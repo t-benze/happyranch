@@ -70,7 +70,8 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | S8a | Task core CRUD, queries, severity, lineage and recall: the exact 22-method set below, `_SEVERITY_RANK` and identity-re-exported `LineageTooDeep` | `db/tasks.py` | HIGH |
 | S8b | Verified retry lineage, atomic single/fanout child spawn, retry feedback and no-write admission: exact 13-method/eight-module-node set below | existing `db/tasks.py`; identity re-exports in `database.py`, MRO unchanged | HIGH |
 | S8c | Ordinary claim/budget failure, manager supersession/refusal, transactional chain advance and task state queries: exact twelve-method set below | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
-| S8 remaining | Logger-dependent escalation, completion/recovery/result and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
+| S8d | Completion-recovery ledger lifecycle and receipt-owned parent handoff: exact 21-method set below | existing `db/tasks.py`; only standard-library `Callable` import added, bindings and MRO unchanged | HIGH/CRITICAL |
+| S8 remaining | Callback admission, result writers/projection, logger-dependent escalation and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
 | S9 | Schema bootstrap and migrations (DDL byte-identical; erratum: S9 lands before S8 while active PR #955 edits task code; moves the exact 15-method schema/bootstrap set plus the closed five-name module set `AuthorityAuditMigrationRefusal`, `_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`, `_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL`, `_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL`, `_rebuild_indexes_for`; repoints only the source-text path in `tests/test_thread_mention_routing_store.py`) | `db/schema.py` | HIGH |
 | S10 | Authority policy v1 claims/fences/continue envelopes (erratum: the exact 17-method block from `get_authority_candidate_policy_pin` through `list_authority_audit` plus the seven module definitions `_authority_claim_key`, `_parse_authority_fence_results`, `_validate_authority_class`, `_serialize_authority_fence_results`, `_serialize_authority_audit_payload`, `_AUTHORITY_TERMINAL_STATUSES`, and `_AUTHORITY_APPROVED_VERDICTS`; v1 selector/activation/release remain for S13) | `db/authority_v1.py` | HIGH |
 | S11 | Authority policy v2 attempts/finalisation (erratum: the exact contiguous 67-method `_authenticate_v2_attempt_admission_uncommitted` through `get_authority_policy_v2_housekeeping_target` block plus `_AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING`) | `db/authority_v2_attempts.py` | HIGH |
@@ -222,6 +223,74 @@ No close/merge/rewrite/transplant of foreign behavior is authorized. Re-audit
 all open PRs and actual changed hunks before publication and handoff.
 S1–S7/S9–S13 and S8a/S8b are shipped foundations, not rebuilt by S8c;
 remaining S8, R1–R6 and later M/E work is not claimed complete.
+
+### S8d exact ownership and remaining holds
+
+S8c PR #971 is merged at `91fac365452612bcd1a2a62d22b955d9a8df5634`.
+S8d appends exactly these 21 existing definitions, verbatim and in source
+order, to the existing `TasksMixin`:
+
+```text
+claim_task_completion_recovery
+publish_task_completion_recovery_binding
+task_completion_recovery_launch_allowed
+set_task_executor_pid_if_current
+completion_recovery_callback_allowed
+mark_task_completion_recovery_callback_consumed
+reconcile_accepted_recovery_continued_same_root
+complete_task_if_current_recovery_owner
+consume_accepted_blocked_task_completion_recovery
+consume_accepted_completed_task_completion_recovery
+consume_accepted_nonroot_escalation_recovery
+get_consumed_completed_task_completion_recovery_task_ids
+get_consumed_nonroot_escalation_recovery_task_ids
+get_consumed_task_completion_recovery_owners
+consumed_task_completion_recovery_owner_is_current
+settle_expired_task_completion_recovery
+settle_interrupted_task_completion_recovery
+get_claimed_task_completion_recovery
+get_accepted_task_completion_recovery_result
+get_accepted_task_completion_recovery_task_ids
+handoff_consumed_task_completion_recovery_parent_effect
+```
+
+Their decorated source totals 692 lines: the first twenty are the contiguous
+recovery block, followed by the receipt-owned parent-effect handoff. Complete
+closure is `json`, `TaskStatus`, `BlockKind`, identical shared `_synchronized`,
+and annotation `Callable`; only `from typing import Callable` is newly needed.
+No module binding, facade-only global or MRO moves. All 47 existing mixin
+methods, severity assignment, nine facade identity re-exports and every
+retained facade/module node remain unchanged. Dynamic `self` lookups,
+particularly `consumed_task_completion_recovery_owner_is_current` and
+`insert_audit_log_uncommitted`, stay patchable. The shared decorator still
+observes late whole-facade `_time` replacement and the same instance RLock;
+the synchronous parent effect remains inside the receipt-owned critical
+section, after captured-job cleanup and before notification delivery.
+
+Direct facade methods go from 78 to 57, mixin methods from 47 to 68, and the
+remaining task-domain inventory from 35 to 14. Retained task methods are:
+`try_escalate`, `try_escalate_runtime`, `try_escalate_over_budget`,
+`insert_task_result`, `_insert_task_result`, `admit_task_completion_callback`,
+`get_task_results`, `get_agent_task_results`, `get_latest_task_result`,
+`get_latest_completion_report`, `_row_to_completion_report`,
+`insert_task_with_attachments`, `dispatch_task_followup_replacement`, and
+`terminate_agent_cleanups`. Result projection helpers and cross-domain/module
+infrastructure remain in the facade. The S8a–c paragraphs preserve historical
+receipts; only their remaining-work descriptions are superseded by this move.
+The U0 recovery inventory names unchanged run_step/startup callers and needs
+no edit.
+
+Fresh S8d audit found 34 foreign open PRs with heads/file sets equal to the
+previous audit minus merged #971. None touches `tasks.py`; actual
+#840/#684/#595/#587/#585/#547 Database hunks do not intersect the selected
+nodes or closure. PR #840's actual result writers/cleanup helpers remain held.
+PR #682's eleven-function R2 and actual R4/R6 validator/completion/chain/
+carrier/fanout/CAS collisions remain HELD under THR-175 seq33/36's incident
+split and deferred-hardening disposition. #970 is web/i18n, outside this
+radius. Re-audit actual hunks before publication and handoff; no foreign
+close/merge/rewrite/transplant or hardening is authorized. All landed
+S1–S7/S9–S13/S8a–c remain foundations. Remaining S8, R1–R6 and later M/E
+work is not claimed complete.
 
 ## Per-slice gates
 
