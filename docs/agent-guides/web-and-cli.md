@@ -662,8 +662,15 @@ Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 `happyranch memory report` paginates the existing audit read surface but is
 currently fail-closed: JSON and text both return `insufficient_instrumentation`.
 There is no CLI flag or input that can override the invalid current/unversioned
-epoch. Existing explicit `--session-id` get/search behavior remains unchanged;
-the report neither begins collection nor recommends push, alias, embedding, or
+epoch. Executor-owned task children receive their runtime session in the private
+`HAPPYRANCH_RUNTIME_SESSION_ID` environment hint, so `memory get`/`search`
+without a flag can preserve validated read-only attribution; a
+nonempty `--session-id` still takes precedence; an explicitly empty flag retains
+the existing environment fallback. Environment assembly with no runtime SID
+sends an empty hint that overrides inherited ambient values. Ordinary/custom
+execution forwards resolved invocation IDs; generated, unregistered IDs remain
+uncredited. Provider resume IDs are never used for this purpose.
+The report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
 Its cursor pages are exhausted before report calculation; malformed diagnostic
 rows fail closed, with text never presenting the observation thresholds as met.

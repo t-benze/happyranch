@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from cli import _shared
@@ -89,8 +90,11 @@ def cmd_learning_get(args: argparse.Namespace) -> None:
     client = _learning_client()
     org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
     params: dict = {}
-    if getattr(args, "session_id", None):
-        params["session_id"] = args.session_id
+    session_id = getattr(args, "session_id", None) or os.environ.get(
+        "HAPPYRANCH_RUNTIME_SESSION_ID"
+    )
+    if session_id:
+        params["session_id"] = session_id
     r = client.get(
         f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/{args.id_or_slug}",
         params=params or None,
@@ -138,8 +142,11 @@ def cmd_learning_search(args: argparse.Namespace) -> None:
         payload["include_kb"] = args.include_kb
     params: dict = {}
     # THR-091 Slice 2: optional session_id for search telemetry correlation
-    if getattr(args, "session_id", None):
-        params["session_id"] = args.session_id
+    session_id = getattr(args, "session_id", None) or os.environ.get(
+        "HAPPYRANCH_RUNTIME_SESSION_ID"
+    )
+    if session_id:
+        params["session_id"] = session_id
     r = client.post(
         f"/api/v1/orgs/{org}/agents/{args.agent}/memory/entries/search",
         json=payload,
@@ -930,7 +937,10 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     pg.add_argument("id_or_slug")
     pg.add_argument("--json", action="store_true")
     # THR-091 Slice 2: optional session_id for read-source attribution
-    pg.add_argument("--session-id", required=False, default=None)
+    pg.add_argument(
+        "--session-id", required=False, default=None,
+        help="Runtime session correlation (defaults to child runtime hint)",
+    )
     pg.set_defaults(func=wrap(cmd_learning_get))
 
     ps = verb_sub.add_parser("search", help=f"Substring search over {noun}")
@@ -944,7 +954,10 @@ def _register_group(sub, name: str, *, deprecated: bool) -> None:
     ps.add_argument("--include-kb", action=argparse.BooleanOptionalAction, default=None)
     ps.add_argument("--json", action="store_true")
     # THR-091 Slice 2: optional session_id for search telemetry correlation
-    ps.add_argument("--session-id", required=False, default=None)
+    ps.add_argument(
+        "--session-id", required=False, default=None,
+        help="Runtime session correlation (defaults to child runtime hint)",
+    )
     ps.set_defaults(func=wrap(cmd_learning_search))
 
     pa = verb_sub.add_parser("add", help="Add a new memory item (file payload)")
