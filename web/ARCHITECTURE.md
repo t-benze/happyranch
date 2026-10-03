@@ -206,8 +206,13 @@ localized fallbacks. Artifact bytes use `formatAttachmentSizeFor` with the same
 binary thresholds/rounding; other attachment consumers retain their legacy
 optional-locale behavior. DrawerContent has no closeLabel/control; Compose's
 DialogContent does, and is localized. The KB drawer fits below 640px without
-changing desktop width. `kb` and `artifacts` coverage is translated; `usage`
-and `system-assistant` remain english-only. Preview remains enabled with unset
+changing desktop width. At that narrow breakpoint the scrollable filter rail
+stacks above the feed, and the header actions stack below the title so list
+copy stays readable; desktop retains the side rail and header layout. Raw KB
+type badges retain their stored case (for example, `sop` rather than `SOP`)
+in both locales instead of applying a CSS uppercase transform. `kb` and
+`artifacts` coverage is translated; `usage` and `system-assistant` remain
+english-only. Preview remains enabled with unset
 English and secondary-page disclosure; W5 and native N0/N1 remain later work.
 Browser evidence adds representative KB list/detail/candidates and artifact
 list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one

@@ -71,7 +71,7 @@ export function KbEntryCard({
             types fall back to the neutral grey tone. */}
         <span
           className={cn(
-            'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide',
+            'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-semibold tracking-wide',
             toneClass(entry.type),
           )}
         >

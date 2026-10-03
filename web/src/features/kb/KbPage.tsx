@@ -545,11 +545,11 @@ export function KbPage(): JSX.Element {
   const isListEmpty = liveEntries.length === 0;
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full max-sm:flex-col">
       {/* Folder rail */}
       <aside
         aria-label={t('kb.filterLabel')}
-        className="w-rail shrink-0 overflow-y-auto border-r border-border-default bg-surface-sunken p-3"
+        className="w-rail shrink-0 overflow-y-auto border-r border-border-default bg-surface-sunken p-3 max-sm:max-h-64 max-sm:w-full max-sm:border-r-0 max-sm:border-b"
       >
         <div className="mb-3">
           <Input
@@ -586,14 +586,14 @@ export function KbPage(): JSX.Element {
           <ContentWrap> so the header eyebrow/title column aligns above the feed
           columns at 1180 with matching 26px gutters. main is the flex sizer;
           the body <ContentWrap> owns the internal scroll. */}
-      <main className="flex flex-1 flex-col overflow-hidden bg-surface-canvas">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-surface-canvas">
         {/* Header — KB-02: uppercase eyebrow (live document count) + Newsreader
             serif title, matching the a-knowledge Direction-A reference and the
             Tasks/Audit surfaces. The amber pill surfaces pending dream
             candidates from the same client-side count the feed derives. */}
         <header className="shrink-0 border-b border-border-subtle">
           <ContentWrap>
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start justify-between gap-3 max-sm:flex-col">
             <div className="min-w-0 flex-1">
               <p className="text-text-muted text-xs font-medium uppercase tracking-wide">
                 {t('kb.headerEyebrow', { count: liveEntries.length, number: formatCountFor(locale, liveEntries.length) })}

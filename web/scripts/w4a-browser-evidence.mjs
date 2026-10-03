@@ -435,6 +435,29 @@ const VIEW_ROUTES = [
     id: 'kb-list', route: 'kb', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
     keys: ['kb.pageTitle', 'kb.railAllEntries', 'kb.railTagsSection', ['kb.headerEyebrow', { count: 1, number: '1' }], ['kb.viewedLabel', { count: 1000, number: '1,000' }]],
     verbatim: [W4D_KB.title, 'RAW_Type', 'Raw_Tag', 'raw-knowledge'],
+    checks: () => [
+      ['heading and entry text fit their containers', `(() => {
+        const main = document.querySelector('main main');
+        const heading = main?.querySelector('h1');
+        const title = [...(main?.querySelectorAll('a span') ?? [])].find(el => el.textContent === ${JSON.stringify(W4D_KB.title)});
+        if (!main || !heading || !title) return false;
+        return [heading, title].every(el => {
+          const range = document.createRange(); range.selectNodeContents(el);
+          const rects = [...range.getClientRects()];
+          if (!rects.length) return false;
+          return rects.every(r => {
+            if (r.width <= 0 || r.left < 0 || r.right > innerWidth) return false;
+            for (let parent = el; parent; parent = parent.parentElement) {
+              if (!['hidden', 'auto', 'scroll', 'clip'].includes(getComputedStyle(parent).overflowX)) continue;
+              const box = parent.getBoundingClientRect();
+              if (r.left < box.left - 1 || r.right > box.right + 1) return false;
+            }
+            return true;
+          });
+        });
+      })()`, true],
+      ['raw type has no text transform', `(() => { const badge = [...document.querySelectorAll('main a span')].find(el => el.textContent === 'RAW_Type'); return Boolean(badge && getComputedStyle(badge).textTransform === 'none'); })()`, true],
+    ],
   },
   {
     id: 'kb-detail', route: 'kb detail', path: `/orgs/${ORG}/kb/raw-knowledge`, ready: () => bodyHas(W4D_KB.body),
