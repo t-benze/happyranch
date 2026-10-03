@@ -23,6 +23,7 @@
  * materialize / "pending" / "active" wording anywhere. This module is
  * unit-tested for that.
  */
+import type { MessageKey } from '@/lib/i18n';
 import {
   agentProvenance,
   type AgentAssignmentFacts,
@@ -114,11 +115,13 @@ export function toggleAssignment(
  *  perform given the current desired state. 'Assign' when it will start showing
  *  the skill as guidance; 'Unassign' when it will stop. Never renders the api
  *  verb ('allow'/'remove') or permission wording ('Allow'/'Grant'/'Approve'). */
+export type ToggleLabelKey = 'skills.assign.assign' | 'skills.assign.unassign';
+
 export function toggleLabel(
   a: AgentAssignmentFacts,
   queue: PendingAssignments,
-): 'Assign' | 'Unassign' {
-  return desiredAssigned(a, queue) ? 'Unassign' : 'Assign';
+): ToggleLabelKey {
+  return desiredAssigned(a, queue) ? 'skills.assign.unassign' : 'skills.assign.assign';
 }
 
 /** The OPTIMISTIC per-agent provenance under the queue. Feeds the committed
@@ -148,10 +151,11 @@ export interface AssignmentChange {
   agent: string;
   /** REQUEST-BODY verb — 'allow' | 'remove'. NEVER rendered. */
   action: AssignAction;
-  /** Product-language label for the change — 'Assign' | 'Unassign'. */
-  label: 'Assign' | 'Unassign';
-  /** One-sentence, guidance-visibility summary of what the change does. */
-  summary: string;
+  /** Catalog key for the change label — Assign | Unassign. */
+  label: ToggleLabelKey;
+  /** Catalog key for the one-sentence, guidance-visibility summary; rendered
+   *  with `{ agent }` (the agent name stays verbatim). */
+  summary: MessageKey;
 }
 
 /** The config-review summary: the review-before-commit list of queued changes,
@@ -169,14 +173,14 @@ export function reviewChanges(
         ? {
             agent: a.agent,
             action: 'allow',
-            label: 'Assign',
-            summary: `${a.agent} will be shown this skill as guidance at its next session.`,
+            label: 'skills.assign.assign',
+            summary: 'skills.assign.summaryAssign',
           }
         : {
             agent: a.agent,
             action: 'remove',
-            label: 'Unassign',
-            summary: `${a.agent} will no longer be shown this skill as guidance.`,
+            label: 'skills.assign.unassign',
+            summary: 'skills.assign.summaryUnassign',
           },
     );
   }
@@ -196,5 +200,4 @@ export function changeCount(
  *  invariant plainly: assignment changes what an agent is SHOWN as guidance,
  *  not what it can do. Deliberately avoids every forbidden token family
  *  (permission / approve / admit / grant / materialize / pending / active). */
-export const CONFIG_REVIEW_NOTE =
-  'Assigned skills are shown to this agent as guidance at its next session; they do not change available tools or commands.';
+export const CONFIG_REVIEW_NOTE: MessageKey = 'skills.assign.note';

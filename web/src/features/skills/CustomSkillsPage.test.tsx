@@ -4,6 +4,7 @@ import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
+import { translate } from '@/lib/i18n';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
@@ -75,21 +76,21 @@ describe('Custom Skills routes', () => {
     installShellHandlers();
     server.use(http.get(`${API}/catalog`, () => HttpResponse.json({ skills: [] })));
     mount(`/orgs/${SLUG}/skills/custom`);
-    expect(await screen.findByText('No custom skills yet')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.customList.emptyTitle'))).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
     installShellHandlers();
     server.use(http.get(`${API}/catalog`, () => new HttpResponse('unavailable', { status: 500 })));
     mount(`/orgs/${SLUG}/skills/custom`);
-    expect(await screen.findByText('Could not load custom skills')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.catalog.customErrorTitle'))).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
     installShellHandlers();
     server.use(http.get(`${API}/catalog`, () => new HttpResponse('forbidden', { status: 403 })));
     mount(`/orgs/${SLUG}/skills/custom`);
-    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.founderRequired.title'))).toBeInTheDocument();
   });
 
   test('switches to an isolated removed catalog with count, badge, deep link, and empty state', async () => {
@@ -110,25 +111,25 @@ describe('Custom Skills routes', () => {
     mount(`/orgs/${SLUG}/skills/custom`);
     expect(await screen.findByText('Partner playbook')).toBeInTheDocument();
     expect(screen.getByText('Founder workspace · 1')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Add custom skill' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: translate('en', 'skills.addCustom') })).toHaveAttribute(
       'href', `/orgs/${SLUG}/skills/custom/new`,
     );
 
-    await user.click(screen.getByRole('button', { name: 'Removed' }));
-    expect(await screen.findByText('Permanently removed')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'Add custom skill' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.view.removed') }));
+    expect(await screen.findByText(translate('en', 'skills.status.permanentlyRemoved'))).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: translate('en', 'skills.addCustom') })).not.toBeInTheDocument();
     expect(screen.getByText('Removed · 1')).toBeInTheDocument();
-    expect(screen.getByText('Reservation retained')).toBeInTheDocument();
+    expect(screen.getByText(translate('en', 'skills.reservationRetained'))).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'View permanently removed playbook' })).toHaveAttribute(
       'href', `/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`,
     );
-    expect(screen.queryByText('Retired')).not.toBeInTheDocument();
+    expect(screen.queryByText(translate('en', 'skills.retired'))).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /retire/i })).not.toBeInTheDocument();
     expect(requests).toEqual(['current', 'removed']);
 
-    await user.click(screen.getByRole('button', { name: 'Current' }));
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.view.current') }));
     expect(await screen.findByText('Founder workspace · 1')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Add custom skill' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: translate('en', 'skills.addCustom') })).toBeInTheDocument();
     expect(requests).toEqual(['current', 'removed']);
 
     cleanup();
@@ -138,8 +139,8 @@ describe('Custom Skills routes', () => {
       skills: new URL(request.url).searchParams.get('view') === 'removed' ? [] : [skill],
     })));
     mount(`/orgs/${SLUG}/skills/custom`);
-    await user.click(await screen.findByRole('button', { name: 'Removed' }));
-    expect(await screen.findByText('No permanently removed skills')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: translate('en', 'skills.view.removed') }));
+    expect(await screen.findByText(translate('en', 'skills.customList.emptyRemovedTitle'))).toBeInTheDocument();
   });
 
   test('keeps the removed control selected through loading, error, and forbidden responses', async () => {
@@ -151,9 +152,9 @@ describe('Custom Skills routes', () => {
       return new HttpResponse(removedResponse, { status: removedResponse === 'forbidden' ? 403 : 500 });
     }));
     mount(`/orgs/${SLUG}/skills/custom`);
-    await user.click(await screen.findByRole('button', { name: 'Removed' }));
-    expect(screen.getByRole('button', { name: 'Removed' })).toHaveAttribute('aria-pressed', 'true');
-    expect(await screen.findByLabelText('Loading removed custom skills')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: translate('en', 'skills.view.removed') }));
+    expect(screen.getByRole('button', { name: translate('en', 'skills.view.removed') })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByLabelText(translate('en', 'skills.customList.loadingRemoved'))).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
@@ -161,8 +162,8 @@ describe('Custom Skills routes', () => {
     removedResponse = 'error';
     server.use(http.get(`${API}/catalog`, ({ request }) => new URL(request.url).searchParams.get('view') === 'removed' ? new HttpResponse('error', { status: 500 }) : HttpResponse.json({ skills: [skill] })));
     mount(`/orgs/${SLUG}/skills/custom`);
-    await user.click(await screen.findByRole('button', { name: 'Removed' }));
-    expect(await screen.findByText('Could not load removed skills')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: translate('en', 'skills.view.removed') }));
+    expect(await screen.findByText(translate('en', 'skills.customList.errorTitleRemoved'))).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
@@ -170,41 +171,50 @@ describe('Custom Skills routes', () => {
     removedResponse = 'forbidden';
     server.use(http.get(`${API}/catalog`, ({ request }) => new URL(request.url).searchParams.get('view') === 'removed' ? new HttpResponse('forbidden', { status: 403 }) : HttpResponse.json({ skills: [skill] })));
     mount(`/orgs/${SLUG}/skills/custom`);
-    await user.click(await screen.findByRole('button', { name: 'Removed' }));
-    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: translate('en', 'skills.view.removed') }));
+    expect(await screen.findByText(translate('en', 'skills.founderRequired.title'))).toBeInTheDocument();
   });
 
   test('create route exposes mutation pending, error, and forbidden states', async () => {
     const user = userEvent.setup();
     server.use(http.post(API, () => new Promise(() => {})));
     mount(`/orgs/${SLUG}/skills/custom/new`);
-    await user.type(screen.getByLabelText('Name'), 'New guidance');
-    await user.type(screen.getByLabelText('Slug'), 'new-guidance');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.name')), 'New guidance');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.slug')), 'new-guidance');
     await user.type(screen.getByLabelText('SKILL.md'), '# New guidance');
-    await user.click(screen.getByRole('button', { name: 'Create custom skill' }));
-    expect(await screen.findByRole('button', { name: 'Creating…' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.create.title') }));
+    expect(await screen.findByRole('button', { name: translate('en', 'skills.create.submitting') })).toBeDisabled();
 
     cleanup();
     server.resetHandlers();
     installShellHandlers();
     server.use(http.post(API, () => new HttpResponse('unavailable', { status: 500 })));
     mount(`/orgs/${SLUG}/skills/custom/new`);
-    await user.type(screen.getByLabelText('Name'), 'New guidance');
-    await user.type(screen.getByLabelText('Slug'), 'new-guidance');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.name')), 'New guidance');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.slug')), 'new-guidance');
     await user.type(screen.getByLabelText('SKILL.md'), '# New guidance');
-    await user.click(screen.getByRole('button', { name: 'Create custom skill' }));
-    expect(await screen.findByText('Could not create this custom skill. Check the details and try again.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.create.title') }));
+    // THR-118 W4c: a code-less daemon detail is appended verbatim after the
+    // localized failure line (classifySkillError boundary).
+    expect(
+      await screen.findByText(
+        translate('en', 'skills.error.withDiagnostic', {
+          message: translate('en', 'skills.create.error.fallback'),
+          diagnostic: 'unavailable',
+        }),
+      ),
+    ).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
     installShellHandlers();
     server.use(http.post(API, () => new HttpResponse('forbidden', { status: 403 })));
     mount(`/orgs/${SLUG}/skills/custom/new`);
-    await user.type(screen.getByLabelText('Name'), 'Forbidden guidance');
-    await user.type(screen.getByLabelText('Slug'), 'forbidden-guidance');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.name')), 'Forbidden guidance');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.slug')), 'forbidden-guidance');
     await user.type(screen.getByLabelText('SKILL.md'), '# Forbidden');
-    await user.click(screen.getByRole('button', { name: 'Create custom skill' }));
-    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.create.title') }));
+    expect(await screen.findByText(translate('en', 'skills.founderRequired.title'))).toBeInTheDocument();
   });
 
   test('create explains a permanently reserved removed slug', async () => {
@@ -214,12 +224,12 @@ describe('Custom Skills routes', () => {
       { status: 409 },
     )));
     mount(`/orgs/${SLUG}/skills/custom/new`);
-    await user.type(screen.getByLabelText('Name'), 'Removed guidance');
-    await user.type(screen.getByLabelText('Slug'), 'playbook');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.name')), 'Removed guidance');
+    await user.type(screen.getByLabelText(translate('en', 'skills.create.slug')), 'playbook');
     await user.type(screen.getByLabelText('SKILL.md'), '# Removed guidance');
-    await user.click(screen.getByRole('button', { name: 'Create custom skill' }));
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.create.title') }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'This slug is permanently reserved by a removed custom skill. Open the Removed view to inspect its receipt.',
+      translate('en', 'skills.create.error.reserved'),
     );
   });
 
@@ -234,14 +244,14 @@ describe('Custom Skills routes', () => {
     installShellHandlers();
     server.use(http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => new HttpResponse('unavailable', { status: 500 })));
     mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
-    expect(await screen.findByText('Could not load this custom skill')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.customDetail.loadErrorTitle'))).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
     installShellHandlers();
     server.use(http.get(`${API}/${encodeURIComponent(SKILL_ID)}`, () => new HttpResponse('forbidden', { status: 403 })));
     mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
-    expect(await screen.findByText('Founder access required')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.founderRequired.title'))).toBeInTheDocument();
   });
 
   test('permanent removal requires the exact slug, exposes pending/error, and renders the tombstone', async () => {
@@ -253,14 +263,14 @@ describe('Custom Skills routes', () => {
       http.post(`${API}/${encodeURIComponent(SKILL_ID)}/purge`, () => new Promise<Response>((resolve) => { release = resolve; })),
     );
     mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
-    await user.click(await screen.findByRole('button', { name: 'Permanently remove' }));
-    const confirm = screen.getAllByRole('button', { name: 'Permanently remove' })[1];
+    await user.click(await screen.findByRole('button', { name: translate('en', 'skills.customDetail.permanentlyRemove') }));
+    const confirm = screen.getAllByRole('button', { name: translate('en', 'skills.customDetail.permanentlyRemove') })[1];
     expect(confirm).toBeDisabled();
     await user.type(screen.getByRole('textbox', { name: /Type playbook to confirm/ }), 'playbook');
     await user.click(confirm);
-    expect(await screen.findByRole('button', { name: 'Removing…' })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: translate('en', 'skills.customDetail.removing') })).toBeDisabled();
     release?.(new HttpResponse('failed', { status: 500 }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Permanent removal failed.');
+    expect(await screen.findByRole('alert')).toHaveTextContent(translate('en', 'skills.customDetail.purgeFailed'));
 
     cleanup();
     server.resetHandlers();
@@ -271,7 +281,7 @@ describe('Custom Skills routes', () => {
       purge_id: 'purge:fixed',
       purged_at: '2026-08-30T01:02:03Z',
     } });
-    expect(await screen.findByRole('heading', { name: 'Permanently removed' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: translate('en', 'skills.status.permanentlyRemoved') })).toBeInTheDocument();
     expect(screen.getByText('purge:fixed')).toBeInTheDocument();
     expect(screen.getByText(/physical_erasure=false/)).toBeInTheDocument();
   });
@@ -281,7 +291,7 @@ describe('Custom Skills routes', () => {
     const source = '# Partner guidance\n\nUse <script>unsafe()</script> literally.\n  Keep this indentation.';
     mountDetail({ skill: { ...skill, content_hash: '4d0fc04d9c0d89a12a4c8fb914a92f7281fb8d3ba14f301d50b0af3beaaf83f7', skill_md_cache: source } });
 
-    const guidance = await screen.findByRole('region', { name: 'Current guidance / SKILL.md' });
+    const guidance = await screen.findByRole('region', { name: translate('en', 'skills.customDetail.currentGuidance') });
     expect(guidance).toHaveTextContent('Current version: v1');
     expect(guidance).toHaveTextContent('Content hash: 4d0fc04d9c0d89a12a4c8fb914a92f7281fb8d3ba14f301d50b0af3beaaf83f7');
     expect(guidance.querySelector('pre')?.textContent).toBe(source);
@@ -295,24 +305,24 @@ describe('Custom Skills routes', () => {
 
   test('detail safely explains null or absent legacy current guidance', async () => {
     mountDetail({ skill: { ...skill, skill_md_cache: null } });
-    expect(await screen.findByText('No current SKILL.md content is available.')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.customDetail.noSkillMd'))).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
     installShellHandlers();
     mountDetail();
-    expect(await screen.findByText('No current SKILL.md content is available.')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.customDetail.noSkillMd'))).toBeInTheDocument();
   });
 
   test('detail uses the hidden eligibility badge only when the server reports it', async () => {
     mountDetail({ skill: { ...skill, hidden_reason: 'no_eligibility_policy' } });
-    expect(await screen.findByText('Hidden — eligibility not configured')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.status.hiddenNoEligibility'))).toBeInTheDocument();
 
     cleanup();
     server.resetHandlers();
     installShellHandlers();
     mountDetail();
-    expect(await screen.findByText('Validated')).toBeInTheDocument();
+    expect(await screen.findByText(translate('en', 'skills.status.validated'))).toBeInTheDocument();
   });
 
   test('editor sends org rules with an explicit effect to preview and save', async () => {
@@ -323,11 +333,11 @@ describe('Custom Skills routes', () => {
       preview: async (request) => { payloads.push(await request.json()); return HttpResponse.json({ newly_visible: [], newly_hidden: [], unchanged: [], revision: 1 }); },
       save: async (request) => { payloads.push(await request.json()); return HttpResponse.json({ newly_visible: [], newly_hidden: [], unchanged: [], revision: 1 }); },
     });
-    await user.click(await screen.findByRole('button', { name: 'Add rule' }));
+    await user.click(await screen.findByRole('button', { name: translate('en', 'skills.customDetail.addRule') }));
     await user.selectOptions(screen.getByLabelText('Rule 1 scope'), 'org');
     await user.selectOptions(screen.getByLabelText('Rule 1 effect'), 'deny');
-    await user.click(screen.getByRole('button', { name: 'Preview impact' }));
-    await user.click(screen.getByRole('button', { name: 'Save eligibility' }));
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.customDetail.previewImpact') }));
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.customDetail.saveEligibility') }));
     await waitFor(() => expect(payloads).toEqual([
       [{ scope_type: 'org', scope_target: '', effect: 'deny' }],
       [{ scope_type: 'org', scope_target: '', effect: 'deny' }],
@@ -340,8 +350,15 @@ describe('Custom Skills routes', () => {
     const target = await screen.findByLabelText('Rule 1 target');
     await user.clear(target);
     await user.type(target, 'local-draft');
-    await user.click(screen.getByRole('button', { name: 'Save eligibility' }));
-    expect(await screen.findByText('Could not save eligibility.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.customDetail.saveEligibility') }));
+    expect(
+      await screen.findByText(
+        translate('en', 'skills.error.withDiagnostic', {
+          message: translate('en', 'skills.customDetail.saveFailed'),
+          diagnostic: 'unavailable',
+        }),
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByLabelText('Rule 1 target')).toHaveValue('local-draft');
   });
 
@@ -369,13 +386,13 @@ describe('Custom Skills routes', () => {
     const target = await screen.findByLabelText('Rule 1 target');
     await user.clear(target);
     await user.type(target, 'founder-draft');
-    await user.click(screen.getByRole('button', { name: 'Save eligibility' }));
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.customDetail.saveEligibility') }));
     expect(await screen.findByText(/Eligibility changed elsewhere/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText('Current revision: v2')).toBeInTheDocument());
     expect(screen.getByLabelText('Rule 1 target')).toHaveValue('founder-draft');
 
-    await user.click(screen.getByRole('button', { name: 'Save eligibility' }));
-    expect(await screen.findByText('Eligibility saved.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: translate('en', 'skills.customDetail.saveEligibility') }));
+    expect(await screen.findByText(translate('en', 'skills.customDetail.eligibilitySaved'))).toBeInTheDocument();
     expect(saveRevisions).toEqual(['1', '2']);
   });
 
@@ -389,8 +406,8 @@ describe('Custom Skills routes', () => {
       http.get(`${API}/${encodeURIComponent(SKILL_ID)}/versions/:a/diff/:b`, () => { diffCalls += 1; return HttpResponse.json({ a: {}, b: {}, diff: [] }); }),
     );
     mount(`/orgs/${SLUG}/skills/custom/${encodeURIComponent(SKILL_ID)}`);
-    const before = await screen.findByLabelText('Before');
-    const after = screen.getByLabelText('After');
+    const before = await screen.findByLabelText(translate('en', 'skills.customDetail.before'));
+    const after = screen.getByLabelText(translate('en', 'skills.customDetail.after'));
     await user.selectOptions(before, '1');
     await user.selectOptions(after, '2');
     await waitFor(() => expect(diffCalls).toBe(1));

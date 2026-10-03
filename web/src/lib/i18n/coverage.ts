@@ -20,9 +20,13 @@
  * detail drawer). W4b migrates Todos (`todos`, `todos/:scheduleId` and its
  * owned dialogs), Work Hours (`work-hours`, `work-hours/:agent`, the
  * TierEditorDialog and the shared EligibilityEditorDialog) and Audit (`audit`,
- * incl. the catalog-templated narrative). The other mounted product surfaces
- * remain `english-only` for the later slices (W4c agents/skills, W4d
- * artifacts/usage; kb and the assistant dock body in later W4/W5 legs) —
+ * incl. the catalog-templated narrative). W4c migrates Agents (`agents`,
+ * `agents/:agent_name`, `agents/:agent_name/team-escalation-policy` and its
+ * owned dialogs/panels) and Skills (every `skills*` route token and its owned
+ * surfaces); user/daemon values (policy bodies, contract ids, digests, agent
+ * names, skill names/slugs/bodies, versions, provenance) stay verbatim. The
+ * other mounted product surfaces remain `english-only` for the later slices
+ * (W4d artifacts/usage; kb and the assistant dock body in later W4/W5 legs) —
  * fallback English is never treated as coverage.
  * Redirect-only/catch-all
  * tokens are `not-applicable`. The marker is explicit machine-readable data
@@ -163,7 +167,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
       'skills/custom/:skillId',
       'skills/:skillId',
     ],
-    status: 'english-only',
+    status: 'translated',
     surfaces: [
       'SkillsPage',
       'SkillValidationPage',
@@ -176,7 +180,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'agents',
     routeTokens: ['agents', 'agents/:agent_name', 'agents/:agent_name/team-escalation-policy'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['AgentsPage', 'TeamEscalationPolicyPage', 'AddAgentDialog', 'NewThreadDialog'],
   },
   {

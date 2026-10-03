@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import type { ValidationEvent } from '@/hooks/skills';
+import { translate, type MessageKey, type MessageParams } from '@/lib/i18n';
 import {
   agentLabel,
   agentOptions,
@@ -13,6 +14,9 @@ import {
   toValidationRow,
   type ValidationFilters,
 } from './skills-validation';
+
+/** English translator: copy assertions run against the rendered catalog text (THR-118 W4c). */
+const T = (key: MessageKey, params?: MessageParams): string => translate('en', key, params);
 
 // A fixed "now" so relative-age assertions are deterministic.
 const NOW = Date.parse('2026-07-15T12:00:00Z');
@@ -36,20 +40,20 @@ function ev(over: Partial<ValidationEvent> = {}): ValidationEvent {
 
 describe('severityBadge', () => {
   test('pass → positive "Passed"', () => {
-    expect(severityBadge('pass')).toEqual({ text: 'Passed', tone: 'positive' });
+    expect(severityBadge('pass', T)).toEqual({ text: 'Passed', tone: 'positive' });
   });
   test('error → attention "Needs attention" (product language, not permission)', () => {
-    expect(severityBadge('error')).toEqual({
+    expect(severityBadge('error', T)).toEqual({
       text: 'Needs attention',
       tone: 'attention',
     });
   });
   test('warn/info map to product words', () => {
-    expect(severityBadge('warn').text).toBe('Warning');
-    expect(severityBadge('info')).toEqual({ text: 'Info', tone: 'neutral' });
+    expect(severityBadge('warn', T).text).toBe('Warning');
+    expect(severityBadge('info', T)).toEqual({ text: 'Info', tone: 'neutral' });
   });
   test('unknown severity is humanized, never the raw enum', () => {
-    const b = severityBadge('some_new_kind');
+    const b = severityBadge('some_new_kind', T);
     expect(b.text).toBe('Some new kind');
     expect(b.tone).toBe('neutral');
   });
@@ -57,27 +61,27 @@ describe('severityBadge', () => {
 
 describe('reasonCodeLabel', () => {
   test('maps known technical codes to plain language', () => {
-    expect(reasonCodeLabel('missing_version')).toBe(
+    expect(reasonCodeLabel('missing_version', T)).toBe(
       'The skill guide is missing a version.',
     );
-    expect(reasonCodeLabel('slug_collision')).toBe(
+    expect(reasonCodeLabel('slug_collision', T)).toBe(
       'This slug is already used by another skill.',
     );
   });
   test('maps the SKILL.md authoring-contract codes to plain language', () => {
-    expect(reasonCodeLabel('skill_md_no_frontmatter')).toBe(
+    expect(reasonCodeLabel('skill_md_no_frontmatter', T)).toBe(
       'The skill guide must start with YAML frontmatter.',
     );
-    expect(reasonCodeLabel('skill_md_unclosed_frontmatter')).toBe(
+    expect(reasonCodeLabel('skill_md_unclosed_frontmatter', T)).toBe(
       'The skill guide frontmatter is missing its closing fence.',
     );
-    expect(reasonCodeLabel('skill_md_malformed_frontmatter')).toBe(
+    expect(reasonCodeLabel('skill_md_malformed_frontmatter', T)).toBe(
       'The skill guide frontmatter is not valid YAML.',
     );
-    expect(reasonCodeLabel('skill_md_frontmatter_not_mapping')).toBe(
+    expect(reasonCodeLabel('skill_md_frontmatter_not_mapping', T)).toBe(
       'The skill guide frontmatter must be a mapping.',
     );
-    expect(reasonCodeLabel('skill_md_no_heading')).toBe(
+    expect(reasonCodeLabel('skill_md_no_heading', T)).toBe(
       'The skill guide needs a top-level heading.',
     );
   });
@@ -97,45 +101,45 @@ describe('reasonCodeLabel', () => {
       'invalid_slug',
     ];
     for (const code of codes) {
-      const line = reasonCodeLabel(code);
+      const line = reasonCodeLabel(code, T);
       expect(line.length).toBeGreaterThan(0);
       // No raw enum jargon, no forbidden token family, no user-facing "active".
       expect(line).not.toContain(code);
       expect(line).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
       expect(line).not.toMatch(/\bactive\b/i);
     }
-    expect(reasonCodeLabel('frontmatter_name_slug_mismatch')).toBe(
+    expect(reasonCodeLabel('frontmatter_name_slug_mismatch', T)).toBe(
       'The skill guide name must match the slug.',
     );
-    expect(reasonCodeLabel('admission_field_not_allowed')).toBe(
+    expect(reasonCodeLabel('admission_field_not_allowed', T)).toBe(
       'The skill guide frontmatter uses a field that is not supported here.',
     );
     // The document name copy names ASCII explicitly (seq43 Option A).
-    expect(reasonCodeLabel('frontmatter_invalid_name')).toContain('ASCII');
+    expect(reasonCodeLabel('frontmatter_invalid_name', T)).toContain('ASCII');
     // The request-identity code names the literal ASCII grammar.
-    expect(reasonCodeLabel('invalid_slug')).toContain('ASCII');
-    expect(reasonCodeLabel('invalid_slug')).toContain('a-z');
+    expect(reasonCodeLabel('invalid_slug', T)).toContain('ASCII');
+    expect(reasonCodeLabel('invalid_slug', T)).toContain('a-z');
   });
   test('materialization / contract-predicate codes avoid forbidden tokens', () => {
-    const mat = reasonCodeLabel('materialization_error');
-    const pred = reasonCodeLabel('contract_predicate_error');
-    const next = reasonCodeLabel('next_session_materialization');
+    const mat = reasonCodeLabel('materialization_error', T);
+    const pred = reasonCodeLabel('contract_predicate_error', T);
+    const next = reasonCodeLabel('next_session_materialization', T);
     for (const line of [mat, pred, next]) {
       expect(line).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
     }
     expect(next).toBe('Takes effect next session.');
   });
   test('unknown code is humanized with a period, never raw enum jargon', () => {
-    expect(reasonCodeLabel('brand_new_reason')).toBe('Brand new reason.');
+    expect(reasonCodeLabel('brand_new_reason', T)).toBe('Brand new reason.');
   });
 });
 
 describe('agentLabel', () => {
   test('named agent passes through', () => {
-    expect(agentLabel('support_agent')).toBe('support_agent');
+    expect(agentLabel('support_agent', T)).toBe('support_agent');
   });
   test('null agent → context-applied product label, never blank', () => {
-    const label = agentLabel(null);
+    const label = agentLabel(null, T);
     expect(label).toBe('Applied by context — all agents');
     expect(label.trim().length).toBeGreaterThan(0);
   });
@@ -143,31 +147,31 @@ describe('agentLabel', () => {
 
 describe('sourceLabel', () => {
   test('maps the three real daemon event sources to product labels', () => {
-    expect(sourceLabel('user_authored')).toBe('Custom');
-    expect(sourceLabel('first_party')).toBe('Bundled');
-    expect(sourceLabel('materialization')).toBe('Applied at session spawn');
+    expect(sourceLabel('user_authored', T)).toBe('Custom');
+    expect(sourceLabel('first_party', T)).toBe('Bundled');
+    expect(sourceLabel('materialization', T)).toBe('Applied at session spawn');
   });
   test('the materialization label is copy-gate-safe (no forbidden token, no "active")', () => {
-    const label = sourceLabel('materialization');
+    const label = sourceLabel('materialization', T);
     expect(label).not.toMatch(/materializ|admit|permission|approve|grant|\bpending\b/i);
     expect(label).not.toMatch(/\bactive\b/i);
   });
   test('unknown source is humanized, never the raw enum', () => {
-    expect(sourceLabel('some_source')).toBe('Some source');
+    expect(sourceLabel('some_source', T)).toBe('Some source');
   });
 });
 
 describe('formatEventTime', () => {
   test('recent event → "just now"', () => {
-    expect(formatEventTime('2026-07-15T11:59:30Z', NOW).relative).toBe('just now');
+    expect(formatEventTime('2026-07-15T11:59:30Z', NOW, 'en', T).relative).toBe('just now');
   });
   test('minutes / hours / days buckets', () => {
-    expect(formatEventTime('2026-07-15T11:30:00Z', NOW).relative).toBe('30m');
-    expect(formatEventTime('2026-07-15T09:00:00Z', NOW).relative).toBe('3h');
-    expect(formatEventTime('2026-07-13T12:00:00Z', NOW).relative).toBe('2d');
+    expect(formatEventTime('2026-07-15T11:30:00Z', NOW, 'en', T).relative).toBe('30m');
+    expect(formatEventTime('2026-07-15T09:00:00Z', NOW, 'en', T).relative).toBe('3h');
+    expect(formatEventTime('2026-07-13T12:00:00Z', NOW, 'en', T).relative).toBe('2d');
   });
   test('absolute string is populated', () => {
-    expect(formatEventTime('2026-07-15T09:00:00Z', NOW).absolute.length).toBeGreaterThan(0);
+    expect(formatEventTime('2026-07-15T09:00:00Z', NOW, 'en', T).absolute.length).toBeGreaterThan(0);
   });
 });
 
@@ -184,6 +188,8 @@ describe('toValidationRow', () => {
         reason_codes: ['missing_version', 'contract_predicate_error'],
       }),
       NOW,
+      'en',
+      T,
     );
     expect(row.id).toBe(7);
     expect(row.skillName).toBe('refund-decision-guide');
@@ -204,6 +210,8 @@ describe('toValidationRow', () => {
     const row = toValidationRow(
       { ...ev(), findings: undefined as never, reason_codes: undefined as never },
       NOW,
+      'en',
+      T,
     );
     expect(row.findings).toEqual([]);
     expect(row.reasonLines).toEqual([]);

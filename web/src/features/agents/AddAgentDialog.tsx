@@ -36,6 +36,8 @@ import { Textarea } from '@/design-system/primitives/Textarea';
 import { useCreateAgent } from '@/hooks/agents';
 import { useTeamsList } from '@/hooks/teams';
 import { useExecutorOptions } from './useExecutorOptions';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyAgentError, renderAgentError, type AgentErrorView } from './strings';
 
 const NAME_RE = /^[a-z][a-z0-9_]*$/;
 
@@ -56,6 +58,7 @@ interface Props {
 export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
   const { slug } = useParams<{ slug: string }>();
   const navigate = useNavigate();
+  const { t, render } = useTranslation();
   const teamsQuery = useTeamsList();
   const teams = teamsQuery.data?.teams ?? [];
 
@@ -67,7 +70,11 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
   const [executor, setExecutor] = useState('');
   const [description, setDescription] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
-  const [serverError, setServerError] = useState<string | null>(null);
+  // Locale-neutral error view + the submitted values its template names, so a
+  // mapped message re-translates in place on a locale switch.
+  const [serverError, setServerError] = useState<
+    { view: AgentErrorView; params: { name: string; team: string; newTeam: string } } | null
+  >(null);
 
   const create = useCreateAgent();
   const executorOptions = useExecutorOptions();
@@ -151,41 +158,35 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
       onOpenChange(false);
       if (slug) navigate(`/orgs/${slug}/agents/${name}`);
     } catch (err: unknown) {
-      const e = err as { code?: string; message?: string };
-      if (e.code === 'agent_exists') {
-        setServerError(`An agent named "${name}" already exists.`);
-      } else if (e.code === 'team_exists') {
-        setServerError(`Team "${newTeam}" already exists.`);
-      } else if (e.code === 'unknown_team') {
-        setServerError(`Team "${team}" doesn't exist (was it removed?).`);
-      } else {
-        setServerError(e.message ?? 'Could not create agent.');
-      }
+      setServerError({
+        view: classifyAgentError(err, 'agents.error.createFailed'),
+        params: { name, team, newTeam },
+      });
     }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
-          <DialogTitle>New agent</DialogTitle>
+          <DialogTitle>{t('agents.add.title')}</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4">
           <div>
-            <Label htmlFor="agent-name">Name</Label>
+            <Label htmlFor="agent-name">{t('agents.add.name')}</Label>
             <Input
               id="agent-name"
               value={name}
               onChange={(e) => onNameChange(e.target.value)}
-              placeholder="e.g. alpha_worker_1"
+              placeholder={t('agents.add.namePlaceholder')}
               autoFocus
             />
-            <p className="text-fg-muted text-xs">Lowercase + digits + underscores; must start with a letter.</p>
+            <p className="text-fg-muted text-xs">{t('agents.add.nameHint')}</p>
           </div>
 
           <fieldset>
-            <legend className="text-sm font-medium">Role</legend>
+            <legend className="text-sm font-medium">{t('agents.add.role')}</legend>
             <label className="mr-4 inline-flex items-center gap-1">
               <input
                 type="radio"
@@ -194,7 +195,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                 checked={role === 'worker'}
                 onChange={() => onRoleChange('worker')}
               />
-              Worker
+              {t('agents.role.worker')}
             </label>
             <label className="inline-flex items-center gap-1">
               <input
@@ -204,25 +205,25 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                 checked={role === 'manager'}
                 onChange={() => onRoleChange('manager')}
               />
-              Manager
+              {t('agents.role.manager')}
             </label>
           </fieldset>
 
           {role === 'worker' ? (
             teams.length === 0 ? (
               <p className="text-fg-muted text-sm">
-                No teams yet. Add a manager to create the first team.
+                {t('agents.add.noTeams')}
               </p>
             ) : (
               <div>
-                <Label htmlFor="agent-team">Team</Label>
+                <Label htmlFor="agent-team">{t('agents.add.team')}</Label>
                 <select
                   id="agent-team"
                   value={team}
                   onChange={(e) => setTeam(e.target.value)}
                   className="border-border-subtle bg-bg-subtle w-full rounded border p-2 text-sm"
                 >
-                  <option value="">Select team…</option>
+                  <option value="">{t('agents.add.selectTeam')}</option>
                   {teams.map((t) => (
                     <option key={t.name} value={t.name}>
                       {t.name}
@@ -233,43 +234,46 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
             )
           ) : (
             <div>
-              <Label htmlFor="agent-new-team">New team name</Label>
+              <Label htmlFor="agent-new-team">{t('agents.add.newTeam')}</Label>
               <Input
                 id="agent-new-team"
                 value={newTeam}
                 onChange={(e) => onNewTeamChange(e.target.value)}
-                placeholder="defaults from name"
+                placeholder={t('agents.add.newTeamPlaceholder')}
               />
             </div>
           )}
 
           <div>
-            <Label htmlFor="agent-executor">Executor</Label>
+            <Label htmlFor="agent-executor">{t('agents.executor.label')}</Label>
             {executorOptions.state === 'loading' ? (
-              <p className="text-fg-muted text-sm">Loading executor list…</p>
+              <p className="text-fg-muted text-sm">{t('agents.executor.loading')}</p>
             ) : executorOptions.state === 'error' ? (
               <p className="text-tier-red text-sm">
-                Could not load the executor list. Create is disabled.
+                {t('agents.add.executorError')}
               </p>
             ) : executorOptions.state === 'empty' ? (
               <div>
                 <p className="text-fg-muted text-sm">
-                  No executors are available on this machine.
+                  {t('agents.add.noExecutors')}
                   {executorOptions.unavailable.length > 0 && (
                     <>
                       {' '}
-                      The following are not launchable:{' '}
-                      {executorOptions.unavailable.map((e) => e.name).join(', ')}.
+                      {t('agents.add.notLaunchable', {
+                        names: executorOptions.unavailable.map((e) => e.name).join(', '),
+                      })}
                     </>
                   )}
                 </p>
                 {slug && (
                   <p className="text-fg-muted mt-1 text-xs">
-                    Register one via{' '}
-                    <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
-                      Settings → Executors
-                    </Link>
-                    , then reopen this dialog.
+                    {render('agents.add.registerVia', {
+                      link: (
+                        <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
+                          {t('agents.executor.settingsLink')}
+                        </Link>
+                      ),
+                    })}
                   </p>
                 )}
               </div>
@@ -282,19 +286,17 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
               >
                 {executorOptions.selectable.map((opt) => (
                   <option key={opt.name} value={opt.name}>
-                    {opt.name}
-                    {opt.kind === 'custom' ? ' (custom)' : ''}
+                    {opt.kind === 'custom' ? t('agents.executor.customOption', { name: opt.name }) : opt.name}
                   </option>
                 ))}
                 {executorOptions.unavailable.length > 0 && (
                   <>
-                    <option disabled>── unavailable ──</option>
+                    <option disabled>{t('agents.executor.unavailableHeader')}</option>
                     {executorOptions.unavailable.map((opt) => (
                       <option key={opt.name} value={opt.name} disabled>
-                        {opt.name}
                         {opt.kind === 'custom'
-                          ? ' (custom, unavailable — register in Settings > Executors)'
-                          : ' (not registered — Settings > Executors)'}
+                          ? t('agents.add.customUnavailableOption', { name: opt.name })
+                          : t('agents.add.notRegisteredOption', { name: opt.name })}
                       </option>
                     ))}
                   </>
@@ -304,16 +306,16 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
             {/* Settings → Executors navigation link for unavailable executors */}
             {slug && executorOptions.state === 'ready' && executorOptions.unavailable.length > 0 && (
               <p className="text-fg-muted mt-1 text-xs">
-                Unavailable executors need to be registered.{' '}
+                {t('agents.executor.needRegister')}{' '}
                 <Link to={`/orgs/${slug}/settings/executors`} className="text-accent-text underline">
-                  Settings → Executors
+                  {t('agents.executor.settingsLink')}
                 </Link>
               </p>
             )}
           </div>
 
           <div>
-            <Label htmlFor="agent-description">Description</Label>
+            <Label htmlFor="agent-description">{t('agents.field.description')}</Label>
             <Input
               id="agent-description"
               value={description}
@@ -322,7 +324,7 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
           </div>
 
           <div>
-            <Label htmlFor="agent-system-prompt">System prompt</Label>
+            <Label htmlFor="agent-system-prompt">{t('agents.field.systemPrompt')}</Label>
             <Textarea
               id="agent-system-prompt"
               value={systemPrompt}
@@ -332,16 +334,18 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
           </div>
 
           {serverError && (
-            <p className="text-tier-red text-sm">{serverError}</p>
+            <p className="text-tier-red text-sm">
+              {renderAgentError(serverError.view, t, serverError.params)}
+            </p>
           )}
         </div>
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button disabled={!canSubmit} onClick={onSubmit}>
-            {create.isPending ? 'Creating…' : 'Create'}
+            {create.isPending ? t('agents.add.creating') : t('agents.add.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

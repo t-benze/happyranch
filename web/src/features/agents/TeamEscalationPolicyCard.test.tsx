@@ -1,8 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { I18nTestBoundary } from '@/test/render';
 import { ApiError } from '@/lib/api';
 import { type V2PairedControlRequest } from '@/hooks/authorityPolicy';
 import { TeamEscalationPolicyCard } from './TeamEscalationPolicyCard';
+import { en } from '@/lib/i18n/catalog';
 
 const legacyTemplate = {
   title: 'Canonical legacy policy',
@@ -105,6 +108,10 @@ vi.mock('@/hooks/authorityPolicy', async () => ({
 
 const agent = { name: 'engineering_manager', team: 'engineering', role: 'manager' };
 
+// THR-118 W4c: the card reads copy through useTranslation, so every mount sits
+// inside the real I18nProvider (rerender keeps the wrapper).
+const render = (ui: ReactElement) => rtlRender(ui, { wrapper: I18nTestBoundary });
+
 function controlResponse(request: V2PairedControlRequest) {
   return {
     control: 'v2_create_activate' as const,
@@ -135,10 +142,10 @@ function controlResponse(request: V2PairedControlRequest) {
 }
 
 async function editPairAndOpenConfirmation(whatTo = 'Escalate edited scope.', whatNot = 'Continue edited work.') {
-  fireEvent.change(await screen.findByLabelText('What to escalate'), { target: { value: whatTo } });
-  fireEvent.change(screen.getByLabelText('What not to escalate'), { target: { value: whatNot } });
-  fireEvent.click(screen.getByRole('button', { name: 'Save & activate' }));
-  return screen.findByRole('dialog', { name: 'Save and activate both policy texts?' });
+  fireEvent.change(await screen.findByLabelText(en['agents.policy.whatTo']), { target: { value: whatTo } });
+  fireEvent.change(screen.getByLabelText(en['agents.policy.whatNot']), { target: { value: whatNot } });
+  fireEvent.click(screen.getByRole('button', { name: en['agents.policy.save'] }));
+  return screen.findByRole('dialog', { name: en['agents.policy.confirmTitle'] });
 }
 
 describe('TeamEscalationPolicyCard v2 editor', () => {
@@ -159,14 +166,14 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     render(<TeamEscalationPolicyCard agent={agent} />);
     const textareas = await screen.findAllByRole('textbox');
     expect(textareas).toHaveLength(2);
-    expect(screen.getByLabelText('What to escalate')).toHaveValue(v2Starter.what_to_escalate);
-    expect(screen.getByLabelText('What not to escalate')).toHaveValue(v2Starter.what_not_to_escalate);
+    expect(screen.getByLabelText(en['agents.policy.whatTo'])).toHaveValue(v2Starter.what_to_escalate);
+    expect(screen.getByLabelText(en['agents.policy.whatNot'])).toHaveValue(v2Starter.what_not_to_escalate);
     expect(screen.getByText(v2Starter.title)).toBeInTheDocument();
     expect(screen.queryByText('Normative policy')).not.toBeInTheDocument();
     expect(screen.queryByText('Canonical continuation phrase')).not.toBeInTheDocument();
     expect(screen.queryByText('esc-one')).not.toBeInTheDocument();
-    expect(screen.getByText('Owned by the Engineering team, not by this agent.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save & activate' })).toBeEnabled();
+    expect(screen.getByText('Owned by the engineering team, not by this agent.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: en['agents.policy.save'] })).toBeEnabled();
   });
 
   it('completes a Content mutation through authoritative Content readback', async () => {
@@ -206,13 +213,13 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
       return { data: contentReadback };
     });
     render(<TeamEscalationPolicyCard agent={{ name: 'content_manager', team: 'content', role: 'manager' }} />);
-    expect(await screen.findByLabelText('What to escalate')).toHaveValue(contentStarter.what_to_escalate);
-    expect(screen.getByLabelText('What not to escalate')).toHaveValue(contentStarter.what_not_to_escalate);
+    expect(await screen.findByLabelText(en['agents.policy.whatTo'])).toHaveValue(contentStarter.what_to_escalate);
+    expect(screen.getByLabelText(en['agents.policy.whatNot'])).toHaveValue(contentStarter.what_not_to_escalate);
     expect(screen.getByText(contentStarter.title)).toBeInTheDocument();
-    expect(screen.getByText('Owned by the Content team, not by this agent.')).toBeInTheDocument();
-    expect(screen.queryByText('Owned by the Engineering team, not by this agent.')).not.toBeInTheDocument();
+    expect(screen.getByText('Owned by the content team, not by this agent.')).toBeInTheDocument();
+    expect(screen.queryByText('Owned by the engineering team, not by this agent.')).not.toBeInTheDocument();
     await editPairAndOpenConfirmation('Content changed escalate.', 'Content changed continue.');
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
     await waitFor(() => expect(v2Create.mutateAsync).toHaveBeenCalledOnce());
     expect(v2Create.mutateAsync.mock.calls[0][0].body).toMatchObject({
       team: 'content', policy_id: contentStarter.policy_id, title: contentStarter.title,
@@ -226,8 +233,8 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
   it('initializes active v2 bytes and truthfully shows release, activation, selector and digest identity', async () => {
     query.data = activeV2();
     render(<TeamEscalationPolicyCard agent={agent} />);
-    expect(await screen.findByLabelText('What to escalate')).toHaveValue('Escalate scope changes.');
-    expect(screen.getByLabelText('What not to escalate')).toHaveValue('Continue ordinary work.');
+    expect(await screen.findByLabelText(en['agents.policy.whatTo'])).toHaveValue('Escalate scope changes.');
+    expect(screen.getByLabelText(en['agents.policy.whatNot'])).toHaveValue('Continue ordinary work.');
     const identity = screen.getByText(/Active release v2/);
     expect(identity).toHaveTextContent(RELEASE_ID);
     expect(identity).toHaveTextContent(ACTIVATION_ID);
@@ -242,7 +249,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     query.refetch.mockImplementation(async () => { query.data = readback; return { data: readback }; });
     render(<TeamEscalationPolicyCard agent={agent} />);
     await editPairAndOpenConfirmation('  Escalate exact bytes.  ', '  Continue exact bytes.  ');
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
     await waitFor(() => expect(v2Create.mutateAsync).toHaveBeenCalledOnce());
     const request = v2Create.mutateAsync.mock.calls[0][0].body as V2PairedControlRequest;
     expect(request).toMatchObject({
@@ -266,7 +273,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     query.refetch.mockImplementation(async () => { query.data = readback; return { data: readback }; });
     render(<TeamEscalationPolicyCard agent={agent} />);
     await editPairAndOpenConfirmation();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
     await waitFor(() => expect(v2Create.mutateAsync).toHaveBeenCalledOnce());
     expect(v2Create.mutateAsync.mock.calls[0][0].body).toMatchObject({
       based_on_selector_id: null, expected_selector_id: null, action: 'bootstrap',
@@ -275,10 +282,10 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
 
   it('requires both raw text values and applies scalar bounds without trimming accepted bytes', async () => {
     render(<TeamEscalationPolicyCard agent={agent} />);
-    const whatTo = await screen.findByLabelText('What to escalate');
+    const whatTo = await screen.findByLabelText(en['agents.policy.whatTo']);
     fireEvent.change(whatTo, { target: { value: '   ' } });
     expect(screen.getByRole('status')).toHaveTextContent('What to escalate is required.');
-    expect(screen.getByRole('button', { name: 'Save & activate' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: en['agents.policy.save'] })).toBeDisabled();
     fireEvent.change(whatTo, { target: { value: 'x'.repeat(20_001) } });
     expect(screen.getByRole('status')).toHaveTextContent('What to escalate must be at most 20000 characters.');
     expect(v2Create.mutateAsync).not.toHaveBeenCalled();
@@ -287,12 +294,12 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
   it('preserves an unsaved paired draft across ordinary query rerenders and warns for navigation/reload', async () => {
     const onDirtyChange = vi.fn();
     const view = render(<TeamEscalationPolicyCard agent={agent} onDirtyChange={onDirtyChange} />);
-    fireEvent.change(await screen.findByLabelText('What to escalate'), { target: { value: 'Unsaved escalation bytes' } });
-    fireEvent.change(screen.getByLabelText('What not to escalate'), { target: { value: 'Unsaved continuation bytes' } });
+    fireEvent.change(await screen.findByLabelText(en['agents.policy.whatTo']), { target: { value: 'Unsaved escalation bytes' } });
+    fireEvent.change(screen.getByLabelText(en['agents.policy.whatNot']), { target: { value: 'Unsaved continuation bytes' } });
     query.data = { ...empty };
     view.rerender(<TeamEscalationPolicyCard agent={agent} onDirtyChange={onDirtyChange} />);
-    expect(screen.getByLabelText('What to escalate')).toHaveValue('Unsaved escalation bytes');
-    expect(screen.getByLabelText('What not to escalate')).toHaveValue('Unsaved continuation bytes');
+    expect(screen.getByLabelText(en['agents.policy.whatTo'])).toHaveValue('Unsaved escalation bytes');
+    expect(screen.getByLabelText(en['agents.policy.whatNot'])).toHaveValue('Unsaved continuation bytes');
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     const event = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(event);
@@ -306,11 +313,11 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     }));
     render(<TeamEscalationPolicyCard agent={agent} />);
     await editPairAndOpenConfirmation();
-    const confirm = screen.getByRole('button', { name: 'Confirm save & activate' });
+    const confirm = screen.getByRole('button', { name: en['agents.policy.confirmSave'] });
     fireEvent.click(confirm);
     fireEvent.click(confirm);
     expect(v2Create.mutateAsync).toHaveBeenCalledOnce();
-    expect(screen.getByRole('button', { name: 'Saving & activating…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: en['agents.policy.saving'] })).toBeDisabled();
     await act(async () => {
       finish(controlResponse(v2Create.mutateAsync.mock.calls[0][0].body));
     });
@@ -323,7 +330,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     const onDirtyChange = vi.fn();
     render(<TeamEscalationPolicyCard agent={agent} onDirtyChange={onDirtyChange} />);
     await editPairAndOpenConfirmation();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
     const status = await screen.findByRole('status');
     expect(status).toHaveTextContent('Saved and activated immutable v2 release');
     expect(status).toHaveTextContent(RELEASE_ID);
@@ -339,13 +346,13 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     query.refetch.mockImplementation(async () => ({ data: current }));
     render(<TeamEscalationPolicyCard agent={agent} />);
     await editPairAndOpenConfirmation('Unsaved escalation bytes', 'Unsaved continuation bytes');
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
     expect(await screen.findByRole('status')).toHaveTextContent('active selector changed');
     expect(query.refetch).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('What to escalate')).toHaveValue('Unsaved escalation bytes');
-    fireEvent.click(screen.getByRole('button', { name: 'Review current selector' }));
+    expect(screen.getByLabelText(en['agents.policy.whatTo'])).toHaveValue('Unsaved escalation bytes');
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.reviewSelector'] }));
     await waitFor(() => expect(query.refetch).toHaveBeenCalledOnce());
-    expect(screen.getByLabelText('What to escalate')).toHaveValue('Unsaved escalation bytes');
+    expect(screen.getByLabelText(en['agents.policy.whatTo'])).toHaveValue('Unsaved escalation bytes');
     expect(screen.getByRole('status')).toHaveTextContent('Your draft is preserved');
   });
 
@@ -357,7 +364,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     v2Create.mutateAsync.mockRejectedValueOnce(error);
     render(<TeamEscalationPolicyCard agent={agent} />);
     await editPairAndOpenConfirmation();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
     expect(await screen.findByRole('status')).toHaveTextContent(copy);
     expect(screen.getByRole('status')).not.toHaveTextContent(/must-not-render|network leaked detail/);
     expect(screen.queryByText(/Saved and activated immutable/)).not.toBeInTheDocument();
@@ -369,8 +376,8 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     query.refetch.mockImplementation(async () => ({ data: readback }));
     render(<TeamEscalationPolicyCard agent={agent} />);
     await editPairAndOpenConfirmation();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirm save & activate' }));
-    const retry = await screen.findByRole('button', { name: 'Retry exact save & activate' });
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
+    const retry = await screen.findByRole('button', { name: en['agents.policy.retryExact'] });
     fireEvent.click(retry);
     await waitFor(() => expect(v2Create.mutateAsync).toHaveBeenCalledTimes(2));
     expect(v2Create.mutateAsync.mock.calls[1][0]).toEqual(v2Create.mutateAsync.mock.calls[0][0]);
@@ -399,7 +406,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     expect(screen.getAllByText(/selector epoch 4/)).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /Reactivate/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/APR-old/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Retry loading dual-text history' }));
+    fireEvent.click(screen.getByRole('button', { name: en['agents.policy.history.retryMore'] }));
     expect(v2History.fetchNextPage).toHaveBeenCalledOnce();
     expect(legacyHistory.fetchNextPage).not.toHaveBeenCalled();
     expect(screen.getByText('Escalate history.')).toBeInTheDocument();
@@ -409,7 +416,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     v2History.data.pages = [{ items: [], next_cursor: null }];
     v2History.isError = true;
     render(<TeamEscalationPolicyCard agent={agent} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Retry dual-text history' }));
+    fireEvent.click(await screen.findByRole('button', { name: en['agents.policy.history.retry'] }));
     expect(v2History.refetch).toHaveBeenCalledOnce();
     expect(v2History.fetchNextPage).not.toHaveBeenCalled();
     expect(query.refetch).not.toHaveBeenCalled();
@@ -426,6 +433,6 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(query.refetch).toHaveBeenCalledOnce();
-    expect(screen.getByText('Loading team policy…')).toBeInTheDocument();
+    expect(screen.getByText(en['agents.policy.loading'])).toBeInTheDocument();
   });
 });

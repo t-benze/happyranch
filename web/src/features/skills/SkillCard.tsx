@@ -8,11 +8,13 @@
  * Takes effect next session. Never permission / approve / admit wording.
  */
 import { Lock, Package, Sparkles } from 'lucide-react';
+import { useTranslation } from '@/hooks/i18n';
 import type { CatalogSkillItem } from '@/hooks/skills';
 import { SkillStatusBadge } from './SkillStatusBadge';
-import { isBundled, isReadOnly, sourceLabel } from './skills-catalog';
+import { isBundled, isReadOnly, SOURCE_LABEL_KEYS, sourceLabel } from './skills-catalog';
 
 function SourceBadge({ item }: { item: CatalogSkillItem }): JSX.Element {
+  const { t } = useTranslation();
   const label = sourceLabel(item);
   const cls =
     label === 'bundled'
@@ -22,21 +24,23 @@ function SourceBadge({ item }: { item: CatalogSkillItem }): JSX.Element {
     <span
       className={`text-2xs inline-flex items-center rounded-full px-2 py-0.5 font-bold tracking-wide uppercase ${cls}`}
     >
-      {label}
+      {t(SOURCE_LABEL_KEYS[label])}
     </span>
   );
 }
 
 function ContractBadge(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <span className="text-2xs text-fg-muted bg-bg-subtle border-border-default inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-bold tracking-wide uppercase">
       <Lock size={10} aria-hidden="true" />
-      system contract
+      {t('skills.badge.systemContract')}
     </span>
   );
 }
 
 export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
+  const { t } = useTranslation();
   const readOnly = isReadOnly(item);
   const bundled = isBundled(item);
   const SourceIcon = bundled ? Package : Sparkles;
@@ -79,13 +83,13 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
 
         <div className="text-fg-subtle mt-3 flex flex-wrap items-center gap-x-3.5 gap-y-1.5 text-xs">
           <span className="inline-flex items-center gap-1.5">
-            Assigned{' '}
+            {t('skills.card.assigned')}{' '}
             <span className="text-fg-muted font-semibold tabular-nums">
               {item.assigned_agent_count}
             </span>
           </span>
           <span className="inline-flex items-center gap-1.5">
-            Effective{' '}
+            {t('skills.card.effective')}{' '}
             <span className="text-accent-text font-semibold tabular-nums">
               {item.effective_agent_count}
             </span>
@@ -96,12 +100,12 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
                 aria-hidden="true"
                 className="bg-attention h-1.5 w-1.5 rounded-full"
               />
-              Takes effect next session
+              {t('skills.card.takesEffect')}
             </span>
           )}
           {readOnly && (
             <span className="text-fg-subtle">
-              Read-only — cannot be edited or unassigned
+              {t('skills.card.readOnly')}
             </span>
           )}
         </div>
@@ -115,10 +119,10 @@ export function SkillCard({ item }: { item: CatalogSkillItem }): JSX.Element {
         // surface (THR-092). Mirrors AuditTimeline's relative-wraps-absolute idiom.
         <div
           className="text-fg-subtle relative mt-0.5 shrink-0 self-start"
-          title="Read-only system contract"
+          title={t('skills.card.readOnlyContract')}
         >
           <Lock size={15} aria-hidden="true" />
-          <span className="sr-only">Read-only system contract</span>
+          <span className="sr-only">{t('skills.card.readOnlyContract')}</span>
         </div>
       )}
     </article>

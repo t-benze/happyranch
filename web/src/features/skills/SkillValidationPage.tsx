@@ -30,6 +30,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { useTranslation } from '@/hooks/i18n';
 import { useSkillValidation } from '@/hooks/skills';
 import {
   agentOptions,
@@ -48,6 +49,10 @@ import {
   type ValidationRow,
   type ValidationTone,
 } from './skills-validation';
+import { classifySkillError, renderSkillError } from './strings';
+
+/** The daemon's canonical endpoint label token for this surface. */
+const RUNTIME_VALIDATION_LABEL = 'Runtime Validation';
 
 const TONE_STYLE: Record<ValidationTone, string> = {
   positive: 'text-status-open bg-tier-green-tint',
@@ -120,46 +125,47 @@ function FilterControls({
   skillOpts: FilterOption[];
   agentOpts: FilterOption[];
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <>
       <FilterSelect
         idPrefix={idPrefix}
         name="skill"
-        label="Skill"
+        label={t('skills.validation.filter.skill')}
         value={filters.skill}
-        options={[{ value: '', label: 'All skills' }, ...skillOpts]}
+        options={[{ value: '', label: t('skills.catalog.allSkills') }, ...skillOpts]}
         onChange={(v) => setFilters({ ...filters, skill: v })}
       />
       <FilterSelect
         idPrefix={idPrefix}
         name="agent"
-        label="Agent"
+        label={t('skills.validation.filter.agent')}
         value={filters.agent}
-        options={[{ value: '', label: 'All agents' }, ...agentOpts]}
+        options={[{ value: '', label: t('skills.validation.allAgents') }, ...agentOpts]}
         onChange={(v) => setFilters({ ...filters, agent: v })}
       />
       <FilterSelect
         idPrefix={idPrefix}
         name="source"
-        label="Source"
+        label={t('skills.validation.filter.source')}
         value={filters.source}
-        options={SOURCE_OPTIONS}
+        options={SOURCE_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
         onChange={(v) => setFilters({ ...filters, source: v as SourceFilter })}
       />
       <FilterSelect
         idPrefix={idPrefix}
         name="time"
-        label="Time"
+        label={t('skills.validation.filter.time')}
         value={filters.time}
-        options={TIME_OPTIONS}
+        options={TIME_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
         onChange={(v) => setFilters({ ...filters, time: v as TimeFilter })}
       />
       <FilterSelect
         idPrefix={idPrefix}
         name="severity"
-        label="Result"
+        label={t('skills.validation.filter.result')}
         value={filters.severity}
-        options={SEVERITY_OPTIONS}
+        options={SEVERITY_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }))}
         onChange={(v) =>
           setFilters({ ...filters, severity: v as SeverityFilter })
         }
@@ -177,7 +183,7 @@ function EventRow({ row, slug }: { row: ValidationRow; slug: string }): JSX.Elem
     <article
       className="border-border-default bg-surface-raised flex gap-3.5 rounded-md border p-4"
       data-event-id={row.id}
-      data-severity={row.severity.text}
+      data-severity={row.severityCode}
     >
       {/* `relative` contains the sr-only span (position:absolute) so it cannot
           escape the validation list's overflow-y-auto scroller to the ICB and
@@ -243,6 +249,7 @@ function EventRow({ row, slug }: { row: ValidationRow; slug: string }): JSX.Elem
 }
 
 export function SkillValidationPage(): JSX.Element {
+  const { t, locale } = useTranslation();
   const { slug } = useParams<{ slug: string }>();
   const [filters, setFilters] = useState<ValidationFilters>(EMPTY_FILTERS);
 
@@ -264,21 +271,25 @@ export function SkillValidationPage(): JSX.Element {
   const agentOpts = agentOptions(baseEvents);
 
   const events = listQuery.data?.events ?? [];
-  const rows = events.map((e) => toValidationRow(e, nowMs));
+  const rows = events.map((e) => toValidationRow(e, nowMs, locale, t));
+  // The endpoint `label` is a daemon value: its known token maps to catalog
+  // copy, any other label renders verbatim.
+  const endpointLabel = listQuery.data?.label ?? optionsQuery.data?.label;
   const title =
-    listQuery.data?.label ?? optionsQuery.data?.label ?? 'Runtime Validation';
+    endpointLabel === undefined || endpointLabel === RUNTIME_VALIDATION_LABEL
+      ? t('skills.catalog.runtimeValidation')
+      : endpointLabel;
 
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col overflow-y-auto px-4 py-5 md:px-7 md:py-6">
       <header className="mb-4">
         <div className="text-fg-subtle text-overline mb-1 flex items-center gap-1.5 tracking-wider uppercase">
           <Activity size={13} aria-hidden="true" />
-          Skills
+          {t('skills.validation.eyebrow')}
         </div>
         <h1 className="text-h2 text-fg">{title}</h1>
         <p className="text-fg-muted text-body-sm mt-1 max-w-2xl">
-          A read-only record of what happened when skills were checked or
-          prepared for a session.
+          {t('skills.validation.description')}
         </p>
       </header>
 
@@ -286,16 +297,15 @@ export function SkillValidationPage(): JSX.Element {
       <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mb-5 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
         <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
         <span>
-          <b className="text-fg font-semibold">Guidance visibility only.</b>{' '}
-          These events record how skills were checked or shown — nothing here
-          changes what an agent can do.
+          <b className="text-fg font-semibold">{t('skills.guidanceOnly')}</b>{' '}
+          {t('skills.validation.guidanceBody')}
         </span>
       </div>
 
       {/* Desktop filter bar */}
       <div
         className="mb-5 hidden flex-wrap items-end gap-3 md:flex"
-        aria-label="Runtime validation filters"
+        aria-label={t('skills.validation.filtersLabel')}
       >
         <FilterControls
           idPrefix="rv-desktop"
@@ -310,7 +320,7 @@ export function SkillValidationPage(): JSX.Element {
             onClick={() => setFilters(EMPTY_FILTERS)}
             className="text-fg-muted hover:text-fg text-body-sm py-1.5 font-medium underline underline-offset-2"
           >
-            Clear filters
+            {t('skills.validation.clearFilters')}
           </button>
         )}
       </div>
@@ -319,16 +329,16 @@ export function SkillValidationPage(): JSX.Element {
       <details className="border-border-default bg-surface-raised mb-5 rounded-md border md:hidden">
         <summary className="text-fg text-body-sm flex cursor-pointer list-none items-center gap-2 px-3 py-2.5 font-semibold">
           <SlidersHorizontal size={15} aria-hidden="true" className="shrink-0" />
-          Filters
+          {t('skills.validation.filters')}
           {isFiltered && (
             <span className="bg-accent-soft text-accent-text ml-auto rounded-full px-2 py-0.5 text-xs font-semibold">
-              On
+              {t('skills.validation.filtersOn')}
             </span>
           )}
         </summary>
         <div
           className="border-border-default flex flex-col gap-3 border-t px-3 py-3"
-          aria-label="Runtime validation filters"
+          aria-label={t('skills.validation.filtersLabel')}
         >
           <FilterControls
             idPrefix="rv-mobile"
@@ -343,7 +353,7 @@ export function SkillValidationPage(): JSX.Element {
               onClick={() => setFilters(EMPTY_FILTERS)}
               className="text-fg-muted hover:text-fg text-body-sm self-start font-medium underline underline-offset-2"
             >
-              Clear filters
+              {t('skills.validation.clearFilters')}
             </button>
           )}
         </div>
@@ -361,18 +371,14 @@ export function SkillValidationPage(): JSX.Element {
       ) : listQuery.isError ? (
         <EmptyState
           icon={<TriangleAlert size={28} />}
-          title="Could not load runtime validation"
-          body="These events are unavailable right now. Try again shortly."
+          title={t('skills.validation.errorTitle')}
+          body={renderSkillError(classifySkillError(listQuery.error, 'skills.validation.errorBody'), t)}
         />
       ) : rows.length === 0 ? (
         <EmptyState
           icon={<Activity size={28} />}
-          title={isFiltered ? 'No events match these filters' : 'No runtime validation events yet'}
-          body={
-            isFiltered
-              ? 'Try widening the time window or clearing a filter.'
-              : 'When your skills are checked or prepared for a session, those events will show up here.'
-          }
+          title={t(isFiltered ? 'skills.validation.emptyFilteredTitle' : 'skills.validation.emptyTitle')}
+          body={t(isFiltered ? 'skills.validation.emptyFilteredBody' : 'skills.validation.emptyBody')}
         />
       ) : (
         <ul className="flex flex-col gap-3">

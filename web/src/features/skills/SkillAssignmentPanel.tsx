@@ -32,6 +32,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useAgentsList } from '@/hooks/agents';
+import { useTranslation } from '@/hooks/i18n';
 import { useAssignSkill, useSkillStatus } from '@/hooks/skills';
 import type { ValidationTone } from './skills-catalog';
 import {
@@ -50,6 +51,7 @@ import {
   toggleLabel,
   type PendingAssignments,
 } from './skills-assign';
+import { classifySkillError, renderSkillErrorInContext, type SkillErrorView } from './strings';
 
 const STATUS_TONE: Record<AgentEffectiveStatus, ValidationTone> = {
   effective: 'positive',
@@ -84,6 +86,7 @@ export function SkillAssignmentPanel({
   slug: string;
   skillId: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   const status = useSkillStatus(skillId);
   // The full candidate roster comes from the real agents source, NOT the status
   // response (which lists only already-assigned agents) — so an unassigned agent
@@ -93,17 +96,13 @@ export function SkillAssignmentPanel({
   const [queue, setQueue] = useState<PendingAssignments>({});
   const [reviewOpen, setReviewOpen] = useState(false);
   const [applied, setApplied] = useState(false);
-  const [applyError, setApplyError] = useState<string | null>(null);
+  const [applyError, setApplyError] = useState<SkillErrorView | null>(null);
 
   const section = (body: ReactNode) => (
     <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
-      <Eyebrow>Assign to agents</Eyebrow>
-      <h2 className="text-h2 text-fg mb-1">Which agents see this skill</h2>
-      <p className="text-fg-muted text-body-sm">
-        Assign this skill to an agent to show it as guidance at that agent’s next
-        session. This changes what the agent is shown — it never changes the
-        tools or commands available to it.
-      </p>
+      <Eyebrow>{t('skills.assign.eyebrow')}</Eyebrow>
+      <h2 className="text-h2 text-fg mb-1">{t('skills.assign.title')}</h2>
+      <p className="text-fg-muted text-body-sm">{t('skills.assign.description')}</p>
       {body}
     </section>
   );
@@ -125,7 +124,11 @@ export function SkillAssignmentPanel({
           aria-hidden="true"
           className="text-fg-subtle mt-0.5 shrink-0"
         />
-        Per-agent assignment is unavailable right now. Try again in a moment.
+        {renderSkillErrorInContext(
+          classifySkillError(status.error, 'skills.assign.unavailable'),
+          'skills.assign.unavailable',
+          t,
+        )}
       </p>,
     );
   }
@@ -145,19 +148,15 @@ export function SkillAssignmentPanel({
             aria-hidden="true"
             className="text-fg-subtle shrink-0"
           />
-          Validation needed before you can assign
+          {t('skills.assign.notValidatedTitle')}
         </div>
-        <p className="text-body-sm mt-1.5">
-          This skill hasn’t passed validation yet, so it isn’t shown to any agent
-          and can’t be assigned. Re-validate it first — then you can choose which
-          agents see it as guidance.
-        </p>
+        <p className="text-body-sm mt-1.5">{t('skills.assign.notValidatedBody')}</p>
         <Link
           to={editRoutePath(slug, skillId)}
           className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm mt-3 inline-flex max-w-full items-start gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
         >
           <Pencil size={14} aria-hidden="true" className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">Re-validate skill</span>
+          <span className="min-w-0 break-words">{t('skills.assign.revalidate')}</span>
         </Link>
       </div>,
     );
@@ -194,10 +193,8 @@ export function SkillAssignmentPanel({
       setQueue({});
       setReviewOpen(false);
       setApplied(true);
-    } catch {
-      setApplyError(
-        'Could not apply every change. Review the list and try again.',
-      );
+    } catch (err) {
+      setApplyError(classifySkillError(err, 'skills.assign.applyError'));
     }
   }
 
@@ -221,7 +218,7 @@ export function SkillAssignmentPanel({
                 <div className="text-fg font-mono text-sm font-semibold break-all">
                   {a.agent}
                 </div>
-                <p className="text-fg-muted text-body-sm mt-1">{p.reason}</p>
+                <p className="text-fg-muted text-body-sm mt-1">{t(p.reason)}</p>
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 {changed && (
@@ -230,7 +227,7 @@ export function SkillAssignmentPanel({
                       aria-hidden="true"
                       className="bg-attention h-1.5 w-1.5 rounded-full"
                     />
-                    will change
+                    {t('skills.assign.willChange')}
                   </span>
                 )}
                 <span
@@ -239,16 +236,16 @@ export function SkillAssignmentPanel({
                   }`}
                 >
                   <Icon size={11} aria-hidden="true" className="shrink-0" />
-                  {p.statusLabel}
+                  {t(p.statusLabel)}
                 </span>
                 <button
                   type="button"
                   onClick={() => toggle(a)}
                   disabled={applying}
-                  aria-label={`${label} ${a.agent}`}
+                  aria-label={t('skills.assign.toggleAria', { action: t(label), agent: a.agent })}
                   className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm inline-flex items-center rounded-md border px-2.5 py-1 font-semibold disabled:opacity-60"
                 >
-                  {label}
+                  {t(label)}
                 </button>
               </div>
             </li>
@@ -263,7 +260,7 @@ export function SkillAssignmentPanel({
           role="status"
         >
           <BadgeCheck size={15} aria-hidden="true" className="mt-0.5 shrink-0" />
-          Changes applied — they take effect at each agent’s next session.
+          {t('skills.assign.applied')}
         </p>
       )}
 
@@ -273,7 +270,7 @@ export function SkillAssignmentPanel({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-fg text-body-sm inline-flex items-center gap-2 font-semibold">
               <Users size={15} aria-hidden="true" className="text-fg-subtle" />
-              {pendingCount} {pendingCount === 1 ? 'change' : 'changes'} to review
+              {t('skills.assign.toReview', { count: pendingCount })}
             </span>
             {!reviewOpen && (
               <button
@@ -282,7 +279,7 @@ export function SkillAssignmentPanel({
                 className="bg-accent text-on-accent hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold"
               >
                 <ClipboardCheck size={14} aria-hidden="true" />
-                Review &amp; apply
+                {t('skills.assign.reviewApply')}
               </button>
             )}
           </div>
@@ -297,10 +294,10 @@ export function SkillAssignmentPanel({
                     className="flex flex-wrap items-baseline gap-x-2 gap-y-1 p-3"
                   >
                     <span className="text-fg text-body-sm font-semibold">
-                      {c.label}
+                      {t(c.label)}
                     </span>
                     <span className="text-fg-muted text-body-sm min-w-0 break-words">
-                      {c.summary}
+                      {t(c.summary, { agent: c.agent })}
                     </span>
                   </li>
                 ))}
@@ -312,12 +309,12 @@ export function SkillAssignmentPanel({
                   aria-hidden="true"
                   className="text-fg-subtle mt-0.5 shrink-0"
                 />
-                {CONFIG_REVIEW_NOTE}
+                {t(CONFIG_REVIEW_NOTE)}
               </p>
 
               {applyError && (
                 <p className="text-attention-text text-body-sm mt-2" role="alert">
-                  {applyError}
+                  {renderSkillErrorInContext(applyError, 'skills.assign.applyError', t)}
                 </p>
               )}
 
@@ -329,8 +326,8 @@ export function SkillAssignmentPanel({
                   className="bg-accent text-on-accent hover:bg-accent-hover text-body-sm inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-semibold disabled:opacity-60"
                 >
                   {applying
-                    ? 'Applying…'
-                    : `Apply ${pendingCount} ${pendingCount === 1 ? 'change' : 'changes'}`}
+                    ? t('skills.assign.applying')
+                    : t('skills.assign.apply', { count: pendingCount })}
                 </button>
                 <button
                   type="button"
@@ -338,7 +335,7 @@ export function SkillAssignmentPanel({
                   disabled={applying}
                   className="text-fg-muted hover:text-fg text-body-sm inline-flex items-center rounded-md px-2 py-1.5 font-semibold disabled:opacity-60"
                 >
-                  Keep editing
+                  {t('skills.assign.keepEditing')}
                 </button>
               </div>
             </div>
