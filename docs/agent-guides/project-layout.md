@@ -103,14 +103,16 @@ subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`
 and `LineageTooDeep`, plus verified retry lineage, atomic single/fanout child
 spawning and retry feedback/admission, ordinary task claim and budget failure,
 manager supersession and non-root/thread-origin refusal, transactional chain
-advance, revision increments, task-ID allocation and state queries.
+advance, revision increments, task-ID allocation and state queries, plus the
+completion-recovery ledger claim/publication/launch/expiry lifecycle, accepted
+and consumed receipt selection/settlement, and receipt-owned parent handoff.
 `LineageTooDeep`, `VerifiedRetry`,
 `InvalidLineage`, `RetryClaim`, `Committed`, `LostClaim`, `SpawnOutcome`,
 `PendingRetry` and `_RetryEvidenceRefusal` remain identity-re-exported from
-`database.py`. Logger-dependent escalation, completion/recovery/results and
-cross-domain writers remain in the facade. PR #955's
+`database.py`. Callback admission, result writers/projection, logger-dependent
+escalation and cross-domain writers remain in the facade. PR #955's
 `try_fail_nonroot_manager_supersede` now belongs to `TasksMixin`, unchanged.
-The exact S8a/S8b/S8c method inventories and remaining collision holds are
+The exact S8a/S8b/S8c/S8d method inventories and remaining collision holds are
 recorded in
 `docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
 
