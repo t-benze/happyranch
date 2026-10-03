@@ -667,6 +667,7 @@ mentioned only in item text are excluded. No content is logged. Old writer
 calls remain byte-equivalent and unversioned. Read/search routes and CLI hint
 precedence stay unchanged; digest-first source resolution uses accurate item
 IDs, allowing a genuinely nonshown search-result read to be search-sourced.
+Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
 A version is exposure metadata, never epoch authority or task eligibility.
 G1 independent canary/epoch acceptance, G3 complete launch/expectation census,
 G4 consistent acquisition and full reporting/installed health remain OPEN.

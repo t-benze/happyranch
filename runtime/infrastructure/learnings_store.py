@@ -793,6 +793,9 @@ class MemoryStore:
         back to a normal pointer line (no body truncation, no silent drop).
         All other entries (experiential, reflective, out-of-scope directives)
         remain pointer-only: id, title, provenance, effective salience.
+        Exposure captures only string IDs satisfying ID_RE.fullmatch at actual
+        append sites. Permissively parsed malformed IDs keep their rendered text
+        but contribute no identity; writer metadata validation remains strict.
         Read-only: no files are written, no mtimes/timestamps are churned.
 
         Founder-ratified: THR-091 seq7.
@@ -868,7 +871,10 @@ class MemoryStore:
             full_len = len(full_block)
             if used + full_len <= budget:
                 result_parts.append(full_block)
-                if entry.id not in full_body_ids:
+                if (
+                    isinstance(entry.id, str) and ID_RE.fullmatch(entry.id) is not None
+                    and entry.id not in full_body_ids
+                ):
                     full_body_ids.append(entry.id)
                 used += full_len
             else:
@@ -894,7 +900,10 @@ class MemoryStore:
                 # Last item or nudge already emitted — just check line fit.
                 if used + line_len <= budget:
                     result_parts.append(line)
-                    if entry.id not in pointer_ids and entry.id not in full_body_ids:
+                    if (
+                        isinstance(entry.id, str) and ID_RE.fullmatch(entry.id) is not None
+                        and entry.id not in pointer_ids and entry.id not in full_body_ids
+                    ):
                         pointer_ids.append(entry.id)
                     used += line_len
                 else:
@@ -904,7 +913,10 @@ class MemoryStore:
                 if used + line_len + nudge_len <= budget:
                     # Both line + future nudge fit — add line, continue.
                     result_parts.append(line)
-                    if entry.id not in pointer_ids and entry.id not in full_body_ids:
+                    if (
+                        isinstance(entry.id, str) and ID_RE.fullmatch(entry.id) is not None
+                        and entry.id not in pointer_ids and entry.id not in full_body_ids
+                    ):
                         pointer_ids.append(entry.id)
                     used += line_len
                 elif used + nudge_len <= budget:
@@ -916,7 +928,10 @@ class MemoryStore:
                     # Even nudge alone doesn't fit, but the line does — add it
                     # and stop (no nudge will be emitted).
                     result_parts.append(line)
-                    if entry.id not in pointer_ids and entry.id not in full_body_ids:
+                    if (
+                        isinstance(entry.id, str) and ID_RE.fullmatch(entry.id) is not None
+                        and entry.id not in pointer_ids and entry.id not in full_body_ids
+                    ):
                         pointer_ids.append(entry.id)
                     used += line_len
                     break

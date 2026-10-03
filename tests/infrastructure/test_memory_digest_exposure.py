@@ -181,3 +181,42 @@ def test_observed_exposure_persisted_without_content(tmp_path: Path, pointers: l
         assert report["observation_period"]["thresholds_met"] is False
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("branch", ["final-item", "reserved-nudge", "line-only-last-fit", "directive-fit", "directive-fallback"])
+def test_unidentifiable_pointer_budget_branches(tmp_path: Path, branch: str) -> None:
+    """All appended invalid item forms preserve bytes and valid-only exposure."""
+    root = tmp_path / "memory"
+    root.mkdir()
+    good_full = "**Directive:** `MEM-001` — Valid  (directive, salience 70)\nValid body.\n\n"
+    (root / "MEM-001-valid.md").write_text(
+        "---\nid: MEM-001\nslug: valid\ntitle: Valid\ntopic: memory\n"
+        "provenance: directive\nscope: agent\nlifecycle: valid\nsalience: 60\n---\nValid body."
+    )
+    directive = branch.startswith("directive")
+    provenance = "directive" if directive else "experiential"
+    body = "Private body MEM-999. " * 30
+    score = 60 if directive else 50
+    bad_line = f"- `None` — A MEM-888  ({provenance}, salience {score})\n"
+    bad_full = f"**Directive:** `None` — A MEM-888  (directive, salience 60)\n{body}\n\n"
+    (root / "MEM-004-malformed.md").write_text(
+        "---\nid: null\nslug: malformed\ntitle: A MEM-888\ntopic: memory\n"
+        f"provenance: {provenance}\nscope: agent\nlifecycle: valid\nsalience: 50\n---\n{body}"
+    )
+    if branch in {"reserved-nudge", "line-only-last-fit"}:
+        (root / "MEM-005-omitted.md").write_text(
+            "---\nid: MEM-005\nslug: omitted\ntitle: " + "Z" * 300 + "\ntopic: memory\n"
+            "provenance: experiential\nscope: agent\nlifecycle: valid\nsalience: 40\n---\nOmitted body."
+        )
+    expected = HEADER + good_full + (bad_full if branch == "directive-fit" else bad_line)
+    if branch in {"reserved-nudge", "directive-fallback"}:
+        expected += NUDGE
+    budget = len(expected)
+    if branch == "line-only-last-fit":
+        assert len(bad_line) < len(NUDGE)
+    rendered = MemoryStore(root).render_memory_digest("", budget=budget)
+    assert rendered.text == expected
+    assert len(rendered.text) == budget
+    assert rendered.full_body_ids == ("MEM-001",)
+    assert rendered.pointer_ids == ()
+    assert rendered.digest_ids == ("MEM-001",)

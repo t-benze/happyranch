@@ -1812,6 +1812,8 @@ exposure. Fit directives are full bodies, fallback directives are pointers;
 body/title/header/nudge mentions and nonrendered candidates are not item IDs.
 Text, ranking, character budget, ordering and nudge behavior stay unchanged.
 
+Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+
 After the existing trusted publication/SessionTracker binding and before
 `session_start` and executor launch, bootstrap emits one existing impression
 for actual items, with `memory_telemetry_version=1`, `pointer_ids`,
