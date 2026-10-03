@@ -108,14 +108,22 @@ completion-recovery ledger claim/publication/launch/expiry lifecycle, accepted
 and consumed receipt selection/settlement, receipt-owned parent handoff, and
 completion-result readers and projection (`get_task_results`,
 `get_agent_task_results`, `get_latest_task_result`,
-`get_latest_completion_report`, and `_row_to_completion_report`).
+`get_latest_completion_report`, and `_row_to_completion_report`), plus atomic
+task/attachment admission (`insert_task_with_attachments`) and causal
+task-followup replacement (`dispatch_task_followup_replacement`). These two
+writers use the existing shared `_late_database_now` helper as `_now`, resolving
+the whole facade clock after import; the shared decorator still resolves the
+facade `_time` late and uses the same instance RLock.
 `LineageTooDeep`, `VerifiedRetry`,
 `InvalidLineage`, `RetryClaim`, `Committed`, `LostClaim`, `SpawnOutcome`,
 `PendingRetry` and `_RetryEvidenceRefusal` remain identity-re-exported from
 `database.py`. Callback admission, result writers, logger-dependent
 escalation and cross-domain writers remain in the facade. PR #955's
 `try_fail_nonroot_manager_supersede` now belongs to `TasksMixin`, unchanged.
-The exact S8a/S8b/S8c/S8d/S8e method inventories and remaining collision holds are
+The seven remaining task keepers are `try_escalate`, `try_escalate_runtime`,
+`try_escalate_over_budget`, `insert_task_result`, `_insert_task_result`,
+`admit_task_completion_callback`, and `terminate_agent_cleanups`.
+The exact S8a/S8b/S8c/S8d/S8e/S8f method inventories and remaining collision holds are
 recorded in
 `docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
 
