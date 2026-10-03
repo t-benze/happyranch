@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"time"
@@ -80,7 +81,7 @@ func NewTSNetEngine() *TSNetEngine {
 
 func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []byte) (RedemptionReceipt, error) {
 	if ctx.Err() != nil {
-		return RedemptionReceipt{}, ErrNetworkJoin
+		return RedemptionReceipt{}, terminalNetworkFailure(ctx.Err())
 	}
 	// Start is contextless upstream work, so it cannot be interrupted here.  The
 	// deadline still starts at adapter entry: a late Start return must not mint a
@@ -102,19 +103,19 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 		now = time.Now
 	}
 	if ctx.Err() != nil {
-		return RedemptionReceipt{}, ErrNetworkJoin
+		return RedemptionReceipt{}, terminalNetworkFailure(ctx.Err())
 	}
 	if deadline, ok := ctx.Deadline(); ok && !now().Before(deadline) {
-		return RedemptionReceipt{}, ErrNetworkJoin
+		return RedemptionReceipt{}, terminalNetworkFailure(context.DeadlineExceeded)
 	}
 	e.server.ClearAuthKey()
 	if readyCtx.Err() != nil {
-		return RedemptionReceipt{}, ErrNetworkJoin
+		return RedemptionReceipt{}, terminalNetworkFailure(readyCtx.Err())
 	}
 
 	status, err := e.server.Up(readyCtx)
 	if err != nil || readyCtx.Err() != nil || status == nil || status.BackendState != "Running" {
-		return RedemptionReceipt{}, ErrNetworkJoin
+		return RedemptionReceipt{}, readinessNetworkFailure(readyCtx, err, status, false)
 	}
 	if expectedPeerVisible(status, c.ExpectedPeers) {
 		return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, nil
@@ -129,17 +130,62 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	for {
 		select {
 		case <-readyCtx.Done():
-			return RedemptionReceipt{}, ErrNetworkJoin
+			if errors.Is(readyCtx.Err(), context.DeadlineExceeded) {
+				return RedemptionReceipt{}, NetworkJoinFailure{SubReason: "peer_wait_deadline"}
+			}
+			return RedemptionReceipt{}, terminalNetworkFailure(readyCtx.Err())
 		case <-ticker.C:
 			status, err = e.server.Status(readyCtx)
 			if err != nil || readyCtx.Err() != nil || status == nil || status.BackendState != "Running" {
-				return RedemptionReceipt{}, ErrNetworkJoin
+				return RedemptionReceipt{}, readinessNetworkFailure(readyCtx, err, status, true)
 			}
 			if expectedPeerVisible(status, c.ExpectedPeers) {
 				return RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, nil
 			}
 		}
 	}
+}
+
+func terminalNetworkFailure(err error) error {
+	if errors.Is(err, context.Canceled) {
+		return NetworkJoinFailure{SubReason: "context_cancelled"}
+	}
+	return NetworkJoinFailure{SubReason: "deadline_exceeded"}
+}
+
+func readinessNetworkFailure(ctx context.Context, err error, status *ipnstate.Status, peer bool) error {
+	if ctx.Err() != nil {
+		return terminalNetworkFailure(ctx.Err())
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return terminalNetworkFailure(err)
+	}
+	reason := "up_error_unclassified"
+	if peer {
+		reason = "peer_status_error"
+	}
+	if err != nil {
+		// Only these two producers are distinguishable in pinned tsnet v1.78.0.
+		if !peer {
+			if strings.HasPrefix(err.Error(), "tsnet.Up: backend: ") {
+				reason = "up_backend_error"
+			}
+			if err.Error() == "tsnet.Up: running, but no ip" {
+				reason = "up_no_ip"
+			}
+		}
+	} else if status == nil {
+		reason = "up_status_unavailable"
+		if peer {
+			reason = "peer_status_unavailable"
+		}
+	} else {
+		reason = "up_not_running"
+		if peer {
+			reason = "peer_not_running"
+		}
+	}
+	return NetworkJoinFailure{SubReason: reason}
 }
 
 func expectedPeerVisible(status *ipnstate.Status, expectedPeers []string) bool {

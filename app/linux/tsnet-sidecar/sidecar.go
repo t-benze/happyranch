@@ -29,6 +29,37 @@ var (
 	ErrListener        = errors.New("sidecar: listener unavailable")
 )
 
+// NetworkJoinFailure retains only finite stage evidence, never an upstream
+// cause. Error and Unwrap preserve the existing public refusal contract.
+type NetworkJoinFailure struct{ SubReason string }
+
+func (e NetworkJoinFailure) Error() string { return ErrNetworkJoin.Error() }
+func (e NetworkJoinFailure) Unwrap() error { return ErrNetworkJoin }
+func (e NetworkJoinFailure) NetworkJoinSubReason() string {
+	switch e.SubReason {
+	case "context_cancelled", "deadline_exceeded", "up_backend_error", "up_no_ip",
+		"up_error_unclassified", "up_status_unavailable", "up_not_running",
+		"peer_status_error", "peer_status_unavailable", "peer_not_running",
+		"peer_wait_deadline", "expected_peer_missing":
+		return e.SubReason
+	default:
+		return "unclassified"
+	}
+}
+
+// NetworkJoinSubReason sanitizes metadata at both production consumers.
+func NetworkJoinSubReason(err error) string {
+	var failure NetworkJoinFailure
+	if errors.As(err, &failure) {
+		return failure.NetworkJoinSubReason()
+	}
+	var pointer *NetworkJoinFailure
+	if errors.As(err, &pointer) && pointer != nil {
+		return pointer.NetworkJoinSubReason()
+	}
+	return "unclassified"
+}
+
 const consumedMarker = "credential.consumed"
 
 type Config struct {
@@ -135,7 +166,7 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	if err != nil {
 		s.closeEngine()
 		if errors.Is(err, ErrNetworkJoin) {
-			return ErrNetworkJoin
+			return NetworkJoinFailure{SubReason: NetworkJoinSubReason(err)}
 		}
 		return ErrEngineStart
 	}
@@ -145,7 +176,7 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	}
 	if !receipt.ExpectedPeerVisible {
 		s.closeEngine()
-		return ErrNetworkJoin
+		return NetworkJoinFailure{SubReason: "expected_peer_missing"}
 	}
 	if len(credential) != 0 {
 		if err := commitConsumption(s.cfg); err != nil {

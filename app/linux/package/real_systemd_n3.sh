@@ -143,7 +143,8 @@ observe_systemctl_value() {
   observation_value=unknown; observation_loss=unattempted
   observe_remaining || return 0
   (( observe_bytes_left < cap )) && cap="$observe_bytes_left"
-  file="$(mktemp "$diagnostics/.n3-observe.XXXXXX")" || { observation_loss=launch_failure; return; }
+  file="$(mktemp "${work:-${TMPDIR:-/tmp}}/.n3-observe.XXXXXX")" || { observation_loss=launch_failure; return; }
+  capture_raw_files+=("$file")
   case "$-" in *e*) restore_errexit=1 ;; esac
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" systemctl show "$unit" -p "$property" --value 2>/dev/null | head -c "$((cap + 1))" >"$file"
@@ -172,7 +173,8 @@ capture_completed_jobs() {
   case "$-" in *e*) restore_errexit=1 ;; esac
   completed_jobs='[]'; jobs_loss=unattempted
   observe_remaining || return 0
-  journal_file="$(mktemp "$diagnostics/.n3-jobs.XXXXXX")" || { jobs_loss=launch_failure; return; }
+  journal_file="$(mktemp "${work:-${TMPDIR:-/tmp}}/.n3-jobs.XXXXXX")" || { jobs_loss=launch_failure; return; }
+  capture_raw_files+=("$journal_file")
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" journalctl -b "$snapshot_boot_id" --since "@$snapshot_since_seconds" --output=json --output-fields=UNIT,JOB_ID,JOB_TYPE,JOB_RESULT,MESSAGE_ID,_PID,_UID,_BOOT_ID,__REALTIME_TIMESTAMP --no-pager JOB_TYPE=start UNIT=happyranch-managed.target UNIT=happyranch-connector.service UNIT=happyranch-tsnet-sidecar.service 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
   status=${PIPESTATUS[0]}
@@ -225,38 +227,7 @@ capture_sidecar_failure_lines() {
   json_file="$(mktemp "$diagnostics/.n3-sidecar-lines-json.XXXXXX")" || { rm -f "$filtered_file"; sidecar_failure_lines_loss=launch_failure; return; }
   set +e
   timeout --kill-after=1 3 journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_journal" --until "@$sidecar_failure_until_journal" -o cat --no-pager 2>/dev/null \
-    | python -c '
-import json, sys
-allowed = {
-    ("credential_input", "input_acquisition"),
-    ("engine_start", "engine_initialization"),
-    ("network_join", "peer_establishment"),
-    ("durable_commit", "receipt_commit"),
-    ("unknown", "unknown"),
-}
-for raw in sys.stdin:
-    line = raw.rstrip("\n")
-    if line in {"readiness_unavailable", "watchdog_unavailable"}:
-        print(line)
-        continue
-    if not line.startswith("diagnostic_receipt="):
-        continue
-    try:
-        value = json.loads(line.removeprefix("diagnostic_receipt="))
-    except (json.JSONDecodeError, UnicodeError):
-        continue
-    if (
-        isinstance(value, dict)
-        and set(value) == {"category", "phase", "actor", "unit", "outcome", "terminal", "assertion"}
-        and (value["category"], value["phase"]) in allowed
-        and value["actor"] == "tsnet-sidecar"
-        and value["unit"] == "happyranch-tsnet-sidecar.service"
-        and value["outcome"] == "failed"
-        and value["terminal"] is True
-        and value["assertion"] == {"status": "completed"}
-    ):
-        print(line)
-' 2>/dev/null \
+    | timeout --kill-after=1 3 python "$failure_capture_driver" --mode plain 2>/dev/null \
     | head -n 33 \
     | head -c 4097 >"$filtered_file"
   pipeline_status=("${PIPESTATUS[@]}")
@@ -278,6 +249,11 @@ for raw in sys.stdin:
   if (( status != 0 )); then
     rm -f "$filtered_file" "$json_file"
     sidecar_failure_lines_loss=query_error
+    return
+  fi
+  if (( filter_status == 124 || filter_status == 137 )); then
+    rm -f "$filtered_file" "$json_file"
+    sidecar_failure_lines_loss=timeout
     return
   fi
   if (( filter_status != 0 && filter_status != 141 )); then
@@ -309,7 +285,8 @@ capture_diagnostic_receipts() {
   case "$-" in *e*) restore_errexit=1 ;; esac
   diagnostic_receipts='[]'; diagnostic_receipt_loss='["unattempted"]'
   observe_remaining || return 0
-  invocation_file="$(mktemp "$diagnostics/.n3-invocation.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
+  invocation_file="$(mktemp "${work:-${TMPDIR:-/tmp}}/.n3-invocation.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
+  capture_raw_files+=("$invocation_file")
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" systemctl show happyranch-tsnet-sidecar.service -p InvocationID --value 2>/dev/null | head -c 65 >"$invocation_file"
   status=${PIPESTATUS[0]}
@@ -323,7 +300,8 @@ capture_diagnostic_receipts() {
   invocation="${invocation//-/}"
   [[ "$invocation" =~ ^[0-9a-fA-F]{32}$ ]] || { diagnostic_receipt_loss='["parse_loss"]'; return; }
   observe_remaining || { diagnostic_receipt_loss='["unattempted"]'; return; }
-  journal_file="$(mktemp "$diagnostics/.n3-receipts.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
+  journal_file="$(mktemp "${work:-${TMPDIR:-/tmp}}/.n3-receipts.XXXXXX")" || { diagnostic_receipt_loss='["launch_failure"]'; return; }
+  capture_raw_files+=("$journal_file")
   set +e
   timeout --kill-after=1 "$observe_timeout_seconds" journalctl -u happyranch-tsnet-sidecar.service -b "$snapshot_boot_id" --since "@$snapshot_since_seconds" --output=json --no-pager 2>/dev/null | head -c "$((observe_bytes_left + 1))" >"$journal_file"
   status=${PIPESTATUS[0]}
@@ -371,6 +349,26 @@ capture_diagnostic_receipts() {
   done
   rm -f "$journal_file" "$helper_file"
 }
+capture_headscale_fixture() {
+  # Failure-only, read-only and before teardown. The helper owns independent
+  # PID/read/query/parser deadlines and terminates each child process group.
+  local safe_file status=0 restore_errexit=0
+  case "$-" in *e*) restore_errexit=1 ;; esac
+  headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["unattempted"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["unattempted"]}}'
+  safe_file="$(mktemp "$diagnostics/.n3-headscale-safe.XXXXXX")" || return 0
+  set +e
+  timeout --kill-after=1 16 python "$failure_capture_driver" --mode headscale --work "${work:-}" --headscale-pid "${headscale_pid:-}" >"$safe_file" 2>/dev/null
+  status=$?
+  (( restore_errexit )) && set -e || set +e
+  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( $(wc -c <"$safe_file") <= 4096 )); then
+    headscale_observation="$(<"$safe_file")"
+  else
+    local loss=launch_failure
+    (( status != 124 )) || loss=timeout
+    headscale_observation="{\"process_state\":\"unknown\",\"log\":{\"events\":[],\"losses\":[\"$loss\"]},\"nodes\":{\"peer\":{\"count\":null,\"state\":\"unknown\"},\"sidecar\":{\"count\":null,\"state\":\"unknown\"},\"losses\":[\"$loss\"]}}"
+  fi
+  rm -f "$safe_file"
+}
 capture_failure_snapshot() {
   # Essential failure sections have independent bounded budgets. No observation
   # changes the exit status that entered cleanup; all retained values are closed.
@@ -404,6 +402,10 @@ capture_failure_snapshot() {
   capture_completed_jobs
   begin_observation_section 8 8192
   capture_diagnostic_receipts
+  headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["unattempted"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["unattempted"]}}'
+  if [[ "$name" == first-positive-start-failure || "$name" == failure-before-teardown ]]; then
+    capture_headscale_fixture
+  fi
 
   {
     printf '{"schema":"happyranch.n3.failure-snapshot","version":1,"id":"%s","units":{' "$name"
@@ -448,7 +450,7 @@ capture_failure_snapshot() {
     cat "$losses_file"
     [[ "$jobs_loss" == observed ]] || { (( loss_first )) || printf ','; loss_first=0; printf '"jobs":"%s"' "$jobs_loss"; }
     (( loss_first )) || printf ','
-    printf '"diagnostic_receipts":%s,"sidecar_failure_lines":"%s"}}\n' "$diagnostic_receipt_loss" "$sidecar_failure_lines_loss"
+    printf '"diagnostic_receipts":%s,"sidecar_failure_lines":"%s"},"headscale":%s}\n' "$diagnostic_receipt_loss" "$sidecar_failure_lines_loss" "$headscale_observation"
   } >"$snapshot" || true
   rm -f "$losses_file"
 }
@@ -467,7 +469,7 @@ start_managed_target() {
   return "$start_status"
 }
 cleanup() {
-  local original_status="${1:-$?}" cleanup_failed=0
+  local original_status="${1:-$?}" cleanup_failed=0 raw_file
   # EXIT, INT and TERM share exactly ONE teardown. The first invocation owns it
   # and saves the initiating status; a signal arriving while teardown is running
   # must not start a second pass or replace that saved status.
@@ -525,6 +527,7 @@ cleanup() {
     [[ -z "$main_pid" || "$main_pid" == 0 ]] || cleanup_failed=1
   done
   (( cleanup_failed != 0 )) || evidence cleanup all_residue_absent || cleanup_failed=1
+  for raw_file in "${capture_raw_files[@]}"; do rm -f "$raw_file"; done
   rm -rf "$work"
   [[ ! -e "$work" ]] || cleanup_failed=1
   (( cleanup_failed != 0 )) || evidence cleanup task_work_removed || cleanup_failed=1

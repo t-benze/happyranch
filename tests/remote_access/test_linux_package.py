@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+import ctypes
 import hashlib
 import io
 import json
@@ -535,6 +537,10 @@ def test_real_systemd_failure_snapshot_executes_shipping_source_and_is_secret_fr
     assert result.returncode == 0, result.stderr
     assert "SECRET_CANARY" not in result.stdout + result.stderr
     snapshot = json.loads(result.stdout)
+    assert "headscale" in snapshot, "failure-only Headscale observation missing"
+    assert snapshot["headscale"]["process_state"] == "unknown"
+    assert snapshot["headscale"]["nodes"]["peer"] == {"count": None, "state": "unknown"}
+    assert snapshot["headscale"]["nodes"]["losses"] == ["unavailable"]
     assert snapshot["id"] == "first-positive-start-failure"
     assert snapshot["units"]["happyranch-connector.service"] == {
         "active": "failed", "sub": "failed", "result": "exit-code",
@@ -562,11 +568,44 @@ def test_real_systemd_labels_deliberate_negative_credential_leg_as_expected() ->
     assert 'diagnostic credential_input input_acquisition systemd happyranch-tsnet-sidecar.service "$negative_leg_diagnostic_id"' in harness
 
 
+def _assert_secret_free_diagnostics(result: subprocess.CompletedProcess[str], diagnostics: Path) -> None:
+    sentinels = ("KEY_CANARY", "TOKEN_CANARY", "CREDENTIAL_CANARY", "ADDRESS_CANARY", "URL_CANARY", "CONFIG_CANARY", "BACKEND_CANARY", "100.64.2.3")
+
+    def safe(value: object) -> bool:
+        if isinstance(value, dict):
+            return all(safe(key) and safe(item) for key, item in value.items())
+        if isinstance(value, list):
+            return all(safe(item) for item in value)
+        if isinstance(value, str):
+            if any(sentinel in value for sentinel in sentinels):
+                return False
+            nested = value.removeprefix("diagnostic_receipt=")
+            if nested.startswith(("{", "[")):
+                try:
+                    return safe(json.loads(nested))
+                except ValueError:
+                    pass
+        return True
+
+    assert safe(result.stdout) and safe(result.stderr), "private sentinel in subprocess output"
+    for artifact in diagnostics.iterdir():
+        raw = artifact.read_bytes()
+        assert not any(sentinel.encode() in raw for sentinel in sentinels), "private sentinel in diagnostic artifact bytes"
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = raw.decode("utf-8")
+        assert safe(value), "private sentinel in decoded diagnostic artifact"
+
+
 def _run_seq305_failure_snapshot(
     tmp_path: Path,
     *,
     sidecar_mode: str = "observed",
     jobs_mode: str = "observed",
+    headscale_mode: str = "unavailable",
+    headscale_log_mode: str = "observed",
+    watch_private_buffers: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Drive the shipped capture function with the run-36435811326 failure shape."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
@@ -642,8 +681,83 @@ fi
 """)
     for executable in fake_bin.iterdir():
         executable.chmod(0o700)
+    fixture = tmp_path / "fixture"
+    fixture.mkdir(mode=0o700)
+    if headscale_mode != "unavailable":
+        (fixture / "hs").mkdir()
+        (fixture / "hs/config.yaml").write_text("CONFIG_CANARY\n")
+        (fixture / "headscale.log").write_text(
+            '{"level":"error","caller":"hscontrol/noise.go:160","message":"unsupported client connected","node_key":"KEY_CANARY"}\n'
+        )
+        (fixture / "headscale").write_text("""#!/usr/bin/env python3
+import json,os,pathlib,signal,subprocess,sys,time
+root=pathlib.Path(__file__).parent
+assert sys.argv[1:]==['nodes','list','--config',str(root/'hs/config.yaml'),'--output','json']
+with open(os.environ['EVENT_LOG'],'a') as stream: stream.write('headscale:nodes\\n')
+mode=os.environ['HEADSCALE_MODE']
+nodes=[{'name':'synthetic-peer-ci','online':True,'ip_addresses':['ADDRESS_CANARY']},{'name':'home-sidecar-ci','token':'TOKEN_CANARY'}]
+if mode=='query_error': print(json.dumps(nodes)); print('CREDENTIAL_CANARY',file=sys.stderr); sys.exit(7)
+if mode=='timeout': time.sleep(60)
+if mode=='grandchild':
+ child=subprocess.Popen([sys.executable,'-c','import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)'])
+ (root/'capture-pids').write_text(str(os.getpid())+' '+str(child.pid))
+ time.sleep(60)
+if mode=='oversized': print('URL_CANARY'+'x'*65536)
+elif mode=='malformed': print('not-json BACKEND_CANARY')
+elif mode=='empty': print('[]')
+elif mode=='empty_null': print('null')
+elif mode=='empty_stdout': pass
+elif mode=='exact_bytes':
+ raw=json.dumps(nodes); sys.stdout.write(raw+' '*(65536-len(raw)))
+elif mode=='node_limit': print(json.dumps([{'name':'synthetic-peer-ci'}]*64))
+elif mode=='node_overflow': print(json.dumps([{'name':'synthetic-peer-ci'}]*65))
+elif mode=='partial': print(json.dumps(nodes+[{'given_name':'home-sidecar-ci'}]))
+else: print(json.dumps(nodes))
+""")
+        (fixture / "headscale").chmod(0o700)
+        for private in (fixture / "hs/config.yaml", fixture / "headscale.log"):
+            private.chmod(0o600)
+        log_path = fixture / "headscale.log"
+        if headscale_log_mode in {"missing", "fifo", "symlink"}:
+            log_path.unlink()
+            if headscale_log_mode == "fifo":
+                os.mkfifo(log_path, mode=0o600)
+            elif headscale_log_mode == "symlink":
+                log_path.symlink_to(fixture / "hs/config.yaml")
+        elif headscale_log_mode == "unreadable":
+            log_path.chmod(0)
+        elif headscale_log_mode == "empty":
+            log_path.write_bytes(b"")
+        elif headscale_log_mode == "malformed":
+            log_path.write_bytes(b"invalid TOKEN_CANARY\n")
+        elif headscale_log_mode == "invalid_utf8":
+            log_path.write_bytes(b"\xff\n")
+        elif headscale_log_mode == "partial":
+            with log_path.open("ab") as stream:
+                stream.write(b"invalid TOKEN_CANARY\n")
+        elif headscale_log_mode in {"exact_bytes", "oversized"}:
+            prefix = b'{"level":"info","message":"history","padding":"'
+            suffix = b'"}\n'
+            size = 65536 if headscale_log_mode == "exact_bytes" else 65537
+            log_path.write_bytes(prefix + b"x" * (size - len(prefix) - len(suffix)) + suffix)
+        elif headscale_log_mode == "line_overflow":
+            log_path.write_bytes(b'{"level":"info","message":"history"}\n' * 257)
+    if watch_private_buffers:
+        (fake_bin / "mktemp").write_text("""#!/usr/bin/env python3
+import json,os,pathlib,stat,subprocess,sys
+result=subprocess.run(['/usr/bin/mktemp',*sys.argv[1:]],capture_output=True,text=True)
+if result.returncode==0:
+ path=pathlib.Path(result.stdout.strip())
+ if path.name.startswith(('.n3-observe.','.n3-jobs.','.n3-invocation.','.n3-receipts.')):
+  observation={'private_parent':path.parent==pathlib.Path(os.environ['PRIVATE_FIXTURE']), 'mode':stat.S_IMODE(path.stat().st_mode)}
+  with open(os.environ['PRIVATE_BUFFER_EVIDENCE'],'a') as stream: stream.write(json.dumps(observation)+'\\n')
+sys.stdout.write(result.stdout)
+sys.exit(result.returncode)
+""")
+        (fake_bin / "mktemp").chmod(0o700)
     script = f'''set -euo pipefail
-diagnostics={tmp_path!s}; mkdir -p "$diagnostics"
+diagnostics={tmp_path / 'diagnostics'!s}; mkdir -p "$diagnostics"
+work={fixture!s}; headscale_pid=$$
 capture_window_since_us=1699999999999999
 sudo() {{ printf 'presence:%s\n' "$*" >>"$EVENT_LOG"; return 1; }}
 timeout() {{ while [[ $1 == --* || $1 =~ ^[0-9]+$ ]]; do shift; done; "$@"; }}
@@ -653,12 +767,127 @@ run_id=seq305-red-green
 capture_failure_snapshot first-positive-start-failure
 cat "$diagnostics/first-positive-start-failure.json"
 '''
-    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, timeout=30, env=os.environ | {
         "PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "INVOCATION": invocation,
         "BOOT": boot, "RECEIPT": receipt, "JOB": job, "DEPENDENCY": dependency, "CONNECTOR_JOB": connector_job,
         "SIDECAR_MODE": sidecar_mode, "JOBS_MODE": jobs_mode, "N3_UNIT_ROOT": str(tmp_path),
+        "HEADSCALE_MODE": headscale_mode, "PRIVATE_FIXTURE": str(fixture),
+        "PRIVATE_BUFFER_EVIDENCE": str(tmp_path / "private-buffer-evidence"),
     })
     return result, event_log
+
+
+@pytest.mark.parametrize("mode,losses,count", [
+    ("empty", ["empty"], 0), ("missing", ["unavailable"], 0), ("fifo", ["unavailable"], 0),
+    ("symlink", ["unavailable"], 0), ("unreadable", ["unavailable"], 0), ("malformed", ["parse_loss"], 0), ("invalid_utf8", ["parse_loss"], 0),
+    ("partial", ["parse_loss"], 1), ("exact_bytes", ["observed"], 1),
+    ("oversized", ["parse_loss", "truncated"], 0), ("line_overflow", ["truncated"], 256),
+])
+def test_seq322_shipping_log_bounds_preserve_nodes_and_sidecar(tmp_path: Path, mode: str, losses: list[str], count: int) -> None:
+    result, _ = _run_seq305_failure_snapshot(tmp_path, headscale_mode="observed", headscale_log_mode=mode)
+    assert result.returncode == 0, result.stderr
+    snapshot = json.loads(result.stdout)
+    assert snapshot["headscale"]["log"]["losses"] == losses
+    assert sum(event["count"] for event in snapshot["headscale"]["log"]["events"]) == count
+    assert snapshot["headscale"]["nodes"]["peer"] == {"count": 1, "state": "online"}
+    assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+    for artifact in (tmp_path / "diagnostics").iterdir():
+        assert b"CANARY" not in artifact.read_bytes()
+    _assert_secret_free_diagnostics(result, tmp_path / "diagnostics")
+
+
+def test_seq322_shipping_raw_buffers_are_private_and_removed(tmp_path: Path) -> None:
+    result, _ = _run_seq305_failure_snapshot(tmp_path, headscale_mode="observed", watch_private_buffers=True)
+    assert result.returncode == 0, result.stderr
+    observations = [json.loads(line) for line in (tmp_path / "private-buffer-evidence").read_text().splitlines()]
+    assert observations and all(item == {"private_parent": True, "mode": 0o600} for item in observations)
+    assert not list((tmp_path / "fixture").glob(".n3-*"))
+    assert not list((tmp_path / "diagnostics").glob(".n3-*"))
+    _assert_secret_free_diagnostics(result, tmp_path / "diagnostics")
+
+
+def test_seq322_shipping_sidecar_and_job_exhaustion_preserves_reserved_headscale(tmp_path: Path) -> None:
+    result, _ = _run_seq305_failure_snapshot(tmp_path, sidecar_mode="truncation", jobs_mode="truncation", headscale_mode="observed")
+    assert result.returncode == 0, result.stderr
+    snapshot = json.loads(result.stdout)
+    assert snapshot["observation_loss"]["happyranch-tsnet-sidecar.service.active"] == "truncated"
+    assert snapshot["observation_loss"]["jobs"] == "truncated"
+    assert snapshot["headscale"]["nodes"]["peer"] == {"count": 1, "state": "online"}
+    assert snapshot["headscale"]["log"]["losses"] == ["observed"]
+    assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+
+
+@pytest.fixture
+def capture_descendant_watchdog(tmp_path: Path) -> Iterator[None]:
+    """Own failed-mutation descendants too; never leave a fixture to PID1."""
+    libc = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
+    previous = ctypes.c_int()
+    if libc is not None:
+        assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
+        assert libc.prctl(36, 1, 0, 0, 0) == 0
+    try:
+        yield
+    finally:
+        pid_file = tmp_path / "fixture/capture-pids"
+        if pid_file.exists():
+            for text in pid_file.read_text().split():
+                pid = int(text)
+                try:
+                    os.kill(pid, 9)
+                except ProcessLookupError:
+                    pass
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    try:
+                        observed, _ = os.waitpid(pid, os.WNOHANG)
+                    except ChildProcessError:
+                        break
+                    if observed:
+                        break
+                    time.sleep(0.01)
+                assert not Path(f"/proc/{pid}").exists(), "test watchdog could not reap owned descendant"
+        if libc is not None:
+            assert libc.prctl(36, previous.value, 0, 0, 0) == 0
+
+
+@pytest.mark.parametrize("mode,loss", [
+    ("observed", "observed"), ("empty", "empty"), ("unavailable", "unavailable"),
+    ("query_error", "query_error"), ("timeout", "timeout"), ("oversized", "truncated"),
+    ("malformed", "parse_loss"), ("partial", "parse_loss"),
+    ("grandchild", "timeout"), ("empty_null", "empty"), ("empty_stdout", "parse_loss"),
+    ("exact_bytes", "observed"), ("node_limit", "observed"), ("node_overflow", "truncated"),
+])
+def test_seq322_shipping_headscale_reserved_capture(tmp_path: Path, capture_descendant_watchdog: object, mode: str, loss: str) -> None:
+    result, events = _run_seq305_failure_snapshot(tmp_path, headscale_mode=mode)
+    assert result.returncode == 0, result.stderr
+    snapshot = json.loads(result.stdout)
+    assert "headscale" in snapshot, "failure-only Headscale observation missing"
+    headscale = snapshot["headscale"]
+    assert headscale["process_state"] == "running"
+    assert headscale["nodes"]["losses"] == [loss]
+    if mode in {"observed", "partial", "exact_bytes"}:
+        assert headscale["nodes"]["peer"] == {"count": 1, "state": "unknown" if mode == "partial" else "online"}
+        assert headscale["nodes"]["sidecar"] == {"count": 1, "state": "unknown" if mode == "partial" else "offline"}
+    elif mode == "node_limit":
+        assert headscale["nodes"]["peer"] == {"count": 64, "state": "offline"}
+    elif mode in {"empty", "empty_null"}:
+        assert headscale["nodes"]["peer"] == {"count": 0, "state": "absent"}
+    else:
+        assert headscale["nodes"]["peer"] == {"count": None, "state": "unknown"}
+    assert snapshot["diagnostic_receipts"] == [{"category": "network_join", "phase": "peer_establishment"}]
+    if mode != "unavailable":
+        assert headscale["log"] == {"events": [{"event": "unsupported_client", "count": 1}], "losses": ["observed"]}
+        ordering = events.read_text().splitlines()
+        assert ordering.index("journal:plain") < ordering.index("headscale:nodes")
+        assert ordering.index("headscale:nodes") < next(i for i, value in enumerate(ordering) if value.startswith("show:happyranch-connector.service:"))
+    for sentinel in ("KEY_CANARY", "TOKEN_CANARY", "CREDENTIAL_CANARY", "ADDRESS_CANARY", "URL_CANARY", "CONFIG_CANARY", "BACKEND_CANARY"):
+        assert sentinel not in result.stdout + result.stderr
+        for artifact in (tmp_path / "diagnostics").iterdir():
+            assert sentinel.encode() not in artifact.read_bytes()
+    if mode == "grandchild":
+        for pid in (tmp_path / "fixture/capture-pids").read_text().split():
+            assert not Path(f"/proc/{pid}").exists(), "observation descendant was not reaped"
+    _assert_secret_free_diagnostics(result, tmp_path / "diagnostics")
 
 
 def test_seq305_run_failure_shape_captures_sidecar_failed_jobs_and_receipt_before_lossy_units(tmp_path: Path) -> None:
@@ -1000,6 +1229,17 @@ def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37() 
         ("known_exit_messages", ["readiness_unavailable", "watchdog_unavailable"], "observed"),
         ("malformed_receipt_canary", [], "empty"),
         ("matched_overflow", [], "truncated"),
+        *[("reason:" + reason, ['diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","sub_reason":"' + reason + '","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}'], "observed") for reason in (
+            "unclassified", "context_cancelled", "deadline_exceeded", "up_backend_error", "up_no_ip",
+            "up_error_unclassified", "up_status_unavailable", "up_not_running", "peer_status_error",
+            "peer_status_unavailable", "peer_not_running", "peer_wait_deadline", "expected_peer_missing",
+        )],
+        ("reserialize", ['diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}'], "observed"),
+        ("unknown_fallback", ['diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"unknown","outcome":"failed","phase":"unknown","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}'], "observed"),
+        ("deep_then_valid", ['diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}'], "observed"),
+        *[("invalid:" + kind, [], "empty") for kind in ("extra", "nested_extra", "duplicate", "nested_duplicate", "null", "list", "number", "bool", "unknown", "control", "nonfinite", "other_category")],
+
+
     ],
 )
 def test_real_systemd_filter_first_sidecar_capture_is_bounded_secret_free_and_preserves_exit(
@@ -1046,6 +1286,7 @@ if [[ " $* " != *" -o cat "* ]]; then exit 0; fi
 [[ " $* " == *" --since @1700000000.123456 "* ]] || exit 93
 [[ " $* " == *" --until @1700000000.123456 "* ]] || exit 94
 case "${CAPTURE_MODE:?}" in
+  reason:*|reserialize|deep_then_valid|unknown_fallback|invalid:*) printf '%s\\n' "$PLAIN_NEW" ;;
   receipt) printf '%s\\n' 'diagnostic_receipt={"actor":"tsnet-sidecar","assertion":{"status":"completed"},"category":"network_join","outcome":"failed","phase":"peer_establishment","terminal":true,"unit":"happyranch-tsnet-sidecar.service"}' ;;
   empty) printf '%s\\n' 'TOKEN_CANARY unrelated' ;;
   query_error) exit 17 ;;
@@ -1080,6 +1321,24 @@ cleanup() {{
 trap cleanup EXIT
 start_managed_target || exit "$?"
 '''
+    new_receipt = {"category": "network_join", "phase": "peer_establishment", "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": True, "assertion": {"status": "completed"}}
+    if capture_mode.startswith("reason:"):
+        new_receipt["sub_reason"] = capture_mode.split(":", 1)[1]
+    plain_new = "diagnostic_receipt=" + json.dumps(new_receipt).replace("tsnet-sidecar", "tsnet\\u002dsidecar", 1)
+    if capture_mode == "unknown_fallback":
+        plain_new = "diagnostic_receipt=" + json.dumps(new_receipt | {"category": "unknown", "phase": "unknown"})
+    if capture_mode == "deep_then_valid":
+        plain_new = "diagnostic_receipt=" + json.dumps(new_receipt)[:-1] + ',"raw":' + '[' * 1100 + '"TOKEN_CANARY"' + ']' * 1100 + '}\n' + plain_new
+    if capture_mode.startswith("invalid:"):
+        kind = capture_mode.split(":", 1)[1]
+        if kind == "extra": new_receipt["raw"] = "TOKEN_CANARY"
+        elif kind == "nested_extra": new_receipt["assertion"]["raw"] = "TOKEN_CANARY"
+        elif kind == "other_category": new_receipt.update(category="engine_start", phase="engine_initialization", sub_reason="unclassified")
+        elif kind not in {"duplicate", "nested_duplicate"}: new_receipt["sub_reason"] = {"null": None, "list": [], "number": 1, "bool": True, "unknown": "TOKEN_CANARY", "control": "unclassified\x00", "nonfinite": float("nan")}[kind]
+        plain_new = "diagnostic_receipt=" + json.dumps(new_receipt)
+        if kind == "duplicate": plain_new = plain_new[:-1] + ',"category":"network_join"}'
+        if kind == "nested_duplicate": plain_new = plain_new.replace('"status": "completed"', '"status":"completed","status":"completed"')
+
     event_log = tmp_path / "events.log"
     boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
     result = subprocess.run(
@@ -1092,6 +1351,7 @@ start_managed_target || exit "$?"
             "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "EVENT_LOG": str(event_log),
             "CAPTURE_MODE": capture_mode,
+            "PLAIN_NEW": plain_new,
             "BOOT": boot,
             "N3_RESIDUE_ROOT": str(tmp_path),
             "N3_UNIT_ROOT": str(tmp_path),
@@ -1127,6 +1387,7 @@ exit 0
     (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
     script = f'''set -euo pipefail
 diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+failure_capture_driver=/missing
 peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
 port_open() {{ return 1; }}
 tsnet_open() {{ return 1; }}
@@ -1385,6 +1646,7 @@ def test_real_systemd_signal_traps_cleanup_once_and_preserve_non_success(tmp_pat
     (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
     script = f'''set -euo pipefail
 diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+failure_capture_driver=/missing
 peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
 port_open() {{ return 1; }}
 tsnet_open() {{ return 1; }}
@@ -1410,6 +1672,7 @@ kill -{signal} $$
 
 def _run_positive_start_cleanup_scenario(
     tmp_path: Path, *, fault: str = "none", signal: str | None = None,
+    headscale_capture: bool = False, capture_reentry: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     """Run the actual positive-start EXIT/trap seam with a failing teardown command."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
@@ -1433,6 +1696,7 @@ printf 'sudo:%s\\n' "$1" >>"$EVENT_LOG"
 case "$1" in
   systemctl) shift; exec systemctl "$@";;
   test) [[ "${2:-}" == '!' ]] && exit 0; exit 1;;
+  kill) if [[ ${REAL_FIXTURE_KILL:-0} == 1 ]]; then shift; exec /bin/kill "$@"; fi; exit 0;;
   rm|find|kill|update-ca-certificates) exit 0;;
   *) exit 98;;
 esac
@@ -1445,10 +1709,30 @@ esac
         executable.chmod(0o700)
     work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
     (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
+    fixture_setup = ""
+    if headscale_capture:
+        (work / "hs/config.yaml").write_text("CONFIG_CANARY\n")
+        (work / "headscale.log").write_text('{"level":"info","message":"history","credential":"CREDENTIAL_CANARY"}\n')
+        (work / "headscale").write_text('''#!/usr/bin/env python3
+import os,pathlib,signal,time
+root=pathlib.Path(__file__).parent
+os.kill(int(os.environ['HEADSCALE_PID']),0)
+events=pathlib.Path(os.environ['EVENT_LOG'])
+with events.open('a') as stream: stream.write('headscale:queried\\n')
+if os.environ.get('CAPTURE_REENTRY')=='1':
+ count=events.read_text().splitlines().count('headscale:queried')
+ if count==int(os.environ['REENTRY_QUERY']): os.kill(int(os.environ['SHIPPING_PID']),signal.SIGTERM)
+print('[{"name":"synthetic-peer-ci","online":true},{"name":"home-sidecar-ci"}]')
+''')
+        (work / "headscale").chmod(0o700)
+        for private in (work / "hs/config.yaml", work / "headscale.log"):
+            private.chmod(0o600)
+        fixture_setup = 'sleep 60 & headscale_pid=$!\nexport HEADSCALE_PID="$headscale_pid" SHIPPING_PID="$$"\nprintf "%s\\n" "$headscale_pid" >"$FIXTURE_PID_FILE"\n'
     trigger = f"kill -{signal} $$" if signal else 'start_managed_target || exit "$?"'
     script = f'''set -euo pipefail
-diagnostics={tmp_path!s}; work={work!s}; evidence_driver={fake_bin / "evidence"!s}; evidence_artifact=/missing
-failure_capture_driver=/missing
+diagnostics={tmp_path / 'diagnostics' if headscale_capture else tmp_path!s}; mkdir -p "$diagnostics"
+work={work!s}; evidence_driver={fake_bin / "evidence"!s}; evidence_artifact=/missing
+failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve() if headscale_capture else '/missing'}
 peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
 port_open() {{ return 1; }}
 tsnet_open() {{ return 1; }}
@@ -1461,15 +1745,45 @@ cleanup() {{
 trap cleanup EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
+{fixture_setup}
 {trigger}
 '''
     result = subprocess.run(
         ["bash", "-c", script], capture_output=True, text=True, check=False,
         env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log),
-                          "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)},
+                          "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path),
+                          "REAL_FIXTURE_KILL": "1" if headscale_capture else "0", "FIXTURE_PID_FILE": str(tmp_path / "private-fixture-pid"),
+                          "CAPTURE_REENTRY": "1" if capture_reentry else "0", "REENTRY_QUERY": "1" if signal else "2"},
+        timeout=40,
     )
     events = event_log.read_text().splitlines() if event_log.exists() else []
     return result, events, work
+
+
+@pytest.mark.parametrize("signal,expected", [(None, 37), ("INT", 130), ("TERM", 143)])
+@pytest.mark.parametrize("reentry", [False, True])
+def test_real_systemd_headscale_capture_precedes_teardown_and_reaps_fixture_once(tmp_path: Path, signal: str | None, expected: int, reentry: bool) -> None:
+    result, events, work = _run_positive_start_cleanup_scenario(
+        tmp_path, signal=signal, headscale_capture=True, capture_reentry=reentry,
+    )
+    assert result.returncode == expected, result.stderr
+    assert not work.exists()
+    diagnostics = tmp_path / "diagnostics"
+    assert (diagnostics / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
+    assert (diagnostics / "cleanup-status.txt").read_text() == "fixtures_reaped=1\n"
+    queries = [i for i, event in enumerate(events) if event == "headscale:queried"]
+    assert len(queries) == (1 if signal else 2)
+    assert max(queries) < events.index("systemctl:stop") < events.index("systemctl:disable") < events.index("systemctl:reset-failed")
+    pid = (tmp_path / "private-fixture-pid").read_text().strip()
+    assert not Path(f"/proc/{pid}").exists(), "shipping cleanup did not reap its fixture"
+    names = ["failure-before-teardown"] if signal else ["first-positive-start-failure", "failure-before-teardown"]
+    for name in names:
+        raw = (diagnostics / f"{name}.json").read_text()
+        snapshot = json.loads(raw)
+        assert snapshot["headscale"]["process_state"] == "running"
+        assert snapshot["headscale"]["nodes"]["peer"] == {"count": 1, "state": "online"}
+        assert "CANARY" not in raw + result.stdout + result.stderr
+    _assert_secret_free_diagnostics(result, diagnostics)
 
 
 @pytest.mark.parametrize("fault", ["none", "stop", "disable", "reset-failed"])
@@ -1527,6 +1841,7 @@ exit 0
     (work / "headscale").write_text("#!/bin/bash\necho '[]'\n"); (work / "headscale").chmod(0o700)
     script = f'''set -euo pipefail
 diagnostics={tmp_path!s}; work={work!s}; evidence_driver=/missing; evidence_artifact=/missing
+failure_capture_driver=/missing
 peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
 port_open() {{ return 1; }}
 tsnet_open() {{ return 1; }}

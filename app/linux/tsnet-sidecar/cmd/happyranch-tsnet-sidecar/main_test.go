@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -550,10 +551,68 @@ func TestDiagnosticReceiptHasStableRedactedCategories(t *testing.T) {
 		if got["category"] != tc.category || got["phase"] != tc.phase {
 			t.Fatalf("receipt=%v", got)
 		}
+		if tc.category == "network_join" {
+			if got["sub_reason"] != "unclassified" || len(got) != 8 {
+				t.Fatalf("network sub_reason=%v want=unclassified keys=%d", got["sub_reason"], len(got))
+			}
+		} else if _, exists := got["sub_reason"]; exists || len(got) != 7 {
+			t.Fatal("non-network receipt shape changed")
+		}
 		if strings.Contains(raw, "token") || strings.Contains(raw, "/secret") || strings.Contains(raw, "provider") {
 			t.Fatalf("secret-bearing receipt %q", raw)
 		}
 	}
+	for _, reason := range []string{"unclassified", "context_cancelled", "deadline_exceeded", "up_backend_error", "up_no_ip", "up_error_unclassified", "up_status_unavailable", "up_not_running", "peer_status_error", "peer_status_unavailable", "peer_not_running", "peer_wait_deadline", "expected_peer_missing", "KEY_CANARY TOKEN_CANARY CREDENTIAL_CANARY https://user:password@host.invalid/path?key=secret 100.64.0.1 /private/config BACKEND_CANARY"} {
+		name := reason
+		if strings.Contains(reason, "CANARY") {
+			name = "invalid"
+		}
+		t.Run(name, func(t *testing.T) {
+			err := fmt.Errorf("TOKEN_CANARY: %w", sidecar.NetworkJoinFailure{SubReason: reason})
+			emitted := diagnosticReceipt(err)
+			var got map[string]any
+			if json.Unmarshal([]byte(strings.TrimPrefix(emitted, "diagnostic_receipt=")), &got) != nil {
+				t.Fatal("invalid emitted JSON")
+			}
+			want := reason
+			if strings.Contains(reason, "CANARY") {
+				want = "unclassified"
+			}
+			if got["sub_reason"] != want || got["category"] != "network_join" || got["phase"] != "peer_establishment" || len(got) != 8 {
+				t.Fatalf("reason=%v want=%s", got["sub_reason"], want)
+			}
+			for _, sentinel := range []string{"KEY_CANARY", "TOKEN_CANARY", "CREDENTIAL_CANARY", "https://", "100.64.0.1", "/private/config", "BACKEND_CANARY"} {
+				if strings.Contains(emitted, sentinel) {
+					t.Fatal("emitted raw cause")
+				}
+			}
+		})
+	}
+	t.Run("real-adapter-sidecar-cancel", func(t *testing.T) {
+		root := t.TempDir()
+		state := filepath.Join(root, "state")
+		credential := filepath.Join(root, "credential")
+		if os.Mkdir(state, 0700) != nil || os.WriteFile(credential, []byte("KEY_CANARY"), 0600) != nil {
+			t.Fatal("fixture setup")
+		}
+		cfg := sidecar.Config{StateDir: state, CredentialFile: credential, ControlURL: "https://headscale.invalid", RoleIdentity: "home-sidecar-ci", ExpectedPeers: []string{"synthetic-peer-ci"}, ListenAddr: ":443", ConnectorAddr: "127.0.0.1:9443", DERPPolicy: "private-only"}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		svc := sidecar.New(cfg, sidecar.NewTSNetEngine(), &net.Dialer{})
+		err := svc.Start(ctx)
+		defer svc.Stop()
+		var got map[string]any
+		if err == nil || json.Unmarshal([]byte(strings.TrimPrefix(diagnosticReceipt(err), "diagnostic_receipt=")), &got) != nil {
+			t.Fatal("real-chain failure missing")
+		}
+		if got["sub_reason"] != "context_cancelled" {
+			t.Fatalf("real-chain reason=%v want=context_cancelled", got["sub_reason"])
+		}
+		if _, err := os.Stat(credential); err != nil {
+			t.Fatal("cancelled chain consumed credential")
+		}
+	})
+
 }
 
 type recordingNotifier struct {

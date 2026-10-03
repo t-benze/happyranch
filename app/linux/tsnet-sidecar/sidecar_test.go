@@ -3,6 +3,7 @@ package sidecar
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -390,6 +391,72 @@ func TestShippingFailureMatrixUsesStableCategories(t *testing.T) {
 			}
 		})
 	}
+	for _, reason := range []string{"unclassified", "context_cancelled", "deadline_exceeded", "up_backend_error", "up_no_ip", "up_error_unclassified", "up_status_unavailable", "up_not_running", "peer_status_error", "peer_status_unavailable", "peer_not_running", "peer_wait_deadline", "expected_peer_missing", "SECRET_CANARY"} {
+		name := reason
+		if reason == "SECRET_CANARY" {
+			name = "invalid"
+		}
+		for _, shape := range []string{"value", "pointer", "wrapped"} {
+			t.Run("network/"+name+"/"+shape, func(t *testing.T) {
+				cfg := validConfig(t)
+				events := []string{}
+				var failure error = NetworkJoinFailure{SubReason: reason}
+				if shape == "pointer" {
+					failure = &NetworkJoinFailure{SubReason: reason}
+				}
+				if shape == "wrapped" {
+					failure = fmt.Errorf("TOKEN_CANARY: %w", failure)
+				}
+				svc := New(cfg, &fakeEngine{startErr: failure, events: &events}, &net.Dialer{})
+				err := svc.Start(context.Background())
+				want := reason
+				if reason == "SECRET_CANARY" {
+					want = "unclassified"
+				}
+				assertNetworkReason(t, err, want)
+				_ = svc.Stop()
+				if strings.Join(events, ",") != "start,engine-close" {
+					t.Fatalf("ordering=%v", events)
+				}
+				if _, err := os.Stat(cfg.CredentialFile); err != nil {
+					t.Fatal("failed network receipt consumed credential")
+				}
+				if _, err := os.Stat(filepath.Join(cfg.StateDir, consumedMarker)); !os.IsNotExist(err) {
+					t.Fatal("failed network receipt committed")
+				}
+			})
+		}
+	}
+	for _, wrapped := range []bool{false, true} {
+		t.Run(fmt.Sprintf("bare/%t", wrapped), func(t *testing.T) {
+			cfg := validConfig(t)
+			events := []string{}
+			var failure error = ErrNetworkJoin
+			if wrapped {
+				failure = fmt.Errorf("TOKEN_CANARY: %w", failure)
+			}
+			svc := New(cfg, &fakeEngine{startErr: failure, events: &events}, &net.Dialer{})
+			assertNetworkReason(t, svc.Start(context.Background()), "unclassified")
+			_ = svc.Stop()
+			if strings.Join(events, ",") != "start,engine-close" {
+				t.Fatal("close ordering changed")
+			}
+		})
+	}
+	t.Run("incomplete-peer-receipt", func(t *testing.T) {
+		cfg := validConfig(t)
+		events := []string{}
+		svc := New(cfg, &fakeEngine{receipt: RedemptionReceipt{true, true, false}, events: &events}, &net.Dialer{})
+		assertNetworkReason(t, svc.Start(context.Background()), "expected_peer_missing")
+		_ = svc.Stop()
+		if strings.Join(events, ",") != "start,engine-close" {
+			t.Fatal("incomplete peer admitted")
+		}
+		if _, err := os.Stat(cfg.CredentialFile); err != nil {
+			t.Fatal("incomplete peer consumed credential")
+		}
+	})
+
 }
 
 func TestAcceptedConnectionDialAndCopyFailuresCloseResources(t *testing.T) {

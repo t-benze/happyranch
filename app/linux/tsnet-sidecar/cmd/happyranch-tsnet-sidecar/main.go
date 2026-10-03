@@ -95,6 +95,9 @@ func diagnosticReceipt(err error) string {
 		category, phase = "durable_commit", "receipt_commit"
 	}
 	receipt := map[string]any{"category": category, "phase": phase, "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": true, "assertion": map[string]string{"status": "completed"}}
+	if category == "network_join" {
+		receipt["sub_reason"] = sidecar.NetworkJoinSubReason(err)
+	}
 	raw, _ := json.Marshal(receipt)
 	return "diagnostic_receipt=" + string(raw)
 }
