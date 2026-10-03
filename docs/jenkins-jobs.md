@@ -208,15 +208,37 @@ network configuration is supplied. The original full workload selection and
 assertions remain unchanged.
 
 Before guest exit, `guest-diagnostics.json` captures only recognized pytest
-node directories below `/tmp/happyranch-pytest`, prioritizing the two-org case.
+node directories below `/tmp/happyranch-pytest`, in fixed priority order:
+two-org, mixed-fleet, DIY revoke, then DIY acceptance (lexical ties). The mixed
+prefix is exactly `test_mixed_fleet_roundtrip_use` plus one to four digits.
 Limits are four nodes, eight task rows per node, 32 recognized event categories
 per node, 8KiB per text input, two seconds per SQLite read and 30 seconds total
 capture. All new JSON diagnostics combined are capped at 64KiB. Fixed read-only,
 query-only queries correlate alpha/beta `TASK-001` status and result/session-start
 counts. Raw notes/logs/prompts/argv/credentials/DB/WAL are never archived;
 only fixed recognized categories survive, with explicit omitted/unavailable
-fields and unavailable executor evidence. Literal no-follow ancestry and file
-identities are rechecked; symlinks, replacement, unknown schemas and changing
+fields and unavailable executor evidence. Diagnostic statuses admit the production
+`in_progress`, `escalated` and `superseded` literals plus existing literals,
+including legacy `running`/`blocked`; an unknown status refuses the whole org.
+Known instruction-pair and workspace-readiness refusal stems take priority over
+the generic invocation-failed envelope; other retained compatibility markers
+remain fixed enums. Marker priority is instruction pair, workspace readiness,
+`WorkspaceNotInitialized`, authority selector, `SymlinkMaterializationError`,
+executor missing, `session_mismatch`, then generic invocation failed.
+
+Logs of at most 8192 bytes are scanned contiguously once. Larger logs use only
+4096-byte head and tail windows from the same owned descriptor, without a
+sentinel or middle probe. Only LF delimits physical lines: the head's incomplete
+last fragment and the tail through its first LF are conservatively discarded;
+windows are never joined. UTF-8 replacement occurs after trimming. Successful
+receipts include `log_size_bytes`, `log_read_bytes`, `log_gap_bytes`,
+`log_boundary_discarded_bytes`, `log_scanned_bytes` and `log_omitted_bytes`:
+scanned = read - boundary-discarded, omitted = gap + boundary-discarded.
+`log_truncated` means omitted bytes exist, `log_text_omitted` is always true
+(including empty logs), and `log_event_limit_reached` means a 33rd recognized
+line existed, while only the first 32 enums survive. File or ancestry refusal
+retains no provisional log categories or byte/limit fields. Literal no-follow
+ancestry and file identities are rechecked; symlinks, replacement, unknown schemas and changing
 inputs refuse. A live WAL is unavailable rather than ignored or modified.
 For a closed checkpointed WAL-mode main file, both sidecars must be absent
 before and after its lock-free read; otherwise no task facts are retained.

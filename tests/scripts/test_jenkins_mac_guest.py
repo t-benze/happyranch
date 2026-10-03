@@ -15,6 +15,7 @@ import pytest
 
 from scripts import jenkins_mac_guest as guest
 from runtime.infrastructure.database import Database
+from runtime.models import TaskRecord, TaskStatus
 
 
 def _owned_node(tmp_path: Path, *, alpha_status: str = "failed", large_note: bool = False) -> tuple[Path, Path]:
@@ -49,15 +50,180 @@ def _owned_node(tmp_path: Path, *, alpha_status: str = "failed", large_note: boo
 
 
 def _file_facts(root: Path) -> dict[str, tuple[str, int]]:
-    return {str(path.relative_to(root)): (hashlib.sha256(path.read_bytes()).hexdigest(),
-                                        path.stat().st_mode)
-            for path in root.rglob("*") if path.is_file() and not path.is_symlink()}
+    facts = {}
+    for path in root.rglob("*"):
+        info = path.lstat()
+        if path.is_symlink():
+            data = os.readlink(path).encode()
+        elif path.is_file():
+            data = path.read_bytes()
+        elif path.is_dir():
+            data = b""
+        else:
+            continue
+        facts[str(path.relative_to(root))] = (hashlib.sha256(data).hexdigest(), info.st_mode)
+    return facts
 
 
-@pytest.mark.parametrize("alpha_status,large_note", [("failed", False), ("running", False), ("completed", False), ("failed", True)])
+# Independent shipping-receipt inputs, not an oracle derived from guest constants.
+_NOTE_CASES = [
+    ("I0-class", "WorkspaceNotInitialized", "workspace_not_initialized"),
+    ("I0-class-envelope", "agent invocation failed: WorkspaceNotInitialized", "workspace_not_initialized"),
+    ("I0-selector", "authority selector is uninitialized", "authority_selector_uninitialized"),
+    ("I0-selector-envelope", "agent invocation failed: authority selector is uninitialized", "authority_selector_uninitialized"),
+    ("I0-skill", "SymlinkMaterializationError", "skill_materialization_failed"),
+    ("I0-skill-envelope", "agent invocation failed: SymlinkMaterializationError", "skill_materialization_failed"),
+    ("I0-executor", "executor not found", "executor_missing"),
+    ("I0-executor-envelope", "agent invocation failed: executor not found", "executor_missing"),
+    ("I0-session", "session_mismatch", "callback_session_mismatch"),
+    ("I0-session-envelope", "agent invocation failed: session_mismatch", "callback_session_mismatch"),
+    ("I1", "agent invocation failed: workspace CANARY does not have the canonical AGENTS.md/CLAUDE.md instruction pair /CANARY", "workspace_instruction_pair_refused"),
+    ("I1-alone", "workspace CANARY does not have the canonical AGENTS.md/CLAUDE.md instruction pair", "workspace_instruction_pair_refused"),
+    ("I2", "agent invocation failed: workspace CANARY is not initialized (missing /CANARY)", "workspace_not_initialized"),
+    ("I2-alone", "workspace CANARY is not initialized (missing /CANARY)", "workspace_not_initialized"),
+    ("I3", "agent invocation failed: CANARY\nworkspace CANARY is not initialized (missing /CANARY)", "workspace_not_initialized"),
+    ("I3-pair", "agent invocation failed: CANARY\nworkspace CANARY does not have the canonical pair", "workspace_instruction_pair_refused"),
+    ("I4", "is not initialized (missing CANARY) does not have the canonical pair", "workspace_instruction_pair_refused"),
+    ("I4-reverse", "does not have the canonical pair is not initialized (missing CANARY)", "workspace_instruction_pair_refused"),
+    ("I5", "executor not found SymlinkMaterializationError", "skill_materialization_failed"),
+    ("I5-reverse", "SymlinkMaterializationError executor not found", "skill_materialization_failed"),
+    ("I6-envelope", "agent invocation failed: PRIVATE_EXCEPTION_CANARY", "agent_invocation_failed"),
+    ("I6-unknown", "PRIVATE_EXCEPTION_CANARY", "omitted"),
+    ("I6-empty", "", "none"), ("I6-null", None, "none"),
+    ("I7-limit", "WorkspaceNotInitialized" + "x" * (8192 - 23), "workspace_not_initialized"),
+    ("I7-over", "WorkspaceNotInitialized" + "x" * (8193 - 23), "omitted"),
+    ("I8", "session_mismatch prompt CANARY token SECRET_SESSION /CANARY Traceback argv", "callback_session_mismatch"),
+    ("I8-invalid", b"WorkspaceNotInitialized \xff CANARY", "workspace_not_initialized"),
+]
+
+
+def _diagnostic_node(
+    base: Path, name: str, org: str,
+    rows: list[tuple[str, str, int, int, object]], log: bytes = b"",
+) -> Path:
+    """Seed through production DDL/writers, then close before shipping collection."""
+    node = base / name
+    directory = node / "runtime/orgs" / org
+    directory.mkdir(parents=True, exist_ok=True)
+    db = Database(directory / "happyranch.db")
+    try:
+        for task_id, status, results, starts, note in rows:
+            db.insert_task(TaskRecord(id=task_id, brief="PRIVATE_PROMPT_CANARY",
+                                      parent_task_id="TASK-010" if task_id == "TASK-011" else None))
+            # The writer admits real enums; literal SQL is confined to legacy/invalid inputs.
+            if status in {"running", "blocked", "future_unknown"}:
+                db._conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, task_id))
+                db._conn.commit()
+            else:
+                db.update_task(task_id, status=TaskStatus(status))
+            db.update_task(task_id, note=note)
+            for index in range(results):
+                db.insert_task_result(task_id, "worker", f"SECRET_SESSION-{index}", "CANARY", 0)
+            for _ in range(starts):
+                db.insert_audit_log(task_id, "worker", "session_start", {"secret": "CANARY"})
+            db.insert_audit_log(task_id, "worker", "unrelated", {"secret": "CANARY"})
+    finally:
+        db.close()
+    (node / ".happyranch").mkdir(exist_ok=True)
+    (node / ".happyranch/daemon.log").write_bytes(log)
+    return node
+
+
+def _serialized_capture(base: Path, *, deadline: float | None = None) -> dict:
+    before = _file_facts(base)
+    encoded = json.dumps(guest.capture_diagnostics(
+        base, deadline=time.monotonic() + 30 if deadline is None else deadline))
+    assert "CANARY" not in encoded and "SECRET_SESSION" not in encoded
+    assert len(encoded.encode()) < 65536
+    receipt = json.loads(encoded)
+    assert receipt["cause"] == "unknown" and receipt["raw_text"] == "omitted"
+    assert _file_facts(base) == before
+    return receipt
+
+
+def _window_cases() -> list[tuple[str, bytes, list[str], int, int]]:
+    # Each B/R oracle is explicit byte arithmetic from stipulated physical offsets.
+    marker = b"WorkspaceNotInitialized"
+    event = "workspace_not_initialized"
+    rows = [("W0", b"", [], 0, 0),
+            ("W1", marker + b"\n" + marker, [event, event], 0, 47)]
+    for size in (4096, 4097, 8191, 8192):
+        rows.append((f"W2-{size}", b"q" * (size - 24) + b"\n" + marker, [event], 0, size))
+    rows.extend([
+        ("W3", marker + b"\n" + b"q" * (4096 - 24) + b"x" + b"r" * 31 + b"\n" + b"s" * 4063 + b"\n", [event], 4104, 8192),
+        ("W4-head", marker + b"\n" + b"q" * (4096 - 24) + b"x" * 808 + b"r\n" + b"s" * 4093 + b"\n", [event], 4074, 8192),
+        # Marker starts at byte 8977: outside the old first8192, after tail's firstLF.
+        ("W4-tail", b"q" * 4095 + b"\n" + b"x" * 808 + b"r\n" + b"s" * 4070 + b"\n" + marker, [event], 2, 8192),
+        ("W5", b"q" * 4095 + b"\n" + b"x" * 808 + b"r" * 31 + b"\n" + marker + b"\n" + b"s" * 4039 + b"\n", [event], 32, 8192),
+        ("W6-head", b"q" * 4073 + marker + b"x" * 808 + b"r\n" + b"s" * 4093 + b"\n", [], 4098, 8192),
+        ("W6-tail", b"q" * 4095 + b"\n" + b"x" * 808 + marker + b"r\n" + b"s" * 4070 + b"\n", [], 25, 8192),
+        ("W7", b"q" * 4087 + b"Workspace" + b"x" * 808 + b"NotInitialized\n" + b"s" * 4080 + b"\n", [], 4111, 8192),
+        ("W8", b"\xff" + marker + b"\nWorkspaceNotInit\xffialized", [event], 0, 49),
+        ("W8-disjoint", b"q" * 4095 + b"\n" + b"x" * 808 + b"\xff\n" + marker + b" \xff\n" + b"s" * 4067 + b"\n", [event], 2, 8192),
+        ("W9", b"q" * 9000, [], 8192, 8192),
+        ("W10-32", (marker + b"\n") * 32, [event] * 32, 0, 768),
+        ("W10-33", (marker + b"\n") * 33, [event] * 32, 0, 792),
+        ("W11-contiguous", b"q" * 4087 + marker + b"s" * 4082, [event], 0, 8192),
+        ("W11-disjoint", b"q" * 4087 + marker + b"s" * 4083, [], 8192, 8192),
+        ("W-LF-only", b"Workspace\rNotInitialized\n", [], 0, 25),
+    ])
+    return rows
+
+
+@pytest.mark.parametrize("alpha_status,large_note,diagnostic_case", [
+    ("failed", False, "original"), ("running", False, "original"),
+    ("completed", False, "original"), ("failed", True, "original"),
+] + [("failed", False, row[0]) for row in _NOTE_CASES + _window_cases()])
 def test_diagnostics_correlate_orgs_omit_secrets_and_leave_inputs_unchanged(
-    tmp_path: Path, alpha_status: str, large_note: bool,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alpha_status: str, large_note: bool, diagnostic_case: str,
 ) -> None:
+    if diagnostic_case != "original":
+        base = tmp_path / "cases"
+        notes = {row[0]: row[1:] for row in _NOTE_CASES}
+        if diagnostic_case in notes:
+            note, expected = notes[diagnostic_case]
+            log = (note if isinstance(note, bytes) else (note or "").encode())
+            _diagnostic_node(base, "test_two_orgs_run_tasks_concur0", "test",
+                             [("TASK-010", "failed", 0, 0, note)], log)
+            receipt = _serialized_capture(base)
+            node = receipt["nodes"][0]
+            assert node["orgs"][2]["tasks"][0]["note_category"] == expected, diagnostic_case
+            expected_events = [] if expected in {"none", "omitted"} else [expected]
+            if diagnostic_case == "I3":
+                expected_events = ["agent_invocation_failed", "workspace_not_initialized"]
+            elif diagnostic_case == "I3-pair":
+                expected_events = ["agent_invocation_failed", "workspace_instruction_pair_refused"]
+            assert node["event_categories"] == expected_events, diagnostic_case
+        else:
+            _, log, events, discarded, read = next(row for row in _window_cases() if row[0] == diagnostic_case)
+            owned = _diagnostic_node(base, "test_two_orgs_run_tasks_concur0", "test", [], log)
+            log_info = (owned / ".happyranch/daemon.log").stat()
+            identity = log_info.st_dev, log_info.st_ino
+            reads = []
+            original = guest.os.pread
+            def observe(fd: int, length: int, offset: int) -> bytes:
+                data = original(fd, length, offset)
+                info = os.fstat(fd)
+                if (info.st_dev, info.st_ino) == identity:
+                    reads.append((offset, length, len(data)))
+                return data
+            monkeypatch.setattr(guest.os, "pread", observe)
+            receipt = _serialized_capture(base)
+            expected_reads = ([] if not log else [(0, len(log), len(log))]) if len(log) <= 8192 else [
+                (0, 4096, 4096), (len(log) - 4096, 4096, 4096)]
+            assert reads == expected_reads, (diagnostic_case, reads, expected_reads)
+            node = receipt["nodes"][0]
+            assert node["event_categories"] == events, diagnostic_case
+            expected = {"log_size_bytes": len(log), "log_read_bytes": read,
+                        "log_gap_bytes": len(log) - read, "log_boundary_discarded_bytes": discarded,
+                        "log_scanned_bytes": read - discarded,
+                        "log_omitted_bytes": len(log) - read + discarded}
+            for field, value in expected.items():
+                assert type(node[field]) is int and node[field] == value, (diagnostic_case, field, node, expected)
+            assert node["log_truncated"] is (expected["log_omitted_bytes"] > 0)
+            assert node["log_event_limit_reached"] is (diagnostic_case == "W10-33")
+        assert node["log_text_omitted"] is True
+        return
     base, _ = _owned_node(tmp_path, alpha_status=alpha_status, large_note=large_note)
     before = _file_facts(base)
     receipt = guest.capture_diagnostics(base, deadline=time.monotonic() + 30)
@@ -81,10 +247,73 @@ def test_diagnostics_correlate_orgs_omit_secrets_and_leave_inputs_unchanged(
     assert _file_facts(base) == before
 
 
-@pytest.mark.parametrize("hazard", ["node_symlink", "db_symlink", "wal_symlink", "unknown_schema", "replacement"])
+@pytest.mark.parametrize("hazard", ["node_symlink", "db_symlink", "wal_symlink", "unknown_schema", "replacement", "H0", "H1", "H2", "H3", "H4-append", "H4-truncate", "H5"])
 def test_diagnostics_refuse_unsafe_or_changed_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hazard: str,
 ) -> None:
+    if hazard.startswith("H"):
+        base = tmp_path / "cases"
+        node = _diagnostic_node(base, "test_mixed_fleet_roundtrip_use0", "test", [],
+                                b"WorkspaceNotInitialized\n" + b"q" * 4071 + b"\n" + b"x" * 808
+                                + b"r\n" + b"s" * 4070 + b"\nWorkspaceNotInitialized")
+        log = node / ".happyranch/daemon.log"
+        assert log.stat().st_size == 9000
+        fired = []
+        after_trigger = []
+        if hazard == "H0":
+            moved = tmp_path / "outside-node"
+            node.rename(moved)
+            node.symlink_to(moved, target_is_directory=True)
+        elif hazard == "H1":
+            outside = tmp_path / "outside-log"
+            outside.write_text("WorkspaceNotInitialized OUTSIDE_SECRET_CANARY")
+            log.unlink()
+            log.symlink_to(outside)
+        else:
+            original = guest.os.pread
+            identity = log.stat().st_dev, log.stat().st_ino
+            def race(fd: int, length: int, offset: int) -> bytes:
+                data = original(fd, length, offset)
+                info = os.fstat(fd)
+                if not fired and (info.st_dev, info.st_ino) == identity and offset == 4904:
+                    fired.append((info.st_dev, info.st_ino, offset))
+                    if hazard in {"H2", "H3"}:
+                        log.rename(log.with_suffix(".saved"))
+                        if hazard == "H2":
+                            log.write_text("REPLACEMENT_SECRET_CANARY")
+                        else:
+                            outside = tmp_path / "outside-log"
+                            outside.write_text("WorkspaceNotInitialized OUTSIDE_SECRET_CANARY")
+                            log.symlink_to(outside)
+                    elif hazard == "H4-append":
+                        with log.open("ab") as stream:
+                            stream.write(b"CHANGED_CANARY")
+                    elif hazard == "H4-truncate":
+                        with log.open("wb") as stream:
+                            stream.write(b"CHANGED_CANARY")
+                    else:
+                        directory = node / ".happyranch"
+                        directory.rename(node / ".happyranch-saved")
+                        directory.mkdir()
+                        log.write_text("ANCESTOR_SECRET_CANARY")
+                    after_trigger.append(_file_facts(tmp_path))
+                return data
+            monkeypatch.setattr(guest.os, "pread", race)
+        before = _file_facts(tmp_path)
+        receipt = json.loads(json.dumps(guest.capture_diagnostics(base, deadline=time.monotonic() + 30)))
+        observed = receipt["nodes"][0]
+        if hazard == "H0":
+            assert observed == {"node": "test_mixed_fleet_roundtrip_use0", "unavailable": "unsafe_or_changed"}
+        else:
+            if hazard != "H1":
+                assert fired == [(*identity, 4904)], "real owned-log tail syscall must run once"
+            assert observed.get("log_unavailable") is True, (hazard, observed)
+            assert observed["event_categories"] == [], (hazard, observed)
+            assert not any(key.startswith("log_") and key != "log_unavailable" for key in observed), observed
+            assert observed["orgs"][2]["tasks"] == []
+        assert "CANARY" not in json.dumps(receipt)
+        assert _file_facts(tmp_path) == (after_trigger[0] if after_trigger else before)
+        return
     base, node = _owned_node(tmp_path)
     db = node / "runtime/orgs/alpha/happyranch.db"
     if hazard == "node_symlink":
@@ -127,7 +356,68 @@ def test_diagnostics_refuse_unsafe_or_changed_inputs(
     assert "CANARY" not in json.dumps(receipt)
 
 
-def test_diagnostics_sqlite_busy_deadline_and_row_node_caps(tmp_path: Path) -> None:
+@pytest.mark.parametrize("case", ["original", "M0-reader", "M0", "M1", "M2", "M3", "M4", "M4-reader", "M6", "M7", "deadline"]
+    + ["M5-" + status for status in ("pending", "running", "blocked", "in_progress", "escalated", "completed", "failed", "cancelled", "superseded")]
+    + ["suffix-" + suffix for suffix in ("0", "9999", "", "a", "00000", "0-extra", "lookalike")])
+def test_diagnostics_sqlite_busy_deadline_and_row_node_caps(tmp_path: Path, case: str) -> None:
+    if case != "original":
+        base = tmp_path / "cases"
+        if case.startswith("suffix-"):
+            suffix = case.removeprefix("suffix-")
+            name = "test_mixed_fleet_roundtrip_use" + suffix
+            if suffix == "lookalike":
+                name = "test_mixed_fleet_roundtrip_uses0"
+            _diagnostic_node(base, name, "test", [])
+            receipt = _serialized_capture(base)
+            assert [node["node"] for node in receipt["nodes"]] == ([name] if suffix in {"0", "9999"} else [])
+            return
+        rows = [("TASK-010", "in_progress", 0, 0, None), ("TASK-011", "in_progress", 0, 0, None)]
+        if case in {"M1", "M2", "M3"}:
+            rows[0] = ("TASK-010", "in_progress", 1, 1, None)
+        if case == "M2":
+            rows[1] = ("TASK-011", "in_progress", 0, 2, None)
+        elif case == "M3":
+            rows[1] = ("TASK-011", "failed", 0, 0, "agent invocation failed: CANARY")
+        elif case in {"M4", "M4-reader"}:
+            rows = [("TASK-010", "escalated", 0, 0, None), ("TASK-011", "superseded", 1, 2, None)]
+        elif case.startswith("M5-"):
+            rows = [("TASK-010", case[3:], 1, 2, None)]
+        elif case == "M6":
+            rows[1] = ("TASK-011", "future_unknown", 0, 0, None)
+        names = ["test_two_orgs_run_tasks_concur0", "test_mixed_fleet_roundtrip_use0",
+                 "test_acceptance_cross_process_0", "test_acceptance_cross_process_1", "test_real_diy_acceptance0"]
+        if case in {"M0-reader", "M4-reader"} or case.startswith("M5-"):
+            _diagnostic_node(base, names[0], "test", rows)
+        else:
+            for org in ("alpha", "beta"):
+                _diagnostic_node(base, names[0], org, [("TASK-001", "failed", 0, 0, "agent invocation failed: CANARY")])
+            _diagnostic_node(base, names[1], "test", rows)
+            for name in names[2:]:
+                _diagnostic_node(base, name, "test", [])
+        receipt = _serialized_capture(base, deadline=time.monotonic() - 1 if case == "deadline" else None)
+        if case == "deadline":
+            assert receipt.get("deadline_exhausted") is True and receipt["nodes"] == [], receipt
+            return
+        if case not in {"M0-reader", "M4-reader"} and not case.startswith("M5-"):
+            assert [node["node"] for node in receipt["nodes"]] == names[:4], case
+            assert [node["kind"] for node in receipt["nodes"]] == ["two_orgs", "mixed_fleet", "diy_revoke", "diy_revoke"]
+            assert receipt["nodes_truncated"] is True
+            for org in receipt["nodes"][0]["orgs"][:2]:
+                assert [(t["task_id"], t["status"], t["result_count"], t["session_start_count"]) for t in org["tasks"]] == [("TASK-001", "failed", 0, 0)]
+            node = receipt["nodes"][1]
+            assert [org.get("unavailable") for org in node["orgs"][:2]] == ["missing", "missing"]
+        else:
+            node = receipt["nodes"][0]
+        facts = node["orgs"][2]
+        if case == "M6":
+            assert facts.get("unavailable") == "unknown_record" and "tasks" not in facts, facts
+        else:
+            assert "tasks" in facts, (case, facts)
+            assert [(t["task_id"], t["status"], t["result_count"], t["session_start_count"]) for t in facts["tasks"]] == [row[:4] for row in rows]
+            assert all(t["executor_evidence"] == "unavailable" for t in facts["tasks"])
+            if case == "M3":
+                assert facts["tasks"][1]["note_category"] == "agent_invocation_failed"
+        return
     base, node = _owned_node(tmp_path)
     db = node / "runtime/orgs/alpha/happyranch.db"
     connection = sqlite3.connect(db)
