@@ -326,7 +326,7 @@ if [ "$workload_status" -eq 0 ]; then
   bounded 15 60 python "$helper" --state "$state" packages
   bounded 15 60 python --version 2>&1 | sed 's/^/python_version=/' \\
     >> /workspace/artifacts/identity.txt
-  bounded 300 60 python -m pip install --disable-pip-version-check --no-cache-dir "uv=={UV_VERSION}"
+  bounded 600 60 python -m pip install --disable-pip-version-check --no-cache-dir "uv=={UV_VERSION}"
   workload_status=$?
 fi
 if [ "$workload_status" -eq 0 ]; then

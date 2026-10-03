@@ -527,6 +527,7 @@ def test_jenkinsfile_is_bounded_parameterized_and_archives_evidence() -> None:
 
 def _emitted_guest(tmp_path: Path, *, setup_status: int = 0, workload_status: int = 7,
                    summary_status: int = 0, capture_status: int = 0,
+                   pip_status: int = 0, pip_remaining: float | None = None,
                    source_change: bool = False) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Execute emitted bytes; replace only external tools and literal guest paths."""
     source = tmp_path / "source"
@@ -551,14 +552,47 @@ def _emitted_guest(tmp_path: Path, *, setup_status: int = 0, workload_status: in
     for name, body in {
         "apt-get": f"if [ \"$1\" = install ]; then touch {tmp_path / 'installed'}; fi\nexit {setup_status}",
         "dpkg-query": f"printf 'bash 1\\ncurl 2\\niproute2 3\\n'\nif [ -f {tmp_path / 'installed'} ]; then printf 'libbpf1 4\\n'; fi",
-        "uv": "if [ \"$1\" = --version ]; then printf 'uv 0.12.21\\n'; fi",
         "ip": "printf '1: lo inet 127.0.0.1/8 scope host lo\\n'",
-        "python": f'if [ "$1" = -m ] && [ "$2" = pip ]; then exit 0; fi\n'
-                  f'if [ "$4" = capture ] && [ {capture_status} -ne 0 ]; then exit {capture_status}; fi\n'
-                  f'exec {sys.executable} "$@"',
     }.items():
         path = bin_dir / name
         path.write_text(f"#!/bin/sh\n{body}\n")
+        path.chmod(0o755)
+    # Observe the real helper CLI and external tool argv, without replacing its budgets.
+    for name in ("python", "uv"):
+        path = bin_dir / name
+        body = f"""#!{sys.executable}
+import json, os, signal, sys, time
+from pathlib import Path
+argv = sys.argv[1:]
+record = {{"tool": {name!r}, "argv": argv}}
+pip_remaining = {pip_remaining!r}
+if {name!r} == "python" and len(argv) > 3 and argv[3] == "command":
+    command = argv[argv.index("--") + 1:]
+    if command[:3] == ["python", "-m", "pip"]:
+        state_path = Path(argv[2])
+        state = json.loads(state_path.read_text())
+        record["shared_remaining"] = state["deadline"] - time.monotonic()
+        if pip_remaining is not None:
+            # Shrink a private persisted guest-state fixture; real helper owns clipping/reaping.
+            state["deadline"] = time.monotonic() + pip_remaining
+            state_path.write_text(json.dumps(state))
+with Path({str(artifacts / 'tool-argv.jsonl')!r}).open("a") as stream:
+    stream.write(json.dumps(record) + "\\n")
+if {name!r} == "uv":
+    if argv == ["--version"]:
+        print("uv 0.12.21")
+    sys.exit(0)
+if argv[:2] == ["-m", "pip"]:
+    if pip_remaining is not None:
+        signal.alarm(8)
+        Path({str(artifacts / 'pip-pid')!r}).write_text(str(os.getpid()))
+        time.sleep(6)
+    sys.exit({pip_status})
+if len(argv) > 3 and argv[3] == "capture" and {capture_status} != 0:
+    sys.exit({capture_status})
+os.execv({sys.executable!r}, [{sys.executable!r}, *argv])
+"""
+        path.write_text(body)
         path.chmod(0o755)
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(
@@ -586,25 +620,62 @@ def _emitted_guest(tmp_path: Path, *, setup_status: int = 0, workload_status: in
     return result, artifacts
 
 
-@pytest.mark.parametrize("setup_status,workload_status,summary_status,expected", [
-    (0, 7, 0, 7), (17, 0, 0, 17), (0, 0, 13, 13), (0, 7, 13, 7),
+@pytest.mark.parametrize("setup_status,pip_status,pip_remaining,workload_status,summary_status,expected", [
+    (0, 0, None, 7, 0, 7), (17, 0, None, 0, 0, 17),
+    (0, 0, None, 0, 13, 13), (0, 0, None, 7, 13, 7),
+    (0, 17, None, 0, 0, 17), (0, 0, 63, 0, 0, 124), (0, 0, 59, 0, 0, 124),
 ])
 def test_emitted_guest_captures_before_exit_preserving_primary_status(
-    tmp_path: Path, setup_status: int, workload_status: int, summary_status: int, expected: int,
+    tmp_path: Path, setup_status: int, pip_status: int, pip_remaining: float | None,
+    workload_status: int, summary_status: int, expected: int,
 ) -> None:
-    result, artifacts = _emitted_guest(tmp_path, setup_status=setup_status,
-                                      workload_status=workload_status, summary_status=summary_status)
+    result, artifacts = _emitted_guest(tmp_path, setup_status=setup_status, pip_status=pip_status,
+                                      pip_remaining=pip_remaining, workload_status=workload_status,
+                                      summary_status=summary_status)
     assert result.returncode == expected, result.stderr
     assert (artifacts / "guest-diagnostics.json").is_file(), "missing bounded guest diagnostics"
     receipt = json.loads((artifacts / "guest-result.json").read_text())
-    assert receipt["workload_status"] == (setup_status or workload_status)
+    setup_outcome = setup_status or pip_status or (124 if pip_remaining is not None else 0)
+    assert receipt["workload_status"] == (setup_outcome or workload_status)
     assert receipt["summary_status"] == summary_status
     assert receipt["capture_status"] == 0
     assert receipt["source_unchanged"] is True
     assert receipt["diagnostics_before_exit"] is True
-    assert (artifacts / "workload-ran").exists() == (setup_status == 0)
+    assert (artifacts / "workload-ran").exists() == (setup_outcome == 0)
     assert not (artifacts / "integration.xml").exists()
+    assert (artifacts / "guest-ipv4.json").exists() == (setup_outcome == 0)
+    events = [json.loads(line) for line in (artifacts / "tool-argv.jsonl").read_text().splitlines()]
+    uv_argv = [event["argv"] for event in events if event["tool"] == "uv"]
+    assert uv_argv == ([["--version"], ["sync", "--frozen"]] if setup_outcome == 0 else [])
+    helper_calls = [event["argv"] for event in events if event["tool"] == "python"
+                    and len(event["argv"]) > 3 and event["argv"][1] == "--state"]
+    capture_index = next(i for i, argv in enumerate(helper_calls) if argv[3] == "capture")
+    finish_index = next(i for i, argv in enumerate(helper_calls) if argv[3] == "finish")
+    assert capture_index < finish_index
+    assert helper_calls[finish_index][4:] == [str(setup_outcome or workload_status), str(summary_status), "0"]
     if setup_status == 0:
+        pip_calls = [event for event in events if event["tool"] == "python"
+                     and len(event["argv"]) > 3 and event["argv"][3] == "command"
+                     and event["argv"][event["argv"].index("--") + 1:][:3] == ["python", "-m", "pip"]]
+        assert len(pip_calls) == 1
+        assert pip_calls[0]["argv"][4:] == [
+            "--seconds", "600", "--reserve", "60", "--", "python", "-m", "pip", "install",
+            "--disable-pip-version-check", "--no-cache-dir", "uv==0.12.21",
+        ]
+        assert 2400 < pip_calls[0]["shared_remaining"] <= 2490
+        identity = (artifacts / "identity.txt").read_text()
+        if setup_outcome == 0:
+            assert "uv_version=uv 0.12.21" in identity
+        else:
+            assert "uv_version=" not in identity
+        if pip_remaining is not None:
+            pid_path = artifacts / "pip-pid"
+            if pip_remaining > 60:
+                assert pid_path.is_file(), "pip child must actually launch before its clipped timeout"
+                with pytest.raises(ProcessLookupError):
+                    os.kill(int(pid_path.read_text()), 0)
+            else:
+                assert not pid_path.exists(), "exhausted reserve must prevent child launch"
         packages = json.loads((artifacts / "guest-packages.json").read_text())
         assert packages == {"direct": {"bash": "1", "curl": "2", "iproute2": "3"},
                             "transitive_added_or_changed": {"libbpf1": "4"}}
