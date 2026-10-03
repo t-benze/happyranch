@@ -72,6 +72,7 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | S8c | Ordinary claim/budget failure, manager supersession/refusal, transactional chain advance and task state queries: exact twelve-method set below | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
 | S8d | Completion-recovery ledger lifecycle and receipt-owned parent handoff: exact 21-method set below | existing `db/tasks.py`; only standard-library `Callable` import added, bindings and MRO unchanged | HIGH/CRITICAL |
 | S8e | Completion-result readers and projection: exact five-method set below, 163 decorated-source lines | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
+| S8f | Atomic task/attachment admission and causal task-followup replacement: exact two-method set below, 283 decorated-source lines | existing `db/tasks.py`; only sqlite3, ThreadMessageKind and existing late clock helper imports added, facade bindings and MRO unchanged | HIGH |
 | S8 remaining | Callback admission, result writers, logger-dependent escalation and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
 | S9 | Schema bootstrap and migrations (DDL byte-identical; erratum: S9 lands before S8 while active PR #955 edits task code; moves the exact 15-method schema/bootstrap set plus the closed five-name module set `AuthorityAuditMigrationRefusal`, `_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`, `_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL`, `_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL`, `_rebuild_indexes_for`; repoints only the source-text path in `tests/test_thread_mention_routing_store.py`) | `db/schema.py` | HIGH |
 | S10 | Authority policy v1 claims/fences/continue envelopes (erratum: the exact 17-method block from `get_authority_candidate_policy_pin` through `list_authority_audit` plus the seven module definitions `_authority_claim_key`, `_parse_authority_fence_results`, `_validate_authority_class`, `_serialize_authority_fence_results`, `_serialize_authority_audit_payload`, `_AUTHORITY_TERMINAL_STATUSES`, and `_AUTHORITY_APPROVED_VERDICTS`; v1 selector/activation/release remain for S13) | `db/authority_v1.py` | HIGH |
@@ -342,6 +343,46 @@ under THR-175 seq33/36's incident split and deferred-hardening disposition.
 hunks before publication and handoff; no foreign close/merge/rewrite/transplant
 or hardening is authorized. All landed S1–S7/S9–S13/S8a–d remain foundations;
 remaining S8, R1–R6 and later M/E work is not claimed complete.
+
+### S8f exact ownership and remaining holds
+
+S8e PR #973 is merged at `414f3185109c3782fdd2f287cd48648b9f49b612`.
+S8f appends exactly `insert_task_with_attachments` (99 decorated lines) then
+`dispatch_task_followup_replacement` (184), verbatim and in source order, to
+the existing `TasksMixin`. The 283 lines retain every body, annotation,
+default, decorator, SQL string and literal. Complete closure is `TaskRecord`,
+`ThreadMessageKind`, `json`, `sqlite3`, shared `_synchronized` and `_now`.
+Only `sqlite3`, `ThreadMessageKind` and the existing shared
+`_late_database_now as _now` import are added; `json`, `TaskRecord` and
+`_synchronized` already have identical bindings. Original `_now` and its
+`datetime`/`timezone` closure stay facade-owned. The late helper resolves
+the whole facade `_now` after both modules import, while the shared decorator
+continues resolving whole facade `_time` and the same reentrant instance lock.
+Dynamic `self._append_thread_message_uncommitted` remains patchable.
+
+Direct facade methods go from 52 to 50, mixin methods from 73 to 75, and
+remaining task keepers from nine to seven: `try_escalate`,
+`try_escalate_runtime`, `try_escalate_over_budget`, `insert_task_result`,
+`_insert_task_result`, `admit_task_completion_callback`, and
+`terminate_agent_cleanups`. All retained definitions, module assignments,
+facade bindings, nine task identity re-exports and the MRO remain unchanged.
+Earlier S8 paragraphs retain historical counts; their remaining-work
+descriptions are superseded only for these two writers.
+
+Fresh S8f audit found 34 foreign open PRs with unchanged heads/file sets and
+eight complete diff hashes (#840, #684, #595, #587, #585, #547, #682, #970).
+None touches `db/tasks.py` or the selected Database definitions/clock
+definitions. **Caller-overlap erratum:** PR #684 actually wraps attachment
+`submit_task`'s selected insert and enqueue in `transfer_fence.admission()`,
+preserving the selected definition and arguments. Earlier blanket
+no-caller-overlap evidence is superseded. Refresh actual wrapper hunks before
+edits, publication, handoff and manager merge; if it lands, require exact
+main-overlap/trial-merge/focused compatibility or fresh mechanical extraction.
+PR #840's actual result writers and PR #682's eleven-function R2 and actual
+R4/R6 validator/completion/chain/carrier/fanout/CAS collisions remain HELD
+under the existing THR-175 split/deferred-hardening disposition. No foreign
+close/merge/rewrite/transplant or hardening is authorized. All landed slices
+remain foundations; later S8/R/M/E units remain separate work.
 
 ## Per-slice gates
 
