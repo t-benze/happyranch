@@ -76,9 +76,10 @@ For a runtime-owned task invocation, all built-in and approved custom-adapter
 child launch seams receive `HAPPYRANCH_RUNTIME_SESSION_ID` from the actual
 HappyRanch invocation session. It is an environment-only, read-only telemetry
 hint for canonical `happyranch memory get|search`, not a permission rule,
-provider resume id, or task identity. Each launch removes any inherited value;
-thread, dream, and manual/no-context launches therefore cannot manufacture task
-credit.
+provider resume id, or task identity. Each launch replaces any inherited value;
+thread, dream, and manual/no-context launches send an explicit empty hint so
+the final platform environment overlay cannot restore a poisoned ambient value.
+Those contexts therefore cannot manufacture task credit.
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
 contract by `runtime/skills/system_contracts.py`) delivers a stdlib-only guard

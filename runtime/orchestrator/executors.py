@@ -425,11 +425,14 @@ def _callee_env(
 
     ``HAPPYRANCH_RUNTIME_SESSION_ID`` is a per-invocation hint for the
     canonical CLI's read-only memory get/search telemetry.  It is always
-    removed from inherited ambient state, then set only from the actual
-    runtime invocation session (never a provider resume id).
+    replaced with the actual runtime invocation session (never a provider
+    resume id), or with an explicit empty value for no-context launches.  The
+    latter is intentional: platform launchers overlay this mapping onto their
+    ambient environment, so omitting the key would permit a poisoned ambient
+    value to reappear in the final child environment.
     """
     env = apply_task_scratch_environment(_sanitize_child_env(dict(os.environ)))
-    env.pop("HAPPYRANCH_RUNTIME_SESSION_ID", None)
+    env["HAPPYRANCH_RUNTIME_SESSION_ID"] = ""
     if workspace is not None:
         env.update(_prepare_workspace_cache_dirs(workspace))
     if org_slug is not None:
@@ -1067,7 +1070,7 @@ def _run_command(
                     cwd=workspace,
                     env=_callee_env(
                         org_slug=org_slug, workspace=workspace,
-                        session_id=session_id,
+                        session_id=sid,
                     ),
                     stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
@@ -2234,7 +2237,7 @@ class CustomAdapterExecutor:
                 # never selects an agentic CLI from ambient PATH.  Pre-Popen
                 # wrapper/dependency validation is retained exactly.
                 launch_env = _callee_env(
-                    workspace=workspace, session_id=session_id,
+                    workspace=workspace, session_id=sid,
                 )
 
                 try:

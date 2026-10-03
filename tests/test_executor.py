@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -334,8 +335,30 @@ def test_callee_env_forwards_only_the_current_runtime_session(tmp_path, monkeypa
     absent = _callee_env(workspace=workspace)
 
     assert current["HAPPYRANCH_RUNTIME_SESSION_ID"] == "sess-current"
-    assert "HAPPYRANCH_RUNTIME_SESSION_ID" not in absent
+    # The empty value deliberately survives platform environment overlays and
+    # prevents a poisoned daemon ambient hint from reaching the final child.
+    assert absent["HAPPYRANCH_RUNTIME_SESSION_ID"] == ""
     assert os.environ["HAPPYRANCH_RUNTIME_SESSION_ID"] == "sess-stale"
+
+
+def test_run_command_forwards_generated_session_and_empty_no_context_override(
+    tmp_path, monkeypatch,
+):
+    """The actual child sees the resolved SID, even when it was generated."""
+    from runtime.orchestrator.executors import _run_command
+
+    monkeypatch.setenv("HAPPYRANCH_RUNTIME_SESSION_ID", "sess-poisoned")
+    command = [
+        sys.executable, "-c",
+        "import json, os; print(json.dumps({'hint': os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')}))",
+    ]
+    generated = _run_command(command, tmp_path / "generated", None, 10)
+    supplied = _run_command(command, tmp_path / "supplied", "sess-runtime", 10)
+
+    assert generated.success and supplied.success
+    assert json.loads(generated.stdout_tail)["hint"] == generated.session_id
+    assert json.loads(supplied.stdout_tail)["hint"] == "sess-runtime"
+    assert os.environ["HAPPYRANCH_RUNTIME_SESSION_ID"] == "sess-poisoned"
 
 
 def test_callee_env_cache_setup_error_does_not_fall_back_to_tmp(tmp_path):

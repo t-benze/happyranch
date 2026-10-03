@@ -207,8 +207,9 @@ There is no CLI flag or input that can override the invalid current/unversioned
 epoch. Executor-owned task children receive their runtime session in the private
 `HAPPYRANCH_RUNTIME_SESSION_ID` environment hint, so `memory get`/`search`
 without a flag can preserve validated read-only attribution; explicit
-`--session-id` still takes precedence. Fresh/no-context launches strip any
-inherited hint, and provider resume ids are never used for this purpose.
+`--session-id` still takes precedence. Fresh/no-context launches send an empty
+hint that overrides any inherited ambient value, and provider resume ids are
+never used for this purpose.
 the report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
 Its cursor pages are exhausted before report calculation; malformed diagnostic

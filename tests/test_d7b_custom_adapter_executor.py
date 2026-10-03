@@ -969,7 +969,7 @@ class TestAdapterOutputIdentityBinding:
         import stat
         script = textwrap.dedent(f"""\
             #!{_sys.executable}
-            import sys, json
+            import sys, json, os
             data = sys.stdin.read()
             inp = json.loads(data)
             sid = inp["invocation"]["invocation_id"]
@@ -978,7 +978,7 @@ class TestAdapterOutputIdentityBinding:
                 "duration_seconds": 1,
                 "session_id": sid,
                 "returncode": 0,
-                "stdout_tail": "ok",
+                "stdout_tail": os.environ.get("HAPPYRANCH_RUNTIME_SESSION_ID"),
                 "stderr_tail": "",
                 "adapter_metadata": {{
                     "adapter": "test-adapter",
@@ -1020,6 +1020,8 @@ class TestAdapterOutputIdentityBinding:
         finally:
             set_throttle(old)
         assert result.success
+        assert result.session_id.startswith("sess-")
+        assert result.stdout_tail == result.session_id
         assert result.token_usage is not None
         assert result.token_usage.input_tokens == 100
 
