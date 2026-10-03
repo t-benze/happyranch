@@ -80,6 +80,15 @@ releases the kernel lease and startup resumes the durable operation exactly
 once. Existing admitted work is not killed, and U2B adds no workflow admission
 or activation surface.
 
+Approval passes its selected intended profile, or its empty target selection,
+into the existing serialized adapter writer. Before approval, idempotent
+return or binding, the durable target must still match. A supported submission
+that changes it causes the existing 409 `profile_consumer_changed` conflict
+without adapter/profile mutation; a fresh request reselects only after stale
+ownership releases. Stable known-target contention remains 409
+`profile_coordinator_busy`, and ordinary no-target approval creates no profile.
+The adapter writer never acquires a new profile lease.
+
 Both adapter registration entry points (`register_adapter` and
 `submit_adapter`), approval/bind/removal, executor-profile removal,
 direct-connect projection/retry, active Founder creation and approval, manager

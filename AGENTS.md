@@ -270,6 +270,16 @@ operation evidence, unfinished canonical writers, and stale captures refuse this
 exception before synchronization. Reviewer policy and snapshot validation do not
 change; subsequent coherent canonical setup uses ordinary publication/recovery.
 
+Adapter approval carries its initially selected intended profile (including no
+target) through to the durable registry writer. Under the existing adapter
+writer lock, that selection must still match before approval, an idempotent
+return, or profile binding. A concurrent supported submission changing the
+target refuses with the existing 409 `profile_consumer_changed` conflict before
+adapter/profile mutation; ownership releases before a fresh request selects
+again. A known target under live contention still returns 409
+`profile_coordinator_busy`; ordinary no-target approval succeeds without a
+profile. No new profile lease is acquired beneath the adapter writer lock.
+
 U2B still wires no workflow
 admission, activation, or dispatch consumer; those remain later units.
 

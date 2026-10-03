@@ -364,6 +364,15 @@ shared-map insertion; its mirror
 digest must equal the current global digest before readiness is exposed.
 Startup does not dispatch, activate, or admit workflow work.
 
+Adapter approval propagates the profile target selected before lease
+acquisition into its existing serialized registry writer, including an empty
+selection. It revalidates that target before approval, idempotent return or
+binding. A concurrent supported submission changing the target returns the
+existing 409 `profile_consumer_changed` conflict without adapter/profile
+mutation; retry selects afresh after ownership releases. Known-target live
+contention remains 409 `profile_coordinator_busy`. No-target approval still
+succeeds without a profile, and no new lease is taken under the writer lock.
+
 A genuinely empty default org remains attached with no agents and `teams=[]`
 when its initial authority publication is fenced by the missing default reviewer.
 Attachment proves absence of active and pending definitions and canonical/in-memory

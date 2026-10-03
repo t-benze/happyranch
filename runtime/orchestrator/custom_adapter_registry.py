@@ -1534,6 +1534,7 @@ def approve_adapter(
     dependencies: list[dict] | None = None,
     thread_resume_verified_at: str | None = None,
     thread_resume_contract_version: int | None = None,
+    selected_profile_names: tuple[str, ...] | None = None,
 ) -> AdapterEntry:
     """Approve a pending custom adapter (D4 founder-gated approval gate).
 
@@ -1560,6 +1561,15 @@ def approve_adapter(
     first causes the stale approval to reject with no durable overwrite.
     If approval wins first, a subsequent re-registration durably replaces
     the entry with a new PENDING snapshot and cleared provenance.
+
+    Coordinated route callers also supply ``selected_profile_names``: the
+    exact intended target selected before acquiring profile ownership, or an
+    empty tuple for no intended target. Under this same writer lock it must
+    match the durable entry before any transition, idempotent return or bind.
+    A changed selection raises the existing ``profile_consumer_changed``
+    coordination conflict; retry must release ownership and select afresh,
+    never acquire another profile lease beneath this writer lock. ``None``
+    retains the existing standalone registry caller contract.
 
     Exact-idempotence: if the adapter is already APPROVED with identical
     stored immutable facts, the existing entry is returned unchanged (no
@@ -1611,6 +1621,15 @@ def approve_adapter(
                 f"Unknown adapter {adapter_id!r}. Register the adapter first; "
                 f"it must be in PENDING state before approval."
             )
+
+        if selected_profile_names is not None:
+            durable_profile_names = (
+                (entry.intended_profile_name,) if entry.intended_profile_name else ()
+            )
+            if durable_profile_names != selected_profile_names:
+                from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+                raise ProfileCoordinatorError("profile_consumer_changed")
 
         # Normalize deps for comparison (None vs [] are equivalent for legacy)
         _req_deps = dependencies or []

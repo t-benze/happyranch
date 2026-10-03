@@ -191,7 +191,15 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   supported machine-global executor-profile and adapter writers through
   `ProfileCoordinator`: dependent orgs are pre-fenced, the existing durable
   writer commits, and only a complete profile-and-approved-adapter closure is
-  republished. Every supported active consumer creation, promotion, executor
+  republished. Adapter approval revalidates its selected intended profile
+  (including no target) under the existing adapter writer lock before
+  approval, idempotent return or binding. A supported submission that changes
+  the target causes the existing 409 `profile_consumer_changed` conflict
+  without adapter/profile mutation; stale ownership releases before fresh
+  selection. Stable known-target contention remains 409
+  `profile_coordinator_busy`, and no-target approval creates no profile.
+  No new profile lease is acquired under the adapter writer lock.
+  Every supported active consumer creation, promotion, executor
   update and termination maintains its distinct requirement inside the same
   canonical fence; pending-only enrollment/rejection has no active membership.
   Dependency publication checks the actual captured active roster, so missing

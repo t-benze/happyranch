@@ -824,6 +824,7 @@ def approve_registered_adapter(
         if entry is not None and entry.intended_profile_name
         else None
     )
+    selected_profile_names = (profile_name,) if profile_name is not None else ()
     daemon = getattr(request.app.state, "daemon", None)
     coordinator = getattr(daemon, "profile_coordinator", None)
     span = (
@@ -842,7 +843,7 @@ def approve_registered_adapter(
     )
     try:
         with span:
-            return _approve_registered_adapter(adapter_id, body)
+            return _approve_registered_adapter(adapter_id, body, selected_profile_names)
     except Exception as exc:
         from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 
@@ -857,6 +858,7 @@ def approve_registered_adapter(
 def _approve_registered_adapter(
     adapter_id: str,
     body: AdapterApproveRequest,
+    selected_profile_names: tuple[str, ...],
 ) -> dict:
     """Approve a pending custom adapter (THR-107 seq237: approve + optionally bind profile).
 
@@ -887,14 +889,9 @@ def _approve_registered_adapter(
     No-intended/reusable adapters (no ``intended_profile_name``) are approved
     without auto-binding — they retain explicit advanced Bind recovery.
     """
-    # Determine whether to auto-bind: only when the adapter has an
-    # intended_profile_name (submitted via the adapter-submission path).
-    # No-intended adapters (master-bearer registration path) retain
-    # explicit advanced Bind.
-    auto_bind = False
-    adapter_pre_check = get_adapter(adapter_id)
-    if adapter_pre_check is not None and adapter_pre_check.intended_profile_name:
-        auto_bind = True
+    # Binding uses the target selected before profile lease acquisition.
+    # The registry revalidates that selection under its existing writer lock;
+    # another route read would leave a gap before that serialized transition.
 
     try:
         entry = approve_adapter(
@@ -906,11 +903,12 @@ def _approve_registered_adapter(
             contract_version=body.contract_version,
             workspace_adapter=body.workspace_adapter,
             approved_by="founder/master-bearer",
-            auto_bind_profile=auto_bind,
+            auto_bind_profile=bool(selected_profile_names),
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
             thread_resume_verified_at=body.thread_resume_verified_at,
             thread_resume_contract_version=body.thread_resume_contract_version,
+            selected_profile_names=selected_profile_names,
         )
     except ValueError as exc:
         raise HTTPException(

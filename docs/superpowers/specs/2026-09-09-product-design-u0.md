@@ -835,6 +835,16 @@ SQLite transaction. No U2B DDL, store file, or authority-layout change is requir
 remains the existing per-org pointer/journal/lease/canonical-file/cache
 relations above.
 
+Approval binds the durable registry target to the profile set selected before
+coordination, including an empty selection for no intended profile. The
+existing adapter writer lock serializes revalidation with supported
+submissions before any approval transition, idempotent return or bind. A
+changed target refuses through existing 409 `profile_consumer_changed`, with
+no adapter/profile mutation and ownership released before fresh selection;
+the writer never acquires another profile lease. A known target under live
+contention remains 409 `profile_coordinator_busy`; stable intended approval
+binds normally, while ordinary no-target approval creates no profile.
+
 The org-local placement replaces the isolated model's single-transaction
 machine-global capture mechanically without weakening fence-before-write: exact
 agent consumers are mirrored at startup and maintained by active Founder
