@@ -7,6 +7,7 @@ import { Textarea } from '@/design-system/primitives/Textarea';
 import { isCustomSkillForbidden, isCustomSkillStaleRevision, type EligibilityRule, useAddCustomSkillVersion, useCustomSkill, useCustomSkillDiff, useCustomSkillEligibility, useCustomSkillVersions, usePatchCustomSkill, usePreviewCustomSkillEligibility, usePurgeCustomSkill, useRestoreCustomSkill, useRetireCustomSkill, useSaveCustomSkillEligibility } from '@/hooks/custom-skills';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey } from '@/lib/i18n';
+import { formatDateShapeFor } from '@/lib/i18n/format';
 import { SkillStatusBadge } from './SkillStatusBadge';
 import { CustomSkillsState } from './CustomSkillsPage';
 import { classifySkillError, renderSkillError, renderSkillErrorInContext, type SkillErrorView, type Translate } from './strings';
@@ -21,7 +22,7 @@ function renderEligibilityMessage(message: EligibilityMessage, t: Translate): st
 const emptyRule = (): EligibilityRule => ({ scope_type: 'agent', scope_target: '', effect: 'allow' });
 
 export function CustomSkillDetailPage(): JSX.Element {
-  const { t, render } = useTranslation();
+  const { t, render, locale } = useTranslation();
   const { slug, skillId } = useParams<{ slug: string; skillId: string }>();
   const detail = useCustomSkill(skillId); const versions = useCustomSkillVersions(skillId); const eligibility = useCustomSkillEligibility(skillId);
   const patch = usePatchCustomSkill(); const addVersion = useAddCustomSkillVersion(); const retire = useRetireCustomSkill(); const restore = useRestoreCustomSkill(); const purge = usePurgeCustomSkill(); const preview = usePreviewCustomSkillEligibility(); const saveEligibility = useSaveCustomSkillEligibility();
@@ -43,7 +44,7 @@ export function CustomSkillDetailPage(): JSX.Element {
   if (isCustomSkillForbidden(detail.error)) return <CustomSkillsState icon={<Shield size={28} />} title={t('skills.founderRequired.title')} body={t('skills.founderRequired.body')} />;
   if (detail.isError || !detail.data) return <CustomSkillsState icon={<TriangleAlert size={28} />} title={t('skills.customDetail.loadErrorTitle')} body={renderSkillError(classifySkillError(detail.error, 'skills.customDetail.loadErrorBody'), t)} />;
   const skill = detail.data;
-  if (skill.state === 'permanently_removed') return <div className="mx-auto max-w-5xl p-6">{back}<section className="border-border-default bg-surface-raised rounded-md border p-6"><h1 className="text-fg text-lg font-semibold">{t('skills.status.permanentlyRemoved')}</h1><p className="text-fg-muted mt-2 text-sm">{render('skills.customDetail.removedBody', { slug: <span className="font-mono">{skill.slug}</span> })}</p><p className="text-fg-muted mt-2 text-sm">{t('skills.customDetail.removedLogical')}</p><dl className="text-mono-sm text-fg-muted mt-4"><dt>{t('skills.customDetail.purgeId')}</dt><dd>{skill.purge_id}</dd><dt className="mt-2">{t('skills.customDetail.completed')}</dt><dd>{skill.purged_at}</dd></dl></section></div>;
+  if (skill.state === 'permanently_removed') return <div className="mx-auto max-w-5xl p-6">{back}<section className="border-border-default bg-surface-raised rounded-md border p-6"><h1 className="text-fg text-lg font-semibold">{t('skills.status.permanentlyRemoved')}</h1><p className="text-fg-muted mt-2 text-sm">{render('skills.customDetail.removedBody', { slug: <span className="font-mono">{skill.slug}</span> })}</p><p className="text-fg-muted mt-2 text-sm">{t('skills.customDetail.removedLogical')}</p><dl className="text-mono-sm text-fg-muted mt-4"><dt>{t('skills.customDetail.purgeId')}</dt><dd>{skill.purge_id}</dd><dt className="mt-2">{t('skills.customDetail.completed')}</dt><dd>{skill.purged_at ? formatDateShapeFor(locale, new Date(skill.purged_at), 'dateTime') : null}</dd></dl></section></div>;
   const hidden = skill.hidden_reason === 'no_eligibility_policy';
   const runPreview = async () => { setMessage(null); try { await preview.mutateAsync({ skillId: skillId as string, rules }); } catch (error) { setMessage({ error: classifySkillError(error, 'skills.customDetail.previewFailed'), context: 'skills.customDetail.previewFailed' }); } };
   const commitEligibility = async () => { if (revision === null) return; setMessage(null); try { const result = await saveEligibility.mutateAsync({ skillId: skillId as string, rules, revision }); setRevision(result.revision); setMessage({ key: 'skills.customDetail.eligibilitySaved' }); } catch (error) { if (isCustomSkillStaleRevision(error)) { await eligibility.refetch(); setMessage({ key: 'skills.customDetail.eligibilityStale' }); } else setMessage({ error: classifySkillError(error, 'skills.customDetail.saveFailed'), context: 'skills.customDetail.saveFailed' }); } };

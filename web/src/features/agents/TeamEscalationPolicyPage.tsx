@@ -30,10 +30,10 @@ export function TeamEscalationPolicyPage(): JSX.Element {
   return (
     <div className="bg-surface-canvas h-full overflow-y-auto">
       <section className="mx-auto w-full max-w-4xl p-4 sm:p-6" aria-labelledby="team-policy-page-heading">
-        <Button asChild variant="ghost" size="sm"><Link to={routes.detail(policyAgent.name)}>{t('agents.policy.backTo', { name: displayName(policyAgent.name) })}</Link></Button>
+        <Button asChild variant="ghost" size="sm"><Link to={routes.detail(policyAgent.name)}>{t('agents.policy.backTo', { name: policyAgent.name })}</Link></Button>
         <header className="mt-4 mb-5">
           <h1 id="team-policy-page-heading" className="font-display text-text-primary text-2xl font-medium">{t('agents.policy.title')}</h1>
-          <p className="text-text-muted mt-1 text-sm">{displayName(policyAgent.team)} · {displayName(policyAgent.name)}</p>
+          <p className="text-text-muted mt-1 text-sm">{policyAgent.team} · {policyAgent.name}</p>
         </header>
         <TeamEscalationPolicyCard agent={policyAgent} onDirtyChange={setDirty} />
       </section>
@@ -51,9 +51,4 @@ export function TeamEscalationPolicyPage(): JSX.Element {
       </Dialog>
     </div>
   );
-}
-
-function displayName(value: string): string {
-  return value.split(/[_-]+/).filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }

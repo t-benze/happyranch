@@ -24,6 +24,7 @@ import { AppRoutes } from '@/routes'
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render'
 import { server } from '@/test/server'
 import { translate, type MessageKey } from '@/lib/i18n'
+import { formatDateShapeFor } from '@/lib/i18n/format'
 
 const SLUG = 'alpha'
 const API = `/api/v1/orgs/${SLUG}`
@@ -394,6 +395,32 @@ describe('Custom skills i18n', () => {
     mount('zh-CN', `/orgs/${SLUG}/skills/custom/${encodeURIComponent(CUSTOM_ID)}`)
     expect(await screen.findByText('无法加载此自定义技能')).toBeInTheDocument()
     expect(screen.getByText('此自定义技能暂时不可用，请稍后重试。')).toBeInTheDocument()
+  })
+})
+
+describe('Permanently removed custom skill i18n', () => {
+  // Noon UTC keeps the calendar day stable in every host timezone.
+  const PURGED_AT = '2026-08-30T12:02:03Z'
+
+  test.each(['en', 'zh-CN'] as const)('%s purge completion time renders through formatDateShapeFor', async (locale) => {
+    server.use(
+      http.get(`${API}/custom-skills/${encodeURIComponent(CUSTOM_ID)}`, () =>
+        HttpResponse.json({ ...CUSTOM, state: 'permanently_removed', hidden_reason: 'purged', purge_id: 'PURGE-7', purged_at: PURGED_AT }),
+      ),
+      http.get(`${API}/custom-skills/${encodeURIComponent(CUSTOM_ID)}/versions`, () => HttpResponse.json({ versions: [] })),
+      http.get(`${API}/custom-skills/${encodeURIComponent(CUSTOM_ID)}/eligibility`, () =>
+        HttpResponse.json({ rules: [], revision: 1 }),
+      ),
+    )
+    mount(locale, `/orgs/${SLUG}/skills/custom/${encodeURIComponent(CUSTOM_ID)}`)
+    expect(await screen.findByRole('heading', { name: translate(locale, 'skills.status.permanentlyRemoved') })).toBeInTheDocument()
+    const completed = formatDateShapeFor(locale, new Date(PURGED_AT), 'dateTime')
+    expect(completed).toContain(locale === 'en' ? 'Aug 30, 2026' : '2026年8月30日')
+    const label = screen.getByText(translate(locale, 'skills.customDetail.completed'))
+    expect(label.tagName).toBe('DT')
+    expect(label.nextElementSibling?.textContent).toBe(completed)
+    expect(screen.getByText('PURGE-7')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain(PURGED_AT)
   })
 })
 

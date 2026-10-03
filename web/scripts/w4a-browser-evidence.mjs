@@ -554,7 +554,14 @@ const VIEW_ROUTES = [
     id: 'agents', route: 'agents', path: `/orgs/${ORG}/agents`,
     ready: () => `${bodyHas('support_bot')} && ${bodyHas('dev_agent')}`,
     keys: ['agents.page.title', 'agents.page.meta', 'agents.page.newAgent', 'agents.tab.active', 'agents.tab.pending'],
-    verbatim: ['dev_agent', 'support_bot', 'lead'],
+    verbatim: ['dev_agent', 'support_bot', 'lead', 'worker', 'manager'],
+    checks: () => [['roster roles are exact daemon bytes', `(() => {
+      const roster = document.querySelectorAll('aside')[1];
+      return [...roster.querySelectorAll('li > button')].map((button) => [
+        button.querySelector('.font-display').textContent,
+        [...button.querySelectorAll('div')].find((node) => node.classList.contains('mt-0.5') && node.classList.contains('text-xs')).textContent,
+      ]);
+    })()`, ROSTER.map((agent) => [agent.name, agent.role])]],
     contained: () => cardsContain('li > button > *'),
   },
   {
@@ -563,17 +570,23 @@ const VIEW_ROUTES = [
     keys: [
       'agents.page.title', 'agents.field.description', 'agents.field.systemPrompt', 'agents.executor.label', 'agents.detail.model',
       'agents.detail.repos', 'agents.detail.learnings', 'agents.detail.recentTasks',
-      'agents.policy.entryTitle', ['agents.policy.entryMeta', { team: 'Eng', name: 'lead' }], 'agents.policy.open',
+      'agents.policy.entryTitle', ['agents.policy.entryMeta', { team: 'eng', name: 'lead' }], 'agents.policy.open',
     ],
-    verbatim: ['lead', 'support_bot'],
+    verbatim: ['lead', 'support_bot', 'eng', 'manager', 'worker'],
+    checks: (_locale, width) => [['main min-height and body direction match breakpoint', `(() => {
+      const roster = document.querySelectorAll('aside')[1];
+      const body = roster.parentElement;
+      const main = body.querySelector(':scope > main');
+      return { minHeight: getComputedStyle(main).minHeight, direction: getComputedStyle(body).flexDirection };
+    })()`, { minHeight: width < 768 ? '0px' : 'auto', direction: width < 768 ? 'column' : 'row' }]],
     contained: () => cardsContain(BORDERED_CARD_CHILD),
   },
   {
     id: 'agent-policy', route: 'agents/:agent_name/team-escalation-policy', path: `/orgs/${ORG}/agents/lead/team-escalation-policy`,
     ready: (locale) => `${bodyHas(tr(locale, 'agents.policy.history.empty'))}`,
     keys: [
-      // The page title-cases the agent/team names (pre-existing displayName(), unchanged by W4c).
-      'agents.policy.title', ['agents.policy.backTo', { name: 'Lead' }], 'agents.policy.teamOwned', ['agents.policy.ownedBy', { team: 'Eng' }],
+      // Agent/team identifiers stay byte-verbatim; the freeform policy title is separate.
+      'agents.policy.title', ['agents.policy.backTo', { name: 'lead' }], 'agents.policy.teamOwned', ['agents.policy.ownedBy', { team: 'eng' }],
       'agents.policy.whatTo', 'agents.policy.whatNot', 'agents.policy.save', 'agents.policy.history.title', 'agents.policy.history.empty',
     ],
     verbatim: ['Eng «raw» policy title', 'team-eng-dual-text', `APV2-${'d'.repeat(64)}`, `APS-${'b'.repeat(64)}`],
@@ -878,6 +891,9 @@ async function main() {
           for (const value of row.verbatim) check(`V ${row.id} ${locale} ${w} verbatim ${value}`, await evaluate(page, bodyHas(value)), true);
           check(`V ${row.id} ${locale} ${w} no document horizontal overflow`, await evaluate(page, noOverflow), true);
           if (row.contained) check(`V ${row.id} ${locale} ${w} cards contain their rows`, await evaluate(page, row.contained()), { cards: true, over: [] });
+          for (const [label, expression, result] of row.checks?.(locale, w) ?? []) {
+            check(`V ${row.id} ${locale} ${w} ${label}`, await evaluate(page, expression), result);
+          }
           await capture(page, `${short}-${row.id}-${w}`, { viewport: `${w}x${ht}`, locale, route: row.route });
           await closePage(page);
         }

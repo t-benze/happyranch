@@ -172,7 +172,7 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     expect(screen.queryByText('Normative policy')).not.toBeInTheDocument();
     expect(screen.queryByText('Canonical continuation phrase')).not.toBeInTheDocument();
     expect(screen.queryByText('esc-one')).not.toBeInTheDocument();
-    expect(screen.getByText('Owned by the Engineering team, not by this agent.')).toBeInTheDocument();
+    expect(screen.getByText('Owned by the engineering team, not by this agent.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: en['agents.policy.save'] })).toBeEnabled();
   });
 
@@ -216,8 +216,8 @@ describe('TeamEscalationPolicyCard v2 editor', () => {
     expect(await screen.findByLabelText(en['agents.policy.whatTo'])).toHaveValue(contentStarter.what_to_escalate);
     expect(screen.getByLabelText(en['agents.policy.whatNot'])).toHaveValue(contentStarter.what_not_to_escalate);
     expect(screen.getByText(contentStarter.title)).toBeInTheDocument();
-    expect(screen.getByText('Owned by the Content team, not by this agent.')).toBeInTheDocument();
-    expect(screen.queryByText('Owned by the Engineering team, not by this agent.')).not.toBeInTheDocument();
+    expect(screen.getByText('Owned by the content team, not by this agent.')).toBeInTheDocument();
+    expect(screen.queryByText('Owned by the engineering team, not by this agent.')).not.toBeInTheDocument();
     await editPairAndOpenConfirmation('Content changed escalate.', 'Content changed continue.');
     fireEvent.click(screen.getByRole('button', { name: en['agents.policy.confirmSave'] }));
     await waitFor(() => expect(v2Create.mutateAsync).toHaveBeenCalledOnce());

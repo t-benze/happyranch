@@ -24,6 +24,7 @@ import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/tes
 import { server } from '@/test/server';
 import { translate } from '@/lib/i18n';
 import { en, zhCN } from '@/lib/i18n/catalog';
+import { formatDateShapeFor } from '@/lib/i18n/format';
 import { classifyAgentError, renderAgentError } from './strings';
 
 const SLUG = 'happyranch';
@@ -155,8 +156,12 @@ describe('Agents roster + detail i18n', () => {
     expect(screen.getByRole('button', { name: '新建智能体' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '活跃' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: '待审批' })).toBeInTheDocument();
-    expect(screen.getByText('经理')).toBeInTheDocument();
-    expect(screen.getByText('工作者')).toBeInTheDocument();
+    // Roster role meta is the daemon role value, byte-verbatim (no translation).
+    const roster = screen.getByText('support_agent').closest('aside')!;
+    expect(within(roster).getByText('manager')).toBeInTheDocument();
+    expect(within(roster).getByText('worker')).toBeInTheDocument();
+    expect(within(roster).queryByText(zhCN['agents.role.manager'] as string)).not.toBeInTheDocument();
+    expect(within(roster).queryByText(zhCN['agents.role.worker'] as string)).not.toBeInTheDocument();
     for (const heading of ['执行器', '模型', '代码仓库', '问责指标', '最近任务', '清理活动', '经验']) {
       expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
     }
@@ -170,7 +175,7 @@ describe('Agents roster + detail i18n', () => {
     expect(screen.getAllByText('engineering_manager').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Owns engineering delivery.').length).toBeGreaterThan(0);
     expect(screen.getByText('claude-sonnet-4-20250514')).toBeInTheDocument();
-    expect(screen.getByText('manager')).toBeInTheDocument();
+    expect(screen.getAllByText('manager')).toHaveLength(2);
     expect(screen.getByText('TASK-CLEANUP-9')).toBeInTheDocument();
     expect(screen.getByText('Removed two stale worktrees.')).toBeInTheDocument();
 
@@ -238,6 +243,25 @@ describe('Pending enrollments i18n', () => {
 });
 
 describe('Team escalation policy page i18n', () => {
+  test.each(['en', 'zh-CN'] as const)('%s roster roles and policy identifiers remain exact daemon bytes', async (locale) => {
+    stub();
+    const rosterView = mount(locale, `/orgs/${SLUG}/agents/engineering_manager`);
+    const open = await screen.findByRole('link', { name: translate(locale, 'agents.policy.open') });
+    const roster = screen.getByText('support_agent').closest('aside')!;
+    expect(within(roster).getByText('manager', { exact: true }).textContent).toBe('manager');
+    expect(within(roster).getByText('worker', { exact: true }).textContent).toBe('worker');
+    expect(open.closest('[data-testid="team-escalation-policy"]')).toHaveTextContent(
+      translate(locale, 'agents.policy.entryMeta', { team: 'engineering', name: 'engineering_manager' }),
+    );
+    rosterView.unmount();
+
+    mountPolicy(locale);
+    await screen.findByRole('textbox', { name: translate(locale, 'agents.policy.whatTo') });
+    expect(screen.getByRole('link', { name: translate(locale, 'agents.policy.backTo', { name: 'engineering_manager' }), exact: true })).toBeInTheDocument();
+    expect(screen.getByText('engineering · engineering_manager', { exact: true }).textContent).toBe('engineering · engineering_manager');
+    expect(screen.getByText(translate(locale, 'agents.policy.ownedBy', { team: 'engineering' }), { exact: true })).toBeInTheDocument();
+  });
+
   test('zh-CN chrome, confirm + discard dialogs with 关闭, policy bodies verbatim', async () => {
     stub();
     mountPolicy('zh-CN');
@@ -245,7 +269,10 @@ describe('Team escalation policy page i18n', () => {
     expect(whatTo).toHaveValue('Escalate scope changes verbatim.');
     expect(screen.getByRole('textbox', { name: '无需上报的情况' })).toHaveValue('Continue ordinary work verbatim.');
     expect(screen.getByRole('heading', { level: 1, name: '团队上报策略' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '← 返回 Engineering Manager' })).toBeInTheDocument();
+    // Agent and team identifiers are byte-verbatim (no title-casing).
+    expect(screen.getByRole('link', { name: '← 返回 engineering_manager' })).toBeInTheDocument();
+    expect(screen.getByText('engineering · engineering_manager')).toBeInTheDocument();
+    expect(screen.getByText('归 engineering 团队所有，而非该智能体。')).toBeInTheDocument();
     expect(screen.getByText('团队所有')).toBeInTheDocument();
     expect(screen.getByText('不可变的双文本历史')).toBeInTheDocument();
     expect(screen.getByText('team-8c85b6639e62e10b-dual-text')).toBeInTheDocument();
@@ -258,11 +285,52 @@ describe('Team escalation policy page i18n', () => {
     await waitFor(() => expect(screen.queryByRole('heading', { name: '保存并激活两段策略文本？' })).not.toBeInTheDocument());
 
     fireEvent.change(whatTo, { target: { value: 'Edited draft' } });
-    fireEvent.click(screen.getByRole('link', { name: '← 返回 Engineering Manager' }));
+    fireEvent.click(screen.getByRole('link', { name: '← 返回 engineering_manager' }));
     const discard = dialogOf(await screen.findByRole('heading', { name: '放弃未保存的策略更改？' }));
     expect(within(discard).getByRole('button', { name: '关闭' })).toBeInTheDocument();
     expect(within(discard).getByRole('button', { name: '留在此页' })).toBeInTheDocument();
     expect(within(discard).getByRole('button', { name: '放弃并继续' })).toBeInTheDocument();
+  });
+});
+
+describe('Team escalation policy history dates', () => {
+  // Noon UTC keeps the calendar day stable in every host timezone.
+  const RELEASED = '2026-09-03T12:00:00Z';
+  const ACTIVATED = '2026-09-04T12:30:00Z';
+
+  function stubHistory() {
+    server.use(
+      http.get(`${API}/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/v2/history`, () =>
+        HttpResponse.json({ items: [{
+          family: 'v2', contract_version: 'v2', release_id: `APV2-${'d'.repeat(64)}`,
+          policy_id: 'team-8c85b6639e62e10b-dual-text', version: 2, title: 'Dated release',
+          what_to_escalate: 'Escalate dated.', what_not_to_escalate: 'Continue dated.',
+          contract_digest: '4'.repeat(64), policy_digest: '5'.repeat(64),
+          release_created_at: RELEASED, actor_attribution: 'shared local operator credential',
+          activation: { id: `APV2A-${'e'.repeat(64)}`, selector_epoch: 4, action: 'activate',
+            digest: '6'.repeat(64), created_at: ACTIVATED },
+        }], next_cursor: null })),
+    );
+  }
+
+  test.each(['en', 'zh-CN'] as const)('%s release and activation timestamps render through formatDateShapeFor', async (locale) => {
+    stub();
+    stubHistory();
+    mountPolicy(locale);
+    expect(await screen.findByText('Escalate dated.')).toBeInTheDocument();
+    const released = formatDateShapeFor(locale, new Date(RELEASED), 'dateTime');
+    const activated = formatDateShapeFor(locale, new Date(ACTIVATED), 'dateTime');
+    expect(released).toContain(locale === 'en' ? 'Sep 3, 2026' : '2026年9月3日');
+    expect(activated).toContain(locale === 'en' ? 'Sep 4, 2026' : '2026年9月4日');
+    const text = document.body.textContent ?? '';
+    expect(text).toContain(translate(locale, 'agents.policy.history.release', {
+      release: `APV2-${'d'.repeat(64)}`, policyDigest: '5'.repeat(64), contract: '4'.repeat(64), created: released,
+    }));
+    expect(text).toContain(translate(locale, 'agents.policy.history.activation', {
+      activation: `APV2A-${'e'.repeat(64)}`, epoch: 4, action: 'activate', digest: '6'.repeat(64), created: activated,
+    }));
+    expect(text).not.toContain(RELEASED);
+    expect(text).not.toContain(ACTIVATED);
   });
 });
 

@@ -16,6 +16,7 @@ import {
 import { useAgentsRoutes } from '@/hooks/agents';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
+import { formatDateShapeFor } from '@/lib/i18n/format';
 import { classifyAgentError, renderAgentError, type Translate } from './strings';
 
 /** A locale-neutral status message, rendered through `t` on every render. */
@@ -46,7 +47,7 @@ export function TeamEscalationPolicyEntryCard({ agent }: { agent: { name: string
   return (
     <PolicyShell>
       <h3 className="font-display text-text-primary text-base font-medium">{t('agents.policy.entryTitle')}</h3>
-      <p className="text-text-muted mt-1 text-xs">{t('agents.policy.entryMeta', { team: formatTeam(agent.team), name: agent.name })}</p>
+      <p className="text-text-muted mt-1 text-xs">{t('agents.policy.entryMeta', { team: agent.team, name: agent.name })}</p>
       {query.isLoading ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.statusLoading')}</p> : query.isError || !query.data ? <p role="alert" className="text-tier-red mt-3 text-xs">{renderAgentError(classifyAgentError(query.error, 'agents.policy.statusError'), t)}</p> : query.data.family === 'empty' ? <p className="text-text-muted mt-3 text-xs">{t('agents.policy.noActive')}</p> : <p className="text-text-muted mt-3 text-xs">{t(query.data.family === 'v2' ? 'agents.policy.activeV2' : 'agents.policy.activeLegacy', { version: query.data.active.release.version, epoch: authorityPolicyActiveEpoch(query.data.active), digest: query.data.active.release.digest.slice(0, 12) })}</p>}
       <Button asChild size="sm" className="mt-3"><Link to={routes.policy(agent.name)}>{t('agents.policy.open')}</Link></Button>
     </PolicyShell>
@@ -221,7 +222,7 @@ export function TeamEscalationPolicyCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="font-display text-text-primary text-base font-medium">{t('agents.policy.title')}</h3>
-          <p className="text-text-muted mt-1 text-xs">{t('agents.policy.ownedBy', { team: formatTeam(data.team) })}</p>
+          <p className="text-text-muted mt-1 text-xs">{t('agents.policy.ownedBy', { team: data.team })}</p>
         </div>
         <span className="bg-accent-soft text-accent-text rounded-full px-2 py-1 text-xs">{t('agents.policy.teamOwned')}</span>
       </div>
@@ -277,14 +278,14 @@ function V2HistorySection({ history, items }: {
   history: ReturnType<typeof useTeamEscalationPolicyV2History>;
   items: NonNullable<ReturnType<typeof useTeamEscalationPolicyV2History>['data']>['pages'][number]['items'];
 }): JSX.Element {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   return (
     <section aria-labelledby="v2-policy-history-heading" className="border-border-subtle mt-5 border-t pt-4">
       <h4 id="v2-policy-history-heading" className="text-text-primary text-sm font-medium">{t('agents.policy.history.title')}</h4>
       {history.isLoading ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.loading')}</p> : history.isError && !items.length ? <div className="mt-2 flex items-center gap-2"><p role="alert" className="text-tier-red text-xs">{renderAgentError(classifyAgentError(history.error, 'agents.policy.history.error'), t)}</p><Button size="sm" variant="ghost" onClick={() => void history.refetch()}>{t('agents.policy.history.retry')}</Button></div> : !items.length ? <p className="text-text-muted mt-2 text-xs">{t('agents.policy.history.empty')}</p> : <ul className="mt-2 space-y-3">{items.map((item) => <li key={`${item.release_id}-${item.activation?.id ?? 'inactive'}`} className="bg-surface-sunken rounded p-3 text-xs">
         <div className="font-medium">v{item.version} · {item.title}</div>
-        <div className="text-text-muted mt-1 break-all font-mono">{t('agents.policy.history.release', { release: item.release_id, policyDigest: item.policy_digest, contract: item.contract_digest, created: item.release_created_at })}</div>
-        <div className="text-text-muted mt-1 break-all font-mono">{item.activation ? t('agents.policy.history.activation', { activation: item.activation.id, epoch: item.activation.selector_epoch, action: item.activation.action, digest: item.activation.digest, created: item.activation.created_at }) : t('agents.policy.history.neverActivated')}</div>
+        <div className="text-text-muted mt-1 break-all font-mono">{t('agents.policy.history.release', { release: item.release_id, policyDigest: item.policy_digest, contract: item.contract_digest, created: formatDateShapeFor(locale, new Date(item.release_created_at), 'dateTime') })}</div>
+        <div className="text-text-muted mt-1 break-all font-mono">{item.activation ? t('agents.policy.history.activation', { activation: item.activation.id, epoch: item.activation.selector_epoch, action: item.activation.action, digest: item.activation.digest, created: formatDateShapeFor(locale, new Date(item.activation.created_at), 'dateTime') }) : t('agents.policy.history.neverActivated')}</div>
         <div className="mt-2"><span className="font-medium">{t('agents.policy.whatTo')}</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_to_escalate}</p></div>
         <div className="mt-2"><span className="font-medium">{t('agents.policy.whatNot')}</span><p className="mt-1 whitespace-pre-wrap font-mono">{item.what_not_to_escalate}</p></div>
         <div className="text-text-muted mt-2">{item.actor_attribution}</div>
@@ -320,11 +321,6 @@ function editorFromProjection(data: TeamEscalationPolicyResponse): V2EditorState
       ? `${data.family}:${data.selector_id}:${data.active.release.id}:${data.active.release.digest}`
       : `${data.team}:${data.family}:${data.selector_id}:${data.selector_epoch}:${data.v2_starter.policy_id}`,
   };
-}
-
-function formatTeam(team: string): string {
-  return team.split(/[_-]+/).filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 }
 
 const V2_TEXT_MAX = 20_000;

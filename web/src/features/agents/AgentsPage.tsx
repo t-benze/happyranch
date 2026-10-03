@@ -32,13 +32,13 @@ import { AgentDetailPane } from './AgentDetailPane';
 import type { AgentSummary } from '@/lib/api/types';
 import { AddAgentDialog } from './AddAgentDialog';
 import { AgentAvatar } from './AgentAvatar';
-import { roleLabelKey } from './strings';
 import { useTranslation } from '@/hooks/i18n';
 
 /**
  * AGENTS-02: the roster meta line is role-only — `status` is NOT a field on
  * the AgentSummary roster payload, so the absent half is omitted, never
- * fabricated. The localized label comes from `roleLabelKey` (strings.ts).
+ * fabricated. The daemon role value renders verbatim; only a missing role
+ * falls back to the localized "No role" copy.
  */
 
 export function AgentsPage(): JSX.Element {
@@ -225,7 +225,7 @@ export function AgentsPage(): JSX.Element {
                                 />
                               </div>
                               <div className="text-text-muted mt-0.5 text-xs">
-                                {t(roleLabelKey(a.role))}
+                                {a.role ?? t('agents.role.none')}
                               </div>
                               {a.description && (
                                 <p className="text-text-muted mt-0.5 truncate text-xs leading-relaxed">
@@ -248,7 +248,7 @@ export function AgentsPage(): JSX.Element {
         </aside>
 
         {/* RIGHT: Detail/Edit pane */}
-        <main className="bg-surface-canvas min-h-0 flex-1 overflow-hidden">
+        <main className="bg-surface-canvas max-md:min-h-0 flex-1 overflow-hidden">
           {selectedAgent ? (
             <AgentDetailPane
               agentName={selectedAgent}

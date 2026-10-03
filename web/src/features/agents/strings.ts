@@ -54,10 +54,3 @@ function rawDiagnostic(err: unknown): string | null {
 export function renderAgentError(view: AgentErrorView, t: Translate, params?: MessageParams): string {
   return view.kind === 'raw' ? view.text : t(view.key, params);
 }
-
-/** Localized roster role label; a missing role renders the "No role" copy. */
-export function roleLabelKey(role: string | null | undefined): MessageKey {
-  if (role === 'manager') return 'agents.role.manager';
-  if (role === 'worker') return 'agents.role.worker';
-  return 'agents.role.none';
-}
