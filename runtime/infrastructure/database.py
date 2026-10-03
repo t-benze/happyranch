@@ -16,7 +16,7 @@ from __future__ import annotations
 # - db/authority_policy.py: authority policy release, activation, selector, and session binding
 # - db/authority_v2_attempts.py: v2 attempts, candidates, refusal, and finalization
 # - db/authority_v2_continuation.py: v2 continuation, settlement, publication, generation, spend, decision dispatch, and zombie consumption
-# - db/tasks.py: task core CRUD, queries, severity, lineage, recall, and retry/delegation, claim/supersession, chain advance, state queries, recovery-ledger lifecycle, and completion-result readers/projection, atomic task/attachment admission, and task-followup replacement
+# - db/tasks.py: task core CRUD, queries, severity, lineage, recall, and retry/delegation, claim/supersession, chain advance, state queries, recovery-ledger lifecycle, and completion-result readers/projection, atomic task/attachment admission, and task-followup replacement, and agent termination cleanup
 # - facade: callback admission, result writers, escalation, and cross-domain writers
 # - database.py: remaining domains and patched-global write keepers
 
@@ -1995,128 +1995,6 @@ class Database(
 
 
 
-    @_synchronized
-    def terminate_agent_cleanups(
-        self, agent_name: str,
-        *,
-        audit_scope_id: str | None = None,
-        audit_agent: str | None = None,
-    ) -> None:
-        """Atomically cancel/skip/decline all future work for ``agent_name``.
-
-        Runs every cleanup DML statement and each audit write inside ONE
-        explicit SQLite transaction (``BEGIN IMMEDIATE`` / ``COMMIT``). On any
-        exception the COMPLETE transaction is rolled back BEFORE the exception
-        propagates, so control returns to the caller with no open transaction
-        and no partial cancellation or audit residue. The caller is responsible
-        for archiving the AgentDef/workspace and removing team membership first
-        (or rolling them back if this method raises).
-
-        THR-200: when ``audit_scope_id`` is given, the provider-session reset
-        (every thread participant row owned by the agent -> id NULL, watermark
-        0) and its ``thread_session_invalidated`` audit run inside the SAME
-        transaction — a terminated agent must never resume a provider session,
-        and a reset/audit failure rolls back the complete cleanup so the agent
-        stays fully active with prior session state intact.
-        """
-        now_iso = _now().isoformat()
-        self._conn.execute("BEGIN IMMEDIATE")
-        try:
-            # Cancel armed schedules.
-            schedule_rows = self._conn.execute(
-                "SELECT id FROM schedules WHERE agent_name = ? AND status = ?",
-                (agent_name, ScheduleStatus.ARMED.value),
-            ).fetchall()
-            if schedule_rows:
-                self._conn.execute(
-                    "UPDATE schedules SET status = ?, active = 0, updated_at = ? "
-                    "WHERE agent_name = ? AND status = ?",
-                    (ScheduleStatus.CANCELLED.value, now_iso, agent_name, ScheduleStatus.ARMED.value),
-                )
-                for row in schedule_rows:
-                    self.insert_audit_log_uncommitted(
-                        task_id=row["id"],
-                        agent=agent_name,
-                        action="schedule_cancelled",
-                        payload={"reason": "agent_terminated"},
-                    )
-
-            # Skip pending work-hours wakes.
-            wake_rows = self._conn.execute(
-                "SELECT id FROM work_hours WHERE agent_name = ? AND status = ?",
-                (agent_name, WorkHourStatus.PENDING.value),
-            ).fetchall()
-            if wake_rows:
-                self._conn.execute(
-                    "UPDATE work_hours SET status = ?, ended_at = ?, error = ? "
-                    "WHERE agent_name = ? AND status = ?",
-                    (WorkHourStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, WorkHourStatus.PENDING.value),
-                )
-                for row in wake_rows:
-                    self.insert_audit_log_uncommitted(
-                        task_id=row["id"],
-                        agent=agent_name,
-                        action="work_hour_skipped",
-                        payload={"reason": "agent_terminated"},
-                    )
-
-            # Skip pending dreams.
-            dream_rows = self._conn.execute(
-                "SELECT id FROM dreams WHERE agent_name = ? AND status = ?",
-                (agent_name, DreamStatus.PENDING.value),
-            ).fetchall()
-            if dream_rows:
-                self._conn.execute(
-                    "UPDATE dreams SET status = ?, ended_at = ?, error = ? "
-                    "WHERE agent_name = ? AND status = ?",
-                    (DreamStatus.SKIPPED.value, now_iso, "agent_terminated", agent_name, DreamStatus.PENDING.value),
-                )
-                for row in dream_rows:
-                    self.insert_audit_log_uncommitted(
-                        task_id=row["id"],
-                        agent=agent_name,
-                        action="dream_skipped",
-                        payload={"reason": "agent_terminated"},
-                    )
-
-            # Decline not-yet-started thread invocations.
-            self._conn.execute(
-                "UPDATE thread_invocations "
-                "SET status = ?, decline_reason = ?, consumed_at = ? "
-                "WHERE agent_name = ? AND status = ? AND started_at IS NULL",
-                (
-                    ThreadInvocationStatus.DECLINED.value,
-                    "agent_terminated",
-                    now_iso,
-                    agent_name,
-                    ThreadInvocationStatus.PENDING.value,
-                ),
-            )
-
-            # THR-200: a terminated agent must never resume a thread provider
-            # session. Clear every participant row it owns and record the
-            # invalidation audit inside this same transaction — a failure here
-            # rolls back the whole cleanup, leaving the agent fully active
-            # with prior session state intact.
-            session_rows = self._reset_thread_sessions_for_agent_uncommitted(
-                agent_name,
-            )
-            if session_rows and audit_scope_id is not None:
-                self.insert_audit_log_uncommitted(
-                    task_id=audit_scope_id,
-                    agent=audit_agent,
-                    action="thread_session_invalidated",
-                    payload={
-                        "reason": "termination",
-                        "rows": session_rows,
-                        "name": agent_name,
-                    },
-                )
-
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
 
     @_synchronized
     def update_dream_kb_candidate(

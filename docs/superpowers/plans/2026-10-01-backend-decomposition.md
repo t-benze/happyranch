@@ -384,6 +384,70 @@ under the existing THR-175 split/deferred-hardening disposition. No foreign
 close/merge/rewrite/transplant or hardening is authorized. All landed slices
 remain foundations; later S8/R/M/E units remain separate work.
 
+### S8g exact ownership and remaining holds
+
+S8f PR #974 is merged at `7a6511db41933b5fbe512807e415a0de26f6db56`.
+S8g starts from fresh main `6a3e4044054293d2a93aee6360a0e8a2cc4881b4`,
+whose sole intervening PR #965 daemon-launch change leaves the selected source,
+closure, caller and source-map blobs byte-identical. The twelve predecessor
+slices and S8a–f remain shipped foundations.
+
+S8g appends exactly the decorated `terminate_agent_cleanups` definition
+(122 lines), verbatim, into existing `TasksMixin`. Only `ScheduleStatus`,
+`WorkHourStatus` and `DreamStatus` imports are added; `ThreadInvocationStatus`,
+the shared `_synchronized` and `_late_database_now as _now` already exist.
+Complete body closure is those four enums, `_now` and builtin `Exception`,
+with postponed `str`/`None` annotations and `None` defaults. No helper, binding,
+class, module state, logger capture, nested definition or local import moves.
+Every retained facade/mixin definition, original facade import, nine task
+identity re-exports and the MRO remain unchanged.
+
+Risk remains HIGH/load-bearing: one multi-table cleanup/audit/provider-session
+transaction with shipping route archive/team compensation. The existing late
+clock resolves whole-facade `_now` after import; the shared decorator resolves
+whole-facade `_time` and acquires the same instance RLock. Session reset and
+uncommitted audit calls remain dynamic. Preserve clock/BEGIN-before-try,
+Exception-only rollback, SQL/literals, audit scopes and operation order exactly.
+Cleanup timestamps and AuditMixin's own clock remain distinct. A present empty
+audit scope is distinct from `None`; a supplied null audit agent with participant
+rows retains the existing audit-column integrity error and complete rollback.
+No semantic strengthening or repair is part of this relocation.
+
+Base facade inventory is 2,290 lines/50 direct methods and tasks.py is
+3,141 lines/75 methods; the exact move yields 49 facade methods, 76 mixin
+methods and six task keepers: `try_escalate`, `try_escalate_runtime`,
+`try_escalate_over_budget`, `insert_task_result`, `_insert_task_result` and
+`admit_task_completion_callback`. Earlier S8 counts and remaining-work lists
+are historical receipts, superseded only for this termination method.
+
+The sole shipping caller remains `agents.py::manage_agent`. All four selected
+existing termination patch records remain meaningful through that route.
+Fresh complete 33 foreign open heads/file sets and pinned full diff hashes
+remain unchanged after PR #965 merged; actual relevant hunks do not modify
+termination, its selected dependencies or its shipping caller. PR #939 changes
+executor/profile owners in the same route file, outside `manage_agent`.
+PR #684 really wraps attachment `submit_task`'s insert AND enqueue inside
+`transfer_fence.admission`; this prior caller overlap remains acknowledged
+and no foreign behavior is incorporated. PR #840's result writers/admission
+caller, PR #682's eleven-function R2 and actual R4/R6 validator/completion/
+carrier/chain/fanout work remain HELD under the existing THR-175 incident-split
+and deferred-hardening disposition. R1 late-state/cache/lock consumers stay
+put. Re-audit actual main/PR drift before publication, handoff and manager
+merge; same-file unrelated hunks require exact owner assessment. No later
+S/R/M/E unit, foreign PR close/merge/hardening or whole-program completion is
+authorized by S8g.
+
+Finite acceptance retains successful target/unrelated/zero-row matrices,
+exact timestamp/audit columns and provider reset count/scope/payload; real
+cleanup DML/nth-audit/reset-then-raise/invalidation-insert-then-raise rollback
+with full-table and route-compensation observations; class AND instance
+shipping helper patches, late facade clocks, both fresh import orders, nested
+shared RLock and restored healthy actions; and all moved/retained source,
+AST, ordered SQL/literal and runtime identity proofs. Repository tests and
+fixtures stay unchanged; necessary executable task-output probes supplement
+the fourteen inherited assertion rows. Static inventories are requirements,
+not executable QA. All independent exact-head delivery gates below remain.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target
