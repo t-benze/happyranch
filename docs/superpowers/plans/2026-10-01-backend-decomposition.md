@@ -1,6 +1,7 @@
 # Backend decomposition program (THR-273 step 5)
 
 Status: approved for execution by founder THR-273 seq 37 ("start step 5"); owner engineering_manager root TASK-9346.
+Continuation: founder THR-273 seq45; current engineering_manager owner TASK-9515.
 Baseline: `main` `e5c60964` (2026-10-01).
 
 | Module | Lines @ e5c60964 | Shape |
@@ -66,7 +67,8 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | S5 | Workspace-cleanup selection (erratum: the moved module-level set also includes the ISO-awareness helpers, marker constants, history-page constant, shared stale-pending SQL constant, direct-WAL helper, and all three cleanup dataclasses; every name is re-exported) | `db/workspace_cleanup.py` | MEDIUM |
 | S6 | Threads core (erratum: the moved set is the 38 clock-independent thread, participant, message, and invocation methods; clock-resolving helpers and reply/task-tied methods remain for later slices) | `db/threads.py` | HIGH |
 | S7a/b | Reply delivery; reply exchange (erratum: S7a and S7b merge into one PR; the two exchange constants move and are facade-re-exported, while a shared late `_now` helper preserves patched-global rule 3) | `db/reply_delivery.py`, `db/reply_exchange.py` | HIGH |
-| S8 | Tasks lifecycle (insert/update/list/subtree/delegate/escalate, completion-callback admission) | `db/tasks.py` | HIGH |
+| S8a | Task core CRUD, queries, severity, lineage and recall: the exact 22-method set below, `_SEVERITY_RANK` and identity-re-exported `LineageTooDeep` | `db/tasks.py` | HIGH |
+| S8 remaining | Task transition/retry/delegation, completion/recovery/result and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
 | S9 | Schema bootstrap and migrations (DDL byte-identical; erratum: S9 lands before S8 while active PR #955 edits task code; moves the exact 15-method schema/bootstrap set plus the closed five-name module set `AuthorityAuditMigrationRefusal`, `_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`, `_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL`, `_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL`, `_rebuild_indexes_for`; repoints only the source-text path in `tests/test_thread_mention_routing_store.py`) | `db/schema.py` | HIGH |
 | S10 | Authority policy v1 claims/fences/continue envelopes (erratum: the exact 17-method block from `get_authority_candidate_policy_pin` through `list_authority_audit` plus the seven module definitions `_authority_claim_key`, `_parse_authority_fence_results`, `_validate_authority_class`, `_serialize_authority_fence_results`, `_serialize_authority_audit_payload`, `_AUTHORITY_TERMINAL_STATUSES`, and `_AUTHORITY_APPROVED_VERDICTS`; v1 selector/activation/release remain for S13) | `db/authority_v1.py` | HIGH |
 | S11 | Authority policy v2 attempts/finalisation (erratum: the exact contiguous 67-method `_authenticate_v2_attempt_admission_uncommitted` through `get_authority_policy_v2_housekeeping_target` block plus `_AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING`) | `db/authority_v2_attempts.py` | HIGH |
@@ -77,6 +79,55 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | M/E | `models.py`, `executors.py` | re-planned after S/R slices; not committed here (`executors.subprocess` is patched 75× in tests) | — |
 
 Re-evaluation point: after S5 the EM re-measures and may re-order; the plan is updated in the next slice PR.
+
+### S8a exact ownership and remaining holds
+
+S1–S7 and S9–S13 are already on main at the S8a base
+`7c4a3f39eeb5cd026d3bb27b5754c71bd32f3fd4`; none is rebuilt. S8a moves only
+these 22 definitions, in existing order, to `TasksMixin` in `db/tasks.py`:
+
+```text
+insert_task, get_task, list_tasks, get_children, get_descendant_task_ids,
+get_subtree_statuses, _worst_subtree_status, _get_subtree_tasks,
+_current_failed_contributions, _current_severity_rollup, list_roots,
+list_tasks_by_brief_prefix, list_tasks_by_thread, get_direct_revisits,
+batch_get_direct_revisits, walk_ancestors, walk_revisit_chain,
+get_recall_payload, list_agent_tasks, update_task,
+update_task_active_chain, update_task_active_fanout
+```
+
+Their decorated source totals 733 lines. The identical class-body annotated
+`_SEVERITY_RANK` assignment and module-level `LineageTooDeep` class move with
+their consumers; `database.py` re-exports the same exception object. Closure is
+`TaskRecord`, `TaskStatus`, `BlockKind`, `datetime`, `timezone`, the identical
+shared `_synchronized`, and `LineageTooDeep` (plus builtin `Exception`). All
+inter-method/severity lookups use `self`; no moved body resolves a facade-only
+global. The shared decorator retains its existing late facade `_time` lookup.
+All other facade definitions and class assignments remain unchanged.
+
+The fresh S8 inventory has 82 remaining task-domain definitions, including
+PR #955's added `try_fail_nonroot_manager_supersede`, which remains in
+`database.py` for a later transition slice. Remaining work includes task
+transitions, verified retry/delegation, completion admission/recovery/results,
+and task/attachment, thread-followup replacement and termination writers;
+this list grants no wider relocation radius. OPEN PR #840 at
+`aa3e1f7005ffb99a15036b5e698572ab80dd570c` actually modifies
+`insert_task_result` and adds result/cleanup receipt helpers, so that later-S8
+result-write relocation remains held. Its hunks do not overlap S8a.
+
+R2 is exactly **eleven functions**, not twelve, and has not landed. OPEN PR
+#682 at `ff53f85098648e993ce3ca1f2b8a50e406644f97` is an actual collision:
+it modifies `_validate_delegate` and adds `_reviewer_downstream_omission_error`,
+as well as completion consumption, `_advance_chain_for_completed_child`,
+`_carrier_fail_on_verdict_mismatch`, `_enqueue_parent_if_waiting`,
+`_spawn_fanout_children` and chain ownership serialization. R2 and the actual
+overlapping R4/R6 symbols remain held; idle status does not free them.
+Engineering_manager owns this historical PR. Founder THR-175 seq36 approved
+splitting its incident fix into the separate merged PR #686, while ownership/CAS
+hardening remains deferred under its existing trigger. Keep #682 unchanged;
+decomposition does not authorize closing, merging, rewriting, cherry-picking
+or implementing its hardening. Re-audit all open PR hunks at each slice's
+edit/publication/handoff gates, including newly listed historical PRs.
 
 ## Per-slice gates
 

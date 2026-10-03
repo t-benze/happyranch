@@ -52,7 +52,7 @@ Tracked source is split by product surface:
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
-|   |   `-- db/                  # Database facade mixins: dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
+|   |   `-- db/                  # Database facade mixins: task core, dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
@@ -97,6 +97,15 @@ identity aliases retained for import and monkeypatch compatibility.
 Capability-owned methods move incrementally into mixins under
 `runtime/infrastructure/db/`; callers continue importing and instantiating the
 facade from its original module.
+
+`db/tasks.py` owns `TasksMixin`: task core CRUD, query filtering/pagination,
+subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`
+and `LineageTooDeep`. The exception remains identity-re-exported from
+`database.py`. Task transitions, retry/delegation, completion/recovery/results
+and cross-domain writers remain in the facade, including
+`try_fail_nonroot_manager_supersede` from PR #955. The exact S8a method inventory
+and remaining collision holds are recorded in
+`docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
 
 ## Test placement
 
