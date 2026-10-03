@@ -16,8 +16,8 @@ from __future__ import annotations
 # - db/authority_policy.py: authority policy release, activation, selector, and session binding
 # - db/authority_v2_attempts.py: v2 attempts, candidates, refusal, and finalization
 # - db/authority_v2_continuation.py: v2 continuation, settlement, publication, generation, spend, decision dispatch, and zombie consumption
-# - db/tasks.py: task core CRUD, queries, severity, lineage, recall, and retry/delegation, claim/supersession, chain advance, state queries, and recovery-ledger lifecycle
-# - facade: callback admission, result writers/projection, escalation, and cross-domain writers
+# - db/tasks.py: task core CRUD, queries, severity, lineage, recall, and retry/delegation, claim/supersession, chain advance, state queries, recovery-ledger lifecycle, and completion-result readers/projection
+# - facade: callback admission, result writers, escalation, and cross-domain writers
 # - database.py: remaining domains and patched-global write keepers
 
 import hashlib
@@ -1285,176 +1285,13 @@ class Database(
             raise
 
 
-    @_synchronized
-    def get_task_results(self, task_id: str) -> list[dict]:
-        cursor = self._conn.execute(
-            "SELECT * FROM task_results WHERE task_id = ? ORDER BY id", (task_id,)
-        )
-        rows = cursor.fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            if d.get("risks_flagged"):
-                d["risks_flagged"] = json.loads(d["risks_flagged"])
-            if d.get("waiting_on_job_ids"):
-                d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
-            result.append(d)
-        return result
-
-    @_synchronized
-    def get_agent_task_results(self, agent: str, since: str | None = None) -> list[dict]:
-        if since:
-            cursor = self._conn.execute(
-                "SELECT * FROM task_results WHERE agent = ? AND created_at >= ? ORDER BY id",
-                (agent, since),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT * FROM task_results WHERE agent = ? ORDER BY id", (agent,)
-            )
-        rows = cursor.fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            if d.get("risks_flagged"):
-                d["risks_flagged"] = json.loads(d["risks_flagged"])
-            if d.get("waiting_on_job_ids"):
-                d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
-            result.append(d)
-        return result
 
 
 
-    @_synchronized
-    def get_latest_task_result(
-        self, task_id: str, agent: str, session_id: str,
-    ) -> dict | None:
-        cursor = self._conn.execute(
-            """SELECT * FROM task_results
-               WHERE task_id = ? AND agent = ? AND session_id = ?
-               ORDER BY id DESC LIMIT 1""",
-            (task_id, agent, session_id),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            return None
-        d = dict(row)
-        if d.get("risks_flagged"):
-            d["risks_flagged"] = json.loads(d["risks_flagged"])
-        if d.get("waiting_on_job_ids"):
-            d["waiting_on_job_ids"] = json.loads(d["waiting_on_job_ids"])
-        return d
 
 
-    @_synchronized
-    def get_latest_completion_report(
-        self, task_id: str, agent: str | None = None, session_id: str | None = None,
-    ):
-        """Return the most-recent task_results row for the given task as a
-        CompletionReport, or None if no row exists.
 
-        Used by the chain-advance logic in run_step to read the just-completed
-        child's verdict without requiring the caller to know agent/session_id.
 
-        THR-211: when ``agent`` AND ``session_id`` are both provided the lookup
-        is scoped to the exact ``(task_id, agent, session_id)`` fingerprint
-        (the same authority the boot sweep / zombie reaper use) so a newer
-        unrelated row can never substitute for the authenticated report.
-        Without the scope the most-recent row is returned (legacy behavior).
-
-        THR-211 (TASK-5823): for the exact-fingerprint scope, a row whose
-        persisted structured fields fail deserialization/structural
-        validation (invalid JSON in ``risks_flagged`` / ``waiting_on_job_ids``,
-        or values failing the strict ``CompletionReport`` contract) has NO
-        acceptable authenticated report: it returns ``None`` so the caller's
-        existing fail-closed path applies (chain cleared, parent woken once,
-        task-wide evidence never consulted).  Only ``json.JSONDecodeError`` and
-        ``pydantic.ValidationError`` are converted; SQLite, transaction, I/O,
-        programming, and unrelated operational exceptions still propagate.
-        The unscoped (legacy) read keeps its prior behavior.
-        """
-        from pydantic import ValidationError
-
-        if agent is not None and session_id is not None:
-            row = self._conn.execute(
-                "SELECT * FROM task_results WHERE task_id = ? "
-                "AND agent = ? AND session_id = ? "
-                "ORDER BY id DESC LIMIT 1",
-                (task_id, agent, session_id),
-            ).fetchone()
-        else:
-            row = self._conn.execute(
-                "SELECT * FROM task_results WHERE task_id = ? "
-                "ORDER BY id DESC LIMIT 1",
-                (task_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        try:
-            return self._row_to_completion_report(task_id, row)
-        except (json.JSONDecodeError, ValidationError):
-            if agent is None or session_id is None:
-                # Unscoped (legacy) read: preserve prior behavior — a
-                # structurally malformed newest row still surfaces as an
-                # error rather than silently degrading the fallback.
-                raise
-            # Exact modern fingerprint: no acceptable authenticated report.
-            return None
-
-    def _row_to_completion_report(self, task_id: str, row) -> "CompletionReport":
-        """Build a CompletionReport from a task_results row dict.
-
-        ``risks_flagged`` / ``waiting_on_job_ids`` are persisted as JSON text
-        and re-deserialized here; malformed JSON or a value failing the strict
-        ``CompletionReport`` contract raises ``json.JSONDecodeError`` /
-        ``pydantic.ValidationError``, which the exact-scope caller converts to
-        the no-acceptable-report fail-closed outcome.  ``local_ci`` degrades
-        to None (documented behavior).
-        """
-        from runtime.models import CompletionReport, LocalCiEvidence
-
-        keys = row.keys()
-        # Safely parse local_ci from the task_results row.
-        # A missing legacy column, NULL, empty/malformed JSON, wrong shape,
-        # or JSON failing the strict LocalCiEvidence contract → None.
-        _local_ci_raw = row["local_ci"] if "local_ci" in keys else None
-        _local_ci: LocalCiEvidence | None = None
-        if _local_ci_raw:
-            try:
-                _parsed = json.loads(_local_ci_raw)
-                if isinstance(_parsed, dict):
-                    _local_ci = LocalCiEvidence(**_parsed)
-            except Exception:
-                pass
-        manager_self_evaluation = None
-        raw_decision = row["decision_json"] if "decision_json" in keys else None
-        if raw_decision:
-            parsed_decision = json.loads(raw_decision)
-            if isinstance(parsed_decision, dict):
-                manager_self_evaluation = parsed_decision.get(
-                    "_manager_self_evaluation"
-                )
-        return CompletionReport(
-            task_id=task_id,
-            agent=row["agent"],
-            status=row["status"] or "completed",
-            confidence=row["confidence_score"] or 0,
-            output_summary=row["output_summary"] or "",
-            verdict=row["verdict"] if "verdict" in keys else None,
-            manager_self_evaluation=manager_self_evaluation,
-            output_dir=row["output_dir"] if "output_dir" in keys else None,
-            risks_flagged=(
-                json.loads(row["risks_flagged"])
-                if row["risks_flagged"]
-                else []
-            ),
-            waiting_on_job_ids=(
-                json.loads(row["waiting_on_job_ids"])
-                if "waiting_on_job_ids" in keys and row["waiting_on_job_ids"]
-                else []
-            ),
-            local_ci=_local_ci,
-        )
 
     # --- Session Token Usage ---
 
