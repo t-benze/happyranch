@@ -105,14 +105,17 @@ spawning and retry feedback/admission, ordinary task claim and budget failure,
 manager supersession and non-root/thread-origin refusal, transactional chain
 advance, revision increments, task-ID allocation and state queries, plus the
 completion-recovery ledger claim/publication/launch/expiry lifecycle, accepted
-and consumed receipt selection/settlement, and receipt-owned parent handoff.
+and consumed receipt selection/settlement, receipt-owned parent handoff, and
+completion-result readers and projection (`get_task_results`,
+`get_agent_task_results`, `get_latest_task_result`,
+`get_latest_completion_report`, and `_row_to_completion_report`).
 `LineageTooDeep`, `VerifiedRetry`,
 `InvalidLineage`, `RetryClaim`, `Committed`, `LostClaim`, `SpawnOutcome`,
 `PendingRetry` and `_RetryEvidenceRefusal` remain identity-re-exported from
-`database.py`. Callback admission, result writers/projection, logger-dependent
+`database.py`. Callback admission, result writers, logger-dependent
 escalation and cross-domain writers remain in the facade. PR #955's
 `try_fail_nonroot_manager_supersede` now belongs to `TasksMixin`, unchanged.
-The exact S8a/S8b/S8c/S8d method inventories and remaining collision holds are
+The exact S8a/S8b/S8c/S8d/S8e method inventories and remaining collision holds are
 recorded in
 `docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
 

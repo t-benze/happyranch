@@ -71,7 +71,8 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | S8b | Verified retry lineage, atomic single/fanout child spawn, retry feedback and no-write admission: exact 13-method/eight-module-node set below | existing `db/tasks.py`; identity re-exports in `database.py`, MRO unchanged | HIGH |
 | S8c | Ordinary claim/budget failure, manager supersession/refusal, transactional chain advance and task state queries: exact twelve-method set below | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
 | S8d | Completion-recovery ledger lifecycle and receipt-owned parent handoff: exact 21-method set below | existing `db/tasks.py`; only standard-library `Callable` import added, bindings and MRO unchanged | HIGH/CRITICAL |
-| S8 remaining | Callback admission, result writers/projection, logger-dependent escalation and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
+| S8e | Completion-result readers and projection: exact five-method set below, 163 decorated-source lines | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
+| S8 remaining | Callback admission, result writers, logger-dependent escalation and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
 | S9 | Schema bootstrap and migrations (DDL byte-identical; erratum: S9 lands before S8 while active PR #955 edits task code; moves the exact 15-method schema/bootstrap set plus the closed five-name module set `AuthorityAuditMigrationRefusal`, `_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`, `_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL`, `_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL`, `_rebuild_indexes_for`; repoints only the source-text path in `tests/test_thread_mention_routing_store.py`) | `db/schema.py` | HIGH |
 | S10 | Authority policy v1 claims/fences/continue envelopes (erratum: the exact 17-method block from `get_authority_candidate_policy_pin` through `list_authority_audit` plus the seven module definitions `_authority_claim_key`, `_parse_authority_fence_results`, `_validate_authority_class`, `_serialize_authority_fence_results`, `_serialize_authority_audit_payload`, `_AUTHORITY_TERMINAL_STATUSES`, and `_AUTHORITY_APPROVED_VERDICTS`; v1 selector/activation/release remain for S13) | `db/authority_v1.py` | HIGH |
 | S11 | Authority policy v2 attempts/finalisation (erratum: the exact contiguous 67-method `_authenticate_v2_attempt_admission_uncommitted` through `get_authority_policy_v2_housekeeping_target` block plus `_AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING`) | `db/authority_v2_attempts.py` | HIGH |
@@ -291,6 +292,56 @@ radius. Re-audit actual hunks before publication and handoff; no foreign
 close/merge/rewrite/transplant or hardening is authorized. All landed
 S1–S7/S9–S13/S8a–c remain foundations. Remaining S8, R1–R6 and later M/E
 work is not claimed complete.
+
+### S8e exact ownership and remaining holds
+
+S8d PR #972 is merged at `f9654f029643d970a8cf456d7afed10ccba0d433`.
+S8e appends exactly these five existing definitions, verbatim and in source
+order, to the existing `TasksMixin`:
+
+```text
+get_task_results
+get_agent_task_results
+get_latest_task_result
+get_latest_completion_report
+_row_to_completion_report
+```
+
+Their decorated source totals 163 lines. The first four keep their shared
+`_synchronized` decorator; the projection helper remains undecorated.
+Complete module closure is only `json` and the identical shared
+`_synchronized`, already bound in `tasks.py`; no import or binding is added.
+`get_latest_completion_report` retains its local `pydantic.ValidationError`
+import, and `_row_to_completion_report` retains its local `CompletionReport`
+and `LocalCiEvidence` imports. The quoted `CompletionReport` annotation
+remains unchanged; it had no facade module binding and gains none. No bare
+`_now`, `_time`, logger, sqlite3 or other facade-only global moves. The shared
+decorator still observes late whole-facade `_time` replacement and the same
+instance RLock. Dynamic `self._row_to_completion_report` remains patchable.
+
+All 68 existing mixin methods, severity assignment, nine facade identity
+re-exports and every retained facade/module node remain unchanged. Direct
+facade methods go from 57 to 52, mixin methods from 68 to 73, and the remaining
+task-domain inventory from 14 to nine: `try_escalate`, `try_escalate_runtime`,
+`try_escalate_over_budget`, `insert_task_result`, `_insert_task_result`,
+`admit_task_completion_callback`, `insert_task_with_attachments`,
+`dispatch_task_followup_replacement`, and `terminate_agent_cleanups`.
+`completion_result_payload_matches`, `_canonical_completion_json` and all
+infrastructure/cross-domain keepers stay in the facade. S8a–d count and
+ownership paragraphs are historical receipts; their remaining-work
+descriptions are superseded only for these five readers/projection.
+
+Fresh S8e audit found 34 foreign open PRs, with heads/file sets unchanged
+after merged #972. None touches `tasks.py`; actual
+#840/#684/#595/#587/#585/#547 Database hunks do not intersect the selected
+nodes or closure. #840's `get_task_results` line is context, while its result
+writers/cleanup helpers remain HELD. #682's eleven-function R2 and actual
+R4/R6 validator/completion/chain/carrier/fanout/CAS collisions remain HELD
+under THR-175 seq33/36's incident split and deferred-hardening disposition.
+#970 is web/i18n, outside this radius. Re-audit heads/file sets and actual
+hunks before publication and handoff; no foreign close/merge/rewrite/transplant
+or hardening is authorized. All landed S1–S7/S9–S13/S8a–d remain foundations;
+remaining S8, R1–R6 and later M/E work is not claimed complete.
 
 ## Per-slice gates
 
