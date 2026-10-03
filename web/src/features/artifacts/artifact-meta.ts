@@ -1,3 +1,5 @@
+import { formatDateShapeFor, type Locale } from '@/lib/i18n';
+
 /**
  * Client-side derivations for the Artifacts card grid (THR-030 ART-01/02/04).
  *
@@ -87,24 +89,13 @@ export function deriveTitle(name: string): string {
   return m ? m[3] : base;
 }
 
-const MONTHS = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-];
-
-/** Format a plain `YYYY-MM-DD` (no time component, so no timezone drift). */
-export function formatProvenanceDate(date: string): string {
-  const [y, m, d] = date.split('-').map((n) => Number.parseInt(n, 10));
-  return `${MONTHS[m - 1]} ${d}, ${y}`;
+/** Plain calendar date. UTC display preserves the filename's day in every viewer zone. */
+export function formatProvenanceDate(value: string, locale: Locale = 'en'): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) return null;
+  return formatDateShapeFor(locale, date, 'monthDayYear', 'UTC');
 }
-
-const MODIFIED_AT_FMT: Intl.DateTimeFormatOptions = {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric',
-  hour: 'numeric',
-  minute: '2-digit',
-};
 
 /**
  * Format the runtime-supplied `modified_at` ISO string for the card.
@@ -112,9 +103,9 @@ const MODIFIED_AT_FMT: Intl.DateTimeFormatOptions = {
  * render an explicit "Modified time unavailable" fallback and must never pass
  * the raw string through `new Date()` unguarded.
  */
-export function formatArtifactModifiedAt(iso: string | null | undefined): string | null {
+export function formatArtifactModifiedAt(iso: string | null | undefined, locale: Locale = 'en'): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleString(undefined, MODIFIED_AT_FMT);
+  return formatDateShapeFor(locale, d, 'dateTime');
 }

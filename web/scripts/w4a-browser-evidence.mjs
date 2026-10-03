@@ -303,7 +303,16 @@ const W4C_POLICY_HISTORY = { items: [], next_cursor: null };
 const ROSTER = [WH_AGENT('dev_agent', '## Routine Tasks\n- Review open PRs\n- Triage bugs'), WH_AGENT('support_bot', 'No routine section here.'), W4C_LEAD];
 
 /** pathname -> payload (or (search) => payload). Later W4 slices add rows here. */
+const W4D_KB = { slug: 'raw-knowledge', title: 'Authored «raw» Knowledge', type: 'RAW_Type', topic: 'Raw_Topic', tags: ['Raw_Tag'], body: 'Authored «raw» KB body.', authored_by: 'Raw_Agent', source_task: 'TASK-0042', related_entries: [], updated_at: iso(3600e3) };
+const W4D_ARTIFACTS = [
+  { name: 'Raw_Agent-2026-06-16-THR-042-Raw_Title.pdf', size_bytes: 1536, modified_at: '2026-06-20T14:30:00Z' },
+  { name: 'Raw_Folder/Raw_File.txt', size_bytes: 512, modified_at: '' },
+];
 const API_ROUTES = {
+  [`/api/v1/orgs/${ORG}/kb`]: { entries: [W4D_KB] },
+  [`/api/v1/orgs/${ORG}/kb/stats`]: { entries: [{ slug: W4D_KB.slug, view_count: 1000 }] },
+  [`/api/v1/orgs/${ORG}/kb/raw-knowledge`]: W4D_KB,
+  [`/api/v1/orgs/${ORG}/artifacts`]: { artifacts: W4D_ARTIFACTS },
   '/api/v1/auth/bootstrap': { token: 'w4a-evidence-token' },
   '/api/v1/orgs': { orgs: [{ slug: ORG, root: `/runtime/${ORG}` }], broken: [] },
   [`/api/v1/orgs/${ORG}/dashboard/summary`]: { org_age_days: 12 },
@@ -422,6 +431,73 @@ const DREAM_CARD = (id) => `[...document.querySelectorAll('li > button')].find((
  * the content predicate; optional `prep(page, h)` drives the page to the state.
  */
 const VIEW_ROUTES = [
+  {
+    id: 'kb-list', route: 'kb', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
+    keys: ['kb.pageTitle', 'kb.railAllEntries', 'kb.railTagsSection', ['kb.headerEyebrow', { count: 1, number: '1' }], ['kb.viewedLabel', { count: 1000, number: '1,000' }]],
+    verbatim: [W4D_KB.title, 'RAW_Type', 'Raw_Tag', 'raw-knowledge'],
+    checks: () => [
+      ['heading and entry text fit their containers', `(() => {
+        const main = document.querySelector('main main');
+        const heading = main?.querySelector('h1');
+        const title = [...(main?.querySelectorAll('a span') ?? [])].find(el => el.textContent === ${JSON.stringify(W4D_KB.title)});
+        if (!main || !heading || !title) return false;
+        return [heading, title].every(el => {
+          const range = document.createRange(); range.selectNodeContents(el);
+          const rects = [...range.getClientRects()];
+          if (!rects.length) return false;
+          return rects.every(r => {
+            if (r.width <= 0 || r.left < 0 || r.right > innerWidth) return false;
+            for (let parent = el; parent; parent = parent.parentElement) {
+              if (!['hidden', 'auto', 'scroll', 'clip'].includes(getComputedStyle(parent).overflowX)) continue;
+              const box = parent.getBoundingClientRect();
+              if (r.left < box.left - 1 || r.right > box.right + 1) return false;
+            }
+            return true;
+          });
+        });
+      })()`, true],
+      ['raw type has no text transform', `(() => { const badge = [...document.querySelectorAll('main a span')].find(el => el.textContent === 'RAW_Type'); return Boolean(badge && getComputedStyle(badge).textTransform === 'none'); })()`, true],
+    ],
+  },
+  {
+    id: 'kb-detail', route: 'kb detail', path: `/orgs/${ORG}/kb/raw-knowledge`, ready: () => bodyHas(W4D_KB.body),
+    keys: ['kb.pageTitle', 'kb.sourceTaskLabel', ['kb.authoredBy', { agent: 'Raw_Agent' }]],
+    verbatim: [W4D_KB.title, W4D_KB.body, 'Raw_Agent', 'TASK-0042'],
+    // The closed Assistant dock also stays mounted with role=dialog. Bind the
+    // bounds oracle to this open drawer and its verbatim authored title.
+    checks: () => [['drawer fits viewport', `(() => { const el = [...document.querySelectorAll('[role="dialog"][data-state="open"]')].find(d => d.querySelector('h2')?.textContent === ${JSON.stringify(W4D_KB.title)}); if (!el) return false; const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`, true]],
+  },
+  {
+    id: 'kb-candidates', route: 'kb candidates', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
+    prep: async (page, h) => {
+      const SELECT = `[...document.querySelectorAll('aside button')].find(b => b.textContent.includes(${JSON.stringify(tr('en', 'kb.railCandidates'))}) || b.textContent.includes(${JSON.stringify(tr('zh-CN', 'kb.railCandidates'))}))`;
+      await h.waitTrue(page, `Boolean(${SELECT})`, 'KB candidates count'); await h.clickSrc(page, SELECT);
+      await h.waitTrue(page, bodyHas('Spanish after-hours routing'), 'KB candidate row');
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.includes('Spanish after-hours routing'))`);
+      await h.waitTrue(page, `[...document.querySelectorAll('[role="dialog"][data-state="open"]')].some(d => d.querySelector('h2')?.textContent === 'Spanish after-hours routing')`, 'KB candidate detail');
+    },
+    keys: ['kb.acceptButton', 'kb.dismissButton', ['kb.candidatePendingLabel', { agent: 'product_lead' }]],
+    verbatim: ['Spanish after-hours routing', 'spanish-after-hours', 'Seen three times this week.', 'product_lead'],
+  },
+  {
+    id: 'artifacts-list', route: 'artifacts', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('THR-042-Raw_Title.pdf'),
+    keys: ['artifacts.pageTitle', 'artifacts.type.doc', 'artifacts.fromFilename', 'artifacts.download'],
+    checks: locale => [['localized filter accessible name', `document.querySelector('[role="tablist"]').getAttribute('aria-label')`, tr(locale, 'artifacts.filterLabel')]],
+    verbatim: ['Raw_Agent', 'Raw_Folder/', 'THR-042', 'THR-042-Raw_Title.pdf', '1.5 KB'],
+  },
+  {
+    id: 'artifacts-folder', route: 'artifacts folder', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('Raw_Folder/'),
+    prep: async (page, h) => { await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.includes('Raw_Folder/'))`); await h.waitTrue(page, bodyHas('Raw_File.txt'), 'artifact folder'); },
+    keys: ['artifacts.root', 'artifacts.modifiedUnavailable', 'artifacts.sortFolders', 'artifacts.download'],
+    verbatim: ['Raw_Folder', 'Raw_File.txt', '512 B'],
+  },
+  {
+    id: 'artifacts-upload', route: 'artifacts upload', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('THR-042-Raw_Title.pdf'),
+    prep: async (page, h) => { await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(tr('en', 'artifacts.upload'))} || b.textContent.trim() === ${JSON.stringify(tr('zh-CN', 'artifacts.upload'))})`); },
+    keys: ['artifacts.uploadTitle', 'artifacts.file', 'artifacts.nameLabel', 'artifacts.nameHint', 'common.cancel'],
+    verbatim: ['[A-Za-z0-9._-]+', '10 MB'],
+  },
+
   {
     id: 'health', route: 'health', path: `/orgs/${ORG}/health`,
     ready: () => `${bodyHas('work_hours_scheduler_loop')} && ${bodyHas('GET /api/v1/orgs/{slug}/tasks')}`,
@@ -644,6 +720,24 @@ const VIEW_ROUTES = [
  */
 const SWITCH_ROUTES = [
   {
+    id: 'artifacts-upload-file', path: `/orgs/${ORG}/artifacts`,
+    open: async (page, h) => {
+      await h.waitTrue(page, bodyHas('THR-042-Raw_Title.pdf'), 'artifact grid');
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Upload')`);
+      await h.waitTrue(page, `Boolean(document.querySelector('input[type="file"]'))`, 'upload form');
+      await h.evaluate(page, `(() => {
+        const input = document.querySelector('input[type="file"]'); const selected = new File(['exact raw bytes'], 'Raw_Selected.pdf', { type: 'application/pdf' });
+        const data = new DataTransfer(); data.items.add(selected); input.files = data.files; input.dispatchEvent(new Event('change', { bubbles: true }));
+        window.__w4dSelected = input.files[0]; window.__w4dFileInput = input;
+        window.__w4dUploadButton = [...document.querySelectorAll('section button')].find(b => b.textContent.trim() === 'Upload'); return true;
+      })()`);
+    },
+    control: `document.querySelector('section input[type="text"]')`, container: `CONTROL.closest('section')`, draft: 'Raw_Draft.pdf',
+    copy: locale => [tr(locale, 'artifacts.uploadTitle'), tr(locale, 'artifacts.nameLabel'), tr(locale, 'common.cancel')],
+    checks: () => [['selected File and file-input node retained', `document.querySelector('input[type="file"]') === window.__w4dFileInput && window.__w4dFileInput.files[0] === window.__w4dSelected && window.__w4dSelected.name === 'Raw_Selected.pdf'`, true], ['upload control retained', `window.__w4dUploadButton.isConnected && window.__w4dUploadButton.closest('section') === window.__w4aBox.deref()`, true]],
+    shot: 'zh-artifacts-upload-switch-1440',
+  },
+  {
     id: 'dream-drawer-accept', path: `/orgs/${ORG}/dreams`,
     open: async (page, h) => {
       await h.waitTrue(page, bodyHas('DREAM-0011'), 'feed');
@@ -764,6 +858,11 @@ const SWITCH_ROUTES = [
   },
 ];
 
+const selectedSlice = arg('slice', 'all');
+if (!['all', 'kb-artifacts'].includes(selectedSlice)) throw new Error('unknown --slice');
+const ACTIVE_VIEWS = selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith('artifacts-'));
+
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
   const [key, params = {}] = Array.isArray(spec) ? spec : [spec];
@@ -786,7 +885,7 @@ async function main() {
   }
 
   const joined = distJs(dist).map((f) => readFileSync(f, 'utf8')).join('\n');
-  const bundleKeys = [...new Set(VIEW_ROUTES.flatMap((row) => row.keys.map((spec) => (Array.isArray(spec) ? spec[0] : spec))))];
+  const bundleKeys = [...new Set(ACTIVE_VIEWS.flatMap((row) => row.keys.map((spec) => (Array.isArray(spec) ? spec[0] : spec))))];
   // Template text before the first placeholder is what a minifier keeps verbatim.
   const literal = (key) => { const v = CATALOG['zh-CN'][key]; return (typeof v === 'string' ? v : v.other).split('{')[0].trim(); };
   const fingerprint = {
@@ -874,11 +973,11 @@ async function main() {
     endCase();
 
     // ============================================================ V
-    beginCase('V', `${VIEW_ROUTES.map((r) => r.id).join(' + ')}, en/zh-CN, 1440x900 + 390x844`);
+    beginCase('V', `${ACTIVE_VIEWS.map((r) => r.id).join(' + ')}, en/zh-CN, 1440x900 + 390x844`);
     for (const locale of ['en', 'zh-CN']) {
       const short = locale === 'en' ? 'en' : 'zh';
       for (const [w, ht] of [[1440, 900], [390, 844]]) {
-        for (const row of VIEW_ROUTES) {
+        for (const row of ACTIVE_VIEWS) {
           const page = await openPage(`${base}${row.path}`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width: w, height: ht });
           await waitTrue(page, row.ready(locale), `${row.id} content`);
           if (row.prep) await row.prep(page, h);
@@ -902,8 +1001,8 @@ async function main() {
     endCase();
 
     // ============================================================ S
-    beginCase('S', `${SWITCH_ROUTES.map((r) => r.id).join(' + ')}: en -> zh-CN -> en keeps nodes, focus (and draft), zero /api requests`);
-    for (const row of SWITCH_ROUTES) {
+    beginCase('S', `${ACTIVE_SWITCHES.map((r) => r.id).join(' + ')}: en -> zh-CN -> en keeps nodes, focus (and draft), zero /api requests`);
+    for (const row of ACTIVE_SWITCHES) {
       const page = await openPage(`${base}${row.path}`, { init: `${seedLocale('en')}\n${CHINESE_NAVIGATOR}` });
       await row.open(page, h);
       await sleep(400);
@@ -930,6 +1029,7 @@ async function main() {
         check(`S ${row.id} -> ${locale} same container node`, s.sameContainer, true);
         check(`S ${row.id} -> ${locale} same control node`, s.sameControl, true);
         if (row.draft) check(`S ${row.id} -> ${locale} draft value kept`, s.value, row.draft);
+        for (const [label, expression, result] of row.checks?.(locale) ?? []) check(`S ${row.id} -> ${locale} ${label}`, await evaluate(page, expression), result);
         check(`S ${row.id} -> ${locale} focus kept`, s.focused, true);
         for (const text of row.copy(locale)) check(`S ${row.id} -> ${locale} shows "${text}"`, await evaluate(page, bodyHas(text)), true);
         check(`S ${row.id} -> ${locale} <html lang>`, s.lang, locale);
@@ -954,7 +1054,7 @@ async function main() {
     chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + navigator override: environment never defaults the locale)' },
     externalRequestsBlocked: EXTERNAL_BLOCK,
     dist: fingerprint,
-    routes: { view: VIEW_ROUTES.map((r) => r.id), switch: SWITCH_ROUTES.map((r) => r.id), api: Object.keys(API_ROUTES) },
+    routes: { view: ACTIVE_VIEWS.map((r) => r.id), switch: ACTIVE_SWITCHES.map((r) => r.id), api: Object.keys(API_ROUTES) },
     summary: cases.map((c) => ({ id: c.id, title: c.title, pass: c.pass, checks: c.checks.length, failedChecks: c.checks.filter((x) => !x.ok).map((x) => x.name) })),
     cases, screenshots, ledger: LEDGER, passed: cases.length - failed.length, failed: failed.length,
   };

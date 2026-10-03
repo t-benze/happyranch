@@ -24,9 +24,9 @@
  * `agents/:agent_name`, `agents/:agent_name/team-escalation-policy` and its
  * owned dialogs/panels) and Skills (every `skills*` route token and its owned
  * surfaces); user/daemon values (policy bodies, contract ids, digests, agent
- * names, skill names/slugs/bodies, versions, provenance) stay verbatim. The
+ * names, skill names/slugs/bodies, versions, provenance) stay verbatim. W4d-1 migrates KB and Artifacts including gated Compose and upload/action chrome. The
  * other mounted product surfaces remain `english-only` for the later slices
- * (W4d artifacts/usage; kb and the assistant dock body in later W4/W5 legs) —
+ * (W4d Usage; the assistant dock body in later W4/W5 legs) —
  * fallback English is never treated as coverage.
  * Redirect-only/catch-all
  * tokens are `not-applicable`. The marker is explicit machine-readable data
@@ -148,7 +148,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'kb',
     routeTokens: ['kb', 'kb/:entrySlug/*'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['KbPage', 'ComposeKbEntryDialog'],
   },
   {
@@ -216,7 +216,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'artifacts',
     routeTokens: ['artifacts'],
-    status: 'english-only',
+    status: 'translated',
     surfaces: ['ArtifactsPage'],
   },
   {

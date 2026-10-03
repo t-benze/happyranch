@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { formatCount, formatTokens } from '@/lib/format';
-import { formatCountFor, formatDateShapeFor, formatDateTimeFor, formatTokensFor } from './format';
+import { formatAttachmentSizeFor, formatCountFor, formatDateShapeFor, formatDateTimeFor, formatTokensFor } from './format';
 
 describe('formatTokensFor — explicit-locale compact metrics (W1 acceptance case 6)', () => {
   it('English delegates to the canonical K/M formatter', () => {
@@ -213,5 +213,15 @@ describe('W4b display sites route dates through @/lib/i18n/format (THR-118 W4b)'
         .map(([, n]) => `${file}:${n}`),
     );
     expect(offenders).toEqual([]);
+  });
+});
+
+describe('artifact byte display interface', () => {
+  it.each(['en', 'zh-CN'] as const)('preserves binary thresholds and precision with explicit %s', locale => {
+    expect(formatAttachmentSizeFor(locale, 512)).toBe('512 B');
+    expect(formatAttachmentSizeFor(locale, 1536)).toBe('1.5 KB');
+    expect(formatAttachmentSizeFor(locale, 10 * 1024 * 1024)).toBe('10 MB');
+    expect(formatAttachmentSizeFor(locale, -1)).toBeNull();
+    expect(formatAttachmentSizeFor(locale, Infinity)).toBeNull();
   });
 });

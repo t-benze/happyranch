@@ -47,9 +47,10 @@ import {
   Upload,
 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { artifacts as artifactsApi, ApiError } from '@/lib/api';
+import { artifacts as artifactsApi } from '@/lib/api';
 import { useOrgSlug } from '@/lib/orgSlug';
-import { formatAttachmentSize } from '@/lib/threadAttachments';
+import { useTranslation } from '@/hooks/i18n';
+import { formatCountFor, formatAttachmentSizeFor, type MessageKey } from '@/lib/i18n';
 import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Label } from '@/design-system/primitives/Label';
@@ -65,7 +66,7 @@ import {
   type ArtifactType,
 } from './artifact-meta';
 import { buildFolderView, hasFolders, type Crumb, type FolderEntry } from './artifact-tree';
-import { validateArtifactUpload } from './validation';
+import { validateArtifactUpload, classifyArtifactError, renderArtifactError, type ArtifactErrorView } from './validation';
 
 /* ------------------------------------------------------------------ */
 /*  Type → presentation (pill label, centered icon, icon tint)         */
@@ -73,56 +74,38 @@ import { validateArtifactUpload } from './validation';
 
 const TYPE_META: Record<
   ArtifactType,
-  { pill: string; Icon: typeof File; tint: string }
+  { pill: MessageKey; Icon: typeof File; tint: string }
 > = {
-  'pull-request': { pill: 'pull request', Icon: GitPullRequest, tint: 'text-accent-text' },
-  doc: { pill: 'document', Icon: FileText, tint: 'text-text-secondary' },
-  patch: { pill: 'patch', Icon: FileDiff, tint: 'text-accent-text' },
-  design: { pill: 'design', Icon: Image, tint: 'text-text-secondary' },
-  file: { pill: 'file', Icon: File, tint: 'text-text-muted' },
+  'pull-request': { pill: 'artifacts.type.pull-request', Icon: GitPullRequest, tint: 'text-accent-text' },
+  doc: { pill: 'artifacts.type.doc', Icon: FileText, tint: 'text-text-secondary' },
+  patch: { pill: 'artifacts.type.patch', Icon: FileDiff, tint: 'text-accent-text' },
+  design: { pill: 'artifacts.type.design', Icon: Image, tint: 'text-text-secondary' },
+  file: { pill: 'artifacts.type.file', Icon: File, tint: 'text-text-muted' },
 };
 
 /** Segmented filter — "All" plus the four named categories ("file" lives in All). */
-const FILTERS: { key: ArtifactType | 'all'; label: string }[] = [
-  { key: 'all', label: 'All' },
-  { key: 'pull-request', label: 'Pull requests' },
-  { key: 'doc', label: 'Docs' },
-  { key: 'patch', label: 'Patches' },
-  { key: 'design', label: 'Designs' },
+const FILTERS: { key: ArtifactType | 'all'; label: MessageKey }[] = [
+  { key: 'all', label: 'artifacts.filter.all' },
+  { key: 'pull-request', label: 'artifacts.filter.pull-request' },
+  { key: 'doc', label: 'artifacts.filter.doc' },
+  { key: 'patch', label: 'artifacts.filter.patch' },
+  { key: 'design', label: 'artifacts.filter.design' },
 ];
 
 /* ------------------------------------------------------------------ */
 /*  Error helpers                                                      */
 /* ------------------------------------------------------------------ */
 
-function describeUploadError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.code === 'artifact_too_large') return 'File exceeds the 10 MB limit.';
-    if (err.code === 'invalid_artifact_name') {
-      return 'Name: each segment (between slashes) must match [A-Za-z0-9._-]+; forward slash only as separator (no leading/trailing/empty segments). Max 200 characters, 10 MB file cap.';
-    }
-    return `Upload failed (HTTP ${err.status}).`;
-  }
-  return String(err);
-}
-
-function describeDeleteError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.code === 'artifact_not_found') return 'That artifact no longer exists.';
-    return `Delete failed (HTTP ${err.status}).`;
-  }
-  return String(err);
-}
-
 /* ------------------------------------------------------------------ */
 /*  Skeleton                                                           */
 /* ------------------------------------------------------------------ */
 
 function ArtifactsSkeleton(): JSX.Element {
+  const { t } = useTranslation();
   return (
     <div
       className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
-      aria-label="Loading artifacts"
+      aria-label={t('artifacts.loading')}
     >
       {[1, 2, 3, 4, 5, 6].map((i) => (
         <div
@@ -145,6 +128,7 @@ function ArtifactsSkeleton(): JSX.Element {
 /* ------------------------------------------------------------------ */
 
 function ThumbnailHeader({ type }: { type: ArtifactType }): JSX.Element {
+  const { t } = useTranslation();
   const patternId = useId();
   const { pill, Icon, tint } = TYPE_META[type];
   return (
@@ -165,7 +149,7 @@ function ThumbnailHeader({ type }: { type: ArtifactType }): JSX.Element {
         <rect width="100%" height="100%" fill={`url(#${patternId})`} opacity="0.45" />
       </svg>
       <span className="bg-surface text-text-secondary border-border-subtle absolute top-3 left-3 rounded-full border px-2 py-0.5 text-xs lowercase">
-        {pill}
+        {t(pill)}
       </span>
       <div
         className={`bg-surface shadow-pasture-sm relative flex h-12 w-12 items-center justify-center rounded-xl ${tint}`}
@@ -199,11 +183,12 @@ function ArtifactCard({
   onDelete,
   isDeleting,
 }: ArtifactCardProps): JSX.Element {
+  const { t, locale } = useTranslation();
   const type = deriveArtifactType(name);
   const title = deriveTitle(name);
   const prov = parseProvenance(name);
-  const size = formatAttachmentSize(sizeBytes) ?? '—';
-  const modifiedDisplay = formatArtifactModifiedAt(modifiedAt);
+  const size = formatAttachmentSizeFor(locale, sizeBytes) ?? '—';
+  const modifiedDisplay = formatArtifactModifiedAt(modifiedAt, locale);
   const hasProvenance = Boolean(prov.threadId || prov.agent);
 
   return (
@@ -226,8 +211,8 @@ function ArtifactCard({
         */}
         {hasProvenance && (
           <p className="text-text-muted mt-1 flex flex-wrap items-center gap-x-1.5 text-xs">
-            <span className="sr-only">Filename-derived provenance:</span>
-            <span aria-hidden="true">From filename</span>
+            <span className="sr-only">{t('artifacts.provenanceLabel')}</span>
+            <span aria-hidden="true">{t('artifacts.fromFilename')}</span>
             {prov.threadId && (
               <>
                 <span aria-hidden="true">·</span>
@@ -247,7 +232,7 @@ function ArtifactCard({
             {prov.date && (
               <>
                 <span aria-hidden="true">·</span>
-                <span>{formatProvenanceDate(prov.date)}</span>
+                <span>{formatProvenanceDate(prov.date, locale) ?? t('artifacts.dateUnavailable')}</span>
               </>
             )}
           </p>
@@ -257,11 +242,10 @@ function ArtifactCard({
         <p className="text-text-muted mt-1 text-xs">
           {modifiedDisplay ? (
             <>
-              <span className="text-text-muted">Modified</span>{' '}
-              <span>{modifiedDisplay}</span>
+              {t('artifacts.modified', { date: modifiedDisplay })}
             </>
           ) : (
-            <span>Modified time unavailable</span>
+            <span>{t('artifacts.modifiedUnavailable')}</span>
           )}
         </p>
 
@@ -275,13 +259,13 @@ function ArtifactCard({
               className="text-accent-text inline-flex items-center gap-1 text-xs hover:underline"
             >
               <Download size={14} aria-hidden="true" />
-              Download
+              {t('artifacts.download')}
             </button>
             <button
               type="button"
               onClick={() => onDelete(name)}
               disabled={isDeleting}
-              aria-label={`Delete ${name}`}
+              aria-label={t('artifacts.deleteLabel', { name })}
               className="text-text-muted hover:text-feedback-danger inline-flex items-center text-xs transition-colors disabled:opacity-50"
             >
               <Trash2 size={14} aria-hidden="true" />
@@ -305,9 +289,10 @@ function Breadcrumb({
   crumbs: Crumb[];
   onNavigate: (path: string) => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
     <nav
-      aria-label="Folder breadcrumb"
+      aria-label={t('artifacts.breadcrumb')}
       className="mb-4 flex flex-wrap items-center gap-1 text-sm"
     >
       {crumbs.map((c, i) => {
@@ -326,7 +311,7 @@ function Breadcrumb({
                 className="text-text-primary inline-flex items-center gap-1 px-2 py-0.5 font-medium"
               >
                 {home}
-                {c.label}
+                {c.path === '' ? t('artifacts.root') : c.label}
               </span>
             ) : (
               <button
@@ -335,7 +320,7 @@ function Breadcrumb({
                 className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-medium transition-colors"
               >
                 {home}
-                {c.label}
+                {c.path === '' ? t('artifacts.root') : c.label}
               </button>
             )}
           </span>
@@ -353,6 +338,7 @@ function FolderRow({
   folder: FolderEntry;
   onOpen: (path: string) => void;
 }): JSX.Element {
+  const { t, locale } = useTranslation();
   return (
     <button
       type="button"
@@ -367,7 +353,7 @@ function FolderRow({
           {folder.name}/
         </span>
         <span className="text-text-muted block text-xs">
-          {folder.count} file{folder.count === 1 ? '' : 's'}
+          {t('artifacts.fileCount', { count: folder.count, number: formatCountFor(locale, folder.count) })}
         </span>
       </span>
     </button>
@@ -379,15 +365,16 @@ function FolderRow({
 /* ------------------------------------------------------------------ */
 
 export function ArtifactsPage(): JSX.Element {
+  const { t, locale, render } = useTranslation();
   const slug = useOrgSlug();
   const qc = useQueryClient();
   const idBase = useId();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [error, setError] = useState<ArtifactErrorView | null>(null);
+  const [deleteError, setDeleteError] = useState<ArtifactErrorView | null>(null);
+  const [downloadError, setDownloadError] = useState<ArtifactErrorView | null>(null);
   const [showUpload, setShowUpload] = useState(false);
   const [activeFilter, setActiveFilter] = useState<ArtifactType | 'all'>('all');
   // Current folder within the client-derived tree ('' = root). Never a route.
@@ -413,7 +400,7 @@ export function ArtifactsPage(): JSX.Element {
       setShowUpload(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
     },
-    onError: (err: unknown) => setError(describeUploadError(err)),
+    onError: (err: unknown) => setError(classifyArtifactError(err, 'artifacts.error.upload')),
   });
 
   const del = useMutation({
@@ -422,19 +409,19 @@ export function ArtifactsPage(): JSX.Element {
       setDeleteError(null);
       qc.invalidateQueries({ queryKey: ['artifacts', slug] });
     },
-    onError: (err: unknown) => setDeleteError(describeDeleteError(err)),
+    onError: (err: unknown) => setDeleteError(classifyArtifactError(err, 'artifacts.error.delete')),
   });
 
   const requestDelete = (artifactName: string) => {
     setDeleteError(null);
-    if (!window.confirm(`Delete "${artifactName}"? This cannot be undone.`)) return;
+    if (!window.confirm(t('artifacts.deleteConfirm', { name: artifactName }))) return;
     del.mutate(artifactName);
   };
 
   const submit = () => {
     setError(null);
     if (!file) {
-      setError('Select a file to upload.');
+      setError({ kind: 'message', key: 'artifacts.error.selectFile' });
       return;
     }
     const effectiveName = name.trim() || file.name;
@@ -482,13 +469,11 @@ export function ArtifactsPage(): JSX.Element {
   }, [artifacts]);
 
   const artifactCount = artifacts.length;
-  const eyebrow =
-    `${artifactCount} artifact${artifactCount === 1 ? '' : 's'}` +
-    (threadCount > 0
-      ? ` · produced by ${threadCount} thread${threadCount === 1 ? '' : 's'}`
-      : '');
+  const eyebrow = t('artifacts.artifactCount', { count: artifactCount, number: formatCountFor(locale, artifactCount) }) +
+    (threadCount > 0 ? ` · ${t('artifacts.threadCount', { count: threadCount, number: formatCountFor(locale, threadCount) })}` : '');
 
   const hasData = !listQuery.isLoading && !listQuery.isError;
+  const listError = listQuery.isError ? classifyArtifactError(listQuery.error, 'artifacts.loadError') : null;
 
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
@@ -509,7 +494,7 @@ export function ArtifactsPage(): JSX.Element {
               </p>
             )}
             <h1 className="font-display text-display text-text-primary mt-2 font-medium">
-              Everything the org has produced
+              {t('artifacts.pageTitle')}
             </h1>
           </div>
           {/* Solid green "↑ Upload" pill per the a-artifacts reference (THR-099
@@ -521,19 +506,19 @@ export function ArtifactsPage(): JSX.Element {
             onClick={() => setShowUpload((v) => !v)}
           >
             <Upload aria-hidden="true" size={14} />
-            {showUpload ? 'Cancel' : 'Upload'}
+            {showUpload ? t('common.cancel') : t('artifacts.upload')}
           </Button>
         </div>
 
         {/* Upload form (collapsible) — secondary affordance, not primary chrome. */}
         {showUpload && (
           <section
-            aria-label="Upload artifact"
+            aria-label={t('artifacts.uploadTitle')}
             className="bg-surface border-border-default shadow-pasture-sm mt-4 flex flex-col gap-3 rounded-lg border p-4"
           >
-            <h3 className="text-text-primary text-sm font-semibold">Upload artifact</h3>
+            <h3 className="text-text-primary text-sm font-semibold">{t('artifacts.uploadTitle')}</h3>
             <div className="flex flex-col gap-1">
-              <Label htmlFor={fileId}>File</Label>
+              <Label htmlFor={fileId}>{t('artifacts.file')}</Label>
               <Input
                 id={fileId}
                 ref={fileInputRef}
@@ -545,7 +530,7 @@ export function ArtifactsPage(): JSX.Element {
               />
             </div>
             <div className="flex flex-col gap-1">
-              <Label htmlFor={nameId}>Name (optional — defaults to the file name)</Label>
+              <Label htmlFor={nameId}>{t('artifacts.nameLabel')}</Label>
               <Input
                 id={nameId}
                 type="text"
@@ -557,18 +542,18 @@ export function ArtifactsPage(): JSX.Element {
                 }}
               />
               <p className="text-text-muted text-xs">
-                Each '/'-separated segment must match [A-Za-z0-9._-]+ (letters, digits, dot, underscore, hyphen). Forward slash only as separator; no leading/trailing/empty segments. Max 200 characters, 10 MB.
+                {t('artifacts.nameHint')}
               </p>
             </div>
             {error && (
               <p role="alert" className="text-feedback-danger text-sm">
-                {error}
+                {renderArtifactError(error, t)}
               </p>
             )}
             <div>
               <Button onClick={submit} disabled={upload.isPending}>
                 <Upload aria-hidden="true" size={14} />
-                {upload.isPending ? 'Uploading…' : 'Upload'}
+                {upload.isPending ? t('artifacts.uploading') : t('artifacts.upload')}
               </Button>
             </div>
           </section>
@@ -589,8 +574,8 @@ export function ArtifactsPage(): JSX.Element {
           /* Empty — calm empty state (kept full-height centered) */
           <div className="flex h-full items-center justify-center">
             <EmptyState
-              title="No artifacts yet"
-              body="Upload a file above to share it across the org."
+              title={t('artifacts.emptyTitle')}
+              body={t('artifacts.emptyBody')}
             />
           </div>
         ) : (
@@ -602,15 +587,15 @@ export function ArtifactsPage(): JSX.Element {
             {listQuery.isError && (
               <div className="flex flex-col items-center justify-center gap-3 p-8 text-center">
                 <p className="text-feedback-danger text-sm">
-                  Could not load artifacts.
-                  {listQuery.error?.message && <> {listQuery.error.message}</>}
+                  {t('artifacts.loadError')}
+                  {listError && (listError.kind === 'raw' || listError.key !== 'artifacts.loadError') && <> {renderArtifactError(listError, t)}</>}
                 </p>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={() => qc.invalidateQueries({ queryKey: ['artifacts', slug] })}
                 >
-                  Retry
+                  {t('common.retry')}
                 </Button>
               </div>
             )}
@@ -627,13 +612,12 @@ export function ArtifactsPage(): JSX.Element {
                   className="text-attention-text mt-0.5 flex-none"
                 />
                 <p>
-                  Folders are derived from the path in each artifact&apos;s{' '}
-                  <span className="font-mono">name</span> — the only stored fields are{' '}
-                  <span className="font-mono">name</span>,{' '}
-                  <span className="font-mono">size_bytes</span>, and{' '}
-                  <span className="font-mono">modified_at</span>. Agent and date come from the{' '}
-                  <span className="font-mono">&lt;agent&gt;-&lt;YYYY-MM-DD&gt;-&lt;slug&gt;</span>{' '}
-                  filename convention; there is no separate folder record.
+                  {render('artifacts.folderHonesty', {
+                    nameField: <span className="font-mono">name</span>,
+                    sizeField: <span className="font-mono">size_bytes</span>,
+                    modifiedField: <span className="font-mono">modified_at</span>,
+                    convention: <span className="font-mono">&lt;agent&gt;-&lt;YYYY-MM-DD&gt;-&lt;slug&gt;</span>,
+                  })}
                 </p>
               </div>
             )}
@@ -642,7 +626,7 @@ export function ArtifactsPage(): JSX.Element {
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <div
                 role="tablist"
-                aria-label="Filter artifacts by type"
+                aria-label={t('artifacts.filterLabel')}
                 className="flex flex-wrap items-center gap-1"
               >
                 {FILTERS.map((f) => {
@@ -660,25 +644,25 @@ export function ArtifactsPage(): JSX.Element {
                           : 'text-text-secondary hover:text-text-primary hover:bg-surface-hover rounded-full px-3 py-1 text-sm'
                       }
                     >
-                      {f.label}
+                      {t(f.label)}
                     </button>
                   );
                 })}
               </div>
               <span className="text-text-muted text-sm">
-                {showFolders ? 'Folders first · recent files' : 'Recent first'}
+                {t(showFolders ? 'artifacts.sortFolders' : 'artifacts.sortRecent')}
               </span>
             </div>
 
             {/* Banner for delete/download errors */}
             {deleteError && (
               <p role="alert" className="text-feedback-danger mb-4 text-sm">
-                {deleteError}
+                {renderArtifactError(deleteError, t)}
               </p>
             )}
             {downloadError && !deleteError && (
               <p role="alert" className="text-feedback-danger mb-4 text-sm">
-                {downloadError}
+                {renderArtifactError(downloadError, t)}
               </p>
             )}
 
@@ -688,7 +672,7 @@ export function ArtifactsPage(): JSX.Element {
             {/* Subfolders of the current folder. */}
             {view.folders.length > 0 && (
               <div
-                aria-label="Folders"
+                aria-label={t('artifacts.folders')}
                 className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
               >
                 {view.folders.map((f) => (
@@ -700,18 +684,18 @@ export function ArtifactsPage(): JSX.Element {
             {/* Files directly in the current folder. */}
             {view.folders.length === 0 && view.files.length === 0 ? (
               <p className="text-text-muted text-sm">
-                No artifacts match this filter{cwd ? ' in this folder' : ''}.
+                {t(cwd ? 'artifacts.emptyFolderFilter' : 'artifacts.emptyFilter')}
               </p>
             ) : (
               view.files.length > 0 && (
                 <>
                   {view.folders.length > 0 && (
                     <p className="text-text-muted mb-3 text-xs font-semibold tracking-wide uppercase">
-                      Files here
+                      {t('artifacts.filesHere')}
                     </p>
                   )}
                   <div
-                    aria-label="Artifacts list"
+                    aria-label={t('artifacts.listLabel')}
                     className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
                   >
                     {view.files.map((a) => (
@@ -726,11 +710,7 @@ export function ArtifactsPage(): JSX.Element {
                           artifactsApi
                             .downloadArtifact(slug, artifactName)
                             .catch((err: unknown) => {
-                              const msg =
-                                err instanceof ApiError
-                                  ? `Download failed (HTTP ${err.status}).`
-                                  : String(err);
-                              setDownloadError(msg);
+                              setDownloadError(classifyArtifactError(err, 'artifacts.error.download'));
                             });
                         }}
                         onDelete={requestDelete}
