@@ -69,7 +69,8 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | S7a/b | Reply delivery; reply exchange (erratum: S7a and S7b merge into one PR; the two exchange constants move and are facade-re-exported, while a shared late `_now` helper preserves patched-global rule 3) | `db/reply_delivery.py`, `db/reply_exchange.py` | HIGH |
 | S8a | Task core CRUD, queries, severity, lineage and recall: the exact 22-method set below, `_SEVERITY_RANK` and identity-re-exported `LineageTooDeep` | `db/tasks.py` | HIGH |
 | S8b | Verified retry lineage, atomic single/fanout child spawn, retry feedback and no-write admission: exact 13-method/eight-module-node set below | existing `db/tasks.py`; identity re-exports in `database.py`, MRO unchanged | HIGH |
-| S8 remaining | Task transitions, completion/recovery/result and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
+| S8c | Ordinary claim/budget failure, manager supersession/refusal, transactional chain advance and task state queries: exact twelve-method set below | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
+| S8 remaining | Logger-dependent escalation, completion/recovery/result and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
 | S9 | Schema bootstrap and migrations (DDL byte-identical; erratum: S9 lands before S8 while active PR #955 edits task code; moves the exact 15-method schema/bootstrap set plus the closed five-name module set `AuthorityAuditMigrationRefusal`, `_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`, `_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL`, `_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL`, `_rebuild_indexes_for`; repoints only the source-text path in `tests/test_thread_mention_routing_store.py`) | `db/schema.py` | HIGH |
 | S10 | Authority policy v1 claims/fences/continue envelopes (erratum: the exact 17-method block from `get_authority_candidate_policy_pin` through `list_authority_audit` plus the seven module definitions `_authority_claim_key`, `_parse_authority_fence_results`, `_validate_authority_class`, `_serialize_authority_fence_results`, `_serialize_authority_audit_payload`, `_AUTHORITY_TERMINAL_STATUSES`, and `_AUTHORITY_APPROVED_VERDICTS`; v1 selector/activation/release remain for S13) | `db/authority_v1.py` | HIGH |
 | S11 | Authority policy v2 attempts/finalisation (erratum: the exact contiguous 67-method `_authenticate_v2_attempt_admission_uncommitted` through `get_authority_policy_v2_housekeeping_target` block plus `_AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING`) | `db/authority_v2_attempts.py` | HIGH |
@@ -174,6 +175,53 @@ PR #682 remain held as described above. Fresh S8b audit found 33 open PRs;
 the six database hunks (#840, #684, #595, #587, #585, #547) and #682 do not
 change the selected S8b nodes or `tasks.py`. Re-audit before publication and
 handoff; this inventory does not authorize any foreign behavioral change.
+
+### S8c exact ownership and remaining holds
+
+S8b PR #969 is merged at `f7a8ba5b4cf73b34c8921cc292c2c47d94b53baf`.
+S8c moves exactly these twelve existing definitions, verbatim and in source
+order, into the existing `TasksMixin`:
+
+```text
+try_claim_for_step, try_fail_over_budget,
+_has_live_manager_supersession_family_work_uncommitted,
+try_fail_nonroot_manager_supersede, try_manager_supersede,
+try_reject_thread_origin_manager_supersede, try_advance_chain,
+increment_revision_count, next_task_id, get_nonterminal_task_ids,
+list_blocked_with_kind, list_tasks_blocked_on_jobs
+```
+
+Their decorated source totals 489 lines. The family-work helper remains
+undecorated; PR #955's non-root failure writer is unchanged. Complete closure
+is `json`, `hashlib`, `datetime`, `timezone`, shared `_synchronized`,
+`BlockKind`, `TaskStatus` and `TaskRecord`, including the string forward
+annotation on `try_advance_chain`; all are already imported by `tasks.py`.
+No import or module binding moves. The existing 35 mixin methods, severity
+assignment, `LineageTooDeep`, eight S8b bindings and all retained facade/module
+nodes remain unchanged. Dynamic `self` calls stay patchable, and the shared
+decorator retains its late whole-facade `_time` lookup and reentrant lock.
+`Database` keeps its original path, MRO and complete public/private attributes.
+
+Direct facade methods go from 90 to 78; the remaining task-domain inventory
+goes from 47 to 35. Logger-dependent `try_escalate`, `try_escalate_runtime`
+and `try_escalate_over_budget`, completion/recovery/results (including
+`_insert_task_result`, `insert_task_result` and
+`completion_result_payload_matches`), attachment/thread/cleanup/termination/
+notification cross-domain writers and shared/facade infrastructure remain
+for later bounded slices. The S8a/S8b paragraphs above preserve their
+historical inventories; their remaining-work descriptions are superseded
+only by this exact S8c relocation.
+
+Fresh S8c audit found 33 open PRs with unchanged heads/file sets after #969
+merged. None touches `tasks.py`; actual #840/#684/#595/#587/#585/#547
+Database hunks do not modify the twelve selected methods or their closure.
+PR #840 result-write relocation remains held. PR #682 still has no Database
+or tasks hunk, while its eleven-function R2 and actual R4/R6 collisions stay
+held under the THR-175 seq33/36 split/deferred ownership disposition above.
+No close/merge/rewrite/transplant of foreign behavior is authorized. Re-audit
+all open PRs and actual changed hunks before publication and handoff.
+S1–S7/S9–S13 and S8a/S8b are shipped foundations, not rebuilt by S8c;
+remaining S8, R1–R6 and later M/E work is not claimed complete.
 
 ## Per-slice gates
 
