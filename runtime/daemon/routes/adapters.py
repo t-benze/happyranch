@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated
 
@@ -700,7 +701,10 @@ def _extract_registration_token(request: Request) -> str:
 
 
 @router.post("/runtime/adapters/register")
-def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
+def register_adapter(
+    body: AdapterRegisterRequest,
+    request: Request,
+) -> AdapterEntryResponse:
     """Register a custom adapter executable.
 
     Validates the executable (absolute path, regular file, executable),
@@ -718,7 +722,9 @@ def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
     (D4) and profile binding (D7) are separate, founder-gated slices.
     """
     try:
-        entry = register_custom_adapter(
+        daemon = getattr(request.app.state, "daemon", None)
+        coordinator = getattr(daemon, "profile_coordinator", None)
+        kwargs = dict(
             executable=body.executable,
             version=body.version,
             capabilities=body.capabilities,
@@ -728,11 +734,23 @@ def register_adapter(body: AdapterRegisterRequest) -> AdapterEntryResponse:
             dependencies=body.dependencies,
             verify_thread_resume=body.verify_thread_resume,
         )
+        if coordinator is not None:
+            kwargs["profile_coordinator"] = coordinator
+        entry = register_custom_adapter(**kwargs)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
     return _entry_to_response(entry)
 
 
@@ -769,6 +787,78 @@ def get_adapter_entry(adapter_id: str) -> AdapterEntryResponse:
 def approve_registered_adapter(
     adapter_id: str,
     body: AdapterApproveRequest,
+    request: Request,
+) -> dict:
+    """Approve a pending custom adapter (THR-107 seq237: approve + optionally bind profile).
+
+    This is a deliberate, explicit transition from durable PENDING to durable
+    APPROVED. The request body carries the exact durable artifact snapshot the
+    founder inspected — every material identity fact (executable, hash, version,
+    capabilities, contract_version, workspace_adapter) is compared against the
+    durable store entry.
+
+    **THR-107 seq237**: When the adapter has a nonempty ``intended_profile_name``,
+    this endpoint atomically approves the snapshot AND creates/binds that same
+    named custom profile (``command_adapter_id: custom-adapter:<id>``) in one
+    server transaction. Settings' single confirmation must refetch durable state
+    and show Connected; it must make no client-side bind follow-up.
+
+    Exact-idempotence: if the adapter is already APPROVED with identical stored
+    immutable facts, the existing entry is returned unchanged. If the profile is
+    already bound, the response includes ``profile_bound: already_bound``.
+
+    Fails closed with 422 when:
+      - Unknown adapter id
+      - Entry is not PENDING (already-approved incompatible repeat, non-pending)
+      - Any snapshot fact mismatches the store
+      - Malformed/empty values
+      - Profile binding fails (name collision, builtin conflict, cross-adapter,
+        validation, registry, audit) — approval is rolled back to PENDING
+
+    No-intended/reusable adapters (no ``intended_profile_name``) are approved
+    without binding; they remain eligible for explicit recovery binding later.
+    """
+    entry = get_adapter(adapter_id)
+    profile_name = (
+        entry.intended_profile_name
+        if entry is not None and entry.intended_profile_name
+        else None
+    )
+    selected_profile_names = (profile_name,) if profile_name is not None else ()
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
+    span = (
+        coordinator.operation(
+            [profile_name] if profile_name is not None else [],
+            operation_kind=(
+                "rebind"
+                if profile_name is not None
+                and profile_name in load_runtime_profiles()
+                else "register"
+            ),
+            publisher="approve_registered_adapter",
+        )
+        if coordinator is not None
+        else nullcontext()
+    )
+    try:
+        with span:
+            return _approve_registered_adapter(adapter_id, body, selected_profile_names)
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
+
+
+def _approve_registered_adapter(
+    adapter_id: str,
+    body: AdapterApproveRequest,
+    selected_profile_names: tuple[str, ...],
 ) -> dict:
     """Approve a pending custom adapter (THR-107 seq237: approve + optionally bind profile).
 
@@ -799,14 +889,9 @@ def approve_registered_adapter(
     No-intended/reusable adapters (no ``intended_profile_name``) are approved
     without auto-binding — they retain explicit advanced Bind recovery.
     """
-    # Determine whether to auto-bind: only when the adapter has an
-    # intended_profile_name (submitted via the adapter-submission path).
-    # No-intended adapters (master-bearer registration path) retain
-    # explicit advanced Bind.
-    auto_bind = False
-    adapter_pre_check = get_adapter(adapter_id)
-    if adapter_pre_check is not None and adapter_pre_check.intended_profile_name:
-        auto_bind = True
+    # Binding uses the target selected before profile lease acquisition.
+    # The registry revalidates that selection under its existing writer lock;
+    # another route read would leave a gap before that serialized transition.
 
     try:
         entry = approve_adapter(
@@ -818,11 +903,12 @@ def approve_registered_adapter(
             contract_version=body.contract_version,
             workspace_adapter=body.workspace_adapter,
             approved_by="founder/master-bearer",
-            auto_bind_profile=auto_bind,
+            auto_bind_profile=bool(selected_profile_names),
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
             thread_resume_verified_at=body.thread_resume_verified_at,
             thread_resume_contract_version=body.thread_resume_contract_version,
+            selected_profile_names=selected_profile_names,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -1058,8 +1144,10 @@ def submit_adapter(
             detail="Token is already reserved or consumed by a concurrent submission.",
         )
 
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
     try:
-        entry = register_custom_adapter(
+        kwargs = dict(
             executable=body.executable,
             version=body.version,
             capabilities=body.capabilities,
@@ -1070,6 +1158,9 @@ def submit_adapter(
             dependencies=body.dependencies,
             verify_thread_resume=body.verify_thread_resume,
         )
+        if coordinator is not None:
+            kwargs["profile_coordinator"] = coordinator
+        entry = register_custom_adapter(**kwargs)
     except ValueError as exc:
         # Release the token on failure so it remains retryable
         store.release_runtime(raw_token)
@@ -1077,6 +1168,16 @@ def submit_adapter(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         )
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        store.release_runtime(raw_token)
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
 
     # Consume the token permanently on success
     store.commit_runtime(raw_token)
@@ -1479,6 +1580,68 @@ def _audit_adapter_bind(
 def bind_adapter_profile(
     adapter_id: str,
     body: BindProfileRequest,
+    request: Request,
+) -> dict:
+    """Bind a profile name to an APPROVED custom adapter (THR-107 seq141).
+
+    Standard daemon-bearer management endpoint. Two paths:
+    - **Normal / intended-profile**: the request ``profile_name`` must
+      exactly match the adapter's ``intended_profile_name``. This path is
+      reachable during advanced recovery when an intended-profile adapter
+      was approved without auto-bind (legacy state).
+    - **Recovery**: for an approved adapter with no ``intended_profile_name``
+      whose server eligibility is ``recovery_ready``, the caller supplies a
+      valid profile name for explicit Bind recovery. The server validates
+      D7B custom-adapter requirements, checks for built-in name collisions,
+      and verifies on-disk integrity.
+    Both paths bind via ``command_adapter_id: custom-adapter:<id>``.
+
+    Gating checks (exact order):
+    1. Adapter exists (404 if unknown)
+    2. Adapter is APPROVED (422 if PENDING or unknown status)
+    3. When intended_profile_name is set, the request profile_name must
+       match exactly; when None (recovery_ready), the caller selects a
+       valid profile name (422 on mismatch or invalid name)
+    4. Profile name does not collide with a built-in (422)
+    5. On-disk adapter is still executable with matching SHA-256 (422)
+    6. D7B custom-adapter validation passes (orchestrator-rejected → 422)
+    7. Persist as custom-adapter profile atomically
+
+    On any post-durable failure, restore pre-request state.
+
+    Returns the created profile entry.
+    """
+    profile_name = body.profile_name.strip()
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
+    span = (
+        coordinator.operation(
+            [profile_name],
+            operation_kind=(
+                "rebind" if profile_name in load_runtime_profiles() else "register"
+            ),
+            publisher="bind_adapter_profile",
+        )
+        if coordinator is not None
+        else nullcontext()
+    )
+    try:
+        with span:
+            return _bind_adapter_profile(adapter_id, body)
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
+
+
+def _bind_adapter_profile(
+    adapter_id: str,
+    body: BindProfileRequest,
 ) -> dict:
     """Bind a profile name to an APPROVED custom adapter (THR-107 seq141).
 
@@ -1828,6 +1991,49 @@ def remove_unbound_direct_connect_adapter(adapter_id: str):
     dependencies=[require_token()],
 )
 def remove_adapter_entry(
+    adapter_id: str,
+    body: AdapterRemoveRequest,
+    request: Request,
+) -> dict:
+    """Remove an APPROVED custom adapter (THR-107 founder-gated destructive action).
+
+    Master-bearer-authenticated management endpoint. Removes an APPROVED custom
+    adapter from the durable store. The caller MUST supply an exact durable
+    snapshot (all material identity and binding facts) — the server rejects
+    stale, re-registered, and wrong-target snapshots.
+
+    Gating checks (exact order):
+    1. Adapter exists (404 if unknown)
+    2. Adapter is APPROVED (422 if PENDING or unknown status)
+    3. Every snapshot fact matches the stored adapter (422 on mismatch)
+    4. No custom runtime profile references command_adapter_id
+       custom-adapter:<adapter_id> (422 if bound)
+
+    Under the reentrant adapter-store lock, the adapter is durably removed
+    and an audit entry is written. If auditing fails after durable removal,
+    the exact adapter entry is restored under the lock and a failure is
+    returned — a successful removal is always auditable.
+
+    Lock ordering (documented, compatible with bind/registration):
+      adapter_store_lock → durable removal → audit write
+    """
+    # The existing exact bound-profile guard makes every successful adapter
+    # removal profile-neutral.  Still route the writer through the coordinator
+    # entry point so a later relaxation cannot silently bypass U2B.
+    daemon = getattr(request.app.state, "daemon", None)
+    coordinator = getattr(daemon, "profile_coordinator", None)
+    span = (
+        coordinator.operation(
+            [], operation_kind="remove", publisher="remove_adapter_entry",
+        )
+        if coordinator is not None
+        else nullcontext()
+    )
+    with span:
+        return _remove_adapter_entry(adapter_id, body)
+
+
+def _remove_adapter_entry(
     adapter_id: str,
     body: AdapterRemoveRequest,
 ) -> dict:

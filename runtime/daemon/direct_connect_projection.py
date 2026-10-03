@@ -15,11 +15,18 @@ daemon-owned periodic projection sweep. It is never invoked by receipt-only
 """
 from __future__ import annotations
 
+import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
+from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+
+
+_ACTIVE_PROJECTIONS: set[tuple[int, str]] = set()
+_ACTIVE_PROJECTIONS_LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class ProjectionOutcome:
@@ -39,6 +46,15 @@ def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: 
     """
     projection = store.get_projection(operation_id)
     if projection is None:
+        # A same-process owner may have claimed the operation immediately
+        # before its durable plan insert. Keep this bounded and do not start a
+        # second probe while that tiny publication window closes.
+        for _ in range(50):
+            threading.Event().wait(0.02)
+            projection = store.get_projection(operation_id)
+            if projection is not None:
+                break
+    if projection is None:
         raise RuntimeError(f"concurrent projection disappeared for operation {operation_id!r}")
     if projection.state == "committed":
         return ProjectionOutcome(
@@ -51,7 +67,36 @@ def _await_concurrent_outcome(store: DirectConnectAuthorityStore, operation_id: 
 
 
 def project(
-    store: DirectConnectAuthorityStore, operation_id: str, *, now: float | None = None
+    store: DirectConnectAuthorityStore,
+    operation_id: str,
+    *,
+    now: float | None = None,
+    profile_coordinator=None,
+) -> ProjectionOutcome:
+    """Serialize same-process owners while durable planned rows stay retryable."""
+    claim = (id(store), operation_id)
+    with _ACTIVE_PROJECTIONS_LOCK:
+        if claim in _ACTIVE_PROJECTIONS:
+            return _await_concurrent_outcome(store, operation_id)
+        _ACTIVE_PROJECTIONS.add(claim)
+    try:
+        return _project_once(
+            store,
+            operation_id,
+            now=now,
+            profile_coordinator=profile_coordinator,
+        )
+    finally:
+        with _ACTIVE_PROJECTIONS_LOCK:
+            _ACTIVE_PROJECTIONS.discard(claim)
+
+
+def _project_once(
+    store: DirectConnectAuthorityStore,
+    operation_id: str,
+    *,
+    now: float | None = None,
+    profile_coordinator=None,
 ) -> ProjectionOutcome:
     """Drive one direct-connect receipt to COMMITTED, or fail closed.
 
@@ -77,7 +122,6 @@ def project(
         )
     if existing is not None and existing.state == "failed":
         return ProjectionOutcome(state="failed", adapter_id=None, profile_name=None, reason=existing.reason)
-
     artifacts = store.get_receipt_artifacts(operation_id)
     if artifacts is None:
         raise RuntimeError(f"no receipt found for direct-connect operation {operation_id!r}")
@@ -103,11 +147,18 @@ def project(
             return _await_concurrent_outcome(store, active_other)
         return ProjectionOutcome(state="planned", adapter_id=None, profile_name=None, reason=None)
 
-    if not store.plan_projection(operation_id, now=now):
+    if existing is None and not store.plan_projection(operation_id, now=now):
         # Another caller won the plan race between our read of `existing`
-        # and now. Reconcile its durable state instead of racing the
-        # conformance probe / durable writes a second time.
-        return _await_concurrent_outcome(store, operation_id)
+        # and now. Terminalize from its durable result when possible. A
+        # durable planned row is intentionally resumable: a previous owner may
+        # have lost ordinary profile-lease contention before any mutation.
+        raced = store.get_projection(operation_id)
+        if raced is None:
+            raise RuntimeError(
+                f"concurrent projection disappeared for operation {operation_id!r}"
+            )
+        if raced.state != "planned":
+            return _await_concurrent_outcome(store, operation_id)
 
     adapter_id = custom_adapter_registry.generate_adapter_id(
         f"{artifacts.intended_profile_name}-adapter"
@@ -145,39 +196,82 @@ def project(
 
     adapter_created = False
     replaced_adapter: AdapterEntry | None = None
-    acquire_store_lock()
-    try:
-        existing_adapter = get_adapter(adapter_id)
-        if existing_adapter is None:
-            save_adapter(entry)
-            adapter_created = True
-        elif existing_adapter.executable_hash != entry.executable_hash:
-            save_adapter(entry)
-            replaced_adapter = existing_adapter
-        try:
-            bind_result = custom_adapter_registry._perform_adapter_profile_binding(
-                adapter_id=adapter_id,
-                profile_name=artifacts.intended_profile_name,
-                workspace_adapter=artifacts.workspace_adapter_id,
-            )
-        except Exception:
-            if adapter_created:
-                remove_adapter(adapter_id)
-            elif replaced_adapter is not None:
-                save_adapter(replaced_adapter)
-            # The direct gate persists only a fixed category; arbitrary
-            # exception text, paths, hashes, or candidate output must never
-            # reach durable rows or the HTTP response.
-            store.mark_failed(operation_id, "profile_binding_failed", now=now)
-            return ProjectionOutcome(
-                state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
-            )
-    finally:
-        release_store_lock()
 
-    store.mark_committed(
-        operation_id, adapter_id=adapter_id, profile_name=bind_result["profile_name"], now=now,
+    def projection_is_terminal() -> bool:
+        current = store.get_projection(operation_id)
+        return current is not None and current.state in {"committed", "failed"}
+
+    profile_span = (
+        profile_coordinator.claimed_operation(
+            [artifacts.intended_profile_name],
+            operation_kind=(
+                "rebind"
+                if artifacts.intended_profile_name
+                in load_runtime_profiles()
+                else "register"
+            ),
+            publisher="direct_connect_projection",
+            terminal_check=projection_is_terminal,
+        )
+        if profile_coordinator is not None
+        else nullcontext(True)
     )
+    with profile_span as owns_projection:
+        if not owns_projection:
+            # The cross-process winner terminalized while this caller waited
+            # for the profile lease. Return its durable result without creating
+            # another U1A operation, fence, generation, publication, or adapter
+            # mutation.
+            outcome = _await_concurrent_outcome(store, operation_id)
+            if outcome.state == "planned":
+                raise RuntimeError(
+                    f"terminal projection claim disappeared for operation {operation_id!r}"
+                )
+            return outcome
+        acquire_store_lock()
+        try:
+            existing_adapter = get_adapter(adapter_id)
+            if existing_adapter is None:
+                save_adapter(entry)
+                adapter_created = True
+            elif existing_adapter.executable_hash != entry.executable_hash:
+                save_adapter(entry)
+                replaced_adapter = existing_adapter
+            try:
+                bind_result = custom_adapter_registry._perform_adapter_profile_binding(
+                    adapter_id=adapter_id,
+                    profile_name=artifacts.intended_profile_name,
+                    workspace_adapter=artifacts.workspace_adapter_id,
+                )
+            except Exception:
+                if adapter_created:
+                    remove_adapter(adapter_id)
+                elif replaced_adapter is not None:
+                    save_adapter(replaced_adapter)
+                # The direct gate persists only a fixed category; arbitrary
+                # exception text, paths, hashes, or candidate output must never
+                # reach durable rows or the HTTP response.
+                store.mark_failed(operation_id, "profile_binding_failed", now=now)
+                return ProjectionOutcome(
+                    state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
+                )
+        finally:
+            release_store_lock()
+        # Close the resumable planned window before releasing the profile
+        # lease, so a later route/sweep caller observes the terminal winner
+        # instead of redundantly publishing another profile generation.
+        if not store.mark_committed(
+            operation_id,
+            adapter_id=adapter_id,
+            profile_name=bind_result["profile_name"],
+            now=now,
+        ):
+            # This is unreachable for supported callers: the terminal re-read,
+            # durable U1A operation claim, and stable profile lease jointly own
+            # the transition. Never ignore a lost CAS after mutation.
+            raise RuntimeError(
+                f"projection terminal ownership lost for operation {operation_id!r}"
+            )
     return ProjectionOutcome(
         state="committed", adapter_id=adapter_id, profile_name=bind_result["profile_name"], reason=None,
     )

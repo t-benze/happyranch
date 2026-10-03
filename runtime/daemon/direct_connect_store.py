@@ -1638,12 +1638,14 @@ class DirectConnectAuthorityStore:
             return [row["operation_id"] for row in rows]
 
     def list_latest_operations_pending_projection(self) -> list[str]:
-        """Only the latest accepted candidate per parent lacking a projection row.
+        """Latest candidates lacking a projection or left durably planned.
 
         This prevents the daemon sweep from racing an older, superseded
         candidate against the newer candidate that is actually eligible to
         proceed. Legacy operations created before the THR-160 candidate ledger
-        are also included so the sweep continues to drive them to completion.
+        are also included. A ``planned`` row is retryable because ordinary
+        profile-coordinator contention can occur after planning but before any
+        adapter/profile mutation.
         """
         with self._lock:
             rows = self._conn.execute(
@@ -1656,12 +1658,13 @@ class DirectConnectAuthorityStore:
                        ) latest ON latest.token_fingerprint = c.token_fingerprint
                               AND latest.max_ordinal = c.attempt_ordinal
                        LEFT JOIN direct_connect_projections p ON p.operation_id = c.operation_id
-                       WHERE p.operation_id IS NULL
+                       WHERE p.operation_id IS NULL OR p.state = 'planned'
                      UNION ALL
                        SELECT o.operation_id, o.created_at FROM direct_connect_operations o
                        LEFT JOIN direct_connect_candidates c ON c.operation_id = o.operation_id
                        LEFT JOIN direct_connect_projections p ON p.operation_id = o.operation_id
-                       WHERE c.candidate_id IS NULL AND p.operation_id IS NULL
+                       WHERE c.candidate_id IS NULL
+                         AND (p.operation_id IS NULL OR p.state = 'planned')
                    )
                  ORDER BY created_at ASC"""
             ).fetchall()

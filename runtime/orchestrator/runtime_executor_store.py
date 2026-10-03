@@ -13,9 +13,13 @@ Atomic write + YAML serialization mirror the org-config write path.
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
+import stat
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import yaml
@@ -38,6 +42,31 @@ def _store_path() -> Path:
     override = os.environ.get("HAPPYRANCH_DAEMON_HOME")
     base = Path(override) if override else daemon_home()
     return base / "executor_profiles.yaml"
+
+
+@contextmanager
+def _store_mutation_lock() -> Iterator[None]:
+    """Serialize the shared YAML read/merge/replace critical section.
+
+    Per-profile coordinator leases deliberately remain disjoint, while every
+    profile mutation rewrites this one machine-global file. This stable flock
+    is therefore the innermost leaf in the authority lock graph: callers may
+    already own profile/publication/adapter locks, but this helper never
+    acquires any of them and releases the file lock before returning.
+    """
+    path = _store_path().with_name("executor_profiles.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise OSError("executor profile store lock is not a regular file")
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -81,26 +110,28 @@ def save_runtime_profile(name: str, entry: dict) -> None:
 
     Uses atomic temp-file + os.replace pattern (same as org-config writer).
     """
-    path = _store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    with _store_mutation_lock():
+        path = _store_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Read current profiles, merge in the new entry
-    current = load_runtime_profiles()
-    current[name] = entry
+        # Read current profiles, merge in the new entry
+        current = load_runtime_profiles()
+        current[name] = entry
 
-    fd, tmp = tempfile.mkstemp(
-        prefix=".executor-profiles.", suffix=".yaml", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            yaml.safe_dump(current, fh, sort_keys=False)
-        os.replace(tmp, path)
-    except Exception:
+        fd, tmp = tempfile.mkstemp(
+            prefix=".executor-profiles.", suffix=".yaml", dir=str(path.parent)
+        )
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
+            with os.fdopen(fd, "w") as fh:
+                yaml.safe_dump(current, fh, sort_keys=False)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+
 
 def remove_runtime_profile(name: str) -> None:
     """Atomically remove a single runtime executor profile entry.
@@ -110,22 +141,23 @@ def remove_runtime_profile(name: str) -> None:
     the same atomic temp-file + ``os.replace`` pattern as
     ``save_runtime_profile``.
     """
-    path = _store_path()
-    current = load_runtime_profiles()
-    if name not in current:
-        return
-    del current[name]
+    with _store_mutation_lock():
+        path = _store_path()
+        current = load_runtime_profiles()
+        if name not in current:
+            return
+        del current[name]
 
-    fd, tmp = tempfile.mkstemp(
-        prefix=".executor-profiles.", suffix=".yaml", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w") as fh:
-            yaml.safe_dump(current, fh, sort_keys=False)
-        os.replace(tmp, path)
-    except Exception:
+        fd, tmp = tempfile.mkstemp(
+            prefix=".executor-profiles.", suffix=".yaml", dir=str(path.parent)
+        )
         try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
+            with os.fdopen(fd, "w") as fh:
+                yaml.safe_dump(current, fh, sort_keys=False)
+            os.replace(tmp, path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise

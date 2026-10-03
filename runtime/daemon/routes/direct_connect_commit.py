@@ -42,6 +42,7 @@
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -107,9 +108,25 @@ async def commit(operation_id: str, request: Request) -> dict[str, str | None]:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="direct authority unavailable"
         )
     try:
-        outcome = project(authority_store, operation_id)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from None
+        outcome = project(
+            authority_store,
+            operation_id,
+            profile_coordinator=daemon.profile_coordinator,
+        )
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        if isinstance(exc, RuntimeError):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(exc),
+            ) from None
+        raise
 
     result = {"operation_id": operation_id, "profile_state": outcome.state}
     if outcome.state == "committed":
@@ -137,12 +154,25 @@ async def retry(operation_id: str, request: Request) -> dict[str, str]:
             detail=f"refused: projection state is '{projection.state}', not 'failed'",
         )
     try:
-        outcome = retry_validate(authority_store, operation_id)
+        outcome = retry_validate(
+            authority_store,
+            operation_id,
+            profile_coordinator=daemon.profile_coordinator,
+        )
     except DirectConnectRetryStaleCandidateError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="refused: stale candidate superseded by later candidate",
         ) from None
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": exc.code},
+            ) from None
+        raise
     result = {"operation_id": operation_id, "profile_state": outcome.state}
     if outcome.state == "committed":
         result["profile_name"] = outcome.profile_name
@@ -197,8 +227,25 @@ async def status_for_profile(intended_profile_name: str, request: Request) -> Di
         )
         result["retry_state"] = "succeeded"
     elif candidate_status.state == "connected":
-        stored_profiles = load_runtime_profiles()
-        live_profile = get_registry().get_profile(intended_profile_name)
+        coordinator = getattr(daemon, "profile_coordinator", None)
+        span = (
+            coordinator.profile_read(intended_profile_name)
+            if coordinator is not None
+            else nullcontext()
+        )
+        try:
+            with span:
+                stored_profiles = load_runtime_profiles()
+                live_profile = get_registry().get_profile(intended_profile_name)
+        except Exception as exc:
+            from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+            if isinstance(exc, ProfileCoordinatorError):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": exc.code},
+                ) from None
+            raise
         if intended_profile_name in stored_profiles and live_profile is not None:
             result["profile_state"] = "committed"
         else:

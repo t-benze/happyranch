@@ -56,6 +56,65 @@ written for executor resolution. The executor is resolved against the
 Four **built-in** profiles ship with the runtime; approved custom-adapter
 profiles are bound in the machine-global runtime store (THR-107 — see below).
 
+Machine-global profile mutations use the U2B same-host cooperative coordinator.
+Each supported adapter/profile writer takes a stable owner-only per-profile
+file lease, pre-fences only orgs with consumers of that profile, commits through
+the existing durable-first writer, and republishes each org only after its full
+profile dependency closure is coherent, including the existing central
+approved/current custom-adapter eligibility check. The lock order is profile
+lease before org publication lease before existing writer locks; the shared
+`executor_profiles.yaml` mutation lock is the innermost leaf and covers only
+read/merge/atomic-replace. Multiple agents using one profile remain distinct
+consumer rows; removing one cannot erase another. Pending enrollment and rejection
+create no active requirement. Each lifecycle canonical segment acquires source
+and target profile leases before the org publisher gate, maintains the exact
+consumer relation, and restores the prior profile mirrors on pre-commit failure.
+These leases release before publication discovery and awaited workspace work.
+Publication compares the dependency projection with the canonical active roster;
+an absent row cannot silently authorize a ready empty closure. Profile contenders
+refuse an unfinished ordinary canonical batch before their global operation claim;
+a later healthy publication/recovery permits the next action. A removed profile leaves its
+remaining consumers unbound and their org fenced until an explicit valid rebind
+or removal. Live contention returns `profile_coordinator_busy`; process death
+releases the kernel lease and startup resumes the durable operation exactly
+once. Existing admitted work is not killed, and U2B adds no workflow admission
+or activation surface.
+
+Approval passes its selected intended profile, or its empty target selection,
+into the existing serialized adapter writer. Before approval, idempotent
+return or binding, the durable target must still match. A supported submission
+that changes it causes the existing 409 `profile_consumer_changed` conflict
+without adapter/profile mutation; a fresh request reselects only after stale
+ownership releases. Stable known-target contention remains 409
+`profile_coordinator_busy`, and ordinary no-target approval creates no profile.
+The adapter writer never acquires a new profile lease.
+
+Both adapter registration entry points (`register_adapter` and
+`submit_adapter`), approval/bind/removal, executor-profile removal,
+direct-connect projection/retry, active Founder creation and approval, manager
+revision-CAS executor update, dedicated executor update, explicit termination,
+whole-definition repo/model writes, paired profile reads, and daemon startup participate at their existing mutation/read
+boundaries. Conformance probes finish before profile leases. A direct-connect
+projection left durably `planned` by pre-mutation contention is retried by a
+later commit call or the production sweep; it is not treated as a terminal
+successful response. Route and sweep contenders serialize on the profile lease
+and re-read that durable row before creating the U1A operation/fence, so a
+terminal loser performs no adapter/profile mutation or second publication.
+Dynamic org attachment takes all canonically ordered referenced profile leases
+through dependency synchronization and shared-map insertion. Readiness reopens
+only when each org-local profile digest equals the current global digest.
+
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 **Built-in profiles:**
 
 | Executor | Bootstrap doc | Skills dir | Permission surface |
@@ -330,6 +389,12 @@ persist provider stdout, stderr, errors, or the canary.
    durably removed and an audit entry (scope ``adapter:<id>``, action
    ``adapter_removed``) is written. The adapter's on-disk executable is never
    touched.
+
+For all profile-changing steps above, a failure after the durable writer but
+before dependent-org publication preserves the route's established success or
+error contract and leaves the affected org pointer fenced with durable recovery
+state. Daemon startup reconciles that operation forward; it never restores a
+stale ready snapshot. Orgs with no dependency on the profile are untouched.
 
 **Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
 path type (exists, regular file, executable) and SHA-256 immediately before

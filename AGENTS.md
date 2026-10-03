@@ -226,9 +226,68 @@ callback` order. Direct same-UID file/DB mutation is outside this cooperative
 guarantee.
 
 U2A provides `verify_admission_ready()` for later workflow units but wires no
-admission, activation, or dispatch consumer. Machine-global executor profiles
-remain U2B-deferred: profile changes do not yet fence orgs, and no workflow
-admission consumer may ship until that coordinator exists.
+admission, activation, or dispatch consumer. U2B now ships the cooperative
+same-host `ProfileCoordinator`: every supported machine-global profile/adapter
+writer acquires the stable owner-only per-profile `flock` before any affected
+org publication gate, pre-fences exactly the orgs with active or outstanding
+consumers, commits through the existing durable-first writer, and republishes
+only a complete coherent closure. The complete acyclic lock order is profile
+lease -> org publication lease -> existing writer lock(s) -> the shared
+`executor_profiles.yaml` store lock as an innermost leaf. Every save/remove
+holds that stable mode-0600 `flock` only around its read/merge/`os.replace`
+critical section; the store-lock holder never acquires another lease, writer
+lock, or SQLite transaction. Publication paths never acquire a profile or
+store lease, and no profile/publication lease or SQLite transaction spans
+filesystem scanning, network, host launch, or callbacks. Active Founder creation,
+Founder approval, manager revision-CAS executor update, dedicated executor
+update, and explicit termination maintain distinct per-agent dependency rows
+inside the canonical fence. Pending enrollment/rejection has no active profile
+membership. Whole-definition repo/model writers also preserve this relation.
+Lifecycle profile leases cover only synchronous canonical mutation and its
+compensation, and release before publication capture or awaited bootstrap.
+Missing dependency rows are never proof of an empty canonical requirement set.
+A profile contender refuses an unfinished ordinary canonical batch before its
+global operation claim; startup authority recovery owns interrupted batches. Removal leaves
+an outstanding consumer unbound and the org fenced until an explicit coherent
+rebind/removal. Cold startup completes interrupted operations once; a
+post-commit republish failure preserves the writer's established response while
+leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
+remain outside the cooperative guarantee. Dynamic org attachment scans its
+canonical profile requirements and authority inputs before taking the corresponding
+profile leases. Discovery is bracketed by the existing durable authority revision
+and revalidated under the profile-then-org mutation lease; changed captures
+retry boundedly or refuse. Synchronization consumes that captured roster without
+rescanning, publishes only a validated canonical snapshot and current profile
+digest, and joins the shared org map
+before releasing them; a non-terminal operation is therefore retried boundedly
+or refused and cannot be escaped. Closure coherence compares every org mirror's
+profile digest with the current global profile digest before readiness reopens.
+Direct-connect route/sweep retries take the same stable profile lease, re-read
+the durable projection terminal state before creating a U1A operation/fence,
+and only the winner records that existing durable claim and mutates/publishes.
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
+Adapter approval carries its initially selected intended profile (including no
+target) through to the durable registry writer. Under the existing adapter
+writer lock, that selection must still match before approval, an idempotent
+return, or profile binding. A concurrent supported submission changing the
+target refuses with the existing 409 `profile_consumer_changed` conflict before
+adapter/profile mutation; ownership releases before a fresh request selects
+again. A known target under live contention still returns 409
+`profile_coordinator_busy`; ordinary no-target approval succeeds without a
+profile. No new profile lease is acquired beneath the adapter writer lock.
+
+U2B still wires no workflow
+admission, activation, or dispatch consumer; those remain later units.
 
 ## Commands
 

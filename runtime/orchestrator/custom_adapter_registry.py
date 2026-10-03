@@ -27,6 +27,7 @@ import secrets
 import subprocess
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1027,6 +1028,31 @@ def _find_active_profile_bound(
     return None
 
 
+def _profiles_bound_to_adapter(
+    adapter_id: str,
+    runtime_profiles: dict[str, dict],
+) -> tuple[str, ...]:
+    """Return every durable or live registry profile bound to an adapter."""
+    target = f"custom-adapter:{adapter_id}"
+    names = {
+        name.lower()
+        for name, config in runtime_profiles.items()
+        if config.get("command_adapter_id") == target
+    }
+    from runtime.orchestrator.executor_registry import get_registry
+
+    registry = get_registry()
+    for name in registry.list_profile_names():
+        profile = registry.get_profile(name)
+        if (
+            profile is not None
+            and profile.kind != "builtin"
+            and profile.command_adapter_id == target
+        ):
+            names.add(name.lower())
+    return tuple(sorted(names))
+
+
 def register_custom_adapter(
     executable: str,
     version: str,
@@ -1037,6 +1063,7 @@ def register_custom_adapter(
     dependency_manifest_version: int | None = None,
     dependencies: list[dict] | None = None,
     verify_thread_resume: bool = False,
+    profile_coordinator=None,
 ) -> AdapterEntry:
     """Register a custom adapter executable.
 
@@ -1209,66 +1236,94 @@ def register_custom_adapter(
                 f"must report at least one numeric token count."
             )
 
-    # Step 8: Build and persist atomically with competing writes.
+    # Step 8: Build and persist atomically with competing writes. Validation,
+    # hashing, and the conformance subprocess above deliberately complete
+    # before profile coordination begins. The operation span covers only the
+    # durable adapter mutation and its dependent-org publication.
     # Acquire the store lock so that no concurrent approval or
     # registration can interleave between the existing-entry check
     # and the durable write.
     now = datetime.now(timezone.utc).isoformat()
 
-    acquire_store_lock()
-    try:
-        # Re-registration safety: if an active runtime profile is already
-        # bound to this adapter id (via command_adapter_id:
-        # custom-adapter:<id>), reject the re-registration rather than
-        # silently leaving an active profile targeting a PENDING artifact.
-        # The operator must unbind the profile before re-registering.
-        from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
-        bound_profile = _find_active_profile_bound(adapter_id, load_runtime_profiles())
-        if bound_profile is not None:
-            raise ValueError(
-                f"Cannot re-register adapter {adapter_id!r}: the runtime "
-                f"profile {bound_profile!r} is currently bound to it "
-                f"(command_adapter_id: custom-adapter:{adapter_id}). "
-                f"Remove the profile first via Settings → Executors → "
-                f"Custom CLIs, then re-register the adapter."
+    from runtime.orchestrator.executor_registry import get_registry
+    from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+
+    runtime_profiles = load_runtime_profiles()
+    affected_profiles = set(_profiles_bound_to_adapter(adapter_id, runtime_profiles))
+    if intended_profile_name is not None:
+        affected_profiles.add(intended_profile_name.lower())
+    profile_span = (
+        profile_coordinator.operation(
+            sorted(affected_profiles),
+            operation_kind=(
+                "rebind"
+                if any(
+                    name in runtime_profiles or get_registry().get_profile(name) is not None
+                    for name in affected_profiles
+                )
+                else "register"
+            ),
+            publisher="register_custom_adapter",
+        )
+        if profile_coordinator is not None and affected_profiles
+        else nullcontext()
+    )
+    with profile_span:
+        acquire_store_lock()
+        try:
+            # Re-registration safety: if an active runtime profile is already
+            # bound to this adapter id (via command_adapter_id:
+            # custom-adapter:<id>), reject the re-registration rather than
+            # silently leaving an active profile targeting a PENDING artifact.
+            # The operator must unbind the profile before re-registering.
+            bound_profile = _find_active_profile_bound(
+                adapter_id, load_runtime_profiles(),
+            )
+            if bound_profile is not None:
+                raise ValueError(
+                    f"Cannot re-register adapter {adapter_id!r}: the runtime "
+                    f"profile {bound_profile!r} is currently bound to it "
+                    f"(command_adapter_id: custom-adapter:{adapter_id}). "
+                    f"Remove the profile first via Settings → Executors → "
+                    f"Custom CLIs, then re-register the adapter."
+                )
+
+            # Reload existing entry from disk AT the commit boundary
+            existing = get_adapter(adapter_id)
+
+            entry = AdapterEntry(
+                id=adapter_id,
+                name=adapter_name,
+                executable=str(executable_path),
+                executable_hash=file_hash,
+                version=version,
+                capabilities=persisted_capabilities,
+                contract_version=1,
+                workspace_adapter=workspace_adapter,
+                status="pending",  # ALWAYS pending
+                registered_at=now,
+                registered_by=registered_by,
+                approved_at=None,
+                approved_by=None,
+                intended_profile_name=intended_profile_name,
+                dependency_manifest_version=dep_manifest_version,
+                dependencies=normalized_deps,
+                thread_resume_verified_at=thread_resume_verified_at,
+                thread_resume_contract_version=thread_resume_contract_version,
             )
 
-        # Reload existing entry from disk AT the commit boundary
-        existing = get_adapter(adapter_id)
-
-        entry = AdapterEntry(
-            id=adapter_id,
-            name=adapter_name,
-            executable=str(executable_path),
-            executable_hash=file_hash,
-            version=version,
-            capabilities=persisted_capabilities,
-            contract_version=1,
-            workspace_adapter=workspace_adapter,
-            status="pending",  # ALWAYS pending
-            registered_at=now,
-            registered_by=registered_by,
-            approved_at=None,
-            approved_by=None,
-            intended_profile_name=intended_profile_name,
-            dependency_manifest_version=dep_manifest_version,
-            dependencies=normalized_deps,
-            thread_resume_verified_at=thread_resume_verified_at,
-            thread_resume_contract_version=thread_resume_contract_version,
-        )
-
-        # Re-registration guard: if existing entry differs, status MUST be
-        # pending.  If identical (same executable, hash, caps, deps), keep
-        # original status (forward-compat for D4 approval).
-        if existing is not None:
-            if (existing.executable == str(executable_path) and
-                    existing.executable_hash == file_hash and
-                    existing.version == version and
-                    existing.capabilities == persisted_capabilities and
-                    existing.workspace_adapter == workspace_adapter and
-                    existing.dependency_manifest_version == dep_manifest_version and
-                    existing.dependencies == normalized_deps):
-                # Identical — preserve original registration metadata
+            # Re-registration guard: if existing entry differs, status MUST be
+            # pending. If identical, preserve registration metadata but never
+            # silently retain approval.
+            if existing is not None and (
+                existing.executable == str(executable_path)
+                and existing.executable_hash == file_hash
+                and existing.version == version
+                and existing.capabilities == persisted_capabilities
+                and existing.workspace_adapter == workspace_adapter
+                and existing.dependency_manifest_version == dep_manifest_version
+                and existing.dependencies == normalized_deps
+            ):
                 entry = AdapterEntry(
                     id=entry.id,
                     name=entry.name,
@@ -1289,15 +1344,12 @@ def register_custom_adapter(
                     thread_resume_verified_at=thread_resume_verified_at,
                     thread_resume_contract_version=thread_resume_contract_version,
                 )
-            else:
-                # Changed — new registration, pending
-                pass  # entry already has status="pending" and intended_profile_name
 
-        # Persist atomically (save_adapter reloads + replaces under the
-        # same lock, which serializes against competing writers).
-        _save_adapter_locked(entry)
-    finally:
-        release_store_lock()
+            # Persist atomically (save_adapter reloads + replaces under the
+            # same lock, which serializes against competing writers).
+            _save_adapter_locked(entry)
+        finally:
+            release_store_lock()
 
     return entry
 
@@ -1482,6 +1534,7 @@ def approve_adapter(
     dependencies: list[dict] | None = None,
     thread_resume_verified_at: str | None = None,
     thread_resume_contract_version: int | None = None,
+    selected_profile_names: tuple[str, ...] | None = None,
 ) -> AdapterEntry:
     """Approve a pending custom adapter (D4 founder-gated approval gate).
 
@@ -1508,6 +1561,15 @@ def approve_adapter(
     first causes the stale approval to reject with no durable overwrite.
     If approval wins first, a subsequent re-registration durably replaces
     the entry with a new PENDING snapshot and cleared provenance.
+
+    Coordinated route callers also supply ``selected_profile_names``: the
+    exact intended target selected before acquiring profile ownership, or an
+    empty tuple for no intended target. Under this same writer lock it must
+    match the durable entry before any transition, idempotent return or bind.
+    A changed selection raises the existing ``profile_consumer_changed``
+    coordination conflict; retry must release ownership and select afresh,
+    never acquire another profile lease beneath this writer lock. ``None``
+    retains the existing standalone registry caller contract.
 
     Exact-idempotence: if the adapter is already APPROVED with identical
     stored immutable facts, the existing entry is returned unchanged (no
@@ -1559,6 +1621,15 @@ def approve_adapter(
                 f"Unknown adapter {adapter_id!r}. Register the adapter first; "
                 f"it must be in PENDING state before approval."
             )
+
+        if selected_profile_names is not None:
+            durable_profile_names = (
+                (entry.intended_profile_name,) if entry.intended_profile_name else ()
+            )
+            if durable_profile_names != selected_profile_names:
+                from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+                raise ProfileCoordinatorError("profile_consumer_changed")
 
         # Normalize deps for comparison (None vs [] are equivalent for legacy)
         _req_deps = dependencies or []

@@ -401,9 +401,25 @@ retained as provenance; its "proposed, unimplemented" labels are historical
 for those org-scoped writer rows and are superseded by this status note. The
 readiness verifier exists for later units, but U2A wires no admission,
 activation, dispatch, callback or legacy task/chain/fan-out consumer.
-Machine-global `ProfileCoordinator` work remains U2B-deferred: profile changes
-do not yet fence orgs and no admission consumer may ship before U2B. Direct
+Machine-global `ProfileCoordinator` work shipped in U2B: supported profile and
+adapter writers now fence dependent orgs and publish a coherent profile closure.
+No workflow admission consumer ships in U2B. Direct
 same-UID file/DB edits remain outside the cooperative guarantee.
+
+The following U2B overlay is the current supported-operation map for the
+machine-global rows later in this historical census; it replaces their old
+`proposed, unimplemented` cells without changing the still-deferred consumer
+rows:
+
+| Production symbols | Shipped coordination status |
+|---|---|
+| `DaemonState.from_runtime`; `ProfileCoordinator.reconcile_startup` | Recovers interrupted profile operations exactly once, reconciles durable dependencies, and fences or publishes each attached org before admission. |
+| `runtime_executor_store.save_runtime_profile` / `remove_runtime_profile` | Participating writers. Per-profile lease then org publication lease; the shared `executor_profiles.yaml` flock is the innermost leaf around read/merge/replace. |
+| executor register/remove routes and registry register/unregister | Participating writers. Dependents are pre-fenced and a coherent closure is published only while every referenced profile and custom adapter is currently resolvable. |
+| `register_custom_adapter`, approve/bind/remove adapter routes | Participating writers. The coordinator spans the adapter-store mutation and dependent-org publication; existing adapter/profile store locks remain inner leaves. |
+| direct-connect projection route and sweep | Participating writers. A durable `planned` projection is retryable after pre-mutation lease contention and terminalizes under the profile lease. |
+| list/read-only profile and adapter routes | Read-only; no mutation span. They expose durable/current state and do not establish admission readiness. |
+
 Multi-stage route writers retain a process-local coordinator gate through
 terminal success or compensation, ordered before their existing `teams_lock`;
 the startup AgentDef migration retains it across the batch. A durable lease is
@@ -794,22 +810,66 @@ the terminal reverse `journal[:6]` is derived from the prior admitted prestate
 and the independently captured publisher invocation. No new schedule was added
 and no row is compared to itself.
 
-**Proposed D2 global profile protocol (concrete).** The proposal selects a
-machine-global coordinator that cannot be represented by the org-scoped pointer
-alone. Proposed (unimplemented) symbols live in
-`runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.register`,
-`.rebind`, `.remove`, `.reconcile`, `.compensate`, `.republish_dependents`) over
-coordinator-owned durable relations in the machine-global store:
+**D2 global profile protocol (concrete; shipped by U2B).** The selected
+machine-global coordinator cannot be represented by the org-scoped pointer
+alone. Production symbols live in
+`runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.operation`,
+`.claimed_operation`, `.dependency_writer`, `.dynamic_org_attachment`,
+`.rebind_consumer`, `.reconcile_startup`) over
+the U1A relations installed in each org database:
 `workflow_profile_store(profile_name, generation, profile_digest, state)`,
 `workflow_profile_registry(profile_name, published_generation)`,
 `workflow_profile_dependencies(org_namespace, profile_name, consumer_identity,
 bound_generation, state)`, `workflow_profile_operations(id, profile_name, operation_kind,
 captured_members, target_generation, state, profile_digest,
 coordinator_invocation, compensation_generation, created_at)`, and
-`workflow_profile_leases(profile_name, owner_token, owner_pid)`. The isolated
-model uses a separate machine-global SQLite file carrying the same proposed
-schema; the dependent-organization authority itself remains exactly the existing
-per-org pointer/journal/lease/canonical-file/cache relations above.
+`workflow_profile_leases(profile_name, owner_token, owner_pid)`. Unlike the
+earlier isolated model's separate SQLite file, production reuses those shipped
+org-local relations and serializes the machine-global edge with stable
+owner-only `fcntl.flock` files under daemon home. Because different profiles
+take different leases but rewrite the same `executor_profiles.yaml`, every
+`save_runtime_profile`/`remove_runtime_profile` mutation also takes one stable
+mode-0600 store-scoped `flock` only around read/merge/`os.replace`. It is an
+innermost leaf: its holder acquires no profile/publication/adapter lock or
+SQLite transaction. No U2B DDL, store file, or authority-layout change is required; the dependent-organization authority
+remains the existing per-org pointer/journal/lease/canonical-file/cache
+relations above.
+
+Approval binds the durable registry target to the profile set selected before
+coordination, including an empty selection for no intended profile. The
+existing adapter writer lock serializes revalidation with supported
+submissions before any approval transition, idempotent return or bind. A
+changed target refuses through existing 409 `profile_consumer_changed`, with
+no adapter/profile mutation and ownership released before fresh selection;
+the writer never acquires another profile lease. A known target under live
+contention remains 409 `profile_coordinator_busy`; stable intended approval
+binds normally, while ordinary no-target approval creates no profile.
+
+The org-local placement replaces the isolated model's single-transaction
+machine-global capture mechanically without weakening fence-before-write: exact
+agent consumers are mirrored at startup and maintained by active Founder
+creation, Founder approval, manager revision-CAS executor update, the dedicated
+executor route and explicit termination. Pending enrollment/rejection is not
+active membership; whole-definition repo/model writers preserve the canonical
+relation as well. Lifecycle leases cover only synchronous canonical changes and
+compensation, releasing before discovery/publication capture or awaited work.
+Startup/dynamic attachment capture canonical roster and authority inputs outside
+leases/transactions, bracket discovery with the existing durable authority
+revision, and revalidate under profile-then-org mutation ownership. Changed
+captures retry boundedly or refuse; synchronization consumes captured inputs
+without rescanning. Publication verifies the complete active requirement set
+against its captured canonical snapshot rather than treating absent dependency
+rows as proof of no requirements. An unfinished ordinary roster batch is refused
+before a global profile claim rather than republished from its predecessor;
+startup authority recovery owns interrupted ordinary batches. The
+`flock` serializes membership
+capture for the selected profile, the same immutable member list and operation
+identity are installed in every captured org before the first fence, and no
+profile-store mutation begins until every captured org is fenced. A crash during
+the per-org row fanout or fence pass leaves enough identical operation data for
+cold reconciliation to complete missing mirrors and fences. The kernel lock is
+the live-owner authority; org-local `workflow_profile_leases` rows are durable
+diagnostics and cannot override kernel-proven dead-owner release.
 
 Operation identity is `id`; the affected-org set's identity is
 `(org_namespace, profile_name)` while the consumer-requirement identity is
@@ -824,11 +884,24 @@ reclaim only) -> short SQLite operation transactions -> per-org
 `workflow_publication_leases` one at a time during the pre-fence pass -> store
 commit -> registry commit -> per-org republish, each under its own publication
 lease **taken while the coordinator lease is still held** -> coordinator
-release. The graph is acyclic: profile lease -> org publication lease; no path
-takes the profile lease while holding an org publication lease, and the
-publication path never acquires the profile lease; the existing callback order
+release. The graph is acyclic: profile lease -> org publication lease ->
+existing writer lock(s) -> executor-profile store lock leaf; no path takes the
+profile lease while holding an org publication lease, and neither publication
+nor store-lock paths acquire a profile lease; the existing callback order
 `org.db_lock -> binding_lease -> synchronized DB callback` is untouched and no
-coordinator spans clone/network/host-launch/callback.
+coordinator spans clone/network/host-launch/callback. Adapter conformance probes
+complete before coordinator entry. Complete-closure publication reuses
+`ExecutorRegistry._resolve_custom_adapter_eligibility`, so registry-object
+presence cannot publish a pending, missing, non-executable, or hash-mismatched
+adapter as ready. A direct-connect projection left `planned` by pre-mutation
+profile contention remains eligible for both a later commit and the production
+sweep. Independent route/sweep contenders acquire the same profile lease and
+re-read the durable projection terminal state before creating a U1A operation
+claim or any fence/mutation; the loser returns that terminal result with zero
+mutation, fence, generation advance, publication, or second committed event.
+The winner's U1A operation/diagnostic-lease rows are durable before adapter or
+profile mutation, and its checked terminal committed transition occurs before
+profile-lease release.
 
 Pre-fencing reuses the proved machinery: for every captured org,
 `fence_authority_namespace` sets the pointer `fenced`, increments the monotonic
@@ -842,7 +915,12 @@ A new-org activation or a rebind/removal is refused with
 `profile_operation_in_progress:<state>` while any non-terminal operation exists
 for either profile; after publication a stale `expected_generation` is refused
 with `profile_generation_stale`, so a late activation can neither escape the
-captured set nor admit stale authority.
+captured set nor admit stale authority. Dynamic attachment scans desired and
+outstanding profiles before taking their canonically ordered leases, retries
+boundedly behind a live owner, synchronizes and publishes while holding those
+leases, and enters the shared org map before release. Complete-closure
+coherence additionally compares every org-local `profile_digest` with the
+current global profile digest before readiness reopens.
 
 Failure handling is forward-only and cold-recoverable. A failure after only some
 org fences leaves `state='fenced'`; a crash after the durable store commit but
@@ -894,19 +972,17 @@ by construction); the service owns membership truthfulness, capture immutability
 the admission barrier, fence-before-store ordering, forward-only compensation and
 cold reconciliation semantics that SQL alone cannot express.
 
-**Remaining ledger (F4 D, for F6 consolidation).** F4-A effective map: delivered
+**Shipped ledger (F4 D, for F6 consolidation).** F4-A effective map: delivered
 here; owner dev_agent; dependency = current pinned source; verification =
 targeted `rg` citations. F4-B protocol: delivered here; owner dev_agent;
 dependency = D5 protected-choice disposition; verification = independent review.
 F4-C isolated proof: delivered here; owner dev_agent; dependency = ten-path
 evidence radius; verification = focused + all-three-U0 + required local CI.
-F4-D per-delta implementation needs: (1) additive `runtime/workflows/` schema and
-coordinator (production schema/ownership decision); (2) per-org pre-fence wiring
-from the coordinator to real supported writers (needs the supported-writer
-boundary decision); (3) barrier enforcement at every supported activation/rebind
-route (needs route-level implementation review); (4) republish/recovery wiring
-into startup reconciliation (needs old-reader/disable-new-runs decisions). These
-remain unimplemented and are owned by the later protected D5 disposition; F5
+F4-D is implemented by U2A/U2B: the org-scoped authority publisher, org-local
+profile dependency/operation mirrors, same-host profile lease, supported writer
+participation, exact dependent-org pre-fence, coherent republish, and cold
+startup reconciliation now ship. The implementation adds no schema and no
+machine-global SQLite store. F5
 (atomic request/outbox/uncertain launch) and F6 (historical cutover/old-reader,
 disable-new-runs/drain, template namespace/name/version/CAS) remain explicitly
 pending, together with the U1--U6 ledger.
@@ -927,11 +1003,11 @@ acceptance. Evidence remains UNACCEPTED / D5 NOT READY; the study is NOT RUN.
 
 ### 2026-09-21 F4 consolidated correction: membership, validity and stale recovery (TASK-8691)
 
-This subsection is the current normative correction of the proposed D2 global
-profile protocol and supersedes the earlier F4 outline wherever the two differ.
-It remains an unimplemented cooperative proposal plus isolated executable
-evidence; current shipping routes gain none of these guarantees and D5 is not
-approved.
+This subsection is the normative correction of the D2 global profile protocol
+and supersedes the earlier F4 outline wherever the two differ. U2B carries the
+corrected consumer identity, complete-closure, same-host lease, fencing and
+cold-recovery rules into production; the isolated schedules remain provenance
+for those shipped choices. This does not itself approve or ship D5 admission.
 
 **Consumer-requirement identity and honest state.** The isolated fixture's
 `workflow_profile_dependencies` primary key is the tuple `(org_namespace,
@@ -1500,3 +1576,14 @@ is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
 fork/join, pipeline carriers and coding migration remain out of scope. Evidence
 remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder
 disposition.
+
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.

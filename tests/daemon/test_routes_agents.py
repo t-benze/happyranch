@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from unittest.mock import patch
 
@@ -51,6 +52,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     """The activity read uses trigger audits, before its five-row limit."""
     _seed_active_agent(org_state, "dev_agent")
     _seed_active_agent(org_state, "qa_engineer")
+    _authority_generation(org_state)
     db = org_state.db
     # Seed directly so this test exercises the projection without invoking a
     # lifecycle writer.  The same trigger twice must not displace TASK-4.
@@ -152,8 +154,24 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     # database, rather than merely filtering foreign rows in alpha.
     beta_root = daemon_state.runtime.orgs_dir / "beta"
     (beta_root / "org" / "agents").mkdir(parents=True)
-    (beta_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    # Dynamic attachment validates the complete canonical roster before ready
+    # publication. Give beta real managers/workers/reviewers, as alpha has.
+    alpha_paths = _paths(org_state)
+    (beta_root / "org" / "teams.yaml").write_bytes(
+        alpha_paths.teams_config_path.read_bytes()
+    )
+    for agent_file in alpha_paths.agents_dir.glob("*.md"):
+        (beta_root / "org" / "agents" / agent_file.name).write_bytes(
+            agent_file.read_bytes()
+        )
     beta = asyncio.run(daemon_state.add_org("beta"))
+    attached_snapshot = json.loads(
+        beta.workflow_authority.verify_admission_ready().snapshot_bytes
+    )
+    assert {agent["name"] for agent in attached_snapshot["agents"]} >= {
+        "dev_agent", "qa_engineer", "code_reviewer", "senior_dev",
+    }
+    assert attached_snapshot["org_slug"] == "beta"
     _seed_active_agent(beta, "dev_agent")
     _seed_active_agent(beta, "qa_engineer")
     beta.db._conn.execute(
@@ -1698,6 +1716,19 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
         )
     )
 
+    from runtime.orchestrator.adapter_store import AdapterEntry, save_adapter
+    executable = tmp_home / "testcustom-adapter"
+    executable.write_text("#!/bin/sh\ncat\n")
+    executable.chmod(0o700)
+    save_adapter(AdapterEntry(
+        id="testcustom", name="testcustom", executable=str(executable),
+        executable_hash=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        version="1.0.0", capabilities=[], contract_version=1,
+        workspace_adapter="pi", status="approved",
+        registered_at="2026-10-03T00:00:00+00:00", registered_by="test",
+        approved_at="2026-10-03T00:00:00+00:00", approved_by="test",
+    ))
+
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.ensure_workspace_ready.return_value = None
@@ -3028,7 +3059,29 @@ def test_set_executor_accepts_registered_custom_profile_via_route(
     """A registered custom executor profile must be accepted by the real
     PUT /agents/{agent}/executor route end-to-end — authentication, body
     handling, validation, and persistence included."""
+    from runtime.orchestrator.adapter_store import AdapterEntry, save_adapter
     from runtime.orchestrator.executor_registry import ExecutorProfile, get_registry
+
+    executable = tmp_home / "testcustom-adapter"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    save_adapter(
+        AdapterEntry(
+            id="testcustom",
+            name="testcustom",
+            executable=str(executable),
+            executable_hash=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            version="1.0.0",
+            capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="approved",
+            registered_at="2026-10-01T00:00:00+00:00",
+            registered_by="test",
+            approved_at="2026-10-01T00:00:00+00:00",
+            approved_by="test",
+        )
+    )
 
     registry = get_registry()
     registry.register_custom_profile(

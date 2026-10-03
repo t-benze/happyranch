@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import tempfile
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -626,23 +627,24 @@ async def manage_repo(
         description=agent_def.description,
         model=agent_def.model,
     )
-    async with org.workflow_authority.supported_change_async(
-        publisher="manage_repo",
-    ):
-        active_path = paths.agents_dir / f"{agent_name}.md"
-        fd, tmp = tempfile.mkstemp(
-            prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
-        )
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(render_agent_text(updated))
-            os.replace(tmp, active_path)
-        except Exception:
+    async with _consumer_writer_interval(
+        org, publisher="manage_repo", consumer=agent_name, executor=updated.executor,
+    ) as authority_change:
+        with authority_change.canonical_change():
+            active_path = paths.agents_dir / f"{agent_name}.md"
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+            )
             try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
-            raise
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(render_agent_text(updated))
+                os.replace(tmp, active_path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                raise
 
     # Clone/remove repo dir as before
     if body.action == RepoAction.add:
@@ -746,8 +748,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
     elif body.action == ManageAgentAction.update:
         if body.expected_revision is None or not re.fullmatch(r"[0-9a-f]{64}", body.expected_revision):
             raise HTTPException(status_code=422, detail={"code": "expected_revision_required", "message": "update requires a 64-character expected_revision"})
-        async with org.workflow_authority.async_writer_interval(
-            publisher="manage_agent_update",
+        async with _consumer_writer_interval(
+            org, publisher="manage_agent_update", consumer=body.name,
+            executor=body.executor, preserve=body.executor is None,
         ) as authority_change:
             async with org.teams_lock:
                 loaded = prompt_loader.load_agent_snapshot(paths, body.name)
@@ -993,8 +996,8 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
             )
 
         async with (
-            org.workflow_authority.async_writer_interval(
-                publisher="manage_agent_terminate",
+            _consumer_writer_interval(
+                org, publisher="manage_agent_terminate", consumer=body.name,
             ) as authority_change,
             org.teams_lock,
         ):
@@ -1234,8 +1237,8 @@ async def founder_create_agent(
 
     # ---- team mutation + agent file write, under the same locks ----
     async with (
-        org.workflow_authority.async_writer_interval(
-            publisher="founder_create_agent",
+        _consumer_writer_interval(
+            org, publisher="founder_create_agent", consumer=body.name, executor=body.executor,
         ) as authority_change,
         org.teams_lock,
     ):
@@ -1901,6 +1904,26 @@ def _validate_executor(executor: str) -> None:
         )
 
 
+@asynccontextmanager
+async def _consumer_writer_interval(org, *, publisher, consumer, executor=None, preserve=False):
+    coordinator = getattr(org, "_profile_coordinator", None)
+    if coordinator is None:
+        async with org.workflow_authority.async_writer_interval(publisher=publisher) as interval:
+            yield interval
+        return
+    try:
+        async with coordinator.consumer_writer(
+            org=org, publisher=publisher, consumer=consumer,
+            executor=executor, preserve=preserve,
+        ) as interval:
+            yield interval
+    except Exception as exc:
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+        if isinstance(exc, ProfileCoordinatorError):
+            raise HTTPException(status_code=409, detail={"code": exc.code}) from None
+        raise
+
+
 @router.put("/agents/{agent_name}/executor")
 async def set_agent_executor(
     slug: str, agent_name: str, body: SetExecutorBody, org: OrgDep,
@@ -2194,8 +2217,9 @@ async def set_agent_executor(
     # teams_lock is held. Atomic replace provides durable bytes, while this
     # fresh read prevents a stale whole-definition write among ASGI writers.
     async with (
-        org.workflow_authority.async_writer_interval(
-            publisher="set_agent_executor",
+        _consumer_writer_interval(
+            org, publisher="set_agent_executor", consumer=agent_name,
+            executor=body.executor,
         ) as authority_change,
         org.teams_lock,
     ):
@@ -2214,6 +2238,7 @@ async def set_agent_executor(
         )
         from runtime.orchestrator.agent_def import render_agent_text
         active_path = paths.agents_dir / f"{agent_name}.md"
+        original_bytes = active_path.read_bytes()
         fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
         try:
             with authority_change.canonical_change():
@@ -2335,24 +2360,25 @@ async def set_agent_model(
         description=existing.description,
         model=body.model if body.model else None,
     )
-    async with org.workflow_authority.supported_change_async(
-        publisher="set_agent_model",
-    ):
-        from runtime.orchestrator.agent_def import render_agent_text
-        active_path = paths.agents_dir / f"{agent_name}.md"
-        fd, tmp = tempfile.mkstemp(
-            prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
-        )
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(render_agent_text(updated))
-            os.replace(tmp, active_path)
-        except Exception:
+    async with _consumer_writer_interval(
+        org, publisher="set_agent_model", consumer=agent_name, executor=updated.executor,
+    ) as authority_change:
+        with authority_change.canonical_change():
+            from runtime.orchestrator.agent_def import render_agent_text
+            active_path = paths.agents_dir / f"{agent_name}.md"
+            fd, tmp = tempfile.mkstemp(
+                prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir),
+            )
             try:
-                os.unlink(tmp)
-            except FileNotFoundError:
-                pass
-            raise
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(render_agent_text(updated))
+                os.replace(tmp, active_path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except FileNotFoundError:
+                    pass
+                raise
 
     after_model = _resolve_agent_model(paths, agent_name)
 
@@ -2484,38 +2510,39 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
             },
         )
 
-    async with org.workflow_authority.supported_change_async(
-        publisher="approve_agent",
-    ):
-        promoted = False
-        try:
-            agent_def = prompt_loader.approve_agent(paths, agent_name)
-            promoted = True
-            if (
-                agent_def.role == "manager"
-                and is_eligible_policy_manager(
-                    root=org.root,
-                    agent_name=agent_name,
-                    team=agent_def.team,
-                    teams=org.teams,
-                )
-            ):
-                # Bootstrap-manager approval is the supported lifecycle that
-                # can make an already-registered team's manager eligible.
-                # Initialize inside this same supported canonical change so
-                # the published snapshot and launch resolver cannot diverge.
-                AuthorityPolicyStore(org.db).ensure_authority_selector(
-                    agent_def.team,
-                )
-        except FileExistsError:
-            raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
-        except Exception:
-            if promoted:
-                active_path = paths.agents_dir / f"{agent_name}.md"
-                pending_path = paths.pending_agents_dir / f"{agent_name}.md"
-                if active_path.exists() and not pending_path.exists():
-                    os.replace(active_path, pending_path)
-            raise
+    async with _consumer_writer_interval(
+        org, publisher="approve_agent", consumer=agent_name, preserve=True,
+    ) as authority_change:
+        with authority_change.canonical_change():
+            promoted = False
+            try:
+                agent_def = prompt_loader.approve_agent(paths, agent_name)
+                promoted = True
+                if (
+                    agent_def.role == "manager"
+                    and is_eligible_policy_manager(
+                        root=org.root,
+                        agent_name=agent_name,
+                        team=agent_def.team,
+                        teams=org.teams,
+                    )
+                ):
+                    # Bootstrap-manager approval is the supported lifecycle that
+                    # can make an already-registered team's manager eligible.
+                    # Initialize inside this same supported canonical change so
+                    # the published snapshot and launch resolver cannot diverge.
+                    AuthorityPolicyStore(org.db).ensure_authority_selector(
+                        agent_def.team,
+                    )
+            except FileExistsError:
+                raise HTTPException(status_code=409, detail=f"agent is approved, not pending")
+            except Exception:
+                if promoted:
+                    active_path = paths.agents_dir / f"{agent_name}.md"
+                    pending_path = paths.pending_agents_dir / f"{agent_name}.md"
+                    if active_path.exists() and not pending_path.exists():
+                        os.replace(active_path, pending_path)
+                raise
 
     workspace = paths.workspaces_dir / agent_name
     workspace.mkdir(parents=True, exist_ok=True)

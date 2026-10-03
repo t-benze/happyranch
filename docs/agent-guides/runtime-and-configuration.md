@@ -337,6 +337,53 @@ record keyed by the profile name. No ``shutil.which`` or PATH discovery is
 used for any profile. See
 [agent-executors-and-permissions.md](./agent-executors-and-permissions.md).
 
+Supported active roster creation, approval, revision-CAS executor updates,
+dedicated executor updates and termination maintain exact per-agent profile
+requirements inside their canonical fence; pending enrollments do not bind.
+Their profile leases release before ordinary publication capture and awaited
+bootstrap, including compensation exits. At daemon state construction, U2B rebuilds exact per-agent custom-profile
+dependencies for every loaded org and reconciles any interrupted coordinated
+profile operation before the state is exposed to routes. It uses the U1A
+org-local profile relations plus an owner-only same-host `flock`; there is no
+new machine-global database or schema. A coherent dependency change publishes
+a new org authority generation, while an absent, removed, or otherwise
+unpublished required profile or a profile whose custom adapter is not currently
+approved and resolvable keeps the org fenced. The shared profile YAML's
+read/merge/replace writers additionally take one store-scoped leaf `flock`, so
+different profile leases cannot lose each other's entries. Direct-connect
+`planned` projections are production-sweep eligible after transient profile
+contention. Independent route/sweep contenders re-read the durable terminal row
+under the profile lease before any mutation or fence. Dynamic org attachment
+captures canonical authority/roster inputs outside profile/publication leases
+and SQLite transactions, brackets discovery with the existing durable authority
+revision, and validates that revision under profile-then-org mutation ownership.
+Changed captures retry boundedly or refuse; synchronization consumes the captured
+roster without another directory scan. It holds every canonically ordered
+referenced profile lease through coherent synchronization/publication and
+shared-map insertion; its mirror
+digest must equal the current global digest before readiness is exposed.
+Startup does not dispatch, activate, or admit workflow work.
+
+Adapter approval propagates the profile target selected before lease
+acquisition into its existing serialized registry writer, including an empty
+selection. It revalidates that target before approval, idempotent return or
+binding. A concurrent supported submission changing the target returns the
+existing 409 `profile_consumer_changed` conflict without adapter/profile
+mutation; retry selects afresh after ownership releases. Known-target live
+contention remains 409 `profile_coordinator_busy`. No-target approval still
+succeeds without a profile, and no new lease is taken under the writer lock.
+
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 ## Org Config: Timezone and `current_time` Prompt Injection
 
 Top-level `timezone:` in `<runtime>/orgs/<slug>/org/config.yaml` is the org-wide

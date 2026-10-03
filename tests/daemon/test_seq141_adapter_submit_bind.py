@@ -37,6 +37,302 @@ from runtime.orchestrator.runtime_executor_store import (
 from runtime.orchestrator.adapter_store import compute_sha256, load_adapters
 
 
+@pytest.fixture
+def coordinated_approval(route_setup, monkeypatch):
+    """Real daemon/coordinator with an attached empty, fenced org."""
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.daemon import paths
+    from runtime.orchestrator.executor_registry import reset_registry
+    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    from tests.workflows.test_profile_coordinator import _empty_org
+
+    reset_registry()
+    _bypass_loopback(monkeypatch)
+    state = DaemonState.idle(Settings())
+    org = _empty_org(route_setup / "empty")
+    coordinator = ProfileCoordinator(daemon_home=paths.daemon_home(), orgs=state.orgs)
+    state.profile_coordinator = coordinator
+    with coordinator.dynamic_org_attachment(org):
+        state.orgs["empty"] = org
+    app = create_app(state)
+    client, submitter = TestClient(app), TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {paths.read_token()}"})
+    try:
+        yield state, client, submitter, coordinator
+    finally:
+        client.close()
+        submitter.close()
+        for attached in state.orgs.values():
+            attached.close()
+        if state.direct_connect_authority_store is not None:
+            state.direct_connect_authority_store.close()
+        state.metrics_store.close()
+        reset_registry()
+
+
+def _coordinated_adapter(venue, root, *, submit=False):
+    state, client, submitter, coordinator = venue
+    profile = "lease-race"
+    adapter_id = f"{profile}-adapter"
+    script = _make_conformant_adapter_script(root, adapter_id)
+    payload = {
+        "executable": str(script), "version": "1.0.0", "capabilities": [],
+        "workspace_adapter": "pi", **_dep_manifest(script),
+    }
+    registered = client.post("/api/v1/runtime/adapters/register", json=payload)
+    assert registered.status_code == 200, registered.text
+    assert registered.json()["intended_profile_name"] is None
+    if submit:
+        _submit_coordinated_adapter(venue, payload, profile)
+    return profile, adapter_id, payload, _approval_snapshot(registered.json())
+
+
+def _submit_coordinated_adapter(venue, payload, profile):
+    state, client, submitter, coordinator = venue
+    token = _mint_adapter_token(state.registration_token_store, profile)
+    result = submitter.post(
+        "/api/v1/runtime/adapters/submit", json=payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["status"] == "pending"
+    assert result.json()["intended_profile_name"] == profile
+    return result
+
+
+def _coordinated_approval_facts(state, adapter_id):
+    from dataclasses import asdict
+    from runtime.orchestrator.adapter_store import get_adapter
+
+    return {
+        "adapter": asdict(get_adapter(adapter_id)),
+        "profiles": load_runtime_profiles(),
+        "orgs": {
+            slug: {
+                table: [tuple(row) for row in org.db.execute(
+                    f"SELECT * FROM {table} ORDER BY rowid"
+                ).fetchall()]
+                for table in (
+                    "workflow_authority_pointers", "workflow_publication_journals",
+                    "workflow_profile_store", "workflow_profile_registry",
+                    "workflow_profile_dependencies", "workflow_profile_operations",
+                    "workflow_profile_leases",
+                )
+            }
+            for slug, org in state.orgs.items()
+        },
+    }
+
+
+class TestCoordinatedApprovalTarget:
+    """TASK-9600: selected lease target must survive the registry boundary."""
+
+    @pytest.mark.parametrize("boundary", ["first_route_read", "registry_writer"])
+    def test_concurrent_submit_cannot_change_approval_lease_target(
+        self, coordinated_approval, route_setup, monkeypatch, boundary,
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+        from runtime.daemon.routes import adapters
+        from runtime.orchestrator import custom_adapter_registry
+        from runtime.orchestrator.adapter_store import get_adapter
+        from runtime.orchestrator.executor_registry import get_registry
+        from runtime.workflows.authority import WorkflowAuthorityError
+        from runtime.workflows.profile_coordinator import ProfileCoordinator, ProfileCoordinatorError
+
+        venue = coordinated_approval
+        state, client, submitter, coordinator = venue
+        profile, adapter_id, payload, snapshot = _coordinated_adapter(venue, route_setup)
+        paused, resume = threading.Event(), threading.Event()
+        contender = ProfileCoordinator(daemon_home=route_setup / ".happyranch", orgs={})
+        first = True
+
+        if boundary == "first_route_read":
+            original = adapters.get_adapter
+
+            def scheduled_read(identity):
+                nonlocal first
+                entry = original(identity)
+                if first:
+                    first = False
+                    assert entry.intended_profile_name is None
+                    paused.set()
+                    assert resume.wait(10)
+                return entry
+
+            monkeypatch.setattr(adapters, "get_adapter", scheduled_read)
+        else:
+            original = custom_adapter_registry.acquire_store_lock
+
+            def scheduled_lock():
+                nonlocal first
+                if first:
+                    first = False
+                    paused.set()
+                    assert resume.wait(10)
+                return original()
+
+            monkeypatch.setattr(custom_adapter_registry, "acquire_store_lock", scheduled_lock)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                client.post, f"/api/v1/runtime/adapters/{adapter_id}/approve", json=snapshot,
+            )
+            try:
+                assert paused.wait(10)
+                _submit_coordinated_adapter(venue, payload, profile)
+                before = _coordinated_approval_facts(state, adapter_id)
+                with contender.profile_read(profile):
+                    resume.set()
+                    result = future.result(timeout=10)
+                    after = _coordinated_approval_facts(state, adapter_id)
+                    # Read the actual durable outcome, even if status also fails.
+                    assert after == before, (result.status_code, result.json(), after)
+                    assert get_adapter(adapter_id).status == "pending"
+                    assert profile not in load_runtime_profiles()
+                    assert get_registry().get_profile(profile) is None
+                    assert result.status_code == 409, result.text
+                    assert result.json()["detail"]["code"] == "profile_consumer_changed"
+                    with pytest.raises(ProfileCoordinatorError, match="profile_coordinator_busy"):
+                        with coordinator.profile_read(profile):
+                            pytest.fail("independent profile flock was not held")
+                    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+                        state.orgs["empty"].workflow_authority.verify_admission_ready()
+            finally:
+                resume.set()
+        retry = client.post(f"/api/v1/runtime/adapters/{adapter_id}/approve", json=snapshot)
+        assert retry.status_code == 200, retry.text
+        assert retry.json()["profile_bound"]["profile_name"] == profile
+        assert get_adapter(adapter_id).status == "approved"
+        assert load_runtime_profiles()[profile]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+
+    @pytest.mark.parametrize("submitted", [False, True])
+    def test_live_profile_owner_preserves_known_and_no_target_controls(
+        self, coordinated_approval, route_setup, submitted,
+    ):
+        from runtime.orchestrator.adapter_store import get_adapter
+        from runtime.workflows.profile_coordinator import ProfileCoordinator
+
+        venue = coordinated_approval
+        state, client, submitter, coordinator = venue
+        profile, adapter_id, payload, snapshot = _coordinated_adapter(
+            venue, route_setup, submit=submitted,
+        )
+        before = _coordinated_approval_facts(state, adapter_id)
+        contender = ProfileCoordinator(daemon_home=route_setup / ".happyranch", orgs={})
+        with contender.profile_read(profile):
+            result = client.post(f"/api/v1/runtime/adapters/{adapter_id}/approve", json=snapshot)
+            assert profile not in load_runtime_profiles()
+            after = _coordinated_approval_facts(state, adapter_id)
+            assert after["orgs"] == before["orgs"]
+            if submitted:
+                assert after == before
+                assert result.status_code == 409, result.text
+                assert result.json()["detail"]["code"] == "profile_coordinator_busy"
+                assert get_adapter(adapter_id).status == "pending"
+            else:
+                assert result.status_code == 200, result.text
+                assert "profile_bound" not in result.json()
+                assert get_adapter(adapter_id).status == "approved"
+                assert get_adapter(adapter_id).intended_profile_name is None
+
+    def test_stable_target_rebinds_and_republishes_real_dependent_org(
+        self, coordinated_approval, route_setup,
+    ):
+        from runtime.orchestrator.adapter_store import get_adapter
+        from tests.workflows.test_profile_coordinator import _seed_org, _dependencies
+
+        venue = coordinated_approval
+        state, client, submitter, coordinator = venue
+        profile, adapter_id, payload, snapshot = _coordinated_adapter(venue, route_setup, submit=True)
+        first = client.post(f"/api/v1/runtime/adapters/{adapter_id}/approve", json=snapshot)
+        assert first.status_code == 200, first.text
+        assert first.json().get("profile_bound", {}).get("profile_name") == profile
+        assert load_runtime_profiles()[profile]["command_adapter_id"] == f"custom-adapter:{adapter_id}"
+        org = _seed_org(route_setup / "dependent", "dependent", {"worker": profile})
+        with coordinator.dynamic_org_attachment(org):
+            state.orgs["dependent"] = org
+        before = org.workflow_authority.verify_admission_ready()
+        removed = client.delete(f"/api/v1/executors/runtime/profiles/{profile}")
+        assert removed.status_code == 200, removed.text
+        assert _dependencies(org) == [(profile, "worker", "unbound")]
+        _submit_coordinated_adapter(venue, payload, profile)
+        approved = client.post(f"/api/v1/runtime/adapters/{adapter_id}/approve", json=snapshot)
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["profile_bound"]["profile_name"] == profile
+        assert _dependencies(org) == [(profile, "worker", "active")]
+        after = org.workflow_authority.verify_admission_ready()
+        assert after.generation > before.generation
+        assert coordinator._authority_profile_projection_coherent(org)
+        assert all(row[0] in {"published", "aborted"} for row in org.db.execute(
+            "SELECT state FROM workflow_profile_operations"
+        ).fetchall())
+        durable = get_adapter(adapter_id)
+        repeated = client.post(f"/api/v1/runtime/adapters/{adapter_id}/approve", json=snapshot)
+        assert repeated.status_code == 200, repeated.text
+        assert get_adapter(adapter_id) == durable
+        assert coordinator._authority_profile_projection_coherent(org)
+
+    def test_submit_cannot_commit_inside_approval_writer_interval(
+        self, coordinated_approval, route_setup, monkeypatch,
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+        from runtime.orchestrator import custom_adapter_registry
+        from runtime.orchestrator.adapter_store import get_adapter
+
+        venue = coordinated_approval
+        state, client, submitter, coordinator = venue
+        profile, adapter_id, payload, snapshot = _coordinated_adapter(venue, route_setup)
+        paused, resume = threading.Event(), threading.Event()
+        submit_waiting, submit_acquired = threading.Event(), threading.Event()
+        original_read = custom_adapter_registry.get_adapter
+        original_lock = custom_adapter_registry.acquire_store_lock
+        first = True
+
+        def scheduled_read(identity):
+            nonlocal first
+            entry = original_read(identity)
+            if first:
+                first = False
+                paused.set()
+                assert resume.wait(10)
+            return entry
+
+        def scheduled_lock():
+            if paused.is_set():
+                submit_waiting.set()
+                original_lock()
+                submit_acquired.set()
+            else:
+                original_lock()
+
+        monkeypatch.setattr(custom_adapter_registry, "get_adapter", scheduled_read)
+        monkeypatch.setattr(custom_adapter_registry, "acquire_store_lock", scheduled_lock)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            approval = pool.submit(
+                client.post, f"/api/v1/runtime/adapters/{adapter_id}/approve", json=snapshot,
+            )
+            try:
+                assert paused.wait(10)
+                submission = pool.submit(_submit_coordinated_adapter, venue, payload, profile)
+                assert submit_waiting.wait(10)
+                assert not submit_acquired.wait(0.1)
+                assert not submission.done()
+                assert get_adapter(adapter_id).intended_profile_name is None
+                resume.set()
+                result = approval.result(timeout=10)
+                assert result.status_code == 200, result.text
+                assert result.json()["intended_profile_name"] is None
+                assert "profile_bound" not in result.json()
+                assert submission.result(timeout=10).status_code == 200
+            finally:
+                resume.set()
+        assert get_adapter(adapter_id).status == "pending"
+        assert get_adapter(adapter_id).intended_profile_name == profile
+        assert profile not in load_runtime_profiles()
+
+
 def _dep_manifest(script: Path) -> dict:
     """Return the required dependency-manifest fields for a submit payload."""
     return {

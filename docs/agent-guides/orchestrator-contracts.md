@@ -186,10 +186,46 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   advances only its roster generation and adds no selector-history churn. Common task,
   thread, dream, wake, and schedule launch resolution is read-only and refuses
   an uninitialized selector rather than mutating authority during launch.
-- **U2A boundary.** The coordinator's readiness verifier is intentionally not
-  consumed by task, chain, fan-out, activation, or dispatch paths yet.
-  Machine-global executor-profile changes remain U2B-deferred and do not yet
-  fence orgs; no workflow admission consumer may ship before U2B.
+- **U2A/U2B boundary.** The readiness verifier is intentionally not consumed
+  by task, chain, fan-out, activation, or dispatch paths yet. U2B now routes
+  supported machine-global executor-profile and adapter writers through
+  `ProfileCoordinator`: dependent orgs are pre-fenced, the existing durable
+  writer commits, and only a complete profile-and-approved-adapter closure is
+  republished. Adapter approval revalidates its selected intended profile
+  (including no target) under the existing adapter writer lock before
+  approval, idempotent return or binding. A supported submission that changes
+  the target causes the existing 409 `profile_consumer_changed` conflict
+  without adapter/profile mutation; stale ownership releases before fresh
+  selection. Stable known-target contention remains 409
+  `profile_coordinator_busy`, and no-target approval creates no profile.
+  No new profile lease is acquired under the adapter writer lock.
+  Every supported active consumer creation, promotion, executor
+  update and termination maintains its distinct requirement inside the same
+  canonical fence; pending-only enrollment/rejection has no active membership.
+  Dependency publication checks the actual captured active roster, so missing
+  rows cannot prove zero requirements. Canonical discovery is outside all
+  profile/publication leases and transactions, bracketed by the durable
+  authority revision, and revalidated before synchronization/publication.
+  Lifecycle source/target leases release before publication capture and awaited
+  workspace work, including compensation. Startup settles interrupted operations before returning
+  `DaemonState`; direct-connect `planned` rows remain retryable by both the
+  commit route and production sweep, with a terminal re-read under the shared
+  profile lease before any U1A fence or adapter/profile mutation. Dynamic org
+  attachment synchronizes beneath canonically ordered profile leases and joins
+  the shared map before releasing them; closure also binds each local profile
+  digest to the current global digest. No workflow admission consumer ships
+  before its later unit.
+  A genuinely empty default org remains attached with no agents and `teams=[]`
+  when its initial authority publication is fenced by the missing default reviewer.
+  Attachment proves absence of active and pending definitions and canonical/in-memory
+  teams outside leases and transactions, brackets that discovery with the durable
+  revision, and validates it under profile-then-org ownership. It preserves the
+  initial fenced generation and publication journal; `verify_admission_ready()`
+  still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+  operation evidence, unfinished canonical writers, and stale captures refuse this
+  exception before synchronization. Reviewer policy and snapshot validation do not
+  change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
