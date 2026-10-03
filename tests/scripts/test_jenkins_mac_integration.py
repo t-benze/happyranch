@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -236,7 +238,7 @@ def test_container_argv_has_only_two_host_mounts_and_no_forbidden_mode(
     assert not any(value == "HOME" or value == f"HOME={Path.home()}" for value in inherited_env)
     payload = argv[-1]
     assert f"uv=={job.UV_VERSION}" in payload
-    assert "apt-get install -y --no-install-recommends bash curl" in payload
+    assert "apt-get install -y --no-install-recommends bash curl iproute2\n" in payload
     assert "uv sync --frozen" in payload
     assert "scripts/run_bounded_output.py" in payload
     assert "uv run pytest tests/ -v -m integration" in payload
@@ -521,3 +523,188 @@ def test_jenkinsfile_is_bounded_parameterized_and_archives_evidence() -> None:
     assert "post-cleanup.txt" in pipeline
     assert "returnStatus: true" in pipeline
     assert "cron(" not in pipeline
+
+
+def _emitted_guest(tmp_path: Path, *, setup_status: int = 0, workload_status: int = 7,
+                   summary_status: int = 0, capture_status: int = 0,
+                   source_change: bool = False) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Execute emitted bytes; replace only external tools and literal guest paths."""
+    source = tmp_path / "source"
+    artifacts = tmp_path / "artifacts"
+    bin_dir = tmp_path / "bin"
+    for directory in (source / "scripts", artifacts, bin_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    venv_bin = tmp_path / "venv/bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python").symlink_to(sys.executable)
+    (source / "runtime/remote_access").mkdir(parents=True)
+    shutil.copyfile(ROOT / "runtime/remote_access/network.py", source / "runtime/remote_access/network.py")
+    (source / "scripts/run_bounded_output.py").write_text(
+        f"from pathlib import Path\nPath({str(artifacts / 'workload-ran')!r}).touch()\n"
+        + (f"Path({str(source / 'changed-test')!r}).write_text('drift')\n" if source_change else "")
+        +
+        f"raise SystemExit({workload_status})\n"
+    )
+    (source / "scripts/nightly_integration_summary.py").write_text(
+        f"raise SystemExit({summary_status})\n"
+    )
+    for name, body in {
+        "apt-get": f"if [ \"$1\" = install ]; then touch {tmp_path / 'installed'}; fi\nexit {setup_status}",
+        "dpkg-query": f"printf 'bash 1\\ncurl 2\\niproute2 3\\n'\nif [ -f {tmp_path / 'installed'} ]; then printf 'libbpf1 4\\n'; fi",
+        "uv": "if [ \"$1\" = --version ]; then printf 'uv 0.12.21\\n'; fi",
+        "ip": "printf '1: lo inet 127.0.0.1/8 scope host lo\\n'",
+        "python": f'if [ "$1" = -m ] && [ "$2" = pip ]; then exit 0; fi\n'
+                  f'if [ "$4" = capture ] && [ {capture_status} -ne 0 ]; then exit {capture_status}; fi\n'
+                  f'exec {sys.executable} "$@"',
+    }.items():
+        path = bin_dir / name
+        path.write_text(f"#!/bin/sh\n{body}\n")
+        path.chmod(0o755)
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "1 0 0:1 / /workspace/src ro - virtiofs src ro\n"
+        "2 0 0:2 / /workspace/artifacts rw - virtiofs artifacts rw\n"
+    )
+    # The verifier compares mount destinations; only the syscall input path is replaced.
+    payload = job._INNER_SCRIPT.replace('/proc/self/mountinfo', str(mountinfo))
+    # Keep the verifier's expected literal mount names but redirect its artifact write.
+    payload = payload.replace('Path("/workspace/artifacts/mount-evidence.txt")',
+                              f'Path({str(artifacts / "mount-evidence.txt")!r})')
+    verifier_end = payload.index("PY\n") + len("PY\n")
+    payload = payload[:verifier_end] + payload[verifier_end:].replace(
+        "/workspace/src", str(source)
+    ).replace("/workspace/artifacts", str(artifacts))
+    payload = payload.replace("/tmp/happyranch-", str(tmp_path / "happyranch-"))
+    result = subprocess.run(
+        ["sh", "-c", payload], capture_output=True, text=True, timeout=15,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path / "home"),
+             "UV_PROJECT_ENVIRONMENT": str(tmp_path / "venv"),
+             "UV_CACHE_DIR": str(tmp_path / "cache"), "XDG_CACHE_HOME": str(tmp_path / "xdg"),
+             "PYTHONDONTWRITEBYTECODE": "1", "SOURCE_SHA": "ab" * 20,
+             "JOB_BUILD_URL": "https://jenkins.example/1"},
+    )
+    return result, artifacts
+
+
+@pytest.mark.parametrize("setup_status,workload_status,summary_status,expected", [
+    (0, 7, 0, 7), (17, 0, 0, 17), (0, 0, 13, 13), (0, 7, 13, 7),
+])
+def test_emitted_guest_captures_before_exit_preserving_primary_status(
+    tmp_path: Path, setup_status: int, workload_status: int, summary_status: int, expected: int,
+) -> None:
+    result, artifacts = _emitted_guest(tmp_path, setup_status=setup_status,
+                                      workload_status=workload_status, summary_status=summary_status)
+    assert result.returncode == expected, result.stderr
+    assert (artifacts / "guest-diagnostics.json").is_file(), "missing bounded guest diagnostics"
+    receipt = json.loads((artifacts / "guest-result.json").read_text())
+    assert receipt["workload_status"] == (setup_status or workload_status)
+    assert receipt["summary_status"] == summary_status
+    assert receipt["capture_status"] == 0
+    assert receipt["source_unchanged"] is True
+    assert receipt["diagnostics_before_exit"] is True
+    assert (artifacts / "workload-ran").exists() == (setup_status == 0)
+    assert not (artifacts / "integration.xml").exists()
+    if setup_status == 0:
+        packages = json.loads((artifacts / "guest-packages.json").read_text())
+        assert packages == {"direct": {"bash": "1", "curl": "2", "iproute2": "3"},
+                            "transitive_added_or_changed": {"libbpf1": "4"}}
+
+
+@pytest.mark.parametrize("workload_status,capture_status,cleanup_ok,inspect_ok,source_change,expected", [
+    (0, 0, True, True, False, 0), (7, 19, False, False, False, 7),
+    (0, 19, False, True, False, 90), (0, 19, True, True, False, 91),
+    (0, 0, True, False, False, 91), (0, 0, False, False, False, 90),
+    (124, 0, False, False, False, 124), (0, 0, True, True, True, 91),
+])
+def test_run_job_proves_capture_before_cleanup_and_status_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workload_status: int, capture_status: int,
+    cleanup_ok: bool, inspect_ok: bool, source_change: bool, expected: int,
+) -> None:
+    calls = []
+    class GuestContainer:
+        def run(self, arguments: list[str], *, timeout_seconds: int, capture: bool = True) -> job.CommandResult:
+            calls.append(arguments[0])
+            if arguments[:1] == ["run"]:
+                if workload_status == 124:
+                    raise subprocess.TimeoutExpired(arguments, timeout_seconds)
+                result, _ = _emitted_guest(tmp_path, workload_status=workload_status, capture_status=capture_status,
+                                         source_change=source_change)
+                return job.CommandResult(result.returncode, "", result.stderr)
+            if arguments[:2] == ["image", "inspect"]:
+                return job.CommandResult(0 if inspect_ok else 1, "{}", "")
+            if arguments[:2] == ["rm", "-f"]:
+                if workload_status != 124:
+                    receipt = json.loads((tmp_path / "artifacts/guest-result.json").read_text())
+                    assert receipt["capture_status"] == capture_status
+                    assert receipt["diagnostics_before_exit"] == (capture_status == 0)
+                return job.CommandResult(0, "", "")
+            if arguments == ["ls", "-a"]:
+                listing = "ID IMAGE OS ARCH STATE IP CPUS MEMORY STARTED\n"
+                if not cleanup_ok:
+                    listing += job.build_container_name("ab" * 20, "1") + " image linux arm64 stopped\n"
+                return job.CommandResult(0, listing, "")
+            raise AssertionError(arguments)
+    monkeypatch.setattr(job, "CommandRunner", GuestContainer)
+    monkeypatch.setattr(job, "prepare_source", lambda source, sha: source.mkdir())
+    monkeypatch.setattr(job, "validate_container_version", lambda runner: "container CLI version 1.5.0")
+    monkeypatch.setattr(job, "ensure_runtime_ready", lambda *args, **kwargs: None)
+    args = argparse.Namespace(workspace=tmp_path, source_sha="ab" * 20, definition_sha="cd" * 20,
+                              build_number="1", node_name="mac-mini", build_url="https://jenkins.example/1")
+    assert job._run_job(args) == expected
+    assert calls == ["run", "image", "rm", "ls"]
+    identity = (tmp_path / "artifacts/identity.txt").read_text()
+    assert "source_sha=" + "ab" * 20 in identity
+    assert "job_definition_sha=" + "cd" * 20 in identity
+    assert "guest_helper_sha256=" + hashlib.sha256((ROOT / "scripts/jenkins_mac_guest.py").read_bytes()).hexdigest() in identity
+    assert "cleanup_verified_absent=" in (tmp_path / "artifacts/cleanup.txt").read_text()
+    if workload_status == 124:
+        assert not (tmp_path / "artifacts/guest-result.json").exists()
+        assert "guest_evidence_valid=false" in identity
+        assert (tmp_path / "artifacts/timeout.txt").exists()
+
+
+@pytest.mark.parametrize("source,definition,mismatch", [
+    ("short", "cd" * 20, False), ("ab" * 20, "nothex", False), ("ab" * 20, "cd" * 20, True),
+])
+def test_main_refuses_bad_identity_before_container_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, definition: str, mismatch: bool,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["runner", "--workspace", str(tmp_path), "--source-sha", source,
+                                     "--definition-sha", definition, "--build-number", "1",
+                                     "--node-name", "mac-mini", "--build-url", "https://jenkins.example/1"])
+    commands = []
+    def checked(command: list[str], *, timeout_seconds: int) -> str:
+        commands.append(command)
+        return "00" * 20 if "rev-parse" in command else ""
+    monkeypatch.setattr(job, "_run_checked", checked)
+    def forbidden() -> None:
+        pytest.fail("container launched after identity refusal")
+    monkeypatch.setattr(job, "CommandRunner", forbidden)
+    assert job.main() == 2
+    assert len(commands) == (5 if mismatch else 0)
+    assert (tmp_path / "artifacts/job-error.txt").is_file()
+
+
+@pytest.mark.parametrize("extra_mount,source_mode,expected", [
+    (False, "ro", 0), (True, "ro", 81), (False, "rw", 81),
+])
+def test_emitted_mount_verifier_executes_complete_set_and_readonly_contract(
+    tmp_path: Path, extra_mount: bool, source_mode: str, expected: int,
+) -> None:
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        f"1 0 0:1 / /workspace/src {source_mode} - virtiofs source {source_mode}\n"
+        "2 0 0:2 / /workspace/artifacts rw - virtiofs artifacts rw\n"
+        + ("3 0 0:3 / /Users rw - virtiofs users rw\n" if extra_mount else "")
+    )
+    verifier = job._INNER_SCRIPT.split("python - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    verifier = verifier.replace('/proc/self/mountinfo', str(mountinfo))
+    verifier = verifier.replace('/workspace/artifacts/mount-evidence.txt', str(tmp_path / "mount-evidence.txt"))
+    verifier = verifier.replace('/tmp/happyranch-guest.py', str(tmp_path / "guest.py"))
+    result = subprocess.run([sys.executable, "-c", verifier], capture_output=True, text=True, timeout=3)
+    assert result.returncode == expected, result.stderr
+    assert f"host_mount_isolation={str(expected == 0).lower()}" in (tmp_path / "mount-evidence.txt").read_text()
+    if expected == 0:
+        assert (tmp_path / "guest.py").read_bytes() == (ROOT / "scripts/jenkins_mac_guest.py").read_bytes()
+    else:
+        assert not (tmp_path / "guest.py").exists()
