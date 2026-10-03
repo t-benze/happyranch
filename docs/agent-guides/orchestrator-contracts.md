@@ -1802,3 +1802,30 @@ claim a cancelled task. Queue failure preserves A's pending feedback and release
 the reservation. Queue insertion is not a task claim or an exactly-once crash
 boundary; startup may enqueue PENDING again. Other feedback paths, general chain
 advancement and restart policy are unchanged.
+
+## Task memory render and impression (THR-091)
+
+`_run_agent` retains the structured `MemoryStore.render_memory_digest` result
+through prompt construction. `build_memory_digest` remains a string/None
+wrapper. Selection/rendering occurs once; only appended item blocks contribute
+exposure. Fit directives are full bodies, fallback directives are pointers;
+body/title/header/nudge mentions and nonrendered candidates are not item IDs.
+Text, ranking, character budget, ordering and nudge behavior stay unchanged.
+
+Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+
+After the existing trusted publication/SessionTracker binding and before
+`session_start` and executor launch, bootstrap emits one existing impression
+for actual items, with `memory_telemetry_version=1`, `pointer_ids`,
+`full_body_ids` plus the old accurate digest fields. A header/nudge-only result
+has no item exposure and emits no impression. Audit task scope/action and
+lifecycle/error handling stay unchanged. No metadata is recomputed from memory
+files after injection. The legacy extractor remains supported but bootstrap no
+longer uses it. The unchanged resolver still prefers digest to search.
+
+See the feature guide for the exact optional JSON validation/legacy contract.
+Recovery/unattributed launches do not gain task eligibility from a version;
+`session_start` is intended invocation rather than complete launch census.
+G1 canary/epoch authority, G3 launch/expectation census, G4 consistent acquisition,
+full reporting and installed acceptance remain OPEN; both reports stay
+fail-closed. No collection starts here.

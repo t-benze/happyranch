@@ -5,6 +5,7 @@ fresh on every spawn/wake, with an injectable clock for deterministic tests.
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
@@ -13,6 +14,7 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from runtime.models import TaskStatus
+from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executors import ExecutorResult
 from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.teams import TeamsRegistry
@@ -274,10 +276,16 @@ class TestRunAgentMemoryDigest:
             success=True, duration_seconds=1, session_id="sess-test",
         )
         with patch.object(orch, "_build_executor", return_value=mock_executor):
-            orch._run_agent(task_id, "dev_agent", "")
+            result, _ = orch._run_agent(task_id, "dev_agent", "")
         prompt = mock_executor.run.call_args.kwargs["prompt"]
 
+        assert result.success
         assert "MEMORY-DIGEST" not in prompt
+        rows = orch._db.fetch_all_readonly(
+            "SELECT action FROM audit_log WHERE task_id=? "
+            "AND action IN ('memory_digest_impression', 'session_start')", (task_id,),
+        )
+        assert [row["action"] for row in rows] == ["session_start"]
         assert "Test memory digest budget=0" in prompt
 
     def test_missing_memory_dir_omits_digest(self, orch, test_runtime, monkeypatch):
@@ -293,10 +301,16 @@ class TestRunAgentMemoryDigest:
             success=True, duration_seconds=1, session_id="sess-test",
         )
         with patch.object(orch, "_build_executor", return_value=mock_executor):
-            orch._run_agent(task_id, "dev_agent", "")
+            result, _ = orch._run_agent(task_id, "dev_agent", "")
         prompt = mock_executor.run.call_args.kwargs["prompt"]
 
+        assert result.success
         assert "MEMORY-DIGEST" not in prompt
+        rows = orch._db.fetch_all_readonly(
+            "SELECT action FROM audit_log WHERE task_id=? "
+            "AND action IN ('memory_digest_impression', 'session_start')", (task_id,),
+        )
+        assert [row["action"] for row in rows] == ["session_start"]
 
     def test_digest_injected_with_seeded_memory(self, orch, test_runtime, monkeypatch):
         """When memory/ dir exists with valid items and budget > 0,
@@ -320,6 +334,121 @@ class TestRunAgentMemoryDigest:
         assert "Worktree edit-path trap" in prompt
         # Must be pointer-only — no bodies
         assert "Always edit inside the worktree checkout" not in prompt
+
+    @pytest.mark.parametrize(("id_field", "shown_id"), [
+        pytest.param("id: null\n", "None", id="null-reviewer-R1"),
+        pytest.param("", "", id="missing"),
+        pytest.param("id: private-MEM-777-secret\n", "private-MEM-777-secret", id="embedded-id-string"),
+        pytest.param("id: true\n", "True", id="boolean"),
+        pytest.param("id: 42\n", "42", id="integer"),
+        pytest.param("id: 4.2\n", "4.2", id="float"),
+        pytest.param("id: [MEM-777, private-content]\n", "['MEM-777', 'private-content']", id="list"),
+        pytest.param("id: {MEM-777: private-content}\n", "{'MEM-777': 'private-content'}", id="mapping"),
+        pytest.param('id: "MEM-777\\nprivate-content"\n', "MEM-777\nprivate-content", id="multiline-string"),
+    ])
+    @pytest.mark.parametrize("mode", ["experiential", "directive-fit", "directive-fallback"])
+    @pytest.mark.parametrize("neighbors", [True, False], ids=["valid-neighbors", "malformed-only"])
+    def test_unidentifiable_rendered_memory_preserves_launch(
+        self, orch: Orchestrator, test_runtime: OrgPaths, monkeypatch: pytest.MonkeyPatch,
+        id_field: str, shown_id: str, mode: str, neighbors: bool,
+    ) -> None:
+        """Permissive files keep their prompt text without becoming audit identity."""
+        from runtime.infrastructure.learnings_store import MemoryStore
+
+        self._setup_ws(test_runtime)
+        root = test_runtime.workspaces_dir / "dev_agent" / "memory"
+        root.mkdir(exist_ok=True)
+        header = (
+            "=== MEMORY-DIGEST (system) ===\n"
+            "Relevant memory (pointers only — fetch bodies with `happyranch memory get <id>`):\n\n"
+        )
+        nudge = 'Pull the long tail: `happyranch memory search "<terms>"`.\n'
+        if mode == "experiential":
+            # Exact additive reviewer fixture when neighbors=True and id=null.
+            self._seed_memory_store(test_runtime)
+            source = next(root.glob("MEM-001-*.md")).read_text()
+            (root / "MEM-004-malformed.md").write_text(source.replace("id: MEM-001\n", id_field))
+            if not neighbors:
+                for path in root.glob("MEM-00[123]-*.md"):
+                    path.unlink()
+            bad_line = f"- `{shown_id}` — Worktree edit-path trap  (experiential, salience 90)\n"
+            expected = header
+            if neighbors:
+                expected += (
+                    "**Directive:** `MEM-002` — Never force-push to main  (directive, salience 80)\n"
+                    "Founder rule: never force-push to main.\n\n\n"
+                    "- `MEM-001` — Worktree edit-path trap  (experiential, salience 90)\n"
+                )
+            expected += bad_line
+            if neighbors:
+                expected += "- `MEM-003` — CI lockfile frozen constraint  (experiential, salience 60)\n"
+            budget = 2000
+            pointers, bodies = (["MEM-001", "MEM-003"], ["MEM-002"]) if neighbors else ([], [])
+        else:
+            body = "Private malformed body MEM-999. " * 30
+            title = "Private malformed title MEM-888"
+            (root / "MEM-004-malformed.md").write_text(
+                "---\n" + id_field + "slug: malformed\ntitle: " + title + "\ntopic: memory\n"
+                "provenance: directive\nscope: agent\nlifecycle: valid\nsalience: 50\n---\n" + body
+            )
+            good_line = "- `MEM-010` — Valid neighbor  (experiential, salience 30)\n"
+            if neighbors:
+                (root / "MEM-010-neighbor.md").write_text(
+                    "---\nid: MEM-010\nslug: neighbor\ntitle: Valid neighbor\ntopic: memory\n"
+                    "provenance: experiential\nscope: agent\nlifecycle: valid\nsalience: 30\n---\nValid body."
+                )
+            bad_line = f"- `{shown_id}` — {title}  (directive, salience 60)\n"
+            if mode == "directive-fit":
+                expected = header + f"**Directive:** `{shown_id}` — {title}  (directive, salience 60)\n" + body + "\n\n"
+                if neighbors:
+                    expected += good_line
+                budget = 2000
+            else:
+                expected = header + bad_line + (good_line if neighbors else "") + nudge
+                budget = len(expected)
+            pointers, bodies = (["MEM-010"], []) if neighbors else ([], [])
+        # Check accepted parser shapes explicitly, including unhashable IDs.
+        parsed = MemoryStore(root)._parse((root / "MEM-004-malformed.md").read_text())
+        assert str(parsed.id) == shown_id
+        self._write_org_config(test_runtime, budget=budget)
+        task_id = orch.create_task("Launch check")
+        monkeypatch.setattr(orch, "_build_session_id", lambda: "sess-malformed")
+        executor = MagicMock()
+        executor.run.return_value = ExecutorResult(success=True, duration_seconds=1, session_id="sess-malformed")
+        with patch.object(orch, "_build_executor", return_value=executor):
+            result, _ = orch._run_agent(task_id, "dev_agent", "")
+        assert result.success
+        assert executor.run.call_count == 1
+        prompt = executor.run.call_args.kwargs["prompt"]
+        assert prompt[prompt.index(header):] == expected + (
+            "\n\nRepository freshness at session start: test did not fast-forward cleanly; "
+            "their code may be stale.\n"
+        )
+        task = orch._db.get_task(task_id)
+        assert (task.id, task.assigned_agent, task.current_session_id) == (task_id, "dev_agent", "sess-malformed")
+        rows = orch._db.fetch_all_readonly(
+            "SELECT action, task_id, agent, payload FROM audit_log WHERE task_id=? ORDER BY id", (task_id,),
+        )
+        lifecycle = [row for row in rows if row["action"] in {"session_start", "session_end"}]
+        assert [row["action"] for row in lifecycle] == ["session_start", "session_end"]
+        for row in lifecycle:
+            assert (row["task_id"], row["agent"]) == (task_id, "dev_agent")
+        assert json.loads(lifecycle[0]["payload"])["session_id"] == "sess-malformed"
+        assert json.loads(lifecycle[1]["payload"]) == {"duration_seconds": 1, "token_count": None}
+        impressions = [row for row in rows if row["action"] == "memory_digest_impression"]
+        assert len(impressions) == int(neighbors)
+        if neighbors:
+            row = impressions[0]
+            assert (row["task_id"], row["agent"]) == (task_id, "dev_agent")
+            assert json.loads(row["payload"]) == {
+                "agent": "dev_agent", "session_id": "sess-malformed",
+                "digest_ids": bodies + pointers, "digest_count": len(bodies + pointers), "budget": budget,
+                "memory_telemetry_version": 1, "pointer_ids": pointers, "full_body_ids": bodies,
+            }
+            assert rows.index(row) < rows.index(lifecycle[0])
+        # Audit has neither malformed representations nor body/title ID mentions.
+        serialized = json.dumps([dict(row) for row in rows])
+        assert all(secret not in serialized for secret in ("private-content", "private-MEM", "MEM-777", "MEM-888", "MEM-999", "Private malformed"))
 
     def test_directive_scope_agent_boosted_in_full_prompt(self, orch, test_runtime, monkeypatch):
         """Agent-scope directive items get directive boost and rank above

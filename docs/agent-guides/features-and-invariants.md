@@ -247,13 +247,21 @@ Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/
 
 ### Memory telemetry guard (THR-091, TASK-7767)
 
+Task bootstrap retains text and item IDs from one actual `MemoryStore.render_memory_digest` pass; `build_memory_digest` remains a compatible string/None wrapper. Only appended full blocks or pointer lines contribute IDs. Directive fit is full-body exposure; budget fallback is pointer exposure. IDs merely mentioned in bodies, titles, header, or nudge are not item exposure. Scoring, ordering, salience, character budgets, prompt bytes and nudge behavior remain unchanged. A header/nudge-only result has no items and emits no impression. Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+
+After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
+
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, G3 complete intended-launch/expectation census, G4 consistent acquisition, the whole-report matrix and installed health acceptance remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+
 `AuditLogger.compute_memory_telemetry_report` and `happyranch memory report`
 currently report `insufficient_instrumentation`. Current audit rows have no
-versioned, production-canary-accepted epoch and no independently demonstrated
-automatic transport, so counts, elapsed time, manually attributed reads, and
-diagnostic ratios are observation-only and must never select tuning. This guard
-does not start collection or change memory get/search behavior, audit rows, or
-ranking. The frozen next-phase measurement definitions are in
+production-canary-accepted epoch or complete independently accepted health and
+launch/expectation census. Bounded disposable transport proofs do not establish
+installed acceptance. Counts, elapsed time, manually attributed reads, and
+diagnostic ratios remain observation-only and must never select tuning. The
+earlier guard-only unit did not change get/search, audit rows or ranking; the
+render-observed producer above extends only existing impression JSON and its
+accurate item IDs. Collection has not started. The frozen next-phase measurement definitions are in
 `docs/superpowers/specs/2026-09-11-memory-telemetry-corrective-guard.md`.
 Fail-closed output explicitly marks thresholds as not met and collection as not
 started; malformed diagnostic rows also remain ineligible rather than being
