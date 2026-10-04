@@ -262,7 +262,7 @@ def test_diy_candidate_identity(case):
 
 
 @pytest.mark.parametrize("case", ["complete", "missing_node", "zero", "skip", "duplicate", "wrong_phase", "wrong_attempt"])
-def test_diy_phase_coverage(case):
+def test_diy_phase_coverage(case, tmp_path, monkeypatch):
     _driver_admission()
     rows = [dict(node=node, status="passed", phase="proof-admission", attempt=1) for node in ("one", "two")]
     if case == "missing_node":
@@ -281,6 +281,185 @@ def test_diy_phase_coverage(case):
         proof.verify_phase(rows, ("one", "two"), phase="proof-admission", attempt=1)
     else:
         _assert_refused(lambda: proof.verify_phase(rows, ("one", "two"), phase="proof-admission", attempt=1), "[E3] incomplete coverage must refuse")
+
+
+    if case in {"complete", "missing_node"}:
+        # Independent design literals, never generated from shipping inventory.
+        literal = (('tests/remote_access/test_diy_acceptance.py::test_acceptance_cross_process_revoke_remove_then_reopen_streams',
+          270),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[short]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[segmented]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[split_terminator]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[truncated]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[oversize]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[wrong_frame]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[deadline]', 13),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[header_deadline]', 13),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[read_error]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[heartbeat_no_action]', 22),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[two_children]', 22),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[silent_timeout]', 7),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[eof]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[reset]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[read_error]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[default_output]', 1.9),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[malformed]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[truncated_record]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[oversize_record]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[extra_record]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[unflushed_record]', 2.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[secret_canary]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[stderr_canary]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[backpressure]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[flushed_admission]', 5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[duplicate_keys]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[non_ascii]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[wrong_child]', 1.3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[wrong_bool]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[out_of_order]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[invalid_terminal]', 1.4),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[success]', 6),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[admission_failure]', 3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[frame_read_failure]', 3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[cli_timeout]', 3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[close_wait_timeout]', 3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[cleanup_failure]', 3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[kill_survivor]', 13),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[terminate_error]', 10),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[kill_error]', 25),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_wait_once]', 6),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_poll_once]', 6),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_poll_unknown]', 6),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[shared_deadline_expired]', 6),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[shared_deadline_allowance_exhausted]',
+          35),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_pump_read]', 5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_pipe_close]', 5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_unregister]',
+          5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_get_map]',
+          5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_close]',
+          5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_watchdog_cancel]',
+          5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_watchdog_join]',
+          5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_descriptor_access]',
+          5),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[no_primary]', 6),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[empty_exited_empty]', 3),
+         ('tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[empty_exited_already_exited]', 4),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[scheduled]', 1.4),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[omitted]', 1.4),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[full]', 1.4),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[targeted]', 1.4),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[invalid]', 1.8),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[match]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[ref_drift]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[workflow_mismatch]',
+          1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[head_mismatch]',
+          1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[attempt_mismatch]',
+          1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[wrong_import]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[oldpin]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[complete]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[missing_node]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[zero]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[skip]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[duplicate]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[wrong_phase]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[wrong_attempt]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[intended]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[import_error]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[flag_error]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[bootstrap_error]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[no_admission]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[wrong_assertion]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[outer_timeout]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[unexpected_green]',
+          1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[success]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[red_failure]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[green_failure]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[signal]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[mode_mismatch]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[byte_mismatch]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[restore_error]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[blocked_pipe]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[child_timeout]', 1.7),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[term_survivor]', 13),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[descendant]', 1.7),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[cleanup_error]', 1.8),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[success]', 1.4),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[overflow]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[secret_canary]', 1.6),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[missing_junit]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[upload_failure]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[all_five]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[missing_round]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[reused_temp]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[reused_process]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[stale_marker]', 1.2),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[complete]', 1.3),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[phase_failure]', 10),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[timeout]', 1.4),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[cancelled]', 1.5),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[missing_upload]', 1.6),
+         ('tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[cleanup_unknown]', 1.6))
+        inventory = proof.phase_inventory("repeat-1")
+        actual = inventory["isolated"]
+        assert actual == list(literal), f"[E3-capacity] exact literal node inventory: observed={actual} expected={literal}"
+        assert inventory["isolated_reservation"] == 676.8 and inventory["sibling_reservation"] == 555 and inventory["bookkeeping_per_lane"] == 15, "[E3-capacity] literal command reservation: expected676.8+555 with15 per lane"
+        assert proof.phase_inventory("proof-protocol-cleanup")["payload_reservation"] == 1005, "[E3-capacity] literal command reservation: expected protocol1005"
+        assert [len(nodes) for nodes, _, _ in proof.fixed_commands("proof-protocol-cleanup")] == [39, 28], "[E3-capacity] exact literal node inventory: expected D39 E28"
+        # Observe actual run_phase -> _command operands. No command is run and
+        # no successful cleanup receipt is manufactured: finalization MUST fail
+        # with unknown command cleanup. Only dispatch shape is under test here.
+        source = tmp_path / "dispatch-source"
+        source.mkdir()
+        for relative in proof.FILES:
+            target = source / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            original = proof.ROOT / relative
+            target.write_bytes(original.read_bytes())
+            target.chmod(stat.S_IMODE(original.stat().st_mode))
+        dispatched = []
+        def capture_dispatch(nodes, marker, private, bound, **kwargs):
+            dispatched.append((nodes, marker, bound, kwargs.get("expected_red")))
+            return dict(cleanup=None, pipes_closed=None)
+        with monkeypatch.context() as patch:
+            patch.setattr(proof, "ROOT", source)
+            patch.setattr(proof, "_command", capture_dispatch)
+            patch.setattr(proof, "E_MUTATIONS", {})
+            patch.setattr(proof, "MUTATIONS", {"proof-protocol-cleanup": proof.MUTATIONS["proof-protocol-cleanup"][:1]})
+            evidence = tmp_path / "dispatch-evidence"
+            evidence.mkdir()
+            with pytest.raises(proof.ProofFailure, match="phase_cleanup_incomplete"):
+                proof.run_phase("proof-protocol-cleanup", start=time.monotonic(), attempt=1, evidence=evidence)
+            observed_bounds = [bound for _, _, bound, _ in dispatched]
+            assert observed_bounds == [10, 10, 10, 6, 210, 60], f"[E3-capacity] literal command reservation: observed={observed_bounds} expected=[10,10,10,6,210,60]"
+            dispatched.clear()
+            with pytest.raises(proof.ProofFailure, match="phase_cleanup_incomplete"):
+                proof.run_phase("repeat-1", start=time.monotonic(), attempt=1, evidence=evidence)
+            observed_isolated = [(nodes[0], bound) for nodes, _, bound, _ in dispatched[:-2]]
+            assert observed_isolated == list(literal), f"[E3-capacity] literal command reservation: observed={observed_isolated} expected={literal}"
+            assert [(nodes[0], bound) for nodes, _, bound, _ in dispatched[-2:]] == [("tests/remote_access/test_diy_acceptance.py",420),("tests/scripts/test_nightly_integration_reporting.py",120)], "[E3-capacity] literal command reservation: actual siblings420/120"
+            owned = json.loads((evidence / "owned-cleanup.json").read_text())
+            assert owned["groups_reaped"] is None and owned["pipes_closed"] is None, "[E3-capacity] literal command reservation: dispatch capture cannot claim cleanup"
+        with monkeypatch.context() as patch:
+            larger = dict(proof.NODE_BOUNDS)
+            larger["tests/remote_access/test_diy_acceptance.py::test_acceptance_cross_process_revoke_remove_then_reopen_streams"] = 272
+            patch.setattr(proof, "NODE_BOUNDS", larger)
+            _assert_refused(lambda: proof.phase_inventory("repeat-1"), "[E3-capacity] literal command reservation: isolation over677 must refuse")
+        with monkeypatch.context() as patch:
+            patch.setattr(proof, "SIBLING_CEILING", 554)
+            _assert_refused(lambda: proof.phase_inventory("repeat-1"), "[E3-capacity] literal command reservation: sibling over ceiling must refuse")
+        with monkeypatch.context() as patch:
+            patch.setattr(proof, "ISOLATION_CEILING", 706)
+            _assert_refused(lambda: proof.phase_inventory("repeat-1"), "[E3-capacity] literal command reservation: joint ceilings over1260 must refuse")
 
 
 @pytest.mark.parametrize("case", ["intended", "import_error", "flag_error", "bootstrap_error", "no_admission", "wrong_assertion", "outer_timeout", "unexpected_green"])

@@ -84,6 +84,27 @@ primary failure. This is invocation-owned evidence, not OS-wide absence;
 uncatchable termination remains incomplete. Historical unknown receipts remain
 unknown. A corrective head requires renewed final-head proof and CI.
 
+DIY owned cleanup contains individual operation failures and attempts every registered
+resource within one shared 25s deadline, followed by the frozen fixture's 5s
+allowance. Clients and CLI children precede the connector, then fixture shutdown.
+Delivered TERM keeps its 10s grace; refused TERM falls back to KILL without that
+grace. Expired waits receive zero, never a renewed positive allowance. Descriptor,
+selector and watchdog finalizers continue after faults; refusal, survivor and
+unavailable observations remain truthful. The original primary and traceback
+survive with private category-only notes; cleanup errors without a primary fail.
+The fixed program retains all original 94/41/61 nodes and adds 18 cleanup leaves:
+112 isolated nodes, 59 acceptance and 61 reporting siblings, 120 distinct nodes
+and 232 passing observations per complete repeat. All 50 mutation pairs plus the
+separate pre-fix-owner assertion RED/restored GREEN require exact bytes and modes
+restoration. Protocol restoration groups are D39/E28; its reservation is 1005s.
+Repeat isolation reserves 661.8+15=676.8s under 677s, and siblings reserve
+420+120+15=555s under 555s. Each lane includes 15s bookkeeping; joint reservation
+1231.8s and ceiling sum 1232s fit the unchanged 1260s payload/1800s job. Static
+inventory and actual command bounds must agree; measured overruns refuse.
+Selected 270s, E9 10s, actual 25+5s cleanup, TERM 10s and 16s controls remain.
+All eight phases and five isolated plus five sibling observations authenticate one
+frozen candidate; definitions and historical results are not repaired-head proof.
+
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)

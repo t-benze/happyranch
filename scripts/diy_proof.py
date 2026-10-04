@@ -38,7 +38,7 @@ KEEPERS = (
 )
 READER = ("short", "segmented", "split_terminator", "truncated", "oversize", "wrong_frame", "deadline", "header_deadline", "read_error")
 LIFECYCLE = ("heartbeat_no_action", "two_children", "silent_timeout", "eof", "reset", "read_error", "default_output", "malformed", "truncated_record", "oversize_record", "extra_record", "unflushed_record", "secret_canary", "stderr_canary", "backpressure", 'flushed_admission', 'duplicate_keys', 'non_ascii', 'wrong_child', 'wrong_bool', 'out_of_order', 'invalid_terminal')
-CLEANUP = ("success", "admission_failure", "frame_read_failure", "cli_timeout", "close_wait_timeout", "cleanup_failure", "kill_survivor")
+CLEANUP = ('success', 'admission_failure', 'frame_read_failure', 'cli_timeout', 'close_wait_timeout', 'cleanup_failure', 'kill_survivor', 'terminate_error', 'kill_error', 'wait_poll_error_wait_once', 'wait_poll_error_poll_once', 'wait_poll_error_poll_unknown', 'shared_deadline_expired', 'shared_deadline_allowance_exhausted', 'finalizer_error_pump_read', 'finalizer_error_pipe_close', 'finalizer_error_selector_unregister', 'finalizer_error_selector_get_map', 'finalizer_error_selector_close', 'finalizer_error_watchdog_cancel', 'finalizer_error_watchdog_join', 'finalizer_error_descriptor_access', 'no_primary', 'empty_exited_empty', 'empty_exited_already_exited')
 E_CASES = {
     "dispatch_selection": ("scheduled", "omitted", "full", "targeted", "invalid"),
     "candidate_identity": ("match", "ref_drift", "workflow_mismatch", "head_mismatch", "attempt_mismatch", "wrong_import", "oldpin"),
@@ -642,7 +642,7 @@ MUTATIONS["proof-protocol-cleanup"] += (
     (ACCEPTANCE, '    assert type(row["child_id"]) is int and row["child_id"] == child_id, "[D-record] fresh child"', '    pass', ACCEPTANCE + "::test_diy_lifecycle_records[wrong_child]", "[D-record] expected fresh child"),
     (ACCEPTANCE, '        assert row["sse"] is True and row["first_frame_ok"] is True, "[D-record] first frame"', '        pass', ACCEPTANCE + "::test_diy_lifecycle_records[wrong_bool]", "[D-record] expected first frame"),
     (ACCEPTANCE, '                            assert len(row["records"]) < 2, "[D-record] extra record"', '                            pass', ACCEPTANCE + "::test_diy_lifecycle_records[extra_record]", "[D-record] expected extra record"),
-    (ACCEPTANCE, '                    row["proc"].kill()', '                    pass', ACCEPTANCE + "::test_diy_owned_cleanup[kill_survivor]", "[D-cleanup] process and pipe absence"),
+    (ACCEPTANCE, '                    attempt(proc.kill, "process_cleanup")', '                    pass', ACCEPTANCE + "::test_diy_owned_cleanup[kill_survivor]", "[D-cleanup] process and pipe absence"),
     (ACCEPTANCE, '    if primary is not None:', '    if False:', ACCEPTANCE + "::test_diy_owned_cleanup[cleanup_failure]", "[D-cleanup] primary must survive cleanup failure"),
 )
 
@@ -656,41 +656,331 @@ E_MUTATIONS["proof-protocol-cleanup"] += (
     ('            run_phase(phase, start=start, attempt=receipt["identity"]["attempt"], evidence=evidence, receipts=receipt["commands"])', '            run_phase(phase, start=start, attempt=receipt["identity"]["attempt"], evidence=evidence)', 'verdict[phase_failure]', '[E9] retain prior completed command', 10),
 )
 
+# Literal reservations accepted in TASK9558 step36. Historical short-node maxima
+# plus0.5s are prospective bounds; actual command overruns still fail.
+NODE_BOUNDS = {'tests/remote_access/test_diy_acceptance.py::test_acceptance_cross_process_revoke_remove_then_reopen_streams': 270,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[short]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[segmented]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[split_terminator]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[truncated]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[oversize]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[wrong_frame]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[deadline]': 13,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[header_deadline]': 13,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_first_frame_reader[read_error]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[heartbeat_no_action]': 22,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[two_children]': 22,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[silent_timeout]': 7,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[eof]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[reset]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[read_error]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[default_output]': 1.9,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[malformed]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[truncated_record]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[oversize_record]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[extra_record]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[unflushed_record]': 2.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[secret_canary]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[stderr_canary]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[backpressure]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[flushed_admission]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[duplicate_keys]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[non_ascii]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[wrong_child]': 1.3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[wrong_bool]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[out_of_order]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_lifecycle_records[invalid_terminal]': 1.4,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[success]': 6,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[admission_failure]': 3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[frame_read_failure]': 3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[cli_timeout]': 3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[close_wait_timeout]': 3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[cleanup_failure]': 3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[kill_survivor]': 13,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[scheduled]': 1.4,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[omitted]': 1.4,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[full]': 1.4,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[targeted]': 1.4,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_dispatch_selection[invalid]': 1.8,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[match]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[ref_drift]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[workflow_mismatch]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[head_mismatch]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[attempt_mismatch]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[wrong_import]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_candidate_identity[oldpin]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[complete]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[missing_node]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[zero]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[skip]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[duplicate]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[wrong_phase]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_phase_coverage[wrong_attempt]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[intended]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[import_error]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[flag_error]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[bootstrap_error]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[no_admission]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[wrong_assertion]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[outer_timeout]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_red_attribution[unexpected_green]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[success]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[red_failure]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[green_failure]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[signal]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[mode_mismatch]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[byte_mismatch]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_restore[restore_error]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[blocked_pipe]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[child_timeout]': 1.7,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[term_survivor]': 13,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[descendant]': 1.7,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_deadline_cleanup[cleanup_error]': 1.8,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[success]': 1.4,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[overflow]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[secret_canary]': 1.6,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[missing_junit]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_receipt_privacy[upload_failure]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[all_five]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[missing_round]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[reused_temp]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[reused_process]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_repetition[stale_marker]': 1.2,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[complete]': 1.3,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[phase_failure]': 10,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[timeout]': 1.4,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[cancelled]': 1.5,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[missing_upload]': 1.6,
+ 'tests/scripts/test_nightly_integration_reporting.py::test_diy_verdict[cleanup_unknown]': 1.6,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[terminate_error]': 10,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[kill_error]': 25,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_wait_once]': 6,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_poll_once]': 6,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_poll_unknown]': 6,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[shared_deadline_expired]': 6,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[shared_deadline_allowance_exhausted]': 35,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_pump_read]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_pipe_close]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_unregister]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_get_map]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_close]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_watchdog_cancel]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_watchdog_join]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_descriptor_access]': 5,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[no_primary]': 6,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[empty_exited_empty]': 3,
+ 'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[empty_exited_already_exited]': 4}
+BOOKKEEPING = 15  # Per lane, also included in proof-phase accounting.
+ISOLATION_CEILING = 677
+SIBLING_CEILING = 555
+
+
+MUTATIONS["proof-protocol-cleanup"] += (('tests/remote_access/test_diy_acceptance.py',
+  '                    term = attempt(proc.terminate, "process_cleanup")',
+  '                    term = proc.terminate()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[terminate_error]',
+  '[D5-terminate] later roles reaped'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                    attempt(proc.kill, "process_cleanup")',
+  '                    proc.kill()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[kill_error]',
+  '[D5-kill] later roles attempted; survivor truthful'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                    except Exception:\n                        errors.append("process_cleanup")',
+  '                    except Exception:\n                        raise',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_wait_once]',
+  '[D5-wait-once] finalizers completed'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                state = attempt(proc.poll, "process_cleanup")\n'
+  '                if state is None or state is unknown:\n'
+  '                    term = attempt(proc.terminate, "process_cleanup")',
+  '                state = proc.poll()\n'
+  '                if state is None or state is unknown:\n'
+  '                    term = attempt(proc.terminate, "process_cleanup")',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_poll_once]',
+  '[D5-poll-once] later roles attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                reaped = False',
+  '                if attempt(proc.poll, "process_cleanup") is unknown:\n'
+  '                    continue\n'
+  '                reaped = False',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[wait_poll_error_poll_unknown]',
+  '[D5-poll-unknown] unobserved is not absent'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        unknown = object()',
+  '        if time.monotonic() >= self.deadline:\n'
+  '            return []\n'
+  '        unknown = object()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[shared_deadline_expired]',
+  '[D5-expired] live resources attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '            return max(0, min(cap, deadline - time.monotonic()))',
+  '            return cap',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[shared_deadline_allowance_exhausted]',
+  '[D5-shared] no renewed or positive expired wait'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        def attempt(operation, category):',
+  '        def attempt(operation, category):\n'
+  '            if category == "pipe":\n'
+  '                return operation()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_pump_read]',
+  '[D5-pump-read] independent finalizers attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                finalizer(pipe.close, "descriptor")',
+  '                pipe.close()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_pipe_close]',
+  '[D5-pipe-close] remaining pipes attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                except Exception:\n                    errors.append("descriptor")',
+  '                except Exception:\n                    raise',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_unregister]',
+  '[D5-unregister] remaining descriptors attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '            mapping = attempt(self.selector.get_map, "descriptor")',
+  '            mapping = self.selector.get_map()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_get_map]',
+  '[D5-get-map] finalization continues'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        finalizer(self.selector.close, "descriptor")',
+  '        pass  # omitted selector finalization',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_selector_close]',
+  '[D5-selector-close] closure truthful; fixture attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        finalizer(self.watchdog.cancel, "watchdog")',
+  '        self.watchdog.cancel()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_watchdog_cancel]',
+  '[D5-watchdog-cancel] later operations attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        finalizer(lambda: self.watchdog.join(timeout=remaining(1)), "watchdog")',
+  '        self.watchdog.join(timeout=remaining(1))',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_watchdog_join]',
+  '[D5-watchdog-join] liveness truthful; later operations attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                finalizer(pipe.fileno, "descriptor")',
+  '                pipe.fileno()',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[finalizer_error_descriptor_access]',
+  '[D5-descriptor-access] remaining descriptors attempted'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '    elif errors:',
+  '    elif errors and False:',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[no_primary]',
+  '[D5-no-primary] cleanup error must fail'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        return sorted(set(errors))',
+  '        return sorted(set(errors + (["process_cleanup"] if not self.children else [])))',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[empty_exited_empty]',
+  '[D5-empty] no owned resources succeeds'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        for row in self.children:\n            for label in ("stdout", "stderr"):',
+  '        for row in self.children:\n'
+  '            if row["proc"].returncode is not None:\n'
+  '                continue\n'
+  '            for label in ("stdout", "stderr"):',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[empty_exited_already_exited]',
+  '[D5-exited] exited descriptors closed without signal'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '        for roles in ({"client", "cli"}, {"connector"}):',
+  '        for roles in ({"connector"}, {"client", "cli"}):',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[success]',
+  '[D5-role-order] clients before connector before fixture'),
+ ('tests/remote_access/test_diy_acceptance.py',
+  '                errors.append(category)',
+  '                errors.append(category + ":" + str(sys.exception()))',
+  'tests/remote_access/test_diy_acceptance.py::test_diy_owned_cleanup[terminate_error]',
+  '[D5-category] category-only note without canary'))
+
+
 def node_bound(node):
-    if node == SELECTED:
-        return 270
-    if "first_frame_reader" in node:
-        return 13 if "[deadline]" in node or "[header_deadline]" in node else 3
-    if "lifecycle_records" in node:
-        if "[flushed_admission]" in node:
-            return 5
-        if "[heartbeat_no_action]" in node or "[two_children]" in node:
-            return 22
-        return 7 if "[silent_timeout]" in node else 3
-    if "owned_cleanup" in node:
-        return 13 if "[kill_survivor]" in node else 3
-    if "deadline_cleanup[term_survivor]" in node:
-        return 13
-    if "dispatch_selection[invalid]" in node:
-        return 5
-    if "verdict[phase_failure]" in node:
-        return 10
-    return 2
+    require(node in NODE_BOUNDS, "inventory_node")
+    return NODE_BOUNDS[node]
+
+
+E_MUTATIONS["proof-protocol-cleanup"] += (("CLEANUP = ('success', 'admission_failure', 'frame_read_failure', 'cli_timeout', "
+  "'close_wait_timeout', 'cleanup_failure', 'kill_survivor', 'terminate_error', 'kill_error', "
+  "'wait_poll_error_wait_once', 'wait_poll_error_poll_once', 'wait_poll_error_poll_unknown', "
+  "'shared_deadline_expired', 'shared_deadline_allowance_exhausted', 'finalizer_error_pump_read', "
+  "'finalizer_error_pipe_close', 'finalizer_error_selector_unregister', "
+  "'finalizer_error_selector_get_map', 'finalizer_error_selector_close', "
+  "'finalizer_error_watchdog_cancel', 'finalizer_error_watchdog_join', "
+  "'finalizer_error_descriptor_access', 'no_primary', 'empty_exited_empty', "
+  "'empty_exited_already_exited')",
+  "CLEANUP = ('success', 'admission_failure', 'frame_read_failure', 'cli_timeout', "
+  "'close_wait_timeout', 'cleanup_failure', 'kill_survivor', 'kill_error', "
+  "'wait_poll_error_wait_once', 'wait_poll_error_poll_once', 'wait_poll_error_poll_unknown', "
+  "'shared_deadline_expired', 'shared_deadline_allowance_exhausted', 'finalizer_error_pump_read', "
+  "'finalizer_error_pipe_close', 'finalizer_error_selector_unregister', "
+  "'finalizer_error_selector_get_map', 'finalizer_error_selector_close', "
+  "'finalizer_error_watchdog_cancel', 'finalizer_error_watchdog_join', "
+  "'finalizer_error_descriptor_access', 'no_primary', 'empty_exited_empty', "
+  "'empty_exited_already_exited')",
+  'phase_coverage[complete]',
+  '[E3-capacity] exact literal node inventory',
+  10),
+ ('                invoke((node,), bound=red_bound, red=expected)',
+  '                invoke((node,), bound=60, red=expected)',
+  'phase_coverage[missing_node]',
+  '[E3-capacity] literal command reservation',
+  10))
+
+D_PAIR_BOUNDS = {'proof-admission': ((60, 60), (60, 60), (60, 60), (60, 60)),
+ 'proof-causality': ((60, 60), (60, 60), (60, 60), (60, 60), (60, 60)),
+ 'proof-protocol-cleanup': ((10, 6),
+                            (10, 6),
+                            (10, 6),
+                            (10, 6),
+                            (10, 6),
+                            (25, 18),
+                            (10, 6),
+                            (10, 10),
+                            (25, 25),
+                            (6, 6),
+                            (6, 6),
+                            (6, 6),
+                            (6, 6),
+                            (35, 35),
+                            (5, 5),
+                            (5, 5),
+                            (5, 5),
+                            (5, 5),
+                            (5, 5),
+                            (5, 5),
+                            (5, 5),
+                            (5, 5),
+                            (6, 6),
+                            (3, 3),
+                            (4, 4),
+                            (6, 6),
+                            (10, 10))}
+
+
+def mutation_bounds(phase, index):
+    return D_PAIR_BOUNDS[phase][index]
 
 
 def phase_inventory(phase):
     require(phase in PHASES, "inventory_phase")
     if phase.startswith("repeat-"):
         isolated = [(node, node_bound(node)) for node in (SELECTED, *D_NODES, *E_NODES)]
-        require(sum(bound for _, bound in isolated) <= 600, "inventory_isolated_budget")
-        return dict(isolated=isolated, isolated_reservation=sum(bound for _, bound in isolated),
-                    sibling=[(ACCEPTANCE, 420), (REPORTING, 120)], sibling_reservation=540)
-    mutations = [(relative, node, 60, 60) for relative, _, _, node, _ in MUTATIONS.get(phase, ())]
-    mutations += [("scripts/diy_proof.py", REPORTING + "::test_diy_" + suffix, bound, 10) for _, _, suffix, _, bound in E_MUTATIONS.get(phase, ())]
+        isolated_total = round(sum(bound for _, bound in isolated) + BOOKKEEPING, 1)
+        sibling = [(ACCEPTANCE, 420), (REPORTING, 120)]
+        sibling_total = sum(bound for _, bound in sibling) + BOOKKEEPING
+        require(isolated_total <= ISOLATION_CEILING, "inventory_isolated_budget")
+        require(sibling_total <= SIBLING_CEILING, "inventory_sibling_budget")
+        require(isolated_total + sibling_total <= 1260, "inventory_payload_budget")
+        require(ISOLATION_CEILING + SIBLING_CEILING <= 1260, "inventory_lane_budget")
+        return dict(isolated=isolated, isolated_reservation=isolated_total,
+                    sibling=sibling, sibling_reservation=sibling_total,
+                    bookkeeping_per_lane=BOOKKEEPING)
+    mutations = [(relative, node, *mutation_bounds(phase, index))
+                 for index, (relative, _, _, node, _) in enumerate(MUTATIONS.get(phase, ()))]
+    mutations += [("scripts/diy_proof.py", REPORTING + "::test_diy_" + suffix, bound, 10)
+                  for _, _, suffix, _, bound in E_MUTATIONS.get(phase, ())]
     fixed = fixed_commands(phase)
-    reservation = sum(red + green for _, _, red, green in mutations) + sum(bound for _, _, bound in fixed)
+    pre_fix = 20 if phase == "proof-protocol-cleanup" else 0
+    reservation = sum(red + green for _, _, red, green in mutations) + sum(bound for _, _, bound in fixed) + pre_fix + BOOKKEEPING
     require(reservation <= 1260, "inventory_proof_budget")
-    return dict(mutations=mutations, fixed=fixed, payload_reservation=reservation)
+    return dict(mutations=mutations, fixed=fixed, pre_fix_reservation=pre_fix,
+                bookkeeping=BOOKKEEPING, payload_reservation=reservation)
 
 
 
@@ -711,9 +1001,13 @@ def fixed_commands(phase):
     if phase == "proof-causality":
         return ((tuple(node for node in D_NODES if "lifecycle_records" in node and not any("[" + case + "]" in node for case in protocol)), "integration", 60), ((SELECTED,), "integration", 270))
     if phase == "proof-protocol-cleanup":
-        return ((tuple(node for node in D_NODES if "owned_cleanup" in node or ("lifecycle_records" in node and any("[" + case + "]" in node for case in protocol))), "integration", 60),
+        return ((tuple(node for node in D_NODES if "owned_cleanup" in node or ("lifecycle_records" in node and any("[" + case + "]" in node for case in protocol))), "integration", 210),
                 (tuple(node for node in E_NODES if not any(owner in node for owner in first_e)), "not integration", 60))
     return ()
+
+
+# Separate pre-fix-owner proof inside the existing protocol allocation.
+PRE_FIX_CLEANUP = ('    def cleanup(self):\n        deadline = time.monotonic() + 25  # Remaining 5s belongs to the fixture.\n        errors = []\n        unknown = object()\n\n        def attempt(operation, category):\n            try:\n                return operation()\n            except Exception:\n                errors.append(category)\n                return unknown\n\n        def remaining(cap):\n            return max(0, min(cap, deadline - time.monotonic()))\n\n        def finalizer(operation, category):\n            # A one-shot refusal must not abandon this or later resources.\n            if attempt(operation, category) is unknown:\n                attempt(operation, category)\n\n        finalizer(self.watchdog.cancel, "watchdog")\n        finalizer(lambda: self.watchdog.join(timeout=remaining(1)), "watchdog")\n        # All client/CLI children before the connector.\n        for roles in ({"client", "cli"}, {"connector"}):\n            rows = [row for row in self.children if row["role"] in roles]\n            delivered = []\n            for row in rows:\n                proc = row["proc"]\n                state = attempt(proc.poll, "process_cleanup")\n                if state is None or state is unknown:\n                    term = attempt(proc.terminate, "process_cleanup")\n                    if term is unknown:\n                        attempt(proc.kill, "process_cleanup")\n                    else:\n                        delivered.append(row)\n            term_end = min(deadline, time.monotonic() + 10)\n            while delivered and time.monotonic() < term_end:\n                pending = []\n                for row in delivered:\n                    state = attempt(row["proc"].poll, "process_cleanup")\n                    if state is None:\n                        pending.append(row)\n                    elif state is unknown:\n                        # Unavailable polling cannot justify a grace wait or absence.\n                        attempt(row["proc"].kill, "process_cleanup")\n                delivered = pending\n                if delivered:\n                    attempt(lambda: self.pump(timeout=min(0.1, remaining(0.1)), cleanup=True), "pipe")\n            for row in rows:\n                proc = row["proc"]\n                state = attempt(proc.poll, "process_cleanup")\n                if state is None or state is unknown:\n                    attempt(proc.kill, "process_cleanup")\n            for row in rows:\n                proc = row["proc"]\n                reaped = False\n                # Retry a refused observation once, always inside the same deadline.\n                for _ in range(2):\n                    try:\n                        proc.wait(timeout=remaining(5))\n                        reaped = True\n                        break\n                    except subprocess.TimeoutExpired:\n                        state = attempt(proc.poll, "process_cleanup")\n                        if state is None:\n                            errors.append("survivor")\n                        break\n                    except Exception:\n                        errors.append("process_cleanup")\n                if not reaped:\n                    state = attempt(proc.poll, "process_cleanup")\n                    if state is None:\n                        errors.append("survivor")\n                    elif state is unknown:\n                        errors.append("process_cleanup")\n        # Drain EOF before closing every descriptor, including failure paths.\n        stop = min(deadline, time.monotonic() + 1)\n        while time.monotonic() < stop:\n            mapping = attempt(self.selector.get_map, "descriptor")\n            if mapping is unknown:\n                break\n            if not mapping:\n                break\n            attempt(lambda: self.pump(timeout=min(0.1, remaining(0.1)), cleanup=True), "pipe")\n        for row in self.children:\n            for label in ("stdout", "stderr"):\n                pipe = attempt(lambda: getattr(row["proc"], label), "descriptor")\n                if pipe is unknown:\n                    pipe = attempt(lambda: getattr(row["proc"], label), "descriptor")\n                if pipe is unknown:\n                    continue\n                finalizer(pipe.fileno, "descriptor")\n                # EOF may already have unregistered this descriptor.\n                try:\n                    self.selector.unregister(pipe)\n                except KeyError:\n                    pass\n                except Exception:\n                    errors.append("descriptor")\n                finalizer(pipe.close, "descriptor")\n        finalizer(self.selector.close, "descriptor")\n        alive = attempt(self.watchdog.is_alive, "watchdog")\n        if alive is True or alive is unknown:\n            errors.append("watchdog")\n        return sorted(set(errors))\n', '    def cleanup(self):\n        deadline = time.monotonic() + 25  # Remaining 5s belongs to the fixture.\n        errors = []\n        self.watchdog.cancel()\n        self.watchdog.join(timeout=1)\n        # All client/CLI children before the connector.\n        for roles in ({"client", "cli"}, {"connector"}):\n            rows = [row for row in self.children if row["role"] in roles]\n            for row in rows:\n                if row["proc"].poll() is None:\n                    row["proc"].terminate()\n            term_end = min(deadline, time.monotonic() + 10)\n            while any(row["proc"].poll() is None for row in rows) and time.monotonic() < term_end:\n                try:\n                    self.pump(cleanup=True)\n                except (AssertionError, OSError):\n                    errors.append("pipe")\n            for row in rows:\n                if row["proc"].poll() is None:\n                    row["proc"].kill()\n            for row in rows:\n                try:\n                    row["proc"].wait(timeout=max(0.001, min(5, deadline - time.monotonic())))\n                except subprocess.TimeoutExpired:\n                    errors.append("survivor")\n        # Drain EOF before closing every descriptor, including failure paths.\n        stop = min(deadline, time.monotonic() + 1)\n        while self.selector.get_map() and time.monotonic() < stop:\n            try:\n                self.pump(cleanup=True)\n            except (AssertionError, OSError):\n                errors.append("pipe")\n        for row in self.children:\n            for label in ("stdout", "stderr"):\n                try:\n                    getattr(row["proc"], label).close()\n                except OSError:\n                    errors.append("descriptor")\n        self.selector.close()\n        if self.watchdog.is_alive():\n            errors.append("watchdog")\n        return errors\n')
 
 
 def run_phase(phase, *, start: float, attempt: int, evidence: Path, receipts=None):
@@ -734,13 +1028,23 @@ def run_phase(phase, *, start: float, attempt: int, evidence: Path, receipts=Non
         def invoke(nodes, marker="integration", bound=60, red=None):
             receipts.append(_command(tuple(nodes), marker, private, bound, payload_end=payload_end,
                                      phase=phase, attempt=attempt, evidence=evidence, number=len(receipts) + 1, expected_red=red))
-        for relative, before, after, node, expected in MUTATIONS.get(phase, ()):
+        if phase == "proof-protocol-cleanup":
+            node = ACCEPTANCE + "::test_diy_owned_cleanup[terminate_error]"
+            with restore_mutation(ROOT / ACCEPTANCE, *PRE_FIX_CLEANUP):
+                invoke((node,), bound=10, red="[D5-terminate] later roles reaped")
+            require(manifest() == baseline, "restored_manifest")
+            receipts[-1]["restored"] = True
+            receipts[-1]["mutation_file"] = ACCEPTANCE
+            receipts[-1]["pre_fix_owner"] = True
+            invoke((node,), bound=10)
+        for index, (relative, before, after, node, expected) in enumerate(MUTATIONS.get(phase, ())):
+            red_bound, green_bound = mutation_bounds(phase, index)
             with restore_mutation(ROOT / relative, before, after):
-                invoke((node,), red=expected)
+                invoke((node,), bound=red_bound, red=expected)
             require(manifest() == baseline, "restored_manifest")
             receipts[-1]["restored"] = True
             receipts[-1]["mutation_file"] = relative
-            invoke((node,))
+            invoke((node,), bound=green_bound)
         for before, after, suffix, expected, bound in E_MUTATIONS.get(phase, ()):
             node = REPORTING + "::test_diy_" + suffix
             with restore_mutation(ROOT / "scripts/diy_proof.py", before, after):
@@ -754,15 +1058,15 @@ def run_phase(phase, *, start: float, attempt: int, evidence: Path, receipts=Non
                 invoke(nodes, marker, bound)
         else:
             # Separate fresh pytest processes/data for each isolated owner group.
-            isolated_end = min(payload_end, time.monotonic() + 600)
+            isolated_end = min(payload_end, time.monotonic() + ISOLATION_CEILING)
             original_end = payload_end
             payload_end = isolated_end
             inventory = phase_inventory(phase)
             for node, bound in inventory["isolated"]:
                 invoke((node,), "integration" if node.startswith(ACCEPTANCE) else "not integration", bound=bound)
-            payload_end = min(original_end, time.monotonic() + 600)
-            invoke((ACCEPTANCE,), bound=420)
-            invoke((REPORTING,), "not integration", bound=120)
+            payload_end = min(original_end, time.monotonic() + SIBLING_CEILING)
+            for nodes, bound in inventory["sibling"]:
+                invoke((nodes,), "integration" if nodes == ACCEPTANCE else "not integration", bound=bound)
     except (Exception, KeyboardInterrupt) as exc:
         primary = exc
         raise

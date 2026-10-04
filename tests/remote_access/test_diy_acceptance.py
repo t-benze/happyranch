@@ -822,45 +822,108 @@ class _OwnedDiyProcesses:
     def cleanup(self):
         deadline = time.monotonic() + 25  # Remaining 5s belongs to the fixture.
         errors = []
-        self.watchdog.cancel()
-        self.watchdog.join(timeout=1)
+        unknown = object()
+
+        def attempt(operation, category):
+            try:
+                return operation()
+            except Exception:
+                errors.append(category)
+                return unknown
+
+        def remaining(cap):
+            return max(0, min(cap, deadline - time.monotonic()))
+
+        def finalizer(operation, category):
+            # A one-shot refusal must not abandon this or later resources.
+            if attempt(operation, category) is unknown:
+                attempt(operation, category)
+
+        finalizer(self.watchdog.cancel, "watchdog")
+        finalizer(lambda: self.watchdog.join(timeout=remaining(1)), "watchdog")
         # All client/CLI children before the connector.
         for roles in ({"client", "cli"}, {"connector"}):
             rows = [row for row in self.children if row["role"] in roles]
+            delivered = []
             for row in rows:
-                if row["proc"].poll() is None:
-                    row["proc"].terminate()
+                proc = row["proc"]
+                state = attempt(proc.poll, "process_cleanup")
+                if state is None or state is unknown:
+                    term = attempt(proc.terminate, "process_cleanup")
+                    if term is unknown:
+                        attempt(proc.kill, "process_cleanup")
+                    else:
+                        delivered.append(row)
             term_end = min(deadline, time.monotonic() + 10)
-            while any(row["proc"].poll() is None for row in rows) and time.monotonic() < term_end:
-                try:
-                    self.pump(cleanup=True)
-                except (AssertionError, OSError):
-                    errors.append("pipe")
+            while delivered and time.monotonic() < term_end:
+                pending = []
+                for row in delivered:
+                    state = attempt(row["proc"].poll, "process_cleanup")
+                    if state is None:
+                        pending.append(row)
+                    elif state is unknown:
+                        # Unavailable polling cannot justify a grace wait or absence.
+                        attempt(row["proc"].kill, "process_cleanup")
+                delivered = pending
+                if delivered:
+                    attempt(lambda: self.pump(timeout=min(0.1, remaining(0.1)), cleanup=True), "pipe")
             for row in rows:
-                if row["proc"].poll() is None:
-                    row["proc"].kill()
+                proc = row["proc"]
+                state = attempt(proc.poll, "process_cleanup")
+                if state is None or state is unknown:
+                    attempt(proc.kill, "process_cleanup")
             for row in rows:
-                try:
-                    row["proc"].wait(timeout=max(0.001, min(5, deadline - time.monotonic())))
-                except subprocess.TimeoutExpired:
-                    errors.append("survivor")
+                proc = row["proc"]
+                reaped = False
+                # Retry a refused observation once, always inside the same deadline.
+                for _ in range(2):
+                    try:
+                        proc.wait(timeout=remaining(5))
+                        reaped = True
+                        break
+                    except subprocess.TimeoutExpired:
+                        state = attempt(proc.poll, "process_cleanup")
+                        if state is None:
+                            errors.append("survivor")
+                        break
+                    except Exception:
+                        errors.append("process_cleanup")
+                if not reaped:
+                    state = attempt(proc.poll, "process_cleanup")
+                    if state is None:
+                        errors.append("survivor")
+                    elif state is unknown:
+                        errors.append("process_cleanup")
         # Drain EOF before closing every descriptor, including failure paths.
         stop = min(deadline, time.monotonic() + 1)
-        while self.selector.get_map() and time.monotonic() < stop:
-            try:
-                self.pump(cleanup=True)
-            except (AssertionError, OSError):
-                errors.append("pipe")
+        while time.monotonic() < stop:
+            mapping = attempt(self.selector.get_map, "descriptor")
+            if mapping is unknown:
+                break
+            if not mapping:
+                break
+            attempt(lambda: self.pump(timeout=min(0.1, remaining(0.1)), cleanup=True), "pipe")
         for row in self.children:
             for label in ("stdout", "stderr"):
+                pipe = attempt(lambda: getattr(row["proc"], label), "descriptor")
+                if pipe is unknown:
+                    pipe = attempt(lambda: getattr(row["proc"], label), "descriptor")
+                if pipe is unknown:
+                    continue
+                finalizer(pipe.fileno, "descriptor")
+                # EOF may already have unregistered this descriptor.
                 try:
-                    getattr(row["proc"], label).close()
-                except OSError:
+                    self.selector.unregister(pipe)
+                except KeyError:
+                    pass
+                except Exception:
                     errors.append("descriptor")
-        self.selector.close()
-        if self.watchdog.is_alive():
+                finalizer(pipe.close, "descriptor")
+        finalizer(self.selector.close, "descriptor")
+        alive = attempt(self.watchdog.is_alive, "watchdog")
+        if alive is True or alive is unknown:
             errors.append("watchdog")
-        return errors
+        return sorted(set(errors))
 
 
 def _cleanup_owned(owner, daemon, primary):
@@ -1155,8 +1218,231 @@ def test_diy_lifecycle_records(case):
             assert not errors, "[D-cleanup] unexpected cleanup failure"
 
 
-@pytest.mark.parametrize("case", ["success", "admission_failure", "frame_read_failure", "cli_timeout", "close_wait_timeout", "cleanup_failure", "kill_survivor"])
-def test_diy_owned_cleanup(case):
+@pytest.mark.parametrize("case", ["success", "admission_failure", "frame_read_failure", "cli_timeout", "close_wait_timeout", "cleanup_failure", "kill_survivor",
+    "terminate_error", "kill_error", "wait_poll_error_wait_once", "wait_poll_error_poll_once", "wait_poll_error_poll_unknown",
+    "shared_deadline_expired", "shared_deadline_allowance_exhausted", "finalizer_error_pump_read", "finalizer_error_pipe_close",
+    "finalizer_error_selector_unregister", "finalizer_error_selector_get_map", "finalizer_error_selector_close",
+    "finalizer_error_watchdog_cancel", "finalizer_error_watchdog_join", "finalizer_error_descriptor_access", "no_primary",
+    "empty_exited_empty", "empty_exited_already_exited"])
+def test_diy_owned_cleanup(case, monkeypatch):
+    if case == "success" or case not in {"admission_failure", "frame_read_failure", "cli_timeout", "close_wait_timeout", "cleanup_failure", "kill_survivor"}:
+        # Faults wrap real operations. Snapshots precede independent containment;
+        # an oracle poll/wait is never credited as an owner-initiated reap.
+        owner = _OwnedDiyProcesses(60)
+        daemon = FakeDaemon(BEARER, held_sse_mode="silent")
+        original_stop = daemon.stop
+        original_pump = owner.pump
+        original_selector_close = owner.selector.close
+        original_cancel, original_join = owner.watchdog.cancel, owner.watchdog.join
+        children, events, reaped, faults, waits, fixture = [], [], set(), [], [], []
+        sentinel = None
+        primary = AssertionError("[D-cleanup] primary retained")
+        canary = "DIY_SECRET_CANARY operation details"
+        marker = {
+            "success": "[D5-role-order] clients before connector before fixture",
+            "terminate_error": "[D5-terminate] later roles reaped",
+            "kill_error": "[D5-kill] later roles attempted; survivor truthful",
+            "wait_poll_error_wait_once": "[D5-wait-once] finalizers completed",
+            "wait_poll_error_poll_once": "[D5-poll-once] later roles attempted",
+            "wait_poll_error_poll_unknown": "[D5-poll-unknown] unobserved is not absent",
+            "shared_deadline_expired": "[D5-expired] live resources attempted",
+            "shared_deadline_allowance_exhausted": "[D5-shared] no renewed or positive expired wait",
+            "finalizer_error_pump_read": "[D5-pump-read] independent finalizers attempted",
+            "finalizer_error_pipe_close": "[D5-pipe-close] remaining pipes attempted",
+            "finalizer_error_selector_unregister": "[D5-unregister] remaining descriptors attempted",
+            "finalizer_error_selector_get_map": "[D5-get-map] finalization continues",
+            "finalizer_error_selector_close": "[D5-selector-close] closure truthful; fixture attempted",
+            "finalizer_error_watchdog_cancel": "[D5-watchdog-cancel] later operations attempted",
+            "finalizer_error_watchdog_join": "[D5-watchdog-join] liveness truthful; later operations attempted",
+            "finalizer_error_descriptor_access": "[D5-descriptor-access] remaining descriptors attempted",
+            "no_primary": "[D5-no-primary] cleanup error must fail",
+            "empty_exited_empty": "[D5-empty] no owned resources succeeds",
+            "empty_exited_already_exited": "[D5-exited] exited descriptors closed without signal",
+        }[case]
+
+        pumping = [False]
+
+        def intercept(name, operation, *, refuse=False, persistent=False, allow_fault=lambda: True):
+            calls = 0
+            def observed(*args, **kwargs):
+                nonlocal calls
+                events.append(name)
+                if allow_fault():
+                    calls += 1
+                if refuse and allow_fault() and (persistent or calls == 1):
+                    faults.append(name)
+                    raise OSError(canary)
+                return operation(*args, **kwargs)
+            return observed
+
+        class ObservedPipe:
+            def __init__(self, pipe, label, fault):
+                self.pipe = pipe
+                self.fileno = intercept(label + ":fileno", pipe.fileno, refuse=fault == "descriptor_access")
+                self.close = intercept(label + ":close", pipe.close, refuse=fault == "pipe_close")
+            def __getattr__(self, name):
+                return getattr(self.pipe, name)
+
+        def snapshot_stop():
+            fixture.append(dict(reaped=set(reaped), events=list(events),
+                exits={item["proc"].pid: item["proc"].returncode for item in children},
+                pipes=all(pipe.closed for item in children for pipe in item["pipes"]),
+                selector=owner.selector._selector.fileno() if not owner.selector._selector.closed else -1,
+                watchdog=owner.watchdog.is_alive(), at=time.monotonic()))
+            events.append("fixture")
+            return original_stop()
+
+        try:
+            daemon.start()
+            if case != "empty_exited_empty":
+                roles = ("connector", "cli", "client") if case != "empty_exited_already_exited" else ("cli",)
+                for role in roles:
+                    resistant = case == "kill_error" and role == "cli"
+                    source = "import signal,time; " + ("signal.signal(signal.SIGTERM,signal.SIG_IGN); " if resistant else "") + "print('ready',flush=True); " + ("" if case == "empty_exited_already_exited" else "time.sleep(60)")
+                    row = owner.spawn([sys.executable, "-c", source], role=role)
+                    proc = row["proc"]
+                    children.append(dict(row=row, proc=proc, poll=proc.poll, wait=proc.wait, kill=proc.kill,
+                                         terminate=proc.terminate, pipes=(proc.stdout, proc.stderr)))
+                for item in children:
+                    owner.wait(lambda item=item: b"ready" in item["row"]["stdout"], 2, "[D-cleanup] owned child ready")
+                if case == "empty_exited_already_exited":
+                    children[0]["wait"](timeout=2)
+                if case == "success":
+                    sentinel = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            with _admission_response("127.0.0.1", daemon.port, "/tail", {"Authorization": "Bearer " + BEARER}) as (positive, positive_sock, positive_deadline, positive_watchdog):
+                assert _read_first_sse_frame(positive, positive_deadline) == 13, "[D-cleanup] independent first frame"
+                print("DIY_ADMITTED", flush=True)
+            assert positive.closed and not positive_watchdog.is_alive(), "[D-cleanup] positive response closed"
+            cleanup_start = None
+            with monkeypatch.context() as patch:
+                patch.setattr(daemon, "stop", snapshot_stop)
+                for item in children:
+                    proc, role = item["proc"], item["row"]["role"]
+                    first = role == "cli"
+                    for method in ("terminate", "kill"):
+                        refuse = first and ((method == "terminate" and case in {"terminate_error", "no_primary"}) or
+                            (method == "kill" and case == "kill_error") or
+                            (method == "poll" and case in {"wait_poll_error_poll_once", "wait_poll_error_poll_unknown"}))
+                        persistent = case in {"kill_error", "wait_poll_error_poll_unknown"}
+                        patch.setattr(proc, method, intercept(role + ":" + method, item[method], refuse=refuse, persistent=persistent))
+                    observed_poll = intercept(role + ":poll", item["poll"], refuse=first and case in {"wait_poll_error_poll_once", "wait_poll_error_poll_unknown"}, persistent=case == "wait_poll_error_poll_unknown")
+                    def recorded_poll(item=item, observed_poll=observed_poll):
+                        result = observed_poll()
+                        if result is not None:
+                            reaped.add(item["proc"].pid)
+                        return result
+                    patch.setattr(proc, "poll", recorded_poll)
+                    calls = [0]
+                    def observed_wait(*args, item=item, first=first, calls=calls, **kwargs):
+                        calls[0] += 1
+                        at = time.monotonic()
+                        waits.append((at, kwargs.get("timeout")))
+                        events.append(item["row"]["role"] + ":wait")
+                        if first and case == "shared_deadline_allowance_exhausted" and calls[0] == 1:
+                            faults.append("shared_wait")
+                            # Consume the actual allowance, without a fake clock.
+                            time.sleep(max(0, cleanup_start + 25 - time.monotonic()))
+                            raise subprocess.TimeoutExpired("owned", kwargs.get("timeout"))
+                        if first and ((case == "wait_poll_error_wait_once" and calls[0] == 1) or case == "wait_poll_error_poll_unknown"):
+                            faults.append("wait")
+                            raise OSError(canary)
+                        result = item["wait"](*args, **kwargs)
+                        reaped.add(item["proc"].pid)
+                        return result
+                    patch.setattr(proc, "wait", observed_wait)
+                    for label, pipe in zip(("stdout", "stderr"), item["pipes"]):
+                        fault = case.removeprefix("finalizer_error_") if first and label == "stdout" else ""
+                        patch.setattr(proc, label, ObservedPipe(pipe, role + ":" + label, fault))
+                for name in ("get_map", "unregister", "close"):
+                    patch.setattr(owner.selector, name, intercept("selector:" + name, getattr(owner.selector, name),
+                        refuse=case == "finalizer_error_selector_" + name, persistent=case == "finalizer_error_selector_close", allow_fault=lambda: not pumping[0]))
+                for name in ("cancel", "join"):
+                    patch.setattr(owner.watchdog, name, intercept("watchdog:" + name, getattr(owner.watchdog, name),
+                        refuse=case == "finalizer_error_watchdog_" + name))
+                pump_fault = intercept("pump", original_pump, refuse=case == "finalizer_error_pump_read")
+                def observed_pump(*args, **kwargs):
+                    pumping[0] = True
+                    try:
+                        return pump_fault(*args, **kwargs)
+                    finally:
+                        pumping[0] = False
+                patch.setattr(owner, "pump", observed_pump)
+                if case == "shared_deadline_expired":
+                    owner.deadline = time.monotonic() - 1
+                    owner.expired.set()
+                cleanup_start = time.monotonic()
+                secondary = None
+                traceback_before = None
+                try:
+                    if case not in {"success", "no_primary", "empty_exited_empty", "empty_exited_already_exited"}:
+                        raise primary
+                    _cleanup_owned(owner, daemon, None)
+                except AssertionError as exc:
+                    if exc is primary:
+                        traceback_before = exc.__traceback__
+                        _cleanup_owned(owner, daemon, exc)
+                        assert exc is primary and exc.__traceback__ is traceback_before, "[D-cleanup] same primary failure"
+                    else:
+                        secondary = exc
+                elapsed = time.monotonic() - cleanup_start
+                # Capture before restoring faults or any independent poll/wait.
+                owned_reaped = set(reaped)
+                captured_events = list(events)
+                all_closed = all(pipe.closed for item in children for pipe in item["pipes"])
+                selector_closed = owner.selector._selector.closed
+                watchdog_live = owner.watchdog.is_alive()
+                notes = str(getattr(primary, "__notes__", []))
+            live = {item["proc"].pid: item["poll"]() is None for item in children}
+            expected_reaped = {item["proc"].pid for item in children if case != "shared_deadline_allowance_exhausted" and not (item["row"]["role"] == "cli" and case in {"kill_error", "wait_poll_error_poll_unknown"})}
+            later_reaped = expected_reaped <= owned_reaped
+            expected_selector_closed = case != "finalizer_error_selector_close"
+            assert fixture and later_reaped and all_closed and selector_closed == expected_selector_closed and not watchdog_live, f"{marker}: observed={(bool(fixture), later_reaped, all_closed, selector_closed, watchdog_live)} expected={(True,True,True,expected_selector_closed,False)}"
+            assert fixture[0]["reaped"] == owned_reaped and fixture[0]["pipes"] and not fixture[0]["watchdog"], f"{marker}: fixture observed={fixture} expected=completed owned attempts"
+            signal_roles = [event.split(":")[0] for event in captured_events if event.endswith((":terminate", ":kill", ":wait"))]
+            connector_at = signal_roles.index("connector") if "connector" in signal_roles else len(signal_roles)
+            assert not any(role in {"cli", "client"} for role in signal_roles[connector_at:]), f"[D5-role-order] clients before connector before fixture: observed={signal_roles} expected=client/cli,connector"
+            if case == "kill_error":
+                pid = next(item["proc"].pid for item in children if item["row"]["role"] == "cli")
+                assert live[pid] and pid not in owned_reaped and "survivor" in notes and faults, f"{marker}: observed={(live[pid],pid in owned_reaped,notes,faults)} expected=live unreaped survivor"
+            elif case == "wait_poll_error_poll_unknown":
+                pid = next(item["proc"].pid for item in children if item["row"]["role"] == "cli")
+                assert pid not in owned_reaped and "process_cleanup" in notes and "survivor" not in notes and any(event == "cli:wait" for event in captured_events), f"{marker}: observed={(pid in owned_reaped,notes,captured_events)} expected=unknown, attempted reap"
+            elif case == "shared_deadline_allowance_exhausted":
+                assert faults and all(role + ":wait" in captured_events for role in ("cli", "client", "connector")) and elapsed <= 30.5 and fixture[0]["at"] - cleanup_start <= 25.5 and all(timeout <= max(0, cleanup_start + 25 - at) + 0.01 for at, timeout in waits), f"{marker}: observed={(elapsed,waits,captured_events)} expected=one25s allowance, zero expired waits, all roles attempted"
+            else:
+                assert not any(live.values()), f"{marker}: observed={live} expected=actual absence"
+            if case == "no_primary":
+                assert secondary is not None and "process_cleanup" in str(secondary), f"{marker}: observed={secondary} expected=cleanup failure"
+            else:
+                assert secondary is None, f"{marker}: observed={secondary} expected=no replacement failure"
+            if case.startswith("finalizer_error_") or case in {"terminate_error", "kill_error", "wait_poll_error_wait_once", "wait_poll_error_poll_once", "wait_poll_error_poll_unknown", "no_primary"}:
+                assert faults, f"{marker}: observed={faults} expected=reached fault boundary"
+            if case == "finalizer_error_selector_close":
+                assert "descriptor" in notes and "selector:close" in captured_events, f"{marker}: observed={(notes,captured_events)} expected=attempted refused close, incomplete"
+            assert canary not in notes and canary not in str(secondary), f"[D5-category] category-only note without canary: observed={notes} expected=closed categories"
+            if case == "empty_exited_already_exited":
+                assert not any(event.endswith((":terminate", ":kill")) for event in captured_events), f"{marker}: observed={captured_events} expected=no signal"
+            if sentinel is not None:
+                assert sentinel.poll() is None, "[D5-role-order] unowned sentinel remains live"
+            assert not daemon._thread.is_alive() and not owner.watchdog.is_alive(), "[D-cleanup] fixture/watchdog joined"
+            assert not _connector_reachable("127.0.0.1", daemon.port), "[D-cleanup] listener absence"
+        finally:
+            # No successful cleanup credit may come from this outer containment.
+            for item in children:
+                proc = item["proc"]
+                if item["poll"]() is None:
+                    item["kill"]()
+                item["wait"](timeout=5)
+                for pipe in item["pipes"]:
+                    pipe.close()
+            if sentinel is not None:
+                sentinel.kill()
+                sentinel.wait(timeout=5)
+            original_selector_close()
+            original_cancel()
+            original_join(timeout=1)
+            original_stop()
+        return
     owner = _OwnedDiyProcesses(60)
     daemon = FakeDaemon(BEARER, held_sse_mode="silent")
     daemon.start()
