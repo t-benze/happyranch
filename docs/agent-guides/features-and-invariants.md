@@ -276,9 +276,19 @@ rows. A short metadata lock never spans rendering, execution or application
 callbacks. Observation-boundary persistence drains concurrent metadata in
 generation order; another invocation's callback need not wait on a blocked
 observer writer. Writer failures are sticky and affect observation availability
-only. Internal zero-write validation rejects missing/duplicate/corrupt phases,
-missing starts or expected impressions even at zero reads, missing seals,
-unknown/pending preparation and zero population. A restart allocates a new
+only. Seals checkpoint independent counters/digests without reading history;
+their diagnostic integrity is `census_not_reconciled`, never a validation or
+health claim. Exhaustive zero-write read validation rejects missing/duplicate/
+corrupt phases and seals, missing starts or expected impressions at zero reads,
+unresolved population/parent/type facts, unknown/pending preparation and zero
+population. It compares opening/closing semantic observer facts (including
+errors, pending writer/preparation state and seal progress), excluding sample
+timestamps. Audit history is acquired in primary-key pages of at most 256 rows,
+with no shared Database lock across pages or decoding, and a 100,000-row total
+work limit including unrelated/prior-boot history. Same-connection write counts
+and other-connection data versions bracket acquisition. Movement, read failure
+or work exhaustion returns unavailable; no partial history is validated and no
+retry-until-quiet loop or reader write is performed. A restart allocates a new
 observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
 

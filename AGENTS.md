@@ -50,6 +50,9 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   identity/binding/started-callback occurrences/own terminal plus seals. Loss,
   corruption, zero/pending/unknown population and failed initialization remain
   unavailable; application returns/exceptions and session ownership stay intact.
+  Seals checkpoint counters without history reads and explicitly remain
+  `census_not_reconciled`. Exhaustive read validation is bounded and compares
+  closing semantic observer/database facts; movement or work exhaustion refuses.
   Internal census validity is never collection health or epoch authority.
   G1/B1/current-serving acquisition, both health consumers, installed acceptance,
   canary/deferred venues and full reporting remain open; backend/CLI guards stay

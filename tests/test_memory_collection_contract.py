@@ -636,3 +636,308 @@ def test_started_callback_from_provider_thread_keeps_own_invocation(collection_o
     assert launches[0]["payload"]["callback_count"] == 1
     assert rows(org, "memory_runtime_terminal")[0]["payload"]["launched_callbacks"] == 1
     assert org.memory_collection.validate()["census_valid"] is True
+
+
+def test_validation_rejects_real_bootstrap_entered_after_read(collection_org, monkeypatch):
+    """A stable prefix cannot hide a second real preparation after SELECT."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from runtime.infrastructure.learnings_store import MemoryStore
+    org, _ = collection_org
+    bootstrap(org)
+    observer = org.memory_collection
+    assert observer.validate()["census_valid"]
+    seed_memory(org)
+    captured, resume_read, in_render, resume_render = (Event() for _ in range(4))
+    read_rows, renderer = observer._rows, MemoryStore.render_memory_digest
+    opening = observer.snapshot()
+
+    def held_rows():
+        result = read_rows()
+        if not captured.is_set():
+            captured.set()
+            assert resume_read.wait(5)
+        return result
+
+    def held_render(*args, **kwargs):
+        in_render.set()
+        assert resume_render.wait(5)
+        return renderer(*args, **kwargs)
+
+    monkeypatch.setattr(observer, "_rows", held_rows)
+    monkeypatch.setattr(MemoryStore, "render_memory_digest", held_render)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        checking = pool.submit(observer.validate)
+        try:
+            assert captured.wait(3)
+            launching = pool.submit(bootstrap, org)
+            assert in_render.wait(3)
+            current = observer.snapshot()
+            assert current["assigned_intents"] == 2
+            assert current["generation"] > opening["generation"]
+            assert len(current["active_preparations"]) == 1
+            before = org.db.fetch_all_readonly("SELECT * FROM audit_log ORDER BY id")
+            resume_read.set()
+            answer = checking.result(timeout=3)
+            assert answer["census_valid"] is False, answer
+            assert answer["problems"] == ["census_moving"], answer
+            assert [tuple(r) for r in org.db.fetch_all_readonly("SELECT * FROM audit_log ORDER BY id")] == [tuple(r) for r in before]
+        finally:
+            resume_read.set()
+            resume_render.set()
+        launching.result(timeout=3)
+    assert observer.validate()["census_valid"] is True
+
+
+def test_validation_rejects_error_without_generation_movement(collection_org, monkeypatch):
+    """A real late started callback poisons the observer without a new phase."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    org, _ = collection_org
+    callbacks = []
+
+    def provider(**kwargs):
+        callbacks.append(kwargs["on_started"])
+        kwargs["on_started"](12345)
+        return ExecutorResult(success=True, duration_seconds=0, session_id=kwargs["session_id"], returncode=0)
+
+    monkeypatch.setattr(org.orchestrator, "_launch_agent_with_scratch", provider)
+    bootstrap(org)
+    observer = org.memory_collection
+    opening = observer.snapshot()
+    captured, resume = Event(), Event()
+    read_rows = observer._rows
+
+    def held_rows():
+        result = read_rows()
+        captured.set()
+        assert resume.wait(5)
+        return result
+
+    monkeypatch.setattr(observer, "_rows", held_rows)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        checking = pool.submit(observer.validate)
+        try:
+            assert captured.wait(3)
+            callbacks[0](54321)
+            assert observer.snapshot()["generation"] == opening["generation"]
+            assert observer.snapshot()["observation_error"] == "invocation_reference_invalid"
+            resume.set()
+            answer = checking.result(timeout=3)
+            assert answer["census_valid"] is False, answer
+            assert answer["problems"] == ["census_moving"], answer
+        finally:
+            resume.set()
+    assert "observation_error" in observer.validate()["problems"]
+
+
+@pytest.mark.parametrize(("task_id", "success", "error"), [
+    ("TASK-unknown", False, "invalid task_id: 'TASK-unknown'"),
+    ("TASK-999999", True, None),
+])
+def test_unresolved_actual_population_keeps_own_truthful_terminal(collection_org, task_id, success, error):
+    """Unknown SQL population stays unavailable despite real identity/start/binding."""
+    org, prompts = collection_org
+    assert org.db.get_task(task_id) is None
+    result, report = org.orchestrator._run_agent(task_id, "dev_agent", "")
+    assert (result.success, result.error, report) == (success, error, None)
+    assert len(prompts) == int(success)
+    intent = rows(org, "memory_runtime_intent")[0]
+    identity = rows(org, "memory_runtime_identity")[0]
+    terminal = rows(org, "memory_runtime_terminal")[0]
+    for row in (intent, identity, terminal):
+        assert (row["task_id"], row["agent"], row["payload"]["ordinal"]) == (task_id, "dev_agent", 1)
+    facts = identity["payload"]
+    assert (facts["population"], facts["parent_known"], facts["task_type"]) == ("unknown", False, None)
+    assert terminal["payload"]["session_id"] == facts["session_id"] == result.session_id
+    assert (terminal["payload"]["outcome"], terminal["payload"]["success"], terminal["payload"]["returncode"]) == ("returned", success, result.returncode)
+    snapshot = org.memory_collection.snapshot()
+    assert snapshot["assigned_intents"] == 1 and snapshot["active_references"] == []
+    assert snapshot["phase_counts"]["intent"] == snapshot["phase_counts"]["terminal"] == {"attempted": 1, "persisted": 1}
+    answer = org.memory_collection.validate()
+    assert answer["census_valid"] is False, answer
+    assert answer["problems"] == ["population_unknown:1"], answer
+    assert answer["discrepancies"] == dict.fromkeys(("intent", "identity", "expectation", "binding", "launched", "terminal"), 0)
+    assert answer["collection_decision"] == "insufficient_instrumentation" and not answer["thresholds_met"]
+
+
+@pytest.mark.parametrize("unknown", ["parent_known", "task_type", "population", "parent_relation"])
+def test_unresolved_identity_fact_cannot_be_repaired_by_start(collection_org, monkeypatch, unknown):
+    """Individually unresolved authoritative facts remain unknown after launch."""
+    org, _ = collection_org
+    observer = org.memory_collection
+    observe = observer.observe
+
+    def incomplete(invocation, phase, **facts):
+        if phase == "identity":
+            facts = {**facts, **{
+                "parent_known": {"parent_known": False},
+                "task_type": {"task_type": None},
+                "population": {"population": "unknown"},
+                "parent_relation": {"population": "child"},
+            }[unknown]}
+        return observe(invocation, phase, **facts)
+
+    monkeypatch.setattr(observer, "observe", incomplete)
+    task, sid = bootstrap(org)
+    assert len(rows(org, "session_start")) == len(rows(org, "memory_runtime_binding")) == 1
+    assert rows(org, "memory_runtime_terminal")[0]["payload"]["session_id"] == sid
+    answer = observer.validate()
+    assert answer["census_valid"] is False, answer
+    assert answer["problems"] == ["population_unknown:1"], answer
+    assert observer.snapshot()["assigned_intents"] == 1
+
+
+def test_execution_seals_do_no_history_reads_as_real_population_grows(collection_org, monkeypatch):
+    """100 real entries: callback sealing has constant work, no history acquisition."""
+    org, _ = collection_org
+    observer = org.memory_collection
+    history_reads, queries = [], []
+    read_rows, fetch = observer._rows, org.db.fetch_all_readonly
+
+    def measured_rows():
+        result = read_rows()
+        history_reads.append(len(result))
+        return result
+
+    def measured_fetch(sql, params=()):
+        result = fetch(sql, params)
+        if "audit_log" in sql:
+            queries.append((sql, len(result)))
+        return result
+
+    monkeypatch.setattr(observer, "_rows", measured_rows)
+    monkeypatch.setattr(org.db, "fetch_all_readonly", measured_fetch)
+    for number in range(1, 101):
+        bootstrap(org)
+        assert history_reads == [], (number, history_reads)
+        assert queries == [], (number, queries)
+    snapshot = observer.snapshot()
+    assert snapshot["assigned_intents"] == 100
+    assert snapshot["phase_counts"]["intent"] == snapshot["phase_counts"]["terminal"] == {"attempted": 100, "persisted": 100}
+    seals = rows(org, "memory_collection_seal")
+    assert len(seals) == snapshot["seal_attempts"] == snapshot["seal_persisted"] == 600
+    assert all(row["payload"]["census_integrity"]["problems"] == ["census_not_reconciled"]
+               and not row["payload"]["census_integrity"]["census_valid"] for row in seals)
+    assert observer.validate()["census_valid"] is True
+    assert history_reads == [1300]
+    assert max(size for _, size in queries) <= 256
+    assert all("json_extract" not in sql and "LIMIT" in sql for sql, _ in queries)
+
+
+def test_read_work_limit_refuses_complete_looking_prefix(collection_org, monkeypatch):
+    """Partial acquisition has a specific unavailable result and no sticky write error."""
+    import runtime.infrastructure.memory_collection as collection
+    org, _ = collection_org
+    bootstrap(org)
+    monkeypatch.setattr(collection, "MAX_CENSUS_READ_ROWS", 4, raising=False)
+    before = [tuple(r) for r in org.db.fetch_all_readonly("SELECT * FROM audit_log ORDER BY id")]
+    result = org.memory_collection.validate()
+    assert result["census_valid"] is False, result
+    assert result["problems"] == ["census_read_work_limit"], result
+    assert org.memory_collection.snapshot()["observation_error"] is None
+    assert [tuple(r) for r in org.db.fetch_all_readonly("SELECT * FROM audit_log ORDER BY id")] == before
+    monkeypatch.setattr(collection, "MAX_CENSUS_READ_ROWS", 100_000)
+    assert org.memory_collection.validate()["census_valid"] is True
+
+
+def test_faulted_read_page_releases_database_for_actual_callback(collection_org, monkeypatch):
+    """A delayed/failing validation page cannot hold the DB across another bootstrap."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    org, _ = collection_org
+    bootstrap(org)
+    captured, resume, progressed = Event(), Event(), Event()
+    fetch = org.db.fetch_all_readonly
+    provider = org.orchestrator._launch_agent_with_scratch
+
+    def progress(**kwargs):
+        result = provider(**kwargs)
+        progressed.set()
+        return result
+
+    monkeypatch.setattr(org.orchestrator, "_launch_agent_with_scratch", progress)
+
+    def fault(sql, params=()):
+        result = fetch(sql, params)
+        if "audit_log" in sql and not captured.is_set():
+            captured.set()
+            assert resume.wait(5)
+            raise OSError("read page unavailable")
+        return result
+
+    monkeypatch.setattr(org.db, "fetch_all_readonly", fault)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        checking = pool.submit(org.memory_collection.validate)
+        try:
+            assert captured.wait(3)
+            launching = pool.submit(bootstrap, org)
+            assert progressed.wait(3), "actual callback must progress while the read page is held"
+            task, sid = launching.result(timeout=3)
+            assert org.db.get_task(task).current_session_id == sid
+            assert rows(org, "memory_runtime_terminal")[-1]["payload"]["session_id"] == sid
+            resume.set()
+            answer = checking.result(timeout=3)
+            assert answer["problems"] == ["census_read_unavailable"], answer
+        finally:
+            resume.set()
+    assert org.memory_collection.validate()["census_valid"] is True
+
+
+@pytest.mark.parametrize("connection", ["same", "other"])
+def test_read_pages_reject_concurrent_sql_history_change(collection_org, monkeypatch, connection):
+    """Paged SELECTs cannot combine versions when an audit payload changes."""
+    import sqlite3
+    import runtime.infrastructure.memory_collection as collection
+    org, _ = collection_org
+    bootstrap(org)
+    monkeypatch.setattr(collection, "CENSUS_READ_PAGE_ROWS", 4)
+    fetch = org.db.fetch_all_readonly
+    target = rows(org, "memory_runtime_expectation")[0]
+    altered = json.dumps({**target["payload"], "budget": 1})
+    changed = False
+
+    def moving(sql, params=()):
+        nonlocal changed
+        result = fetch(sql, params)
+        if "audit_log" in sql and not changed:
+            changed = True
+            if connection == "same":
+                org.db.execute("UPDATE audit_log SET payload=? WHERE id=?", (altered, target["id"]))
+                org.db.commit()
+            else:
+                with sqlite3.connect(org.db.path) as writer:
+                    writer.execute("UPDATE audit_log SET payload=? WHERE id=?", (altered, target["id"]))
+        return result
+
+    monkeypatch.setattr(org.db, "fetch_all_readonly", moving)
+    answer = org.memory_collection.validate()
+    assert changed
+    assert answer["problems"] == ["census_read_moving"], answer
+    assert answer["census_valid"] is False
+    stable = org.memory_collection.validate()
+    assert stable["census_valid"] is False and "expectation_count_or_digest" in stable["problems"]
+
+
+@pytest.mark.parametrize("fault", ["deleted", "duplicate", "corrupt"])
+def test_diagnostic_seal_cannot_hide_corrupted_history(collection_org, fault):
+    """Later successful bootstraps cannot bless missing/duplicate/corrupt seals."""
+    org, _ = collection_org
+    bootstrap(org)
+    target = rows(org, "memory_collection_seal")[-1]
+    if fault == "deleted":
+        org.db.execute("DELETE FROM audit_log WHERE id=?", (target["id"],))
+        org.db.commit()
+    elif fault == "duplicate":
+        org.db.insert_audit_log(target["task_id"], target["agent"], target["action"], target["payload"])
+    else:
+        org.db.execute("UPDATE audit_log SET payload=? WHERE id=?",
+                       (json.dumps({**target["payload"], "assigned_intents": 0}), target["id"]))
+        org.db.commit()
+    bootstrap(org)
+    snapshot = org.memory_collection.snapshot()
+    assert snapshot["assigned_intents"] == 2 and snapshot["seal_attempts"] == snapshot["seal_persisted"] == 12
+    assert snapshot["observation_error"] is None
+    answer = org.memory_collection.validate()
+    assert answer["census_valid"] is False and answer["problems"] == ["seal_count_or_digest"], answer
+    assert rows(org, "memory_collection_seal")[-1]["payload"]["census_integrity"]["problems"] == ["census_not_reconciled"]

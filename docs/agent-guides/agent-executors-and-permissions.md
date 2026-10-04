@@ -180,7 +180,11 @@ occurrences under that entry, so provider retries do not add invocations.
 Terminal observation never clears another SessionTracker generation. Direct
 executor/manual/thread/dream launches create no task-bootstrap census binding.
 Observation failures do not change executor results, retries or application
-exceptions. These source facts confer no installed/epoch/collection authority.
+exceptions. Callback sealing performs no history acquisition; diagnostic seals
+remain `census_not_reconciled`. Bounded exhaustive read validation rejects
+moving captures and unresolved authoritative task/parent/type facts without
+changing ordinary launch/refusal behavior. These source facts confer no
+installed/epoch/collection authority.
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
 contract by `runtime/skills/system_contracts.py`) delivers a stdlib-only guard

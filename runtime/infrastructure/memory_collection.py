@@ -24,6 +24,19 @@ from runtime.infrastructure.learnings_store import MemoryDigestRender, MemorySto
 
 PHASES = ("intent", "identity", "expectation", "binding", "launched", "terminal")
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
+# Bound all acquired audit history, including unrelated/prior-boot rows. A
+# limit is an unavailable observation, never permission to validate a prefix.
+CENSUS_READ_PAGE_ROWS = 256
+MAX_CENSUS_READ_ROWS = 100_000
+
+
+class CensusReadUnavailable(Exception):
+    """A bounded acquisition cannot establish a coherent complete history."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
 RENDER_CONTRACT_DIGEST = hashlib.sha256(
     inspect.getsource(MemoryStore.render_memory_digest).encode("utf-8")
 ).hexdigest()
@@ -209,6 +222,7 @@ class CollectionObserver:
                 "active_references": references,
                 "active_preparations": [item for item in references if not item["expectation_known"]],
                 "observation_error": self._error, "pending_observations": len(self._pending),
+                "writer_active": self._writer.locked(),
                 "seal_attempts": self._seal_attempts,
                 "seal_persisted": self._seal_persisted, "seal_digest": self._seal_digest,
                 "latest_seal_audit_id": self._latest_seal,
@@ -219,31 +233,69 @@ class CollectionObserver:
         with self._lock:
             return self._snapshot()
 
-    def _rows(self) -> list[dict]:
-        # One synchronized SELECT gives a stable durable bookend. No Database
-        # callback enters the observer; observer always acquires Database next.
-        actions = [f"memory_runtime_{phase}" for phase in PHASES]
-        actions += ["memory_collection_seal", "session_start", "memory_digest_impression"]
-        raw = self.db.fetch_all_readonly(
-            "WITH identities AS (SELECT task_id, agent, json_extract(payload, '$.session_id') AS sid "
-            "FROM audit_log WHERE action='memory_runtime_identity' AND json_valid(payload) "
-            "AND json_extract(payload, '$.boot_id')=?) "
-            "SELECT id, task_id, agent, action, payload FROM audit_log "
-            "WHERE action IN (" + ",".join("?" for _ in actions) + ") AND json_valid(payload) AND ("
-            "json_extract(payload, '$.boot_id')=? OR (action IN ('session_start', 'memory_digest_impression') "
-            "AND (task_id, agent, json_extract(payload, '$.session_id')) IN "
-            "(SELECT task_id, agent, sid FROM identities))) ORDER BY id",
-            (self.boot_id, *actions, self.boot_id),
+    def _read_revision(self) -> tuple[int, int, int]:
+        # Same-connection mutations advance total_changes(); other connections'
+        # commits advance data_version. The audit PK bounds pagination without
+        # a JSON predicate or a lock spanning the complete history acquisition.
+        row = self.db.fetch_one_readonly(
+            "SELECT total_changes(), data_version, "
+            "(SELECT coalesce(max(id), 0) FROM audit_log) FROM pragma_data_version"
         )
-        return [{**dict(row), "payload": json.loads(row["payload"] or "null")} for row in raw]
+        return tuple(row)
+
+    def _rows(self) -> list[dict]:
+        revision = self._read_revision()
+        upper = revision[2]
+        cursor, acquired = 0, 0
+        candidates: list[dict] = []
+        actions = {f"memory_runtime_{phase}" for phase in PHASES}
+        actions.update(("memory_collection_seal", "session_start", "memory_digest_impression"))
+        while cursor < upper:
+            limit = min(CENSUS_READ_PAGE_ROWS, MAX_CENSUS_READ_ROWS - acquired + 1)
+            raw = self.db.fetch_all_readonly(
+                "SELECT id, task_id, agent, action, payload FROM audit_log "
+                "WHERE id>? AND id<=? ORDER BY id LIMIT ?", (cursor, upper, limit),
+            )
+            acquired += len(raw)
+            if acquired > MAX_CENSUS_READ_ROWS:
+                raise CensusReadUnavailable("census_read_work_limit")
+            if not raw:
+                break
+            cursor = raw[-1]["id"]
+            # Decode outside the shared Database lock. Counts/digests reject
+            # malformed/missing current-boot rows; no lost row is reconstructed.
+            for row in raw:
+                if row["action"] not in actions:
+                    continue
+                payload = json.loads(row["payload"] or "null")
+                if isinstance(payload, dict):
+                    candidates.append({**dict(row), "payload": payload})
+        if self._read_revision() != revision:
+            raise CensusReadUnavailable("census_read_moving")
+        identities = {(row["task_id"], row["agent"], row["payload"].get("session_id"))
+                      for row in candidates if row["action"] == "memory_runtime_identity"
+                      and row["payload"].get("boot_id") == self.boot_id}
+        return [row for row in candidates if row["payload"].get("boot_id") == self.boot_id
+                or (row["action"] in ("session_start", "memory_digest_impression")
+                    and (row["task_id"], row["agent"], row["payload"].get("session_id")) in identities)]
 
     def validate(self) -> dict:
-        """Zero-write read; a moving/in-flight observation fails closed."""
+        """Zero-write, one bounded capture; moving/in-flight facts fail closed."""
         snapshot = self.snapshot()
-        if self._writer.locked() or snapshot["pending_observations"]:
+        if snapshot["writer_active"] or snapshot["pending_observations"]:
             return _result(["observation_pending"], {})
         try:
-            return validate_census(snapshot, self._rows())
+            integrity = validate_census(snapshot, self._rows())
+            closing = self.snapshot()
+            # Compare all semantic facts, including sticky errors and seal
+            # progress that need not change the observation generation. No
+            # metadata lock is retained across SELECT/decode/reconciliation.
+            if ({key: value for key, value in snapshot.items() if key != "sampled_at"}
+                    != {key: value for key, value in closing.items() if key != "sampled_at"}):
+                return _result(["census_moving"], {})
+            return integrity
+        except CensusReadUnavailable as exc:
+            return _result([exc.category], {})
         except Exception:
             return _result(["census_read_unavailable"], {})
 
@@ -252,8 +304,10 @@ class CollectionObserver:
             self._seal_attempts += 1
             snapshot = self._snapshot()
         try:
-            integrity = validate_census(snapshot, self._rows(), require_seal=False)
-            # Diagnostic only; pending/failed preparations remain unknown.
+            # Execution/callback paths checkpoint independent counters only.
+            # Exhaustive history validation belongs to the bounded read path;
+            # a seal must never advertise a reconciliation it did not perform.
+            integrity = _result(["census_not_reconciled"], {})
             payload = {**snapshot, "census_integrity": integrity}
             row = {"task_id": invocation.task_id, "agent": invocation.agent,
                    "action": "memory_collection_seal", "payload": payload}
@@ -331,6 +385,14 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
             continue
         identity = identities[0]["payload"]
         expected = expectations[0]["payload"]
+        population = identity.get("population")
+        parent = identity.get("parent_task_id")
+        if (identity.get("parent_known") is not True
+                or identity.get("task_type") not in ("task", "subtask")
+                or population not in ("root", "child", "recovery")
+                or (population == "root" and parent is not None)
+                or (population == "child" and not parent)):
+            problems.append(f"population_unknown:{ordinal}")
         sid = identity["session_id"]
         key = (intent["task_id"], intent["agent"], sid)
         starts = starts_by_tuple.get(key, [])

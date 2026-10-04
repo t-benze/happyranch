@@ -673,6 +673,10 @@ The source-side G3 census records actual bootstrap intent/identity/expectation/
 binding/launch-callback/terminal metadata plus independent seals in ordinary audit
 rows. Existing `/audit` returns those stored rows with the unchanged response
 shape; this unit supplies no live observer envelope or CLI collection authority.
+Stored seals checkpoint counters only: `census_integrity` explicitly reports
+`census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
+bounded internal zero-write validation with live semantic bookends; neither a
+stored seal nor a valid source census establishes collection health.
 G1 independent canary/epoch acceptance, current-serving census acquisition,
 G4 consistent acquisition and full reporting/installed health remain OPEN.
 
