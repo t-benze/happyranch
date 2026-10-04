@@ -381,7 +381,7 @@ def test_diy_deadline_cleanup(case, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("case", ["success", "overflow", "secret_canary", "missing_junit", "upload_failure"])
-def test_diy_receipt_privacy(case):
+def test_diy_receipt_privacy(case, tmp_path, monkeypatch):
     _driver_admission()
     receipt = dict(label="TARGETED DIY", status="complete")
     if case == "overflow":
@@ -393,6 +393,52 @@ def test_diy_receipt_privacy(case):
         assert json.loads(result)["label"] == "TARGETED DIY" and len(result) < 65536, "[E7] bounded labelled receipt"
     else:
         _assert_refused(lambda: proof.finalize_receipt(receipt, junit_present=case != "missing_junit", upload=case != "upload_failure"), "[E7] unsafe or missing receipt must refuse")
+
+    if case in ("success", "overflow", "secret_canary"):
+        # Private JUnit fixtures go through the real projection and serializers.
+        # The location oracle is independent source bytes, never failure prose.
+        import hashlib
+        import xml.etree.ElementTree as ET
+        source = tmp_path / "test_sample.py"
+        source.write_text("def test_failed():\n    assert False\n")
+        monkeypatch.setattr(proof, "ROOT", tmp_path)
+        monkeypatch.setattr(proof, "FILES", ("test_sample.py",))
+        monkeypatch.setattr(proof, "E_NODES", ("test_sample.py::test_failed",))
+        monkeypatch.setenv("GITHUB_SHA", CANDIDATE)
+        private = tmp_path / "private.xml"
+        details = ["test_sample.py:2: AssertionError"] if case == "success" else [
+            "", "test_sample.py:0: AssertionError", "test_sample.py:999999: AssertionError",
+            "other.py:2: AssertionError", "../test_sample.py:2: AssertionError",
+            "test_sample.py:two: AssertionError", "test_sample.py:2: AssertionError\ntest_sample.py:1: AssertionError",
+        ]
+        for detail in details:
+            root = ET.Element("testsuite")
+            node = ET.SubElement(root, "testcase", classname="test_sample", name="test_failed")
+            failure = ET.SubElement(node, "failure", message="AssertionError: DIY_SECRET_CANARY bearer-private")
+            failure.text = "Bearer private-credential\ndata: hello\nDIY_SECRET_CANARY\n" + detail
+            private.write_bytes(ET.tostring(root))
+            if case == "overflow":
+                failure.text = "x" * 1048576 + "\ntest_sample.py:2: AssertionError"
+                private.write_bytes(ET.tostring(root))
+                _assert_refused(lambda: proof._junit(private, phase="repeat-2", attempt=1), "[E7] oversized private JUnit must refuse")
+                continue
+            _, rows = proof._junit(private, phase="repeat-2", attempt=1)
+            published = tmp_path / "safe.xml"
+            proof._write_safe_junit(published, rows)
+            encoded = proof.finalize_receipt(dict(rows=rows), junit_present=True, upload=True)
+            observed = json.loads(encoded)["rows"][0]
+            assert observed["status"] == "failed", "[E7] private evidence preserves original failure"
+            location = observed.get("failure")
+            assert location is not None, "[E7] serialize fixed failure projection"
+            assert location["candidate"] == CANDIDATE and location["source_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest(), "[E7] bind immutable candidate/source"
+            assert location["values"] == "unknown", "[E7] arbitrary assertion values stay private"
+            if case == "success":
+                assert location["module"] == "test_sample.py" and location["line"] == 2 and location["location"] == "known", "[E7] actual source location"
+                assert location["category"] == "assertion", "[E7] fixed assertion category"
+            else:
+                assert location["line"] is None and location["location"] != "known", "[E7] invalid location stays unknown"
+            raw = encoded + published.read_bytes()
+            assert len(raw) < 65536 and all(value not in raw for value in (b"Bearer ", b"private-credential", b"bearer-private", b"data: hello", b"DIY_SECRET_CANARY")), "[E7] no private failure strings cross serialization"
 
 
 @pytest.mark.parametrize("case", ["all_five", "missing_round", "reused_temp", "reused_process", "stale_marker"])
@@ -434,6 +480,8 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
         source.write_text("def test_green(): pass\n"
                           "def test_failed(): assert False, 'DIY_SECRET_CANARY'\n"
                           "def test_later(): pass\n")
+        original = source.read_bytes()
+        original_mode = stat.S_IMODE(source.stat().st_mode)
         event = tmp_path / "event.json"
         event.write_text(json.dumps({"inputs": {"mode": "diy-proof", "phase": "proof-admission", "expected_candidate": CANDIDATE}}))
         (tmp_path / "diy-start").write_text(str(time.monotonic()))
@@ -456,6 +504,7 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(proof, "fixed_commands", lambda phase: tuple(((node,), "not integration", 5) for node in nodes))
         monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
         monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+        monkeypatch.setenv("GITHUB_SHA", CANDIDATE)
         monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
         handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
         try:
@@ -474,11 +523,103 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
         assert failed["number"] == 2 and failed["nodes"] == [nodes[1]] and failed["exit"] == 1, "[E9] retain failed command identity/status"
         assert failed["counts"] == {"passed": 0, "failed": 1, "error": 0, "skipped": 0}, "[E9] observed failure counts"
         assert failed["failure_types"] == ["AssertionError"] and failed["cleanup"] is True and failed["pipes_closed"] is True, "[E9] actual owned outcome"
-        assert observed["cleanup"] is None, "[E9] failed tests do not establish phase cleanup"
+        assert observed["cleanup"] is True, "[E9] independently observed cleanup includes failed command"
+        owned = observed.get("owned_cleanup")
+        assert owned == {"commands": 2, "groups_reaped": True, "pipes_closed": True, "source_restored": True, "private_removed": True}, "[E9] complete actual owned-resource scope"
+        location = failed.get("failures")
+        assert location and location[0]["module"] == "test_sample.py" and location[0]["line"] == 2 and location[0]["location"] == "known", "[E9] retain actual failed source line"
+        assert location[0]["candidate"] == CANDIDATE and location[0]["values"] == "unknown", "[E9] fixed candidate and unknown private values"
         assert (exported / "command-2.xml").is_file() and not (exported / "command-3.xml").exists(), "[E9] retain failed JUnit and stop"
         with pytest.raises(ProcessLookupError):
             os.kill(failed["process"], 0)
         assert source.read_text().endswith("def test_later(): pass\n"), "[E9] exact source unchanged"
+        assert source.read_bytes() == original and stat.S_IMODE(source.stat().st_mode) == original_mode, "[E9] exact source bytes AND mode"
         published = b"".join(path.read_bytes() for path in exported.iterdir())
         captured = capsys.readouterr()
         assert b"DIY_SECRET_CANARY" not in published and "DIY_SECRET_CANARY" not in captured.err + captured.out, "[E9] no raw exception/assertion export"
+
+    if case in ("timeout", "cancelled", "missing_upload", "cleanup_unknown"):
+        # Safe miniature children exercise real owned supervision/finalization;
+        # no daemon or integration test is admitted on this host.
+        source = tmp_path / "test_sample.py"
+        source.write_text("def test_failed(): assert False\n")
+        original = source.read_bytes()
+        mode = stat.S_IMODE(source.stat().st_mode)
+        event = tmp_path / "event.json"
+        event.write_text(json.dumps({"inputs": {"mode": "diy-proof", "phase": "proof-admission", "expected_candidate": CANDIDATE}}))
+        (tmp_path / "diy-start").write_text(str(time.monotonic()))
+        monkeypatch.setattr(proof, "ROOT", tmp_path)
+        monkeypatch.setattr(proof, "FILES", ("test_sample.py",))
+        real_manifest = proof.manifest
+        monkeypatch.setattr(proof, "manifest", lambda: real_manifest(tmp_path))
+        monkeypatch.setattr(proof, "E_NODES", ("test_sample.py::test_failed",))
+        monkeypatch.setattr(proof, "MUTATIONS", {})
+        monkeypatch.setattr(proof, "E_MUTATIONS", {})
+        monkeypatch.setattr(proof, "fixed_commands", lambda phase: ((('test_sample.py::test_failed',), "not integration", 2),))
+        monkeypatch.setattr(proof, "_identity", lambda candidate: _identity_facts())
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+        monkeypatch.setenv("GITHUB_SHA", CANDIDATE)
+        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+        results = []
+        real_run_owned = proof.run_owned
+        if case in ("timeout", "cancelled"):
+            def interrupted_owner(*args, **kwargs):
+                result = real_run_owned([sys.executable, "-c", "import time; time.sleep(5)"], cwd=tmp_path, deadline=time.monotonic() + 0.05)
+                results.append(result)
+                if case == "cancelled":
+                    os.kill(os.getpid(), signal.SIGTERM)
+                return result
+            monkeypatch.setattr(proof, "run_owned", interrupted_owner)
+        elif case == "cleanup_unknown":
+            real_cleanup = proof.cleanup_owned
+            def cleanup_refused(*args):
+                real_cleanup(*args)
+                raise OSError("private cleanup exception")
+            monkeypatch.setattr(proof, "cleanup_owned", cleanup_refused)
+        else:
+            real_directory_cleanup = proof.tempfile.TemporaryDirectory.cleanup
+            def directory_refused(self):
+                real_directory_cleanup(self)
+                raise OSError("private directory exception")
+            monkeypatch.setattr(proof.tempfile.TemporaryDirectory, "cleanup", directory_refused)
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+        try:
+            assert proof.main(["run"]) == 1, "[E9] interrupted or cleanup-failed phase stays nonzero"
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        observed = json.loads((tmp_path / "artifacts/targeted-diy/receipt.json").read_bytes())
+        assert observed["status"] == "failure", "[E9] common finalization retains failure"
+        owned = observed["owned_cleanup"]
+        if case == "timeout":
+            assert results[0]["outer_timeout"] and results[0]["cleanup"] and results[0]["pipes_closed"], "[E9] actual timed-out miniature child cleaned"
+            assert observed["failure"] == "command_containment" and observed["failed_command"]["exit"] is not None, "[E9] timeout remains primary failure"
+            assert observed["cleanup"] is True, "[E9] timeout is not cleanup failure"
+        elif case == "cancelled":
+            assert results[0]["cleanup"] and results[0]["pipes_closed"], "[E9] actual interrupted miniature safety"
+            assert observed["failed_command"]["exit"] is None and observed["cleanup"] is None, "[E9] unavailable interrupted result stays unknown"
+            assert owned["groups_reaped"] is None and owned["pipes_closed"] is None, "[E9] signal cannot fabricate command observation"
+        elif case == "cleanup_unknown":
+            assert observed["failed_command"]["cleanup"] is False and owned["groups_reaped"] is False and observed["cleanup"] is False, "[E9] cleanup exception cannot become absence"
+            assert observed["failure"] == "command_containment", "[E9] failed ownership remains primary"
+        else:
+            assert observed["failure"] == "command_exit" and observed["failed_command"]["exit"] == 1, "[E9] private cleanup exception preserves primary pytest failure"
+            assert owned["private_removed"] is False and observed["cleanup"] is False, "[E9] private cleanup exception stays false"
+        assert owned["source_restored"] is True and source.read_bytes() == original and stat.S_IMODE(source.stat().st_mode) == mode, "[E9] actual source bytes AND mode remain restored"
+        assert owned["commands"] == 1, "[E9] failed command included in cleanup scope"
+        if results:
+            with pytest.raises(ProcessLookupError):
+                os.kill(results[0]["pid"], 0)
+        # Re-enter actual main before identity admission in the same directory.
+        # Earlier cleanup evidence must not be reused by this incomplete attempt.
+        def identity_refused(candidate):
+            raise proof.ProofFailure("identity_context")
+        monkeypatch.setattr(proof, "_identity", identity_refused)
+        try:
+            assert proof.main(["run"]) == 1, "[E9] pre-admission refusal stays failed"
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        unadmitted = json.loads((tmp_path / "artifacts/targeted-diy/receipt.json").read_bytes())
+        assert unadmitted["failure"] == "identity_failure" and unadmitted["cleanup"] is None and unadmitted["owned_cleanup"]["commands"] == 0, "[E9] pre-admission failure never borrows earlier cleanup"

@@ -7,6 +7,7 @@ An exit zero here is a phase result, not an independent aggregate QA verdict.
 from __future__ import annotations
 
 import argparse
+import ast
 from contextlib import contextmanager
 import hashlib
 import importlib
@@ -277,9 +278,62 @@ def verdict(receipts: list[dict]):
     return "TARGETED DIY complete"
 
 
-def _junit(path: Path, *, phase: str, attempt: int):
+def _junit(path: Path, *, phase: str, attempt: int, source=None):
     require(path.is_file() and path.stat().st_size <= 1048576, "junit_missing_or_cap")
-    root = ET.fromstring(path.read_bytes())
+    try:
+        root = ET.fromstring(path.read_bytes())
+    except ET.ParseError:
+        raise ProofFailure("junit_malformed") from None
+    source = manifest(ROOT) if source is None else source
+
+    def project_failure(element: ET.Element, module: str, node: str) -> dict:
+        # No exception message, source text or value is an exportable field.
+        candidate = os.environ.get("GITHUB_SHA", "")
+        facts = dict(node=node, module=module, line=None, location="missing",
+                     candidate=candidate if re.fullmatch(r"[0-9a-f]{40}", candidate) else None,
+                     source_sha256=None, category="failure_boundary", values="unknown")
+        if module not in source or not module.endswith(".py"):
+            facts["location"] = "foreign"
+            return facts
+        test_source = ROOT / module
+        try:
+            require(test_source.is_file() and not test_source.is_symlink(), "source_regular")
+            data = test_source.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            require(digest == source[module]["sha256"], "command_source_drift")
+            facts["source_sha256"] = digest
+            tree = ast.parse(data)
+        except (OSError, SyntaxError, ProofFailure):
+            facts["location"] = "source_unknown"
+            return facts
+        # Pytest's private traceback ends in path:line: exception-class.
+        # Match the whole location line; never copy arbitrary suffixes/text.
+        boundaries = []
+        for text in (element.text or "").splitlines():
+            match = re.fullmatch(r"(.+\.py):([0-9]{1,7}): (AssertionError|[A-Za-z][A-Za-z0-9]*Error)", text)
+            if match:
+                boundaries.append(match.groups())
+        if not boundaries:
+            return facts
+        if len(boundaries) != 1:
+            facts["location"] = "ambiguous"
+            return facts
+        filename, number, kind = boundaries[0]
+        if filename not in (module, str(ROOT / module)):
+            facts["location"] = "foreign"
+            return facts
+        line = int(number)
+        name = node.rsplit("::", 1)[-1].split("[", 1)[0]
+        owners = [item for item in ast.walk(tree) if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name]
+        in_owner = any(item.lineno <= line <= item.end_lineno for item in owners)
+        assertion = any(isinstance(item, ast.Assert) and item.lineno <= line <= item.end_lineno
+                        for owner in owners for item in ast.walk(owner))
+        if line <= 0 or not in_owner or (kind == "AssertionError" and not assertion):
+            facts["location"] = "invalid"
+            return facts
+        facts.update(line=line, location="known", category="assertion" if kind == "AssertionError" else "failure_boundary")
+        return facts
+
     rows = []
     for case in root.iter("testcase"):
         classname = case.attrib.get("classname", "")
@@ -291,7 +345,10 @@ def _junit(path: Path, *, phase: str, attempt: int):
         require(node in {*D_NODES, *E_NODES, SELECTED, *KEEPERS,
                          ACCEPTANCE + "::test_real_diy_acceptance",
                          ACCEPTANCE + "::test_acceptance_cross_process_revoke_closes_live_sse_stream"} or node in OLD_REPORT_NODES, "junit_unknown_node")
-        rows.append(dict(node=node, status=status, phase=phase, attempt=attempt))
+        row = dict(node=node, status=status, phase=phase, attempt=attempt)
+        if status in ("failed", "error"):
+            row["failure"] = project_failure(case.find("failure") if status == "failed" else case.find("error"), module, node)
+        rows.append(row)
     return root, rows
 
 
@@ -312,21 +369,24 @@ def _command(nodes: tuple[str, ...], marker: str, private: Path, bound: int, *, 
     work = Path(tempfile.mkdtemp(prefix="invocation-", dir=private))
     xml = work / "private.xml"
     began = time.monotonic()
-    result = run_owned([sys.executable, "-m", "pytest", *nodes, "-v", "-m", marker,
-                        "--basetemp=" + str(work / "pytest"), "--junitxml=" + str(xml), "-o", "junit_logging=all"],
-                       cwd=ROOT, deadline=time.monotonic() + bound, env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(work / "daemon-home"), "HAPPYRANCH_DAEMON_PORT": "0"})
-    failure_facts = dict(number=number, nodes=list(nodes), exit=result["exit"],
-                         cleanup=result["cleanup"], pipes_closed=result["pipes_closed"],
-                         outer_timeout=result["outer_timeout"], overflow=result["overflow"],
-                         process=result["pid"], counts=None, failure_types=None,
+    failure_facts = dict(number=number, nodes=list(nodes), exit=None,
+                         cleanup=None, pipes_closed=None, outer_timeout=None, overflow=None,
+                         process=None, counts=None, failure_types=None, failures=None,
+                         source_digest=hashlib.sha256(json.dumps(baseline, sort_keys=True).encode()).hexdigest(),
                          expected_red=expected_red, red_facts=None)
     try:
+        result = run_owned([sys.executable, "-m", "pytest", *nodes, "-v", "-m", marker,
+                            "--basetemp=" + str(work / "pytest"), "--junitxml=" + str(xml), "-o", "junit_logging=all"],
+                           cwd=ROOT, deadline=time.monotonic() + bound, env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(work / "daemon-home"), "HAPPYRANCH_DAEMON_PORT": "0"})
+        failure_facts.update({key: result[key] for key in ("exit", "cleanup", "pipes_closed", "outer_timeout", "overflow")})
+        failure_facts["process"] = result["pid"]
         require(manifest() == baseline, "command_source_drift")
         require(result["cleanup"] and result["pipes_closed"] and not result["overflow"] and not result["outer_timeout"], "command_containment")
-        parsed, rows = _junit(xml, phase=phase, attempt=attempt)
+        parsed, rows = _junit(xml, phase=phase, attempt=attempt, source=baseline)
         _write_safe_junit(evidence / f"command-{number}.xml", rows)
         failure_facts["nodes"] = [row["node"] for row in rows]
         failure_facts["counts"] = {status: sum(row["status"] == status for row in rows) for status in ("passed", "failed", "error", "skipped")}
+        failure_facts["failures"] = [row["failure"] for row in rows if "failure" in row]
         failure_facts["failure_types"] = [
             "AssertionError" if element.attrib.get("message", "").startswith("AssertionError") else "test_failure"
             for element in parsed.iter("failure")
@@ -352,12 +412,12 @@ def _command(nodes: tuple[str, ...], marker: str, private: Path, bound: int, *, 
             verify_phase(rows, tuple(expected), phase=phase, attempt=attempt)
         return dict(number=number, source_digest=hashlib.sha256(json.dumps(baseline, sort_keys=True).encode()).hexdigest(), duration_ms=int((time.monotonic() - began) * 1000), nodes=[row["node"] for row in rows], counts={status: sum(row["status"] == status for row in rows) for status in ("passed", "failed", "error", "skipped")},
                     expected_red=expected_red, exit=result["exit"], admitted=True if expected_red else None,
-                    restored=None, cleanup=True, red_facts=detail if expected_red else None, private_temp=work.name, process=result["pid"])
+                    restored=None, cleanup=result["cleanup"], pipes_closed=result["pipes_closed"], red_facts=detail if expected_red else None, private_temp=work.name, process=result["pid"])
     except (Exception, KeyboardInterrupt) as exc:
         # Fixed categories only. Raw assertion messages, streams and exception
         # reprs stay private even on an ordinary failed pytest command.
         categories = {"command_source_drift", "command_containment", "command_exit",
-                      "junit_missing_or_cap", "junit_unknown_node", "coverage_zero",
+                      "junit_missing_or_cap", "junit_malformed", "junit_unknown_node", "coverage_zero",
                       "coverage_nodes", "coverage_status_identity", "red_exit",
                       "red_attribution", "red_assertion", "red_node",
                       "privacy_overflow", "privacy_canary"}
@@ -472,8 +532,14 @@ def run_phase(phase, *, start: float, attempt: int, evidence: Path, receipts=Non
     if receipts is None:
         receipts = []
     baseline = manifest()
-    with tempfile.TemporaryDirectory(prefix="diy-private-") as directory:
-        private = Path(directory)
+    directory = None
+    private = None
+    primary = None
+    owned = dict(commands=0, groups_reaped=None, pipes_closed=None,
+                 source_restored=None, private_removed=None)
+    try:
+        directory = tempfile.TemporaryDirectory(prefix="diy-private-")
+        private = Path(directory.name)
         def invoke(nodes, marker="integration", bound=60, red=None):
             receipts.append(_command(tuple(nodes), marker, private, bound, payload_end=payload_end,
                                      phase=phase, attempt=attempt, evidence=evidence, number=len(receipts) + 1, expected_red=red))
@@ -506,6 +572,36 @@ def run_phase(phase, *, start: float, attempt: int, evidence: Path, receipts=Non
             payload_end = min(original_end, time.monotonic() + 600)
             invoke((ACCEPTANCE,), bound=420)
             invoke((REPORTING,), "not integration", bound=120)
+    except (Exception, KeyboardInterrupt) as exc:
+        primary = exc
+        raise
+    finally:
+        failed = getattr(primary, "diy_failed_command", None)
+        observed = [*receipts, *([failed] if failed is not None else [])]
+        owned["commands"] = len(observed)
+        for field, key in (("groups_reaped", "cleanup"), ("pipes_closed", "pipes_closed")):
+            values = [row.get(key) for row in observed]
+            owned[field] = False if any(value is False for value in values) else True if values and all(value is True for value in values) else None
+        try:
+            owned["source_restored"] = manifest() == baseline
+        except (Exception, KeyboardInterrupt):
+            owned["source_restored"] = None
+        if directory is not None:
+            try:
+                directory.cleanup()
+                owned["private_removed"] = not private.exists()
+            except (Exception, KeyboardInterrupt):
+                owned["private_removed"] = False
+        # Record only this invocation's observed resources, including failure.
+        # Cleanup failures cannot replace the primary command exception.
+        try:
+            (evidence / "owned-cleanup.json").write_bytes(finalize_receipt(owned, junit_present=True, upload=None))
+        except (Exception, KeyboardInterrupt):
+            if primary is None:
+                raise ProofFailure("phase_cleanup_evidence") from None
+            primary.add_note("phase_cleanup_evidence")
+        if primary is None:
+            require(all(owned[key] is True for key in ("groups_reaped", "pipes_closed", "source_restored", "private_removed")), "phase_cleanup_incomplete")
     require(manifest() == baseline, "final_source_restore")
     return receipts
 
@@ -565,6 +661,7 @@ def main(argv=None):
         receipt = dict(label="TARGETED DIY", candidate=candidate, phase=phase, status="incomplete", cleanup=None, upload=None)
         target = evidence / "receipt.json"
         target.write_bytes(json.dumps(receipt).encode())
+        (evidence / "owned-cleanup.json").write_bytes(json.dumps(dict(commands=0, groups_reaped=None, pipes_closed=None, source_restored=None, private_removed=None)).encode())
         baseline = manifest()
         def interrupted(signum, frame):
             raise ProofFailure("signal")
@@ -576,7 +673,6 @@ def main(argv=None):
             receipt["commands"] = []
             run_phase(phase, start=start, attempt=receipt["identity"]["attempt"], evidence=evidence, receipts=receipt["commands"])
             receipt["status"] = "complete"
-            receipt["cleanup"] = True
         except (Exception, KeyboardInterrupt) as exc:
             failed = getattr(exc, "diy_failed_command", None)
             receipt["failure"] = "identity_failure" if "identity" not in receipt else "phase_failure"
@@ -584,17 +680,36 @@ def main(argv=None):
                 receipt["failed_command"] = failed
                 receipt["failure"] = failed["category"]
             receipt["status"] = "failure"
-            receipt["cleanup"] = None
             raise
         finally:
-            receipt["restored"] = manifest() == baseline
+            try:
+                receipt["restored"] = manifest() == baseline
+            except (Exception, KeyboardInterrupt):
+                receipt["restored"] = None
+            owned_path = evidence / "owned-cleanup.json"
+            if owned_path.is_file():
+                try:
+                    require(owned_path.stat().st_size <= 65536, "privacy_overflow")
+                    owned = json.loads(owned_path.read_bytes())
+                    receipt["owned_cleanup"] = owned
+                    values = [owned.get(key) for key in ("groups_reaped", "pipes_closed", "source_restored", "private_removed")]
+                    receipt["cleanup"] = False if any(value is False for value in values) else True if all(value is True for value in values) else None
+                except (Exception, KeyboardInterrupt):
+                    receipt["cleanup"] = None
             if not receipt["restored"]:
                 receipt["status"] = "failure"
-            # No arbitrary failure repr or raw stdout/JUnit ever crosses here.
-            target.write_bytes(finalize_receipt(receipt, junit_present=bool(receipt.get("commands")), upload=None) if receipt.get("commands") else json.dumps(receipt).encode())
+            if receipt["status"] == "complete" and receipt["cleanup"] is not True:
+                receipt["status"] = "failure"
+            # A failed first command still has real JUnit evidence; an identity
+            # refusal has only the initial incomplete receipt. Scan both paths.
+            junit_present = any(evidence.glob("command-*.xml"))
+            encoded = finalize_receipt(receipt, junit_present=True, upload=None) if junit_present else json.dumps(receipt, sort_keys=True).encode()
+            safe_bytes(encoded, 65536)
+            target.write_bytes(encoded)
             (evidence / "summary.md").write_text("TARGETED DIY phase " + phase + ": " + receipt["status"] + ". External artifact/attempt verification required.\n")
             require(sum(path.stat().st_size for path in evidence.iterdir()) <= 16777216, "artifact_aggregate_cap")
         require(receipt["restored"] is True, "final_restore")
+        require(receipt["status"] == "complete" and receipt["cleanup"] is True, "phase_cleanup_incomplete")
         print("TARGETED DIY phase complete; independent joins required")
         return 0
     except (Exception, KeyboardInterrupt):
