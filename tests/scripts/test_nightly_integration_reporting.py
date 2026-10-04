@@ -413,7 +413,7 @@ def test_diy_repetition(case):
 
 
 @pytest.mark.parametrize("case", ["complete", "phase_failure", "timeout", "cancelled", "missing_upload", "cleanup_unknown"])
-def test_diy_verdict(case):
+def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
     _driver_admission()
     receipts = [dict(phase=phase, candidate=CANDIDATE, status="complete", cleanup=True, upload=True) for phase in proof.PHASES]
     if case in ("phase_failure", "timeout", "cancelled"):
@@ -426,3 +426,59 @@ def test_diy_verdict(case):
         assert proof.verdict(receipts) == "TARGETED DIY complete", "[E9] all joined phases"
     else:
         _assert_refused(lambda: proof.verdict(receipts), "[E9] incomplete final verdict must refuse")
+
+    if case == "phase_failure":
+        # Real pytest children exercise the failing command/export path; only
+        # GitHub identity and the fixed payload inventory are unit inputs.
+        source = tmp_path / "test_sample.py"
+        source.write_text("def test_green(): pass\n"
+                          "def test_failed(): assert False, 'DIY_SECRET_CANARY'\n"
+                          "def test_later(): pass\n")
+        event = tmp_path / "event.json"
+        event.write_text(json.dumps({"inputs": {"mode": "diy-proof", "phase": "proof-admission", "expected_candidate": CANDIDATE}}))
+        (tmp_path / "diy-start").write_text(str(time.monotonic()))
+        nodes = tuple("test_sample.py::" + name for name in ("test_green", "test_failed", "test_later"))
+        monkeypatch.setattr(proof, "ROOT", tmp_path)
+        monkeypatch.setattr(proof, "FILES", ("test_sample.py",))
+        real_manifest = proof.manifest
+        monkeypatch.setattr(proof, "manifest", lambda: real_manifest(tmp_path))
+        monkeypatch.setattr(proof, "E_NODES", nodes)
+        monkeypatch.setattr(proof, "MUTATIONS", {})
+        monkeypatch.setattr(proof, "E_MUTATIONS", {})
+        owned_results = []
+        real_run_owned = proof.run_owned
+        def capture_owned(*args, **kwargs):
+            result = real_run_owned(*args, **kwargs)
+            owned_results.append(result)
+            return result
+        monkeypatch.setattr(proof, "run_owned", capture_owned)
+        monkeypatch.setattr(proof, "_identity", lambda candidate: _identity_facts())
+        monkeypatch.setattr(proof, "fixed_commands", lambda phase: tuple(((node,), "not integration", 5) for node in nodes))
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+        try:
+            assert proof.main(["run"]) == 1, "[E9] actual failed phase returns nonzero"
+        finally:
+            for sig, handler in handlers.items():
+                signal.signal(sig, handler)
+        exported = tmp_path / "artifacts/targeted-diy"
+        observed = json.loads((exported / "receipt.json").read_bytes())
+        assert len(owned_results) == 2 and [row["exit"] for row in owned_results] == [0, 1], "[E9] actual admitted pytest outcomes"
+        assert all(row["cleanup"] and row["pipes_closed"] for row in owned_results), "[E9] actual children closed before export"
+        assert observed.get("failure") == "command_exit", "[E9] retain actual failure category"
+        assert observed["status"] == "failure" and observed["restored"] is True
+        assert len(observed["commands"]) == 1 and observed["commands"][0]["nodes"] == [nodes[0]], "[E9] retain prior completed command"
+        failed = observed["failed_command"]
+        assert failed["number"] == 2 and failed["nodes"] == [nodes[1]] and failed["exit"] == 1, "[E9] retain failed command identity/status"
+        assert failed["counts"] == {"passed": 0, "failed": 1, "error": 0, "skipped": 0}, "[E9] observed failure counts"
+        assert failed["failure_types"] == ["AssertionError"] and failed["cleanup"] is True and failed["pipes_closed"] is True, "[E9] actual owned outcome"
+        assert observed["cleanup"] is None, "[E9] failed tests do not establish phase cleanup"
+        assert (exported / "command-2.xml").is_file() and not (exported / "command-3.xml").exists(), "[E9] retain failed JUnit and stop"
+        with pytest.raises(ProcessLookupError):
+            os.kill(failed["process"], 0)
+        assert source.read_text().endswith("def test_later(): pass\n"), "[E9] exact source unchanged"
+        published = b"".join(path.read_bytes() for path in exported.iterdir())
+        captured = capsys.readouterr()
+        assert b"DIY_SECRET_CANARY" not in published and "DIY_SECRET_CANARY" not in captured.err + captured.out, "[E9] no raw exception/assertion export"

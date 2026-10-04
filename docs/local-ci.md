@@ -36,6 +36,11 @@ Real integration execution remains forbidden on the Linux daemon host. General
 integration is SKIPPED under THR-243 seq42; this bounded disposable proof is
 separately authorized. Default/scheduled behavior and reporting are unchanged.
 
+On a targeted command failure, the driver retains completed command receipts and
+sanitized failed-command JUnit/status, fixed failure category and observed owned
+group/pipe cleanup. Phase cleanup stays unknown; raw assertions and child output
+remain private. A corrective head requires renewed final-head proof and CI.
+
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)

@@ -315,31 +315,56 @@ def _command(nodes: tuple[str, ...], marker: str, private: Path, bound: int, *, 
     result = run_owned([sys.executable, "-m", "pytest", *nodes, "-v", "-m", marker,
                         "--basetemp=" + str(work / "pytest"), "--junitxml=" + str(xml), "-o", "junit_logging=all"],
                        cwd=ROOT, deadline=time.monotonic() + bound, env={**os.environ, "HAPPYRANCH_DAEMON_HOME": str(work / "daemon-home"), "HAPPYRANCH_DAEMON_PORT": "0"})
-    require(manifest() == baseline, "command_source_drift")
-    require(result["cleanup"] and result["pipes_closed"] and not result["overflow"] and not result["outer_timeout"], "command_containment")
-    parsed, rows = _junit(xml, phase=phase, attempt=attempt)
-    if expected_red:
-        failures = list(parsed.iter("failure"))
-        captured = "\n".join(element.text or "" for element in parsed.iter("system-out")).splitlines()
-        message = failures[0].attrib.get("message", "") if len(failures) == 1 else ""
-        boundary = "DRIVER_ADMITTED" if nodes[0].startswith(REPORTING) or any("lifecycle_records[" + case + "]" in nodes[0] for case in ("stderr_canary", "wrong_child", "wrong_bool", "extra_record")) else "DIY_ADMITTED"
-        detail = dict(exit=result["exit"], outer_timeout=result["outer_timeout"], cleanup=result["cleanup"],
-                      admitted=boundary in captured, assertion=expected_red if expected_red in message else None,
-                      failure_type="AssertionError" if message.startswith("AssertionError") else None,
-                      failures=len(failures), skips=sum(row["status"] == "skipped" for row in rows))
-        verify_red(detail, expected_red)
-        require(len(rows) == 1 and rows[0]["node"] == nodes[0], "red_node")
-    else:
-        require(result["exit"] == 0, "command_exit")
-        if len(nodes) == 1 and nodes[0] in (ACCEPTANCE, REPORTING):
-            expected = ((*D_NODES, SELECTED, ACCEPTANCE + "::test_real_diy_acceptance", ACCEPTANCE + "::test_acceptance_cross_process_revoke_closes_live_sse_stream") if nodes[0] == ACCEPTANCE else (*E_NODES, *OLD_REPORT_NODES))
+    failure_facts = dict(number=number, nodes=list(nodes), exit=result["exit"],
+                         cleanup=result["cleanup"], pipes_closed=result["pipes_closed"],
+                         outer_timeout=result["outer_timeout"], overflow=result["overflow"],
+                         process=result["pid"], counts=None, failure_types=None,
+                         expected_red=expected_red, red_facts=None)
+    try:
+        require(manifest() == baseline, "command_source_drift")
+        require(result["cleanup"] and result["pipes_closed"] and not result["overflow"] and not result["outer_timeout"], "command_containment")
+        parsed, rows = _junit(xml, phase=phase, attempt=attempt)
+        _write_safe_junit(evidence / f"command-{number}.xml", rows)
+        failure_facts["nodes"] = [row["node"] for row in rows]
+        failure_facts["counts"] = {status: sum(row["status"] == status for row in rows) for status in ("passed", "failed", "error", "skipped")}
+        failure_facts["failure_types"] = [
+            "AssertionError" if element.attrib.get("message", "").startswith("AssertionError") else "test_failure"
+            for element in parsed.iter("failure")
+        ]
+        if expected_red:
+            failures = list(parsed.iter("failure"))
+            captured = "\n".join(element.text or "" for element in parsed.iter("system-out")).splitlines()
+            message = failures[0].attrib.get("message", "") if len(failures) == 1 else ""
+            boundary = "DRIVER_ADMITTED" if nodes[0].startswith(REPORTING) or any("lifecycle_records[" + case + "]" in nodes[0] for case in ("stderr_canary", "wrong_child", "wrong_bool", "extra_record")) else "DIY_ADMITTED"
+            detail = dict(exit=result["exit"], outer_timeout=result["outer_timeout"], cleanup=result["cleanup"],
+                          admitted=boundary in captured, assertion=expected_red if expected_red in message else None,
+                          failure_type="AssertionError" if message.startswith("AssertionError") else None,
+                          failures=len(failures), skips=sum(row["status"] == "skipped" for row in rows))
+            failure_facts["red_facts"] = detail
+            verify_red(detail, expected_red)
+            require(len(rows) == 1 and rows[0]["node"] == nodes[0], "red_node")
         else:
-            expected = nodes
-        verify_phase(rows, tuple(expected), phase=phase, attempt=attempt)
-    _write_safe_junit(evidence / f"command-{number}.xml", rows)
-    return dict(number=number, source_digest=hashlib.sha256(json.dumps(baseline, sort_keys=True).encode()).hexdigest(), duration_ms=int((time.monotonic() - began) * 1000), nodes=[row["node"] for row in rows], counts={status: sum(row["status"] == status for row in rows) for status in ("passed", "failed", "error", "skipped")},
-                expected_red=expected_red, exit=result["exit"], admitted=True if expected_red else None,
-                restored=None, cleanup=True, red_facts=detail if expected_red else None, private_temp=work.name, process=result["pid"])
+            require(result["exit"] == 0, "command_exit")
+            if len(nodes) == 1 and nodes[0] in (ACCEPTANCE, REPORTING):
+                expected = ((*D_NODES, SELECTED, ACCEPTANCE + "::test_real_diy_acceptance", ACCEPTANCE + "::test_acceptance_cross_process_revoke_closes_live_sse_stream") if nodes[0] == ACCEPTANCE else (*E_NODES, *OLD_REPORT_NODES))
+            else:
+                expected = nodes
+            verify_phase(rows, tuple(expected), phase=phase, attempt=attempt)
+        return dict(number=number, source_digest=hashlib.sha256(json.dumps(baseline, sort_keys=True).encode()).hexdigest(), duration_ms=int((time.monotonic() - began) * 1000), nodes=[row["node"] for row in rows], counts={status: sum(row["status"] == status for row in rows) for status in ("passed", "failed", "error", "skipped")},
+                    expected_red=expected_red, exit=result["exit"], admitted=True if expected_red else None,
+                    restored=None, cleanup=True, red_facts=detail if expected_red else None, private_temp=work.name, process=result["pid"])
+    except (Exception, KeyboardInterrupt) as exc:
+        # Fixed categories only. Raw assertion messages, streams and exception
+        # reprs stay private even on an ordinary failed pytest command.
+        categories = {"command_source_drift", "command_containment", "command_exit",
+                      "junit_missing_or_cap", "junit_unknown_node", "coverage_zero",
+                      "coverage_nodes", "coverage_status_identity", "red_exit",
+                      "red_attribution", "red_assertion", "red_node",
+                      "privacy_overflow", "privacy_canary"}
+        category = exc.args[0] if type(exc) is ProofFailure and exc.args else None
+        failure_facts["category"] = category if type(category) is str and category in categories else "command_error"
+        exc.diy_failed_command = failure_facts
+        raise
 
 
 # Fixed test-side regressions. No production path is ever writable here.
@@ -372,6 +397,14 @@ MUTATIONS["proof-protocol-cleanup"] += (
 
 E_MUTATIONS = {'proof-admission': (('    require(type(inputs) is dict and set(inputs) <= {"mode", "phase", "expected_candidate"}, "selection_keys")', '    require(type(inputs) is dict, "selection_keys")', 'dispatch_selection[invalid]', '[E1] invalid selection', 10), ('    require(all(facts.get(key) == candidate for key in ("head", "event_sha", "workflow_sha", "remote_sha")), "identity_head")', '    require(all(facts.get(key) == candidate for key in ("head", "event_sha", "workflow_sha")), "identity_head")', 'candidate_identity[ref_drift]', '[E2] mismatched identity', 10), ('    require(len(set(ids)) == len(ids) and set(ids) == set(expected), "coverage_nodes")', '    require(len(set(ids)) == len(ids), "coverage_nodes")', 'phase_coverage[missing_node]', '[E3] incomplete coverage', 10), ('    require(result.get("admitted") is True and result.get("assertion") == marker, "red_attribution")', '    require(result.get("assertion") == marker, "red_attribution")', 'red_attribution[no_admission]', '[E4] false RED', 10)), 'proof-protocol-cleanup': (('            path.chmod(mode)', '            pass  # omitted mode restore', 'restore[mode_mismatch]', '[E5] restoration must complete', 10), ('            if time.monotonic() >= deadline or overflow:', '            if overflow:', 'deadline_cleanup[child_timeout]', '[E6] deadline/cap observable', 45), ('    require(not any(value in raw for value in forbidden), "privacy_canary")', '    pass  # omitted privacy guard', 'receipt_privacy[secret_canary]', '[E7] unsafe or missing receipt', 10), ('        require(len({row.get(key) for row in rows}) == 5, "repetition_freshness")', '        pass  # omitted fresh resources', 'repetition[reused_temp]', '[E8] missing or reused repetition', 10), ('    require(all(row.get("status") == "complete" and row.get("cleanup") is True and row.get("upload") is True for row in receipts), "verdict_evidence")', '    require(all(row.get("status") == "complete" and row.get("upload") is True for row in receipts), "verdict_evidence")', 'verdict[cleanup_unknown]', '[E9] incomplete final verdict', 10))}
 
+
+# E9 also proves failure-path evidence survives the actual command/main seam.
+E_MUTATIONS["proof-protocol-cleanup"] += (
+    ('                receipt["failure"] = failed["category"]', '                pass', 'verdict[phase_failure]', '[E9] retain actual failure category', 10),
+    ('        _write_safe_junit(evidence / f"command-{number}.xml", rows)', '        pass', 'verdict[phase_failure]', '[E9] retain failed JUnit and stop', 10),
+    ('            run_phase(phase, start=start, attempt=receipt["identity"]["attempt"], evidence=evidence, receipts=receipt["commands"])', '            run_phase(phase, start=start, attempt=receipt["identity"]["attempt"], evidence=evidence)', 'verdict[phase_failure]', '[E9] retain prior completed command', 10),
+)
+
 def node_bound(node):
     if node == SELECTED:
         return 270
@@ -389,6 +422,8 @@ def node_bound(node):
         return 13
     if "dispatch_selection[invalid]" in node:
         return 5
+    if "verdict[phase_failure]" in node:
+        return 10
     return 2
 
 
@@ -430,11 +465,12 @@ def fixed_commands(phase):
     return ()
 
 
-def run_phase(phase, *, start: float, attempt: int, evidence: Path):
+def run_phase(phase, *, start: float, attempt: int, evidence: Path, receipts=None):
     require(time.monotonic() <= start + 330, "setup_identity_budget")
     phase_inventory(phase)
     payload_end = min(start + 1590, time.monotonic() + 1260)
-    receipts = []
+    if receipts is None:
+        receipts = []
     baseline = manifest()
     with tempfile.TemporaryDirectory(prefix="diy-private-") as directory:
         private = Path(directory)
@@ -537,10 +573,16 @@ def main(argv=None):
         try:
             receipt["identity"] = _identity(candidate)
             require(time.monotonic() <= start + 330, "identity_budget")
-            receipt["commands"] = run_phase(phase, start=start, attempt=receipt["identity"]["attempt"], evidence=evidence)
+            receipt["commands"] = []
+            run_phase(phase, start=start, attempt=receipt["identity"]["attempt"], evidence=evidence, receipts=receipt["commands"])
             receipt["status"] = "complete"
             receipt["cleanup"] = True
-        except (Exception, KeyboardInterrupt):
+        except (Exception, KeyboardInterrupt) as exc:
+            failed = getattr(exc, "diy_failed_command", None)
+            receipt["failure"] = "identity_failure" if "identity" not in receipt else "phase_failure"
+            if failed is not None:
+                receipt["failed_command"] = failed
+                receipt["failure"] = failed["category"]
             receipt["status"] = "failure"
             receipt["cleanup"] = None
             raise

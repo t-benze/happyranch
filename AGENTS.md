@@ -336,6 +336,11 @@ no input accepts arbitrary commands, selectors, source overlays or credentials.
 `TARGETED DIY` receipts/artifacts are separate from default nightly evidence,
 old-pin Jenkins, ARM64 and general integration coverage. Missing/ambiguous
 identity, skip, cleanup or upload is incomplete; a phase exit zero is not QA.
+On a targeted command failure, the driver retains completed command receipts and
+sanitized failed-command JUnit/status, fixed failure category and observed owned
+group/pipe cleanup. Phase cleanup stays unknown; raw assertions and child output
+remain private. A corrective head requires renewed final-head proof and CI.
+
 Real integration execution remains forbidden on the Linux daemon host. General
 integration is SKIPPED under THR-243 seq42; this bounded disposable proof is
 separately authorized. Default/scheduled behavior and reporting are unchanged.
