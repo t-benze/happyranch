@@ -341,9 +341,19 @@ sanitized failed-command JUnit/status, fixed failure category and observed owned
 group/pipe cleanup. Ordinary assertion failures also retain only an allowlisted
 test module and a positive source line validated against the candidate source,
 candidate/source digests, and fixed assertion or failure-boundary categories.
-Absent, malformed, foreign or ambiguous locations remain unknown; oversized or
-malformed private JUnit is refused. Assertion values remain unknown. Raw
-assertions, code, locals, credentials and child output remain private.
+For exactly `tests/remote_access/test_diy_acceptance.py::test_real_diy_acceptance`,
+only uniquely resolved top-level `_run_client` and `_wait_until` helpers directly
+called by that test additionally own assertion sites. No transitive or unlisted
+helper is eligible. A validated assertion site is `assert` or an explicit literal
+builtin `AssertionError` raise; source bindings or shadowing refuse the raise.
+This records an observed boundary, never a transport, authentication or launch
+cause. Serialized failure projections alone carry a closed rejection reason:
+`not_owned`, `not_assertion`, `out_of_range`, `helper_unavailable`, or null.
+Missing/foreign/ambiguous/source-unknown gates keep null reasons; invalid sites
+export no rejected line. Safe JUnit and stdout/stderr carry no reason. Absent,
+malformed, foreign or ambiguous locations remain unknown; oversized or malformed
+private JUnit is refused. Assertion values remain unknown. Raw assertions, code,
+locals, credentials and child output remain private.
 Common finalization independently observes every returned command's owned group
 absence/direct-child reap and closed pipes (including the failed command), exact
 source restoration, and removal of the invocation's private directory. The

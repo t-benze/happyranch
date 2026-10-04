@@ -291,7 +291,7 @@ def _junit(path: Path, *, phase: str, attempt: int, source=None):
         candidate = os.environ.get("GITHUB_SHA", "")
         facts = dict(node=node, module=module, line=None, location="missing",
                      candidate=candidate if re.fullmatch(r"[0-9a-f]{40}", candidate) else None,
-                     source_sha256=None, category="failure_boundary", values="unknown")
+                     source_sha256=None, category="failure_boundary", values="unknown", reason=None)
         if module not in source or not module.endswith(".py"):
             facts["location"] = "foreign"
             return facts
@@ -323,14 +323,69 @@ def _junit(path: Path, *, phase: str, attempt: int, source=None):
             facts["location"] = "foreign"
             return facts
         line = int(number)
+        if line <= 0 or line > len(data.splitlines()):
+            facts.update(location="invalid", reason="out_of_range")
+            return facts
         name = node.rsplit("::", 1)[-1].split("[", 1)[0]
         owners = [item for item in ast.walk(tree) if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name]
         in_owner = any(item.lineno <= line <= item.end_lineno for item in owners)
         assertion = any(isinstance(item, ast.Assert) and item.lineno <= line <= item.end_lineno
                         for owner in owners for item in ast.walk(owner))
-        if line <= 0 or not in_owner or (kind == "AssertionError" and not assertion):
-            facts["location"] = "invalid"
-            return facts
+        if kind != "AssertionError":
+            # Preserve the existing other-Error owner behavior.
+            if not in_owner:
+                facts["location"] = "invalid"
+                return facts
+        elif not (in_owner and assertion):
+            # Only these directly-called top-level helpers belong to this
+            # exact test. No transitive or future discovery is allowed.
+            eligible = owners
+
+            def owned_nodes(owner):
+                pending = list(owner.body)
+                while pending:
+                    item = pending.pop()
+                    yield item
+                    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                        pending.extend(ast.iter_child_nodes(item))
+
+            if not in_owner:
+                if (module, node) != ("tests/remote_access/test_diy_acceptance.py", "tests/remote_access/test_diy_acceptance.py::test_real_diy_acceptance"):
+                    facts.update(location="invalid", reason="not_owned")
+                    return facts
+                selected = [item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == name]
+                calls = {item.func.id for owner in selected for item in owned_nodes(owner)
+                         if isinstance(item, ast.Call) and isinstance(item.func, ast.Name)}
+                helpers = [[item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name == helper]
+                           for helper in ("_run_client", "_wait_until")]
+                if len(selected) != 1 or any(len(matches) != 1 or matches[0].name not in calls for matches in helpers):
+                    facts.update(location="invalid", reason="helper_unavailable")
+                    return facts
+                eligible = [matches[0] for matches in helpers]
+                if not any(item.lineno <= line <= item.end_lineno for item in eligible):
+                    facts.update(location="invalid", reason="not_owned")
+                    return facts
+                assertion = any(isinstance(item, ast.Assert) and item.lineno <= line <= item.end_lineno
+                                for owner in eligible for item in owned_nodes(owner))
+            # A literal raise must resolve conservatively to the builtin.
+            # Reject source binding forms rather than infer Python scopes.
+            shadowed = any(
+                (isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)) and item.id == "AssertionError")
+                or (isinstance(item, ast.arg) and item.arg == "AssertionError")
+                or (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == "AssertionError")
+                or (isinstance(item, ast.alias) and (item.asname or item.name.split(".")[0]) in ("AssertionError", "*"))
+                or (isinstance(item, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and item.name == "AssertionError")
+                or (isinstance(item, ast.MatchMapping) and item.rest == "AssertionError")
+                for item in ast.walk(tree))
+            raises = [item for owner in eligible for item in owned_nodes(owner)
+                      if isinstance(item, ast.Raise) and item.lineno <= line <= item.end_lineno]
+            literal_raise = not shadowed and any(
+                isinstance(item.exc.func if isinstance(item.exc, ast.Call) else item.exc, ast.Name)
+                and (item.exc.func if isinstance(item.exc, ast.Call) else item.exc).id == "AssertionError"
+                for item in raises)
+            if not assertion and not literal_raise:
+                facts.update(location="invalid", reason="not_assertion")
+                return facts
         facts.update(line=line, location="known", category="assertion" if kind == "AssertionError" else "failure_boundary")
         return facts
 

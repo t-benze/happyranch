@@ -440,6 +440,114 @@ def test_diy_receipt_privacy(case, tmp_path, monkeypatch):
             raw = encoded + published.read_bytes()
             assert len(raw) < 65536 and all(value not in raw for value in (b"Bearer ", b"private-credential", b"bearer-private", b"data: hello", b"DIY_SECRET_CANARY")), "[E7] no private failure strings cross serialization"
 
+    if case in ("success", "secret_canary"):
+        # F0-F7 use fixed miniature bytes, never the real integration module.
+        module = "tests/remote_access/test_diy_acceptance.py"
+        source = tmp_path / module
+        source.parent.mkdir(parents=True, exist_ok=True)
+        fixture = ("def _run_client():\n"
+                   "    assert False, 'DIY_SECRET_CANARY'\n"
+                   "def _wait_until():\n"
+                   "    raise AssertionError('DIY_SECRET_CANARY')\n"
+                   "def _free_port():\n"
+                   "    assert False, 'DIY_SECRET_CANARY'\n"
+                   "def _connector_reachable():\n"
+                   "    return False\n"
+                   "def test_real_diy_acceptance():\n"
+                   "    _run_client()\n"
+                   "    _wait_until()\n"
+                   "    _free_port()\n"
+                   "    _connector_reachable()\n"
+                   "    assert False, 'DIY_SECRET_CANARY'\n"
+                   "def test_other():\n"
+                   "    _run_client()\n")
+        # Rejection enums are stipulated per input before reporter changes.
+        valid = [
+            ("F0", fixture, "test_real_diy_acceptance", 14, "known", None),
+            ("F1", fixture, "test_real_diy_acceptance", 2, "known", None),
+            ("F2", fixture, "test_real_diy_acceptance", 4, "known", None),
+            ("F2_bare", fixture.replace("raise AssertionError('DIY_SECRET_CANARY')", "raise AssertionError"), "test_real_diy_acceptance", 4, "known", None),
+            ("F0_binding", fixture + "AssertionError = ValueError\n", "test_real_diy_acceptance", 14, "known", None),
+            ("F0_missing_helper", fixture.replace("def _wait_until():", "def _absent():"), "test_real_diy_acceptance", 14, "known", None),
+        ]
+        invalid = [
+            ("F3_other", fixture, "test_other", 2, "invalid", "not_owned"),
+            ("F3_class", fixture + "class TestOther:\n    def test_real_diy_acceptance(self): _run_client()\n", "TestOther::test_real_diy_acceptance", 2, "invalid", "not_owned"),
+            ("F3_unlisted", fixture, "test_real_diy_acceptance", 6, "invalid", "not_owned"),
+            ("F3_future", fixture + "def _future():\n    assert False\n", "test_real_diy_acceptance", 18, "invalid", "not_owned"),
+            ("F4_missing", fixture.replace("def _wait_until():", "def _absent():"), "test_real_diy_acceptance", 2, "invalid", "helper_unavailable"),
+            ("F4_duplicate", fixture + "def _wait_until(): pass\n", "test_real_diy_acceptance", 2, "invalid", "helper_unavailable"),
+            ("F4_not_called", fixture.replace("    _wait_until()", "    pass"), "test_real_diy_acceptance", 2, "invalid", "helper_unavailable"),
+            ("F4_indirect", fixture.replace("    _wait_until()", "    def indirect(): _wait_until()"), "test_real_diy_acceptance", 2, "invalid", "helper_unavailable"),
+            ("F4_not_top_level", fixture.replace("def _wait_until():\n    raise AssertionError('DIY_SECRET_CANARY')", "class Container:\n    def _wait_until(): raise AssertionError"), "test_real_diy_acceptance", 2, "invalid", "helper_unavailable"),
+            ("F5_zero", fixture, "test_real_diy_acceptance", 0, "invalid", "out_of_range"),
+            ("F5_past_end", fixture, "test_real_diy_acceptance", 17, "invalid", "out_of_range"),
+            ("F5_test_def", fixture, "test_real_diy_acceptance", 9, "invalid", "not_assertion"),
+            ("F5_call", fixture, "test_real_diy_acceptance", 10, "invalid", "not_assertion"),
+            ("F5_helper_def", fixture, "test_real_diy_acceptance", 3, "invalid", "not_assertion"),
+            ("F5_other_raise", fixture.replace("raise AssertionError(", "raise ValueError("), "test_real_diy_acceptance", 4, "invalid", "not_assertion"),
+            ("F5_attribute_raise", fixture.replace("raise AssertionError(", "raise errors.AssertionError("), "test_real_diy_acceptance", 4, "invalid", "not_assertion"),
+            ("F5_nested", fixture.replace("    assert False, 'DIY_SECRET_CANARY'", "    def inner(): assert False", 1), "test_real_diy_acceptance", 2, "invalid", "not_assertion"),
+            ("F5_nonassert", fixture.replace("    raise AssertionError('DIY_SECRET_CANARY')", "    return False"), "test_real_diy_acceptance", 4, "invalid", "not_assertion"),
+        ]
+        # Conservative builtin resolution rejects each binding form, even if
+        # a synthetic traceback labels the differently resolved raise builtin.
+        bindings = ["AssertionError = ValueError", "import other as AssertionError",
+                    "from other import AssertionError", "def AssertionError(): pass",
+                    "class AssertionError: pass", "for AssertionError in (): pass",
+                    "try: pass\nexcept Exception as AssertionError: pass",
+                    "match 0:\n    case AssertionError: pass"]
+        invalid += [("F5_binding", fixture + binding + "\n", "test_real_diy_acceptance", 4, "invalid", "not_assertion") for binding in bindings]
+        invalid += [("F5_argument", fixture.replace("def _wait_until():", "def _wait_until(AssertionError):"), "test_real_diy_acceptance", 4, "invalid", "not_assertion")]
+        scenarios = valid if case == "success" else invalid
+        monkeypatch.setattr(proof, "FILES", (module,))
+        monkeypatch.setattr(proof, "E_NODES", (module + "::test_real_diy_acceptance", module + "::test_other", module + "::TestOther::test_real_diy_acceptance"))
+        for label, data, name, line, expected_location, reason in scenarios:
+            source.write_text(data)
+            root = ET.Element("testsuite")
+            node = ET.SubElement(root, "testcase", classname="tests.remote_access.test_diy_acceptance", name=name)
+            failure = ET.SubElement(node, "failure", message="AssertionError: DIY_SECRET_CANARY bearer-private")
+            failure.text = "Bearer private-credential\ndata: hello\nDIY_SECRET_CANARY\n" + f"{module}:{line}: AssertionError"
+            private.write_bytes(ET.tostring(root))
+            _, rows = proof._junit(private, phase="repeat-2", attempt=1)
+            proof._write_safe_junit(published, rows)
+            encoded = proof.finalize_receipt(dict(rows=rows), junit_present=True, upload=True)
+            location = json.loads(encoded)["rows"][0]["failure"]
+            assert location["location"] == expected_location and location["line"] == (line if expected_location == "known" else None), f"[F0-F6] {label} stipulated boundary"
+            assert location.get("reason") == reason, f"[F0-F6] {label} stipulated rejection enum"
+            assert location["candidate"] == CANDIDATE and location["source_sha256"] == hashlib.sha256(data.encode()).hexdigest(), "[F7] candidate/source binding"
+            assert location["values"] == "unknown" and rows[0]["status"] == "failed", "[F7] private values and ordinary failure"
+            assert location["category"] == ("assertion" if expected_location == "known" else "failure_boundary"), "[F7] observed boundary only"
+            assert b"reason" not in published.read_bytes(), "[F7] no reason in safe JUnit"
+            raw = encoded + published.read_bytes()
+            assert all(value not in raw for value in (b"Bearer ", b"private-credential", b"bearer-private", b"data: hello", b"DIY_SECRET_CANARY")), "[F7] valid/invalid projections stay private"
+        if case == "secret_canary":
+            # F6 keeps the established gate precedence and null reason.
+            source.write_text(fixture)
+            baseline = proof.manifest(tmp_path)
+            gates = [("", "missing"), (f"{module}:two: AssertionError", "missing"),
+                     ("other.py:2: AssertionError", "foreign"),
+                     (f"../{module}:2: AssertionError", "foreign"),
+                     (f"{module}:2: AssertionError\n{module}:4: AssertionError", "ambiguous")]
+            for detail, expected in gates:
+                failure.text = "DIY_SECRET_CANARY\n" + detail
+                private.write_bytes(ET.tostring(root))
+                _, rows = proof._junit(private, phase="repeat-2", attempt=1, source=baseline)
+                location = rows[0]["failure"]
+                assert (location["location"], location["line"], location.get("reason")) == (expected, None, None), "[F6] established rejection precedence"
+            failure.text = f"{module}:2: AssertionError"
+            private.write_bytes(ET.tostring(root))
+            source.write_text(fixture + "# drift\n")
+            for symlink in (False, True):
+                if symlink:
+                    target = tmp_path / "fixture.py"
+                    target.write_text(fixture)
+                    source.unlink()
+                    source.symlink_to(target)
+                _, rows = proof._junit(private, phase="repeat-2", attempt=1, source=baseline)
+                location = rows[0]["failure"]
+                assert (location["location"], location["line"], location.get("reason")) == ("source_unknown", None, None), "[F6] digest/symlink ownership refusal"
+
 
 @pytest.mark.parametrize("case", ["all_five", "missing_round", "reused_temp", "reused_process", "stale_marker"])
 def test_diy_repetition(case):
@@ -476,68 +584,90 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
     if case == "phase_failure":
         # Real pytest children exercise the failing command/export path; only
         # GitHub identity and the fixed payload inventory are unit inputs.
-        source = tmp_path / "test_sample.py"
-        source.write_text("def test_green(): pass\n"
-                          "def test_failed(): assert False, 'DIY_SECRET_CANARY'\n"
-                          "def test_later(): pass\n")
-        original = source.read_bytes()
-        original_mode = stat.S_IMODE(source.stat().st_mode)
-        event = tmp_path / "event.json"
-        event.write_text(json.dumps({"inputs": {"mode": "diy-proof", "phase": "proof-admission", "expected_candidate": CANDIDATE}}))
-        (tmp_path / "diy-start").write_text(str(time.monotonic()))
-        nodes = tuple("test_sample.py::" + name for name in ("test_green", "test_failed", "test_later"))
-        monkeypatch.setattr(proof, "ROOT", tmp_path)
-        monkeypatch.setattr(proof, "FILES", ("test_sample.py",))
         real_manifest = proof.manifest
-        monkeypatch.setattr(proof, "manifest", lambda: real_manifest(tmp_path))
-        monkeypatch.setattr(proof, "E_NODES", nodes)
-        monkeypatch.setattr(proof, "MUTATIONS", {})
-        monkeypatch.setattr(proof, "E_MUTATIONS", {})
-        owned_results = []
         real_run_owned = proof.run_owned
-        def capture_owned(*args, **kwargs):
-            result = real_run_owned(*args, **kwargs)
-            owned_results.append(result)
-            return result
-        monkeypatch.setattr(proof, "run_owned", capture_owned)
-        monkeypatch.setattr(proof, "_identity", lambda candidate: _identity_facts())
-        monkeypatch.setattr(proof, "fixed_commands", lambda phase: tuple(((node,), "not integration", 5) for node in nodes))
-        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
-        monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
-        monkeypatch.setenv("GITHUB_SHA", CANDIDATE)
-        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-        handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
-        try:
-            assert proof.main(["run"]) == 1, "[E9] actual failed phase returns nonzero"
-        finally:
-            for sig, handler in handlers.items():
-                signal.signal(sig, handler)
-        exported = tmp_path / "artifacts/targeted-diy"
-        observed = json.loads((exported / "receipt.json").read_bytes())
-        assert len(owned_results) == 2 and [row["exit"] for row in owned_results] == [0, 1], "[E9] actual admitted pytest outcomes"
-        assert all(row["cleanup"] and row["pipes_closed"] for row in owned_results), "[E9] actual children closed before export"
-        assert observed.get("failure") == "command_exit", "[E9] retain actual failure category"
-        assert observed["status"] == "failure" and observed["restored"] is True
-        assert len(observed["commands"]) == 1 and observed["commands"][0]["nodes"] == [nodes[0]], "[E9] retain prior completed command"
-        failed = observed["failed_command"]
-        assert failed["number"] == 2 and failed["nodes"] == [nodes[1]] and failed["exit"] == 1, "[E9] retain failed command identity/status"
-        assert failed["counts"] == {"passed": 0, "failed": 1, "error": 0, "skipped": 0}, "[E9] observed failure counts"
-        assert failed["failure_types"] == ["AssertionError"] and failed["cleanup"] is True and failed["pipes_closed"] is True, "[E9] actual owned outcome"
-        assert observed["cleanup"] is True, "[E9] independently observed cleanup includes failed command"
-        owned = observed.get("owned_cleanup")
-        assert owned == {"commands": 2, "groups_reaped": True, "pipes_closed": True, "source_restored": True, "private_removed": True}, "[E9] complete actual owned-resource scope"
-        location = failed.get("failures")
-        assert location and location[0]["module"] == "test_sample.py" and location[0]["line"] == 2 and location[0]["location"] == "known", "[E9] retain actual failed source line"
-        assert location[0]["candidate"] == CANDIDATE and location[0]["values"] == "unknown", "[E9] fixed candidate and unknown private values"
-        assert (exported / "command-2.xml").is_file() and not (exported / "command-3.xml").exists(), "[E9] retain failed JUnit and stop"
-        with pytest.raises(ProcessLookupError):
-            os.kill(failed["process"], 0)
-        assert source.read_text().endswith("def test_later(): pass\n"), "[E9] exact source unchanged"
-        assert source.read_bytes() == original and stat.S_IMODE(source.stat().st_mode) == original_mode, "[E9] exact source bytes AND mode"
-        published = b"".join(path.read_bytes() for path in exported.iterdir())
-        captured = capsys.readouterr()
-        assert b"DIY_SECRET_CANARY" not in published and "DIY_SECRET_CANARY" not in captured.err + captured.out, "[E9] no raw exception/assertion export"
-
+        for scenario in ("direct", "F1", "F2", "F9"):
+            scenario_root = tmp_path / scenario
+            scenario_root.mkdir()
+            module = "test_sample.py" if scenario == "direct" else "tests/remote_access/test_diy_acceptance.py"
+            source = scenario_root / module
+            source.parent.mkdir(parents=True, exist_ok=True)
+            if scenario == "direct":
+                source.write_text("def test_green(): pass\n"
+                                  "def test_failed(): assert False, 'DIY_SECRET_CANARY'\n"
+                                  "def test_later(): pass\n")
+            else:
+                source.write_text("def _run_client():\n"
+                                  "    assert False, 'DIY_SECRET_CANARY'\n"
+                                  "def _wait_until():\n"
+                                  "    raise AssertionError('DIY_SECRET_CANARY')\n"
+                                  "def _free_port():\n"
+                                  "    assert False, 'DIY_SECRET_CANARY'\n"
+                                  "def test_green(): pass\n"
+                                  "def test_real_diy_acceptance():\n"
+                                  + "    " + {"F1": "_run_client()", "F2": "_wait_until()", "F9": "_free_port()"}[scenario] + "\n"
+                                  + "    _wait_until()\n    _run_client()\n"
+                                  + "def test_later(): pass\n")
+            original = source.read_bytes()
+            original_mode = stat.S_IMODE(source.stat().st_mode)
+            event = scenario_root / "event.json"
+            event.write_text(json.dumps({"inputs": {"mode": "diy-proof", "phase": "proof-admission", "expected_candidate": CANDIDATE}}))
+            (scenario_root / "diy-start").write_text(str(time.monotonic()))
+            nodes = tuple(module + "::" + name for name in ("test_green", "test_failed" if scenario == "direct" else "test_real_diy_acceptance", "test_later"))
+            monkeypatch.setattr(proof, "ROOT", scenario_root)
+            monkeypatch.setattr(proof, "FILES", (module,))
+            monkeypatch.setattr(proof, "manifest", lambda: real_manifest(scenario_root))
+            monkeypatch.setattr(proof, "E_NODES", nodes)
+            monkeypatch.setattr(proof, "MUTATIONS", {})
+            monkeypatch.setattr(proof, "E_MUTATIONS", {})
+            owned_results = []
+            def capture_owned(*args, **kwargs):
+                result = real_run_owned(*args, **kwargs)
+                owned_results.append(result)
+                return result
+            monkeypatch.setattr(proof, "run_owned", capture_owned)
+            monkeypatch.setattr(proof, "_identity", lambda candidate: _identity_facts())
+            monkeypatch.setattr(proof, "fixed_commands", lambda phase: tuple(((node,), "not integration", 5) for node in nodes))
+            monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+            monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+            monkeypatch.setenv("GITHUB_SHA", CANDIDATE)
+            monkeypatch.setenv("RUNNER_TEMP", str(scenario_root))
+            handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+            try:
+                assert proof.main(["run"]) == 1, "[E9] actual failed phase returns nonzero"
+            finally:
+                for sig, handler in handlers.items():
+                    signal.signal(sig, handler)
+            exported = scenario_root / "artifacts/targeted-diy"
+            observed = json.loads((exported / "receipt.json").read_bytes())
+            assert len(owned_results) == 2 and [row["exit"] for row in owned_results] == [0, 1], "[E9] actual admitted pytest outcomes"
+            assert all(row["cleanup"] and row["pipes_closed"] for row in owned_results), "[E9] actual children closed before export"
+            assert observed.get("failure") == "command_exit", "[E9] retain actual failure category"
+            assert observed["status"] == "failure" and observed["restored"] is True
+            assert len(observed["commands"]) == 1 and observed["commands"][0]["nodes"] == [nodes[0]], "[E9] retain prior completed command"
+            failed = observed["failed_command"]
+            assert failed["number"] == 2 and failed["nodes"] == [nodes[1]] and failed["exit"] == 1, "[E9] retain failed command identity/status"
+            assert failed["counts"] == {"passed": 0, "failed": 1, "error": 0, "skipped": 0}, "[E9] observed failure counts"
+            assert failed["failure_types"] == ["AssertionError"] and failed["cleanup"] is True and failed["pipes_closed"] is True, "[E9] actual owned outcome"
+            assert observed["cleanup"] is True, "[E9] independently observed cleanup includes failed command"
+            owned = observed.get("owned_cleanup")
+            assert owned == {"commands": 2, "groups_reaped": True, "pipes_closed": True, "source_restored": True, "private_removed": True}, "[E9] complete actual owned-resource scope"
+            location = failed.get("failures")
+            if scenario == "direct":
+                assert location and location[0]["module"] == "test_sample.py" and location[0]["line"] == 2 and location[0]["location"] == "known", "[E9] retain actual failed source line"
+            else:
+                assert location and location[0]["module"] == module, "[F8] retained failed module"
+                expected = {"F1": ("known", 2, None), "F2": ("known", 4, None), "F9": ("invalid", None, "not_owned")}[scenario]
+                assert (location[0]["location"], location[0]["line"], location[0].get("reason")) == expected, "[F8-F9] propagated stipulated failed-line boundary"
+            assert location[0]["candidate"] == CANDIDATE and location[0]["values"] == "unknown", "[E9] fixed candidate and unknown private values"
+            assert (exported / "command-2.xml").is_file() and not (exported / "command-3.xml").exists(), "[E9] retain failed JUnit and stop"
+            with pytest.raises(ProcessLookupError):
+                os.kill(failed["process"], 0)
+            assert source.read_text().endswith("def test_later(): pass\n"), "[E9] exact source unchanged"
+            assert source.read_bytes() == original and stat.S_IMODE(source.stat().st_mode) == original_mode, "[E9] exact source bytes AND mode"
+            published = b"".join(path.read_bytes() for path in exported.iterdir())
+            captured = capsys.readouterr()
+            assert b"DIY_SECRET_CANARY" not in published and "DIY_SECRET_CANARY" not in captured.err + captured.out, "[E9] no raw exception/assertion export"
     if case in ("timeout", "cancelled", "missing_upload", "cleanup_unknown"):
         # Safe miniature children exercise real owned supervision/finalization;
         # no daemon or integration test is admitted on this host.
