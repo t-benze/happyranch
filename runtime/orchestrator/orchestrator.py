@@ -1351,12 +1351,11 @@ class Orchestrator:
                        if recovery and provider == "codex" else {}),
                 )
             finally:
-                # The contained supervisor invokes its terminal hook before
-                # release.  The legacy fallback preserves its ordinary
-                # lifecycle behavior, but the one-shot recovery has no later
-                # owner and must clear only its own generation after terminal
-                # failure so its PID/control cannot survive as stale authority.
-                if recovery and self._sessions is not None:
+                # Retire only this invocation after the executor's final
+                # return/exception, including any internal 429 attempts.
+                # Generation-safe cleanup preserves newer bindings and other
+                # tasks; the contained supervisor owns its pre-release hook.
+                if self._sessions is not None:
                     self._sessions.clear_if_active_session(
                         task_id, agent_name, session_id
                     )

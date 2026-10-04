@@ -1877,6 +1877,17 @@ lifecycle/error handling stay unchanged. No metadata is recomputed from memory
 files after injection. The legacy extractor remains supported but bootstrap no
 longer uses it. The unchanged resolver still prefers digest to search.
 
+The ordinary `host_supervisor=None` launch retires its own SessionTracker
+binding after `executor.run` finally returns or raises, including all internal
+429 attempts. The existing `clear_if_active_session(task_id, agent, session_id)`
+removes only that generation's active context, PID and control; newer same-task
+generations and other tasks survive. The invocation remains usable for callbacks
+and memory attribution until that final exit. A retired SID still permits memory
+get/search but earns no task/session credit. Result identity, task classification,
+scratch/report ordering, one-shot recovery and contained pre-release cleanup
+remain unchanged. Ordinary source tests do not establish installed or contained
+acceptance.
+
 See the feature guide for the exact optional JSON validation/legacy contract.
 Recovery/unattributed launches do not gain task eligibility from a version;
 `session_start` is intended invocation rather than complete launch census.

@@ -41,6 +41,16 @@ additional contained/custom variants, forged-task nonoverride, thread/dream
 population and genuinely nonshown search follow-on remain OPEN manager-owned
 canary obligations. Collection, reporting, thresholds and tuning remain unshipped.
 
+The S04 ordinary source correction retires an invocation's existing SessionTracker
+binding at the final `executor.run` return/exception, after any internal 429
+attempts. The unchanged generation-safe clear preserves newer same-task sessions
+and other same-agent tasks. Real blocked-job resumption uses a new runtime SID;
+a genuine failed-child retry retains the failed child's parent, results and history
+and uses the required direct revisit link. Retired/provider/generated hints remain
+usable for get/search without task/session credit while the successor is active.
+This ordinary source proof does not establish installed, custom or contained
+acceptance, collection health, a clean epoch or whole-report completion.
+
 A clean epoch begins only after deployed production-canary acceptance. Its
 earliest qualifying timestamp is the deterministic minimum, never input order.
 Observation requires 14 complete deployed days and at least 500 valid nonempty
