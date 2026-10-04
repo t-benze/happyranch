@@ -742,4 +742,23 @@ uv run pytest tests/ -v -m ""            # unit + integration
 
 Integration tests spawn a real daemon and fake CLIs. They are isolated from `~/.happyranch/` via `HAPPYRANCH_DAEMON_HOME`. Run integration tests locally before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
 
+The existing manual nightly workflow also acceptsthe fixed internal `mode=diy-proof`,
+`phase=proof-admission|proof-causality|proof-protocol-cleanup|repeat-1..repeat-5`
+and `expected_candidate=<40-character committed SHA>` inputs. Dispatch on the
+maker branch; the hash is an equality guard and targeted checkout uses the event
+SHA. Raw inputs are validated before dependency sync or pytest; only validated
+`full` selects the original full-suite command. Run the eight targeted phases
+serially at one immutable candidate, reconciling each exact run/attempt, source
+manifest, actual JUnit nodes, restoration, owned cleanup and uploaded artifact
+before the next request. The unchanged 30-minute cap allocates 300s setup, 30s
+identity, 1260s payload, 60s cleanup, 90s finalization/upload and 60s contingency;
+no input accepts arbitrary commands, selectors, source overlays or credentials.
+`TARGETED DIY` receipts/artifacts are separate from default nightly evidence,
+old-pin Jenkins, ARM64 and general integration coverage. Missing/ambiguous
+identity, skip, cleanup or upload is incomplete; a phase exit zero is not QA.
+Real integration execution remains forbidden on the Linux daemon host. General
+integration is SKIPPED under THR-243 seq42; this bounded disposable proof is
+separately authorized. Default/scheduled behavior and reporting are unchanged.
+
+
 `tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures.

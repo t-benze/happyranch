@@ -4,12 +4,16 @@ Used by the connector-core harness as the positive loopback-forward control:
 the connector forwards to 127.0.0.1 only, injects the daemon bearer on the
 final hop, and the fake daemon asserts it. With ``hold_open`` the daemon holds
 the response body open (headers already flushed) so revocation-mid-stream
-tests can abort an in-flight HTTP/SSE exchange.
+tests can abort an in-flight HTTP/SSE exchange. Legacy holds return after
+10 seconds. Explicit held_sse_mode heartbeat/silent requests instead have
+finite, request-specific ownership; only heartbeat excludes idle closure.
 """
 from __future__ import annotations
 
 import json
 import threading
+import socket
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from runtime.remote_access.forwarding import LOOPBACK_HOST
@@ -20,11 +24,16 @@ class FakeDaemon:
 
     ``expected_bearer``: the Authorization value the connector must inject.
     ``hold_open``: when True the response body is held open until ``release``
-    is set. SSE emits one frame before ``started`` is set; HTTP only flushes
+    is set or the legacy 10s wait expires. SSE emits one frame before ``started`` is set; HTTP only flushes
     headers. This enables deterministic revocation-mid-stream tests.
     """
 
-    def __init__(self, expected_bearer: str, hold_open: bool = False, port: int = 0) -> None:
+    def __init__(self, expected_bearer: str, hold_open: bool = False, port: int = 0, *, held_sse_mode: str | None = None) -> None:
+        if held_sse_mode not in (None, "heartbeat", "silent") or (hold_open and held_sse_mode):
+            raise ValueError("invalid held SSE selection")
+        self.held_sse_mode = held_sse_mode
+        self._held_lock = threading.Lock()
+        self._held: dict[int, dict] = {}
         self.expected_bearer = expected_bearer
         self.requests: list[dict] = []
         self.hold_open = hold_open
@@ -33,6 +42,10 @@ class FakeDaemon:
         self._server = ThreadingHTTPServer(
             (LOOPBACK_HOST, port), self._handler_factory()
         )
+        if held_sse_mode:
+            # Only this opt-in instance avoids an unbounded server_close join.
+            self._server.daemon_threads = True
+            self._server.block_on_close = False
         self._port = self._server.server_address[1]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -44,10 +57,82 @@ class FakeDaemon:
         self._thread.start()
 
     def stop(self) -> None:
+        if self.held_sse_mode:
+            self._stop_held()
+            return
         self.release.set()
         self._server.shutdown()
         self._server.server_close()
         self._thread.join(timeout=5)
+
+    def _held_snapshot(self) -> dict[int, dict]:
+        with self._held_lock:
+            return {ordinal: {k: v for k, v in row.items() if k not in ("socket", "thread")}
+                    | {"release": self.release.is_set()}
+                    for ordinal, row in self._held.items()}
+
+    def _serve_held_sse(self, handler: BaseHTTPRequestHandler) -> None:
+        started = time.monotonic()
+        with self._held_lock:
+            ordinal = len(self._held) + 1
+            row = dict(alive=True, first_frame_flushed=False, heartbeat_count=0,
+                       last_flush=started, terminal=None, failure=False,
+                       socket=handler.connection, thread=threading.current_thread())
+            self._held[ordinal] = row
+        def update(**values):
+            with self._held_lock:
+                row.update(values)
+        try:
+            handler.connection.settimeout(2)
+            handler.send_response(200)
+            handler.send_header("Content-Type", "text/event-stream")
+            handler.send_header("Connection", "close")
+            handler.end_headers()
+            handler.wfile.write(b"data: hello\n\n")
+            handler.wfile.flush()
+            update(first_frame_flushed=True, last_flush=time.monotonic())
+            self.started.set()
+            while not self.release.wait(timeout=1):
+                now = time.monotonic()
+                if now - started >= 120 or row["heartbeat_count"] >= 120:
+                    update(failure=True, terminal="budget_exhausted")
+                    return
+                if self.held_sse_mode == "heartbeat":
+                    if now - row["last_flush"] > 3:
+                        update(failure=True, terminal="write_gap")
+                        return
+                    handler.wfile.write(b":\n\n")
+                    handler.wfile.flush()
+                    if time.monotonic() - row["last_flush"] > 3:
+                        update(failure=True, terminal="write_gap")
+                        return
+                    update(heartbeat_count=row["heartbeat_count"] + 1, last_flush=time.monotonic())
+            update(terminal="released")
+        except (BrokenPipeError, ConnectionResetError):
+            update(terminal="peer_disconnect")
+        except OSError:
+            update(failure=True, terminal="write_failure")
+        finally:
+            update(alive=False)
+
+    def _stop_held(self) -> None:
+        deadline = time.monotonic() + 5
+        self.release.set()
+        with self._held_lock:
+            rows = list(self._held.values())
+        for row in rows:
+            try:
+                row["socket"].shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        if self._thread.is_alive():
+            self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=max(0, deadline - time.monotonic()))
+        for row in rows:
+            row["thread"].join(timeout=max(0, deadline - time.monotonic()))
+        if self._thread.is_alive() or any(row["thread"].is_alive() for row in rows):
+            raise AssertionError("held fixture cleanup incomplete")
 
     def _handler_factory(self) -> type[BaseHTTPRequestHandler]:
         daemon = self
@@ -95,6 +180,9 @@ class FakeDaemon:
                 if not self._record_and_check_auth():
                     return
                 if self.path.endswith("/tail"):
+                    if daemon.held_sse_mode:
+                        daemon._serve_held_sse(self)
+                        return
                     # A held SSE emits one frame before holding the body open.
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")

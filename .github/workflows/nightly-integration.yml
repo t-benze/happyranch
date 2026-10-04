@@ -5,6 +5,18 @@ on:
     # 07:00 UTC nightly — off-peak. Adjust the cron if you prefer another window.
     - cron: '0 7 * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        default: full
+        options: [full, diy-proof]
+      phase:
+        type: choice
+        default: none
+        options: [none, proof-admission, proof-causality, proof-protocol-cleanup, repeat-1, repeat-2, repeat-3, repeat-4, repeat-5]
+      expected_candidate:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -17,16 +29,37 @@ jobs:
     # daemon can't run for the full 6h default.
     timeout-minutes: 30
     steps:
+      - name: Record initial bounded DIY admission
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, pathlib, time
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          (root / "diy-start").write_text(str(time.monotonic()))
+          (root / "diy-initial.json").write_text(json.dumps({"label": "TARGETED DIY", "status": "incomplete", "cleanup": None, "upload": None}))
+          PYTHON
       - name: Checkout
+        if: ${{ inputs.mode != 'diy-proof' }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Checkout TARGETED DIY event SHA
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'diy-proof' }}
+        timeout-minutes: 5
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+      - name: Validate raw selection before dependencies or tests
+        id: selection
+        run: python3 scripts/diy_proof.py validate
       - name: Install uv
+        timeout-minutes: 5
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
           python-version: '3.12'
       - name: Sync dependencies (frozen)
+        if: ${{ steps.selection.outputs.mode == 'full' }}
         run: uv sync --frozen
       - name: Run integration tests
+        if: ${{ steps.selection.outputs.mode == 'full' }}
         run: |
           mkdir -p artifacts
           python3 scripts/run_bounded_output.py \
@@ -35,7 +68,7 @@ jobs:
             -- uv run pytest tests/ -v -m integration \
               --junitxml=artifacts/nightly-integration.xml
       - name: Build integration summary
-        if: ${{ always() }}
+        if: ${{ always() && steps.selection.outputs.mode == 'full' }}
         env:
           NIGHTLY_ARTIFACT_NAME: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
           NIGHTLY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -48,7 +81,7 @@ jobs:
             --artifact-name "${NIGHTLY_ARTIFACT_NAME}"
           cat artifacts/nightly-summary.md >> "${GITHUB_STEP_SUMMARY}"
       - name: Upload nightly evidence
-        if: ${{ always() }}
+        if: ${{ always() && steps.selection.outputs.mode == 'full' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
@@ -57,6 +90,44 @@ jobs:
             artifacts/nightly-integration.log
             artifacts/nightly-summary.md
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Sync TARGETED DIY within shared setup budget
+        if: ${{ steps.selection.outputs.mode == 'diy-proof' }}
+        timeout-minutes: 5
+        run: |
+          remaining=$(python3 - <<'PYTHON'
+          import os, pathlib, time
+          start = float(pathlib.Path(os.environ["RUNNER_TEMP"]).joinpath("diy-start").read_text())
+          left = int(start + 300 - time.monotonic())
+          if left <= 0: raise SystemExit(1)
+          print(left)
+          PYTHON
+          )
+          timeout "${remaining}s" uv sync --frozen
+      - name: Run fixed TARGETED DIY phase
+        if: ${{ steps.selection.outputs.mode == 'diy-proof' }}
+        timeout-minutes: 23
+        run: uv run --frozen python scripts/diy_proof.py run
+      - name: Finalize TARGETED DIY summary on every outcome
+        if: ${{ always() && inputs.mode == 'diy-proof' }}
+        run: |
+          mkdir -p artifacts/targeted-diy
+          if [ ! -f artifacts/targeted-diy/receipt.json ]; then
+            cp "${RUNNER_TEMP}/diy-initial.json" artifacts/targeted-diy/receipt.json
+          fi
+          if [ ! -f artifacts/targeted-diy/summary.md ]; then
+            printf '%s\n' 'TARGETED DIY incomplete; admission or proof evidence missing.' > artifacts/targeted-diy/summary.md
+          fi
+          cat artifacts/targeted-diy/summary.md >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload TARGETED DIY evidence
+        if: ${{ always() && inputs.mode == 'diy-proof' }}
+        timeout-minutes: 1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: targeted-diy-${{ github.sha }}-${{ steps.selection.outputs.phase || 'unadmitted' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/targeted-diy/
+          if-no-files-found: error
           retention-days: 14
 
   report-scheduled-failure:
