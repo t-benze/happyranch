@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -147,3 +148,87 @@ def test_cli_surfaces_route_machine_code_unchanged(tmp_path, capsys, code: str) 
             cmd_workflow_templates_publish(args)
     assert exc.value.code == 1
     assert code in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("form", ["show", "request", "downgrade-preflight"])
+def test_cutover_parser_and_usage_contract(form: str) -> None:
+    words = ["workflows", "cutover", form, "--org", "alpha", "--json"]
+    if form == "request":
+        words += ["--from-file", "/tmp/cutover.json"]
+    args = build_parser().parse_args(words)
+    assert args.org == "alpha" and args.json
+    assert args.cutover_command == form
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(words + ["--verified"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("form,eligible,expected_exit", [
+    ("show", None, None), ("request", None, None),
+    ("downgrade-preflight", True, None), ("downgrade-preflight", False, 1),
+])
+def test_cutover_cli_wire_projection_and_pending_exit(
+    tmp_path: Path, capsys: pytest.CaptureFixture, form: str, eligible: bool | None, expected_exit: int | None,
+) -> None:
+    from cli.commands.workflows import cmd_workflow_cutover
+
+    projection = {"org_slug": "alpha", "state": "enable_requested", "generation": 2, "blockers": []}
+    result = projection if eligible is None else {"eligible": eligible, "blockers": [], "projection": projection}
+    body = {"action": "enable", "operation_key": "one", "expected_generation": 1}
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(body))
+    args = argparse.Namespace(cutover_command=form, org="alpha", json=True, from_file=str(path))
+    client = Mock()
+    client.post.return_value = client.get.return_value = _response(200, result)
+    with patch("cli.commands.workflows.OpcClient.from_env", return_value=client), patch(
+        "cli.commands.workflows._shared._fetch_available_orgs", return_value=["alpha"],
+    ):
+        if expected_exit is None:
+            cmd_workflow_cutover(args)
+        else:
+            with pytest.raises(SystemExit) as exc:
+                cmd_workflow_cutover(args)
+            assert exc.value.code == expected_exit
+    assert json.loads(capsys.readouterr().out) == result
+    if form == "request":
+        client.post.assert_called_once_with("/api/v1/orgs/alpha/workflows/cutover/requests", json=body)
+    else:
+        client.get.assert_called_once_with("/api/v1/orgs/alpha/workflows/cutover" + ("/downgrade-preflight" if eligible is not None else ""))
+
+
+@pytest.mark.parametrize("payload", [b"{", b"[]", b"\xff"])
+def test_cutover_cli_bad_file_never_opens_transport(tmp_path: Path, payload: bytes) -> None:
+    from cli.commands.workflows import cmd_workflow_cutover
+
+    path = tmp_path / "bad.json"
+    path.write_bytes(payload)
+    with patch("cli.commands.workflows.OpcClient.from_env") as transport:
+        with pytest.raises(SystemExit) as exc:
+            cmd_workflow_cutover(argparse.Namespace(cutover_command="request", from_file=str(path), org="alpha", json=False))
+        assert exc.value.code == 1
+        transport.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["domain", "transport", "relative"])
+def test_cutover_cli_errors_are_nonzero_and_keep_safe_categories(
+    tmp_path: Path, capsys: pytest.CaptureFixture, failure: str,
+) -> None:
+    import httpx
+    from cli.commands.workflows import cmd_workflow_cutover
+
+    path = tmp_path / "request.json"
+    path.write_text('{"action":"enable","operation_key":"one","expected_generation":1}')
+    client = Mock()
+    if failure == "domain":
+        client.post.return_value = _response(409, {"detail": {"code": "cutover_generation_stale"}})
+    elif failure == "transport":
+        client.post.side_effect = httpx.ConnectError("private transport detail")
+    with patch("cli.commands.workflows.OpcClient.from_env", return_value=client), patch(
+        "cli.commands.workflows._shared._fetch_available_orgs", return_value=["alpha"],
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cmd_workflow_cutover(argparse.Namespace(cutover_command="request", from_file="relative.json" if failure == "relative" else str(path), org="alpha", json=False))
+    assert exc.value.code == 1
+    error = capsys.readouterr().err
+    assert {"domain": "cutover_generation_stale", "transport": "retry requests with the same body/key", "relative": "must be absolute"}[failure] in error
+    assert "private transport detail" not in error

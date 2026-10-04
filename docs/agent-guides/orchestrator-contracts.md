@@ -186,6 +186,24 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   advances only its roster generation and adds no selector-history churn. Common task,
   thread, dream, wake, and schedule launch resolution is read-only and refuses
   an uninitialized selector rather than mutating authority during launch.
+- **Cutover request/recovery ownership.** `WorkflowCutoverStore` holds the
+  existing `Database._lock` plus a short `BEGIN IMMEDIATE` for each atomic
+  state/event transition and refuses caller-owned transactions. HTTP holds
+  existing `org.db_lock`; no profile lease, filesystem scan, host/network work
+  or await occurs inside the SQLite reservation. Full canonical layout/version,
+  chain cardinality/edges/keys/digests and marker pointer/time/reason are reread
+  under ownership; event1 retains its shipped identity/digest. Progressed event
+  SHA256 binds canonical UTF8 fields, fixed verifier/Founder request facts,
+  actual org and previous digest. Timestamps must be UTC, not monotonic.
+  Installer and initial-only release oracle remain unchanged. One post-install
+  cold-load call before teams/settings resumes only authentic requests; pure
+  reads never advance. Enable verifies real integrity/FKs and absence of
+  contradictory work before compatibility_verified and again before enabled.
+  Disable commits its admission fence before separate drain commits. F5 closure
+  inspection retains actual owners and terminal history; queued cancellation,
+  callbacks and uncertain host reconciliation remain U2D/U4/U5 responsibilities.
+  Future activation must consume this same SQLite marker under its separately
+  accepted profile-to-org lock order; no consumer or first-draft lane ships here.
 - **U2A/U2B boundary.** The readiness verifier is intentionally not consumed
   by task, chain, fan-out, activation, or dispatch paths yet. U2B now routes
   supported machine-global executor-profile and adapter writers through

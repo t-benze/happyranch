@@ -4011,6 +4011,70 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/cutover": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/cutover/downgrade-preflight": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/cutover/requests": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/templates": {
       "GET": {
         "params": [
