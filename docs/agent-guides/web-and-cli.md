@@ -579,6 +579,43 @@ version/pins/timestamp and authenticated publisher provenance. Conflict,
 stale-CAS, duplicate-content and authorization errors retain stable
 machine-readable `detail.code` values; refusals leave no template residue.
 
+### Workflow cutover
+
+Founder bearer and actual org authority apply to all three methods:
+
+```bash
+happyranch workflows cutover show --org <org> [--json]
+happyranch workflows cutover request --org <org> --from-file /absolute/request.json [--json]
+happyranch workflows cutover downgrade-preflight --org <org> [--json]
+```
+
+The only request fields are `action` (`enable` or `disable`), an opaque ASCII
+`operation_key` (1–128 characters from `[A-Za-z0-9._:-]`), and a strict positive
+integer `expected_generation`. No client actor/org/owner/proof/verified/state or
+receipt claim is accepted. Disable reason is fixed `founder_disable_requested`.
+The API prefix is `/api/v1/orgs/{slug}`: GET `/workflows/cutover`, POST
+`/workflows/cutover/requests`, GET `/workflows/cutover/downgrade-preflight`.
+`workflowCutover.ts` mirrors these methods; there is no workflow UI page yet.
+
+Responses expose stored marker/events and derived allowed actions, blockers,
+actual owners, deferred actions, reconciliation_required and the reconstructed
+`workflow-cutover-verifier@1` verification event. Requests add original request
+identity/generation/action and replayed alongside current state. HTTP200 means
+accepted, including truthful pending verification/drain. Retry an ambiguous
+response with the same body/key; exact historical replay works after disable
+and cold reopen. It never creates a new request identity.
+
+Auth/org authority precedes body parsing; identity claims return403, strict
+invalid input422, corrupt layout/history500, operation conflicts/stale CAS/
+illegal edges409, precommit operational failure safe500. Errors expose only a
+machine category. CLI exits0 for accepted reads/requests (including pending) or
+eligible preflight, 1 for denied preflight/domain/input/transport failures, and
+2 for usage. Preflight is read-only and permits only pristine initial history
+with no workflow data; even empty drained or template-only stores refuse.
+Old binaries are not claimed to enforce this decision. Activation, first-draft
+work and cancellation/dispatch remain later units; no live enable or deployment
+is implied by these methods.
+
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 
 System assistant commands are container-level:

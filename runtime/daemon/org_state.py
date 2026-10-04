@@ -23,6 +23,7 @@ from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import install_or_recover
+from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.dashboard_projection import DashboardProjectionManager
@@ -199,7 +200,8 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         try:
-            install_or_recover(db)
+            install_or_recover(db, expected_org_slug=slug)
+            WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.

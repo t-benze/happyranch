@@ -43,7 +43,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 ## Essentials
 
-- **Workflow schema U1A foundation (THR-139).** The U1A candidate installs the
+- **Workflow schema U1A foundation (THR-139).** U1A installs the
   complete inert version-1 workflow layout only from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
   membership validation, or orchestrator construction. Generic
@@ -53,15 +53,27 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   objects, version 1, the singleton `installed_legacy_only` generation 1 owned
   by `workflow_cutover_reconciler`, and its install event; interruption rolls
   back to zero workflow residue. Every reopen validates the full canonical
-  table/column/default/PK/CHECK/UNIQUE/FK/index/trigger layout and exact initial
-  marker/event, refusing missing, extra, malformed, conflicting, newer, or
+  table/column/default/PK/CHECK/UNIQUE/FK/index/trigger layout and the complete validated
+  marker/event history (initial-only references need no org context; progressed
+  histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
   canonical org installer, and hashes the complete schema; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
-  store. This is schema/compatibility foundation only: U1B-U6 template,
-  activation, authority coordination, dispatch, callback, route/UI,
-  enable/cutover-transition behavior remain unimplemented. U1B adds only
+  store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain
+  from installed_legacy_only through enable_requested, compatibility_verified,
+  enabled, disable_requested, draining and drained. Founder-only requests use
+  strict action/key/generation input; request/fence commits precede separate
+  bounded reconciliation. Every authoritative reread validates the full layout
+  and org-bound deterministic event chain; cold load advances only authentic
+  committed requests before teams/settings mutation. GET/preflight never advance.
+  SQLite integrity/FKs and contradictory pre-enable work block verification;
+  incomplete/nonterminal F5 closures block drain with actual ownership and
+  deferred U2D/U4/U5 actions, never cancellation or task/outbox mutation.
+  Downgrade is eligible only for pristine initial history and zero workflow data.
+  Integrity hashes are cooperative coherence, not hostile same-UID proof.
+  Activation, first draft/dispatch, callbacks, operator UI and full U2C-U6
+  acceptance remain deferred. U1B adds only
   inert, immutable `product-design` template authoring/versioning in
   `runtime/workflows/templates.py`: current active managers publish only in
   their uniquely registered team's org namespace through verified task/session

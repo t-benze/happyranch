@@ -92,4 +92,10 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/tasks/{task_id}')).toBe(true);
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/dashboard/summary')).toBe(true);
   });
+  test('all cutover methods are browser-included', () => {
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/cutover')).toBe(true);
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/cutover/requests')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/cutover/downgrade-preflight')).toBe(true);
+  });
+
 });

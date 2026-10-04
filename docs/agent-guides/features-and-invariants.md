@@ -6,6 +6,27 @@ For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/
 
 ## Feature Modules Overview
 
+### Workflow cutover prerequisite
+
+`runtime/workflows/cutover.py` owns the existing version-1 lifecycle marker and
+its contiguous org-bound event chain. Founder bearer requests commit the
+request/admission fence before verification or drain; recovery checks the full
+canonical layout/history, SQLite integrity/FKs and real work closure under each
+short writer reservation. GET and downgrade preflight never advance. Historical
+request replay reconstructs the original action/CAS before obsolete gates and
+returns its identity separately from current pending/enabled/draining state.
+
+Installation still writes only generation1/event1; cold `OrgState.load` forwards
+actual org context and resumes only a committed request. Existing templates,
+authority and profiles may remain inert; pre-enable activation/dispatch/recovery
+work blocks enabling. Drain never cancels or settles F5 work: queued/prelaunch,
+running, uncertain and incomplete closures project actual owners and deferred
+U2D/U4/U5 actions. Terminal history remains. Downgrade requires pristine initial
+history and no workflow data, including template-only data. Historical v0/v1
+source-pinned initializer/migration tests prove preservation at that boundary,
+not whole-runtime conversion or old-binary gate compliance. Activation/first
+draft, dispatch/recovery routing and operator acceptance remain later work.
+
 ### Implemented boundaries for retained features
 
 KB input validation, duplicate detection, author stamps, and deletion checks live

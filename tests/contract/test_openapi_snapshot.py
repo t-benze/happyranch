@@ -310,3 +310,17 @@ def test_thread_reply_delivery_operations_document_four_state_precedence() -> No
         description = operation["description"]
         assert "running > queued > held > retry_required > settled" in description
         assert "held" in description.lower()
+
+
+def test_cutover_openapi_has_closed_request_and_truthful_projection() -> None:
+    schema = create_app(DaemonState.idle(Settings())).openapi()
+    request = schema["paths"]["/api/v1/orgs/{slug}/workflows/cutover/requests"]["post"]
+    body = request["requestBody"]["content"]["application/json"]["schema"]
+    assert body["additionalProperties"] is False
+    assert set(body["required"]) == {"action", "operation_key", "expected_generation"}
+    assert body["properties"]["action"]["enum"] == ["enable", "disable"]
+    assert body["properties"]["expected_generation"]["type"] == "integer"
+    assert body["properties"]["expected_generation"]["exclusiveMinimum"] == 0
+    projection = schema["components"]["schemas"]["CutoverProjection"]["properties"]
+    assert {"events", "blockers", "reconciliation_required", "allowed_actions", "verification"} <= projection.keys()
+    assert "execution_started" not in projection
