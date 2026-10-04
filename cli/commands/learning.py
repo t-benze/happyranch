@@ -281,599 +281,161 @@ def cmd_learning_promote(args: argparse.Namespace) -> None:
 
 
 def _paginate(client: OpcClient, org: str, action: str) -> list[dict]:
-    """Cursor-paginate through all audit rows for the given action."""
-    all_rows: list[dict] = []
-    cursor: str | None = None
-    while True:
-        params: dict = {"action": action, "limit": 5000}
-        if cursor is not None:
-            params["cursor"] = cursor
-        r = client.get(f"/api/v1/orgs/{org}/audit", params=params)
-        if not _ok(r):
-            break
-        page = r.json()
-        entries = page.get("entries", [])
-        all_rows.extend(entries)
-        cursor = page.get("next_cursor")
-        if cursor is None:
-            break
-    return all_rows
+    """Report-only, complete production-limit audit acquisition or refusal."""
+    from runtime.infrastructure.database import _decode_cursor
+    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable
+
+    rows, cursor, seen_cursors, seen_ids = [], None, set(), set()
+    try:
+        while True:
+            params = {"action": action, "limit": 5000}
+            if cursor is not None:
+                params["cursor"] = cursor
+            response = client.get(f"/api/v1/orgs/{org}/audit", params=params)
+            if response.status_code != 200:
+                raise ReportAcquisitionUnavailable()
+            page = response.json()
+            if not isinstance(page, dict) or not isinstance(page.get("entries"), list) or "next_cursor" not in page:
+                raise ReportAcquisitionUnavailable()
+            entries, next_cursor = page["entries"], page["next_cursor"]
+            if len(entries) > 5000 or any(not isinstance(row, dict) or type(row.get("id")) is not int or row["id"] <= 0 for row in entries):
+                raise ReportAcquisitionUnavailable()
+            for row in entries:
+                if row["id"] in seen_ids or row.get("action") != action:
+                    raise ReportAcquisitionUnavailable()
+                seen_ids.add(row["id"])
+            rows.extend(entries)
+            if next_cursor is None:
+                return rows
+            if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors or not entries:
+                raise ReportAcquisitionUnavailable()
+            anchor = _decode_cursor(next_cursor)
+            if not any((row.get("timestamp"), row["id"]) == anchor for row in entries):
+                raise ReportAcquisitionUnavailable()
+            if cursor is not None and anchor >= _decode_cursor(cursor):
+                raise ReportAcquisitionUnavailable()
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+    except ReportAcquisitionUnavailable:
+        raise
+    except Exception as exc:
+        raise ReportAcquisitionUnavailable() from exc
 
 
-def _fetch_agent_roles(client: OpcClient, org: str) -> dict[str, str]:
-    """Fetch agent→role map from the authoritative /agents read surface.
-
-    Returns empty dict when /agents is unavailable — the caller must
-    report this as unavailable rather than falling back to agent names."""
-    role_map: dict[str, str] = {}
-    r = client.get(f"/api/v1/orgs/{org}/agents")
-    if not _ok(r):
-        print("warning: could not fetch agent roles from /agents;"
-              " role analysis will be unavailable", file=sys.stderr)
-        return role_map
-    agents = r.json().get("agents", [])
-    for agent in agents:
-        name = agent.get("name")
-        role = agent.get("role")
-        if name and role:
-            role_map[name] = role
-    return role_map
-
-
-def cmd_memory_report(args: argparse.Namespace) -> None:
-    """THR-091 Slice 2: operator-facing memory telemetry report.
-
-    Reads the org's audit_log to compute activation/retrieval telemetry
-    from memory_digest_impression, memory_read, and memory_search rows.
-    Uses cursor pagination (not fixed first-page caps).  Agent roles
-    are fetched from the authoritative /agents read surface.
-    Outputs in JSON or human-readable form.
-    """
-    client = _learning_client()
-    org = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
-
-    # Fetch agent roles from authoritative /agents surface
-    role_map = _fetch_agent_roles(client, org)
-
-    # Collect digest impressions (cursor-paginated)
-    impression_rows = _paginate(client, org, "memory_digest_impression")
-
-    # Collect memory_read events (cursor-paginated)
-    read_rows = _paginate(client, org, "memory_read")
-
-    # Collect memory_search events (cursor-paginated)
-    search_rows = _paginate(client, org, "memory_search")
-
-    # Compute telemetry client-side (mirrors compute_memory_telemetry_report)
-    report = _compute_report(impression_rows, read_rows, search_rows,
-                             agent_role_map=role_map if role_map else None)
-
-    if args.json:
-        print(json.dumps(report, indent=2))
-        return
-
-    # Human-readable output
-    _print_report(report)
+def _fetch_agent_roles(client: OpcClient, org: str) -> dict[str, str] | None:
+    """Unavailable roles remain unknown; never infer a role from a name."""
+    try:
+        response = client.get(f"/api/v1/orgs/{org}/agents")
+        if response.status_code != 200:
+            return None
+        body = response.json()
+        if not isinstance(body, dict) or not isinstance(body.get("agents"), list):
+            return None
+        roles = {}
+        for agent in body["agents"]:
+            if not isinstance(agent, dict) or not isinstance(agent.get("name"), str) or not agent["name"] or not isinstance(agent.get("role"), str) or not agent["role"] or agent["name"] in roles:
+                return None
+            roles[agent["name"]] = agent["role"]
+        return roles
+    except Exception:
+        return None
 
 
-def _compute_report(
-    impression_rows: list[dict],
-    read_rows: list[dict],
-    search_rows: list[dict],
-    agent_role_map: dict[str, str] | None = None,
-    current_time: "datetime | None" = None,
-) -> dict:
-    """Client-side telemetry computation from audit rows.
-
-    Args:
-        current_time: UTC datetime for time-based threshold evaluation.
-            When None (production), uses datetime.now(timezone.utc).
-    """
-    from datetime import datetime, timezone
-
-    def fail_closed(report: dict) -> dict:
-        """Keep current diagnostic arithmetic observation-only (TASK-7767)."""
-        reason = (
-            "Current telemetry epoch is unversioned and invalid; collection has "
-            "not started. Independent transport and deployed-canary health "
-            "evidence are required before tuning can be evaluated."
-        )
-        observation = dict(report.get("observation_period", {}))
-        observation.update({
-            "status": "insufficient_instrumentation",
-            "reason": reason,
-            "thresholds_met": False,
-            "days_met": False,
-            "sessions_met": False,
-            "diagnostics_valid_for_collection": False,
-            "diagnostic_note": "Counts and elapsed time are observation-only.",
-            "trigger": "Canary-gated collection has NOT started.",
-        })
-        report["observation_period"] = observation
-        report["decision"] = "insufficient_instrumentation"
-        report["decision_detail"] = reason
-        return report
-
-    def valid_rows(rows: list[dict], *, event: str) -> bool:
-        """Reject malformed diagnostic inputs before they reach set arithmetic."""
+def _report_projection(streams: dict, cutoff) -> str:
+    """Compare relevant audit identities/content; invalid times stay relevant."""
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    relevant = {}
+    for action, rows in streams.items():
+        kept = []
         for row in rows:
-            if not isinstance(row, dict):
-                return False
-            payload = row.get("payload", {})
+            try:
+                if aware_utc(row.get("timestamp")) >= cutoff:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                pass
+            payload = row.get("payload")
             if isinstance(payload, str):
                 try:
                     payload = json.loads(payload)
                 except (TypeError, ValueError):
-                    return False
-            if not isinstance(payload, dict):
-                return False
-            timestamp = row.get("timestamp")
-            if not isinstance(timestamp, str):
-                return False
-            try:
-                parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            except ValueError:
-                return False
-            if parsed.tzinfo is None:
-                return False
-            if event == "impression":
-                if not isinstance(payload.get("session_id"), str):
-                    return False
-                if not isinstance(payload.get("agent", row.get("agent", "")), str):
-                    return False
-                if not isinstance(row.get("task_id", ""), str):
-                    return False
-                digest_ids = payload.get("digest_ids")
-                if not isinstance(digest_ids, list) or not all(isinstance(mid, str) for mid in digest_ids):
-                    return False
-            elif event == "read":
-                if not all(isinstance(payload.get(key), str)
-                           for key in ("id", "source", "session_id", "task_id")):
-                    return False
-                if not isinstance(row.get("agent"), str) or not isinstance(row.get("task_id"), str):
-                    return False
-                payload_agent = payload.get("agent", row["agent"])
-                if not isinstance(payload_agent, str):
-                    return False
-            else:
-                if not all(isinstance(payload.get(key), str) for key in ("session_id", "task_id")):
-                    return False
-                if not isinstance(row.get("agent"), str) or not isinstance(row.get("task_id"), str):
-                    return False
-                memory_ids = payload.get("memory_ids")
-                if not isinstance(memory_ids, list) or not all(isinstance(mid, str) for mid in memory_ids):
-                    return False
-                if any(not isinstance(payload.get(key), int) or isinstance(payload.get(key), bool)
-                       for key in ("hit_count", "kb_hit_count")):
-                    return False
-        return True
+                    pass
+            kept.append({key: row.get(key) for key in ("id", "timestamp", "agent", "task_id", "action")} | {"payload": payload})
+        relevant[action] = sorted(kept, key=lambda row: row["id"])
+    return json.dumps(relevant, sort_keys=True)  # reducer rejects structurally nonfinite payloads
 
-    if current_time is None:
-        current_time = datetime.now(timezone.utc)
 
-    if (not valid_rows(impression_rows, event="impression")
-            or not valid_rows(read_rows, event="read")
-            or not valid_rows(search_rows, event="search")):
-        return fail_closed({"observation_period": {}, "aggregate": {}, "by_role": {}, "decision": "insufficient_sample"})
+def cmd_memory_report(args: argparse.Namespace) -> None:
+    """Observe a stable full four-stream acquisition at one aware UTC cutoff."""
+    from datetime import datetime, timezone
+    from runtime.infrastructure.memory_telemetry_report import ACTIONS, ReportAcquisitionUnavailable
 
-    if not impression_rows:
-        return fail_closed({
-            "observation_period": {
-                "status": "insufficient_sample",
-                "reason": "No memory_digest_impression rows found —"
-                          " observation has not started.",
-                "trigger": "First production memory_digest_impression row"
-                           " emitted by the deployed revision.",
-            },
-            "aggregate": {},
-            "by_role": {},
-            "decision": "insufficient_sample",
-        })
-
-    # Parse impressions
-    impressions: list[dict] = []
-    for row in impression_rows:
-        payload = row.get("payload", {})
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except Exception:
-                continue
-        session_id = payload.get("session_id")
-        digest_ids = payload.get("digest_ids", [])
-        agent = payload.get("agent", row.get("agent", ""))
-        task_id = row.get("task_id", "")
-        if session_id and digest_ids:
-            impressions.append({
-                "session_id": session_id,
-                "digest_ids": digest_ids,
-                "agent": agent,
-                "task_id": task_id,
-                "timestamp": row.get("timestamp", ""),
-            })
-
-    if not impressions:
-        return fail_closed({
-            "observation_period": {
-                "status": "insufficient_sample",
-                "reason": "No non-empty correlated digest impressions found.",
-                "trigger": "First production memory_digest_impression row"
-                           " emitted by the deployed revision.",
-            },
-            "aggregate": {},
-            "by_role": {},
-            "decision": "insufficient_sample",
-        })
-
-    # Observation period
-    first_ts_str = impressions[0]["timestamp"]
+    cutoff = datetime.now(timezone.utc)
     try:
-        first_ts = datetime.fromisoformat(first_ts_str.replace("Z", "+00:00"))
-    except Exception:
-        first_ts = datetime.now(timezone.utc)
-    days_elapsed = (current_time - first_ts).days
-
-    all_sessions: set[str] = set()
-    per_agent_sessions: dict[str, set[str]] = {}
-    agent_roles: dict[str, str] = {}
-    for imp in impressions:
-        sid = imp["session_id"]
-        all_sessions.add(sid)
-        agent = imp["agent"]
-        if agent not in per_agent_sessions:
-            per_agent_sessions[agent] = set()
-        per_agent_sessions[agent].add(sid)
-        if agent_role_map is not None and agent not in agent_roles:
-            role = agent_role_map.get(agent)
-            if role is not None:
-                agent_roles[agent] = role
-
-    total_sessions = len(all_sessions)
-    met_days = days_elapsed >= 14
-    met_sessions = total_sessions >= 500
-
-    observation = {
-        "trigger": "First production memory_digest_impression row emitted"
-                   " by the deployed revision.",
-        "first_impression_at": first_ts_str,
-        "days_elapsed": days_elapsed,
-        "required_days": 14,
-        "total_correlated_sessions": total_sessions,
-        "required_sessions": 500,
-        "thresholds_met": met_days and met_sessions,
-        "days_met": met_days,
-        "sessions_met": met_sessions,
-    }
-
-    if not (met_days and met_sessions):
-        return fail_closed({
-            "observation_period": {
-                **observation,
-                "status": "insufficient_sample",
-                "reason": (
-                    f"Need 14 days (have {days_elapsed}) AND"
-                    f" 500 sessions (have {total_sessions})."
-                ),
-            },
-            "aggregate": {},
-            "by_role": {},
-            "decision": "insufficient_sample",
-        })
-
-    # Session digest maps.
-    # Build validated (agent, task_id, session_id) tuples from trusted
-    # impressions so reads can be verified against them.
-    session_digest_ids: dict[str, set[str]] = {}
-    session_agent: dict[str, str] = {}
-    validated_impression_tuples: dict[str, tuple[str, str]] = {}  # sid→(agent, task_id)
-    for imp in impressions:
-        sid = imp["session_id"]
-        session_digest_ids[sid] = set(imp["digest_ids"])
-        session_agent[sid] = imp["agent"]
-        imp_task_id = imp.get("task_id", "")
-        if imp_task_id:
-            validated_impression_tuples[sid] = (imp["agent"], imp_task_id)
-
-    # Parse reads — only include tuple-verified reads (matching the
-    # impression's agent+task_id+session_id) in tracked attribution.
-    # Legacy/untrusted/mismatched reads are excluded from denominators.
-    session_read_ids: dict[str, set[str]] = {}
-    untrusted_reads: list[dict] = []
-    digest_reads: list[dict] = []
-    search_reads: list[dict] = []
-    explicit_reads: list[dict] = []
-    for row in read_rows:
-        payload = row.get("payload", {})
-        if isinstance(payload, str):
-            try:
-                payload = json.loads(payload)
-            except Exception:
-                continue
-        mid = payload.get("id")
-        source = payload.get("source", "explicit_or_other")
-        rsid = payload.get("session_id")
-        rtask_id = payload.get("task_id")
-        # Verify tuple: read's (agent, task_id, session_id) must match
-        # the impression's validated tuple.
-        if rsid and rtask_id:
-            validated_tuple = validated_impression_tuples.get(rsid)
-            if validated_tuple is not None:
-                imp_agent, imp_task_id = validated_tuple
-                row_agent = payload.get("agent", row.get("agent", ""))
-                if row_agent == imp_agent and rtask_id == imp_task_id:
-                    if rsid not in session_read_ids:
-                        session_read_ids[rsid] = set()
-                    session_read_ids[rsid].add(mid)
-                    entry = {"id": mid, "source": source,
-                             "session_id": rsid, "task_id": rtask_id,
-                             "agent": row_agent}
-                    if source == "digest":
-                        digest_reads.append(entry)
-                    elif source == "search":
-                        search_reads.append(entry)
-                    else:
-                        explicit_reads.append(entry)
-                    continue
-            # Tuple mismatch or unknown session — treat as untrusted
-            untrusted_reads.append({"id": mid, "source": source,
-                                   "session_id": rsid, "task_id": rtask_id})
-        else:
-            untrusted_reads.append({"id": mid, "source": source, "session_id": rsid})
-
-    # Aggregate pull-through — per-session denominators (not globally unioned).
-    # Each session's unique shown IDs and unique read-in-session IDs are summed
-    # across all sessions.  A MEM-001 shown in 2 sessions counts as 2 in the
-    # denominator.
-    total_shown = 0
-    total_read_in_session = 0
-    for sid, d_ids in session_digest_ids.items():
-        shown = len(d_ids)
-        reads = session_read_ids.get(sid, set())
-        read_in_this_session = len(reads & d_ids)
-        total_shown += shown
-        total_read_in_session += read_in_this_session
-
-    agg_pull_through = (
-        total_read_in_session / total_shown
-        if total_shown else 0.0
-    )
-
-    # Search reads absent from session digest.
-    # Only correlated read rows (have both session_id and task_id) are
-    # evaluated.  Legacy/untrusted/unmatched rows are excluded rather than
-    # treated as search misses.
-    search_total = len(search_reads)
-    search_absent_count = 0
-    for sr in search_reads:
-        sid = sr.get("session_id")
-        if sid and sid in session_digest_ids:
-            if sr["id"] not in session_digest_ids[sid]:
-                search_absent_count += 1
-        # No else — untrusted rows excluded, not counted as absent
-
-    search_absent_frac = (
-        search_absent_count / search_total if search_total > 0 else 0.0
-    )
-
-    # Per-role.
-    # Only agents with an authoritative role from agent_role_map are included
-    # in role-level decisions.  Agents without a known role are excluded.
-    roles_unavailable = agent_role_map is None
-    role_data: dict[str, dict] = {}
-    unknown_agents: list[str] = []
-    for agent, sessions in per_agent_sessions.items():
-        role = agent_roles.get(agent)
-        if role is None:
-            unknown_agents.append(agent)
-            continue
-        if role not in role_data:
-            role_data[role] = {"agents": [], "sessions": set()}
-        role_data[role]["agents"].append(agent)
-        role_data[role]["sessions"] |= sessions
-
-    by_role: dict[str, dict] = {}
-    eligible_roles: list[str] = []
-    for role, data in role_data.items():
-        role_sessions = data["sessions"]
-        role_session_count = len(role_sessions)
-        if role_session_count < 30:
-            by_role[role] = {
-                "correlated_sessions": role_session_count,
-                "eligible": False,
-                "reason": f"Need >=30 sessions (have {role_session_count})",
-            }
-            continue
-        eligible_roles.append(role)
-
-        # Per-session denominators (not globally unioned) for role pull-through
-        role_total_shown = 0
-        role_total_read_in_session = 0
-        for sid in role_sessions:
-            if sid in session_digest_ids:
-                role_total_shown += len(session_digest_ids[sid])
-                reads = session_read_ids.get(sid, set())
-                role_total_read_in_session += len(
-                    reads & session_digest_ids[sid]
-                )
-
-        role_pull_through = (
-            role_total_read_in_session / role_total_shown
-            if role_total_shown else 0.0
+        client = OpcClient.from_env()
+        org = args.org
+        if not org:
+            response = client.get("/api/v1/orgs")
+            if response.status_code != 200:
+                raise ReportAcquisitionUnavailable()
+            body = response.json()
+            org = resolve_org_slug(args_org=None, available=[o["slug"] for o in body["orgs"]])
+        sweeps, role_maps = [], []
+        for _ in range(2):
+            sweeps.append({action: _paginate(client, org, action) for action in ACTIONS})
+            role_maps.append(_fetch_agent_roles(client, org))
+        if (_report_projection(sweeps[0], cutoff) != _report_projection(sweeps[1], cutoff)
+                or role_maps[0] != role_maps[1]):
+            raise ReportAcquisitionUnavailable()
+        streams = sweeps[1]
+        report = _compute_report(
+            streams["memory_digest_impression"], streams["memory_read"], streams["memory_search"],
+            role_maps[1], cutoff, session_start_rows=streams["session_start"],
         )
-
-        role_search_total = 0
-        role_search_absent = 0
-        for sr in search_reads:
-            sid = sr.get("session_id")
-            if sid and sid in role_sessions:
-                role_search_total += 1
-                if sid in session_digest_ids:
-                    if sr["id"] not in session_digest_ids[sid]:
-                        role_search_absent += 1
-                # No else — untrusted rows excluded
-
-        role_search_absent_frac = (
-            role_search_absent / role_search_total
-            if role_search_total > 0 else 0.0
-        )
-
-        by_role[role] = {
-            "correlated_sessions": role_session_count,
-            "eligible": True,
-            "digest_pull_through": round(role_pull_through, 4),
-            "unique_digest_ids_shown": role_total_shown,
-            "unique_digest_ids_read_same_session": role_total_read_in_session,
-            "search_sourced_reads": role_search_total,
-            "search_sourced_absent_from_digest": role_search_absent,
-            "search_absent_fraction": round(role_search_absent_frac, 4),
-            "search_threshold_met": role_search_total >= 30,
-        }
-
-    # Decision
-    decision: str
-    decision_detail: str
-
-    if agg_pull_through < 0.10:
-        eligible_below_10 = sum(
-            1 for r in eligible_roles
-            if by_role[r]["digest_pull_through"] < 0.10
-        )
-        if eligible_roles and eligible_below_10 > len(eligible_roles) / 2:
-            decision = "activation_loss"
-            decision_detail = (
-                "Aggregate pointer-level same-session pull-through"
-                f" ({agg_pull_through:.2%}) < 10% AND majority of eligible"
-                f" roles ({eligible_below_10}/{len(eligible_roles)}) < 10%."
-                " Next step: provenance/push tuning only, no aliases/embeddings."
-            )
-        elif not eligible_roles:
-            decision = "no_demonstrated_problem"
-            decision_detail = (
-                f"Aggregate pull-through ({agg_pull_through:.2%}) < 10%"
-                " but no eligible roles to confirm (role analysis"
-                " unavailable). Do not tune ranking/push."
-            )
-        else:
-            decision = "no_demonstrated_problem"
-            decision_detail = (
-                f"Aggregate pull-through ({agg_pull_through:.2%}) < 10%"
-                " but majority of eligible roles are NOT <10%."
-                " Contradictory role visibility preserved."
-            )
-    elif search_absent_frac > 0.25:
-        retrieval_roles = [
-            r for r in eligible_roles
-            if by_role[r].get("search_threshold_met")
-            and by_role[r]["search_absent_fraction"] > 0.25
-        ]
-        if retrieval_roles:
-            decision = "retrieval_loss"
-            decision_detail = (
-                "Search reads of IDs absent from digest >25% in"
-                f" aggregate ({search_absent_frac:.2%}) AND in eligible"
-                f" role(s): {retrieval_roles}."
-                " Next step: alias/synonym-tag evaluation first."
-                " Embeddings remain founder-gated."
-            )
-        else:
-            decision = "no_demonstrated_problem"
-            decision_detail = (
-                "Search absent fraction >25% aggregate"
-                f" ({search_absent_frac:.2%}) but no eligible role"
-                " with >=30 search reads exceeds 25%."
-            )
+        rendered = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) if args.json else None
+    except Exception as exc:
+        # Never leak a partial report or provider/decoder exception text.
+        print(ReportAcquisitionUnavailable.category, file=sys.stderr)
+        raise SystemExit(1) from exc
+    if args.json:
+        print(rendered)
     else:
-        decision = "no_demonstrated_problem"
-        decision_detail = (
-            "Aggregate pull-through >=10% and search absent"
-            " fraction <=25%. No demonstrated problem."
-        )
+        _print_report(report)
 
-    result: dict = {
-        "observation_period": {**observation, "status": "thresholds_met"},
-        "aggregate": {
-            "correlated_sessions": total_sessions,
-            "unique_digest_ids_shown": total_shown,
-            "unique_digest_ids_read_same_session": total_read_in_session,
-            "digest_pull_through": round(agg_pull_through, 4),
-            "search_sourced_reads": search_total,
-            "search_sourced_absent_from_digest": search_absent_count,
-            "search_absent_fraction": round(search_absent_frac, 4),
-            "digest_sourced_reads": len(digest_reads),
-            "explicit_or_other_sourced_reads": len(explicit_reads),
-            "untrusted_uncorrelated_reads": len(untrusted_reads),
-        },
-        "by_role": by_role,
-        "decision": decision,
-        "decision_detail": decision_detail,
-    }
-    if roles_unavailable:
-        result["roles_warning"] = (
-            "Authoritative agent roles unavailable — /agents surface"
-            " could not be read. Per-role analysis excluded."
-        )
-    elif unknown_agents:
-        result["roles_warning"] = (
-            f"{len(unknown_agents)} agent(s) have unknown roles"
-            f" and are excluded from role decisions: {unknown_agents}"
-        )
-    return fail_closed(result)
+
+def _compute_report(
+    impression_rows: list[dict], read_rows: list[dict], search_rows: list[dict],
+    agent_role_map: dict[str, str] | None = None, current_time: "datetime | None" = None,
+    *, session_start_rows: list[dict] | None = None,
+) -> dict:
+    """Compatibility wrapper around the same pure reducer as AuditLogger."""
+    from runtime.infrastructure.memory_telemetry_report import reduce_report
+    return reduce_report(impression_rows, read_rows, search_rows, agent_role_map, current_time,
+                         session_start_rows=session_start_rows)
 
 
 def _print_report(report: dict) -> None:
-    """Print human-readable telemetry report."""
+    """Show descriptive evidence even while collection stays closed."""
     obs = report.get("observation_period", {})
-    print("=== THR-091 Memory Layer Slice 2 Telemetry Report ===")
-    print()
-    print("OBSERVATION PERIOD")
-    print(f"  Status:        {obs.get('status', 'unknown')}")
-    print(f"  Trigger:       {obs.get('trigger', 'N/A')}")
-    print(f"  First event:   {obs.get('first_impression_at', 'N/A')}")
-    print(f"  Days elapsed:  {obs.get('days_elapsed', 0)} / {obs.get('required_days', 14)}")
-    print(f"  Sessions:      {obs.get('total_correlated_sessions', 0)} / {obs.get('required_sessions', 500)}")
-    print(f"  Thresholds:    {'MET' if obs.get('thresholds_met') else 'NOT MET'}")
-    print()
-
-    if obs.get("status") != "thresholds_met":
-        print(f"DECISION: {report.get('decision', 'unknown')}")
-        print(f"  {obs.get('reason', '')}")
-        return
-
-    agg = report.get("aggregate", {})
-    print("AGGREGATE")
-    print(f"  Correlated digest sessions:     {agg.get('correlated_sessions', 0)}")
-    print(f"  Unique digest IDs shown:        {agg.get('unique_digest_ids_shown', 0)}")
-    print(f"  Same-session reads:             {agg.get('unique_digest_ids_read_same_session', 0)}")
-    print(f"  Digest pull-through:            {agg.get('digest_pull_through', 0):.2%}")
-    print(f"  Search-sourced reads:           {agg.get('search_sourced_reads', 0)}")
-    print(f"  Search absent from digest:      {agg.get('search_sourced_absent_from_digest', 0)}")
-    print(f"  Search absent fraction:         {agg.get('search_absent_fraction', 0):.2%}")
-    print(f"  Digest-sourced reads:           {agg.get('digest_sourced_reads', 0)}")
-    print(f"  Explicit/other reads:           {agg.get('explicit_or_other_sourced_reads', 0)}")
-    print()
-
-    by_role = report.get("by_role", {})
-    if by_role:
-        print("BY ROLE")
-        for role, data in sorted(by_role.items()):
-            eligible = data.get("eligible", False)
-            marker = "" if eligible else " (INELIGIBLE)"
-            print(f"  [{role}]{marker}")
-            print(f"    Sessions:       {data.get('correlated_sessions', 0)}")
-            if eligible:
-                print(f"    Pull-through:   {data.get('digest_pull_through', 0):.2%}")
-                print(f"    Search absent:  {data.get('search_absent_fraction', 0):.2%}")
-            else:
-                print(f"    Reason:         {data.get('reason', 'N/A')}")
-            print()
-
-    roles_warning = report.get("roles_warning")
-    if roles_warning:
-        print()
-        print(f"ROLES WARNING: {roles_warning}")
-    print()
+    print("=== THR-091 Memory Telemetry Report (observation-only) ===")
+    print(f"Status: {obs.get('status', 'unknown')}")
+    print("Canary-gated collection has NOT started; epoch is unversioned and invalid.")
+    print(f"Data through: {report.get('data_through')}; timezone UTC")
+    print(f"First event: {obs.get('first_impression_at')}")
+    print(f"Days elapsed: {obs.get('days_elapsed', 0)} / {obs.get('required_days', 14)}")
+    print(f"Sessions: {obs.get('total_correlated_sessions', 0)} / {obs.get('required_sessions', 500)}")
+    print("Thresholds:    NOT MET")
+    print("Population: audited intended task-session invocations; complete launch census UNKNOWN")
+    for label, rows in (("AGGREGATE", {"all": report.get("aggregate", {})}),
+                        ("BY AGENT", report.get("by_agent", {})), ("BY ROLE", report.get("by_role", {}))):
+        print(label)
+        for name, data in sorted(rows.items()):
+            print(f"  [{name}]")
+            for key, value in sorted(data.items()):
+                print(f"    {key}: {'unknown' if value is None else value}")
+    for label in ("read_counts", "excluded", "diagnostic_errors", "instrumentation_health"):
+        print(f"{label}: {json.dumps(report.get(label, {}), sort_keys=True, allow_nan=False)}")
     print(f"DECISION: {report.get('decision', 'unknown')}")
-    print(f"  {report.get('decision_detail', '')}")
+    print(report.get("decision_detail", ""))
 
 
 def _deprecation_wrapper(func):

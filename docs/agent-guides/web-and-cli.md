@@ -715,7 +715,7 @@ Stored seals checkpoint counters only: `census_integrity` explicitly reports
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
 G1 independent canary/epoch acceptance, current-serving census acquisition,
-G4 consistent acquisition and full reporting/installed health remain OPEN.
+Read-side G4 acquisition is implemented below; full eligibility reporting and installed health remain OPEN.
 
 `happyranch memory report` paginates the existing audit read surface but is
 currently fail-closed: JSON and text both return `insufficient_instrumentation`.
@@ -730,12 +730,44 @@ execution forwards resolved invocation IDs; generated, unregistered IDs remain
 uncredited. Provider resume IDs are never used for this purpose.
 The report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
-Its cursor pages are exhausted before report calculation; malformed diagnostic
-rows fail closed, with text never presenting the observation thresholds as met.
-The current backend and command use report-local validation, so this guard does
-not assert unchanged shared-helper parity for observation-only malformed
-read/search diagnostics or a full controlled-clock whole-report matrix. Those
-remain frozen obligations of versioned reporting rather than passed guard work.
+The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
+They acquire `session_start`, impressions, reads and searches before any empty or
+short return. Backend acquisition uses one synchronized SELECT statement snapshot;
+CLI exhausts real `/audit` pages at limit5000 in two complete sweeps and compares
+relevant audit identities/content and `/agents` roles at one aware UTC cutoff.
+Events at or after that cutoff are excluded. Backdated/content/role drift,
+cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
+`acquisition_unavailable`; CLI writes only that category to stderr and exits1,
+with no partial JSON. Unavailable `/agents` stays explicitly unknown and allows
+safe descriptive counts; it never supplies functional cohort authority.
+
+Structural returned-data corruption produces the full empty-metrics error object
+(null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
+errors). Task-only sources are `digest`, `search`, `explicit_or_other`; unsupported
+strings use `invalid_source`, nonstrings `malformed_read_source_type`, and causal
+or digest-first contradictions `source_contradiction`. Independently identified
+manual/thread/dream/recovery/legacy populations are excluded before task source
+validation. Runtime task credit requires the actual task/agent/runtime-session
+start tuple; prefixes, client claims and SID-only matching cannot establish it.
+
+Version1 observed pointer/full-body lists are validated, disjoint and duplicate
+free, with union matching digest IDs/count. Legacy impressions remain unversioned
+with unavailable mode metrics; no memory-file/body/directive inference occurs.
+Exact tuple+memory pairs deduplicate opportunities and reads; secondary activated
+sessions and per-agent/role/memory operation counts remain descriptive. Search
+ratios use distinct persisted, causally corroborated search-sourced read pairs.
+Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
+complete UTC days exclude partial first/current days. Raw day/session sample
+flags may be true; thresholds, diagnostics_valid_for_collection and
+evaluation_candidate remain false, decision `insufficient_instrumentation`.
+`session_start` records audited intended invocations, never a complete process
+launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
+current-serving census authority. Trusted canary/epoch, census and probe
+health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
+synthetic/natural eligibility claim, authority override or epoch start.
+The read-side snapshot/two-sweep contract detects observed drift; it adds no
+writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
+and actual shipping/installed canary cases remain separately gated.
 
 ### PR CI wait / guarded merge entrypoints
 

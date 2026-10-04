@@ -316,6 +316,16 @@ profile. No new profile lease is acquired beneath the adapter writer lock.
 U2B still wires no workflow
 admission, activation, or dispatch consumer; those remain later units.
 
+**Memory reporting core (THR-091).** Backend and CLI use one pure observation-only
+reducer, validate all four audit streams and consume only persisted version1
+exposure metadata. Backend uses one synchronized SELECT; CLI exhausts two sweeps
+of `/audit` at limit5000 and checks roles/content at a fixed UTC cutoff. Acquisition
+failures refuse as `acquisition_unavailable`, with no partial CLI stdout. G1 trusted
+epoch/canary and current-serving G3 census acceptance remain unavailable in
+this report; `session_start` denotes intended invocations. Raw day/session counts cannot enable
+collection, threshold readiness or tuning. See the memory sections in
+`features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
+
 ## Commands
 
 ```bash

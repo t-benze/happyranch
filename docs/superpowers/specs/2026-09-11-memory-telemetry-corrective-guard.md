@@ -10,8 +10,9 @@
 > Tuning-decision branch tests remain deferred to the independently reviewed
 > versioned implementation.
 
-> Narrowed guard boundary (TASK-7832): the backend and CLI retain separate
-> report-local validators. Observation-only malformed read/search diagnostic
+> Historical narrowed guard boundary (TASK-7832): that guard-only checkpoint
+> retained separate report-local validators. The reporting core below supersedes
+> that separation; the historical failed parity receipts remain FAILED. Observation-only malformed read/search diagnostic
 > parity and the remaining controlled-clock whole-report finite matrix are
 > versioned-reporting acceptance obligations, not assertions passed or closed
 > by this guard-only unit.
@@ -39,7 +40,7 @@ Claude/Codex root/child bootstrap, every read/search row tuple and scope, actual
 resume argv, and deterministic same-agent operation/end isolation. Codebuddy,
 additional contained/custom variants, forged-task nonoverride, thread/dream
 population and genuinely nonshown search follow-on remain OPEN manager-owned
-canary obligations. Collection, reporting, thresholds and tuning remain unshipped.
+canary obligations. Collection, full eligibility reporting, thresholds and tuning remain unshipped.
 
 The S04 ordinary source correction retires an invocation's existing SessionTracker
 binding at the final `executor.run` return/exception, after any internal 429
@@ -78,7 +79,7 @@ Task bootstrap retains text and item IDs from one actual `MemoryStore.render_mem
 
 After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 
-The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, current-serving G3 census acquisition/acceptance, G4 consistent acquisition, the whole-report matrix and installed health acceptance remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, current-serving G3 census acquisition/acceptance, The observation-only reporting core below supplies read-side G4 acquisition; full eligibility reporting, current-serving census acceptance and installed health remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
 
 The producer source tests use disposable provider-boundary stand-ins for Claude/Codex ROOT/CHILD, exact R11b/c prompt sizes, and shown-get/search/genuinely-nonshown-get. They do not establish installed canary, codebuddy/custom/contained host coverage or G1/G3/G4 acceptance. Independent review, behavioral QA, CI and merge remain delivery gates.
 
@@ -129,3 +130,44 @@ installed canary/deferred executor/population coverage and full reporting remain
 unimplemented here. Existing backend and canonical CLI guards remain
 `insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
 transition, deployment, tuning or 48-hour clock starts from this source unit.
+
+## Observation-only reporting core (TASK-9673 recovery / TASK-9559)
+
+The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
+They acquire `session_start`, impressions, reads and searches before any empty or
+short return. Backend acquisition uses one synchronized SELECT statement snapshot;
+CLI exhausts real `/audit` pages at limit5000 in two complete sweeps and compares
+relevant audit identities/content and `/agents` roles at one aware UTC cutoff.
+Events at or after that cutoff are excluded. Backdated/content/role drift,
+cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
+`acquisition_unavailable`; CLI writes only that category to stderr and exits1,
+with no partial JSON. Unavailable `/agents` stays explicitly unknown and allows
+safe descriptive counts; it never supplies functional cohort authority.
+
+Structural returned-data corruption produces the full empty-metrics error object
+(null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
+errors). Task-only sources are `digest`, `search`, `explicit_or_other`; unsupported
+strings use `invalid_source`, nonstrings `malformed_read_source_type`, and causal
+or digest-first contradictions `source_contradiction`. Independently identified
+manual/thread/dream/recovery/legacy populations are excluded before task source
+validation. Runtime task credit requires the actual task/agent/runtime-session
+start tuple; prefixes, client claims and SID-only matching cannot establish it.
+
+Version1 observed pointer/full-body lists are validated, disjoint and duplicate
+free, with union matching digest IDs/count. Legacy impressions remain unversioned
+with unavailable mode metrics; no memory-file/body/directive inference occurs.
+Exact tuple+memory pairs deduplicate opportunities and reads; secondary activated
+sessions and per-agent/role/memory operation counts remain descriptive. Search
+ratios use distinct persisted, causally corroborated search-sourced read pairs.
+Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
+complete UTC days exclude partial first/current days. Raw day/session sample
+flags may be true; thresholds, diagnostics_valid_for_collection and
+evaluation_candidate remain false, decision `insufficient_instrumentation`.
+`session_start` records audited intended invocations, never a complete process
+launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
+current-serving census authority. Trusted canary/epoch, census and probe
+health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
+synthetic/natural eligibility claim, authority override or epoch start.
+The read-side snapshot/two-sweep contract detects observed drift; it adds no
+writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
+and actual shipping/installed canary cases remain separately gated.
