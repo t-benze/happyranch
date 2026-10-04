@@ -30,21 +30,27 @@ SHUTDOWN_SECONDS = 30
 PYTEST_SECONDS = 2300
 MAX_DIAGNOSTIC_BYTES = 65536
 INPUT_BYTES = 8192
+_LOG_HEAD_BYTES = 4096
+_LOG_TAIL_BYTES = 4096
 SQL_SECONDS = 2
 PACKAGES = ("bash", "curl", "iproute2")
 _NODES = (
     ("test_two_orgs_run_tasks_concur", "two_orgs"),
+    ("test_mixed_fleet_roundtrip_use", "mixed_fleet"),
     ("test_acceptance_cross_process_", "diy_revoke"),
     ("test_real_diy_acceptance", "diy_acceptance"),
 )
-_STATUSES = {"pending", "running", "completed", "failed", "blocked", "cancelled"}
+_STATUSES = {"pending", "running", "completed", "failed", "blocked", "cancelled",
+             "in_progress", "escalated", "superseded"}
 _CATEGORIES = {
-    "agent invocation failed:": "agent_invocation_failed",
+    "does not have the canonical": "workspace_instruction_pair_refused",
+    "is not initialized (missing": "workspace_not_initialized",
     "WorkspaceNotInitialized": "workspace_not_initialized",
     "authority selector is uninitialized": "authority_selector_uninitialized",
     "SymlinkMaterializationError": "skill_materialization_failed",
     "executor not found": "executor_missing",
     "session_mismatch": "callback_session_mismatch",
+    "agent invocation failed:": "agent_invocation_failed",
 }
 
 
@@ -321,6 +327,57 @@ def _read_tasks(directory: Path, deadline: float, remaining: int) -> dict[str, o
     return result
 
 
+def _read_owned_log(directory: Path, deadline: float) -> dict[str, object]:
+    """Return only validated complete-line categories and byte omission facts."""
+    with _owned_file(directory, "daemon.log") as (_, fd):
+        size = os.fstat(fd).st_size
+
+        def read_interval(offset: int, length: int) -> bytes:
+            data = bytearray()
+            while len(data) < length:
+                if time.monotonic() >= deadline:
+                    raise ValueError("diagnostic_read_deadline")
+                chunk = os.pread(fd, length - len(data), offset + len(data))
+                if not chunk:
+                    raise ValueError("log_changed_or_short")
+                data.extend(chunk)
+            return bytes(data)
+
+        discarded = 0
+        if size <= INPUT_BYTES:
+            windows = [read_interval(0, size)]
+            read = size
+        else:
+            head = read_interval(0, _LOG_HEAD_BYTES)
+            tail = read_interval(size - _LOG_TAIL_BYTES, _LOG_TAIL_BYTES)
+            # Without an extra boundary probe, neither edge fragment is evidence.
+            head_end = head.rfind(b"\n") + 1
+            tail_start = tail.find(b"\n") + 1
+            if tail_start == 0:
+                tail_start = len(tail)
+            discarded = len(head) - head_end + tail_start
+            windows = [head[:head_end], tail[tail_start:]]
+            read = len(head) + len(tail)
+        events = []
+        recognized = 0
+        for window in windows:
+            for line in window.split(b"\n"):
+                category = _category(line.decode("utf-8", errors="replace"))
+                if category not in {"none", "omitted"}:
+                    recognized += 1
+                    if len(events) < 32:
+                        events.append(category)
+        omitted = size - read + discarded
+        facts = {"event_categories": events, "log_size_bytes": size,
+                 "log_read_bytes": read, "log_gap_bytes": size - read,
+                 "log_boundary_discarded_bytes": discarded,
+                 "log_scanned_bytes": read - discarded, "log_omitted_bytes": omitted,
+                 "log_truncated": omitted > 0, "log_text_omitted": True,
+                 "log_event_limit_reached": recognized > 32}
+    # _owned_file and its ancestry validate before any provisional fact escapes.
+    return facts
+
+
 def capture_diagnostics(basetemp: Path, *, deadline: float) -> dict[str, object]:
     receipt: dict[str, object] = {"nodes": [], "nodes_truncated": False,
                                  "cause": "unknown", "raw_text": "omitted"}
@@ -330,7 +387,8 @@ def capture_diagnostics(basetemp: Path, *, deadline: float) -> dict[str, object]
             names = sorted(os.listdir(base))
             selected = [(name, kind) for name in names for prefix, kind in _NODES
                         if re.fullmatch(re.escape(prefix) + r"[0-9]{1,4}", name)]
-            selected.sort(key=lambda entry: (entry[1] != "two_orgs", entry[0]))
+            selected.sort(key=lambda entry: (
+                ("two_orgs", "mixed_fleet", "diy_revoke", "diy_acceptance").index(entry[1]), entry[0]))
             receipt["nodes_truncated"] = len(selected) > 4
             for name, kind in selected[:4]:
                 if time.monotonic() >= deadline:
@@ -355,20 +413,11 @@ def capture_diagnostics(basetemp: Path, *, deadline: float) -> dict[str, object]
                                                         else "unsafe_or_unreadable")
                             orgs.append(facts)
                         node["orgs"] = orgs
-                        events: list[str] = []
                         try:
-                            with _owned_file(basetemp / name / ".happyranch", "daemon.log") as (_, fd):
-                                data = os.read(fd, INPUT_BYTES + 1)
-                                node["log_truncated"] = len(data) > INPUT_BYTES
-                                for line in data[:INPUT_BYTES].decode("utf-8", errors="replace").splitlines():
-                                    category = _category(line)
-                                    if category not in {"none", "omitted"} and len(events) < 32:
-                                        events.append(category)
-                                node["log_text_omitted"] = True
+                            node.update(_read_owned_log(basetemp / name / ".happyranch", deadline))
                         except (OSError, ValueError):
                             node["log_unavailable"] = True
-                            events = []
-                        node["event_categories"] = events
+                            node["event_categories"] = []
                 except (OSError, ValueError):
                     node = {"node": name, "unavailable": "unsafe_or_changed"}
                 nodes.append(node)
