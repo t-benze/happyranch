@@ -700,38 +700,54 @@ def test_r22b_actual_partial_acquisition_refuses(client_with_runtime, paged_data
     client, org = client_with_runtime
     db, _, counts = paged_dataset
     monkeypatch.setattr(org, "db", db)
-    # Both real HTTP page-limit venues are exercised: 250 raw route and 5000
-    # actual CLI. The 551 CLI venue is one page, so faults there are injected
-    # on the second sweep rather than pretending it has a second page.
+    # Raw audit consumer uses its public --limit250/all-pages boundary.
+    # Canonical memory-report below always requests5000: at551 the fault is
+    # second sweep; at5001 it is the second page, never a fake250 report page.
     page_counts, union = real_pages(client, action, 250)
     assert page_counts[0] == 250 and len(union) == sum(counts)
-    raw_first = client.get("/api/v1/orgs/alpha/audit", params={"action": action, "limit": 250})
-    assert raw_first.status_code == 200 and len(raw_first.json()["entries"]) == 250
-    raw_cursor = raw_first.json()["next_cursor"]
-    assert raw_cursor is not None
-    raw_requests = []
+    raw_opc = OpcClient("http://testserver", "fixture")
+    raw_opc._client.close()
+    raw_opc._client = client
+    raw_requests, raw_successes = [], []
     actual_get = client.get
     def raw_failure(path, **kwargs):
-        raw_requests.append(kwargs["params"].copy())
-        assert kwargs["params"]["limit"] == 250 and kwargs["params"]["cursor"] == raw_cursor
-        if fault == "timeout":
-            raise httpx.ReadTimeout("fixture")
-        if fault == "invalid-response":
-            return httpx.Response(200, text="invalid JSON")
-        return httpx.Response(fault, json={"detail": "fixture"})
+        params = kwargs.get("params") or {}
+        if path.endswith("/audit") and params.get("action") == action:
+            raw_requests.append(params.copy())
+            if len(raw_requests) == 2:
+                assert params["limit"] == 250
+                assert params["cursor"] == raw_successes[0]["next_cursor"]
+                if fault == "timeout":
+                    raise httpx.ReadTimeout("fixture")
+                if fault == "invalid-response":
+                    return httpx.Response(200, text="invalid JSON")
+                return httpx.Response(fault, json={"detail": "fixture"})
+            response = actual_get(path, **kwargs)
+            assert response.status_code == 200
+            raw_successes.append(response.json())
+            return response
+        return actual_get(path, **kwargs)
+    before = db._conn.total_changes
     with monkeypatch.context() as raw_patch:
         raw_patch.setattr(client, "get", raw_failure)
-        if fault == "timeout":
-            with pytest.raises(httpx.ReadTimeout):
-                client.get("/api/v1/orgs/alpha/audit", params={"action": action, "limit": 250, "cursor": raw_cursor})
+        raw_patch.setattr(OpcClient, "from_env", classmethod(lambda cls: raw_opc))
+        raw_args = build_parser().parse_args(["audit", "--org", "alpha", "--action", action,
+                                             "--all-pages", "--limit", "250", "--json"])
+        expected_exception = httpx.ReadTimeout if fault == "timeout" else ValueError if fault == "invalid-response" else SystemExit
+        with pytest.raises(expected_exception) as raw_exc:
+            raw_args.func(raw_args)
+        captured = capsys.readouterr()
+        if isinstance(fault, int):
+            assert raw_exc.value.code == 1
+            assert captured.out == f'Error ({fault}): {{"detail":"fixture"}}\n'
         else:
-            raw_second = client.get("/api/v1/orgs/alpha/audit", params={"action": action, "limit": 250, "cursor": raw_cursor})
-            if fault == "invalid-response":
-                with pytest.raises(ValueError):
-                    raw_second.json()
-            else:
-                assert raw_second.status_code == fault
-    assert len(raw_requests) == 1
+            assert captured.out == ""
+        assert captured.err == ""
+    assert len(raw_requests) == 2
+    assert "cursor" not in raw_requests[0]
+    assert len(raw_successes) == 1 and len(raw_successes[0]["entries"]) == 250
+    assert raw_successes[0]["next_cursor"] is not None
+    assert db._conn.total_changes == before
     opc = OpcClient("http://testserver", "fixture")
     opc._client.close()
     opc._client = client
@@ -784,7 +800,7 @@ def test_r23_cursor_schema_failures_are_bounded(client_with_runtime, paged_datas
     opc = OpcClient("http://testserver", "fixture")
     opc._client.close()
     opc._client = client
-    original, calls = opc.get, []
+    original, calls, injected = opc.get, [], []
     def broken(path, **kwargs):
         response = original(path, **kwargs)
         if path.endswith("/audit"):
@@ -806,16 +822,38 @@ def test_r23_cursor_schema_failures_are_bounded(client_with_runtime, paged_datas
                     body["next_cursor"] = _encode_cursor(oldest["timestamp"], oldest["id"])
                 else:
                     body["next_cursor"] = calls[1].get("cursor") or "not-a-cursor"
+            injected.append(copy.deepcopy(body))
             return httpx.Response(200, json=body)
         return response
     monkeypatch.setattr(opc, "get", broken)
     monkeypatch.setattr(OpcClient, "from_env", classmethod(lambda cls: opc))
+    # The real report-only paginator must refuse here, independently of the
+    # command's later two-sweep drift check. No partial list may be returned.
+    from cli.commands.learning import _paginate
+    expected_calls = {"repeat": 2, "cycle": 3, "malformed": 1, "entries": 1, "cursor-type": 1}[fault]
+    with pytest.raises(ReportAcquisitionUnavailable) as refusal:
+        _paginate(opc, "alpha", "session_start")
+    assert refusal.value.category == "acquisition_unavailable"
+    assert len(calls) == expected_calls
+    if fault in ("repeat", "cycle"):
+        assert len(injected[0]["entries"]) == 5000
+        assert injected[0]["next_cursor"] is not None
+        assert calls[1]["cursor"] == injected[0]["next_cursor"]
+        assert injected[-1]["next_cursor"] == calls[1]["cursor"]
+    elif fault == "entries":
+        assert injected[-1]["entries"] == {}
+    elif fault == "cursor-type":
+        assert injected[-1]["next_cursor"] == 42
+    else:
+        assert injected[-1]["next_cursor"] == "not-a-cursor"
+    calls.clear()
+    injected.clear()
     args = build_parser().parse_args(["memory", "report", "--org", "alpha", "--agent", "dev_agent", "--json"])
     with pytest.raises(SystemExit) as exc:
         args.func(args)
     captured = capsys.readouterr()
     assert exc.value.code == 1 and captured.out == "" and captured.err == "acquisition_unavailable\n"
-    assert len(calls) <= 3
+    assert len(calls) == expected_calls
 
 
 def test_r24_backend_select_failure_is_typed(tmp_path, monkeypatch):

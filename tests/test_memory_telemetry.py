@@ -1207,6 +1207,21 @@ def test_report_uses_agent_roles_for_grouping(db):
     obs = report["observation_period"]
     assert obs["total_correlated_sessions"] == 100
     assert obs["sessions_met"] is False  # 100 < 500
+    assert set(report["by_agent"]) == {"dev_agent", "qa_engineer"}
+    assert set(report["by_role"]) == {"developer", "qa"}
+    assert report["instrumentation_health"]["roles_available"] is True
+    for agent, role in {"dev_agent": "developer", "qa_engineer": "qa"}.items():
+        assert report["by_agent"][agent]["role"] == role
+        for metrics in (report["by_agent"][agent], report["by_role"][role]):
+            assert metrics["correlated_sessions"] == 50
+            assert metrics["pointer_opportunities"] == 50
+            assert metrics["read_operations"] == 0
+        assert report["by_agent"][agent]["eligible"] is False
+        assert report["by_role"][role]["retrieval_corroboration_eligible"] is False
+    assert obs["thresholds_met"] is False
+    assert obs["diagnostics_valid_for_collection"] is False
+    assert report["evaluation_candidate"] is False
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 def test_report_without_role_map_marks_unavailable(db):
@@ -1224,8 +1239,18 @@ def test_report_without_role_map_marks_unavailable(db):
     obs = report["observation_period"]
     assert obs["total_correlated_sessions"] == 50
     assert obs["sessions_met"] is False
-    # roles_warning appears only when thresholds_met, which they aren't here.
-    # The role mapping is None, so roles are effectively unavailable.
+    assert report["instrumentation_health"]["roles_available"] is False
+    assert set(report["by_agent"]) == {"dev_agent"}
+    assert report["by_agent"]["dev_agent"]["role"] is None
+    assert report["by_agent"]["dev_agent"]["correlated_sessions"] == 50
+    assert report["by_agent"]["dev_agent"]["pointer_opportunities"] == 50
+    assert report["by_agent"]["dev_agent"]["read_operations"] == 0
+    assert report["by_agent"]["dev_agent"]["eligible"] is False
+    assert report["by_role"] == {}
+    assert obs["thresholds_met"] is False
+    assert obs["diagnostics_valid_for_collection"] is False
+    assert report["evaluation_candidate"] is False
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 # ---------------------------------------------------------------------------
