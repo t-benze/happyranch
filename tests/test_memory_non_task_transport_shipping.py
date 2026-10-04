@@ -11,13 +11,17 @@ import importlib.metadata
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import textwrap
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Callable, Iterator
 
 import httpx
 import pytest
@@ -41,6 +45,9 @@ _PROVIDER = r'''
 import importlib.metadata, json, os, socket, subprocess, sys
 from pathlib import Path
 import cli, runtime
+# External-provider ownership evidence includes attempts refused at connect.
+with Path(sys.argv[0] + '.launches').open('a') as launches:
+    launches.write(json.dumps({'pid': os.getpid()}) + '\n')
 prompt = sys.stdin.read()
 plan = json.loads(Path(sys.argv[0] + '.json').read_text())
 conn = socket.create_connection(tuple(plan['address']), timeout=30)
@@ -84,6 +91,11 @@ class _Child:
         self.conn = conn
         conn.settimeout(20)
         self.wire = conn.makefile('rwb')
+        self.finished = False
+        self.completion = None
+        self.needs_callback = False
+
+    def enter(self) -> None:
         self.evidence = json.loads(self.wire.readline())
         candidate = Path(__file__).resolve().parents[1]
         assert self.evidence['python'] == sys.executable
@@ -91,8 +103,6 @@ class _Child:
                                             str(candidate / 'runtime/__init__.py')]
         assert self.evidence['package'] == importlib.metadata.version('happyranch')
         assert self.evidence['provider_id'] != self.evidence['hint']
-        self.finished = False
-        self.completion = None
 
     def command(self, args, *, env=None):
         self._send({'kind': 'cli', 'args': args, 'env': env or {}})
@@ -104,16 +114,34 @@ class _Child:
         self.wire.write((json.dumps(body) + '\n').encode())
         self.wire.flush()
 
-    def finish(self):
-        if not self.finished:
-            # Also settle an owned runner on an assertion failure, preventing
-            # its legitimate no-callback retry from leaving an unobserved child.
-            if self.completion is not None:
-                self.command(self.completion)
-            self._send({'kind': 'finish'})
+    def finish(self, *, abort: bool = False) -> None:
+        if self.finished:
+            return
+        error = None
+        try:
+            if not abort and not (self.needs_callback and self.completion is None):
+                # A failed callback must not be followed by a clean provider
+                # exit: that would legitimately launch an unobserved nudge.
+                if self.completion is not None:
+                    self.command(self.completion)
+                self._send({'kind': 'finish'})
+        except BaseException as exc:
+            error = exc
+        finally:
             self.finished = True
-            self.wire.close()
-            self.conn.close()
+            # Shutdown before closing the buffered wire also releases a peer
+            # blocked in readline, including partial handshake/broken I/O.
+            for release in (lambda: self.conn.shutdown(socket.SHUT_RDWR),
+                            self.wire.close, self.conn.close):
+                try:
+                    release()
+                except BaseException as exc:
+                    if error is None:
+                        error = exc
+                    else:
+                        error.add_note(f'owned socket cleanup: {exc!r}')
+        if error is not None:
+            raise error
 
 
 class _Venue:
@@ -124,18 +152,121 @@ class _Venue:
         self.children = []
         self.started = {}
         self.receipts = []
+        self.futures = []
+        self.runner_futures = set()
+        self.pool = ThreadPoolExecutor(max_workers=3)
+        self.server = self.server_thread = self.sock = None
+        self.runs_closed = self.closed = False
+
+    def submit(self, function: Callable[..., object], *args: object) -> Future:
+        future = self.pool.submit(function, *args)
+        self.futures.append(future)
+        if function is asyncio.run:
+            self.runner_futures.add(future)
+        return future
+
+    @contextmanager
+    def runners(self) -> Iterator[None]:
+        try:
+            yield
+        finally:
+            self.finish_runs(primary=sys.exception())
+
+    @staticmethod
+    def _finish_errors(errors: list[BaseException], primary: BaseException | None) -> None:
+        if errors:
+            if primary is not None:
+                for error in errors:
+                    primary.add_note(f'owned cleanup: {type(error).__name__}: {error}')
+            else:
+                first, *rest = errors
+                for error in rest:
+                    first.add_note(f'owned cleanup: {type(error).__name__}: {error}')
+                raise first
+
+    def finish_runs(self, primary: BaseException | None = None) -> None:
+        if self.runs_closed:
+            return
+        self.runs_closed = True
+        errors = []
+        for child in self.children:
+            try:
+                child.finish()
+            except BaseException as exc:
+                errors.append(exc)
+        # Close the private admission socket before joins. A submitted runner
+        # not yet accepted (or a legitimate retry) cannot leave a held child.
+        if self.listener is not None:
+            try:
+                self.listener.close()
+            except BaseException as exc:
+                errors.append(exc)
+        for future in self.futures:
+            try:
+                future.result(timeout=20)
+            except FutureTimeout as exc:
+                future.cancel()
+                errors.append(exc)
+            except BaseException as exc:
+                errors.append(exc)
+        self.pool.shutdown(wait=all(f.done() for f in self.futures), cancel_futures=True)
+        self._finish_errors(errors, primary)
+
+    def close(self, primary: BaseException | None = None) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        errors = []
+        try:
+            self.finish_runs(primary)
+        except BaseException as exc:
+            errors.append(exc)
+        # Every release is attempted even if a child/callback/join failed.
+        def stop_server() -> None:
+            if self.server is not None:
+                self.server.should_exit = True
+            if self.server_thread is not None and self.server_thread.ident is not None:
+                self.server_thread.join(timeout=5)
+                if self.server_thread.is_alive():
+                    self.server.force_exit = True
+                    self.server_thread.join(timeout=5)
+                assert not self.server_thread.is_alive(), 'owned server did not stop'
+        for release in (lambda: self.listener.close() if self.listener else None,
+                        stop_server,
+                        lambda: self.sock.close() if self.sock else None,
+                        lambda: asyncio.run(self.daemon.close_all())):
+            try:
+                release()
+            except BaseException as exc:
+                errors.append(exc)
+        self._finish_errors(errors, primary)
 
     def accept(self, future):
         # Socket connection is the entered barrier; no timing/sleep oracle.
         # If launch failed, surface its actual result rather than hiding it.
+        if future not in self.futures:
+            self.futures.append(future)
         try:
             conn, _ = self.listener.accept()
         except TimeoutError:
             if future.done():
                 raise AssertionError(f'provider did not launch: {future.result()}') from None
             raise
-        child = _Child(conn)
+        try:
+            child = _Child(conn)
+        except BaseException:
+            conn.close()
+            raise
+        child.needs_callback = future in self.runner_futures
         self.children.append(child)
+        try:
+            child.enter()
+        except BaseException as primary:
+            try:
+                child.finish(abort=True)
+            except BaseException as secondary:
+                primary.add_note(f'partial child cleanup: {secondary!r}')
+            raise
         return child
 
     def task(self, task):
@@ -271,32 +402,32 @@ def shipping_venue(test_settings, monkeypatch, tmp_path, request):
             'provenance: experiential\nscope: agent\nlifecycle: valid\nsalience: 50\n---\n\nshipping body\n')
     daemon = DaemonState.from_runtime(runtime, test_settings)
     org = daemon.orgs['alpha']
-    listener = socket.socket()
-    listener.bind(('127.0.0.1', 0))
-    listener.listen(4)
-    listener.settimeout(20)
-    provider = tmp_path / executor
-    provider.write_text('#!' + sys.executable + '\n' + textwrap.dedent(_PROVIDER))
-    provider.chmod(0o755)
-    Path(str(provider) + '.json').write_text(json.dumps({
-        'address': listener.getsockname(), 'executor': executor}))
-    set_binary(executor, str(provider))
-    sock = socket.socket()
-    sock.bind(('127.0.0.1', 0))
-    paths.port_file().write_text(str(sock.getsockname()[1]))
-    ready = threading.Event()
-
-    class ReadyServer(uvicorn.Server):
-        async def startup(self, sockets=None):
-            await super().startup(sockets=sockets)
-            ready.set()
-
-    server = ReadyServer(uvicorn.Config(create_app(daemon), lifespan='off', log_level='error'))
-    server_thread = threading.Thread(target=server.run, kwargs={'sockets': [sock]})
-    server_thread.start()
-    venue = _Venue(org, daemon, test_settings, listener,
-                   f'http://127.0.0.1:{sock.getsockname()[1]}/api/v1/orgs/alpha', executor)
+    venue = _Venue(org, daemon, test_settings, None, '', executor)
     try:
+        listener = venue.listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(4)
+        listener.settimeout(20)
+        provider = venue.provider = tmp_path / executor
+        provider.write_text('#!' + sys.executable + '\n' + textwrap.dedent(_PROVIDER))
+        provider.chmod(0o755)
+        Path(str(provider) + '.json').write_text(json.dumps({
+            'address': listener.getsockname(), 'executor': executor}))
+        set_binary(executor, str(provider))
+        sock = venue.sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        paths.port_file().write_text(str(sock.getsockname()[1]))
+        venue.url = f'http://127.0.0.1:{sock.getsockname()[1]}/api/v1/orgs/alpha'
+        ready = threading.Event()
+
+        class ReadyServer(uvicorn.Server):
+            async def startup(self, sockets=None):
+                await super().startup(sockets=sockets)
+                ready.set()
+
+        server = venue.server = ReadyServer(uvicorn.Config(create_app(daemon), lifespan='off', log_level='error'))
+        server_thread = venue.server_thread = threading.Thread(target=server.run, kwargs={'sockets': [sock]})
+        server_thread.start()
         assert ready.wait(10) and server.started
         print(json.dumps({'venue': 'ordinary/legacy source, host_supervisor=None for runners',
                           'detector': type(_actual_detector()).__name__,
@@ -304,14 +435,8 @@ def shipping_venue(test_settings, monkeypatch, tmp_path, request):
                           'python': [sys.executable, sys.version], 'cwd': str(Path.cwd())}))
         yield venue
     finally:
-        for child in venue.children:
-            child.finish()
-        listener.close()
-        server.should_exit = True
-        server_thread.join(timeout=5)
-        assert not server_thread.is_alive()
-        sock.close()
-        asyncio.run(daemon.close_all())
+        primary = sys.exception()
+        venue.close(primary=None if isinstance(primary, GeneratorExit) else primary)
 
 
 @pytest.mark.parametrize('shipping_venue', ('claude', 'codex'), indirect=True)
@@ -331,16 +456,13 @@ def test_task_non_task_attribution_overlap_and_population(shipping_venue, monkey
     b = 'TASK-SHIPPING-CHILD'
     org.db.insert_task(TaskRecord(id=b, parent_task_id=a, brief='shipping child B',
                                  team='engineering', assigned_agent='dev_agent', task_type='subtask'))
-    futures = []
     # Provider connections are entered/release barriers. Only owned children
     # are released on failure, before waiting for the executor worker threads.
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with v.runners():
         try:
-            fa = pool.submit(v.task, a)
-            futures.append(fa)
+            fa = v.submit(v.task, a)
             ca = v.accept(fa)
-            fb = pool.submit(v.task, b)
-            futures.append(fb)
+            fb = v.submit(v.task, b)
             cb = v.accept(fb)
             sa, sb = v.started[a], v.started[b]
             assert ca.evidence['hint'] == sa and cb.evidence['hint'] == sb and sa != sb
@@ -398,7 +520,7 @@ def test_task_non_task_attribution_overlap_and_population(shipping_venue, monkey
                             token = arrivals[0].invocation_token
                             pending = org.db.get_pending_invocation(token)
                             assert pending is not None and pending.started_at is None
-                            future = pool.submit(asyncio.run, run_invocation(
+                            future = v.submit(asyncio.run, run_invocation(
                                 org_state=org, invocation_token=token, settings=v.settings,
                                 host_supervisor=None))
                         else:
@@ -408,10 +530,9 @@ def test_task_non_task_attribution_overlap_and_population(shipping_venue, monkey
                                 local_date=('2026-10-04' if not poison else '2026-10-05'),
                                 scheduled_for=now, window_start=now-timedelta(hours=1), window_end=now))
                             assert org.db.get_dream(scope).status == DreamStatus.PENDING
-                            future = pool.submit(asyncio.run, run_dream(
+                            future = v.submit(asyncio.run, run_dream(
                                 org_state=org, dream_id=scope, settings=v.settings,
                                 host_supervisor=None))
-                        futures.append(future)
                         child = v.accept(future)
                         runtime_sid = child.evidence['hint']
                         payload_file = paths.daemon_home() / (name + '.json')
@@ -512,7 +633,89 @@ def test_task_non_task_attribution_overlap_and_population(shipping_venue, monkey
             print(json.dumps({'S05': v.executor, 'receipts': v.receipts,
                               'census': org.memory_collection.snapshot()}))
         finally:
-            for child in v.children:
-                child.finish()
-            for future in futures:
-                future.result(timeout=20)
+            v.finish_runs(primary=sys.exception())
+
+
+@pytest.mark.parametrize('executor', ('claude', 'codex'))
+@pytest.mark.parametrize('failure', ('callback', 'early_assert', 'early_unregistered_callback'))
+def test_owned_cleanup_preserves_primary_and_releases_siblings(
+    test_settings, monkeypatch, tmp_path: Path, executor: str, failure: str,
+) -> None:
+    """Real pending reply/CLI exit 1 plus a sibling AFTER the failing child.
+
+    Throwing into the actual yield fixture reproduces assertion unwinding;
+    closing it exercises teardown with the callback as the primary failure.
+    The early assertion also has a secondary callback failure, so merely
+    catching every teardown error cannot satisfy preservation of both errors.
+    """
+    primary = AssertionError('distinct early assertion before final callbacks')
+    with pytest.raises(AssertionError) as caught:
+        with contextmanager(shipping_venue.__wrapped__)(
+            test_settings, monkeypatch, tmp_path, SimpleNamespace(param=executor),
+        ) as v:
+            root = v.org.orchestrator.create_task('owned cleanup bootstrap')
+            root_future = v.submit(v.task, root)
+            v.accept(root_future)
+            scope = 'THR-owned-cleanup'
+            v.org.db.insert_thread(ThreadRecord(id=scope, subject='owned cleanup'))
+            v.org.db.add_thread_participant(scope, 'dev_agent', added_by='founder')
+            seq, arrivals = v.org.db.record_conversational_arrival(
+                thread_id=scope, speaker='founder', kind=ThreadMessageKind.MESSAGE,
+                body_markdown='owned cleanup', recipients=['dev_agent'])
+            token = arrivals[0].invocation_token
+            future = v.submit(asyncio.run, run_invocation(
+                org_state=v.org, invocation_token=token, settings=v.settings,
+                host_supervisor=None))
+            child = v.accept(future)
+            pending = v.org.db.get_invocation_any_status(token)
+            assert pending.status.value == 'pending' and pending.started_at is not None
+            assert pending.session_id == child.evidence['hint']
+            if failure != 'early_unregistered_callback':
+                child.completion = ['threads', 'reply', '--org', 'alpha', '--from-file',
+                                    str(tmp_path / 'nonexistent-callback.json')]
+            sibling = v.submit(v.task, v.org.orchestrator.create_task('held cleanup sibling'))
+            sibling_child = v.accept(sibling)
+            assert not sibling.done() and not future.done()
+            if failure.startswith('early_'):
+                # Exercise BOTH the ordinary test-finally path and the fixture
+                # finalizer. Secondary errors must annotate this exact object.
+                with v.runners():
+                    raise primary
+    observed = caught.value
+    if failure.startswith('early_'):
+        assert observed is primary
+        notes = getattr(primary, '__notes__', [])
+        if failure == 'early_assert':
+            assert any("'exit': 1" in note and 'nonexistent-callback.json' in note
+                       for note in notes), notes
+        else:
+            assert not notes, notes
+    else:
+        assert "'exit': 1" in str(observed)
+        assert 'nonexistent-callback.json' in str(observed)
+    print(json.dumps({'cleanup': failure, 'executor': executor,
+        'primary': str(observed), 'secondary': getattr(observed, '__notes__', [])}))
+    assert v.closed and v.runs_closed
+    assert len(v.children) == 3
+    launches = [json.loads(line)['pid'] for line in
+                Path(str(v.provider) + '.launches').read_text().splitlines()]
+    assert len(launches) == 3
+    assert set(launches) == {c.evidence['pid'] for c in v.children}  # no unseen retry
+    assert sibling_child.finished
+    assert all(c.finished and c.conn.fileno() == -1 and c.wire.closed for c in v.children)
+    assert v.listener.fileno() == -1 and v.sock.fileno() == -1
+    assert v.server.should_exit and not v.server_thread.is_alive()
+    assert all(f.done() for f in v.futures)
+    assert root_future.result()[0].success and sibling.result()[0].success
+    assert future.result() is None  # real runner returned after nonzero provider
+    assert not v.daemon.orgs
+    with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+        v.org.db.fetch_all_readonly('SELECT 1 AS must_be_closed')
+    # Idempotence must not retry the failed callback or reopen resources.
+    child.finish()
+    v.finish_runs()
+    v.close()
+    print(json.dumps({'cleanup_postconditions': failure, 'executor': executor,
+        'children': len(v.children), 'settled_futures': len(v.futures),
+        'listener_closed': v.listener.fileno() == -1,
+        'server_joined': not v.server_thread.is_alive(), 'database_closed': True}))
