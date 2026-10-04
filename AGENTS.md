@@ -338,8 +338,22 @@ old-pin Jenkins, ARM64 and general integration coverage. Missing/ambiguous
 identity, skip, cleanup or upload is incomplete; a phase exit zero is not QA.
 On a targeted command failure, the driver retains completed command receipts and
 sanitized failed-command JUnit/status, fixed failure category and observed owned
-group/pipe cleanup. Phase cleanup stays unknown; raw assertions and child output
-remain private. A corrective head requires renewed final-head proof and CI.
+group/pipe cleanup. Ordinary assertion failures also retain only an allowlisted
+test module and a positive source line validated against the candidate source,
+candidate/source digests, and fixed assertion or failure-boundary categories.
+Absent, malformed, foreign or ambiguous locations remain unknown; oversized or
+malformed private JUnit is refused. Assertion values remain unknown. Raw
+assertions, code, locals, credentials and child output remain private.
+Common finalization independently observes every returned command's owned group
+absence/direct-child reap and closed pipes (including the failed command), exact
+source restoration, and removal of the invocation's private directory. The
+bounded owned-cleanup artifact and receipt preserve true, false and unknown
+observations on both success and failure; a failed test stays failed even when
+its owned cleanup is complete. Interrupted results or pre-admission refusals
+cannot borrow prior cleanup evidence, and cleanup exceptions preserve the
+primary failure. This is invocation-owned evidence, not OS-wide absence;
+uncatchable termination remains incomplete. Historical unknown receipts remain
+unknown. A corrective head requires renewed final-head proof and CI.
 
 Real integration execution remains forbidden on the Linux daemon host. General
 integration is SKIPPED under THR-243 seq42; this bounded disposable proof is
