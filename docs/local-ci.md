@@ -73,6 +73,16 @@ receipt gates still control. Whitespace-only trailing stderr continuation is
 nontext. Safe JUnit and stdout/stderr carry neither this object nor its keys.
 These are observations, never cause or historical attribution; deleted private
 history remains unknown.
+Receipt finalization uses sorted compact JSON with default ASCII escaping and
+preserves every field, type, null and ordered command record. The unchanged
+65536-byte/privacy/evidence guards still refuse oversized or unsafe receipts.
+This is a conditional finite size envelope: complete serialization is required
+when the encoded receipt fits, not guaranteed for arbitrary identity strings or
+failure multiplicities. A 61-failure overcap receipt still refuses; nothing is
+truncated or inferred. Owned-cleanup consumers compare parsed values, and a late
+final-target write failure remains incomplete despite successful XML/cleanup.
+Historical missing command metadata and failure categories remain unknown.
+
 Common finalization independently observes every returned command's owned group
 absence/direct-child reap and closed pipes (including the failed command), exact
 source restoration, and removal of the invocation's private directory. The

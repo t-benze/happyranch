@@ -259,7 +259,7 @@ def safe_bytes(raw: bytes, cap: int):
 
 def finalize_receipt(receipt: dict, *, junit_present: bool, upload: bool | None):
     require(junit_present and upload is not False, "receipt_missing_evidence")
-    encoded = json.dumps(receipt, sort_keys=True).encode()
+    encoded = json.dumps(receipt, sort_keys=True, separators=(',', ':')).encode()
     safe_bytes(encoded, 65536)
     return encoded
 

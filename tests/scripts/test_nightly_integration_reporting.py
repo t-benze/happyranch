@@ -589,9 +589,115 @@ def _client_miniature(root, *, killed=False):
     return source, client
 
 
+def _literal_receipt_fixture(*, wide: bool = False) -> dict:
+    """Synthetic size operands, never recovered repeat1 command observations."""
+    import ast
+    # Reuse E3's independently stated literal, not the shipping node inventory.
+    owner = next(node for node in ast.parse(Path(__file__).read_text()).body
+                 if isinstance(node, ast.FunctionDef) and node.name == "test_diy_phase_coverage")
+    inventory = ast.literal_eval(next(node.value for node in ast.walk(owner)
+                                     if isinstance(node, ast.Assign)
+                                     and any(isinstance(target, ast.Name) and target.id == "literal" for target in node.targets)))
+    isolated = [node for node, _ in inventory]
+    acceptance = [node for node in isolated[1:] if node.startswith("tests/remote_access/")] + [
+        "tests/remote_access/test_diy_acceptance.py::test_acceptance_cross_process_revoke_remove_then_reopen_streams",
+        "tests/remote_access/test_diy_acceptance.py::test_real_diy_acceptance",
+        "tests/remote_access/test_diy_acceptance.py::test_acceptance_cross_process_revoke_closes_live_sse_stream",
+    ]
+    reporting = [node for node in isolated if node.startswith("tests/scripts/")] + [
+        "tests/scripts/test_nightly_integration_reporting.py::test_summary_reports_counts_and_failed_test_ids",
+        "tests/scripts/test_nightly_integration_reporting.py::test_summary_surfaces_missing_junit_without_fabricating_counts",
+        "tests/scripts/test_nightly_integration_reporting.py::test_nightly_workflow_preserves_selection_and_scopes_issue_permission",
+        "tests/scripts/test_nightly_integration_reporting.py::test_bounded_output_caps_artifact_and_retains_tail",
+        "tests/scripts/test_nightly_integration_reporting.py::test_bounded_output_returns_wrapped_nonzero_status",
+        "tests/scripts/test_nightly_integration_reporting.py::test_bounded_output_returns_zero_for_success",
+    ]
+    assert (len(isolated), len(acceptance), len(reporting)) == (112, 59, 61), "[S1] literal 112/59/61 inventory"
+    source = {name: dict(mode=420, sha256="2" * 64) for name in (
+        "tests/remote_access/test_diy_acceptance.py", "tests/remote_access/fake_daemon.py",
+        "tests/remote_access/diy_client.py", "tests/scripts/test_nightly_integration_reporting.py",
+        "scripts/diy_proof.py", ".github/workflows/nightly-integration.yml", "uv.lock")}
+    # Shape and string lengths from the retained admission receipt; every value
+    # below is explicitly synthetic, with no historical-cause or runtime claim.
+    identity = dict(api_join="external_required", arch="x86_64", attempt=1,
+                    event="workflow_dispatch", event_sha=CANDIDATE, head=CANDIDATE,
+                    workflow_sha=CANDIDATE, remote_sha=CANDIDATE,
+                    executable="/home/runner/work/happyranch/happyranch/.venv/bin/python",
+                    expected_workflow_id=294311795, imports_ok=True,
+                    pytest="9.0.3", python="3.12.3", repository="t-benze/happyranch",
+                    run=37234800192, source=source, uv="uv 0.12.23 (x86_64-unknown-linux-gnu)",
+                    imports=[dict(module=module, path=path, sha256="3" * 64) for module, path in (
+                        ("runtime.remote_access.cli", "runtime/remote_access/cli.py"),
+                        ("tests.remote_access.diy_client", "tests/remote_access/diy_client.py"),
+                        ("tests.remote_access.fake_daemon", "tests/remote_access/fake_daemon.py"))])
+    commands = [dict(number=number, source_digest="4" * 64,
+                     duration_ms=1260000 if wide else 0, nodes=nodes,
+                     counts=dict(passed=len(nodes), failed=0, error=0, skipped=0),
+                     expected_red=None, exit=0, admitted=None, restored=None,
+                     cleanup=True, pipes_closed=True, red_facts=None,
+                     private_temp="invocation-abcdefgh", process=2147483647 if wide else 0)
+                for number, nodes in enumerate([[node] for node in isolated] + [acceptance, reporting], 1)]
+    return dict(label="TARGETED DIY", candidate=CANDIDATE, phase="repeat-1",
+                status="complete", cleanup=True, upload=None, identity=identity,
+                commands=commands, restored=True,
+                owned_cleanup=dict(commands=114, groups_reaped=True, pipes_closed=True,
+                                   source_restored=True, private_removed=True))
+
+
+def _literal_failed_receipt(*, failures: int = 1) -> dict:
+    receipt = _literal_receipt_fixture(wide=True)
+    last = receipt["commands"].pop()
+    module = "tests/scripts/test_nightly_integration_reporting.py"
+    projections = [dict(node=node, module=module, line=None, location="missing",
+                        candidate=CANDIDATE, source_sha256="2" * 64,
+                        category="failure_boundary", values="unknown", reason=None)
+                   for node in last["nodes"][:failures]]
+    receipt.update(status="failure", failure="command_exit",
+                   failed_command=dict(number=114, nodes=last["nodes"], exit=1,
+                                       cleanup=True, pipes_closed=True, outer_timeout=False,
+                                       overflow=False, process=2147483647,
+                                       counts=dict(passed=61-failures, failed=failures, error=0, skipped=0),
+                                       failure_types=["AssertionError"] * failures, failures=projections,
+                                       source_digest="4" * 64, expected_red=None, red_facts=None,
+                                       category="command_exit"))
+    return receipt
+
+
+def _assert_json_value(actual: object, expected: object) -> None:
+    """Independent deep values AND types, including bool/int and all nulls."""
+    assert type(actual) is type(expected), f"[S2/M2] type parity: {type(actual)} != {type(expected)}"
+    if isinstance(expected, dict):
+        assert actual.keys() == expected.keys(), "[S2/M2] complete literal key set"
+        for key in expected:
+            _assert_json_value(actual[key], expected[key])
+    elif isinstance(expected, list):
+        assert len(actual) == len(expected), "[S2/M2] lossless ordered length"
+        for observed, wanted in zip(actual, expected):
+            _assert_json_value(observed, wanted)
+    else:
+        assert actual == expected, f"[S2/M2] observed={actual!r} expected={expected!r}"
+
+
+def _assert_complete_command(command: dict, result: dict, nodes: tuple[str, ...], number: int, source_digest: str) -> None:
+    assert set(command) == {"number", "source_digest", "duration_ms", "nodes", "counts",
+                            "expected_red", "exit", "admitted", "restored", "cleanup",
+                            "pipes_closed", "red_facts", "private_temp", "process"}, "[M1/M2] complete command fields"
+    _assert_json_value({key: command[key] for key in ("exit", "cleanup", "pipes_closed", "process")},
+                       dict(exit=result["exit"], cleanup=result["cleanup"],
+                            pipes_closed=result["pipes_closed"], process=result["pid"]))
+    _assert_json_value(command["counts"], dict(passed=len(nodes), failed=0, error=0, skipped=0))
+    _assert_json_value(command["nodes"], list(nodes))
+    assert type(command["number"]) is int and command["number"] == number
+    assert command["source_digest"] == source_digest
+    assert type(command["duration_ms"]) is int and command["duration_ms"] >= 0
+    assert type(command["private_temp"]) is str and command["private_temp"].startswith("invocation-")
+    assert command["expected_red"] is command["admitted"] is command["restored"] is command["red_facts"] is None
+
+
 @pytest.mark.parametrize("case", ["success", "overflow", "secret_canary", "missing_junit", "upload_failure"])
 def test_diy_receipt_privacy(case, tmp_path, monkeypatch, capsys):
     _driver_admission()
+    receipt_metrics = []
     receipt = dict(label="TARGETED DIY", status="complete")
     if case == "overflow":
         receipt["field"] = "x" * 65536
@@ -602,6 +708,99 @@ def test_diy_receipt_privacy(case, tmp_path, monkeypatch, capsys):
         assert json.loads(result)["label"] == "TARGETED DIY" and len(result) < 65536, "[E7] bounded labelled receipt"
     else:
         _assert_refused(lambda: proof.finalize_receipt(receipt, junit_present=case != "missing_junit", upload=case != "upload_failure"), "[E7] unsafe or missing receipt must refuse")
+
+    if case == "success":
+        for wide in (False, True):
+            dense = _literal_receipt_fixture(wide=wide)
+            try:
+                encoded = proof.finalize_receipt(dense, junit_present=True, upload=None)
+            except proof.ProofFailure as exc:
+                encoded = None
+                outcome = exc.args[0]
+            else:
+                outcome = "complete"
+            assert outcome == "complete", f"[S1] expected complete lossless 114-record receipt; observed {outcome}"
+            _assert_json_value(json.loads(encoded), dense)
+            assert len(encoded) <= 65536, "[S1] finite synthetic envelope fits unchanged cap"
+            assert [row["number"] for row in dense["commands"]] == list(range(1, 115))
+            receipt_metrics.append(f"S1 wide={wide} bytes={len(encoded)}")
+        for phase, count in (("proof-admission", 20), ("proof-causality", 12), ("proof-protocol-cleanup", 78)):
+            shape = _literal_receipt_fixture()
+            shape["phase"] = phase
+            literal_nodes = [row["nodes"][0] for row in shape["commands"][:112]]
+            protocol_cases = ("malformed", "truncated_record", "oversize_record", "extra_record", "unflushed_record", "secret_canary", "stderr_canary", "backpressure", "duplicate_keys", "non_ascii", "wrong_child", "wrong_bool", "out_of_order", "invalid_terminal")
+            def is_protocol(node: str) -> bool:
+                return "lifecycle_records" in node and any("[" + value + "]" in node for value in protocol_cases)
+            if count == 20:
+                fixed = [[node for node in literal_nodes if "first_frame_reader" in node],
+                         [node for node in literal_nodes if any(owner in node for owner in ("dispatch_selection", "candidate_identity", "phase_coverage", "red_attribution"))],
+                         ["tests/remote_access/test_supervisor.py::TestReconciliationRotation::test_cross_process_revoke_closes_stream_then_rotation_reopens_repair",
+                          "tests/remote_access/test_diy_provider.py::TestRevocationAndRestart::test_remove_device_closes_live_streams"],
+                         [literal_nodes[0]]]
+                assert [len(nodes) for nodes in fixed] == [9, 27, 2, 1]
+            elif count == 12:
+                fixed = [[node for node in literal_nodes if "lifecycle_records" in node and not is_protocol(node)], [literal_nodes[0]]]
+                assert [len(nodes) for nodes in fixed] == [8, 1]
+            else:
+                fixed = [[node for node in literal_nodes if "owned_cleanup" in node or is_protocol(node)],
+                         [node for node in literal_nodes if node.startswith("tests/scripts/") and not any(owner in node for owner in ("dispatch_selection", "candidate_identity", "phase_coverage", "red_attribution"))]]
+                assert [len(nodes) for nodes in fixed] == [39, 28]
+            shape["commands"] = shape["commands"][:count]
+            shape["owned_cleanup"]["commands"] = count
+            for row, nodes in zip(shape["commands"][-len(fixed):], fixed):
+                row["nodes"] = nodes
+                row["counts"]["passed"] = len(nodes)
+            for row in shape["commands"][:-len(fixed):2]:
+                row.update(expected_red="literal admission", admitted=True, exit=1, restored=True,
+                           mutation_file="tests/remote_access/diy_client.py",
+                           counts=dict(passed=0, failed=1, error=0, skipped=0),
+                           red_facts=dict(exit=1, outer_timeout=False, cleanup=True, admitted=True,
+                                          assertion="literal admission", failure_type="AssertionError", failures=1, skips=0))
+            if count == 78:
+                shape["commands"][0].update(pre_fix_owner=True, mutation_file="tests/remote_access/test_diy_acceptance.py")
+            raw = proof.finalize_receipt(shape, junit_present=True, upload=None)
+            _assert_json_value(json.loads(raw), shape)
+            receipt_metrics.append(f"S2 {phase} records={count} bytes={len(raw)}")
+        failed_shape = _literal_failed_receipt()
+        raw = proof.finalize_receipt(failed_shape, junit_present=True, upload=None)
+        _assert_json_value(json.loads(raw), failed_shape)
+        assert json.loads(raw)["status"] == "failure" and json.loads(raw)["upload"] is None
+        receipt_metrics.append(f"S2 single-failed-last-sibling bytes={len(raw)}")
+        unicode_shape = dict(z="snowman \u2603", a=None, boolean=True)
+        assert proof.finalize_receipt(unicode_shape, junit_present=True, upload=None) == b'{"a":null,"boolean":true,"z":"snowman \\u2603"}', "[S2] sorted keys/default ASCII/null/types"
+    if case in ("success", "overflow"):
+        # Fixed independent compact overhead; no length comes from the finalizer.
+        for size in ((65535, 65536) if case == "success" else (65537,)):
+            boundary = {"field": "x" * (size - len(b'{"field":""}'))}
+            if size <= 65536:
+                try:
+                    raw = proof.finalize_receipt(boundary, junit_present=True, upload=None)
+                except proof.ProofFailure as exc:
+                    outcome = exc.args[0]
+                else:
+                    outcome = "complete"
+                assert outcome == "complete", f"[B] {size} inclusive cap expected complete; observed {outcome}"
+                assert len(raw) == size, f"[B] inclusive cap: observed={len(raw)} expected={size}"
+                _assert_json_value(json.loads(raw), boundary)
+            else:
+                with pytest.raises(proof.ProofFailure, match="^privacy_overflow$"):
+                    proof.finalize_receipt(boundary, junit_present=True, upload=None)
+        if case == "overflow":
+            overcap = _literal_failed_receipt(failures=61)
+            with pytest.raises(proof.ProofFailure, match="^privacy_overflow$"):
+                proof.finalize_receipt(overcap, junit_present=True, upload=None)
+            print(f"B 61-failure compact fixture bytes={len(json.dumps(overcap, sort_keys=True, separators=(',', ':')).encode())}; refused", flush=True)
+    if case == "secret_canary":
+        for forbidden in ("DIY_SECRET_CANARY", "data: hello", "data: world", "Bearer ",
+                          "diy-acceptance-bearer-42", "pairing code for device", "X-HappyRanch-Device-Credential"):
+            nested = _literal_receipt_fixture()
+            nested["commands"][-1]["red_facts"] = {"nested": [{"value": forbidden}]}
+            with pytest.raises(proof.ProofFailure, match="^privacy_canary$"):
+                proof.finalize_receipt(nested, junit_present=True, upload=None)
+    if case in ("missing_junit", "upload_failure"):
+        for value in (_literal_receipt_fixture(), {"field": "x" * 65536, "nested": ["DIY_SECRET_CANARY"]}):
+            with pytest.raises(proof.ProofFailure, match="^receipt_missing_evidence$"):
+                proof.finalize_receipt(value, junit_present=case != "missing_junit", upload=case != "upload_failure")
 
     if case in ("success", "overflow", "secret_canary"):
         # Private JUnit fixtures go through the real projection and serializers.
@@ -916,6 +1115,10 @@ def test_diy_receipt_privacy(case, tmp_path, monkeypatch, capsys):
                 assert (location["location"], location["line"], location.get("reason")) == ("source_unknown", None, None), "[F6] digest/symlink ownership refusal"
 
 
+    for metric in receipt_metrics:
+        print(metric, flush=True)
+
+
 @pytest.mark.parametrize("case", ["all_five", "missing_round", "reused_temp", "reused_process", "stale_marker"])
 def test_diy_repetition(case):
     _driver_admission()
@@ -947,6 +1150,109 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
         assert proof.verdict(receipts) == "TARGETED DIY complete", "[E9] all joined phases"
     else:
         _assert_refused(lambda: proof.verdict(receipts), "[E9] incomplete final verdict must refuse")
+
+    if case == "complete":
+        import hashlib
+        import xml.etree.ElementTree as ET
+        real_manifest, real_run_owned, real_write = proof.manifest, proof.run_owned, Path.write_bytes
+        complete_started = time.monotonic()
+        publication_metrics = []
+        for fault in (False, True):
+            scenario_root = tmp_path / ("late-write" if fault else "publication")
+            scenario_root.mkdir()
+            source = scenario_root / "test_sample.py"
+            source.write_text("def test_green(): assert 2 + 2 == 4\n")
+            original, mode = source.read_bytes(), stat.S_IMODE(source.stat().st_mode)
+            literal_source = {"test_sample.py": dict(sha256=hashlib.sha256(original).hexdigest(), mode=mode)}
+            source_digest = hashlib.sha256(json.dumps(literal_source, sort_keys=True).encode()).hexdigest()
+            event = scenario_root / "event.json"
+            event.write_text(json.dumps({"inputs": {"mode": "diy-proof", "phase": "proof-admission", "expected_candidate": CANDIDATE}}))
+            (scenario_root / "diy-start").write_text(str(time.monotonic()))
+            target = scenario_root / "artifacts/targeted-diy/receipt.json"
+            nodes = ("test_sample.py::test_green",)
+            owned_results, private_paths, target_writes = [], [], []
+            def capture_success(*args: object, **kwargs: object) -> dict:
+                work = Path(kwargs["env"]["HAPPYRANCH_DAEMON_HOME"]).parent
+                private_paths.extend((work, work.parent))
+                result = real_run_owned(*args, **kwargs)
+                owned_results.append(result)
+                return result
+            def late_write(path: Path, data: bytes) -> int:
+                if path == target:
+                    target_writes.append(data)
+                    if fault and len(target_writes) == 2:
+                        assert (target.parent / "command-1.xml").is_file(), "[F] final write occurs after actual XML"
+                        assert json.loads((target.parent / "owned-cleanup.json").read_bytes())["private_removed"] is True
+                        raise OSError("private late-write exception")
+                return real_write(path, data)
+            handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+            began = time.monotonic()
+            with monkeypatch.context() as patch:
+                patch.setattr(proof, "ROOT", scenario_root)
+                patch.setattr(proof, "FILES", ("test_sample.py",))
+                patch.setattr(proof, "manifest", lambda: real_manifest(scenario_root))
+                patch.setattr(proof, "E_NODES", nodes)
+                patch.setattr(proof, "MUTATIONS", {})
+                patch.setattr(proof, "E_MUTATIONS", {})
+                patch.setattr(proof, "fixed_commands", lambda phase: ((nodes, "not integration", 2),))
+                patch.setattr(proof, "_identity", lambda candidate: _identity_facts())
+                patch.setattr(proof, "run_owned", capture_success)
+                patch.setattr(Path, "write_bytes", late_write)
+                patch.setenv("GITHUB_EVENT_PATH", str(event))
+                patch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
+                patch.setenv("GITHUB_SHA", CANDIDATE)
+                patch.setenv("RUNNER_TEMP", str(scenario_root))
+                try:
+                    exit_status = proof.main(["run"])
+                    observed_source = proof.manifest()
+                finally:
+                    for sig, handler in handlers.items():
+                        signal.signal(sig, handler)
+            duration = time.monotonic() - began
+            captured = capsys.readouterr()
+            if "DRIVER_ADMITTED" in captured.out:
+                print("DRIVER_ADMITTED", flush=True)
+            assert exit_status == (1 if fault else 0), f"[M1/F] real publication exit observed={exit_status} expected={1 if fault else 0}"
+            assert len(owned_results) == 1 and owned_results[0]["exit"] == 0
+            result = owned_results[0]
+            assert result["cleanup"] is result["pipes_closed"] is True
+            assert result["outer_timeout"] is result["overflow"] is False
+            with pytest.raises(ProcessLookupError):
+                os.kill(result["pid"], 0)
+            with pytest.raises(ProcessLookupError):
+                os.killpg(result["pid"], 0)
+            assert private_paths and all(not path.exists() for path in private_paths), "[M1] independently absent private invocation/directory"
+            assert source.read_bytes() == original and stat.S_IMODE(source.stat().st_mode) == mode
+            assert observed_source == literal_source
+            owned = dict(commands=1, groups_reaped=True, pipes_closed=True, source_restored=True, private_removed=True)
+            _assert_json_value(json.loads((target.parent / "owned-cleanup.json").read_bytes()), owned)
+            xml = ET.fromstring((target.parent / "command-1.xml").read_bytes())
+            assert [node.attrib["name"] for node in xml.iter("testcase")] == list(nodes)
+            assert (xml.attrib["tests"], xml.attrib["failures"], xml.attrib["errors"], xml.attrib["skipped"]) == ("1", "0", "0", "0")
+            raw = target.read_bytes()
+            observed = json.loads(raw)
+            assert len(target_writes) == 2, "[M1/F] initial and final target write reached"
+            if fault:
+                _assert_json_value(observed, dict(label="TARGETED DIY", candidate=CANDIDATE, phase="proof-admission", status="incomplete", cleanup=None, upload=None))
+                assert raw == target_writes[0], "[F] late OSError preserves initial incomplete target"
+                assert captured.err == "TARGETED DIY admission/proof incomplete\n", "[F] generic bounded stderr"
+                assert "phase complete" not in captured.out, "[F] successful child/cleanup is not published completion"
+            else:
+                assert set(observed) == {"label", "candidate", "phase", "status", "cleanup", "upload", "identity", "commands", "restored", "owned_cleanup"}, "[M1] lossless main receipt fields"
+                _assert_json_value({key: observed[key] for key in ("label", "candidate", "phase", "status", "cleanup", "upload", "restored")},
+                                   dict(label="TARGETED DIY", candidate=CANDIDATE, phase="proof-admission", status="complete", cleanup=True, upload=None, restored=True))
+                _assert_json_value(observed["identity"], _identity_facts())
+                _assert_json_value(observed["owned_cleanup"], owned)
+                assert len(observed["commands"]) == 1
+                _assert_complete_command(observed["commands"][0], result, nodes, 1, source_digest)
+                assert observed["commands"][0]["private_temp"] == private_paths[0].name
+                assert raw == target_writes[1] and raw != target_writes[0], "[M1] actual final target published"
+                assert captured.err == "" and "TARGETED DIY phase complete" in captured.out
+            assert len(raw) <= 65536 and b"private late-write exception" not in raw + captured.err.encode()
+            publication_metrics.append(f"M1 fault={fault} seconds={duration:.6f} bytes={len(raw)} child_exit={result['exit']} private_absent=True")
+        for metric in publication_metrics:
+            print(metric, flush=True)
+        print(f"M1 complete-case seconds={time.monotonic() - complete_started:.6f}", flush=True)
 
     if case == "phase_failure":
         # Real pytest children exercise the failing command/export path; only
@@ -994,7 +1300,10 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
             monkeypatch.setattr(proof, "MUTATIONS", {})
             monkeypatch.setattr(proof, "E_MUTATIONS", {})
             owned_results = []
+            private_paths = []
             def capture_owned(*args, **kwargs):
+                work = Path(kwargs["env"]["HAPPYRANCH_DAEMON_HOME"]).parent
+                private_paths.extend((work, work.parent))
                 result = real_run_owned(*args, **kwargs)
                 owned_results.append(result)
                 return result
@@ -1015,17 +1324,46 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
             observed = json.loads((exported / "receipt.json").read_bytes())
             assert len(owned_results) == 2 and [row["exit"] for row in owned_results] == [0, 1], "[E9] actual admitted pytest outcomes"
             assert all(row["cleanup"] and row["pipes_closed"] for row in owned_results), "[E9] actual children closed before export"
+            for result in owned_results:
+                with pytest.raises(ProcessLookupError):
+                    os.kill(result["pid"], 0)
+                with pytest.raises(ProcessLookupError):
+                    os.killpg(result["pid"], 0)
+            assert private_paths and all(not path.exists() for path in private_paths), "[M2] independent invocation/directory absence"
             assert observed.get("failure") == "command_exit", "[E9] retain actual failure category"
             assert observed["status"] == "failure" and observed["restored"] is True
             assert len(observed["commands"]) == 1 and observed["commands"][0]["nodes"] == [nodes[0]], "[E9] retain prior completed command"
             failed = observed["failed_command"]
+            import hashlib
+            assert set(observed) == {"label", "candidate", "phase", "status", "cleanup", "upload", "identity", "commands", "failure", "failed_command", "restored", "owned_cleanup"}, "[M2] complete failure receipt fields"
+            _assert_json_value(observed["identity"], _identity_facts())
+            assert observed["upload"] is None and observed["label"] == "TARGETED DIY" and observed["phase"] == "proof-admission"
+            expected_source = {module: dict(sha256=hashlib.sha256(original).hexdigest(), mode=original_mode)}
+            if client_source:
+                expected_source["tests/remote_access/diy_client.py"] = dict(sha256=hashlib.sha256(client_original).hexdigest(), mode=client_mode)
+            digest = hashlib.sha256(json.dumps(expected_source, sort_keys=True).encode()).hexdigest()
+            _assert_complete_command(observed["commands"][0], owned_results[0], (nodes[0],), 1, digest)
+            assert set(failed) == {"number", "nodes", "exit", "cleanup", "pipes_closed", "outer_timeout", "overflow", "process", "counts", "failure_types", "failures", "source_digest", "expected_red", "red_facts", "category"}, "[M2] complete failed-command fields"
+            _assert_json_value({key: failed[key] for key in ("exit", "cleanup", "pipes_closed", "outer_timeout", "overflow", "process")},
+                               {**{key: owned_results[1][key] for key in ("exit", "cleanup", "pipes_closed", "outer_timeout", "overflow")}, "process": owned_results[1]["pid"]})
+            assert failed["source_digest"] == digest and failed["expected_red"] is failed["red_facts"] is None and failed["category"] == "command_exit"
+            assert type(failed["number"]) is int and type(failed["process"]) is int
             assert failed["number"] == 2 and failed["nodes"] == [nodes[1]] and failed["exit"] == 1, "[E9] retain failed command identity/status"
             assert failed["counts"] == {"passed": 0, "failed": 1, "error": 0, "skipped": 0}, "[E9] observed failure counts"
             assert failed["failure_types"] == ["AssertionError"] and failed["cleanup"] is True and failed["pipes_closed"] is True, "[E9] actual owned outcome"
             assert observed["cleanup"] is True, "[E9] independently observed cleanup includes failed command"
             owned = observed.get("owned_cleanup")
             assert owned == {"commands": 2, "groups_reaped": True, "pipes_closed": True, "source_restored": True, "private_removed": True}, "[E9] complete actual owned-resource scope"
+            _assert_json_value(owned, dict(commands=2, groups_reaped=True, pipes_closed=True, source_restored=True, private_removed=True))
+            _assert_json_value(json.loads((exported / "owned-cleanup.json").read_bytes()), owned)
             location = failed.get("failures")
+            projection_keys = {"node", "module", "line", "location", "candidate", "source_sha256", "category", "values", "reason"}
+            if scenario in ("G_exit", "G_signal"):
+                projection_keys.add("client")
+            assert len(location) == 1 and set(location[0]) == projection_keys, "[M2] all failure projection fields"
+            assert location[0]["node"] == nodes[1] and location[0]["source_sha256"] == hashlib.sha256(original).hexdigest()
+            assert type(location[0]["line"]) is int or location[0]["line"] is None
+            assert location[0]["category"] == ("failure_boundary" if scenario == "F9" else "assertion")
             if scenario == "direct":
                 assert location and location[0]["module"] == "test_sample.py" and location[0]["line"] == 2 and location[0]["location"] == "known", "[E9] retain actual failed source line"
             elif scenario.startswith("G_"):
@@ -1052,6 +1390,7 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
             assert all(key not in safe for key in (b"client", b"caller_line", b"action", b"returncode", b"outcome", b"exception", b"reason")), "[G4] JSON-only client facts"
         combined_seconds = time.monotonic() - combined_started
         assert combined_seconds <= 10, f"[G3] combined E9 bound: {combined_seconds:.3f}s exceeds 10s"
+        print(f"M2 six-phase-failure seconds={combined_seconds:.6f}; bound=10", flush=True)
     if case in ("timeout", "cancelled", "missing_upload", "cleanup_unknown"):
         # Safe miniature children exercise real owned supervision/finalization;
         # no daemon or integration test is admitted on this host.
