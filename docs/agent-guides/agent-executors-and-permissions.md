@@ -173,6 +173,14 @@ bootstrap and same-agent overlap; codebuddy, additional contained/custom variant
 thread/dream population and genuinely nonshown follow-on reads remain separate
 canary obligations.
 
+The ordinary uncontained task launch keeps its registered runtime SID through
+internal 429 process retries, then retires only its own SessionTracker binding
+after the executor's final return or exception. Retired hints remain usable for
+memory get/search with no task/session credit. Generation-safe retirement leaves
+newer same-task generations and other same-agent tasks intact; provider identity
+and retry policy are unchanged. This ordinary source behavior does not establish
+installed, custom or contained acceptance.
+
 The observation-only G3 census is owned by actual `OrgState`/`_run_agent`, not
 executor environment hints or provider resume IDs. Each runtime entry owns one
 boot ordinal and immutable render expectation; actual started callbacks are
