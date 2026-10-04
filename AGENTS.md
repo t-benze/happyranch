@@ -58,7 +58,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   canary/deferred venues and full reporting remain open; backend/CLI guards stay
   `insufficient_instrumentation`. See the memory section in the feature guide.
 
-- **Workflow schema U1A foundation (THR-139).** The U1A candidate installs the
+- **Workflow schema U1A foundation (THR-139).** U1A installs the
   complete inert version-1 workflow layout only from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
   membership validation, or orchestrator construction. Generic
@@ -68,15 +68,27 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   objects, version 1, the singleton `installed_legacy_only` generation 1 owned
   by `workflow_cutover_reconciler`, and its install event; interruption rolls
   back to zero workflow residue. Every reopen validates the full canonical
-  table/column/default/PK/CHECK/UNIQUE/FK/index/trigger layout and exact initial
-  marker/event, refusing missing, extra, malformed, conflicting, newer, or
+  table/column/default/PK/CHECK/UNIQUE/FK/index/trigger layout and the complete validated
+  marker/event history (initial-only references need no org context; progressed
+  histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
   canonical org installer, and hashes the complete schema; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
-  store. This is schema/compatibility foundation only: U1B-U6 template,
-  activation, authority coordination, dispatch, callback, route/UI,
-  enable/cutover-transition behavior remain unimplemented. U1B adds only
+  store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain
+  from installed_legacy_only through enable_requested, compatibility_verified,
+  enabled, disable_requested, draining and drained. Founder-only requests use
+  strict action/key/generation input; request/fence commits precede separate
+  bounded reconciliation. Every authoritative reread validates the full layout
+  and org-bound deterministic event chain; cold load advances only authentic
+  committed requests before teams/settings mutation. GET/preflight never advance.
+  SQLite integrity/FKs and contradictory pre-enable work block verification;
+  incomplete/nonterminal F5 closures block drain with actual ownership and
+  deferred U2D/U4/U5 actions, never cancellation or task/outbox mutation.
+  Downgrade is eligible only for pristine initial history and zero workflow data.
+  Integrity hashes are cooperative coherence, not hostile same-UID proof.
+  Activation, first draft/dispatch, callbacks, operator UI and full U2C-U6
+  acceptance remain deferred. U1B adds only
   inert, immutable `product-design` template authoring/versioning in
   `runtime/workflows/templates.py`: current active managers publish only in
   their uniquely registered team's org namespace through verified task/session
@@ -85,7 +97,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   SHA-256 digest, gap-free version, CAS pointer and replay receipt in the
   existing U1A tables. Publication never activates, creates tasks/instances,
   dispatches, emits outbox/notification effects or changes cutover/authority
-  state. U2-U6 remain unimplemented.
+  state. U2A/U2B are shipped, and this cutover prerequisite is implemented; activation, first draft, dispatch, U3-U6 and operator acceptance remain deferred.
 
 - **Task-scratch reclamation contract (THR-195 B1).** `runtime/daemon/task_scratch_reclamation.py` accepts only immutable finalized ledger rows for valid canonical manifested `TASK-*` roots. Its caller-constructible `*Assertions` values are explicitly untrusted shapes, have no permissive defaults, and reject missing, malformed, stale-boot, truncated, ambiguous, unsupported-platform, recovery/job/live-reference, unavailable, or internally inconsistent values; B1 does not establish their provenance or independently validate lifecycle/liveness/current-boot authority, whose producers are deferred to B2/B3. The private `collect_revalidate_seal_consume_disposable` seam retains the typed values from each existing bounded E/C admission, compares liveness/session/process and complete coverage projections (including bucket classification/accounting and dominance) across E1..E4/C1..C3 while excluding collection timestamps, and binds final C3's canonical workspace/root/manifest/census fields to its successfully sealed stack-local row. It refuses malformed/private-identity/boot-mismatched or exhausted bounded observations before execution, and a partial executor failure claims zero while preserving the remainder for a fresh refusal. The sole production caller is the bounded pre-agent `run_step` hook. It is disabled by default through the strict boolean `workspace_cleanup.reclamation_actions_enabled` (default `false`), and disabling affects later admissions only — it cannot revoke an already admitted consumer call. It acts only on a third-or-later cleanup ordinal whose scheduler-created preclaim owner is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to this invocation's initial successful `0 -> 1` claim (the first two runs stay report-only), applies one shared one-second deadline and at most 23 read/load admissions with no refill or recovery, and makes at most five best-effort calls to the unchanged consumer. Each attempt records the owner `workspace_cleanup_reclamation_attempt` audit before the prompt carries the known facts into the ordinary completion summary; the transported remainder is exactly the returned `after` accounting or `null`; scheduler triggering/order remains unchanged. It adds no writer fence or future-writer/same-UID guarantee. Sealing also re-derives the canonical root and applies the 60-second newest-mtime floor. Execution hard-skips Git/worktree/bare-repository ancestor or descendant evidence and cross-device ambiguity, uses fd-relative no-follow pathname removal with verified parent/root identity, exact allocated-byte/inode accounting, and complete protected manifest/lock/parent/directory-entry/sibling postconditions. Detected pre-action identity mismatches fail the row with zero reclaimed claims. Portable POSIX unlink/rmdir is not inode-bound: the threat contract deliberately excludes a hostile same-UID replacement in the final identity-check-to-pathname-syscall window, and does not promise that replacement survives. The separate report-only coordinator remains report-only after teardown and through the existing daily trigger; deployment, legacy-backlog eligibility, and activation beyond the explicitly enabled hook remain absent. Unmanifested `.happyranch/tmp`, `.tmp`, `.task-cache`, `.t`, shared `/tmp`, and pre-contract roots remain ineligible.
 

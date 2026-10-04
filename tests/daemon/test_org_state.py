@@ -190,7 +190,7 @@ def test_org_state_load_closes_new_database_when_workflow_install_fails(
     monkeypatch.setattr(
         org_state,
         "install_or_recover",
-        lambda _db: (_ for _ in ()).throw(ValueError("workflow-layout-invalid")),
+        lambda _db, *, expected_org_slug: (_ for _ in ()).throw(ValueError("workflow-layout-invalid")),
     )
 
     with pytest.raises(ValueError, match="workflow-layout-invalid"):
@@ -405,3 +405,45 @@ def test_org_state_load_succeeds_when_custom_profile_unregistered_and_agent_decl
     finally:
         org.close()
         reset_registry()
+
+
+@pytest.mark.parametrize("requested", [False, True])
+def test_cutover_cold_attachment_preserves_initial_or_recovers_authentic_request_twice(
+    tmp_path: Path, requested: bool,
+) -> None:
+    from runtime.workflows.cutover import WorkflowCutoverStore
+    from tests.workflows.test_cutover import _CommitObservation, _legacy_snapshot
+
+    runtime = RuntimeDir.init(tmp_path / "runtime")
+    root = runtime.orgs_dir / "alpha"
+    _seed_org(root)
+    state = DaemonState.from_runtime(runtime, Settings())
+    org = state.get_org("alpha")
+    path = OrgPaths(root=root).db_path
+    original = org.db._conn
+    if requested:
+        def response_loss() -> None:
+            raise RuntimeError("committed request response lost")
+
+        org.db._conn = _CommitObservation(original, generation=2, observe=response_loss)
+        try:
+            with pytest.raises(RuntimeError, match="response lost"):
+                WorkflowCutoverStore(org.db, org_slug="alpha").request(
+                    action="enable", operation_key="cold-request", expected_generation=1,
+                )
+        finally:
+            org.db._conn = original
+    before = _legacy_snapshot(path)
+    org.close()
+    for _ in range(2):
+        loaded = DaemonState.from_runtime(runtime, Settings())
+        attached = loaded.get_org("alpha")
+        try:
+            projection = WorkflowCutoverStore(attached.db, org_slug="alpha").get()
+            assert projection["state"] == ("enabled" if requested else "installed_legacy_only")
+            assert projection["generation"] == (4 if requested else 1)
+            assert attached.workflow_authority is not None
+            assert loaded.profile_coordinator is not None
+            assert _legacy_snapshot(path) == before
+        finally:
+            attached.close()

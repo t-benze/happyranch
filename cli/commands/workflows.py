@@ -136,9 +136,59 @@ def cmd_workflow_templates_show(args: argparse.Namespace) -> None:
     print(f"publisher: {json.dumps(result['publisher'], sort_keys=True)}")
 
 
+
+def cmd_workflow_cutover(args: argparse.Namespace) -> None:
+    body = None
+    if args.cutover_command == "request":
+        absolute = require_absolute_payload_path(args.from_file, kind="workflow-cutover")
+        try:
+            body = json.loads(Path(absolute).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print("error: cannot read workflow cutover JSON payload", file=sys.stderr)
+            raise SystemExit(1) from exc
+        if not isinstance(body, dict):
+            print("error: workflow cutover payload must be a JSON object", file=sys.stderr)
+            raise SystemExit(1)
+    try:
+        client = _founder_client()
+        slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+        base = f"/api/v1/orgs/{slug}/workflows/cutover"
+        if args.cutover_command == "request":
+            response = client.post(base + "/requests", json=body)
+        elif args.cutover_command == "downgrade-preflight":
+            response = client.get(base + "/downgrade-preflight")
+        else:
+            response = client.get(base)
+    except httpx.HTTPError as exc:
+        print("error: workflow cutover transport failed; retry requests with the same body/key", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code != 200:
+        _print_error(response)
+    result = response.json()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        projection = result.get("projection", result)
+        print(f"{projection['org_slug']}: {projection['state']} generation={projection['generation']}")
+        if "eligible" in result:
+            print(f"downgrade eligible: {str(result['eligible']).lower()}")
+        for blocker in result.get("blockers", []):
+            print(f"{blocker['code']}: {blocker['owner']} — {blocker['required_action']}")
+    if args.cutover_command == "downgrade-preflight" and not result["eligible"]:
+        raise SystemExit(1)
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Manage inert workflow definitions")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    cutover = workflow_sub.add_parser("cutover", help="Request and inspect workflow cutover")
+    cutover_sub = cutover.add_subparsers(dest="cutover_command", required=True)
+    for form in ("show", "request", "downgrade-preflight"):
+        command = cutover_sub.add_parser(form)
+        command.add_argument("--org", required=True)
+        command.add_argument("--json", action="store_true")
+        if form == "request":
+            command.add_argument("--from-file", required=True)
+        command.set_defaults(func=cmd_workflow_cutover)
     templates = workflow_sub.add_parser("templates", help="Publish and read workflow templates")
     template_sub = templates.add_subparsers(dest="templates_command", required=True)
 

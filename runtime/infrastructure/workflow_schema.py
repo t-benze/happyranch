@@ -239,7 +239,109 @@ def _object_keys(layout: tuple[object, ...]) -> set[tuple[object, ...]]:
     return {(row[0], row[1], row[2]) for row in objects}
 
 
-def _validate_installed(conn: sqlite3.Connection) -> None:
+
+_CUTOVER_STATES = (
+    "installed_legacy_only", "enable_requested", "compatibility_verified",
+    "enabled", "disable_requested", "draining", "drained",
+)
+_CUTOVER_OWNER = "workflow_cutover_reconciler"
+_CUTOVER_POLICY = "workflow-cutover-verifier@1"
+
+
+def _cutover_event_digest(
+    event: dict, *, org_slug: str, previous_digest: str,
+) -> str:
+    """Reconstructible v1 UTF-8 preimage; no extra persisted receipt fields."""
+    disabling = event["event_seq"] >= 5
+    preimage = {
+        "schema_version": 1,
+        "recovery_owner": _CUTOVER_OWNER,
+        "policy": _CUTOVER_POLICY,
+        "org_slug": org_slug,
+        "event": {k: event[k] for k in (
+            "id", "event_seq", "state_before", "state_after",
+            "operation_key", "created_at",
+        )},
+        "request": {
+            "action": "disable" if disabling else "enable",
+            "expected_generation": 4 if disabling else 1,
+            "principal_id": "founder",
+            "proof_kind": "founder_bearer",
+        },
+        "previous_digest": previous_digest,
+    }
+    raw = json.dumps(preimage, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _validate_cutover_data(
+    conn: sqlite3.Connection, *, expected_org_slug: str | None,
+) -> tuple[dict, list[dict]]:
+    """Validate the whole one-way lifecycle, never just legal state names."""
+    import re
+
+    def refuse() -> None:
+        raise ValueError("workflow_schema_marker_mismatch")
+
+    def valid_time(value: object) -> bool:
+        if not isinstance(value, str) or not value:
+            return False
+        try:
+            parsed = datetime.fromisoformat(value)
+            return parsed.tzinfo is not None and parsed.utcoffset().total_seconds() == 0
+        except (ValueError, AttributeError):
+            return False
+
+    keys = ("schema_version", "state", "recovery_owner", "generation",
+            "operation_key", "disable_reason", "updated_at")
+    rows = conn.execute("SELECT " + ",".join(keys) + " FROM workflow_cutover_state").fetchall()
+    if len(rows) != 1:
+        refuse()
+    marker = dict(zip(keys, tuple(rows[0]), strict=True))
+    generation = marker["generation"]
+    if (marker["schema_version"] != 1 or marker["recovery_owner"] != _CUTOVER_OWNER
+            or type(generation) is not int or not 1 <= generation <= len(_CUTOVER_STATES)):
+        refuse()
+    event_keys = ("id", "event_seq", "state_before", "state_after", "operation_key",
+                  "event_digest", "created_at")
+    events = [dict(zip(event_keys, tuple(row), strict=True)) for row in conn.execute(
+        "SELECT " + ",".join(event_keys) + " FROM workflow_cutover_events ORDER BY event_seq"
+    )]
+    if len(events) != generation or (generation > 1 and not expected_org_slug):
+        refuse()
+    for seq, event in enumerate(events, 1):
+        if (event["id"] != f"cutover-event-{seq}" or event["event_seq"] != seq
+                or event["state_before"] != (None if seq == 1 else _CUTOVER_STATES[seq - 2])
+                or event["state_after"] != _CUTOVER_STATES[seq - 1]
+                or not valid_time(event["created_at"])):
+            refuse()
+        if seq == 1:
+            if event["operation_key"] is not None or event["event_digest"] != _INSTALL_EVENT_DIGEST:
+                refuse()
+        else:
+            key = event["operation_key"]
+            if not isinstance(key, str) or re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key) is None:
+                refuse()
+            request_index = 4 if seq >= 5 else 1
+            if key != events[request_index]["operation_key"]:
+                refuse()
+            if seq >= 5 and key == events[1]["operation_key"]:
+                refuse()
+            if event["event_digest"] != _cutover_event_digest(
+                event, org_slug=expected_org_slug, previous_digest=events[seq - 2]["event_digest"],
+            ):
+                refuse()
+    last = events[-1]
+    if (marker["state"] != last["state_after"] or marker["operation_key"] != last["operation_key"]
+            or marker["updated_at"] != last["created_at"]
+            or marker["disable_reason"] != ("founder_disable_requested" if generation >= 5 else None)):
+        refuse()
+    return marker, events
+
+
+def _validate_installed(
+    conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
+) -> None:
     actual = _layout(conn)
     expected = _canonical_layout()
     if _object_keys(actual) != _object_keys(expected):
@@ -256,49 +358,7 @@ def _validate_installed(conn: sqlite3.Connection) -> None:
     if versions != [(1,)]:
         raise ValueError("workflow_schema_marker_mismatch")
 
-    cutover = [
-        tuple(row)
-        for row in conn.execute(
-            "SELECT schema_version,state,recovery_owner,generation,"
-            "operation_key,disable_reason,updated_at FROM workflow_cutover_state"
-        )
-    ]
-    if (
-        len(cutover) != 1
-        or cutover[0][:6]
-        != (
-            1,
-            "installed_legacy_only",
-            "workflow_cutover_reconciler",
-            1,
-            None,
-            None,
-        )
-        or not cutover[0][6]
-    ):
-        raise ValueError("workflow_schema_marker_mismatch")
-
-    events = [
-        tuple(row)
-        for row in conn.execute(
-            "SELECT id,event_seq,state_before,state_after,operation_key,"
-            "event_digest,created_at FROM workflow_cutover_events"
-        )
-    ]
-    if (
-        len(events) != 1
-        or events[0][:6]
-        != (
-            "cutover-event-1",
-            1,
-            None,
-            "installed_legacy_only",
-            None,
-            _INSTALL_EVENT_DIGEST,
-        )
-        or not events[0][6]
-    ):
-        raise ValueError("workflow_schema_marker_mismatch")
+    _validate_cutover_data(conn, expected_org_slug=expected_org_slug)
 
 
 class WorkflowCompatibilityStore:
@@ -311,11 +371,12 @@ class WorkflowCompatibilityStore:
         self,
         *,
         before_commit: Callable[[], None] | None = None,
+        expected_org_slug: str | None = None,
     ) -> Literal["installed_legacy_only", "reopened"]:
         with self._database.workflow_schema_transaction() as conn:
             actual = _layout(conn)
             if actual[0]:
-                _validate_installed(conn)
+                _validate_installed(conn, expected_org_slug=expected_org_slug)
                 return "reopened"
 
             _execute_ddl(conn, CANONICAL_WORKFLOW_DDL)
@@ -339,7 +400,7 @@ class WorkflowCompatibilityStore:
                     timestamp,
                 ),
             )
-            _validate_installed(conn)
+            _validate_installed(conn, expected_org_slug=expected_org_slug)
             if before_commit is not None:
                 before_commit()
             return "installed_legacy_only"
@@ -349,8 +410,9 @@ def install_or_recover(
     database: Database,
     *,
     before_commit: Callable[[], None] | None = None,
+    expected_org_slug: str | None = None,
 ) -> Literal["installed_legacy_only", "reopened"]:
     """Install or validate the inert v1 layout on an explicit org database."""
     return WorkflowCompatibilityStore(database).install_or_recover(
-        before_commit=before_commit
+        before_commit=before_commit, expected_org_slug=expected_org_slug,
     )
