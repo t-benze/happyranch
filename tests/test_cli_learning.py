@@ -477,8 +477,8 @@ def _report_clock(monkeypatch):
     return now
 
 
-def test_memory_report_paginates_and_prints_guarded_status(monkeypatch, capsys, tmp_path):
-    """Real cursor acquisition twice, all four actions, guarded rendered output."""
+def test_memory_report_single_page_four_stream_acquisition_and_guarded_status(monkeypatch, capsys, tmp_path):
+    """Acquire one page per stream in two sweeps; render guarded status/counts."""
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
     now = _report_clock(monkeypatch)
@@ -513,8 +513,8 @@ def test_memory_report_paginates_and_prints_guarded_status(monkeypatch, capsys, 
     db.close()
 
 
-def test_memory_report_exhausts_populated_pages_and_rejects_malformed_rows(monkeypatch, capsys, tmp_path):
-    """Returned malformed search after populated impressions clears all metrics."""
+def test_memory_report_single_page_returned_corruption_clears_metrics(monkeypatch, capsys, tmp_path):
+    """Validate single-page returned search corruption before diagnostic reduction."""
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
     _report_clock(monkeypatch)
@@ -545,9 +545,9 @@ def test_memory_report_exhausts_populated_pages_and_rejects_malformed_rows(monke
     db.close()
 
 
-def test_memory_report_database_parity_exhausts_populated_pages(monkeypatch, capsys, tmp_path):
+def test_memory_report_single_page_populated_backend_cli_parity(monkeypatch, capsys, tmp_path):
+    """501 rows fit one5000 page; backend/CLI parity and literal guarded text."""
     _report_clock(monkeypatch)
-    """CLI exhausts real populated audit pages and agrees with AuditLogger."""
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
 
@@ -692,11 +692,11 @@ def test_memory_report_real_database_empty_and_short_populations_stay_guarded(
         ("memory_search", '{"session_id":"sess-500","task_id":"TASK-500","memory_ids":"MEM-500","hit_count":1,"kb_hit_count":0}', None),
     ],
 )
-def test_memory_report_real_database_rejects_malformed_later_pages_identically(
+def test_memory_report_single_page_returned_corruption_backend_cli_parity(
     monkeypatch, capsys, tmp_path, action, payload, timestamp,
 ):
+    """Returned corruption in501 rows fits one page; both consumers clear metrics."""
     _report_clock(monkeypatch)
-    """All consumed streams are exhausted and malformed later pages get no credit."""
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
 

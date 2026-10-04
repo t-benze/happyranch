@@ -788,13 +788,12 @@ def test_search_with_null_session_still_works(db):
 
 
 # ---------------------------------------------------------------------------
-# 12. Production-seam tests — impression cardinality at orchestrator
+# 12. Direct audit-writer tests — persisted impression cardinality and budget
 # ---------------------------------------------------------------------------
 
 
 def test_impression_cardinality_non_empty_digest(db):
-    """A non-empty digest produces exactly one impression.  Two builds with
-    non-empty digests produce two impressions."""
+    """Two direct logger calls persist two nonempty impression rows."""
     logger = AuditLogger(db)
     _report_impression(logger,
         agent="dev_agent", task_id="TASK-001",
@@ -810,9 +809,11 @@ def test_impression_cardinality_non_empty_digest(db):
     assert len(rows) == 2
 
 
-def test_impression_cardinality_empty_digest_ids_not_logged(db):
-    """A digest with no IDs should produce NO impression (empty digest_ids
-    → not 'non-empty')."""
+def test_direct_impression_logger_logs_empty_digest_ids(db):
+    """The direct logger persists one impression with an unchanged empty ID list.
+
+    Upstream bootstrap suppresses no-rendered-item impressions separately.
+    """
     logger = AuditLogger(db)
     _report_impression(logger,
         agent="dev_agent", task_id="TASK-001",
@@ -821,13 +822,13 @@ def test_impression_cardinality_empty_digest_ids_not_logged(db):
     rows = db.fetch_all_readonly(
         "SELECT * FROM audit_log WHERE action = 'memory_digest_impression'",
     )
-    assert len(rows) == 1  # logged but with empty digest_ids
+    assert len(rows) == 1  # direct writer accepts/logs empty IDs
     payload = json.loads(rows[0]["payload"])
     assert payload["digest_ids"] == []
 
 
 def test_impression_budget_preserved(db):
-    """Impression correctly stores the budget value without modifying it."""
+    """The direct impression writer preserves budget1500 and0 in persisted payloads."""
     logger = AuditLogger(db)
     _report_impression(logger,
         agent="dev_agent", task_id="TASK-001",
@@ -1062,7 +1063,7 @@ def test_contradictory_roles_preserved_full_decision(db):
 
 
 def test_tuple_mismatched_agent_excluded_from_pull_through(db):
-    """A read with a different agent than the impression is excluded."""
+    """Wrong-agent digest read is rejected by tuple binding, with zero false credit."""
     logger = AuditLogger(db)
     for i in range(500):
         _report_impression(logger,
@@ -1082,18 +1083,39 @@ def test_tuple_mismatched_agent_excluded_from_pull_through(db):
     logger.log_memory_read(
         agent="qa_engineer", id="MEM-001", slug="x",
         session_id="sess-xyz",
-        task_id="TASK-0999",
+        task_id="TASK-0999", source="digest",
     )
     report = logger.compute_memory_telemetry_report(
         agent_role_map={"dev_agent": "developer", "qa_engineer": "qa"},
         current_time=_future_now(),
     )
+    # The real writer's explicit digest source preserves the shown-memory input.
+    # Start/impression precede the read; a SID-only binding cannot hide behind
+    # source_contradiction or pre-start timing. This is a disposable fixture,
+    # not installed bootstrap or collection authority.
+    assert report["diagnostic_errors"] == {"rejected_attribution": 1}
+    assert "source_contradiction" not in report["diagnostic_errors"]
+    assert report["read_counts"] == {}
     agg = report["aggregate"]
+    assert agg["correlated_sessions"] == 501
+    assert agg["pointer_opportunities"] == 501
+    assert agg["untrusted_task_reads"] == 1
+    assert set(report["by_agent"]) == {"dev_agent"}
+    assert set(report["by_role"]) == {"developer"}
+    for metrics in (agg, report["by_agent"]["dev_agent"], report["by_role"]["developer"]):
+        assert metrics["correlated_sessions"] == 501
+        assert metrics["pointer_opportunities"] == metrics["pointer_sessions"] == 501
+        assert metrics["full_body_exposures"] == 0
+        assert metrics["pointer_pairs_read"] == metrics["pointer_sessions_activated"] == 0
+        assert metrics["distinct_valid_read_pairs"] == metrics["read_operations"] == 0
+        assert metrics["search_sourced_reads"] == metrics["search_sourced_absent_from_digest"] == 0
+        assert metrics["digest_pull_through"] == metrics["session_activation"] == 0.0
+    assert agg["digest_sourced_read_pairs"] == agg["explicit_read_pairs"] == 0
     assert agg["untrusted_task_reads"] >= 1
 
 
 def test_tuple_mismatched_task_id_excluded_from_pull_through(db):
-    """A read with a different task_id than the impression is excluded."""
+    """Wrong-task digest read is rejected by tuple binding, with zero false credit."""
     logger = AuditLogger(db)
     for i in range(500):
         _report_impression(logger,
@@ -1113,13 +1135,34 @@ def test_tuple_mismatched_task_id_excluded_from_pull_through(db):
     logger.log_memory_read(
         agent="dev_agent", id="MEM-002", slug="x",
         session_id="sess-abc",
-        task_id="TASK-999",
+        task_id="TASK-999", source="digest",
     )
     report = logger.compute_memory_telemetry_report(
         agent_role_map={"dev_agent": "developer"},
         current_time=_future_now(),
     )
+    # The real writer's explicit digest source preserves the shown-memory input.
+    # Start/impression precede the read; a SID-only binding cannot hide behind
+    # source_contradiction or pre-start timing. This is a disposable fixture,
+    # not installed bootstrap or collection authority.
+    assert report["diagnostic_errors"] == {"rejected_attribution": 1}
+    assert "source_contradiction" not in report["diagnostic_errors"]
+    assert report["read_counts"] == {}
     agg = report["aggregate"]
+    assert agg["correlated_sessions"] == 501
+    assert agg["pointer_opportunities"] == 501
+    assert agg["untrusted_task_reads"] == 1
+    assert set(report["by_agent"]) == {"dev_agent"}
+    assert set(report["by_role"]) == {"developer"}
+    for metrics in (agg, report["by_agent"]["dev_agent"], report["by_role"]["developer"]):
+        assert metrics["correlated_sessions"] == 501
+        assert metrics["pointer_opportunities"] == metrics["pointer_sessions"] == 501
+        assert metrics["full_body_exposures"] == 0
+        assert metrics["pointer_pairs_read"] == metrics["pointer_sessions_activated"] == 0
+        assert metrics["distinct_valid_read_pairs"] == metrics["read_operations"] == 0
+        assert metrics["search_sourced_reads"] == metrics["search_sourced_absent_from_digest"] == 0
+        assert metrics["digest_pull_through"] == metrics["session_activation"] == 0.0
+    assert agg["digest_sourced_read_pairs"] == agg["explicit_read_pairs"] == 0
     assert agg["untrusted_task_reads"] >= 1
 
 
