@@ -435,6 +435,30 @@ def _report_impression(logger, **kwargs):
                                        pointer_ids=kwargs["digest_ids"], full_body_ids=[])
 
 
+def _malformed_impression_report(now):
+    """Literal R02 error contract, independent of the production reducer."""
+    return {
+        "data_through": now.isoformat(), "measurement_timezone": "UTC",
+        "acquisition_complete": True,
+        "epoch": {"status": "unversioned", "id": None,
+                  "collection_started": False, "started_at": None},
+        "observation_period": {
+            "first_impression_at": None, "days_elapsed": 0, "required_days": 14,
+            "total_correlated_sessions": 0, "required_sessions": 500,
+            "days_met": False, "sessions_met": False, "thresholds_met": False,
+            "diagnostics_valid_for_collection": False,
+            "status": "insufficient_instrumentation", "reason_code": "malformed_impression",
+        },
+        "instrumentation_health": {
+            "status": "unhealthy", "malformed_records": 1, "reason_code": "malformed_impression",
+        },
+        "aggregate": {}, "by_agent": {}, "by_role": {}, "read_counts": {},
+        "excluded": {}, "diagnostic_errors": {"malformed_impression": 1},
+        "decision": "insufficient_instrumentation", "evaluation_candidate": False,
+        "decision_detail": "Malformed impression evidence; collection is not eligible.",
+    }
+
+
 # 7. Telemetry report computation
 # ---------------------------------------------------------------------------
 
@@ -617,9 +641,9 @@ def test_decision_activation_loss_when_pull_through_low(db):
 
 
 def test_decision_contradictory_roles_preserved(db):
-    """Both role populations remain visible as descriptive intended-session counts."""
+    """Supplied nonstandard roles remain descriptive; manual reads receive no task credit."""
     logger = AuditLogger(db)
-    # Agent A: 100 sessions, high pull-through (many reads)
+    # Agent A: 100 sessions and 50 manual reads without task attribution.
     for i in range(100):
         _report_impression(logger,
             agent="agent_a",
@@ -628,12 +652,12 @@ def test_decision_contradictory_roles_preserved(db):
             digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
-    for i in range(50):  # 50% pull-through
+    for i in range(50):
         logger.log_memory_read(
             agent="agent_a", id=f"MEM-{i:03d}", slug="x",
             session_id=f"sess-a{i:03d}",
         )
-    # Agent B: 100 sessions, very low pull-through
+    # Agent B: 100 sessions and 5 manual reads, also uncredited.
     for i in range(100):
         _report_impression(logger,
             agent="agent_b",
@@ -642,7 +666,7 @@ def test_decision_contradictory_roles_preserved(db):
             digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
-    for i in range(5):  # 5% pull-through
+    for i in range(5):
         logger.log_memory_read(
             agent="agent_b", id=f"MEM-{i:03d}", slug="x",
             session_id=f"sess-b{i:03d}",
@@ -650,13 +674,34 @@ def test_decision_contradictory_roles_preserved(db):
     report = logger.compute_memory_telemetry_report(
         agent_role_map={"agent_a": "role_a", "agent_b": "role_b"},
     )
-    # Days check will likely fail (<14 days), so by_role may be empty.
-    # The structural computation is validated by non-crash and correct
-    # observation_period fields.
     assert "observation_period" in report
     obs = report["observation_period"]
     assert obs["total_correlated_sessions"] == 200
-    # 200 < 500, so sessions_met should be False
+    assert set(report["by_agent"]) == {"agent_a", "agent_b"}
+    for agent, role in {"agent_a": "role_a", "agent_b": "role_b"}.items():
+        assert report["by_agent"][agent]["role"] == role
+        for metrics in (report["by_agent"][agent], report["by_role"][role]):
+            assert metrics["correlated_sessions"] == 100
+            assert metrics["pointer_opportunities"] == 100
+            assert metrics["pointer_pairs_read"] == 0
+            assert metrics["read_operations"] == 0
+            assert metrics["digest_pull_through"] == 0.0
+        assert report["by_agent"][agent]["eligible"] is False
+        assert report["by_agent"][agent]["activation_vote_eligible"] is False
+        assert report["by_role"][role]["retrieval_corroboration_eligible"] is False
+        assert report["by_role"][role]["descriptive_only_for_activation_majority"] is True
+    assert set(report["by_role"]) == {"role_a", "role_b"}
+    assert report["instrumentation_health"]["roles_available"] is True
+    assert report["excluded"]["manual"] == 55
+    assert report["excluded"]["manual_read"] == 55
+    assert report["aggregate"]["read_operations"] == 0
+    assert report["read_counts"] == {}
+    assert obs["sessions_met"] is False  # 200 < 500
+    assert obs["thresholds_met"] is False
+    assert obs["diagnostics_valid_for_collection"] is False
+    assert report["epoch"]["collection_started"] is False
+    assert report["evaluation_candidate"] is False
+    assert report["decision"] == "insufficient_instrumentation"
 
 
 # ---------------------------------------------------------------------------
@@ -682,9 +727,12 @@ def test_legacy_rows_without_new_fields_dont_crash_report(db):
 
 
 def test_payload_without_expected_keys_doesnt_crash(db):
-    """Payloads missing expected keys don't crash resolution or report."""
+    """Valid empty digests resolve safely; genuinely missing keys clear the report."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 15, tzinfo=timezone.utc)
     logger = AuditLogger(db)
-    # Insert an impression with minimal payload (missing digest_ids)
+    # The real writer supplies all required version1 keys, with an empty digest.
     _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
@@ -692,13 +740,29 @@ def test_payload_without_expected_keys_doesnt_crash(db):
         digest_ids=[],
         budget=1500,
     )
-    # Empty digest_ids is handled gracefully
+    db.execute("UPDATE audit_log SET timestamp='2026-10-01T00:00:00+00:00'")
+    # Valid empty digest_ids never makes an unrelated memory digest-sourced.
     source = logger._resolve_read_source(
         agent="dev_agent", id="MEM-001", session_id="sess-aaa",
     )
     assert source == "explicit_or_other"
-    report = logger.compute_memory_telemetry_report(agent_role_map={})
+    report = logger.compute_memory_telemetry_report(agent_role_map={}, current_time=now)
     assert report["decision"] == "insufficient_instrumentation"
+    assert report["diagnostic_errors"] == {}
+    assert report["instrumentation_health"]["reason_code"] == "missing_authority"
+    assert report["instrumentation_health"]["malformed_records"] == 0
+    assert report["aggregate"]["correlated_sessions"] == 0
+    assert report["aggregate"]["pointer_opportunities"] == 0
+    assert report["aggregate"]["read_operations"] == 0
+    assert report["by_agent"]["dev_agent"]["eligible"] is False
+    assert report["observation_period"]["thresholds_met"] is False
+    assert report["evaluation_candidate"] is False
+
+    # This actual persisted payload now lacks digest_ids and other required keys.
+    db.execute("UPDATE audit_log SET payload='{}' WHERE action='memory_digest_impression'")
+    malformed = logger.compute_memory_telemetry_report(agent_role_map={}, current_time=now)
+    assert malformed["diagnostic_errors"] == {"malformed_impression": 1}
+    assert malformed == _malformed_impression_report(now)
 
 
 def test_search_with_null_session_still_works(db):
@@ -1261,16 +1325,24 @@ from cli.commands.learning import _compute_report
 
 
 def test_report_rejects_malformed_payload_before_diagnostic_set_calculation(db):
-    """Database-backed report cannot raise or credit malformed audit input."""
+    """A persisted array payload yields the whole cleared malformed-impression report."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 10, 15, tzinfo=timezone.utc)
     logger = AuditLogger(db)
     _report_impression(logger,
         agent="dev_agent", task_id="TASK-1", session_id="sess-1",
         digest_ids=["MEM-001"], budget=1500,
     )
     db.execute("UPDATE audit_log SET payload='[]' WHERE action='memory_digest_impression'")
-    report = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
+    db.execute("UPDATE audit_log SET timestamp='2026-10-01T00:00:00+00:00'")
+    report = logger.compute_memory_telemetry_report(
+        agent_role_map={"dev_agent": "developer"}, current_time=now,
+    )
     assert report["decision"] == "insufficient_instrumentation"
     assert report["observation_period"]["thresholds_met"] is False
+    assert report["diagnostic_errors"] == {"malformed_impression": 1}
+    assert report == _malformed_impression_report(now)
 
 
 def test_compute_report_roles_unavailable_warning(db):
