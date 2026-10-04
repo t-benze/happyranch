@@ -1862,6 +1862,20 @@ longer uses it. The unchanged resolver still prefers digest to search.
 See the feature guide for the exact optional JSON validation/legacy contract.
 Recovery/unattributed launches do not gain task eligibility from a version;
 `session_start` is intended invocation rather than complete launch census.
-G1 canary/epoch authority, G3 launch/expectation census, G4 consistent acquisition,
+The source-side G3 observer records independent intended invocations and frozen
+expectations as described in the feature guide. G1 canary/epoch authority,
+current-serving census acquisition/acceptance, G4 consistent acquisition,
 full reporting and installed acceptance remain OPEN; both reports stay
 fail-closed. No collection starts here.
+
+The `_run_agent` observation wrapper preserves its caller signature, bootstrap
+body, original registration/impression/start/launch/cleanup order and returns or
+raised exceptions. Intent reservation precedes preparation; SID and immutable
+expectation observations remain at their actual assignment/render boundaries.
+A finally observation retains unknown early phases and the exact invocation's
+terminal outcome without clearing or rewriting any SessionTracker generation.
+Counters/metadata use a short observer lock; persistence takes the observer
+writer before Database, with no Database-held caller entering the observer.
+Concurrent boundary metadata is drained synchronously by an observation boundary,
+without a timer/service and without holding metadata locks across application
+callbacks, rendering, executor/supervisor or task completion.

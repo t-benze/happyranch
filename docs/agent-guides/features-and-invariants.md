@@ -251,7 +251,43 @@ Task bootstrap retains text and item IDs from one actual `MemoryStore.render_mem
 
 After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 
-The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, G3 complete intended-launch/expectation census, G4 consistent acquisition, the whole-report matrix and installed health acceptance remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, current-serving G3 census acquisition/acceptance, G4 consistent acquisition, the whole-report matrix and installed health acceptance remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+
+The source-side G3 observer is attached by real `OrgState` construction before
+workers. One actual `_run_agent` entry reserves an independent boot-local ordinal
+before telemetry writes. Metadata-only `memory_runtime_intent`,
+`memory_runtime_identity`, `memory_runtime_expectation`, `memory_runtime_binding`,
+`memory_runtime_launched`, `memory_runtime_terminal` and `memory_collection_seal`
+use the existing actual-task audit scope. SID is observed at its original
+assignment; parent relation and recovery purpose come from runtime facts,
+never provider resume or request claims. Provider retries add started-callback
+occurrences under one logical invocation. Each terminal belongs to its own
+ordinal/runtime SID; no latest-agent session-end inference is used.
+
+Expectation freezes the same structured render/config used by the unchanged
+prompt: `disabled/budget_zero`, `empty/memory_directory_absent`,
+`empty/renderer_empty`, `empty/no_valid_rendered_ids`, or
+`nonempty/rendered_ids`. Text presence is separate from eligible item exposure;
+full-body-only exposure is nonempty with zero pointer opportunities. No content
+is recorded and no missing expectation is inferred from an absent impression.
+
+Live attempted/persisted counts and chained digests are independent of stored
+rows. A short metadata lock never spans rendering, execution or application
+callbacks. Observation-boundary persistence drains concurrent metadata in
+generation order; another invocation's callback need not wait on a blocked
+observer writer. Writer failures are sticky and affect observation availability
+only. Internal zero-write validation rejects missing/duplicate/corrupt phases,
+missing starts or expected impressions even at zero reads, missing seals,
+unknown/pending preparation and zero population. A restart allocates a new
+observer boot and never reconstructs old completeness. Constructor/attachment
+failure preserves ordinary org startup with explicit unavailable observation.
+
+This census and its seals are not collection health, installed acceptance or
+epoch authority. G1, current-serving acquisition/B1, both health consumers,
+installed canary/deferred executor/population coverage and full reporting remain
+unimplemented here. Existing backend and canonical CLI guards remain
+`insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
+transition, deployment, tuning or 48-hour clock starts from this source unit.
 
 `AuditLogger.compute_memory_telemetry_report` and `happyranch memory report`
 currently report `insufficient_instrumentation`. Current audit rows have no

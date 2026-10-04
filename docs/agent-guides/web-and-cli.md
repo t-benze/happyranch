@@ -669,7 +669,11 @@ precedence stay unchanged; digest-first source resolution uses accurate item
 IDs, allowing a genuinely nonshown search-result read to be search-sourced.
 Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
 A version is exposure metadata, never epoch authority or task eligibility.
-G1 independent canary/epoch acceptance, G3 complete launch/expectation census,
+The source-side G3 census records actual bootstrap intent/identity/expectation/
+binding/launch-callback/terminal metadata plus independent seals in ordinary audit
+rows. Existing `/audit` returns those stored rows with the unchanged response
+shape; this unit supplies no live observer envelope or CLI collection authority.
+G1 independent canary/epoch acceptance, current-serving census acquisition,
 G4 consistent acquisition and full reporting/installed health remain OPEN.
 
 `happyranch memory report` paginates the existing audit read surface but is
