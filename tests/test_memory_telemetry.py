@@ -463,7 +463,7 @@ def test_report_empty_digest_impressions(db):
 
 
 def test_report_insufficient_days(db):
-    """Recent impressions but <14 days returns insufficient_sample."""
+    """Recent observations retain raw days_met=false and closed collection."""
     logger = AuditLogger(db)
     _report_impression(logger,
         agent="dev_agent",
@@ -478,7 +478,7 @@ def test_report_insufficient_days(db):
 
 
 def test_report_insufficient_sessions(db):
-    """<500 sessions returns insufficient_sample even if days met (in theory)."""
+    """Ten observed task sessions retain sessions_met=false and closed collection."""
     # We can't fake days (uses real clock), but we can verify session count
     # is checked. This test just validates the session count check exists.
     logger = AuditLogger(db)
@@ -588,7 +588,7 @@ def test_search_memory_ids_only_excludes_kb(db):
 
 
 def test_decision_activation_loss_when_pull_through_low(db):
-    """Low pull-through with majority roles below 10% => activation_loss."""
+    """Raw600-session volume never establishes collection or an activation decision."""
     logger = AuditLogger(db)
     # Seed 600 sessions with unique digest IDs, very few reads
     for i in range(600):
@@ -617,7 +617,7 @@ def test_decision_activation_loss_when_pull_through_low(db):
 
 
 def test_decision_contradictory_roles_preserved(db):
-    """When aggregate <10% but majority of roles are NOT <10%, no global remedy."""
+    """Both role populations remain visible as descriptive intended-session counts."""
     logger = AuditLogger(db)
     # Agent A: 100 sessions, high pull-through (many reads)
     for i in range(100):
@@ -799,8 +799,7 @@ def _future_now() -> datetime:
 
 
 def test_activation_loss_decision_when_pull_through_below_10_pct(db):
-    """Activation loss: aggregate <10% AND majority of eligible roles <10%.
-    Uses frozen current_time so the 14-day threshold is met."""
+    """Low pull-through in both large role populations stays descriptive and ineligible."""
     logger = AuditLogger(db)
     # 600 dev_agent sessions, only 5 with reads → pull-through ≈ 5/600 ≈ 0.8%
     for i in range(600):
@@ -855,8 +854,7 @@ def test_activation_loss_decision_when_pull_through_below_10_pct(db):
 
 
 def test_retrieval_loss_decision_with_full_assertion(db):
-    """Retrieval loss: search-sourced reads of IDs absent from digest >25%
-    both aggregate AND in eligible role."""
+    """Real nonshown search-source pairs preserve ratios without selecting retrieval tuning."""
     logger = AuditLogger(db)
     for i in range(600):
         _report_impression(logger,
@@ -908,8 +906,7 @@ def test_retrieval_loss_decision_with_full_assertion(db):
 
 
 def test_no_demonstrated_problem_decision(db):
-    """When pull-through >=10% AND search absent <=25%, decision is
-    no_demonstrated_problem."""
+    """High pull-through and absent search evidence still yield insufficient_instrumentation."""
     logger = AuditLogger(db)
     for i in range(600):
         _report_impression(logger,
@@ -939,9 +936,7 @@ def test_no_demonstrated_problem_decision(db):
 
 
 def test_contradictory_roles_preserved_full_decision(db):
-    """Two roles with divergent pull-through: one <10%, one >=10%.
-    Aggregate <10% but majority of eligible roles NOT below →
-    no activation loss, no global remedy, per-role metrics visible."""
+    """Divergent per-role ratios remain visible while authority and evaluation stay closed."""
     logger = AuditLogger(db)
     # role_a (agent_a): 970 sessions, only 5 with reads → pull-through ~0.5%
     for i in range(970):
@@ -1122,7 +1117,7 @@ def test_roles_unavailable_when_map_is_none(db):
 
 
 def test_unknown_agents_excluded_with_warning(db):
-    """Agents not in role map are excluded with a warning."""
+    """An unmapped agent retains descriptive counts and a null role, without eligibility."""
     logger = AuditLogger(db)
     for i in range(600):
         _report_impression(logger,
@@ -1172,7 +1167,7 @@ def test_partial_role_map_respected(db):
         agent_role_map={"dev_agent": "developer"},
         current_time=_future_now(),
     )
-    # Warning about unknown_agent
+    # Unknown membership cannot gain eligibility
     assert "roles_available" in report["instrumentation_health"]
     assert report["by_agent"]["unknown_agent"]["role"] is None
     # But developer should be in by_role
@@ -1254,9 +1249,7 @@ def test_report_rejects_malformed_payload_before_diagnostic_set_calculation(db):
 
 
 def test_compute_report_roles_unavailable_warning(db):
-    """CLI _compute_report: when agent_role_map is None and thresholds
-    are met, roles_warning is emitted and decision is safe (no remedy
-    when zero eligible roles)."""
+    """CLI wrapper preserves unavailable roles and refuses eligibility despite raw volume."""
     logger = AuditLogger(db)
     for i in range(600):
         _report_impression(logger,
@@ -1287,9 +1280,9 @@ def test_compute_report_roles_unavailable_warning(db):
         agent_role_map=None,
         current_time=_future_now(),
     )
-    # Thresholds met
+    # Raw sample volume never enables collection thresholds
     assert report["observation_period"]["thresholds_met"] is False
-    # roles_warning emitted for unavailable map
+    # Unavailable role projection remains explicit
     assert "roles_available" in report["instrumentation_health"]
     assert report["instrumentation_health"]["roles_available"] is False
     assert report["by_role"] == {}
@@ -1298,9 +1291,7 @@ def test_compute_report_roles_unavailable_warning(db):
 
 
 def test_compute_report_partial_role_map_warning(db):
-    """CLI _compute_report: partial role map emits warning for
-    unknown agents, excludes them from role decisions, and keeps
-    known roles intact."""
+    """CLI wrapper preserves known role counts and unknown-agent null membership."""
     logger = AuditLogger(db)
     # known agent: developer role
     for i in range(500):
@@ -1345,7 +1336,7 @@ def test_compute_report_partial_role_map_warning(db):
         agent_role_map={"dev_agent": "developer"},
         current_time=_future_now(),
     )
-    # roles_warning emitted for unknown agent
+    # Unknown agent stays descriptive and ineligible
     assert "roles_available" in report["instrumentation_health"]
     assert report["by_agent"]["unknown_agent"]["role"] is None
     assert report["by_agent"]["unknown_agent"]["eligible"] is False

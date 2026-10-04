@@ -167,6 +167,45 @@ def observation_oracle(agent_metrics=None, *, now=OCT, first=FIRST, starts=None,
     }
 
 
+def assert_text_report(rendered, expected):
+    """Independent CLI text contract over the declared numeric/error oracle."""
+    obs = expected["observation_period"]
+    summary = [
+        "=== THR-091 Memory Telemetry Report (observation-only) ===",
+        "Status: insufficient_instrumentation",
+        "Canary-gated collection has NOT started; epoch is unversioned and invalid.",
+        f"Data through: {expected['data_through']}; timezone UTC",
+        f"First event: {obs['first_impression_at']}",
+        f"Days elapsed: {obs['days_elapsed']} / 14",
+        f"Sessions: {obs['total_correlated_sessions']} / 500",
+        "Thresholds:    NOT MET",
+        "Population: audited intended task-session invocations; complete launch census UNKNOWN",
+    ]
+    lines = rendered.splitlines()
+    assert lines[:9] == summary
+    remaining = iter(lines[9:])
+    # Each complete section is checked independently; no report/formatter call
+    # supplies expected values, and extra/missing metrics cannot hide in text.
+    for heading, groups in [("AGGREGATE", {"all": expected["aggregate"]}),
+                            ("BY AGENT", expected["by_agent"]), ("BY ROLE", expected["by_role"])]:
+        assert next(remaining) == heading
+        for name in sorted(groups):
+            assert next(remaining) == f"  [{name}]"
+            actual = {}
+            for _ in groups[name]:
+                label, value = next(remaining).strip().split(": ", 1)
+                assert label not in actual
+                actual[label] = value
+            assert actual == {key: "unknown" if value is None else str(value)
+                              for key, value in groups[name].items()}
+    for label in ["read_counts", "excluded", "diagnostic_errors", "instrumentation_health"]:
+        name, encoded = next(remaining).split(": ", 1)
+        assert name == label
+        assert json.loads(encoded) == expected[label]
+    assert list(remaining) == ["DECISION: insufficient_instrumentation", expected["decision_detail"]]
+    assert rendered.endswith("\n")
+
+
 def cli_report(client, monkeypatch, capsys, now, expected):
     # Run the actual canonical parser, command, OpcClient and authenticated routes.
     import datetime as clock_module
@@ -189,13 +228,7 @@ def cli_report(client, monkeypatch, capsys, now, expected):
             assert json.loads(result.out) == expected
             assert "NaN" not in result.out and "Infinity" not in result.out
         else:
-            assert "DECISION: insufficient_instrumentation" in result.out
-            assert "Thresholds:    NOT MET" in result.out
-            assert "Thresholds:    MET" not in result.out and "evaluate activation" not in result.out
-            assert f"Days elapsed: {expected['observation_period']['days_elapsed']} / 14" in result.out
-            assert f"Sessions: {expected['observation_period']['total_correlated_sessions']} / 500" in result.out
-            for name in expected["by_agent"]:
-                assert f"[{name}]" in result.out
+            assert_text_report(result.out, expected)
     monkeypatch.setattr(clock_module, "datetime", real_datetime)
 
 
@@ -235,6 +268,11 @@ def test_r01_r04_whole_empty_and_corrupt_reports(client_with_runtime, monkeypatc
     else:
         if case != "R04":
             AuditLogger(db).log_memory_digest_impression(agent="dev_agent", task_id="TASK-0", session_id="sess0", digest_ids=["MEM-001"], budget=1500)
+        if case == "R02":
+            # Preserve the exact TASK7799 short-malformed-search read tuple,
+            # in addition to its legacy impression and malformed search.
+            AuditLogger(db).log_memory_read(agent="dev_agent", id="MEM-001", slug="x",
+                                           session_id="sess500", task_id="TASK-500", source="digest")
         action = "memory_read" if case == "R03" else "memory_search"
         db.insert_audit_log(task_id="TASK-500", agent="dev_agent", action=action,
                             payload={"id": "MEM-001", "source": "digest", "session_id": "sess500", "task_id": "TASK-500"} if case == "R03" else [])
@@ -607,9 +645,7 @@ runpy.run_module('cli.main',run_name='__main__')
             if mode:
                 assert json.loads(result.stdout) == expected
             else:
-                assert "Thresholds:    NOT MET" in result.stdout
-                assert f"Sessions: {sum(counts)} / 500" in result.stdout
-                assert "DECISION: insufficient_instrumentation" in result.stdout
+                assert_text_report(result.stdout, expected)
         n = sum(counts)
         pages = [5000, 1] if n == 5001 else [551]
         for action in ACTIONS:
@@ -871,7 +907,7 @@ def test_r11_combined_modes_causal_search_pairs_and_operation_counts(client_with
     assert_venues(client, org, monkeypatch, capsys, expected)
 
 
-@pytest.mark.parametrize("variant", ["duplicate", "overlap", "union", "version", "count", "partial"])
+@pytest.mark.parametrize("variant", ["duplicate", "overlap", "union", "version", "count", "partial", "count-missing"])
 def test_r11_r13_exposure_metadata_corruption_is_structural(client_with_runtime, monkeypatch, capsys, variant):
     client, org = client_with_runtime
     emit(org.db)
@@ -882,6 +918,7 @@ def test_r11_r13_exposure_metadata_corruption_is_structural(client_with_runtime,
     if variant == "union": p["pointer_ids"].pop()
     if variant == "version": p["memory_telemetry_version"] = True
     if variant == "count": p["digest_count"] = 9
+    if variant == "count-missing": del p["digest_count"]
     if variant == "partial": del p["full_body_ids"]
     org.db.execute("UPDATE audit_log SET payload=? WHERE id=?", (json.dumps(p), row["id"]))
     assert_venues(client, org, monkeypatch, capsys, error_oracle("malformed_impression", now=OCT))

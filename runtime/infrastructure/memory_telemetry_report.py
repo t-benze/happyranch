@@ -129,6 +129,8 @@ def reduce_report(
                         raise ValueError("count")
                     if any(k in p for k in ("memory_telemetry_version", "pointer_ids", "full_body_ids")):
                         from runtime.infrastructure.learnings_store import ID_RE
+                        if "digest_count" not in p:
+                            raise ValueError("exposure count")
                         if type(p.get("memory_telemetry_version")) is not int or p["memory_telemetry_version"] != 1:
                             raise ValueError("version")
                         for ids in (p["digest_ids"], p.get("pointer_ids"), p.get("full_body_ids")):
