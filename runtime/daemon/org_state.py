@@ -12,6 +12,10 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.infrastructure.memory_collection import CollectionObserver
 
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
@@ -53,6 +57,8 @@ class OrgState:
     settings: Settings
     orchestrator: Orchestrator
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
+    memory_collection: CollectionObserver | None = field(init=False, default=None)
+    memory_collection_unavailable: str | None = field(init=False, default=None)
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -90,6 +96,15 @@ class OrgState:
     }
 
     def __post_init__(self) -> None:
+        try:
+            from runtime.infrastructure.memory_collection import CollectionObserver
+            self.memory_collection = CollectionObserver(org=self.slug, root=self.root, db=self.db)
+            self.orchestrator.attach_memory_collection(self.memory_collection)
+        except Exception:
+            self.memory_collection_unavailable = "observer_initialization_failed"
+            if self.memory_collection is not None:
+                self.memory_collection.unavailable(self.memory_collection_unavailable)
+            logger.exception("org %r: memory collection observation unavailable", self.slug)
         self.workflow_authority = WorkflowAuthorityCoordinator(
             db=self.db,
             org_slug=self.slug,

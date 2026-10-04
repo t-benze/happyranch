@@ -43,6 +43,21 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 ## Essentials
 
+- **Observation-only memory census (THR-091).** Real `OrgState` attaches a
+  boot-local observer before workers. Actual `_run_agent` entry reserves intent
+  independently of starts/impressions/reads; the same structured render freezes
+  disabled/empty/nonempty expectations. Existing task-scoped audit rows record
+  identity/binding/started-callback occurrences/own terminal plus seals. Loss,
+  corruption, zero/pending/unknown population and failed initialization remain
+  unavailable; application returns/exceptions and session ownership stay intact.
+  Seals checkpoint counters without history reads and explicitly remain
+  `census_not_reconciled`. Exhaustive read validation is bounded and compares
+  closing semantic observer/database facts; movement or work exhaustion refuses.
+  Internal census validity is never collection health or epoch authority.
+  G1/B1/current-serving acquisition, both health consumers, installed acceptance,
+  canary/deferred venues and full reporting remain open; backend/CLI guards stay
+  `insufficient_instrumentation`. See the memory section in the feature guide.
+
 - **Workflow schema U1A foundation (THR-139).** U1A installs the
   complete inert version-1 workflow layout only from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
