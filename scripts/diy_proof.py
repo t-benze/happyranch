@@ -331,6 +331,14 @@ def _junit(path: Path, *, phase: str, attempt: int, source=None):
         in_owner = any(item.lineno <= line <= item.end_lineno for item in owners)
         assertion = any(isinstance(item, ast.Assert) and item.lineno <= line <= item.end_lineno
                         for owner in owners for item in ast.walk(owner))
+        def owned_nodes(owner):
+            pending = list(owner.body)
+            while pending:
+                item = pending.pop()
+                yield item
+                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                    pending.extend(ast.iter_child_nodes(item))
+
         if kind != "AssertionError":
             # Preserve the existing other-Error owner behavior.
             if not in_owner:
@@ -340,14 +348,6 @@ def _junit(path: Path, *, phase: str, attempt: int, source=None):
             # Only these directly-called top-level helpers belong to this
             # exact test. No transitive or future discovery is allowed.
             eligible = owners
-
-            def owned_nodes(owner):
-                pending = list(owner.body)
-                while pending:
-                    item = pending.pop()
-                    yield item
-                    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-                        pending.extend(ast.iter_child_nodes(item))
 
             if not in_owner:
                 if (module, node) != ("tests/remote_access/test_diy_acceptance.py", "tests/remote_access/test_diy_acceptance.py::test_real_diy_acceptance"):
@@ -387,6 +387,142 @@ def _junit(path: Path, *, phase: str, attempt: int, source=None):
                 facts.update(location="invalid", reason="not_assertion")
                 return facts
         facts.update(line=line, location="known", category="assertion" if kind == "AssertionError" else "failure_boundary")
+        if (module, node, kind) != (ACCEPTANCE, ACCEPTANCE + "::test_real_diy_acceptance", "AssertionError"):
+            return facts
+        # Only the unchanged client's return-code predicate owns this extension.
+        # Every optional group is nullable; these checks never require evidence.
+        selected = [item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == "test_real_diy_acceptance"]
+        helpers = [item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == "_run_client"]
+        if len(selected) != 1 or len(owners) != 1 or len(helpers) != 1:
+            return facts
+        helper = helpers[0]
+        predicate = ast.parse('assert proc.returncode == 0, f"client failed: {proc.stderr}"').body[0]
+        predicates = [item for item in owned_nodes(helper) if isinstance(item, ast.Assert) and ast.dump(item) == ast.dump(predicate)]
+        if len(predicates) != 1 or predicates[0].lineno != line:
+            return facts
+        facts["client"] = client = dict(caller_line=None, action=None, returncode=None, outcome="unknown", exception=None)
+        if facts["candidate"] is None:
+            return facts
+        # No aliases, rebinding, imported callables or local shadows. Reads are
+        # allowed only as the callee of an actual direct call.
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        shadowed = any(
+            (isinstance(item, ast.Name) and item.id == "_run_client" and
+             (not isinstance(item.ctx, ast.Load) or not isinstance(parents.get(item), ast.Call) or parents[item].func is not item))
+            or (isinstance(item, ast.arg) and item.arg == "_run_client")
+            or (isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and item.name == "_run_client" and item is not helper)
+            or (isinstance(item, ast.alias) and (item.asname or item.name.split(".")[0]) in ("_run_client", "*"))
+            or (isinstance(item, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and item.name == "_run_client")
+            or (isinstance(item, ast.MatchMapping) and item.rest == "_run_client")
+            for item in ast.walk(tree))
+        if shadowed:
+            return facts
+        text = (element.text or "").split("\n")
+        # Only the final owned frame's E-section is an optional input. Displayed
+        # source, locals, reprs, message attributes and captures never supply facts.
+        starts = [(index, match) for index, value in enumerate(text)
+                  if (match := re.fullmatch(r"E( +)AssertionError: client failed: (.*)", value))]
+        ends = [index for index, value in enumerate(text) if value == f"{filename}:{line}: AssertionError"]
+        if len(starts) != 1 or len(ends) != 1 or starts[0][0] >= ends[0]:
+            return facts
+        begin, message = starts[0]
+        segment = text[begin:ends[0]]
+        raw = "\n".join(segment)
+        if len(segment) > 128 or re.search(r"#x(?:0[0-9A-Fa-f]|1[0-9A-Fa-f]|7[Ff])", raw) or any(ord(char) < 32 and char != "\n" or 127 <= ord(char) <= 159 for char in raw):
+            return facts
+        try:
+            safe_bytes(raw.encode(), 16384)
+        except ProofFailure:
+            return facts
+        # A normal first-frame location has an empty exception suffix. Reject
+        # duplicate or foreign observed frames rather than choose a static site.
+        frames = [(index, match.groups()) for index, value in enumerate(text)
+                  if (match := re.fullmatch(r"(.+\.py):([0-9]{1,7}): *", value))]
+        calls = [item for item in owned_nodes(selected[0])
+                 if isinstance(item, ast.Call) and isinstance(item.func, ast.Name) and item.func.id == "_run_client"]
+        if len(frames) == 1 and frames[0][0] < begin and frames[0][1][0] in (module, str(ROOT / module)):
+            caller = int(frames[0][1][1])
+            matches = [item for item in calls if item.lineno <= caller <= item.end_lineno]
+            if len(matches) == 1 and matches[0].lineno == matches[0].end_lineno == caller:
+                call = matches[0]
+                client["caller_line"] = caller
+                if len(call.args) >= 3 and isinstance(call.args[2], ast.List) and call.args[2].elts:
+                    action = call.args[2].elts[0]
+                    if isinstance(action, ast.Constant) and type(action.value) is str and action.value in ("redeem", "request"):
+                        client["action"] = action.value
+        indent = message[1]
+        comparisons = [(index, value) for index, value in enumerate(segment)
+                       if value.startswith("E" + indent + "assert ")]
+        # The generated comparison is at base indent after custom stderr;
+        # its attribute explanation confirms the same integer but no repr value
+        # is parsed, copied or evaluated.
+        spoofed = any(re.match(r"E +(?:assert .+ == 0|\+  where .+ = .+\.returncode)", value)
+                      and not value.startswith("E" + indent + "assert ")
+                      and not value.startswith("E" + indent + " +  where ") for value in segment)
+        if len(comparisons) == 1 and not spoofed:
+            index, value = comparisons[0]
+            comparison = re.fullmatch("E" + indent + r"assert (-?[1-9][0-9]{0,2}) == 0", value)
+            explanation = segment[index + 1] if index + 1 < len(segment) else ""
+            if comparison and re.fullmatch("E" + indent + r" \+  where " + re.escape(comparison[1]) + r" = .+\.returncode", explanation) and not any(value.strip() for value in segment[index + 2:]):
+                code = int(comparison[1])
+                if 1 <= code <= 255 or -64 <= code <= -1:
+                    client.update(returncode=code, outcome="exit" if code > 0 else "signal")
+        # Resolve only the fixed CLIENT declaration, not a generic call graph.
+        declarations = [item for item in tree.body if isinstance(item, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "CLIENT" for target in item.targets)]
+        here = [item for item in tree.body if isinstance(item, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "HERE" for target in item.targets)]
+        fixed_client = ast.parse('CLIENT = HERE / "diy_client.py"').body[0]
+        fixed_here = ast.parse('HERE = Path(__file__).resolve().parent').body[0]
+        if len(declarations) != 1 or len(here) != 1 or ast.dump(declarations[0]) != ast.dump(fixed_client) or ast.dump(here[0]) != ast.dump(fixed_here):
+            return facts
+        client_module = "tests/remote_access/diy_client.py"
+        client_path = ROOT / client_module
+        try:
+            if client_module not in source or client_path.is_symlink() or not client_path.is_file():
+                return facts
+            client_data = client_path.read_bytes()
+            if hashlib.sha256(client_data).hexdigest() != source[client_module]["sha256"]:
+                return facts
+            client_tree = ast.parse(client_data)
+        except (OSError, SyntaxError, ValueError, RecursionError):
+            return facts
+        functions = {name: [item for item in client_tree.body if isinstance(item, ast.FunctionDef) and item.name == name] for name in ("main", "_request")}
+        if any(len(items) != 1 for items in functions.values()) or len(comparisons) != 1:
+            return facts
+        # Client stderr is the deeper-indented custom-message continuation.
+        # Empty trailing continuation from stderr's newline is nontext only.
+        stderr = [message[2]]
+        for value in segment[1:comparisons[0][0]]:
+            prefix = "E" + indent + "  "
+            if not value.startswith(prefix):
+                return facts
+            stderr.append(value[len(prefix):])
+        while stderr and not stderr[-1].strip():
+            stderr.pop()
+        if not stderr or stderr[0] != "Traceback (most recent call last):":
+            return facts
+        position = 1
+        seen = []
+        while position < len(stderr):
+            frame = re.fullmatch(r'  File "([^"\n]+)", line ([1-9][0-9]{0,6}), in (<module>|main|_request|[A-Za-z_][A-Za-z_0-9]*)', stderr[position])
+            if not frame:
+                break
+            path, number, function = frame.groups()
+            if function in functions:
+                owner = functions[function][0]
+                if path not in (client_module, str(client_path)) or not owner.lineno < int(number) <= owner.end_lineno:
+                    return facts
+                seen.append(function)
+            position += 1
+            # Normal Python tracebacks may show one source line and a caret.
+            if position < len(stderr) and stderr[position].startswith("    "):
+                position += 1
+                if position < len(stderr) and re.fullmatch(r"    [ ~^]+", stderr[position]):
+                    position += 1
+        if seen != ["main", "_request"] or position != len(stderr) - 1:
+            return facts
+        terminal = re.fullmatch(r"(http\.client\.RemoteDisconnected|ConnectionResetError|ConnectionRefusedError|TimeoutError):(?: .*)?", stderr[position])
+        if terminal:
+            client["exception"] = terminal[1]
         return facts
 
     rows = []

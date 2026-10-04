@@ -778,6 +778,25 @@ export no rejected line. Safe JUnit and stdout/stderr carry no reason. Absent,
 malformed, foreign or ambiguous locations remain unknown; oversized or malformed
 private JUnit is refused. Assertion values remain unknown. Raw assertions, code,
 locals, credentials and child output remain private.
+For that exact test, only the unique source-validated `_run_client` return-code
+assertion additionally carries a fixed JSON-only `client` object: `caller_line`,
+static `action` (`redeem`/`request`), `returncode`, `outcome` (`exit`/`signal`/`unknown`)
+and `exception`. The caller must be one observed frame at a unique single-line
+direct call in the selected function; action comes only from the first literal
+item of its third positional list operand. A valid caller can have a null action.
+Only the final owned helper frame's canonical rewritten integer comparison admits
+exits 1..255 or signals -64..-1. Class observations require one normal traceback
+with source-bound `main` and `_request` frames in the manifest-authenticated fixed
+client file, and one terminal `http.client.RemoteDisconnected`,
+`ConnectionResetError`, `ConnectionRefusedError` or `TimeoutError` token. Suffixes,
+arguments, values, paths and captured output remain private. Caller, result and
+class groups are independently nullable after common ownership gates. Optional
+malformed, ambiguous, unsafe or over-16KiB/128-line text stays unknown without
+changing the original failure, location, exit or budget; existing whole-JUnit and
+receipt gates still control. Whitespace-only trailing stderr continuation is
+nontext. Safe JUnit and stdout/stderr carry neither this object nor its keys.
+These are observations, never cause or historical attribution; deleted private
+history remains unknown.
 Common finalization independently observes every returned command's owned group
 absence/direct-child reap and closed pipes (including the failed command), exact
 source restoration, and removal of the invocation's private directory. The

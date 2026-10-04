@@ -380,8 +380,38 @@ def test_diy_deadline_cleanup(case, tmp_path, monkeypatch):
         os.kill(result["pid"], 0)
 
 
+def _client_miniature(root, *, killed=False):
+    # AST-read the unchanged shipping helper; never import the marked module.
+    import ast
+    shipping = (ROOT / "tests/remote_access/test_diy_acceptance.py").read_text()
+    helper = next(item for item in ast.parse(shipping).body if isinstance(item, ast.FunctionDef) and item.name == "_run_client")
+    lines = ["import subprocess, sys, json", "from pathlib import Path",
+             "HERE = Path(__file__).resolve().parent", 'CLIENT = HERE / "diy_client.py"',
+             "def _wait_until(): pass", "def test_green(): pass"]
+    lines += [""] * (101 - len(lines))
+    lines += shipping.splitlines()[helper.lineno - 1:helper.end_lineno]
+    lines += [""] * (219 - len(lines))
+    lines += ["def test_real_diy_acceptance():", '    _run_client("fixture-host", 0, ["redeem"])']
+    # The eleven independently stipulated shipping sites/actions, without inputs.
+    for number, action in ((226, "request"), (233, "request"), (246, "request"),
+                           (251, "redeem"), (265, "redeem"), (269, "request"),
+                           (271, "request"), (283, "request"), (290, "request"), (314, "request")):
+        lines += [""] * (number - 1 - len(lines))
+        lines.append(f'    _run_client("fixture-host", 0, ["{action}"])')
+    lines += ["    _wait_until()", "def test_later(): pass"]
+    module = "tests/remote_access/test_diy_acceptance.py"
+    source = root / module
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("\n".join(lines) + "\n")
+    client = source.with_name("diy_client.py")
+    client.write_text("import http.client, os, signal\ndef _request():\n    "
+                      + ("os.kill(os.getpid(), signal.SIGTERM)" if killed else 'raise http.client.RemoteDisconnected("ORCHID_9671_PRIVATE_SUFFIX")')
+                      + "\ndef main():\n    _request()\nif __name__ == '__main__': main()\n")
+    return source, client
+
+
 @pytest.mark.parametrize("case", ["success", "overflow", "secret_canary", "missing_junit", "upload_failure"])
-def test_diy_receipt_privacy(case, tmp_path, monkeypatch):
+def test_diy_receipt_privacy(case, tmp_path, monkeypatch, capsys):
     _driver_admission()
     receipt = dict(label="TARGETED DIY", status="complete")
     if case == "overflow":
@@ -441,7 +471,165 @@ def test_diy_receipt_privacy(case, tmp_path, monkeypatch):
             assert len(raw) < 65536 and all(value not in raw for value in (b"Bearer ", b"private-credential", b"bearer-private", b"data: hello", b"DIY_SECRET_CANARY")), "[E7] no private failure strings cross serialization"
 
     if case in ("success", "secret_canary"):
+        import xml.etree.ElementTree as ET
+        source, client_source = _client_miniature(tmp_path / "client-facts")
+        original = source.read_text()
+        client_original = client_source.read_text()
+        module = "tests/remote_access/test_diy_acceptance.py"
+        client_module = "tests/remote_access/diy_client.py"
+        monkeypatch.setattr(proof, "ROOT", source.parents[2])
+        monkeypatch.setattr(proof, "FILES", (module, client_module))
+        private = tmp_path / "client-private.xml"
+        published = tmp_path / "client-safe.xml"
+        unknown = dict(caller_line=None, action=None, returncode=None, outcome="unknown", exception=None)
+
+        def representation(caller=221, code="1", exception="http.client.RemoteDisconnected", suffix="ORCHID_9671_PRIVATE_SUFFIX"):
+            stderr = (f'Traceback (most recent call last):\n  File "{client_module}", line 6, in <module>\n    main()\n'
+                      f'  File "{client_module}", line 5, in main\n    _request()\n'
+                      f'  File "{client_module}", line 3, in _request\n    raise http.client.RemoteDisconnected("private")\n'
+                      f'{exception}: {suffix}\n') if exception else ""
+            continuation = "\n".join("E         " + line for line in stderr.split("\n")[1:-1])
+            return (f'{module}:{caller}: \n\n    def _run_client(host, port, args, timeout=20):\n'
+                    f'>       assert proc.returncode == 0, f"client failed: {{proc.stderr}}"\n'
+                    f'E       AssertionError: client failed: {stderr.split(chr(10))[0] if stderr else ""}\n'
+                    + (continuation + "\n" if continuation else "")
+                    + f'E         \nE       assert {code} == 0\nE        +  where {code} = CompletedProcess(private).returncode\n\n{module}:109: AssertionError')
+
+        def observe(text, *, data=original, client_data=client_original, status="failed", baseline=None):
+            source.write_text(data)
+            client_source.write_text(client_data)
+            suite = ET.Element("testsuite")
+            node = ET.SubElement(suite, "testcase", classname="tests.remote_access.test_diy_acceptance", name="test_real_diy_acceptance")
+            if status == "failed":
+                failure = ET.SubElement(node, "failure", message="AssertionError: DIY_SECRET_CANARY")
+                failure.text = text
+                ET.SubElement(node, "system-out").text = "DIY_SECRET_CANARY"
+                ET.SubElement(node, "system-err").text = "DIY_SECRET_CANARY"
+            private.write_bytes(ET.tostring(suite))
+            _, rows = proof._junit(private, phase="repeat-2", attempt=1, source=baseline)
+            proof._write_safe_junit(published, rows)
+            encoded = proof.finalize_receipt(dict(rows=rows), junit_present=True, upload=True)
+            captured = capsys.readouterr()
+            if "DRIVER_ADMITTED" in captured.out:
+                print("DRIVER_ADMITTED", flush=True)
+            safe = published.read_bytes() + captured.out.encode() + captured.err.encode()
+            for key in (b'client', b'caller_line', b'action', b'returncode', b'outcome', b'exception', b'reason'):
+                assert key not in safe, "[G4] client observations are JSON-only"
+            assert all(value not in encoded + safe for value in (b"ORCHID_9671_PRIVATE_SUFFIX", b"DIY_SECRET_CANARY", b"fixture-host", b"CompletedProcess", b"PRIVATE_POSITION_9671")), "[G4] private suffix/arguments never serialize"
+            row = json.loads(encoded)["rows"][0]
+            if status == "failed":
+                assert row["status"] == "failed" and row["failure"]["values"] == "unknown", "[G4] original failure and unknown values retained"
+                return row["failure"]
+            assert "failure" not in row, "[G4] success never fabricates client facts"
+            return row
+
+        if case == "success":
+            for number, action in ((221, "redeem"), (226, "request"), (233, "request"), (246, "request"), (251, "redeem"), (265, "redeem"), (269, "request"), (271, "request"), (283, "request"), (290, "request"), (314, "request")):
+                observed = observe(representation(caller=number))
+                expected = dict(caller_line=number, action=action, returncode=1, outcome="exit", exception="http.client.RemoteDisconnected")
+                assert observed.get("client") == expected, f"[G1-G2] observed {observed.get('client')} expected {expected}"
+                assert type(observed["client"]["returncode"]) is int, "[G2] JSON integer, never boolean"
+                assert (observed["location"], observed["line"], observed["category"], observed["reason"]) == ("known", 109, "assertion", None)
+            for code, outcome in ((7, "exit"), (-15, "signal"), (255, "exit"), (-64, "signal")):
+                observed = observe(representation(code=str(code), exception=None))
+                assert observed.get("client") == dict(caller_line=221, action="redeem", returncode=code, outcome=outcome, exception=None), "[G2] stipulated typed result"
+                assert type(observed["client"]["returncode"]) is int
+            for kind in ("ConnectionResetError", "ConnectionRefusedError", "TimeoutError"):
+                assert observe(representation(exception=kind)).get("client", {}).get("exception") == kind, "[G2] closed terminal class"
+            observe(representation(), status="passed")
+        else:
+            for caller in ("0", "9999999", "two", "220", "222"):
+                observed = observe(representation(caller=caller))
+                assert observed.get("client") == unknown | dict(returncode=1, outcome="exit", exception="http.client.RemoteDisconnected"), "[G1] invalid caller preserves independent groups"
+            for data in (original.replace('    _run_client("fixture-host", 0, ["redeem"])', '    _run_client("fixture-host", 0, ["redeem"]); _run_client("fixture-host", 0, ["request"])', 1),
+                         original.replace('    _run_client("fixture-host", 0, ["redeem"])', '    def nested(): _run_client("fixture-host", 0, ["redeem"])', 1),
+                         original.replace('    _run_client("fixture-host", 0, ["redeem"])', '    _run_client("fixture-host",\n        0, ["redeem"])', 1)):
+                observed = observe(representation(), data=data)
+                assert observed.get("client", {}).get("caller_line") is None and observed.get("client", {}).get("action") is None, "[G1] ambiguous/nested/multiline call never chooses first"
+                assert observed.get("client", {}).get("returncode") == 1, "[G1] independently observed result retained"
+            observed = observe(representation(), data=original.replace('["redeem"]', 'dynamic_args', 1))
+            assert observed.get("client") == dict(caller_line=221, action=None, returncode=1, outcome="exit", exception="http.client.RemoteDisconnected"), "[G1] literal third operand only"
+            for text in (representation() + f"\n{module}:226: ", representation().replace(f"{module}:221: ", "foreign.py:221: ")):
+                assert observe(text).get("client", {}).get("caller_line") is None, "[G1] unique owned observed caller frame"
+            for code in ("0", "-0", "True", "False", "1.0", "'1'", "256", "-65", "1+0", "01", "+1"):
+                observed = observe(representation(code=code))
+                assert observed.get("client") == dict(caller_line=221, action="redeem", returncode=None, outcome="unknown", exception="http.client.RemoteDisconnected"), f"[G2] no fabricated/coerced result {code}"
+            for text in (representation().replace("E       assert 1 == 0", "E         assert 1 == 0"),
+                         representation().replace("E       assert 1 == 0", "E       assert 1 == 0\nE       assert 7 == 0"),
+                         representation().replace("E        +  where 1 =", "E        +  where 7 =")):
+                assert observe(text).get("client", {}).get("returncode") is None, "[G2] generated comparison order/indent/uniqueness"
+            for text in (representation(exception="ValueError"), representation(exception="RemoteDisconnected"),
+                         representation().replace("Traceback (most recent call last):", "bare class"),
+                         representation().replace("E         http.client.RemoteDisconnected:", "E         ConnectionResetError: other\nE         http.client.RemoteDisconnected:"),
+                         representation().replace("E         \nE       assert", "E         private note\nE       assert"),
+                         representation().replace('line 5, in main', 'line 5, in foreign'),
+                         representation().replace('line 3, in _request', 'line 5, in _request'),
+                         representation().replace("E         http.client.RemoteDisconnected:", "E         During handling of the above exception, another exception occurred:\nE         http.client.RemoteDisconnected:")):
+                observed = observe(text)
+                assert observed.get("client", {}).get("exception") is None, "[G2] no bare/spoofed/chained/noted/foreign class"
+                assert observed.get("client", {}).get("returncode") == 1, "[G2] class refusal preserves typed result"
+            for suffix in ("DIY_SECRET_CANARY", "Bearer private", "#x1B[31mprivate", "private\x7f", "private\x85", "x" * 16385, "\n" * 129):
+                observed = observe(representation(suffix=suffix))
+                assert observed.get("client") == unknown, "[G4] optional unsafe/capped text cannot change the original boundary"
+                assert (observed["location"], observed["line"]) == ("known", 109)
+            # Rebinding/aliases cannot authenticate the fixed callable. Optional
+            # refusal leaves the existing helper failure boundary intact.
+            for data in (original + "_run_client = other\n", original + "alias = _run_client\n",
+                         original.replace("def test_real_diy_acceptance():", "def test_real_diy_acceptance(_run_client=None):")):
+                observed = observe(representation(), data=data)
+                assert observed.get("client") == unknown, "[G1] common no-shadow/no-alias gate"
+                assert (observed["location"], observed["line"]) == ("known", 109)
+            for data in (original.replace('    _run_client("fixture-host", 0, ["redeem"])', '    other._run_client("fixture-host", 0, ["redeem"])', 1),
+                         original.replace('    _run_client("fixture-host", 0, ["redeem"])', '    _run_client("fixture-host", 0)', 1),
+                         original.replace('["redeem"]', '[]', 1),
+                         original.replace('["redeem"]', '[dynamic_action]', 1)):
+                observed = observe(representation(), data=data)
+                expected_line = None if "other._run_client" in data else 221
+                assert observed.get("client", {}).get("caller_line") == expected_line and observed.get("client", {}).get("action") is None, "[G1] indirect/missing/nonliteral operand"
+            assert observe(representation(), data=original + "def _run_client(): pass\n")["location"] == "invalid", "[G1] duplicate helper retains authentic ownership refusal"
+            assert observe(representation(), data=original + "def test_real_diy_acceptance(): pass\n")["location"] == "invalid", "[G1] duplicate selected owner refuses"
+            assert observe(representation(), data=original + "def broken(\n")["location"] == "source_unknown", "[G1] malformed source stays unknown"
+            for replacement in ("E         assert 7 == 0\nE         ",
+                                "E         \nE       assert 1 == 0\nE        +  where 1 = CompletedProcess(private).returncode\nE         "):
+                assert observe(representation().replace("E         \nE       assert", replacement + "\nE       assert")).get("client", {}).get("returncode") is None, "[G2] custom stderr cannot spoof a generated result"
+            # Private positions outside the optional E-section are ignored,
+            # including source/repr tokens that look like public observations.
+            for position in (f"{module}:221: \nPRIVATE_POSITION_9671\n", 'CompletedProcess(args=["PRIVATE_POSITION_9671"], returncode=255)',
+                             '    assert proc.returncode == 0 # PRIVATE_POSITION_9671',
+                             'locals: PRIVATE_POSITION_9671, returncode=255'):
+                text = representation().replace(f"{module}:221: ", position) if position.startswith(module) else "PRIVATE_POSITION_9671\n" + representation().replace("CompletedProcess(private)", position)
+                observed = observe(text)
+                assert observed.get("client", {}).get("returncode") == 1, "[G4] args/locals/source never supply result"
+            for client_data in (client_original + "def main(): pass\n", client_original + "def broken(\n"):
+                observed = observe(representation(), client_data=client_data)
+                assert observed.get("client", {}).get("exception") is None and observed.get("client", {}).get("returncode") == 1, "[G2] malformed/duplicate client owner leaves independent result"
+            observe(representation())
+            client_bytes = client_source.read_bytes()
+            client_source.unlink()
+            target = tmp_path / "client-target.py"
+            target.write_bytes(client_bytes)
+            client_source.symlink_to(target)
+            suite = ET.Element("testsuite")
+            node = ET.SubElement(suite, "testcase", classname="tests.remote_access.test_diy_acceptance", name="test_real_diy_acceptance")
+            ET.SubElement(node, "failure", message="AssertionError").text = representation()
+            private.write_bytes(ET.tostring(suite))
+            # The selected module is still regular and manifest-authentic.
+            baseline = {module: dict(sha256=hashlib.sha256(source.read_bytes()).hexdigest()), client_module: dict(sha256=hashlib.sha256(client_bytes).hexdigest())}
+            _, rows = proof._junit(private, phase="repeat-2", attempt=1, source=baseline)
+            assert rows[0]["failure"].get("client", {}).get("exception") is None and rows[0]["failure"].get("client", {}).get("returncode") == 1, "[G2] symlink client refused independently"
+            client_source.unlink()
+            client_source.write_bytes(client_bytes)
+            _, rows = proof._junit(private, phase="repeat-2", attempt=1, source={module: baseline[module]})
+            assert rows[0]["failure"].get("client", {}).get("exception") is None, "[G2] missing client manifest never invents class"
+            baseline = proof.manifest(source.parents[2])
+            observed = observe(representation(), client_data=client_original + "# drift\n", baseline=baseline)
+            assert observed.get("client", {}).get("exception") is None and observed.get("client", {}).get("returncode") == 1, "[G2] client digest independently gates class"
+            observed = observe(representation(), data=original + "# drift\n", baseline=baseline)
+            assert observed["location"] == "source_unknown" and "client" not in observed, "[G1] authentic-source refusal retained"
+
+    if case in ("success", "secret_canary"):
         # F0-F7 use fixed miniature bytes, never the real integration module.
+        monkeypatch.setattr(proof, "ROOT", tmp_path)
         module = "tests/remote_access/test_diy_acceptance.py"
         source = tmp_path / module
         source.parent.mkdir(parents=True, exist_ok=True)
@@ -586,13 +774,19 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
         # GitHub identity and the fixed payload inventory are unit inputs.
         real_manifest = proof.manifest
         real_run_owned = proof.run_owned
-        for scenario in ("direct", "F1", "F2", "F9"):
+        combined_started = time.monotonic()
+        for scenario in ("direct", "F1", "F2", "F9", "G_exit", "G_signal"):
             scenario_root = tmp_path / scenario
             scenario_root.mkdir()
             module = "test_sample.py" if scenario == "direct" else "tests/remote_access/test_diy_acceptance.py"
             source = scenario_root / module
             source.parent.mkdir(parents=True, exist_ok=True)
-            if scenario == "direct":
+            client_source = None
+            if scenario.startswith("G_"):
+                source, client_source = _client_miniature(scenario_root, killed=scenario == "G_signal")
+                client_original = client_source.read_bytes()
+                client_mode = stat.S_IMODE(client_source.stat().st_mode)
+            elif scenario == "direct":
                 source.write_text("def test_green(): pass\n"
                                   "def test_failed(): assert False, 'DIY_SECRET_CANARY'\n"
                                   "def test_later(): pass\n")
@@ -615,7 +809,7 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
             (scenario_root / "diy-start").write_text(str(time.monotonic()))
             nodes = tuple(module + "::" + name for name in ("test_green", "test_failed" if scenario == "direct" else "test_real_diy_acceptance", "test_later"))
             monkeypatch.setattr(proof, "ROOT", scenario_root)
-            monkeypatch.setattr(proof, "FILES", (module,))
+            monkeypatch.setattr(proof, "FILES", (module, "tests/remote_access/diy_client.py") if client_source else (module,))
             monkeypatch.setattr(proof, "manifest", lambda: real_manifest(scenario_root))
             monkeypatch.setattr(proof, "E_NODES", nodes)
             monkeypatch.setattr(proof, "MUTATIONS", {})
@@ -655,6 +849,12 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
             location = failed.get("failures")
             if scenario == "direct":
                 assert location and location[0]["module"] == "test_sample.py" and location[0]["line"] == 2 and location[0]["location"] == "known", "[E9] retain actual failed source line"
+            elif scenario.startswith("G_"):
+                expected_client = dict(caller_line=221, action="redeem", returncode=1 if scenario == "G_exit" else -15, outcome="exit" if scenario == "G_exit" else "signal", exception="http.client.RemoteDisconnected" if scenario == "G_exit" else None)
+                assert location and location[0].get("client") == expected_client, f"[G3] observed {location[0].get('client') if location else None} expected {expected_client}"
+                assert type(location[0]["client"]["returncode"]) is int
+                assert (location[0]["location"], location[0]["line"]) == ("known", 109), "[G3] real shipping helper boundary"
+                assert client_source.read_bytes() == client_original and stat.S_IMODE(client_source.stat().st_mode) == client_mode, "[G3] client source bytes AND mode restored"
             else:
                 assert location and location[0]["module"] == module, "[F8] retained failed module"
                 expected = {"F1": ("known", 2, None), "F2": ("known", 4, None), "F9": ("invalid", None, "not_owned")}[scenario]
@@ -668,6 +868,11 @@ def test_diy_verdict(case, tmp_path, monkeypatch, capsys):
             published = b"".join(path.read_bytes() for path in exported.iterdir())
             captured = capsys.readouterr()
             assert b"DIY_SECRET_CANARY" not in published and "DIY_SECRET_CANARY" not in captured.err + captured.out, "[E9] no raw exception/assertion export"
+            assert b"ORCHID_9671_PRIVATE_SUFFIX" not in published and "ORCHID_9671_PRIVATE_SUFFIX" not in captured.out + captured.err, "[G4] real client suffix stays private"
+            safe = (exported / "command-2.xml").read_bytes() + captured.out.encode() + captured.err.encode()
+            assert all(key not in safe for key in (b"client", b"caller_line", b"action", b"returncode", b"outcome", b"exception", b"reason")), "[G4] JSON-only client facts"
+        combined_seconds = time.monotonic() - combined_started
+        assert combined_seconds <= 10, f"[G3] combined E9 bound: {combined_seconds:.3f}s exceeds 10s"
     if case in ("timeout", "cancelled", "missing_upload", "cleanup_unknown"):
         # Safe miniature children exercise real owned supervision/finalization;
         # no daemon or integration test is admitted on this host.
