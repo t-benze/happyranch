@@ -427,6 +427,14 @@ def test_search_does_not_store_query_text(db):
 
 
 # ---------------------------------------------------------------------------
+def _report_impression(logger, **kwargs):
+    """New observed fixtures explicitly use the real start and metadata writers."""
+    logger.log_session_start(kwargs["task_id"], kwargs["agent"], "/disposable",
+                             session_id=kwargs["session_id"], invocation_purpose="worker_execution")
+    logger.log_memory_digest_impression(**kwargs, memory_telemetry_version=1,
+                                       pointer_ids=kwargs["digest_ids"], full_body_ids=[])
+
+
 # 7. Telemetry report computation
 # ---------------------------------------------------------------------------
 
@@ -437,13 +445,13 @@ def test_report_no_impressions_returns_insufficient_instrumentation(db):
     report = logger.compute_memory_telemetry_report(agent_role_map={})
     assert report["decision"] == "insufficient_instrumentation"
     assert report["observation_period"]["status"] == "insufficient_instrumentation"
-    assert "unversioned and invalid" in report["observation_period"]["reason"]
+    assert report["observation_period"]["reason_code"] == "missing_authority"
 
 
 def test_report_empty_digest_impressions(db):
     """Impressions with empty digest_ids are filtered out."""
     logger = AuditLogger(db)
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
         session_id="sess-empty",
@@ -457,7 +465,7 @@ def test_report_empty_digest_impressions(db):
 def test_report_insufficient_days(db):
     """Recent impressions but <14 days returns insufficient_sample."""
     logger = AuditLogger(db)
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
         session_id="sess-aaa",
@@ -475,7 +483,7 @@ def test_report_insufficient_sessions(db):
     # is checked. This test just validates the session count check exists.
     logger = AuditLogger(db)
     for i in range(10):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-{i:03d}",
             session_id=f"sess-{i:03d}",
@@ -493,19 +501,19 @@ def test_report_role_breakdown_with_map(db):
     logger = AuditLogger(db)
     # 100 sessions for dev_agent, 100 for qa_engineer
     for i in range(100):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-D{i:03d}",
             session_id=f"sess-d{i:03d}",
-            digest_ids=[f"MEM-D{i:03d}"],
+            digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
     for i in range(100):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="qa_engineer",
             task_id=f"TASK-Q{i:03d}",
             session_id=f"sess-q{i:03d}",
-            digest_ids=[f"MEM-Q{i:03d}"],
+            digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
     report = logger.compute_memory_telemetry_report(
@@ -513,13 +521,15 @@ def test_report_role_breakdown_with_map(db):
     )
     # Still insufficient due to days check, but by_role should show 200 total
     assert report["decision"] == "insufficient_instrumentation"
+    assert report["by_role"]["developer"]["correlated_sessions"] == 100
+    assert report["by_role"]["qa"]["correlated_sessions"] == 100
 
 
 def test_report_search_exclusion_from_digest_tracking(db):
     """Search reads of IDs absent from session digest are tracked."""
     logger = AuditLogger(db)
     # Impression with MEM-001
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
         session_id="sess-aaa",
@@ -532,17 +542,19 @@ def test_report_search_exclusion_from_digest_tracking(db):
         session_id="sess-aaa",
         memory_ids=["MEM-002"],
         hit_count=1,
-        kb_hit_count=0,
+        kb_hit_count=0, task_id="TASK-001",
     )
     # Read MEM-002 with search source
     logger.log_memory_read(
         agent="dev_agent", id="MEM-002", slug="b",
-        session_id="sess-aaa", source="search",
+        session_id="sess-aaa", source="search", task_id="TASK-001",
     )
     # The telemetry report should flag MEM-002 as absent from digest
     report = logger.compute_memory_telemetry_report(agent_role_map={})
-    # We don't assert exact values because days check will fail;
-    # we just verify the structure doesn't crash
+    assert report["aggregate"]["search_sourced_reads"] == 1
+    assert report["aggregate"]["search_sourced_absent_from_digest"] == 1
+    assert report["aggregate"]["pointer_pairs_read"] == 0
+    assert report["observation_period"]["thresholds_met"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +592,7 @@ def test_decision_activation_loss_when_pull_through_low(db):
     logger = AuditLogger(db)
     # Seed 600 sessions with unique digest IDs, very few reads
     for i in range(600):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-{i:04d}",
             session_id=f"sess-{i:04d}",
@@ -600,7 +612,8 @@ def test_decision_activation_loss_when_pull_through_low(db):
     )
     obs = report["observation_period"]
     assert obs["total_correlated_sessions"] == 600
-    assert obs["sessions_met"] is False  # current diagnostics cannot establish collection readiness
+    assert obs["sessions_met"] is True  # raw volume is descriptive; thresholds remain false
+    assert obs["thresholds_met"] is False
 
 
 def test_decision_contradictory_roles_preserved(db):
@@ -608,30 +621,30 @@ def test_decision_contradictory_roles_preserved(db):
     logger = AuditLogger(db)
     # Agent A: 100 sessions, high pull-through (many reads)
     for i in range(100):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="agent_a",
             task_id=f"TASK-A{i:03d}",
             session_id=f"sess-a{i:03d}",
-            digest_ids=[f"MEM-A{i:03d}"],
+            digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
     for i in range(50):  # 50% pull-through
         logger.log_memory_read(
-            agent="agent_a", id=f"MEM-A{i:03d}", slug="x",
+            agent="agent_a", id=f"MEM-{i:03d}", slug="x",
             session_id=f"sess-a{i:03d}",
         )
     # Agent B: 100 sessions, very low pull-through
     for i in range(100):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="agent_b",
             task_id=f"TASK-B{i:03d}",
             session_id=f"sess-b{i:03d}",
-            digest_ids=[f"MEM-B{i:03d}"],
+            digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
     for i in range(5):  # 5% pull-through
         logger.log_memory_read(
-            agent="agent_b", id=f"MEM-B{i:03d}", slug="x",
+            agent="agent_b", id=f"MEM-{i:03d}", slug="x",
             session_id=f"sess-b{i:03d}",
         )
     report = logger.compute_memory_telemetry_report(
@@ -657,7 +670,7 @@ def test_legacy_rows_without_new_fields_dont_crash_report(db):
     # Legacy-style read (no source/session_id)
     logger.log_memory_read(agent="dev_agent", id="MEM-001", slug="a")
     # New-style impression
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
         session_id="sess-aaa",
@@ -672,7 +685,7 @@ def test_payload_without_expected_keys_doesnt_crash(db):
     """Payloads missing expected keys don't crash resolution or report."""
     logger = AuditLogger(db)
     # Insert an impression with minimal payload (missing digest_ids)
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
         session_id="sess-aaa",
@@ -719,11 +732,11 @@ def test_impression_cardinality_non_empty_digest(db):
     """A non-empty digest produces exactly one impression.  Two builds with
     non-empty digests produce two impressions."""
     logger = AuditLogger(db)
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent", task_id="TASK-001",
         session_id="sess-aaa", digest_ids=["MEM-001"], budget=1500,
     )
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent", task_id="TASK-002",
         session_id="sess-bbb", digest_ids=["MEM-002"], budget=1500,
     )
@@ -737,7 +750,7 @@ def test_impression_cardinality_empty_digest_ids_not_logged(db):
     """A digest with no IDs should produce NO impression (empty digest_ids
     → not 'non-empty')."""
     logger = AuditLogger(db)
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent", task_id="TASK-001",
         session_id="sess-empty", digest_ids=[], budget=1500,
     )
@@ -752,11 +765,11 @@ def test_impression_cardinality_empty_digest_ids_not_logged(db):
 def test_impression_budget_preserved(db):
     """Impression correctly stores the budget value without modifying it."""
     logger = AuditLogger(db)
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent", task_id="TASK-001",
         session_id="sess-aaa", digest_ids=["MEM-001"], budget=1500,
     )
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent", task_id="TASK-002",
         session_id="sess-bbb", digest_ids=["MEM-002"], budget=0,
     )
@@ -791,31 +804,31 @@ def test_activation_loss_decision_when_pull_through_below_10_pct(db):
     logger = AuditLogger(db)
     # 600 dev_agent sessions, only 5 with reads → pull-through ≈ 5/600 ≈ 0.8%
     for i in range(600):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-A{i:04d}",
             session_id=f"sess-a{i:04d}",
-            digest_ids=[f"MEM-A{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     for i in range(5):
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-A{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-a{i:04d}",
             task_id=f"TASK-A{i:04d}",
         )
     # 600 qa_engineer sessions, only 3 with reads → pull-through ≈ 0.5%
     for i in range(600, 1200):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="qa_engineer",
             task_id=f"TASK-Q{i:04d}",
             session_id=f"sess-q{i:04d}",
-            digest_ids=[f"MEM-Q{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     for i in range(600, 603):
         logger.log_memory_read(
-            agent="qa_engineer", id=f"MEM-Q{i:04d}", slug="x",
+            agent="qa_engineer", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-q{i:04d}",
             task_id=f"TASK-Q{i:04d}",
         )
@@ -831,14 +844,14 @@ def test_activation_loss_decision_when_pull_through_below_10_pct(db):
     assert agg["digest_pull_through"] < 0.10
 
     by_role = report["by_role"]
-    assert by_role["developer"]["eligible"] is True
+    assert by_role["developer"]["retrieval_corroboration_eligible"] is False
     assert by_role["developer"]["correlated_sessions"] == 600
-    assert by_role["qa"]["eligible"] is True
+    assert by_role["qa"]["retrieval_corroboration_eligible"] is False
     assert by_role["qa"]["correlated_sessions"] == 600
     assert by_role["qa"]["digest_pull_through"] < 0.10
 
     assert report["decision"] == "insufficient_instrumentation"
-    assert "unversioned and invalid" in report["decision_detail"]
+    assert "Missing trusted epoch/canary authority" in report["decision_detail"]
 
 
 def test_retrieval_loss_decision_with_full_assertion(db):
@@ -846,22 +859,22 @@ def test_retrieval_loss_decision_with_full_assertion(db):
     both aggregate AND in eligible role."""
     logger = AuditLogger(db)
     for i in range(600):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-R{i:04d}",
             session_id=f"sess-r{i:04d}",
-            digest_ids=[f"MEM-D{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
         logger.log_memory_search(
             agent="dev_agent",
             session_id=f"sess-r{i:04d}",
-            memory_ids=[f"MEM-S{i:04d}"],
+            memory_ids=[f"MEM-{i+10000:04d}"],
             hit_count=1, kb_hit_count=0,
             task_id=f"TASK-R{i:04d}",
         )
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-S{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i+10000:04d}", slug="x",
             session_id=f"sess-r{i:04d}",
             task_id=f"TASK-R{i:04d}",
             source="search",
@@ -869,7 +882,7 @@ def test_retrieval_loss_decision_with_full_assertion(db):
         # Also read some digest IDs so pull-through is high enough
         # to avoid activation_loss trigger
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-D{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-r{i:04d}",
             task_id=f"TASK-R{i:04d}",
         )
@@ -887,11 +900,11 @@ def test_retrieval_loss_decision_with_full_assertion(db):
     assert agg["search_absent_fraction"] > 0.25
 
     by_role = report["by_role"]
-    assert by_role["developer"]["eligible"] is True
+    assert by_role["developer"]["retrieval_corroboration_eligible"] is False
     assert by_role["developer"]["search_sourced_reads"] == 600
 
     assert report["decision"] == "insufficient_instrumentation"
-    assert "unversioned and invalid" in report["decision_detail"]
+    assert "Missing trusted epoch/canary authority" in report["decision_detail"]
 
 
 def test_no_demonstrated_problem_decision(db):
@@ -899,15 +912,15 @@ def test_no_demonstrated_problem_decision(db):
     no_demonstrated_problem."""
     logger = AuditLogger(db)
     for i in range(600):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-N{i:04d}",
             session_id=f"sess-n{i:04d}",
-            digest_ids=[f"MEM-N{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-N{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-n{i:04d}",
             task_id=f"TASK-N{i:04d}",
         )
@@ -920,7 +933,7 @@ def test_no_demonstrated_problem_decision(db):
 
     agg = report["aggregate"]
     assert agg["digest_pull_through"] >= 0.10
-    assert agg["search_absent_fraction"] <= 0.25
+    assert agg["search_absent_fraction"] is None  # no search-sourced pairs, never a fabricated zero
 
     assert report["decision"] == "insufficient_instrumentation"
 
@@ -932,31 +945,31 @@ def test_contradictory_roles_preserved_full_decision(db):
     logger = AuditLogger(db)
     # role_a (agent_a): 970 sessions, only 5 with reads → pull-through ~0.5%
     for i in range(970):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="agent_a",
             task_id=f"TASK-A{i:04d}",
             session_id=f"sess-ca{i:04d}",
-            digest_ids=[f"MEM-CA{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     for i in range(5):
         logger.log_memory_read(
-            agent="agent_a", id=f"MEM-CA{i:04d}", slug="x",
+            agent="agent_a", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-ca{i:04d}",
             task_id=f"TASK-A{i:04d}",
         )
     # role_b (agent_b): 30 sessions, all with reads → pull-through 100%
     # task_id must match impression tuple exactly
     for i in range(30):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="agent_b",
             task_id=f"TASK-B{i:04d}",
             session_id=f"sess-cb{i:04d}",
-            digest_ids=[f"MEM-CB{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
         logger.log_memory_read(
-            agent="agent_b", id=f"MEM-CB{i:04d}", slug="x",
+            agent="agent_b", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-cb{i:04d}",
             task_id=f"TASK-B{i:04d}",
         )
@@ -972,16 +985,16 @@ def test_contradictory_roles_preserved_full_decision(db):
     assert agg["digest_pull_through"] < 0.10
 
     by_role = report["by_role"]
-    assert by_role["role_a"]["eligible"] is True
+    assert by_role["role_a"]["retrieval_corroboration_eligible"] is False
     assert by_role["role_a"]["correlated_sessions"] == 970
     assert by_role["role_a"]["digest_pull_through"] < 0.10
-    assert by_role["role_b"]["eligible"] is True
+    assert by_role["role_b"]["retrieval_corroboration_eligible"] is False
     assert by_role["role_b"]["correlated_sessions"] == 30
     assert by_role["role_b"]["digest_pull_through"] >= 0.10
 
     # Majority (1 of 2) NOT below 10% → no global remedy
     assert report["decision"] == "insufficient_instrumentation"
-    assert "unversioned and invalid" in report["decision_detail"]
+    assert "Missing trusted epoch/canary authority" in report["decision_detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -993,14 +1006,14 @@ def test_tuple_mismatched_agent_excluded_from_pull_through(db):
     """A read with a different agent than the impression is excluded."""
     logger = AuditLogger(db)
     for i in range(500):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-{i:04d}",
             session_id=f"sess-{i:04d}",
             digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-0999",
         session_id="sess-xyz",
@@ -1017,21 +1030,21 @@ def test_tuple_mismatched_agent_excluded_from_pull_through(db):
         current_time=_future_now(),
     )
     agg = report["aggregate"]
-    assert agg["untrusted_uncorrelated_reads"] >= 1
+    assert agg["untrusted_task_reads"] >= 1
 
 
 def test_tuple_mismatched_task_id_excluded_from_pull_through(db):
     """A read with a different task_id than the impression is excluded."""
     logger = AuditLogger(db)
     for i in range(500):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-{i:04d}",
             session_id=f"sess-{i:04d}",
             digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
         session_id="sess-abc",
@@ -1048,21 +1061,21 @@ def test_tuple_mismatched_task_id_excluded_from_pull_through(db):
         current_time=_future_now(),
     )
     agg = report["aggregate"]
-    assert agg["untrusted_uncorrelated_reads"] >= 1
+    assert agg["untrusted_task_reads"] >= 1
 
 
 def test_tuple_verified_read_included_in_pull_through(db):
     """A read matching the impression's (agent, task_id, session_id) is included."""
     logger = AuditLogger(db)
     for i in range(500):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-{i:04d}",
             session_id=f"sess-{i:04d}",
             digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent",
         task_id="TASK-001",
         session_id="sess-match",
@@ -1091,19 +1104,19 @@ def test_roles_unavailable_when_map_is_none(db):
     """When agent_role_map is None, roles are reported as unavailable."""
     logger = AuditLogger(db)
     for i in range(500):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent=f"agent_{i % 3}",
             task_id=f"TASK-{i:04d}",
             session_id=f"sess-ru{i:04d}",
-            digest_ids=[f"MEM-RU{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     report = logger.compute_memory_telemetry_report(
         agent_role_map=None,
         current_time=_future_now(),
     )
-    assert "roles_warning" in report
-    assert "unavailable" in report["roles_warning"]
+    assert "roles_available" in report["instrumentation_health"]
+    assert report["instrumentation_health"]["roles_available"] is False
     # by_role should be empty since no role data
     assert report["by_role"] == {}
 
@@ -1112,11 +1125,11 @@ def test_unknown_agents_excluded_with_warning(db):
     """Agents not in role map are excluded with a warning."""
     logger = AuditLogger(db)
     for i in range(600):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-{i:04d}",
             session_id=f"sess-unk{i:04d}",
-            digest_ids=[f"MEM-UNK{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     # Role map doesn't include dev_agent
@@ -1124,9 +1137,9 @@ def test_unknown_agents_excluded_with_warning(db):
         agent_role_map={"some_other_agent": "reviewer"},
         current_time=_future_now(),
     )
-    assert "roles_warning" in report
-    assert "unknown roles" in report["roles_warning"]
-    assert "dev_agent" in report["roles_warning"]
+    assert "roles_available" in report["instrumentation_health"]
+    assert report["by_agent"]["dev_agent"]["role"] is None
+    assert report["by_agent"]["dev_agent"]["eligible"] is False
     # by_role should be empty — no eligible roles
     assert report["by_role"] == {}
 
@@ -1135,24 +1148,24 @@ def test_partial_role_map_respected(db):
     """When some agents have roles and others don't, known roles work."""
     logger = AuditLogger(db)
     for i in range(300):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-D{i:04d}",
             session_id=f"sess-prd{i:04d}",
-            digest_ids=[f"MEM-PRD{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-PRD{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-prd{i:04d}",
             task_id=f"TASK-D{i:04d}",
         )
     for i in range(300):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="unknown_agent",
             task_id=f"TASK-U{i:04d}",
             session_id=f"sess-pru{i:04d}",
-            digest_ids=[f"MEM-PRU{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     report = logger.compute_memory_telemetry_report(
@@ -1160,12 +1173,12 @@ def test_partial_role_map_respected(db):
         current_time=_future_now(),
     )
     # Warning about unknown_agent
-    assert "roles_warning" in report
-    assert "unknown_agent" in report["roles_warning"]
+    assert "roles_available" in report["instrumentation_health"]
+    assert report["by_agent"]["unknown_agent"]["role"] is None
     # But developer should be in by_role
     by_role = report["by_role"]
     assert "developer" in by_role
-    assert by_role["developer"]["eligible"] is True
+    assert by_role["developer"]["retrieval_corroboration_eligible"] is False
     assert by_role["developer"]["correlated_sessions"] == 300
 
 
@@ -1178,19 +1191,19 @@ def test_report_uses_agent_roles_for_grouping(db):
     """When agent_role_map is provided, sessions are correctly grouped by role."""
     logger = AuditLogger(db)
     for i in range(50):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-D{i:03d}",
             session_id=f"sess-dg{i:03d}",
-            digest_ids=[f"MEM-DG{i:03d}"],
+            digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
     for i in range(50):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="qa_engineer",
             task_id=f"TASK-Q{i:03d}",
             session_id=f"sess-qg{i:03d}",
-            digest_ids=[f"MEM-QG{i:03d}"],
+            digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
     report = logger.compute_memory_telemetry_report(
@@ -1205,11 +1218,11 @@ def test_report_without_role_map_marks_unavailable(db):
     """When no role map is provided, roles are unavailable."""
     logger = AuditLogger(db)
     for i in range(50):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-X{i:03d}",
             session_id=f"sess-x{i:03d}",
-            digest_ids=[f"MEM-X{i:03d}"],
+            digest_ids=[f"MEM-{i:03d}"],
             budget=1500,
         )
     report = logger.compute_memory_telemetry_report(agent_role_map=None)
@@ -1230,9 +1243,9 @@ from cli.commands.learning import _compute_report
 def test_report_rejects_malformed_payload_before_diagnostic_set_calculation(db):
     """Database-backed report cannot raise or credit malformed audit input."""
     logger = AuditLogger(db)
-    logger.log_memory_digest_impression(
+    _report_impression(logger,
         agent="dev_agent", task_id="TASK-1", session_id="sess-1",
-        digest_ids=["MEM-1"], budget=1500,
+        digest_ids=["MEM-001"], budget=1500,
     )
     db.execute("UPDATE audit_log SET payload='[]' WHERE action='memory_digest_impression'")
     report = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
@@ -1246,11 +1259,11 @@ def test_compute_report_roles_unavailable_warning(db):
     when zero eligible roles)."""
     logger = AuditLogger(db)
     for i in range(600):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-CR{i:04d}",
             session_id=f"sess-cr{i:04d}",
-            digest_ids=[f"MEM-CR{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     # Gather rows to feed _compute_report directly (convert Row → dict)
@@ -1267,6 +1280,7 @@ def test_compute_report_roles_unavailable_warning(db):
         " WHERE action = 'memory_search'",
     )]
     report = _compute_report(
+        session_start_rows=[dict(r) for r in db.fetch_all_readonly("SELECT * FROM audit_log WHERE action = 'session_start'")],
         impression_rows=impression_rows,
         read_rows=read_rows,
         search_rows=search_rows,
@@ -1276,8 +1290,8 @@ def test_compute_report_roles_unavailable_warning(db):
     # Thresholds met
     assert report["observation_period"]["thresholds_met"] is False
     # roles_warning emitted for unavailable map
-    assert "roles_warning" in report
-    assert "unavailable" in report["roles_warning"]
+    assert "roles_available" in report["instrumentation_health"]
+    assert report["instrumentation_health"]["roles_available"] is False
     assert report["by_role"] == {}
     # With zero eligible roles, must NOT claim activation_loss
     assert report["decision"] != "activation_loss"
@@ -1290,25 +1304,25 @@ def test_compute_report_partial_role_map_warning(db):
     logger = AuditLogger(db)
     # known agent: developer role
     for i in range(500):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-DK{i:04d}",
             session_id=f"sess-dk{i:04d}",
-            digest_ids=[f"MEM-DK{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-DK{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-dk{i:04d}",
             task_id=f"TASK-DK{i:04d}",
         )
     # unknown agent: not in role map
     for i in range(200):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="unknown_agent",
             task_id=f"TASK-UK{i:04d}",
             session_id=f"sess-uk{i:04d}",
-            digest_ids=[f"MEM-UK{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     impression_rows = [dict(r) for r in db.fetch_all_readonly(
@@ -1324,6 +1338,7 @@ def test_compute_report_partial_role_map_warning(db):
         " WHERE action = 'memory_search'",
     )]
     report = _compute_report(
+        session_start_rows=[dict(r) for r in db.fetch_all_readonly("SELECT * FROM audit_log WHERE action = 'session_start'")],
         impression_rows=impression_rows,
         read_rows=read_rows,
         search_rows=search_rows,
@@ -1331,13 +1346,13 @@ def test_compute_report_partial_role_map_warning(db):
         current_time=_future_now(),
     )
     # roles_warning emitted for unknown agent
-    assert "roles_warning" in report
-    assert "unknown_agent" in report["roles_warning"]
-    assert "unknown roles" in report["roles_warning"].lower()
+    assert "roles_available" in report["instrumentation_health"]
+    assert report["by_agent"]["unknown_agent"]["role"] is None
+    assert report["by_agent"]["unknown_agent"]["eligible"] is False
     # Known role present
     by_role = report["by_role"]
     assert "developer" in by_role
-    assert by_role["developer"]["eligible"] is True
+    assert by_role["developer"]["retrieval_corroboration_eligible"] is False
     # Unknown agent excluded from by_role
     assert "unknown_agent" not in by_role
     # Decision is safe given the data
@@ -1358,23 +1373,23 @@ def test_cli_compute_report_matching_impressions_not_excluded(db):
     logger = AuditLogger(db)
     # Create >=500 impressions + matching reads with correct task_id tuples
     for i in range(520):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-PC{i:04d}",
             session_id=f"sess-pc{i:04d}",
-            digest_ids=[f"MEM-PC{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
         # Each session has a matching read — 100% pull-through
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-PC{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-pc{i:04d}",
             task_id=f"TASK-PC{i:04d}",
         )
     # Also create some reads with mismatched task_id — should be excluded
     for i in range(20):
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-PC{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-pc{i:04d}",
             task_id="TASK-WRONG",  # mismatched task_id
         )
@@ -1393,6 +1408,7 @@ def test_cli_compute_report_matching_impressions_not_excluded(db):
         " WHERE action = 'memory_search'",
     )]
     report = _compute_report(
+        session_start_rows=[dict(r) for r in db.fetch_all_readonly("SELECT * FROM audit_log WHERE action = 'session_start'")],
         impression_rows=impression_rows,
         read_rows=read_rows,
         search_rows=search_rows,
@@ -1407,10 +1423,10 @@ def test_cli_compute_report_matching_impressions_not_excluded(db):
     assert agg["digest_pull_through"] >= 0.99, (
         f"Expected >=99% pull-through, got {agg['digest_pull_through']:.4f}"
     )
-    assert agg["unique_digest_ids_read_same_session"] >= 520
+    assert agg["pointer_pairs_read"] >= 520
     # Mismatched task_id rows must be in untrusted count, not counted as
     # same-session reads
-    assert agg["untrusted_uncorrelated_reads"] >= 20
+    assert agg["untrusted_task_reads"] >= 20
     # No false activation_loss
     assert report["decision"] != "activation_loss"
     # Current/unversioned telemetry cannot select a tuning decision.
@@ -1439,17 +1455,17 @@ def test_cli_compute_report_mismatched_task_id_excluded(db):
     logger = AuditLogger(db)
     # 500 impressions for dev_agent
     for i in range(500):
-        logger.log_memory_digest_impression(
+        _report_impression(logger,
             agent="dev_agent",
             task_id=f"TASK-MI{i:04d}",
             session_id=f"sess-mi{i:04d}",
-            digest_ids=[f"MEM-MI{i:04d}"],
+            digest_ids=[f"MEM-{i:04d}"],
             budget=1500,
         )
     # Reads with WRONG task_id — agent matches but task_id doesn't
     for i in range(500):
         logger.log_memory_read(
-            agent="dev_agent", id=f"MEM-MI{i:04d}", slug="x",
+            agent="dev_agent", id=f"MEM-{i:04d}", slug="x",
             session_id=f"sess-mi{i:04d}",
             task_id=f"TASK-DIFFERENT{i:04d}",  # does not match impression
         )
@@ -1466,6 +1482,7 @@ def test_cli_compute_report_mismatched_task_id_excluded(db):
         " WHERE action = 'memory_search'",
     )]
     report = _compute_report(
+        session_start_rows=[dict(r) for r in db.fetch_all_readonly("SELECT * FROM audit_log WHERE action = 'session_start'")],
         impression_rows=impression_rows,
         read_rows=read_rows,
         search_rows=search_rows,
@@ -1478,7 +1495,7 @@ def test_cli_compute_report_mismatched_task_id_excluded(db):
     # be 0% and all reads should be untrusted
     agg = report["aggregate"]
     assert agg["digest_pull_through"] == 0.0
-    assert agg["untrusted_uncorrelated_reads"] >= 500
+    assert agg["untrusted_task_reads"] >= 500
     # With all reads excluded, pull-through is 0% — the role with
     # >=30 sessions and 0% pull-through legitimately triggers the
     # activation_loss condition.  The key invariant is that mismatched

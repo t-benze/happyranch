@@ -42,7 +42,7 @@ New specs should include a short status block near the top:
 | `2026-10-01-escalation-reason-display.md` | implemented | THR-279 read-side current-episode reason projection; current contract in `docs/agent-guides/web-and-cli.md`. |
 | `2026-09-20-web-i18n-design.md` | current | THR-118 W1 web i18n foundation (typed en/zh-CN catalog, resolver, adapter seam, coverage manifest). Current contract: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, `web/ARCHITECTURE.md`. Route translation is W2-W4; native persistence is N1. |
 | `2026-09-10-delegated-failure-manager-routing.md` | implemented | Current routing contract: `docs/agent-guides/orchestrator-contracts.md` and `runtime/orchestrator/run_step.py`. |
-| `2026-09-11-memory-telemetry-corrective-guard.md` | current | Guard-only telemetry contract; current report behavior in agent guides and report implementations. |
+| `2026-09-11-memory-telemetry-corrective-guard.md` | current | Historical guard checkpoints plus current observation-only shared report/acquisition contract; full eligibility remains gated. |
 | `2026-09-01-thread-reply-breaker-persistence.md` | current | THR-200 PR A additive SQLite contract plus PR B runtime lifecycle and cooldown/restart invariants. |
 | `2026-04-12-product-engineering-crew-design.md` | historical | Sample-org background; org content now lives under `examples/orgs/` and runtime org trees. |
 | `2026-04-14-orchestrator-daemon-design.md` | implemented | Current contracts: `docs/agent-guides/orchestrator-contracts.md`, `runtime/daemon/`, `runtime/orchestrator/`. |
