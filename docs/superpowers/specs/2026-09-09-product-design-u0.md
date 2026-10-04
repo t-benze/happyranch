@@ -6,7 +6,10 @@ study is **NOT RUN** and no detached lock has been issued. No route, daemon
 workflow, UI/CLI, migration, authority coordinator, or compatibility behavior
 was installed by U0 itself. U1A later shipped the inert layout, U1B shipped
 template authoring/versioning, and U2A now ships only the org-scoped production
-authority publisher described in the status note below. The study remains
+authority publisher described in the status note below. U2B adds profile
+coordination; the cutover prerequisite implements only the existing-schema
+Founder request/verification/drain marker described in active F6 below.
+Activation, dispatch and operator acceptance remain deferred. The study remains
 **NOT RUN**.
 
 The executable fixture calls the actual `RuntimeDir.init -> DaemonState.from_runtime
@@ -1324,9 +1327,11 @@ compatibility marker/event, and full-layout reopen validator are implemented
 in `runtime/infrastructure/workflow_schema.py` and invoked only by
 `OrgState.load`. U1A does not enable workflow behavior. U1B implements only
 inert immutable template authoring/versioning through the existing U1A tables,
-verified manager-session or Founder-bearer route, and CLI/API reads. Every
-later delta below — activation, authority coordination, dispatch/recovery,
-cutover transitions and workflow execution/operator UI — remains unimplemented.
+verified manager-session or Founder-bearer route, and CLI/API reads. U2A/U2B now supply authority/profile coordination. The cutover prerequisite
+implements `WorkflowCutoverStore` and Founder-only HTTP/CLI/TS methods over the
+unchanged U1A layout. Activation, first-draft persistence/dispatch, callback and
+recovery routing, workflow execution/operator UI and acceptance remain later
+units; this prerequisite is not feature completion.
 No old binary has been changed and no later production compatibility approval
 follows from U1A.
 
@@ -1417,11 +1422,23 @@ event sequence records every transition. The later accepted state vocabulary is:
 
 `installed_legacy_only -> enable_requested -> compatibility_verified -> enabled`
 
-U1A installs and accepts only `installed_legacy_only` generation 1. It neither
-implements nor accepts a cutover transition. Future `enable_requested`
-requires a separately authorized implementation and operation. That later
-cold recovery may advance only an already-authorized request,
-committing compatibility verification before enabled. Reopen and repeated
+U1A installation still writes only `installed_legacy_only` generation1/event1.
+The accepted production cutover chain continues through `disable_requested ->
+draining -> drained` after enabled. `WorkflowCutoverStore.request` authenticates
+at the existing Founder route boundary and commits enable_requested before
+separate short compatibility_verified/enabled commits. Disable similarly commits
+the admission fence before drain. Cold recovery advances only an authentic
+committed request; GET/preflight never advance. Every authoritative reread keeps
+complete canonical layout equality and validates exact contiguous events,
+request operation groups/unique keys, org-bound deterministic canonical UTF8
+SHA256 preimages (fixed Founder request facts and verifier policy plus previous
+digest), marker pointer/time/reason and valid UTC timestamps without monotonic
+wall-clock assumptions. Initial event ID/digest remain shipped bytes; progressed
+histories require actual expected_org_slug, while initial-only release references
+still validate without it. SQLite integrity/FKs and contradictory activation,
+instance, dispatch or recovery-owned work block compatibility before each enable
+transition; inert template/authority/profile foundations are permitted. Failed
+verification leaves the authentic request pending with safe blockers. Reopen and repeated
 recovery are state-idempotent. Interruption before the install commit leaves no
 workflow tables; interruption after any committed enable stage resumes forward
 under the same operation/owner and preserves every template/version/activation/
@@ -1490,24 +1507,27 @@ Disable uses the same marker and begins with an admission fence:
 `request_workflow_disable` commits `disable_requested` before drain work.
 Template activation/template-start and F5 request admission then reject with
 zero residue. Existing history and immutable versions remain readable;
-publication alone remains allowed. During `draining`:
+publication alone remains allowed. During `draining`, the production store reads consistent F5 outbox plus
+operation/request/bridge closure and projects incomplete/uncertain work as
+reconciliation_required. Cancellation effects in retained U0 helpers are
+isolated evidence and deferred U2D/U4/U5 work, not production cutover effects:
 
 | F5 durable state | Allowed action | Owner / drain effect |
 | --- | --- | --- |
-| `queued` | cancel before launch | cutover reconciler; terminal history retained |
-| `claimed`, `host_launch_started=0` | cancel before launch | cutover reconciler; no effect row |
+| `queued` | cancel before launch | actual dispatch/recovery owner; cancellation deferred U2D/U4 |
+| `claimed`, `host_launch_started=0` | cancel before launch | actual dispatch/recovery owner; cancellation deferred U2D/U4 |
 | `claimed`, `host_launch_started=1` | reconcile possible host effect | operator; blocks drained |
 | `running` | exact callback reconciliation or supervised cancellation | callback/cancellation owner; blocks drained |
 | `uncertain` | explicit supported host reconciliation or `confirmed_no_launch` disposition | operator; never retryable; blocks drained |
 | `cancelled` / `completed` | history/read only | terminal; does not block drained |
 
-`project_workflow_drain` reports exact outbox state, responsible owner, stored
-owner and required action. It never calls `running`/`uncertain` complete or
-retryable. `advance_workflow_drain` cancels only queued and provably prelaunch
-claimed work; it declares `drained` only when no nonterminal outbox remains.
-Restart/reopen preserves the marker and projection. Legacy startup and workflow
-recovery cannot both launch one work item because the bridge-derived claim is
-exclusive before enqueue/effect.
+The retained isolated `project_workflow_drain`/`advance_workflow_drain` helpers
+model later cancellation and recovery. Production `WorkflowCutoverStore` never
+cancels, launches or settles tasks/outboxes, and never repairs a closure. Empty
+validated work can drain; nonterminal/incomplete work retains actual owner and
+required deferred action. Restart/reopen preserves authentic marker/history.
+Actual bridge-derived legacy/workflow startup exclusion remains U2D/U5 work,
+not a shipping claim from the isolated helper.
 
 ### Executable requirement map
 
@@ -1563,15 +1583,16 @@ concurrent publishers/recovery claimants, activation pinning, every drain state,
 downgrade refusal and public pending/error behavior. Exact current production
 symbols and hashes are recorded in TASK-8859 Native Impact Evidence.
 
-U1A additive schema/initial compatibility installation is implemented as a
-candidate; it does not implement the F4 coordinator. F4-D remains pending for
-supported-writer pre-fences, route barriers and startup republish. F5 remains delivered only as
+U1A additive schema/initial compatibility installation and U2A/U2B coordinated
+authority/profile foundations are implemented. Their accepted independent
+evidence remains historical; it is not cutover acceptance. F5 remains delivered only as
 an isolated request/task/outbox/uncertain-launch contract; its six production
 deltas remain protected. F6 now supplies the recommended compatibility/cutover
-decision and proof. U1B ships D1 authoring only; every post-install cutover
-transition, D2 activation authority, naming-reservation policy, U2-U6 production
-implementation, and the applicable independent review/QA/CI gates remain
-pending. Comparative study
+decision and proof. U1B ships D1 authoring. The existing-schema cutover prerequisite now supplies
+request/replay/verification, truthful deferred drain and pristine-only downgrade
+preflight. D2 activation, initial-draft lane, U2D-U6 execution and separate actual
+Founder Request changes/Sign off/operator acceptance remain pending, as do this
+cutover head's independent FULL review/executable QA/exact-head CI gates. Comparative study
 is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
 fork/join, pipeline carriers and coding migration remain out of scope. Evidence
 remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder

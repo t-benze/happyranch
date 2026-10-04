@@ -186,6 +186,24 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   advances only its roster generation and adds no selector-history churn. Common task,
   thread, dream, wake, and schedule launch resolution is read-only and refuses
   an uninitialized selector rather than mutating authority during launch.
+- **Cutover request/recovery ownership.** `WorkflowCutoverStore` holds the
+  existing `Database._lock` plus a short `BEGIN IMMEDIATE` for each atomic
+  state/event transition and refuses caller-owned transactions. HTTP holds
+  existing `org.db_lock`; no profile lease, filesystem scan, host/network work
+  or await occurs inside the SQLite reservation. Full canonical layout/version,
+  chain cardinality/edges/keys/digests and marker pointer/time/reason are reread
+  under ownership; event1 retains its shipped identity/digest. Progressed event
+  SHA256 binds canonical UTF8 fields, fixed verifier/Founder request facts,
+  actual org and previous digest. Timestamps must be UTC, not monotonic.
+  Installer and initial-only release oracle remain unchanged. One post-install
+  cold-load call before teams/settings resumes only authentic requests; pure
+  reads never advance. Enable verifies real integrity/FKs and absence of
+  contradictory work before compatibility_verified and again before enabled.
+  Disable commits its admission fence before separate drain commits. F5 closure
+  inspection retains actual owners and terminal history; queued cancellation,
+  callbacks and uncertain host reconciliation remain U2D/U4/U5 responsibilities.
+  Future activation must consume this same SQLite marker under its separately
+  accepted profile-to-org lock order; no consumer or first-draft lane ships here.
 - **U2A/U2B boundary.** The readiness verifier is intentionally not consumed
   by task, chain, fan-out, activation, or dispatch paths yet. U2B now routes
   supported machine-global executor-profile and adapter writers through
@@ -1859,9 +1877,41 @@ lifecycle/error handling stay unchanged. No metadata is recomputed from memory
 files after injection. The legacy extractor remains supported but bootstrap no
 longer uses it. The unchanged resolver still prefers digest to search.
 
+The ordinary `host_supervisor=None` launch retires its own SessionTracker
+binding after `executor.run` finally returns or raises, including all internal
+429 attempts. The existing `clear_if_active_session(task_id, agent, session_id)`
+removes only that generation's active context, PID and control; newer same-task
+generations and other tasks survive. The invocation remains usable for callbacks
+and memory attribution until that final exit. A retired SID still permits memory
+get/search but earns no task/session credit. Result identity, task classification,
+scratch/report ordering, one-shot recovery and contained pre-release cleanup
+remain unchanged. Ordinary source tests do not establish installed or contained
+acceptance.
+
 See the feature guide for the exact optional JSON validation/legacy contract.
 Recovery/unattributed launches do not gain task eligibility from a version;
 `session_start` is intended invocation rather than complete launch census.
-G1 canary/epoch authority, G3 launch/expectation census, G4 consistent acquisition,
+The source-side G3 observer records independent intended invocations and frozen
+expectations as described in the feature guide. G1 canary/epoch authority,
+current-serving census acquisition/acceptance, G4 consistent acquisition,
 full reporting and installed acceptance remain OPEN; both reports stay
 fail-closed. No collection starts here.
+
+The `_run_agent` observation wrapper preserves its caller signature, bootstrap
+body, original registration/impression/start/launch/cleanup order and returns or
+raised exceptions. Intent reservation precedes preparation; SID and immutable
+expectation observations remain at their actual assignment/render boundaries.
+A finally observation retains unknown early phases and the exact invocation's
+terminal outcome without clearing or rewriting any SessionTracker generation.
+Counters/metadata use a short observer lock; persistence takes the observer
+writer before Database, with no Database-held caller entering the observer.
+Concurrent boundary metadata is drained synchronously by an observation boundary,
+without a timer/service and without holding metadata locks across application
+callbacks, rendering, executor/supervisor or task completion.
+Sealing checkpoints counters/digests without querying history on the callback
+path; its diagnostic is `census_not_reconciled`. Only a complete zero-write read
+validation reconciles history, using at most 256 rows per primary-key page and
+100,000 total audit rows. Database write counts/data versions and all semantic
+live observer facts bracket capture; changing, incomplete or exhausted capture
+is unavailable. Unresolved task population, parent knowledge or task type is
+unavailable even when identity, binding and start rows exist.
