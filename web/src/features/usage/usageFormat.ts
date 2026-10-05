@@ -32,6 +32,8 @@ export function formatWindow(window: { start_local: string; end_local: string },
 
 /** A UTC instant rendered in the response's timezone ("Sep 29, 14:03"). */
 export function formatInstant(iso: string, timeZone: string, locale: Locale = 'en'): string {
+  // Usage requires a response zone; the shared optional-zone API is viewer-local.
+  if (!timeZone) return iso;
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   try {

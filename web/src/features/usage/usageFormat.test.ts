@@ -20,6 +20,11 @@ describe.each(['en', 'zh-CN'] as const)('Usage display — %s', (locale) => {
     expect(formatLocalStamp('2026-09-99T25:99+08:00', locale)).toBe(zh ? '9月99日 25:99' : 'Sep 99, 25:99');
     expect(formatInstant('raw timestamp', 'UTC', locale)).toBe('raw timestamp');
     expect(formatInstant('2026-09-29T06:03:00Z', 'raw timezone', locale)).toBe('2026-09-29T06:03:00Z');
+    for (const viewer of ['UTC', 'Pacific/Kiritimati']) {
+      vi.stubEnv('TZ', viewer);
+      expect(new Date('2026-09-29T06:03:00Z').getHours()).toBe(viewer === 'UTC' ? 6 : 20);
+      expect(formatInstant('2026-09-29T06:03:00Z', '', locale)).toBe('2026-09-29T06:03:00Z');
+    }
   });
   it('formats counts, tokens, exact titles, native durations, rates and deltas without changing values', () => {
     expect(formatCount(12345, locale)).toBe('12,345');

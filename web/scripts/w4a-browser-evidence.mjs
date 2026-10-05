@@ -415,6 +415,7 @@ function startServer(root) {
           }
           if (p.includes('/usage/') && mode === 'stale') USAGE_REFRESH_FAILED.add(p + url.search + ref.search);
           let payload = api(p, url.search);
+          if (p.includes('/usage/') && mode === 'empty-zone') payload = { ...payload, timezone: '' };
           if (p.includes('/usage/') && mode === 'empty') payload = p.endsWith('/workload') ? { ...USAGE_META, agents: [] } : { ...USAGE_META, cohorts: [], rows: [], unattributed: { current: USAGE_UNATTRIBUTED, previous: null } };
           response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           response.end(JSON.stringify(payload));
@@ -965,9 +966,25 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage'].includes(selectedSlice)) throw new Error('unknown --slice');
-const ACTIVE_VIEWS = selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback'].includes(selectedSlice)) throw new Error('unknown --slice');
+// F1 repair: reuse the real populated and switch cases with only malformed
+// response metadata. Keep the independent raw-string oracle out of formatters.
+const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
+const populatedUsage = VIEW_ROUTES.find(row => row.id === 'usage-populated');
+const switchUsage = SWITCH_ROUTES.find(row => row.id === 'usage-cohort-compare');
+const EMPTY_ZONE_VIEW = {
+  ...populatedUsage, id: 'usage-empty-zone', path: `/orgs/${ORG}/usage?usageFixture=empty-zone`,
+  verbatim: populatedUsage.verbatim.filter(value => value !== 'Asia/Shanghai').concat('2026-09-29T06:03:00Z'),
+  checks: (locale, width) => [...populatedUsage.checks(locale, width), ...emptyZoneChecks()],
+};
+const EMPTY_ZONE_SWITCH = {
+  ...switchUsage, id: 'usage-empty-zone-switch', path: EMPTY_ZONE_VIEW.path,
+  copy: locale => switchUsage.copy(locale).map(value => value === (locale === 'en' ? 'Sep 29, 14:03' : '9月29日 14:03') ? '2026-09-29T06:03:00Z' : value),
+  checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
+  shot: 'zh-usage-empty-zone-switch-1440',
+};
+const ACTIVE_VIEWS = selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
