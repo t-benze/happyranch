@@ -34,6 +34,17 @@ import type { ConversationSummary } from '@/hooks/assistant';
 // Shared mock state (hoisted so vi.mock factories can close over it)
 // ---------------------------------------------------------------------------
 
+const mermaidChunk = vi.hoisted(() => {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => { release = resolve; });
+  return { ready, release };
+});
+// External library-load delay; actual Markdown, lazy import and callers stay real.
+vi.mock('mermaid', async () => {
+  await mermaidChunk.ready;
+  return { default: { initialize: vi.fn(), render: vi.fn(async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' })) } };
+});
+
 interface MockSocket {
   readyState: number;
   send: ReturnType<typeof vi.fn>;
@@ -868,4 +879,43 @@ test.each(['assistant', ''])('raw executor %j is not mistaken for the app speake
   expect(screen.getByLabelText(`${executor} is replying`.trim())).toHaveAttribute('aria-label', `${executor} is replying`);
   expect(h.openSessionMock).toHaveBeenCalledTimes(1);
   expect(sock.close).not.toHaveBeenCalled();
+});
+
+test('Assistant user and reply Mermaid loaders switch while preserving draft, inflight turn and connection', async () => {
+  const sock = createMockSocket();
+  const view = renderWithProviders(<AssistantDockHost />);
+  await openAndReady(sock);
+  const body = 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```';
+  fireFrame({ type: 'history', turns: [{ prompt: body, started_at: '2026-07-04T10:00:00Z', frames: [
+    { type: 'turn_start' }, { type: 'text_delta', text: body }, { type: 'turn_end' },
+  ] }] });
+  try {
+    await waitFor(() => expect(view.container.querySelectorAll('.gl-prose-mermaid-loading')).toHaveLength(2));
+    const fallbacks = Array.from(view.container.querySelectorAll('.gl-prose-mermaid-loading'));
+    fireFrame({ type: 'turn_start' });
+    const articles = Array.from(view.container.querySelectorAll('article'));
+    const input = screen.getByRole('textbox', { name: 'Assistant composer' }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'raw unsent /任务' } });
+    await new Promise(resolve => setTimeout(resolve, 120));
+    input.focus(); input.setSelectionRange(2, 7);
+    const before = [h.openSessionMock.mock.calls.length, sock.send.mock.calls.length, sock.close.mock.calls.length];
+    const requests: string[] = [];
+    const observe = ({ request }: { request: Request }) => requests.push(request.url);
+    server.events.on('request:start', observe);
+    try {
+      for (const locale of ['zh-CN', 'en'] as const) {
+        changeDockLocale(locale);
+        expect(fallbacks.map(node => node.textContent)).toEqual(fallbacks.map(() => locale === 'en' ? 'Rendering diagram…' : '正在渲染图表…'));
+        expect(Array.from(view.container.querySelectorAll('.gl-prose-mermaid-loading'))).toEqual(fallbacks);
+        expect(Array.from(view.container.querySelectorAll('article'))).toEqual(articles);
+        expect(screen.getByRole('textbox', { name: locale === 'en' ? 'Assistant composer' : '助手输入框' })).toBe(input);
+        expect(input).toHaveFocus(); expect(input).toHaveValue('raw unsent /任务');
+        expect([input.selectionStart, input.selectionEnd]).toEqual([2, 7]);
+        expect(screen.getByLabelText(locale === 'en' ? 'claude is replying' : 'claude正在回复')).toBeInTheDocument();
+      }
+      expect(requests).toEqual([]);
+      expect([h.openSessionMock.mock.calls.length, sock.send.mock.calls.length, sock.close.mock.calls.length]).toEqual(before);
+    } finally { server.events.removeListener('request:start', observe); }
+  } finally { await act(async () => mermaidChunk.release()); }
+  await waitFor(() => expect(view.container.querySelectorAll('svg[data-w5a-diagram]')).toHaveLength(2));
 });

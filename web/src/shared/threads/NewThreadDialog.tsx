@@ -270,7 +270,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const inFlight = uploading;
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>
             {prefill?.forwarded_from_id

@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { Markdown } from './Markdown';
+import mermaid from 'mermaid';
 
 vi.mock('mermaid', () => ({
   default: {
@@ -47,7 +48,14 @@ describe('Markdown / Mermaid', () => {
   });
 
   it('falls back to raw source when mermaid render fails', async () => {
-    render(<Markdown body={'```mermaid\nflowchart LR; BAD\n```'} />);
-    await screen.findByText(/flowchart LR; BAD/, undefined, { timeout: 2000 });
+    const body = '```mermaid\nflowchart LR; BAD\n```';
+    const view = render(<Markdown body={body} />);
+    const raw = await screen.findByText(/flowchart LR; BAD/, undefined, { timeout: 2000 });
+    const calls = vi.mocked(mermaid.render).mock.calls.length;
+    for (const label of ['正在渲染图表…', 'Rendering diagram…']) {
+      view.rerender(<Markdown body={body} mermaidLoadingLabel={label} />);
+      expect(screen.getByText(/flowchart LR; BAD/)).toBe(raw);
+    }
+    expect(vi.mocked(mermaid.render).mock.calls.length).toBe(calls);
   });
 });

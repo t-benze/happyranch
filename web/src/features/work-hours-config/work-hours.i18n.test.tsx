@@ -277,17 +277,24 @@ describe('Work Hours overview i18n', () => {
     expect(screen.getAllByText('eng').length).toBe(2);
     expect(screen.getByText('support_bot')).toBeInTheDocument();
 
+    const region = screen.getByRole('region', { name: '工时智能体列表' });
+    region.focus();
+    expect(region).toHaveFocus();
     const link = screen.getByRole('link', { name: 'dev_agent' });
     const requests = await countRequests(async () => {
       await switchLocale('en');
       expect(screen.getByText('Working hours · Founder-only configuration')).toBeInTheDocument();
       expect(screen.getByText('every 30m · 09:00–19:00 mon,tue,wed,thu,fri America/Los_Angeles')).toBeInTheDocument();
       expect(screen.getByRole('columnheader', { name: 'Cadence (effective)' })).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: 'Work Hours roster table' })).toBe(region);
+      expect(region).toHaveFocus();
       expect(screen.getByText('Excluded')).toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'dev_agent' })).toBe(link);
       await switchLocale('zh-CN');
       expect(screen.getByRole('link', { name: 'dev_agent' })).toBe(link);
       expect(screen.getByText('已排除')).toBeInTheDocument();
+      expect(screen.getByRole('region', { name: '工时智能体列表' })).toBe(region);
+      expect(region).toHaveFocus();
     });
     expect(requests).toEqual([]);
   });
@@ -379,14 +386,21 @@ describe('Work Hours agent detail i18n', () => {
     expect(within(hint).getByText('## Routine Tasks').tagName).toBe('CODE');
 
     const heading = screen.getByRole('heading', { name: 'dev_agent' });
+    const region = screen.getByRole('region', { name: '计划来源核对表' });
+    region.focus();
+    expect(region).toHaveFocus();
     const requests = await countRequests(async () => {
       await switchLocale('en');
+      expect(screen.getByRole('region', { name: 'Schedule reconciliation table' })).toBe(region);
+      expect(region).toHaveFocus();
       expect(screen.getByText('Effective schedule — provenance')).toBeInTheDocument();
       expect(screen.getByText(/^To change these in MVP/)).toHaveTextContent(
         'To change these in MVP, edit the agent’s ## Routine Tasks markdown directly.',
       );
       expect(screen.getByRole('heading', { name: 'dev_agent' })).toBe(heading);
       await switchLocale('zh-CN');
+      expect(screen.getByRole('region', { name: '计划来源核对表' })).toBe(region);
+      expect(region).toHaveFocus();
       expect(screen.getByRole('heading', { name: 'dev_agent' })).toBe(heading);
     });
     expect(requests).toEqual([]);

@@ -903,6 +903,7 @@ function DockTurnView({
         timestamp={turn.timestamp}
         formatTimestamp={formatTimestamp}
         body={turn.text}
+        labels={{ mermaidLoading: t('common.mermaidLoading') }}
       />
     );
   }
@@ -933,6 +934,7 @@ function DockTurnView({
           timestamp={turn.timestamp}
           formatTimestamp={formatTimestamp}
           body={turn.text}
+          labels={{ mermaidLoading: t('common.mermaidLoading') }}
         />
       )}
     </div>

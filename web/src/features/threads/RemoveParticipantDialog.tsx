@@ -49,7 +49,7 @@ export function RemoveParticipantDialog({ threadId, agentName, open, onClose }: 
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('threads.dialog.remove.title')}</DialogTitle>
           <DialogDescription>

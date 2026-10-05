@@ -21,6 +21,17 @@ import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 
+const mermaidChunk = vi.hoisted(() => {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => { release = resolve; });
+  return { ready, release };
+});
+// External library-load delay; actual Markdown, lazy import and callers stay real.
+vi.mock('mermaid', async () => {
+  await mermaidChunk.ready;
+  return { default: { initialize: vi.fn(), render: vi.fn(async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' })) } };
+});
+
 const SLUG = 'alpha';
 const AUTHORED_SUBJECT = 'Ship `v2` — **now** (EN title kept)';
 const AUTHORED_BODY = 'Plan: **bold** and `code` for engineering_manager';
@@ -598,4 +609,30 @@ describe('ThreadsPage dream-origin badge accessible names across a locale switch
     expect(writes).toEqual([]);
     expect(JSON.stringify({ ...localStorage })).toBe(storageBefore);
   });
+});
+
+test('Thread Mermaid loading copy switches in place without disturbing the composer or issuing requests', async () => {
+  const thread = mkThread('THR-77', 'raw title');
+  stubList([thread]);
+  stubDetail(thread, [mkMessage(1, 'founder', 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```')]);
+  const view = mount(`/orgs/${SLUG}/threads/THR-77`, 'en');
+  try {
+    await waitFor(() => expect(view.container.querySelector('.gl-prose-mermaid-loading')).not.toBeNull());
+    const fallback = view.container.querySelector('.gl-prose-mermaid-loading');
+    const article = view.container.querySelector('article');
+    const input = screen.getByRole('textbox', { name: 'Compose follow-up' });
+    fireEvent.change(input, { target: { value: 'raw unsent /任务' } }); input.focus();
+    const requests = await countRequests(async () => {
+      for (const locale of ['zh-CN', 'en'] as const) {
+        await switchLocale(locale);
+        expect(fallback?.textContent).toBe(locale === 'en' ? 'Rendering diagram…' : '正在渲染图表…');
+        expect(view.container.querySelector('.gl-prose-mermaid-loading')).toBe(fallback);
+        expect(view.container.querySelector('article')).toBe(article);
+        expect(input).toHaveFocus(); expect(input).toHaveValue('raw unsent /任务');
+        expect(screen.getByText('Rendering diagram…', { selector: 'p' })).toBeInTheDocument();
+      }
+    });
+    expect(requests).toEqual([]);
+  } finally { await act(async () => mermaidChunk.release()); }
+  await waitFor(() => expect(view.container.querySelector('svg[data-w5a-diagram]')).not.toBeNull());
 });
