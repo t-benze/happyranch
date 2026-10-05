@@ -1181,10 +1181,17 @@ async function main() {
     if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.cleanup();
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();
-    if (chrome && !chrome.killed) chrome.kill('SIGKILL');
+    if (chrome && chrome.exitCode === null && chrome.signalCode === null) {
+      // kill() only sends the signal; wait before removing a writable profile.
+      await new Promise((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error('Chrome teardown timed out')), 5000);
+        chrome.once('close', () => { clearTimeout(deadline); resolve(); });
+        chrome.kill('SIGKILL');
+      });
+    }
     server.closeAllConnections?.();
     server.close();
-    rmSync(userDataDir, { recursive: true, force: true });
+    rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 
   const failed = cases.filter((c) => !c.pass);
