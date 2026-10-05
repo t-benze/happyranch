@@ -305,17 +305,18 @@ def test_founder_create_refreshes_bootstrap_inputs_after_clone_winner(
             org.sessions.set_active("TASK-100", "engineering_head", "sess-eh-test")
             revision = prompt_loader.agent_revision(paths, "fresh_founder")
             assert revision is not None
-            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+            winner_request = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
                 action="update", name="fresh_founder", task_id="TASK-100",
                 session_id="sess-eh-test", expected_revision=revision,
                 system_prompt="winner prompt\n", executor="codex",
                 description="winner", repos={"winner": "/winner"},
-            ), org) == {"ok": True}
-            winning_bytes = (paths.agents_dir / "fresh_founder.md").read_bytes()
+            ), org))
             release.set()
-            assert await asyncio.wait_for(create, timeout=1) == {
+            assert await asyncio.wait_for(create, timeout=10) == {
                 "name": "fresh_founder", "team": "engineering", "role": "worker",
             }
+            assert await asyncio.wait_for(winner_request, timeout=10) == {"ok": True}
+            winning_bytes = (paths.agents_dir / "fresh_founder.md").read_bytes()
             assert (paths.agents_dir / "fresh_founder.md").read_bytes() == winning_bytes
 
         asyncio.run(exercise())

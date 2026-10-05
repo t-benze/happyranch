@@ -340,6 +340,7 @@ used for any profile. See
 Supported active roster creation, approval, revision-CAS executor updates,
 dedicated executor updates and termination maintain exact per-agent profile
 requirements inside their canonical fence; pending enrollments do not bind.
+Prompt/model/repo updates preserve the current profile while composing only their intended delta inside the process writer gate. Init and active create/approval retain that gate through final current capture and bootstrap; executor switching retains a single gate through materialization, synchronous bootstrap, final mutation and compensation. The short teams/canonical sections end before awaited host work.
 Their profile leases release before ordinary publication capture and awaited
 bootstrap, including compensation exits. At daemon state construction, U2B rebuilds exact per-agent custom-profile
 dependencies for every loaded org and reconciles any interrupted coordinated

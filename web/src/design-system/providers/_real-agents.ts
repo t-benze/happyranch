@@ -27,6 +27,21 @@ function useRealOrgSlug(): string {
 }
 
 export const realAgentsApi: AgentsApi = {
+  useSetAgentSystemPrompt: () => useMutation({
+    mutationFn: ({ slug, agentName, body }: {
+      slug: string; agentName: string; body: import('@/lib/api/types').SystemPromptBody;
+    }) => agentsApi.setAgentSystemPrompt(slug, agentName, body),
+    retry: false,
+  }),
+
+  useReadAgentSystemPrompt: () => useMutation({
+    mutationFn: async ({ slug, agentName }: { slug: string; agentName: string }) => {
+      const roster = await agentsApi.listAgents(slug, true);
+      return roster.agents.find((agent) => agent.name === agentName);
+    },
+    retry: false,
+  }),
+
   useAgentsList: () => {
     const slug = useRealOrgSlug();
     return useQuery({

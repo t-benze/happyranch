@@ -534,11 +534,15 @@ The shipped frontend surface is `web/src/features/settings/SettingsPage.tsx` (le
 
 ### Agents page
 
-The Agents page (`web/src/features/agents/`) shows the active agent roster plus pending enrollments. Each agent detail drawer now includes (Phase 2):
+The Agents page (`web/src/features/agents/`) shows the active agent roster plus pending enrollments. The mounted detail pane serves desktop and mobile; the retained drawer component shares the prompt editor without a new mount. Agent details include:
 
 - **Repositories** — `repos` map from org/agents/<name>.md frontmatter (THR-095), shown as badge chips in the detail header.
-- **System prompt** — read-only, collapsible. Sourced from the `system_prompt` field on the existing `GET /agents` response (additive Phase 2 field).
+- **System prompt** — collapsible, with Edit / Save / Cancel. The founder-only `PUT /agents/{agent_name}/system-prompt` accepts exactly `system_prompt` and the matching lowercase 64-hex `expected_revision` from `GET /agents`. Description remains read-only.
 - **Model** — per-agent model string (`model` field in `GET /agents`, additive THR-067 field). Web UI field is PR-2 (separate follow-up).
+
+Prompt saves preserve unrelated definition fields and normalize multiline/Unicode text through the existing parser and protected-input validators. The exact 200 receipt is `{agent, system_prompt, revision}` from one canonical byte snapshot. The editor freezes the draft base and captured org/target, disables typing/Save/Cancel through PUT and an explicit uncached GET, and shows Saved only when both body and revision match. Polling never rebases a dirty draft. Initial loading/error/empty/missing-revision/disappeared-target states refuse editing; close/selection/navigation discard locally and ignore late responses. en/zh-CN switching preserves the mounted draft, focus and selection. Errors retain the draft; inspect an explicit fresh read before deliberate reapply, with no automatic PUT retry.
+
+Missing/malformed revisions return422 `expected_revision_required`; stale bases return409 `stale_agent_revision` with `current_revision`; absent active targets return404 `agent_not_found`. Reconciliation400 includes `system_prompt_reconciliation_failed`, a bounded diagnostic and actual canonical/workspace compensation statuses (`restored`, `not_owned`, `failed`, `not_required`). Audit500 reports `system_prompt_audit_failed` / `possibly_committed`, never an invented rollback. A canonical receipt does not prove workflow readiness or retained-provider adoption. THR280 C16 still requires genuine Claude/Codex/Pi/OpenCode retained replies and finite Codex callback recovery evidence; those effects remain unverified until the required isolated probes and manager disposition.
 
 Teams membership editing (add/remove workers only — manager reassignment is founder-gated) is available via `PUT /settings/teams`, wrapping `TeamsRegistry` mutators with `validate_team_membership` consistency checks and 409 rollback on drift.
 

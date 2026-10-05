@@ -349,6 +349,14 @@ export type ManageAgentRepoArgs = Parameters<typeof agentsApi.manageAgentRepo>[2
 export type ManageAgentRepoResult = Awaited<ReturnType<typeof agentsApi.manageAgentRepo>>;
 
 export interface AgentsApi {
+  useSetAgentSystemPrompt: () => MutationLike<
+    { slug: string; agentName: string; body: import('@/lib/api/types').SystemPromptBody },
+    import('@/lib/api/types').SystemPromptReceipt
+  >;
+  /** Explicit network read for the submission's captured org/target, never query cache. */
+  useReadAgentSystemPrompt: () => MutationLike<
+    { slug: string; agentName: string }, import('@/lib/api/types').AgentSummary | undefined
+  >;
   useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
   /** Pending enrollments — `status` filter narrows the file scan. */
   useEnrollmentsList: (

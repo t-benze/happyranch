@@ -51,6 +51,10 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  test('prompt-only founder PUT is browser-included', () => {
+    expect(INCLUDED_PATHS.has('PUT /api/v1/orgs/{slug}/agents/{agent_name}/system-prompt')).toBe(true);
+  });
+
   const daemonRoutes = loadDaemonRoutes();
 
   test('every daemon route is either included or excluded', () => {

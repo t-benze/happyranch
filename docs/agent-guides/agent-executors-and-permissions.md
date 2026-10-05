@@ -89,6 +89,8 @@ ownership releases. Stable known-target contention remains 409
 `profile_coordinator_busy`, and ordinary no-target approval creates no profile.
 The adapter writer never acquires a new profile lease.
 
+Prompt-only founder saves reuse the registered profile's text renderer: Claude's instruction renderer for the Claude adapter, the shared Codex renderer for Codex/Pi, and the OpenCode renderer for its adapter. They update regular `AGENTS.md` plus raw `CLAUDE.md -> AGENTS.md` without invoking permission/settings/skills bootstrap. Existing safe pair conversion preserves original files and never writes through external instruction links; unsafe/unreadable inputs refuse. Saving without a workspace persists canonical content only; explicit init later delivers it. Launch pair validation remains read-only and refuses incomplete pairs. Disk preparation and a resume ID do not prove provider adoption: the required four retained-provider replies and finite Codex recovery probes remain distinct empirical evidence.
+
 Both adapter registration entry points (`register_adapter` and
 `submit_adapter`), approval/bind/removal, executor-profile removal,
 direct-connect projection/retry, active Founder creation and approval, manager

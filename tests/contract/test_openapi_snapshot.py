@@ -81,6 +81,27 @@ def test_openapi_snapshot_matches() -> None:
         raise AssertionError("\n".join(msg_lines))
 
 
+def test_system_prompt_exact_request_receipt_and_failure_contract() -> None:
+    """THR280 C18: externally consumed request/receipt/compensation schema."""
+    schema = create_app(DaemonState.idle(Settings())).openapi()
+    models = schema["components"]["schemas"]
+    request = models["SystemPromptBody"]
+    assert request["additionalProperties"] is False
+    assert set(request["properties"]) == {"system_prompt", "expected_revision"}
+    assert set(request["required"]) == {"system_prompt", "expected_revision"}
+    assert request["properties"]["system_prompt"]["type"] == "string"
+    assert request["properties"]["expected_revision"] == {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    assert set(models["SystemPromptReceipt"]["required"]) == {"agent", "system_prompt", "revision"}
+    assert set(models["SystemPromptReceipt"]["properties"]) == {"agent", "system_prompt", "revision"}
+    operation = schema["paths"]["/api/v1/orgs/{slug}/agents/{agent_name}/system-prompt"]["put"]
+    assert set(operation["responses"]) == {"200", "400", "404", "409", "422", "500"}
+    for field in ("canonical", "workspace"):
+        assert models["SystemPromptCompensation"]["properties"][field]["enum"] == [
+            "restored", "not_owned", "failed", "not_required",
+        ]
+    assert models["SystemPromptAuditDetail"]["properties"]["commit_state"]["const"] == "possibly_committed"
+
+
 # ── AdapterEntryResponse eligibility semantic test (TASK-3836 fix-forward) ─
 
 
