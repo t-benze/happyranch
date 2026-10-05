@@ -6,9 +6,8 @@ decision (cadence, per-agent window dedup, at-most-once per window),
 per-agent >= 1 GiB trigger/non-trigger, owning-agent routing, exact
 first-two report-only behavior, daemon trigger writes (task creation +
 enqueue with fresh advisory context through the daemon-composed brief —
-never a Schedule brief), the per-agent durable founder-report thread seam
-(create-on-first-trigger, participant-authorized task-bound send path, NO
-minted token), the enabled-by-default kill switch, mandatory
+never a Schedule brief), task-only admission and durable agent-page reports
+without routine report threads (THR-259 seq418), the enabled-by-default kill switch, mandatory
 advisory/stale/non-candidate/re-derive wording, single true wall-clock
 deadline across Git collection, every cardinality-cap boundary yielding
 unavailable/truncated status, suffixed TASK-id conservative classification,
@@ -1237,38 +1236,31 @@ def test_live_sessions_fail_open_on_none_or_error():
 # ── (j) per-agent durable report thread: no minted token ──────────────────
 
 @pytest.mark.asyncio
-async def test_trigger_creates_per_agent_report_thread_without_minted_token(
-    tmp_path, test_settings, monkeypatch,
-):
-    """First trigger creates ONE durable thread per agent (per-agent subject,
-    owning agent as participant) and the brief instructs the participant-
-    authorized task-bound send path — NO minted invocation token."""
+async def test_trigger_admits_task_without_report_thread(tmp_path, test_settings, monkeypatch):
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
     _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
-
+    before = _reporting_thread_state(db)
     state = _FakeDaemonState()
-    task_id = await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
+    task_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue)
     task = db.get_task(task_id)
-    subject = wcs.report_thread_subject("dev_agent")
-    threads = db.list_threads(limit=50)
-    matching = [t for t in threads if t.subject == subject]
-    assert len(matching) == 1
-    thread_id = matching[0].id
-    # Owning agent is a participant (participant-authorized send path).
-    assert db.is_thread_participant(thread_id, "dev_agent")
-    # Brief carries the thread id + the task-bound send instruction.
-    assert f"--thread-id {thread_id}" in task.brief
-    assert "happyranch threads send --org" in task.brief
-    assert "--task-id" in task.brief and "--session-id" in task.brief
-    assert "no invocation token is needed" in task.brief
-    # NO minted token anywhere in the brief.
-    assert "invocation_token" not in task.brief
-    assert "BOOTSTRAP" not in task.brief
+    assert task.assigned_agent == "dev_agent"
+    assert task.parent_task_id is None and task.dispatched_from_thread_id is None
+    assert task.task_type == "task"
+    assert state.queue.items == [(org.slug, task_id)]
+    assert _reporting_thread_state(db) == before
+    assert "happyranch threads send" not in task.brief
+    assert "compose a founder-visible thread" not in task.brief
+    assert "existing agent page" in task.brief
+    assert "happyranch report-completion" in task.brief
+    assert "invocation_token" not in task.brief and "BOOTSTRAP" not in task.brief
+    payload = next(r["payload"] for r in db.get_audit_logs(task_id)
+                   if r["action"] == "workspace_cleanup_triggered")
+    assert set(payload) == {"report_thread_id", "measurement_available", "measurement_reason",
+                            "measurement_truncated", "run_number", "brief_kind"}
+    assert payload["report_thread_id"] is None
+    assert payload["run_number"] == 1 and payload["brief_kind"] == "report_only"
 
 
 def test_cleanup_report_thread_inserts_without_mention_routing_enabled_field(
@@ -1314,78 +1306,68 @@ def test_cleanup_report_thread_inserts_without_mention_routing_enabled_field(
 
 
 @pytest.mark.asyncio
-async def test_trigger_reuses_same_thread_on_next_run(tmp_path, test_settings, monkeypatch):
+async def test_trigger_next_run_admits_task_without_thread(tmp_path, test_settings, monkeypatch):
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
     _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
-
     state = _FakeDaemonState()
-    task1_id = await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    task1 = db.get_task(task1_id)
-    thread_id = wcs._find_report_thread(db, "dev_agent").thread_id
-    assert thread_id is not None
-    assert f"--thread-id {thread_id}" in task1.brief
-
-    task2_id = await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    task2 = db.get_task(task2_id)
-    assert f"--thread-id {thread_id}" in task2.brief
-    subject = wcs.report_thread_subject("dev_agent")
-    matching = [t for t in db.list_threads(limit=50) if t.subject == subject]
-    assert len(matching) == 1
-    assert matching[0].id == thread_id
+    before = _reporting_thread_state(db)
+    ids = []
+    for ordinal in (1, 2, 3):
+        tid = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue)
+        ids.append(tid)
+        task = db.get_task(tid)
+        assert "happyranch threads send" not in task.brief
+        assert "final-ledger.jsonl" in task.brief and "report-completion" in task.brief
+        assert ("STRICTLY REPORT-ONLY" in task.brief) == (ordinal < 3)
+        payload = next(r["payload"] for r in db.get_audit_logs(tid)
+                       if r["action"] == "workspace_cleanup_triggered")
+        assert payload["run_number"] == ordinal
+        assert payload["report_thread_id"] is None
+        db.update_task(tid, status=TaskStatus.COMPLETED)
+    assert len(set(ids)) == 3
+    assert state.queue.items == [(org.slug, tid) for tid in ids]
+    assert _reporting_thread_state(db) == before
 
 
 @pytest.mark.asyncio
-async def test_two_agents_get_distinct_report_threads(tmp_path, test_settings, monkeypatch):
+async def test_two_agents_get_distinct_tasks_without_report_threads(tmp_path, test_settings, monkeypatch):
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
-    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
-    _write_file(org.root / "workspaces" / "qa_engineer" / "f.txt", 1024)
-
     state = _FakeDaemonState()
-    await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    await wcs.trigger_cleanup(
-        org, agent="qa_engineer",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    dev_thread = wcs._find_report_thread(db, "dev_agent").thread_id
-    qa_thread = wcs._find_report_thread(db, "qa_engineer").thread_id
-    assert dev_thread is not None and qa_thread is not None
-    assert dev_thread != qa_thread
-    assert db.is_thread_participant(dev_thread, "dev_agent")
-    assert not db.is_thread_participant(dev_thread, "qa_engineer")
-    assert db.is_thread_participant(qa_thread, "qa_engineer")
+    before = _reporting_thread_state(db)
+    ids = []
+    for agent in ("dev_agent", "qa_engineer"):
+        _write_file(org.root / "workspaces" / agent / "f.txt", 1024)
+        tid = await wcs.trigger_cleanup(org, agent=agent, enqueue=state.queue.enqueue)
+        ids.append(tid)
+        assert db.get_task(tid).assigned_agent == agent
+        payload = next(r["payload"] for r in db.get_audit_logs(tid)
+                       if r["action"] == "workspace_cleanup_triggered")
+        assert payload["run_number"] == 1
+        assert payload["report_thread_id"] is None
+    assert ids[0] != ids[1]
+    assert state.queue.items == [(org.slug, tid) for tid in ids]
+    assert _reporting_thread_state(db) == before
 
 
 @pytest.mark.asyncio
-async def test_trigger_fails_closed_when_thread_creation_fails(
+async def test_trigger_fails_closed_when_task_insertion_fails(
     tmp_path, test_settings, monkeypatch,
 ):
-    """TASK-6046 finding 1: a thread-creation failure inside the atomic
-    producer rolls back EVERYTHING — no task, no thread residue, no enqueue —
-    and is audited as a skipped trigger (fail closed; a later tick retries
-    cleanly with zero residue to resolve)."""
+    """A failed ordinary task insert leaves no reporting residue or enqueue."""
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
     _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
 
-    def boom(**kw):
-        raise RuntimeError("thread create boom")
+    def boom(task):
+        raise RuntimeError("task insert boom")
 
     monkeypatch.setattr(
-        org.db, "insert_cleanup_report_thread_and_task", boom,
+        org.db, "insert_task", boom,
     )
     state = _FakeDaemonState()
     task_id = await wcs.trigger_cleanup(
@@ -2121,8 +2103,7 @@ async def test_trigger_allocates_task_id_after_awaited_measurement(
 ):
     """The task id is allocated only AFTER the awaited measurement. A foreign
     producer inserting a task DURING the measurement cannot claim the id the
-    cleanup trigger will use, and the report thread is linked only to the
-    real cleanup task — never a falsely linked thread."""
+    cleanup trigger will use; no report thread or orphan association is created."""
     import threading
 
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
@@ -2177,37 +2158,32 @@ async def test_trigger_allocates_task_id_after_awaited_measurement(
     assert task.parent_task_id is None
     assert task.dispatched_from_thread_id is None
 
-    # The report thread is linked ONLY to the real cleanup task.
-    subject = wcs.report_thread_subject("dev_agent")
-    matching = [t for t in db.list_threads(limit=50) if t.subject == subject]
-    assert len(matching) == 1
-    assert matching[0].composed_from_task_id == task_id
+    assert _reporting_thread_state(db) == _empty_reporting_thread_state(db)
+    assert db.get_task(foreign_id).brief == "foreign ordinary work"
+
 
 
 @pytest.mark.asyncio
 async def test_trigger_insert_failure_leaves_zero_residue_then_retry_succeeds(
     tmp_path, test_settings, monkeypatch,
 ):
-    """TASK-6046 finding 1 probe: an insertion failure at the atomic producer
-    leaves ZERO durable residue (no thread row, participant, message, turn,
-    or thread/task audit rows; no task; no enqueue) and a later retry
-    succeeds exactly once — one task, one thread, one enqueue."""
+    """Failed ordinary insertion leaves zero residue; retry admits one task."""
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
     _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
 
-    real_producer = org.db.insert_cleanup_report_thread_and_task
+    real_producer = org.db.insert_task
     calls = {"n": 0}
 
-    def flaky_producer(**kw):
+    def flaky_producer(task):
         calls["n"] += 1
         if calls["n"] == 1:
             raise Exception("simulated mid-transaction producer failure")
-        return real_producer(**kw)
+        return real_producer(task)
 
     monkeypatch.setattr(
-        org.db, "insert_cleanup_report_thread_and_task", flaky_producer,
+        org.db, "insert_task", flaky_producer,
     )
 
     state = _FakeDaemonState()
@@ -2240,7 +2216,7 @@ async def test_trigger_insert_failure_leaves_zero_residue_then_retry_succeeds(
         for r in audits
     )
 
-    # A later retry succeeds exactly once: one task, one thread, one enqueue.
+    # A later retry admits exactly one task/enqueue and zero threads.
     task_id = await wcs.trigger_cleanup(
         org, agent="dev_agent",
         enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
@@ -2251,15 +2227,10 @@ async def test_trigger_insert_failure_leaves_zero_residue_then_retry_succeeds(
         wcs._CLEANUP_BRIEF_MARKER, assigned_agent="dev_agent",
     )
     assert [t.id for t in cleanup] == [task_id]
-    subject = wcs.report_thread_subject("dev_agent")
-    matching = [t for t in db.list_threads(limit=1000) if t.subject == subject]
-    assert len(matching) == 1
-    assert matching[0].composed_from_task_id == task_id
-    assert db.is_thread_participant(matching[0].id, "dev_agent")
-    opening = db.get_thread_message_by_seq(matching[0].id, 1)
-    assert opening is not None
-    assert opening.body_markdown.startswith(wcs._REPORT_THREAD_OPENING_PREFIX)
-    assert db.get_thread(matching[0].id).turns_used == 1
+    assert _reporting_thread_state(db) == _empty_reporting_thread_state(db)
+    assert db.get_task(task_id).parent_task_id is None
+    assert db.get_task(task_id).dispatched_from_thread_id is None
+
 
 
 @pytest.mark.asyncio
@@ -2279,6 +2250,7 @@ async def test_trigger_insert_failure_on_existing_thread_touches_no_thread_rows(
         org, agent="dev_agent",
         enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
+    _seed_historical_report_thread(org, first_task)
     thread_id = wcs._find_report_thread(db, "dev_agent").thread_id
     assert thread_id is not None
 
@@ -2312,15 +2284,10 @@ async def test_trigger_insert_failure_on_existing_thread_touches_no_thread_rows(
 
 
 @pytest.mark.asyncio
-async def test_trigger_fails_closed_on_intermittent_identity_read_then_recovers(
+async def test_trigger_ignores_unavailable_historical_thread_identity(
     tmp_path, test_settings, monkeypatch,
 ):
-    """TASK-6046 finding 2 probe: a transient report-thread IDENTITY read
-    failure with an existing valid thread must NOT create a duplicate. The
-    history read succeeds but the subsequent identity read fails once: the
-    trigger fails closed (no task, no enqueue, audited reason), the existing
-    open thread is untouched, and the next attempt recovers — one open
-    thread, no duplicate, the task references the existing thread."""
+    """Historical reporting lookup failures are irrelevant to task admission."""
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
@@ -2342,55 +2309,19 @@ async def test_trigger_fails_closed_on_intermittent_identity_read_then_recovers(
     )
     assert wcs._find_report_thread(db, "dev_agent").state == "found"
 
-    # Intermittent identity read: history succeeds, provenance read fails
-    # exactly once.
-    real_identity_read = org.db.list_threads_by_composed_from_task_id
-    calls = {"n": 0}
-
-    def flaky_identity_read(task_id):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise Exception("simulated transient identity-read failure")
-        return real_identity_read(task_id)
-
-    monkeypatch.setattr(
-        org.db, "list_threads_by_composed_from_task_id", flaky_identity_read,
-    )
-
+    before = _reporting_thread_state(db)
+    attempts = []
+    def unavailable_identity(task_id):
+        attempts.append(task_id)
+        raise RuntimeError("historical identity unavailable")
+    monkeypatch.setattr(db, "list_threads_by_composed_from_task_id", unavailable_identity)
     state = _FakeDaemonState()
-    task_id = await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    assert task_id is None
-    assert state.queue.items == []
-    audits = db.get_audit_logs("workspace-cleanup:skipped")
-    assert any(
-        r["action"] == "workspace_cleanup_skipped"
-        and r["payload"].get("reason") == "report_thread_indeterminate"
-        and r["payload"].get("detail") == "provenance_lookup_failed"
-        for r in audits
-    )
-    # Exactly ONE open report thread — no duplicate was created.
-    matching = [t for t in db.list_threads(limit=1000) if t.subject == subject]
-    assert len(matching) == 1
-    assert matching[0].id == existing_tid
-    assert matching[0].status.value == "open"
-
-    # Successful recovery: the next trigger resolves the existing thread and
-    # creates the task referencing it — still one open thread.
-    task_id = await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
+    task_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue)
     assert task_id is not None
     assert state.queue.items == [(org.slug, task_id)]
-    task = db.get_task(task_id)
-    assert f"--thread-id {existing_tid}" in task.brief
-    matching = [t for t in db.list_threads(limit=1000) if t.subject == subject]
-    assert len(matching) == 1
-    assert matching[0].id == existing_tid
-    assert wcs._find_report_thread(db, "dev_agent").thread_id == existing_tid
+    assert attempts == []
+    assert _reporting_thread_state(db) == before
+    assert "--thread-id" not in db.get_task(task_id).brief
 
 
 # ── (r) TASK-6043 finding 4: authoritative durable thread identity ───────
@@ -2462,16 +2393,12 @@ async def test_find_report_thread_rejects_user_subject_collisions(
     # Neither collision resolves to the durable report thread.
     assert wcs._find_report_thread(db, "dev_agent").state == "absent"
 
-    # The daemon's own trigger creates the real thread and resolves to it.
+    before = _reporting_thread_state(db)
     state = _FakeDaemonState()
-    task_id = await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    found = wcs._find_report_thread(db, "dev_agent")
-    assert found.state == "found"
-    assert found.thread_id not in (user_tid_a, user_tid_b)
-    assert db.get_thread(found.thread_id).composed_from_task_id == task_id
+    task_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue)
+    assert task_id is not None
+    assert wcs._find_report_thread(db, "dev_agent").state == "absent"
+    assert _reporting_thread_state(db) == before
 
 
 @pytest.mark.asyncio
@@ -2490,6 +2417,7 @@ async def test_find_report_thread_requires_participant_membership(
         org, agent="dev_agent",
         enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
+    _seed_historical_report_thread(org, task_id)
     daemon_tid = wcs._find_report_thread(db, "dev_agent").thread_id
     assert daemon_tid is not None
     assert db.is_thread_participant(daemon_tid, "dev_agent")
@@ -2517,6 +2445,7 @@ async def test_find_report_thread_located_beyond_open_presentation_limit(
         org, agent="dev_agent",
         enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
+    _seed_historical_report_thread(org, first_task_id)
     daemon_tid = wcs._find_report_thread(db, "dev_agent").thread_id
     assert daemon_tid is not None
 
@@ -2548,18 +2477,18 @@ async def test_find_report_thread_located_beyond_open_presentation_limit(
 async def test_find_report_thread_does_not_reuse_closed_thread(
     tmp_path, test_settings, monkeypatch,
 ):
-    """A closed (archived) report thread is never reused: the daemon creates
-    a fresh open thread on the next trigger."""
+    """Historical closed identity stays absent; task admission preserves it."""
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
     db = Database(tmp_path / "db.sqlite")
     org = _org_with_workspaces(tmp_path, db, test_settings)
     _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
 
     state = _FakeDaemonState()
-    await wcs.trigger_cleanup(
+    task_id = await wcs.trigger_cleanup(
         org, agent="dev_agent",
         enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
+    _seed_historical_report_thread(org, task_id)
     daemon_tid = wcs._find_report_thread(db, "dev_agent").thread_id
     assert daemon_tid is not None
     db.archive_thread_and_reset_sessions(
@@ -2568,18 +2497,12 @@ async def test_find_report_thread_does_not_reuse_closed_thread(
     )
     assert wcs._find_report_thread(db, "dev_agent").state == "absent"
 
-    # A new trigger creates a fresh open thread (the closed one stays).
-    await wcs.trigger_cleanup(
-        org, agent="dev_agent",
-        enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
-    )
-    new_tid = wcs._find_report_thread(db, "dev_agent").thread_id
-    assert new_tid is not None
-    assert new_tid != daemon_tid
-    subject = wcs.report_thread_subject("dev_agent")
-    matching = [t for t in db.list_threads(limit=100) if t.subject == subject]
-    assert len(matching) == 2
-    assert db.get_thread(new_tid).status.value == "open"
+    before = _reporting_thread_state(db)
+    task_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue)
+    assert task_id is not None
+    assert wcs._find_report_thread(db, "dev_agent").state == "absent"
+    assert _reporting_thread_state(db) == before
+    assert db.get_thread(daemon_tid).status.value == "archived"
 
 
 # ── (s) TASK-6043 finding 5: all agents handled beyond the 64 cap ────────
@@ -3042,7 +2965,7 @@ def test_c7_reason_precedence_and_final_transitions(tmp_path):
 # ── C8: legacy weekly ordinals 1/2 -> daily ordinal 3, same thread ────────
 
 @pytest.mark.asyncio
-async def test_c8_legacy_weekly_ordinals_to_daily_ordinal_three_same_thread(
+async def test_c8_legacy_weekly_ordinals_to_daily_ordinal_three_without_report_thread(
     tmp_path, test_settings, monkeypatch,
 ):
     monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
@@ -3055,8 +2978,7 @@ async def test_c8_legacy_weekly_ordinals_to_daily_ordinal_three_same_thread(
         org, agent="dev_agent",
         enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
-    thread_id = wcs._find_report_thread(db, "dev_agent").thread_id
-    assert thread_id is not None
+    assert db.list_threads(limit=1000) == []
     db.update_task(first, status=TaskStatus.COMPLETED)
     first_row = db.get_task(first)
 
@@ -3073,7 +2995,7 @@ async def test_c8_legacy_weekly_ordinals_to_daily_ordinal_three_same_thread(
         enqueue=lambda slug, tid: state.queue.enqueue(slug, tid),
     )
     third_task = db.get_task(third)
-    assert f"--thread-id {thread_id}" in third_task.brief
+    assert "--thread-id" not in third_task.brief
     audit = [
         row for row in db.get_audit_logs(third)
         if row["action"] == "workspace_cleanup_triggered"
@@ -3304,10 +3226,10 @@ async def test_c11_decisive_old_unfinished_beyond_page_and_newer_stamps(
     after_audits = [tuple(row) for row in db.execute(audit_sql).fetchall()]
     assert after_audits[: len(audits_before)] == audits_before
     new_audits = after_audits[len(audits_before):]
-    # Exactly the trigger plus the first-report-thread creation audits; the
+    # Exactly the trigger audit; the
     # serviced qa_engineer skip writes nothing.
     assert sorted(row[0] for row in new_audits) == [
-        "thread_message_sent", "thread_started", "workspace_cleanup_triggered",
+        "workspace_cleanup_triggered",
     ]
     triggered_new = [row for row in new_audits
                      if row[0] == "workspace_cleanup_triggered"]
@@ -3575,10 +3497,8 @@ async def test_c6_real_loop_catch_up_terminalize_close_reopen_restart(
     assert len(state.queue.items) == 2
     assert len(measurement_calls) == 2
     ids = [tid for _, tid in state.queue.items]
-    threads = {
-        agent: wcs._find_report_thread(db, agent).thread_id
-        for agent in ("dev_agent", "qa_engineer")
-    }
+    threads = _reporting_thread_state(db)
+    assert threads == _empty_reporting_thread_state(db)
     stamps = {tid: db.get_task(tid).created_at for tid in ids}
     assert all(stamps[tid] == occ - timedelta(minutes=90) for tid in ids)
     assert all(
@@ -3605,10 +3525,7 @@ async def test_c6_real_loop_catch_up_terminalize_close_reopen_restart(
     assert [reopened.get_task(tid).created_at for tid in ids] == [
         stamps[tid] for tid in ids
     ]
-    assert {
-        agent: wcs._find_report_thread(reopened, agent).thread_id
-        for agent in threads
-    } == threads
+    assert _reporting_thread_state(reopened) == threads
     restart_decision = wcs.decide_cleanup_trigger(
         db=reopened, agent="dev_agent", now_utc=occ - timedelta(minutes=80),
         first_scan=True, tz=timezone.utc,
@@ -3829,14 +3746,10 @@ async def _drive_c7_real_tick_lifecycle(
         ]
         assert len(triggered) == 1
         assert triggered[0]["payload"]["run_number"] == 2
-    # Durable thread provenance exists and is carried into each brief.
-    thread_ids = {
-        agent: wcs._find_report_thread(db, agent).thread_id for agent in agents
-    }
-    assert all(thread_id is not None for thread_id in thread_ids.values())
+    thread_ids = _reporting_thread_state(db)
+    assert thread_ids == _empty_reporting_thread_state(db)
     for tid in created:
-        agent = db.get_task(tid).assigned_agent
-        assert f"--thread-id {thread_ids[agent]}" in db.get_task(tid).brief
+        assert "--thread-id" not in db.get_task(tid).brief
 
     for tid in created:
         db.update_task(tid, status=TaskStatus.COMPLETED)
@@ -3861,9 +3774,7 @@ async def _drive_c7_real_tick_lifecycle(
     assert count("tasks") == tasks_before + 2
     assert audit_counts() == audits_after_create
     # Thread provenance and every original seed row survive the final restart.
-    assert {
-        agent: wcs._find_report_thread(db, agent).thread_id for agent in agents
-    } == thread_ids
+    assert _reporting_thread_state(db) == thread_ids
     for tid, snapshot in seed_before.items():
         assert db.get_task(tid).id == tid
         assert db.get_task(tid).created_at == snapshot.created_at
@@ -3923,8 +3834,7 @@ async def test_c8_legacy_timestamps_drive_real_decision_and_tick(
     ]
     assert len(dev_created) == 1
     first_id = dev_created[0]
-    thread_id = wcs._find_report_thread(db, "dev_agent").thread_id
-    assert thread_id is not None
+    assert db.list_threads(limit=1000) == []
     db.update_task(first_id, status=TaskStatus.COMPLETED)
 
     # Preserved legacy weekly row (ordinal 2) with an old timestamp.
@@ -3949,7 +3859,7 @@ async def test_c8_legacy_timestamps_drive_real_decision_and_tick(
     assert len(dev_all) == 2
     third_id = dev_all[1]
     third = db.get_task(third_id)
-    assert f"--thread-id {thread_id}" in third.brief
+    assert "--thread-id" not in third.brief
     audit = [
         row for row in db.get_audit_logs(third_id)
         if row["action"] == "workspace_cleanup_triggered"
@@ -4251,3 +4161,102 @@ class TestComposeCleanupBriefSharedSkillWording:
         brief = self._brief(3)
         assert "THIS RUN MAY PERFORM BOUNDED CLEANUP ACTIONS" in brief
         assert "without --force" in brief.replace("\n", " ")
+
+
+def _reporting_thread_state(db):
+    tables = [row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'thread%' ORDER BY name"
+    ).fetchall()]
+    state = {table: [tuple(row) for row in db.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()]
+             for table in tables}
+    state["thread_audits"] = [tuple(row) for row in db.execute(
+        "SELECT * FROM audit_log WHERE action LIKE 'thread%' ORDER BY id"
+    ).fetchall()]
+    return state
+
+
+def _empty_reporting_thread_state(db):
+    return {key: [] for key in _reporting_thread_state(db)}
+
+
+def _seed_historical_report_thread(org, task_id):
+    return _insert_thread_via_shared_helper(
+        org, agent="dev_agent", subject=wcs.report_thread_subject("dev_agent"),
+        body_text=wcs._REPORT_THREAD_OPENING_PREFIX + " preserved historical opening",
+        task_id=task_id,
+    )
+
+
+@pytest.mark.asyncio
+async def test_task_insert_constraint_failure_then_retry(tmp_path, test_settings, monkeypatch):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+    db.insert_task(TaskRecord(id="TASK-1", brief="foreign ordinary work", team="engineering", assigned_agent="dev_agent"))
+    before = _reporting_thread_state(db)
+    real_id = db.next_task_id
+    monkeypatch.setattr(db, "next_task_id", lambda: "TASK-1")
+    state = _FakeDaemonState()
+    assert await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue) is None
+    assert state.queue.items == []
+    assert db.get_task("TASK-1").brief == "foreign ordinary work"
+    assert db.list_tasks_by_brief_prefix(wcs._CLEANUP_BRIEF_MARKER, assigned_agent="dev_agent") == []
+    assert _reporting_thread_state(db) == before
+    assert db.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM audit_log WHERE action='workspace_cleanup_triggered'").fetchone()[0] == 0
+    assert any(r["payload"]["reason"] == "task_insert_failed" for r in db.get_audit_logs("workspace-cleanup:skipped"))
+    monkeypatch.setattr(db, "next_task_id", real_id)
+    tid = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue)
+    assert tid == "TASK-002"
+    assert state.queue.items == [(org.slug, tid)]
+    assert _reporting_thread_state(db) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("history", ["open", "closed", "collision", "indeterminate", "beyond_page"])
+async def test_reporting_histories_and_lookup_independence(tmp_path, test_settings, monkeypatch, history):
+    monkeypatch.setattr(wcs, "_MIN_WORKSPACE_TRIGGER_BYTES", 1)
+    db = Database(tmp_path / "db.sqlite")
+    org = _org_with_workspaces(tmp_path, db, test_settings)
+    _write_file(org.root / "workspaces" / "dev_agent" / "f.txt", 1024)
+    _insert_cleanup_task(db, task_id="TASK-900", agent="dev_agent", created_at=datetime.now(timezone.utc)-timedelta(days=30), status=TaskStatus.COMPLETED)
+    tid = _seed_historical_report_thread(org, "TASK-900")
+    if history == "closed":
+        db.archive_thread_and_reset_sessions(tid, summary="historical closed", audit_scope_id="workspace-cleanup:test", audit_agent="dev_agent")
+    if history == "indeterminate":
+        db._conn.execute("UPDATE thread_messages SET system_payload_json='malformed' WHERE thread_id=?", (tid,))
+        db._conn.commit()
+        assert wcs._find_report_thread(db, "dev_agent").state == "indeterminate"
+    db.insert_audit_log("TASK-900", "dev_agent", "workspace_cleanup_triggered", {
+        "report_thread_id": tid, "measurement_available": True, "measurement_reason": None,
+        "measurement_truncated": False, "run_number": 1, "brief_kind": "report_only",
+    })
+    db.insert_task_result("TASK-900", "dev_agent", "historical-session", "Historical report; unique bytes unknown.", 80)
+    historical_task = db.get_task("TASK-900").model_dump()
+    historical_results = [tuple(r) for r in db.execute("SELECT * FROM task_results WHERE task_id='TASK-900' ORDER BY id").fetchall()]
+    historical_audits = db.get_audit_logs("TASK-900")
+    if history == "collision":
+        _insert_thread_via_shared_helper(org, agent="dev_agent", subject=wcs.report_thread_subject("dev_agent"), body_text="user collision", task_id="TASK-900")
+    if history == "beyond_page":
+        for i in range(550):
+            db.insert_thread(ThreadRecord(id=db.next_thread_id(), subject=f"unrelated {i}", turn_cap=500, composed_by="dev_agent"))
+    before = _reporting_thread_state(db)
+    attempts = []
+    def prohibited(*args, **kwargs):
+        attempts.append((args, kwargs))
+        raise RuntimeError("reporting dependency must not be attempted")
+    for method in ("list_threads_by_composed_from_task_id", "next_thread_id", "insert_cleanup_report_thread_and_task"):
+        monkeypatch.setattr(db, method, prohibited)
+    monkeypatch.setattr(wcs, "_find_report_thread", prohibited)
+    import runtime.orchestrator.org_config as config
+    monkeypatch.setattr(config, "resolve_org_setting_threads", prohibited)
+    state = _FakeDaemonState()
+    task_id = await wcs.trigger_cleanup(org, agent="dev_agent", enqueue=state.queue.enqueue)
+    assert task_id is not None
+    assert attempts == []
+    assert state.queue.items == [(org.slug, task_id)]
+    assert _reporting_thread_state(db) == before
+    assert db.get_task("TASK-900").model_dump() == historical_task
+    assert [tuple(r) for r in db.execute("SELECT * FROM task_results WHERE task_id='TASK-900' ORDER BY id").fetchall()] == historical_results
+    assert db.get_audit_logs("TASK-900") == historical_audits

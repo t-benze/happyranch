@@ -489,7 +489,7 @@ def list_agents(slug: str, org: OrgDep) -> dict:
 
 @router.get("/agents/{agent_name}/cleanup-activity")
 def get_cleanup_activity(slug: str, agent_name: str, org: OrgDep) -> dict:
-    """Read the five newest scheduler-triggered workspace cleanup tasks."""
+    """Read five newest scheduled or exact-marker manual cleanup reports."""
     paths = OrgPaths(root=org.root)
     if prompt_loader.load_agent(paths, agent_name) is None:
         raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")

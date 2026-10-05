@@ -543,7 +543,7 @@ Teams membership editing (add/remove workers only — manager reassignment is fo
 
 **Backend:** The `GET /agents` response now includes `repos`, `system_prompt`, and `model` fields (additive, `allow_rules` remains excluded). The `PUT /agents/{agent}/model` route sets or clears the per-agent model (see below).
 
-The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct tasks that have the authoritative `workspace_cleanup_triggered` audit marker and are currently assigned to that agent. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
+The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct own-agent tasks eligible by a historical same-agent `workspace_cleanup_triggered` audit or the exact manual first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (alone, LF or CRLF; no substring/prefix matching). Eligibility and deduplication precede the five-row limit. Routine reports stay on this existing agent page through ordinary completion/results, with no cleanup-report thread creation, routine posting or reuse obligation. Historical threads/messages/associations/results/audits and explicit founder-requested coordination remain intact. Manual display does not increment daemon count or grant action authority. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
 
 Build and dev commands:
 
