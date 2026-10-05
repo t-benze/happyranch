@@ -374,7 +374,7 @@ def test_composite_units_share_exact_address_family_sandbox() -> None:
     }
 
 
-def test_real_systemd_harness_is_zero_skip_and_uses_only_pinned_peer_artifacts() -> None:
+def test_real_systemd_harness_has_valid_bash_syntax() -> None:
     result = subprocess.run(
         ["bash", "-n", "app/linux/package/real_systemd_n3.sh"],
         check=False,
@@ -390,22 +390,21 @@ def test_real_systemd_harness_uses_headscale_025_policy_schema() -> None:
     assert '"proto"' not in harness
 
 
-def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment() -> None:
-    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    stop = harness.index(
-        "stop happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service"
-    )
-    reset = harness.index(
-        "reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service"
-    )
-    assert "reset-failed happyranch-tsnet-sidecar.service happyranch-connector.service happyranch-managed.target" not in harness
-    staged_cleanup = harness.index('failed credential staging cleanup', reset)
-    assert "sudo test ! -e /run/credentials/happyranch-tsnet-sidecar.service" in harness
-    restore = harness.index(
-        "mv /etc/happyranch/enrollment.key.held /etc/happyranch/enrollment.key",
-        staged_cleanup,
-    )
-    assert stop < reset < staged_cleanup < restore
+def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment(tmp_path: Path) -> None:
+    result, events, _ = _run_positive_start_cleanup_scenario(tmp_path, outer_startup=True)
+    observations = [json.loads(event) for event in events]
+    restores = [event for event in observations if event["event"] == "restore"]
+    assert len(restores) == 1, observations
+    assert restores[0] == {
+        "event": "restore", "active": False, "main_pid": 0,
+        "restart_pending": False, "staging_present": False, "staging_checks": 2,
+        "credential": "fixture-enrollment",
+    }, observations
+    resets = [event["argv"] for event in observations if event["event"] == "negative-reset"]
+    assert resets == [["reset-failed", "happyranch-tsnet-sidecar.service", "happyranch-connector.service"]], observations
+    checks = [event["path"] for event in observations if event["event"] == "staging-check"]
+    assert checks == ["/run/credentials/happyranch-tsnet-sidecar.service"] * 2, observations
+    assert result.returncode == 0, result.stderr
 
 
 def test_real_systemd_harness_keeps_headscale_control_socket_in_task_root() -> None:
@@ -468,14 +467,18 @@ def test_real_systemd_uses_plain_shipping_unit_without_af_netlink_ab_arms() -> N
     assert "90-ci-af-netlink.conf" not in harness
 
 
-def test_real_systemd_denial_probe_follows_shipping_state_directory_creation() -> None:
-    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    reset = harness.index('reset_shipping_unit || fail "fresh shipping-unit reset/setup failed"')
-    first_start = harness.index("sudo systemctl start happyranch-managed.target || true", reset)
-    denial_probe = harness.index("capture_denial_matrix shipping-unit", reset)
-    successful_start = harness.index("sudo systemctl start happyranch-managed.target", first_start + 1)
-
-    assert reset < first_start < denial_probe < successful_start
+def test_real_systemd_denial_probe_follows_shipping_state_directory_creation(tmp_path: Path) -> None:
+    result, events, _ = _run_positive_start_cleanup_scenario(tmp_path, outer_startup=True)
+    observations = [json.loads(event) for event in events]
+    starts = [event for event in observations if event["event"] == "start"]
+    probes = [event for event in observations if event["event"] == "denial-probe"]
+    assert starts == [
+        {"event": "start", "credential_present": False, "state_directory_created": True, "exit": 1},
+        {"event": "start", "credential_present": True, "state_directory_created": False, "exit": 0},
+    ], observations
+    assert probes == [{"event": "denial-probe", "state_directory_present": True}], observations
+    assert observations.index(starts[0]) < observations.index(probes[0]) < observations.index(starts[1]), observations
+    assert result.returncode == 0, result.stderr
 
 
 def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
@@ -1198,16 +1201,27 @@ def test_real_systemd_cleanup_finalizer_or_validator_failure_is_nonzero(
     assert events.count("evidence:validate") == expected_validate
 
 
-def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37() -> None:
-    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    cleanup_capture = harness.index("(( original_status == 0 )) || capture_failure_snapshot failure-before-teardown || true")
-    teardown = harness.index("sudo systemctl stop happyranch-managed.target", cleanup_capture)
-    guarded_start = harness.index("start_managed_target() {")
-    capture = harness.index("capture_failure_snapshot first-positive-start-failure || true", guarded_start)
-    preserved_status = harness.index('start_managed_target || exit "$?"', capture)
-    assert cleanup_capture < teardown
-    assert guarded_start < capture < preserved_status
-    assert "trap cleanup EXIT\ntrap 'cleanup 130' INT\ntrap 'cleanup 143' TERM" in harness
+def test_real_systemd_failure_capture_precedes_teardown_and_preserves_exit_37(tmp_path: Path) -> None:
+    result, events, work = _run_positive_start_cleanup_scenario(
+        tmp_path, fault="outer-failure", outer_startup=True,
+    )
+    observations = [json.loads(event) for event in events]
+    positives = [event for event in observations if event["event"] == "start" and event["credential_present"]]
+    assert len(positives) == 1, observations
+    positive = positives[0]
+    assert positive["exit"] == 37, observations
+    after_start = observations[observations.index(positive) + 1:]
+    captures = [event for event in after_start if event["event"] == "capture-attempt"]
+    assert captures == [
+        {"event": "capture-attempt", "cleanup_entered": False, "exit": 9},
+        {"event": "capture-attempt", "cleanup_entered": True, "exit": 9},
+    ], observations
+    teardown = next(event for event in after_start if event["event"] == "teardown-stop")
+    assert all(after_start.index(event) < after_start.index(teardown) for event in captures), observations
+    assert teardown["exit"] == 55, observations
+    assert (tmp_path / "diagnostics/cleanup-events.log").read_text().splitlines() == ["cleanup"]
+    assert not work.exists()
+    assert result.returncode == 37, result.stderr
 
 
 @pytest.mark.parametrize(
@@ -1673,10 +1687,259 @@ kill -{signal} $$
 def _run_positive_start_cleanup_scenario(
     tmp_path: Path, *, fault: str = "none", signal: str | None = None,
     headscale_capture: bool = False, capture_reentry: bool = False,
-    late_headscale: bool = False,
+    late_headscale: bool = False, outer_startup: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     """Run the actual positive-start EXIT/trap seam with a failing teardown command."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    if outer_startup:
+        # Select declarations by shell grammar, and the outer startup region by
+        # its acceptance labels. Private function identifiers are not oracles.
+        declarations = []
+        for declaration in re.finditer(r"(?m)^\w+\(\) \{", harness):
+            line_end = harness.index("\n", declaration.start())
+            if harness[declaration.start():line_end].endswith("}"):
+                end = line_end
+            else:
+                closing = re.search(r"(?m)^\}$", harness[line_end:])
+                assert closing is not None
+                end = line_end + closing.end()
+            declarations.append(harness[declaration.start():end])
+        entry = re.search(r'(?m)^\w+ \|\| fail "fresh shipping-unit reset/setup failed"$', harness)
+        assert entry is not None
+        outer = harness[entry.start():harness.index('wait_for "connector READY"', entry.end())]
+        traps = "\n".join(re.findall(r"(?m)^trap .+ (?:EXIT|INT|TERM)$", harness))
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        work = tmp_path / "work"
+        (work / "hs").mkdir(parents=True)
+        diagnostics = tmp_path / "diagnostics"
+        diagnostics.mkdir()
+        for name in ("daemon.token", "connector.json", "policy.json", "sidecar.json"):
+            (work / name).write_text("fixture-only")
+        event_log = tmp_path / "events.log"
+        # These commands model external systemd/installer results, never the
+        # shipping control flow. Every accepted argv is bounded and local;
+        # unexpected commands fail without forwarding to any host manager.
+        fixture = fake_bin / "fixture"
+        fixture.write_text(f"#!{sys.executable}\n" + r'''
+import json, os, pathlib, shutil, subprocess, sys
+root = pathlib.Path(os.environ["FIXTURE_ROOT"])
+work = root / "work"
+tool = pathlib.Path(sys.argv[0]).name
+argv = sys.argv[1:]
+units = ["happyranch-managed.target", "happyranch-tsnet-sidecar.service", "happyranch-connector.service"]
+state_file = root / "external-state.json"
+state = json.loads(state_file.read_text()) if state_file.exists() else {
+    "installed": False, "active": False, "main_pid": 0, "restart_pending": False,
+    "staging_checks": 0, "positive": False,
+}
+def record(event, **fields):
+    with (root / "events.log").open("a") as stream:
+        stream.write(json.dumps({"event": event, **fields}) + "\n")
+def finish(status=0):
+    state_file.write_text(json.dumps(state))
+    raise SystemExit(status)
+def local(path):
+    path = pathlib.Path(path)
+    if path.is_relative_to(root): return path
+    assert path.is_absolute() and ".." not in path.parts, path
+    assert path.parts[1] in {"etc", "opt", "var", "run", "usr", ".happyranch-install-transaction.json", ".happyranch-backup", ".happyranch-units-backup"}, path
+    return root / str(path).lstrip("/")
+if tool == "sudo":
+    tool, *argv = argv
+    if tool.startswith("/"):
+        assert tool == str(work / "tailscale"), tool
+        tool = "tailscale"
+if tool == "systemctl":
+    verb, *args = argv
+    if verb == "start":
+        assert args == [units[0]], argv
+        credential = local("/etc/happyranch/enrollment.key").exists()
+        directory = local("/var/lib/happyranch-tsnet-sidecar")
+        created = not directory.exists()
+        directory.mkdir(parents=True, exist_ok=True)
+        staging = local("/run/credentials/happyranch-tsnet-sidecar.service")
+        staging.mkdir(parents=True, exist_ok=True)
+        state.update(active=True, main_pid=42, restart_pending=not credential, positive=credential)
+        status = (37 if os.environ["OUTER_FAULT"] == "outer-failure" else 0) if credential else 1
+        record("start", credential_present=credential, state_directory_created=created, exit=status)
+        finish(status)
+    if verb in {"stop", "disable", "reset-failed"}:
+        assert args and len(set(args)) == len(args) and set(args) <= set(units), argv
+        status = 55 if state["positive"] and os.environ["OUTER_FAULT"] == "outer-failure" else 0
+        if verb == "stop":
+            assert args == [units[0]] or args == units, argv
+            record("teardown-stop" if state["positive"] else "stop", exit=status)
+            state.update(active=False, main_pid=0)
+        elif verb == "disable":
+            assert args == [units[0]], argv
+        else:
+            if state["installed"] and not state["positive"]:
+                record("negative-reset", argv=argv)
+            state["restart_pending"] = False
+        finish(status)
+    if verb == "daemon-reload":
+        assert not args, argv
+        finish()
+    if verb == "list-unit-files":
+        assert len(args) == 4 and set(args[:-1]) == set(units) and args[-1] == "--no-legend", argv
+        finish()
+    if verb == "show":
+        assert len(args) == 4 and args[0] in units and args[1] == "-p" and args[3] == "--value", argv
+        values = {"LoadState": "loaded" if state["installed"] else "not-found",
+                  "ActiveState": "active" if state["active"] else "inactive",
+                  "SubState": "running" if state["active"] else "dead", "MainPID": str(state["main_pid"])}
+        assert args[2] in values, argv
+        print(values[args[2]])
+        finish()
+    if verb == "is-active":
+        assert args == ["--quiet", units[1]], argv
+        finish(0 if state["active"] else 3)
+    raise AssertionError(argv)
+if tool == "mv":
+    assert argv in [["/etc/happyranch/enrollment.key", "/etc/happyranch/enrollment.key.held"],
+                    ["/etc/happyranch/enrollment.key.held", "/etc/happyranch/enrollment.key"]], argv
+    source, destination = map(local, argv)
+    if argv[0].endswith(".held"):
+        record("restore", active=state["active"], main_pid=state["main_pid"],
+               restart_pending=state["restart_pending"],
+               staging_present=local("/run/credentials/happyranch-tsnet-sidecar.service").exists(),
+               staging_checks=state["staging_checks"], credential=source.read_text().strip())
+    source.rename(destination)
+    finish()
+if tool == "test":
+    invert = argv[0] == "!"
+    args = argv[1:] if invert else argv
+    assert len(args) == 2 and args[0] in {"-e", "-d"}, argv
+    path = local(args[1])
+    if invert and args[1] == "/run/credentials/happyranch-tsnet-sidecar.service":
+        state["staging_checks"] += 1
+        record("staging-check", path=args[1])
+        if state["staging_checks"] == 2 and not state["active"] and not state["restart_pending"]:
+            shutil.rmtree(path)
+    present = path.is_dir() if args[0] == "-d" else path.exists()
+    finish(0 if present != invert else 1)
+if tool == "install":
+    assert argv[:6] == ["-d", "-m", "0700", "-o", "happyranch", "-g"] or argv[:2] == ["-m", "0600"], argv
+    if argv[0] == "-d":
+        assert argv == ["-d", "-m", "0700", "-o", "happyranch", "-g", "happyranch", "/etc/happyranch"], argv
+        local(argv[-1]).mkdir(parents=True, exist_ok=True)
+    else:
+        assert len(argv) == 8 and argv[2] == "-o" and argv[4] == "-g", argv
+        name = pathlib.Path(argv[-1]).name
+        assert name in {"daemon.token", "connector.json", "policy.json", "sidecar.json", "enrollment.key"}, argv
+        owner = "root" if name in {"daemon.token", "enrollment.key"} else "happyranch"
+        assert argv[3] == argv[5] == owner and argv[-2] == str(work / name) and argv[-1] == "/etc/happyranch/" + name, argv
+        shutil.copyfile(argv[-2], local(argv[-1]))
+    finish()
+if tool == "env":
+    assert argv == ["PATH=" + os.environ["PATH"], "uv", "run", "python", "-", "fixture-package"], argv
+    assert sys.stdin.read() == "import sys\nfrom pathlib import Path\nfrom runtime.remote_access.linux_package import install_linux_package\ninstall_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)\n"
+    state["installed"] = True
+    finish()
+if tool == "headscale":
+    if argv == ["preauthkeys", "create", "--user", "ci", "--reusable=false", "--expiration", "10m", "--config", str(work / "hs/config.yaml")]:
+        print("fixture-enrollment")
+    else:
+        assert argv == ["nodes", "list", "--output", "json", "--config", str(work / "hs/config.yaml")], argv
+        print("[]")
+    finish()
+if tool == "tailscale":
+    assert argv == ["--socket=" + str(work / "peer.sock"), "status", "--json"], argv
+    print('{"Peer":null}')
+    finish()
+if tool == "timeout":
+    if argv[:2] == ["15", "systemd-run"]:
+        assert argv == ["15", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+            "--unit=happyranch-n3-denial-shipping-unit", "--property=User=happyranch", "--property=Group=happyranch",
+            "--property=NoNewPrivileges=yes", "--property=PrivateDevices=yes", "--property=ProtectSystem=strict",
+            "--property=ProtectHome=yes", "--property=ReadWritePaths=/var/lib/happyranch-tsnet-sidecar",
+            "--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "--property=CapabilityBoundingSet=",
+            "/usr/bin/python3", "-", "shipping-unit"], argv
+        record("denial-probe", state_directory_present=local("/var/lib/happyranch-tsnet-sidecar").is_dir())
+        sys.stdin.read()  # Never execute privileged denial-probe input locally.
+        print("{}")
+        finish()
+    assert argv in [["1", "bash", "-c", "</dev/tcp/127.0.0.1/" + port] for port in ("18443", "18765", "18080", "19090", "15043", "13478")], argv
+    finish(1)  # No host or network probe is forwarded.
+if tool == "mktemp":
+    assert argv == [str(root / "diagnostics/.n3-losses.XXXXXX")], argv
+    record("capture-attempt", cleanup_entered=(root / "diagnostics/cleanup-events.log").exists(), exit=9)
+    finish(9)  # Real capture entry observes a failed external temp-file launch.
+if tool == "sleep":
+    assert argv in [["1"], ["2"]], argv
+    finish()
+if tool == "pgrep":
+    assert argv == ["-f", "(^|/)(happyranch-connector|happyranch-tsnet-sidecar)( |$)"], argv
+    finish(1)
+if tool == "find":
+    assert argv == ["/", "-maxdepth", "1", "(", "-name", ".happyranch-stage-*", "-o", "-name", ".happyranch-tmp-*", ")", "-print", "-quit"] or argv == [str(root), *["-maxdepth", "1", "(", "-name", ".happyranch-stage-*", "-o", "-name", ".happyranch-tmp-*", ")", "-print", "-quit"]], argv
+    finish()
+if tool == "update-ca-certificates":
+    assert not argv, argv
+    finish()
+if tool == "rm":
+    assert argv[0] in {"-f", "-rf"}, argv
+    allowed = {"/etc/systemd/system/happyranch-tsnet-sidecar.service.d", "/usr/local/share/ca-certificates/happyranch-n3-ci.crt",
+        *["/etc/systemd/system/" + unit for unit in units],
+        "/opt/happyranch", "/etc/happyranch", *["/" + base + "/" + name for base in ("var/lib", "run", "var/log") for name in ("happyranch-connector", "happyranch-tsnet-sidecar")], str(work)}
+    assert argv[1:] and set(argv[1:]) <= allowed, argv
+    for value in argv[1:]:
+        path = local(value)
+        if path.is_dir():
+            assert argv[0] == "-rf", argv
+            shutil.rmtree(path)
+        elif path.exists(): path.unlink()
+    finish()
+raise AssertionError((tool, argv))
+''')
+        fixture.chmod(0o700)
+        for command in ("sudo", "systemctl", "sleep", "timeout", "mktemp", "pgrep", "rm"):
+            (fake_bin / command).symlink_to(fixture)
+        (work / "headscale").symlink_to(fixture)
+        (work / "tailscale").symlink_to(fixture)
+        driver = tmp_path / "evidence.py"
+        driver.write_text('''import sys
+from pathlib import Path
+args = sys.argv[1:]
+directory = Path(__file__).parent / "diagnostics"
+artifact = str(directory / "execution-evidence.json")
+if args[0] == "observe":
+    phase, observation = args[3], args[5]
+    assert (phase, observation) in {("startup", "process_absent"), ("startup", "tsnet_admission_absent"),
+        ("cleanup", "all_residue_absent"), ("cleanup", "task_work_removed")}, args
+    assert args == ["observe", artifact, "--phase", phase, "--observation", observation,
+        "--assertion-id", "fixture:" + phase + ":" + observation], args
+elif args[0] == "diagnose":
+    assert args == ["diagnose", artifact, "--id", "fixture:negative-leg-expected:credential_input",
+        "--category", "credential_input", "--phase", "input_acquisition", "--actor", "systemd",
+        "--unit", "happyranch-tsnet-sidecar.service"], args
+elif args[0] == "validate-denial-matrix":
+    assert args == ["validate-denial-matrix", str(directory / "shipping-unit-denial-matrix.json"),
+        "--expected-arm", "shipping-unit"], args
+elif args[0] == "finalize":
+    assert args == ["finalize", artifact], args
+else:
+    assert args == ["validate", artifact, "--expected-subject", "a" * 40, "--expected-run", "fixture"], args
+''')
+        script = f'''set -euo pipefail
+work={str(work)!r}; diagnostics={str(diagnostics)!r}; ts_dir="$work"
+run_id=fixture; PACKAGE_TAR=fixture-package; evidence_driver={str(driver)!r}; PROOF_SUBJECT_SHA={'a' * 40}
+evidence_artifact="$diagnostics/execution-evidence.json"; capture_raw_files=()
+headscale_pid=""; peer_pid=""; daemon_pid=""; sidecar_ip=""; barrier_dir=""
+{chr(10).join(declarations)}
+{traps}
+{outer}
+'''
+        result = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, check=False, timeout=20,
+            env=os.environ | {"PATH": f"{fake_bin}:{Path(sys.executable).parent}:/usr/bin:/bin",
+                              "FIXTURE_ROOT": str(tmp_path), "OUTER_FAULT": fault,
+                              "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)},
+        )
+        assert "Traceback" not in result.stderr and "unbound variable" not in result.stderr, result.stderr
+        events = event_log.read_text().splitlines() if event_log.exists() else []
+        return result, events, work
     snapshot = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
     unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
     cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
