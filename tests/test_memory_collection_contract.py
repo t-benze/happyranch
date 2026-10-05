@@ -941,3 +941,504 @@ def test_diagnostic_seal_cannot_hide_corrupted_history(collection_org, fault):
     answer = org.memory_collection.validate()
     assert answer["census_valid"] is False and answer["problems"] == ["seal_count_or_digest"], answer
     assert rows(org, "memory_collection_seal")[-1]["payload"]["census_integrity"]["problems"] == ["census_not_reconciled"]
+
+
+OBSERVATION_KEYS = {
+    "contract_version", "org", "boot_id", "installed_identity", "generation",
+    "assigned_intents", "intent_digest", "phase_counts", "phase_digests",
+    "active_preparations", "observation_error", "latest_seal_audit_id",
+    "epoch_id", "epoch_audit_id", "sampled_at", "data_through",
+}
+
+
+@pytest.fixture
+def observation_client(collection_org, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from runtime.daemon import paths
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.orchestrator.executor_binary_registry import set_binary
+    org, _ = collection_org
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon-home"))
+    paths.ensure_daemon_home()
+    paths.ensure_token()
+    binary = tmp_path / "provider"
+    binary.write_text("#!/bin/sh\nexit 0\n")
+    binary.chmod(0o700)
+    set_binary("claude", str(binary))
+    daemon = DaemonState.idle(org.settings)
+    from runtime.runtime import RuntimeDir
+    daemon.runtime = RuntimeDir.init(tmp_path / "http-runtime")
+    daemon.orgs[org.slug] = org
+    client = TestClient(create_app(daemon), raise_server_exceptions=False)
+    client.headers["Authorization"] = f"Bearer {paths.read_token()}"
+    return org, client
+
+
+def observed(client, slug="test"):
+    response = client.get(f"/api/v1/orgs/{slug}/audit", params={"action": "memory_collection_seal", "limit": 2})
+    assert response.status_code == 200
+    body = response.json()
+    assert "memory_collection_observation" in body, "seal GET must expose the actual serving view"
+    return body["memory_collection_observation"]
+
+
+def test_serving_observation_real_root_child_http(observation_client):
+    """G1-P06/P09: real producer population, own-org HTTP and zero-write view."""
+    from datetime import datetime, timedelta
+    org, client = observation_client
+    seed_memory(org)
+    root, _ = bootstrap(org)
+    child = org.orchestrator.create_task("child")
+    org.db.update_task(child, parent_task_id=root, assigned_agent="dev_agent", task_type="subtask")
+    org.orchestrator._run_agent(child, "dev_agent", "")
+    before = org.db.fetch_one_readonly("SELECT total_changes(), count(*) FROM audit_log")
+    cursor = None
+    seen = []
+    while True:
+        params = {"action": "memory_collection_seal", "limit": 2}
+        if cursor:
+            params["cursor"] = cursor
+        expected, expected_cursor = org.db.query_audit_logs(**params)
+        response = client.get("/api/v1/orgs/test/audit", params=params)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["entries"] == expected and body["next_cursor"] == expected_cursor
+        assert "memory_collection_observation" in body, "seal GET must expose the actual serving view"
+        view = body["memory_collection_observation"]
+        assert set(view) == OBSERVATION_KEYS
+        assert view["org"] == "test" and view["boot_id"] == org.memory_collection.boot_id
+        assert type(view["generation"]) is int and view["generation"] == 12
+        assert view["assigned_intents"] == 2 and view["active_preparations"] == []
+        assert view["phase_counts"] == {phase: {"attempted": 2, "persisted": 2}
+                                        for phase in ("intent", "identity", "expectation", "binding", "launched", "terminal")}
+        assert view["epoch_id"] is view["epoch_audit_id"] is None
+        assert view["observation_error"] is None, view
+        assert datetime.fromisoformat(view["data_through"]).utcoffset() == timedelta(0)
+        identity = view["installed_identity"]
+        assert identity["org_root"] == str(org.root.resolve())
+        assert [item["agent"] for item in identity["cohort"]] == ["dev_agent", "engineering_head"]
+        assert identity["python"]["version"].startswith("3.")
+        assert set(identity) == {"source_root", "runtime_root", "org_root", "package_version", "python",
+                                 "loaded_code", "files", "teams_sha256", "cohort", "profiles", "backend"}
+        assert identity["source_root"] == str(Path(__file__).resolve().parents[1])
+        assert set(identity["python"]) == {"executable", "version", "implementation", "cache_tag"}
+        assert identity["loaded_code"] and identity["files"]
+        assert any(item["qualname"] == "collection_org.<locals>.provider" for item in identity["loaded_code"]), "identity must fingerprint the actual bound launch callable"
+        assert any(Path(item["path"]).name == "METADATA" for item in identity["files"]), "package version must be tied to its actual metadata file"
+        assert all(set(item) == {"module", "qualname", "origin", "loaded_sha256", "source_code_sha256"}
+                   for item in identity["loaded_code"])
+        assert all(set(item) == {"path", "sha256"} and len(item["sha256"]) == 64 for item in identity["files"])
+        assert all(set(item) == {"agent", "team", "role", "executor", "model"} for item in identity["cohort"])
+        assert all(set(item) == {"name", "kind", "workspace_adapter_id", "command_adapter_id",
+                                 "readiness_marker_fragment", "model_arg_sha256", "provider", "adapter"}
+                   for item in identity["profiles"])
+        seen.extend(item["id"] for item in body["entries"])
+        cursor = body["next_cursor"]
+        if cursor is None:
+            break
+    assert len(seen) == 12 and len(set(seen)) == 12
+    for action in (None, "session_start", "memory_digest_impression"):
+        params = {"action": action} if action else {}
+        expected, cursor = org.db.query_audit_logs(action=action)
+        assert client.get("/api/v1/orgs/test/audit", params=params).json() == {"entries": expected, "next_cursor": cursor}
+    assert org.db.fetch_one_readonly("SELECT total_changes(), count(*) FROM audit_log")[:] == before[:]
+    assert rows(org, "memory_collection_epoch_started") == []
+
+
+def test_empty_missing_and_failed_serving_observer(observation_client, monkeypatch):
+    """Known empty is different from missing; neither grants collection health."""
+    org, client = observation_client
+    view = observed(client)
+    assert view["assigned_intents"] == 0 and view["generation"] == 0
+    assert view["epoch_id"] is None and view["observation_error"] is None
+    monkeypatch.setattr(org, "memory_collection", None)
+    view = observed(client)
+    assert view["assigned_intents"] is view["generation"] is view["phase_counts"] is None
+    assert view["boot_id"] is view["data_through"] is None
+    assert view["observation_error"] == "observer_unavailable"
+    assert client.get("/api/v1/orgs/test/audit").status_code == 200
+
+
+@pytest.mark.parametrize("lost_action", ["memory_runtime_intent", "memory_collection_seal"])
+def test_current_intent_and_sticky_write_error_replace_old_view(observation_client, monkeypatch, lost_action):
+    org, client = observation_client
+    bootstrap(org)
+    old = observed(client)
+    insert = org.db.insert_audit_log
+    def fail_intent(task_id, agent, action, payload=None):
+        if action == lost_action:
+            raise OSError("not exposed")
+        return insert(task_id, agent, action, payload)
+    monkeypatch.setattr(org.db, "insert_audit_log", fail_intent)
+    bootstrap(org)
+    current = observed(client)
+    assert current["assigned_intents"] == 2 and current["generation"] > old["generation"]
+    assert current["phase_counts"]["intent"] == {"attempted": 2, "persisted": 1 if lost_action == "memory_runtime_intent" else 2}
+    assert current["intent_digest"] != old["intent_digest"]
+    assert current["observation_error"] == ("intent_write_failed" if lost_action == "memory_runtime_intent" else "seal_write_failed")
+    assert current["data_through"] is None and current["epoch_id"] is None
+    assert "not exposed" not in json.dumps(current)
+
+
+@pytest.mark.parametrize("fault", ["read", "registry", "source", "interpreter", "bool", "missing_observer", "snapshot", "import"])
+def test_serving_acquisition_failures_are_bounded_and_launch_safe(observation_client, monkeypatch, fault):
+    import runtime.infrastructure.memory_collection as module
+    org, client = observation_client
+    if fault == "read":
+        def fail(*args, **kwargs):
+            raise OSError("SECRET unavailable content")
+        monkeypatch.setattr(module, "_identity_bytes", fail)
+    elif fault == "registry":
+        from runtime.orchestrator.executor_binary_registry import _registry_path
+        _registry_path().write_text("corrupt")
+    elif fault == "source":
+        # Different loaded code at the exact origin cannot pass a disk match.
+        original = org.orchestrator._run_agent.__func__
+        monkeypatch.setattr(original, "__code__", original.__code__.replace(co_consts=(*original.__code__.co_consts, "stale")))
+    elif fault == "interpreter":
+        monkeypatch.setattr(module.sys, "executable", "/nonexistent/python")
+    elif fault == "bool":
+        monkeypatch.setattr(org.memory_collection, "_generation", True)
+    elif fault == "missing_observer":
+        monkeypatch.setattr(org, "memory_collection", None)
+    elif fault == "import":
+        import builtins
+        importing = builtins.__import__
+        def unavailable_import(name, *args, **kwargs):
+            if name == "runtime.infrastructure.memory_collection":
+                raise ImportError("SECRET observer import failure")
+            return importing(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, "__import__", unavailable_import)
+    else:
+        monkeypatch.setattr(org.memory_collection, "_snapshot", lambda: (_ for _ in ()).throw(ValueError("SECRET")))
+    view = observed(client)
+    assert view["installed_identity"] is None and view["data_through"] is None
+    assert view["observation_error"] is not None and view["epoch_id"] is None
+    assert view["observation_error"] == {
+        "read": "observation_unavailable", "registry": "observation_unavailable",
+        "source": "identity_loaded_source_mismatch", "interpreter": "observation_unavailable",
+        "bool": "observer_snapshot_invalid", "missing_observer": "observer_unavailable",
+        "snapshot": "observation_unavailable", "import": "observation_unavailable",
+    }[fault]
+    assert "SECRET" not in json.dumps(view)
+    if fault == "missing_observer":
+        assert view["assigned_intents"] is view["generation"] is view["phase_counts"] is None
+    assert client.get("/api/v1/orgs/test/audit", params={"action": "session_start"}).status_code == 200
+    if fault not in ("bool", "interpreter", "snapshot", "import"):
+        bootstrap(org)  # observation read failures do not affect bootstrap outcome
+    assert rows(org, "memory_collection_epoch_started") == []
+
+
+@pytest.mark.parametrize("change", ["cohort", "profile", "provider", "boot"])
+def test_actual_identity_components_and_boot_are_distinguishable(observation_client, monkeypatch, change):
+    from dataclasses import replace
+    from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
+    from runtime.orchestrator.executor_registry import get_registry
+    org, client = observation_client
+    before = observed(client)
+    assert before["installed_identity"] is not None
+    if change == "cohort":
+        path = org.root / "org" / "agents" / "dev_agent.md"
+        definition = parse_agent_text(path.read_text(), expected_name="dev_agent")
+        path.write_text(render_agent_text(replace(definition, model="changed-model")))
+    elif change == "profile":
+        registry = get_registry()
+        monkeypatch.setitem(registry._profiles, "claude", replace(registry.get_profile("claude"), model_arg=["--changed", "{model}"]))
+    elif change == "provider":
+        from runtime.orchestrator.executor_binary_registry import get_binary
+        Path(get_binary("claude")).write_text("#!/bin/sh\nexit 1\n")
+    else:
+        reloaded = OrgState.load(slug=org.slug, root=org.root, settings=org.settings)
+        try:
+            view = reloaded.memory_collection_observation()
+            assert view["boot_id"] != before["boot_id"] and view["assigned_intents"] == 0
+            assert view["epoch_id"] is None
+        finally:
+            reloaded.close()
+        return
+    after = observed(client)
+    assert after["installed_identity"] is not None, after
+    assert after["installed_identity"] != before["installed_identity"]
+    assert after["epoch_id"] is None
+
+
+@pytest.mark.parametrize("moving", ["intent", "identity", "db"])
+def test_paired_serving_acquisition_refuses_moving_cutoff(observation_client, monkeypatch, moving):
+    import runtime.infrastructure.memory_collection as module
+    org, client = observation_client
+    bootstrap(org)
+    opened = {}
+    original_open, original_close = module.os.open, module.os.close
+    changed = [False]
+    def open_file(path, flags, *args, **kwargs):
+        fd = original_open(path, flags, *args, **kwargs)
+        opened[fd] = Path(path)
+        return fd
+    def close_file(fd):
+        path = opened.pop(fd, None)
+        original_close(fd)
+        if not changed[0] and path is not None and (moving != "identity" or path.name == "provider"):
+            changed[0] = True
+            if moving == "intent":
+                bootstrap(org)
+            elif moving == "db":
+                org.db.insert_audit_log("TASK-neutral", "dev_agent", "neutral", {})
+            else:
+                path.write_text("#!/bin/sh\nexit 3\n")
+    monkeypatch.setattr(module.os, "open", open_file)
+    monkeypatch.setattr(module.os, "close", close_file)
+    view = observed(client)
+    assert view["data_through"] is None, "moving acquisition cannot publish a stable cutoff"
+    assert view["observation_error"] == "observation_moving"
+    assert view["installed_identity"] is None and view["epoch_id"] is None
+    assert org.memory_collection.snapshot()["observation_error"] is None
+
+
+def test_blocked_identity_does_not_hold_observer_or_database(observation_client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    import runtime.infrastructure.memory_collection as module
+    org, client = observation_client
+    entered, release = threading.Event(), threading.Event()
+    original_open = module.os.open
+    def blocked(path, flags, *args, **kwargs):
+        if Path(path) == Path(module.sys.executable).resolve():
+            entered.set()
+            assert release.wait(5)
+        return original_open(path, flags, *args, **kwargs)
+    monkeypatch.setattr(module.os, "open", blocked)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        request = pool.submit(observed, client)
+        assert entered.wait(3)
+        try:
+            run = pool.submit(bootstrap, org)
+            assert run.result(timeout=3)[0]
+            audit = pool.submit(client.get, "/api/v1/orgs/test/audit", params={"action": "session_start"})
+            assert audit.result(timeout=3).status_code == 200
+        finally:
+            release.set()
+        view = request.result(timeout=3)
+    assert view["data_through"] is None and view["observation_error"] == "observation_moving"
+
+
+def test_pending_writer_and_preparation_have_no_stable_cutoff(observation_client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    org, client = observation_client
+    entered, release = threading.Event(), threading.Event()
+    insert = org.db.insert_audit_log
+    def held(task_id, agent, action, payload=None):
+        if action == "memory_runtime_intent":
+            entered.set()
+            assert release.wait(5)
+        return insert(task_id, agent, action, payload)
+    monkeypatch.setattr(org.db, "insert_audit_log", held)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        run = pool.submit(bootstrap, org)
+        assert entered.wait(3)
+        try:
+            view = observed(client)
+            assert view["assigned_intents"] == 1
+            assert len(view["active_preparations"]) == 1
+            assert view["phase_counts"]["intent"] == {"attempted": 1, "persisted": 0}
+            assert view["observation_error"] == "observation_pending" and view["data_through"] is None
+        finally:
+            release.set()
+        assert run.result(timeout=3)[0]
+    assert observed(client)["observation_error"] is None
+
+
+@pytest.mark.parametrize("change", ["stale_source", "matching_other_checkout", "interpreter", "file_limit"])
+def test_identity_is_acquired_from_real_disposable_source_process(observation_client, tmp_path, change):
+    """H05/G1-P06: no editing/restarting shared source or serving processes."""
+    import shutil
+    import subprocess
+    import sys
+    import textwrap
+    org, _ = observation_client
+    checkout = tmp_path / "disposable-checkout"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "runtime", checkout / "runtime",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    isolated_org = tmp_path / "isolated-org"
+    shutil.copytree(org.root / "org", isolated_org / "org")
+    script = textwrap.dedent('''\
+        import json, sys
+        from pathlib import Path
+        from runtime.config import Settings
+        from runtime.daemon.org_state import OrgState
+        import runtime.infrastructure.memory_collection as m
+        org = OrgState.load(slug="source-probe", root=Path(sys.argv[1]), settings=Settings(project_root=Path.cwd()))
+        first = org.memory_collection_observation()
+        assert first["installed_identity"] is not None, first
+        source = Path(m.__file__)
+        change = sys.argv[2]
+        if change == "stale_source":
+            # Serving function remains loaded while its OWN installed file changes.
+            source.write_text(source.read_text().replace('"package_version": package_version', '"package_version": "changed"'))
+        elif change == "matching_other_checkout":
+            import shutil
+            other = Path.cwd().parent / "other-checkout"
+            shutil.copytree(Path.cwd() / "runtime", other / "runtime")
+            # A same-byte file elsewhere cannot be substituted for the origin
+            # of the actually loaded declared function.
+            m.loaded_identity.__code__ = m.loaded_identity.__code__.replace(co_filename=str(other / "runtime/infrastructure/memory_collection.py"))
+        elif change == "interpreter":
+            sys.executable = str(Path.cwd() / "missing-python")
+        else:
+            from runtime.orchestrator.executor_binary_registry import get_binary
+            with open(get_binary("claude"), "wb") as f:
+                f.truncate(m.MAX_IDENTITY_BINARY_BYTES + 1)
+        second = org.memory_collection_observation()
+        assert second["installed_identity"] is None and second["data_through"] is None, second
+        assert second["epoch_id"] is None
+        print(json.dumps({"first": first["installed_identity"]["source_root"], "error": second["observation_error"]}))
+        org.close()
+    ''')
+    # file_limit operates on an owned provider copy, never the parent's file.
+    import os
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(checkout)
+    private_home = tmp_path / "private-home"
+    private_home.mkdir()
+    provider = private_home / "provider"
+    provider.write_text("#!/bin/sh\nexit 0\n")
+    provider.chmod(0o700)
+    (private_home / "executors.json").write_text(json.dumps({"claude": str(provider)}))
+    environment["HAPPYRANCH_DAEMON_HOME"] = str(private_home)
+    completed = subprocess.run([sys.executable, "-c", script, str(isolated_org), change],
+                               cwd=checkout, env=environment, text=True, capture_output=True, timeout=12)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["first"] == str(checkout)
+    assert result["error"] == {
+        "stale_source": "identity_loaded_source_mismatch", "matching_other_checkout": "identity_origin_mismatch",
+        "interpreter": "observation_unavailable", "file_limit": "identity_work_limit",
+    }[change]
+
+
+@pytest.mark.parametrize("state", ["empty", "metadata", "unavailable", "malformed"])
+def test_new_observation_cannot_enable_backend_or_canonical_cli(observation_client, monkeypatch, capsys, state):
+    from argparse import Namespace
+    from cli.commands.learning import cmd_memory_report
+    from cli.client.client import OpcClient
+    from runtime.daemon import paths
+    org, http = observation_client
+    if state != "empty":
+        seed_memory(org)
+        bootstrap(org)
+    if state == "unavailable":
+        monkeypatch.setattr(org, "memory_collection", None)
+    elif state == "malformed":
+        monkeypatch.setattr(org.memory_collection, "_generation", True)
+    view = observed(http)
+    assert view["epoch_id"] is view["epoch_audit_id"] is None
+    backend = org.orchestrator._audit.compute_memory_telemetry_report()
+    client = OpcClient("http://testserver/api/v1", paths.read_token())
+    client._client.close()
+    # Real OpcClient methods use actual ASGI HTTP route/DB reads, with only the
+    # transport changed to the existing TestClient (no report implementation).
+    client._client = http
+    monkeypatch.setattr(OpcClient, "from_env", lambda: client)
+    cmd_memory_report(Namespace(org="test", json=True))
+    canonical = json.loads(capsys.readouterr().out)
+    for report in (backend, canonical):
+        assert report["decision"] == "insufficient_instrumentation"
+        assert report["observation_period"]["thresholds_met"] is False
+        assert report["observation_period"]["diagnostics_valid_for_collection"] is False
+        assert report["evaluation_candidate"] is False
+    cmd_memory_report(Namespace(org="test", json=False))
+    text = capsys.readouterr().out
+    assert "insufficient_instrumentation" in text and "Thresholds:    NOT MET" in text
+    assert "DECISION: insufficient_instrumentation" in text
+    assert rows(org, "memory_collection_epoch_started") == []
+
+
+def test_serving_observation_is_tenant_local_and_cursor_errors_stay_usable(observation_client, tmp_path, monkeypatch):
+    import shutil
+    org, client = observation_client
+    bootstrap(org)
+    beta_root = tmp_path / "runtime" / "orgs" / "beta"
+    shutil.copytree(org.root / "org", beta_root / "org")
+    beta = OrgState.load(slug="beta", root=beta_root, settings=org.settings)
+    client.app.state.daemon.orgs["beta"] = beta
+    try:
+        own = observed(client)
+        other = observed(client, "beta")
+        assert own["assigned_intents"] == 1 and other["assigned_intents"] == 0
+        assert own["boot_id"] != other["boot_id"]
+        assert own["org"] == org.slug
+        assert own["installed_identity"]["org_root"] == str(org.root.resolve())
+        assert other["installed_identity"]["org_root"] == str(beta_root.resolve())
+        assert other["installed_identity"]["runtime_root"] == str(beta_root.parent.parent)
+        assert other["org"] == "beta" and other["latest_seal_audit_id"] is None
+        assert client.get("/api/v1/orgs/beta/audit", params={"action": "memory_collection_seal"}).json()["entries"] == []
+        monkeypatch.setattr(org, "memory_collection", None)
+        response = client.get("/api/v1/orgs/test/audit", params={"action": "memory_collection_seal", "cursor": "bad"})
+        assert response.status_code == 422 and response.json() == {"detail": "Invalid cursor"}
+        forged = client.get("/api/v1/orgs/test/audit", params={"action": "memory_collection_seal", "healthy": "true", "epoch_id": "claimed"})
+        assert forged.json()["memory_collection_observation"]["epoch_id"] is None
+        assert rows(org, "memory_collection_epoch_started") == []
+        assert rows(beta, "memory_collection_epoch_started") == []
+    finally:
+        client.app.state.daemon.orgs.pop("beta")
+        beta.close()
+
+
+def test_supervised_identity_uses_existing_cached_backend_without_probe(observation_client, monkeypatch):
+    from runtime.orchestrator.host_supervisor import build_default_host_supervisor
+    org, client = observation_client
+    supervisor = build_default_host_supervisor()
+    org.orchestrator.attach_host_supervisor(supervisor)
+    # The real supervisor constructor already populates its cached report.
+    # GET must consume that report without refreshing it.
+    assert supervisor._capability_report is not None
+    def forbidden():
+        pytest.fail("GET must never invoke a backend capability probe")
+    monkeypatch.setattr(supervisor, "probe", forbidden)
+    monkeypatch.setattr(supervisor._backend, "probe", forbidden)
+    view = observed(client)
+    assert view["observation_error"] is None, view
+    assert view["installed_identity"]["backend"] == {
+        "mode": "supervised", "name": "passthrough", "version": "0.1", "capabilities": {},
+    }
+    assert any(item["qualname"] == "PassthroughBackend.launch" for item in view["installed_identity"]["loaded_code"])
+    monkeypatch.setattr(supervisor, "_capability_report", None)
+    missing = observed(client)
+    assert missing["installed_identity"] is None and missing["observation_error"] == "identity_backend_unavailable"
+
+
+@pytest.mark.parametrize("state", ["pending", "tampered"])
+def test_custom_identity_reads_only_applicable_registry_and_refuses_bad_adapter(observation_client, monkeypatch, tmp_path, state):
+    """Applicable custom metadata is a read only; no provider/adapter is launched."""
+    from dataclasses import replace
+    import hashlib
+    from runtime.orchestrator import adapter_store, executor_registry
+    from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
+    from runtime.orchestrator.executor_binary_registry import _registry_path
+    from runtime.orchestrator.executor_registry import ExecutorProfile, ExecutorRegistry
+    org, client = observation_client
+    registry = ExecutorRegistry()
+    registry.register_custom_profile(ExecutorProfile(
+        name="owned-custom", kind="custom", workspace_adapter_id="claude",
+        command_adapter_id="custom-adapter:owned", readiness_marker_fragment=".claude/skills/start-task/SKILL.md"))
+    monkeypatch.setattr(executor_registry, "_registry", registry)
+    for name in ("dev_agent", "engineering_head"):
+        path = org.root / "org" / "agents" / f"{name}.md"
+        definition = parse_agent_text(path.read_text(), expected_name=name)
+        path.write_text(render_agent_text(replace(definition, executor="owned-custom")))
+    executable = tmp_path / "owned-adapter"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    entry = adapter_store.AdapterEntry(id="owned", name="owned", executable=str(executable),
+                                     executable_hash=hashlib.sha256(executable.read_bytes()).hexdigest(), version="1",
+                                     status="pending" if state == "pending" else "approved")
+    # An adversarial stored approval label with a mismatched artifact is only a
+    # negative; it can never stand in for independent shipping/installed authority.
+    adapter_store.save_adapter(entry)
+    if state == "tampered":
+        executable.write_text("#!/bin/sh\nexit 1\n")
+    _registry_path().unlink()  # No builtin cohort: this file is inapplicable.
+    view = observed(client)
+    assert view["observation_error"] == ("identity_adapter_unavailable" if state == "pending" else "identity_adapter_mismatch")
+    assert view["installed_identity"] is None and view["data_through"] is None and view["epoch_id"] is None

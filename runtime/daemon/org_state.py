@@ -147,6 +147,23 @@ class OrgState:
         self.event_bus = EventBus(history_loader=loader)
         self.thread_store = ThreadStore(self.root / "threads")
 
+    def memory_collection_observation(self) -> dict:
+        """Read this serving org; observation failure never changes launch state."""
+        try:
+            from runtime.infrastructure.memory_collection import serving_observation
+            return serving_observation(self)
+        except Exception:
+            # Module/constructor acquisition can itself be unavailable. Keep the
+            # ordinary audit route usable without importing a second observer.
+            from datetime import datetime, timezone
+            return {"contract_version": 1, "org": self.slug, "boot_id": None,
+                    "installed_identity": None, "generation": None, "assigned_intents": None,
+                    "intent_digest": None, "phase_counts": None, "phase_digests": None,
+                    "active_preparations": None,
+                    "observation_error": self.memory_collection_unavailable or "observation_unavailable",
+                    "latest_seal_audit_id": None, "epoch_id": None, "epoch_audit_id": None,
+                    "sampled_at": datetime.now(timezone.utc).isoformat(), "data_through": None}
+
     def bind_authority_v2_owner(self) -> None:
         """Bind the real owning-process identity + permission-surface reader.
 

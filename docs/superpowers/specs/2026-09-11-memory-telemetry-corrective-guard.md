@@ -79,7 +79,7 @@ Task bootstrap retains text and item IDs from one actual `MemoryStore.render_mem
 
 After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 
-The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, current-serving G3 census acquisition/acceptance, The observation-only reporting core below supplies read-side G4 acquisition; full eligibility reporting, current-serving census acceptance and installed health remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority and current-serving G3 census acceptance remain OPEN. The observation-only reporting core below supplies read-side G4 acquisition; full eligibility reporting, current-serving census acceptance and installed health remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
 
 The producer source tests use disposable provider-boundary stand-ins for Claude/Codex ROOT/CHILD, exact R11b/c prompt sizes, and shown-get/search/genuinely-nonshown-get. They do not establish installed canary, codebuddy/custom/contained host coverage or G1/G3/G4 acceptance. Independent review, behavioral QA, CI and merge remain delivery gates.
 
@@ -125,11 +125,101 @@ observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
 
 This census and its seals are not collection health, installed acceptance or
-epoch authority. G1, current-serving acquisition/B1, both health consumers,
+epoch authority. The seal-action serving source view is described here. G1
+durable acceptance/B1, both health consumers,
 installed canary/deferred executor/population coverage and full reporting remain
 unimplemented here. Existing backend and canonical CLI guards remain
 `insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
 transition, deployment, tuning or 48-hour clock starts from this source unit.
+
+## Current-serving source observation (TASK-9734 / TASK-9559)
+
+Founder THR-091 seq268/269 releases the seq240 seal-only optional response
+extension. `GET /api/v1/orgs/{slug}/audit?action=memory_collection_seal` retains
+exact entries, cursor, filters, enrichment, cursor errors and token dependency,
+and adds `memory_collection_observation` from the serving OrgState. Every other
+action response is unchanged; there is no new query option or authority flag.
+TS `AuditResponse` permits legacy absence/null and mirrors the closed object.
+
+Outer keys exactly: `contract_version` (integer 1 excluding bool), `org`,
+`boot_id`, `installed_identity`, `generation`, `assigned_intents`, `intent_digest`,
+`phase_counts`, `phase_digests`, `active_preparations`, `observation_error`,
+`latest_seal_audit_id`, `epoch_id`, `epoch_audit_id`, `sampled_at`, `data_through`.
+Both epoch refs are always null in this unit. Missing/failed/busy observer fields
+are null rather than invented healthy zeros. Real empty observers report known
+N0 and remain unaccepted. Phase maps have exactly intent/identity/expectation/
+binding/launched/terminal and attempted/persisted counts or SHA256 digests.
+Active preparations retain exactly ordinal/task_id/agent/session_id/
+expectation_known from the producer. Counts are nonnegative integers excluding
+bool; SHA256 values are lowercase hex; timestamps are aware UTC. Category-only
+errors disclose no exception contents. Sticky writer errors remain sticky;
+GET acquisition failure never changes observer or application state.
+
+`installed_identity` is null when acquisition fails; otherwise its exact keys
+are `source_root`, `runtime_root`, `org_root`, `package_version`, `python`,
+`loaded_code`, `files`, `teams_sha256`, `cohort`, `profiles`, `backend`:
+
+- `python`: executable (canonical realpath), version, implementation, cache_tag.
+- `loaded_code`: sorted records of module, qualname, origin, loaded_sha256,
+  source_code_sha256. Interpreter-bound fingerprints include bytecode,
+  constants/nested code, names/variables/freevars/cellvars, flags/arguments,
+  filename/qualname and line/exception metadata. Declared functions are actual
+  Orchestrator _run_agent/_run_agent_impl, _resolve_executor_name/
+  _resolve_model_name/_build_executor, actual bound _launch_agent_with_scratch/
+  _run_agent_launch_contained, MemoryStore.render_memory_digest,
+  CollectionObserver.begin/observe/expectation/snapshot/_snapshot/_record/
+  _persist/_seal; the directly used _identity_bytes/_identity_file_hash/_hash_metadata/
+  _code_projection/_find_code/_serving_snapshot/_serving_revision/
+  _check_serving_snapshot/_now/serving_observation/loaded_identity helpers;
+  applicable first-party adapter build_argv and actual cached supervisor
+  backend launch/finish are also fingerprinted. Sources are compiled
+  without execution at actual import origins. Origin or loaded-source mismatch
+  is unavailable, never repaired by importing another checkout.
+- `files`: sorted canonical path/sha256 records from those actual source files,
+  interpreter executable, actual installed package METADATA (bounded version
+  header acquisition, with distribution location observed at initialization),
+  teams/agent definitions, applicable provider registry and pinned
+  binaries, and applicable adapter store/executables/dependencies. Contents,
+  credentials, prompts, bodies, briefs and queries are never exposed.
+- `teams_sha256`: canonical loaded team/manager/sorted-worker metadata hash;
+  loaded registry is checked against current teams.yaml. `cohort`: sorted
+  agent/team/role/executor/model records from actual registration/definitions,
+  with null model retained rather than inferred.
+- `profiles`: sorted name/kind/workspace_adapter_id/command_adapter_id/
+  readiness_marker_fragment/model_arg_sha256/provider/adapter records from the
+  actual runtime registry. Builtin provider is path/sha256; custom provider is
+  null, adapter is id/version/contract_version/dependency_manifest_version/
+  dependencies (sorted path/sha256 records, including the approved executable).
+  Builtin adapter is null. Pending/missing/hash-mismatched custom adapters fail
+  unavailable. No command text or permission surface is emitted or changed.
+- `backend`: mode/name/version/capabilities. Legacy mode has null other fields;
+  supervised mode uses only the already cached actual capability report, with
+  capability-name -> guaranteed/best_effort/unavailable values. Absent cached
+  report is unavailable; GET never probes/launches. This metadata is descriptive,
+  and does not claim backend health or enforcement beyond its existing report.
+
+Acquisition is zero durable writes and no reseal/full-history reconciliation.
+Nonblocking short observer/Database lock admissions preserve observer -> Database
+ordering; no Database-held callback acquires observer lock, and file acquisition
+holds neither lock. Two identity reads plus observer semantic and database
+revision bookends must match. Pending preparation/writer, sticky errors, failed
+reads or movement withhold data_through; stable cutoff is evidence to a future
+validator, not collection health. Work is limited to 64 agents/teams (64 workers
+per team), 96 regular files and 1 GiB total per identity read; declared
+executables are streamed in at most 256 KiB chunks with a 512 MiB/file bound
+(the actual registered Claude/Codex binaries exceed 200 MiB). Metadata/source/
+registry/agent files are capped at 1 MiB, custom dependencies at 16,
+profile model arguments at 16 strings of at most 256 characters. Nonregular
+files, unreadable/moving files and exhausted limits are unavailable. Filesystem
+operations have bounded byte/work admission, not a new OS-I/O deadline or timer.
+
+This source view does not implement the admitted independent role/job acceptance
+parser, atomic epoch/invalidation, BOTH health consumers, installed canary or
+operational acceptance. Backend and canonical CLI remain insufficient_instrumentation;
+thresholds_met/diagnostics_valid_for_collection/evaluation_candidate stay false.
+No natural collection clock or epoch starts from identity, boot, census or source
+test. Same-UID integrity is detective only, not attestation. Collection CLOSED,
+epoch NOT STARTED, 48h handoff NOT DUE; frozen eligibility thresholds unchanged.
 
 ## Observation-only reporting core (TASK-9673 recovery / TASK-9559)
 

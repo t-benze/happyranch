@@ -744,13 +744,19 @@ Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` co
 A version is exposure metadata, never epoch authority or task eligibility.
 The source-side G3 census records actual bootstrap intent/identity/expectation/
 binding/launch-callback/terminal metadata plus independent seals in ordinary audit
-rows. Existing `/audit` returns those stored rows with the unchanged response
-shape; this unit supplies no live observer envelope or CLI collection authority.
+rows. Existing `/audit` preserves entries/cursors and optionally adds
+`memory_collection_observation` only for `action=memory_collection_seal`, from
+the actual serving OrgState. Other action responses remain unchanged. The
+closed source view and loaded identity are defined in the corrective memory
+spec; absent/busy/moving/failed components are explicit unknown/unavailable.
+GET performs no durable writes, resealing, provider launch or backend probe.
+Both epoch refs remain null; the CLI gains no collection authority.
 Stored seals checkpoint counters only: `census_integrity` explicitly reports
 `census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
-G1 independent canary/epoch acceptance, current-serving census acquisition,
+G1 independent canary/epoch acceptance and current-serving census acceptance
+remain OPEN.
 Read-side G4 acquisition is implemented below; full eligibility reporting and installed health remain OPEN.
 
 `happyranch memory report` paginates the existing audit read surface but is

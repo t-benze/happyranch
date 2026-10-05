@@ -275,7 +275,7 @@ Task bootstrap retains text and item IDs from one actual `MemoryStore.render_mem
 
 After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 
-The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, current-serving G3 census acquisition/acceptance, The observation-only reporting core below supplies read-side G4 acquisition; full eligibility reporting, current-serving census acceptance and installed health remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority and current-serving G3 census acceptance remain OPEN. The observation-only reporting core below supplies read-side G4 acquisition; full eligibility reporting, current-serving census acceptance and installed health remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
 
 The source-side G3 observer is attached by real `OrgState` construction before
 workers. One actual `_run_agent` entry reserves an independent boot-local ordinal
@@ -316,8 +316,17 @@ retry-until-quiet loop or reader write is performed. A restart allocates a new
 observer boot and never reconstructs old completeness. Constructor/attachment
 failure preserves ordinary org startup with explicit unavailable observation.
 
+The seal-action audit GET now supplies an optional closed current-serving
+observation from the actual OrgState, with explicit unavailable/unknown fields,
+paired live counters and bounded loaded/disk/interpreter/registry identities.
+It does not write rows, reseal, reconcile full history or produce an epoch.
+Other audit response shapes remain unchanged. The exact response and nested
+identity are specified in the corrective memory spec; a stable empty N0 view
+is descriptive and unaccepted.
+
 This census and its seals are not collection health, installed acceptance or
-epoch authority. G1, current-serving acquisition/B1, both health consumers,
+epoch authority. The seal-action serving source view is described here. G1
+durable acceptance/B1, both health consumers,
 installed canary/deferred executor/population coverage and full reporting remain
 unimplemented here. Existing backend and canonical CLI guards remain
 `insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch

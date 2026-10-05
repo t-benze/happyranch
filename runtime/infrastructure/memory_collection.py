@@ -12,6 +12,13 @@ from collections import deque
 import hashlib
 import inspect
 import json
+import marshal
+import os
+import stat
+import sys
+from importlib.metadata import distribution
+from email.parser import BytesHeaderParser
+from types import CodeType
 import threading
 import uuid
 from dataclasses import dataclass
@@ -21,6 +28,18 @@ from typing import Any
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.learnings_store import MemoryDigestRender, MemoryStore
+from runtime.orchestrator import executor_binary_registry, adapter_store
+from runtime.orchestrator.agent_def import parse_agent_text
+from runtime.orchestrator.executor_registry import get_registry
+from runtime.adapters import get_first_party_adapter
+import yaml
+
+# Resolve installed distribution location during best-effort observer module
+# initialization, never by scanning package directories on GET.
+try:
+    _PACKAGE_METADATA_PATH = Path(distribution("happyranch")._path) / "METADATA"
+except Exception:
+    _PACKAGE_METADATA_PATH = None
 
 PHASES = ("intent", "identity", "expectation", "binding", "launched", "terminal")
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
@@ -432,3 +451,372 @@ def validate_census(snapshot: dict, rows: list[dict], *, require_seal: bool = Tr
                 or seals[-1]["payload"]["generation"] != snapshot["generation"]):
             problems.append("seal_count_or_digest")
     return _result(problems, discrepancies)
+
+
+# Fixed work limits on the serving GET. No tree walk, provider invocation,
+# backend probe, registry mutation or exhaustive census decoding occurs here.
+MAX_IDENTITY_FILE_BYTES = 1024 * 1024
+MAX_IDENTITY_BINARY_BYTES = 512 * 1024 * 1024
+MAX_IDENTITY_TOTAL_BYTES = 1024 * 1024 * 1024
+MAX_IDENTITY_FILES = 96
+MAX_IDENTITY_AGENTS = 64
+
+
+class IdentityUnavailable(Exception):
+    """Category-only acquisition failure; no paths/content from exceptions."""
+
+
+def _identity_bytes(path: Path, budget: list[int], *, limit: int = MAX_IDENTITY_FILE_BYTES) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_size > limit
+                or budget[0] + before.st_size > MAX_IDENTITY_TOTAL_BYTES
+                or budget[1] >= MAX_IDENTITY_FILES):
+            raise IdentityUnavailable("identity_work_limit")
+        budget[0] += before.st_size
+        budget[1] += 1
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(limit + 1)
+        after = os.fstat(fd)
+        if (len(data) != before.st_size or len(data) > limit
+                or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                or path.stat() != after):
+            raise IdentityUnavailable("identity_file_moving")
+        return data
+    finally:
+        os.close(fd)
+
+
+def _identity_file_hash(path: Path, budget: list[int]) -> str:
+    """Stream only a declared executable, bounded by bytes/files; no tree walk."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_size > MAX_IDENTITY_BINARY_BYTES
+                or budget[0] + before.st_size > MAX_IDENTITY_TOTAL_BYTES
+                or budget[1] >= MAX_IDENTITY_FILES or not os.access(path, os.X_OK)):
+            raise IdentityUnavailable("identity_work_limit")
+        budget[0] += before.st_size
+        budget[1] += 1
+        digest, remaining = hashlib.sha256(), before.st_size
+        while remaining:
+            chunk = os.read(fd, min(256 * 1024, remaining))
+            if not chunk:
+                raise IdentityUnavailable("identity_file_moving")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(fd)
+        if (os.read(fd, 1) or path.stat() != after
+                or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+            raise IdentityUnavailable("identity_file_moving")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
+
+
+def _hash_metadata(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                    ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
+def _code_projection(code: CodeType) -> dict:
+    # Structured constants avoid marshal's interning/reference-table differences
+    # between an imported function and an independently compiled source object.
+    return {"bytecode": code.co_code.hex(), "constants": [
+                _code_projection(value) if isinstance(value, CodeType)
+                else marshal.dumps(value).hex() for value in code.co_consts],
+            "names": code.co_names, "variables": code.co_varnames,
+            "freevars": code.co_freevars, "cellvars": code.co_cellvars,
+            "flags": code.co_flags, "args": (code.co_argcount, code.co_posonlyargcount, code.co_kwonlyargcount),
+            "filename": code.co_filename, "qualname": code.co_qualname,
+            "firstline": code.co_firstlineno, "lines": code.co_linetable.hex(),
+            "exceptions": code.co_exceptiontable.hex()}
+
+
+def _find_code(code: CodeType, qualname: str) -> CodeType:
+    if code.co_qualname == qualname:
+        return code
+    for item in code.co_consts:
+        if isinstance(item, CodeType):
+            try:
+                return _find_code(item, qualname)
+            except LookupError:
+                pass
+    raise LookupError(qualname)
+
+
+def loaded_identity(org: Any) -> dict:
+    """Actual interpreter/imported code and authoritative metadata, never attestation.
+
+    Source is compiled without executing it, solely to compare declared loaded
+    function fingerprints. No second checkout is imported to supply identity.
+    """
+    budget = [0, 0]
+    files: dict[str, str] = {}
+    def read(path: Path, *, limit: int = MAX_IDENTITY_FILE_BYTES) -> bytes:
+        path = path.resolve(strict=True)
+        data = _identity_bytes(path, budget, limit=limit)
+        digest = hashlib.sha256(data).hexdigest()
+        if str(path) in files and files[str(path)] != digest:
+            raise IdentityUnavailable("identity_file_moving")
+        files[str(path)] = digest
+        return data
+
+    def executable_hash(path: Path) -> str:
+        path = path.resolve(strict=True)
+        digest = _identity_file_hash(path, budget)
+        if str(path) in files and files[str(path)] != digest:
+            raise IdentityUnavailable("identity_file_moving")
+        files[str(path)] = digest
+        return digest
+
+    python = {"executable": str(Path(sys.executable).resolve(strict=True)),
+              "version": sys.version, "implementation": sys.implementation.name,
+              "cache_tag": sys.implementation.cache_tag}
+    executable_hash(Path(python["executable"]))
+    source_root = Path(__file__).resolve(strict=True).parents[2]
+    functions = [org.orchestrator._run_agent, org.orchestrator._run_agent_impl,
+                 org.orchestrator._launch_agent_with_scratch,
+                 org.orchestrator._run_agent_launch_contained,
+                 org.orchestrator._resolve_executor_name, org.orchestrator._resolve_model_name,
+                 org.orchestrator._build_executor, MemoryStore.render_memory_digest, CollectionObserver.begin,
+                 CollectionObserver.observe, CollectionObserver.expectation,
+                 CollectionObserver.snapshot, CollectionObserver._snapshot,
+                 CollectionObserver._record, CollectionObserver._persist, CollectionObserver._seal,
+                 _identity_bytes, _identity_file_hash, _hash_metadata, _code_projection, _find_code, _serving_snapshot,
+                 _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
+    code_rows = []
+    compiled: dict[str, CodeType] = {}
+    def fingerprint(function: Any) -> None:
+        function = getattr(function, "__func__", function)
+        code = function.__code__
+        module = sys.modules[function.__module__]
+        origin = str(Path(module.__spec__.origin).resolve(strict=True))
+        if (Path(code.co_filename).resolve(strict=True) != Path(origin)
+                or not Path(origin).is_relative_to(source_root)):
+            raise IdentityUnavailable("identity_origin_mismatch")
+        if origin not in compiled:
+            compiled[origin] = compile(read(Path(origin), limit=1024 * 1024), code.co_filename,
+                                       "exec", dont_inherit=True, optimize=sys.flags.optimize)
+        on_disk = _find_code(compiled[origin], code.co_qualname)
+        loaded_hash = _hash_metadata({"python": python, "code": _code_projection(code)})
+        disk_hash = _hash_metadata({"python": python, "code": _code_projection(on_disk)})
+        if loaded_hash != disk_hash:
+            raise IdentityUnavailable("identity_loaded_source_mismatch")
+        code_rows.append({"module": function.__module__, "qualname": code.co_qualname,
+                          "origin": origin, "loaded_sha256": loaded_hash,
+                          "source_code_sha256": disk_hash})
+    for function in functions:
+        fingerprint(function)
+
+    if len(org.teams._teams) > MAX_IDENTITY_AGENTS or any(
+            len(team.workers) > MAX_IDENTITY_AGENTS for team in org.teams._teams.values()):
+        raise IdentityUnavailable("identity_work_limit")
+    names = sorted(set(org.teams.all_agents()))
+    if len(names) > MAX_IDENTITY_AGENTS:
+        raise IdentityUnavailable("identity_cohort_unavailable")
+    # This is the actual loaded TeamsRegistry, not a reconstructed replacement.
+    registered = [{"team": team, "manager": org.teams.manager_for_team(team).name,
+                   "workers": sorted(org.teams.manager_for_team(team).workers)} for team in org.teams.teams()]
+    disk_teams = yaml.safe_load(read(org.root / "org" / "teams.yaml", limit=1024 * 1024))
+    layout = disk_teams.get("teams") or {}
+    disk_registered = [{"team": team, "manager": entry["manager"],
+                        "workers": sorted(entry.get("workers") or [])} for team, entry in sorted(layout.items())]
+    if registered != disk_registered:
+        raise IdentityUnavailable("identity_cohort_mismatch")
+    cohort = []
+    profiles = {}
+    registry = get_registry()
+    binary_path = executor_binary_registry._registry_path()
+    binaries: dict | None = None
+    for name in names:
+        definition = parse_agent_text(read(org.root / "org" / "agents" / f"{name}.md", limit=1024 * 1024).decode(),
+                                      expected_name=name)
+        if (definition.team not in org.teams.teams()
+                or name not in (org.teams.manager_for_team(definition.team).name,
+                                *org.teams.manager_for_team(definition.team).workers)
+                or org.teams.is_team_manager(name) != (definition.role == "manager")):
+            raise IdentityUnavailable("identity_cohort_unavailable")
+        cohort.append({"agent": name, "team": definition.team, "role": definition.role,
+                       "executor": definition.executor, "model": definition.model})
+        profile = registry.get_profile(definition.executor)
+        if profile is None:
+            raise IdentityUnavailable("identity_profile_unavailable")
+        if profile.name in profiles:
+            continue
+        if (profile.model_arg is not None and (len(profile.model_arg) > 16
+                or any(not isinstance(arg, str) or len(arg) > 256 for arg in profile.model_arg))):
+            raise IdentityUnavailable("identity_work_limit")
+        metadata = {"name": profile.name, "kind": profile.kind,
+                    "workspace_adapter_id": profile.workspace_adapter_id,
+                    "command_adapter_id": profile.command_adapter_id,
+                    "readiness_marker_fragment": profile.readiness_marker_fragment,
+                    "model_arg_sha256": _hash_metadata(profile.model_arg),
+                    "provider": None, "adapter": None}
+        if profile.kind == "builtin":
+            adapter_cls = get_first_party_adapter(profile.name)
+            if adapter_cls is None:
+                raise IdentityUnavailable("identity_adapter_unavailable")
+            fingerprint(adapter_cls.build_argv)
+            if binaries is None:
+                binaries = json.loads(read(binary_path, limit=1024 * 1024))
+                if not isinstance(binaries, dict):
+                    raise IdentityUnavailable("identity_registry_unavailable")
+            raw_path = binaries.get(profile.name)
+            if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+                raise IdentityUnavailable("identity_provider_unavailable")
+            provider = Path(raw_path).resolve(strict=True)
+            metadata["provider"] = {"path": str(provider), "sha256": executable_hash(provider)}
+        elif profile.kind == "custom":
+            command = profile.command_adapter_id or ""
+            if not command.startswith("custom-adapter:"):
+                raise IdentityUnavailable("identity_adapter_unavailable")
+            # Reuse the authoritative store path + entry parser, with a bounded
+            # byte snapshot rather than its permissive/unbounded convenience GET.
+            entries = yaml.safe_load(read(adapter_store._store_path(), limit=1024 * 1024))
+            entry = adapter_store.AdapterEntry.from_dict(entries[command.split(":", 1)[1]])
+            if (entry.status != "approved" or len(entry.dependencies) > 16
+                    or type(entry.contract_version) is not int or entry.contract_version != 1
+                    or (entry.dependency_manifest_version is not None
+                        and (type(entry.dependency_manifest_version) is not int or entry.dependency_manifest_version < 1))):
+                raise IdentityUnavailable("identity_adapter_unavailable")
+            dependencies = []
+            for dependency in [{"executable": entry.executable, "sha256": entry.executable_hash}, *entry.dependencies]:
+                path = Path(dependency["executable"]).resolve(strict=True)
+                digest = executable_hash(path)
+                if digest != dependency["sha256"]:
+                    raise IdentityUnavailable("identity_adapter_mismatch")
+                dependencies.append({"path": str(path), "sha256": digest})
+            metadata["adapter"] = {"id": entry.id, "version": entry.version,
+                                   "contract_version": entry.contract_version,
+                                   "dependency_manifest_version": entry.dependency_manifest_version,
+                                   "dependencies": sorted(dependencies, key=lambda item: item["path"])}
+        else:
+            raise IdentityUnavailable("identity_profile_unavailable")
+        profiles[profile.name] = metadata
+    supervisor = org.orchestrator._host_supervisor
+    if supervisor is None:
+        backend = {"mode": "legacy", "name": None, "version": None, "capabilities": None}
+    else:
+        # Never call probe(): it can create a scope. The actual cached launch
+        # capability observation must exist already or identity is unavailable.
+        report = supervisor._capability_report
+        if report is None:
+            raise IdentityUnavailable("identity_backend_unavailable")
+        fingerprint(supervisor._backend.launch)
+        fingerprint(supervisor._backend.finish)
+        backend = {"mode": "supervised", "name": report.backend,
+                   "version": report.backend_version,
+                   "capabilities": {key.value: value.value for key, value in sorted(report.capabilities.items())}}
+    if _PACKAGE_METADATA_PATH is None:
+        raise IdentityUnavailable("identity_package_unavailable")
+    package_metadata = BytesHeaderParser().parsebytes(read(_PACKAGE_METADATA_PATH))
+    package_versions = package_metadata.get_all("Version", [])
+    if (package_metadata.get("Name") != "happyranch" or len(package_versions) != 1
+            or not package_versions[0] or len(package_versions[0]) > 256):
+        raise IdentityUnavailable("identity_package_unavailable")
+    package_version = package_versions[0]
+    root = org.root.resolve(strict=True)
+    runtime_root = root.parent.parent if root.parent.name == "orgs" else root
+    return {"source_root": str(source_root), "runtime_root": str(runtime_root), "org_root": str(root),
+            "package_version": package_version, "python": python,
+            "loaded_code": sorted(code_rows, key=lambda row: (row["module"], row["qualname"])),
+            "files": [{"path": path, "sha256": digest} for path, digest in sorted(files.items())],
+            "teams_sha256": _hash_metadata(registered), "cohort": cohort,
+            "profiles": [profiles[name] for name in sorted(profiles)], "backend": backend}
+
+
+def _serving_snapshot(observer: CollectionObserver) -> dict:
+    # A held metadata lock is explicit unknown, never an unbounded GET wait.
+    if not observer._lock.acquire(blocking=False):
+        raise IdentityUnavailable("observer_busy")
+    try:
+        if len(observer._active) > MAX_IDENTITY_AGENTS:
+            raise IdentityUnavailable("observer_work_limit")
+        return observer._snapshot()
+    finally:
+        observer._lock.release()
+
+
+def _serving_revision(observer: CollectionObserver) -> tuple[int, int, int]:
+    # SELECT executes only after nonblocking admission to the existing DB lock;
+    # release it before acquiring observer metadata or reading any files.
+    if not observer.db._lock.acquire(blocking=False):
+        raise IdentityUnavailable("observation_database_busy")
+    try:
+        return observer._read_revision()
+    finally:
+        observer.db._lock.release()
+
+
+def _check_serving_snapshot(snapshot: dict) -> None:
+    def integer(value: Any) -> bool:
+        return type(value) is int and value >= 0
+    def digest(value: Any) -> bool:
+        return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    if (type(snapshot["contract_version"]) is not int or snapshot["contract_version"] != 1
+            or not isinstance(snapshot["boot_id"], str)
+            or str(uuid.UUID(snapshot["boot_id"])) != snapshot["boot_id"]
+            or not integer(snapshot["generation"]) or not integer(snapshot["assigned_intents"])
+            or not digest(snapshot["intent_digest"])
+            or (snapshot["latest_seal_audit_id"] is not None
+                and (not integer(snapshot["latest_seal_audit_id"]) or snapshot["latest_seal_audit_id"] == 0))
+            or set(snapshot["phase_counts"]) != set(PHASES)
+            or set(snapshot["phase_digests"]) != set(PHASES)):
+        raise IdentityUnavailable("observer_snapshot_invalid")
+    for phase in PHASES:
+        counts, digests = snapshot["phase_counts"][phase], snapshot["phase_digests"][phase]
+        if (set(counts) != {"attempted", "persisted"} or not all(integer(v) for v in counts.values())
+                or set(digests) != {"attempted", "persisted"} or not all(digest(v) for v in digests.values())):
+            raise IdentityUnavailable("observer_snapshot_invalid")
+
+
+def serving_observation(org: Any) -> dict:
+    """Closed current view, paired without a DB-held observer callback.
+
+    A stable cutoff is evidence for a future validator, never a health decision.
+    Acquisition exceptions do not poison the observer or launch/callback paths.
+    """
+    view = {"contract_version": 1, "org": org.slug, "boot_id": None,
+            "installed_identity": None, "generation": None, "assigned_intents": None,
+            "intent_digest": None, "phase_counts": None, "phase_digests": None,
+            "active_preparations": None, "observation_error": None,
+            "latest_seal_audit_id": None, "epoch_id": None, "epoch_audit_id": None,
+            "sampled_at": _now(), "data_through": None}
+    observer = org.memory_collection
+    if observer is None:
+        view["observation_error"] = org.memory_collection_unavailable or "observer_unavailable"
+        return view
+    try:
+        if observer.org != org.slug or observer.root != str(org.root.resolve()) or observer.db is not org.db:
+            raise IdentityUnavailable("observer_context_mismatch")
+        opening = _serving_snapshot(observer)
+        _check_serving_snapshot(opening)
+        for key in ("boot_id", "generation", "assigned_intents", "intent_digest", "phase_counts",
+                    "phase_digests", "active_preparations", "latest_seal_audit_id", "sampled_at", "observation_error"):
+            view[key] = opening[key]
+        revision = _serving_revision(observer)
+        identity = loaded_identity(org)
+        cutoff = _now()
+        closing_identity = loaded_identity(org)
+        closing_revision = _serving_revision(observer)
+        closing = _serving_snapshot(observer)
+        if (org.memory_collection is not observer or revision != closing_revision
+                or identity != closing_identity
+                or {k: v for k, v in opening.items() if k != "sampled_at"}
+                != {k: v for k, v in closing.items() if k != "sampled_at"}):
+            raise IdentityUnavailable("observation_moving")
+        view["installed_identity"] = identity
+        if opening["writer_active"] or opening["pending_observations"] or opening["active_preparations"]:
+            view["observation_error"] = opening["observation_error"] or "observation_pending"
+        if view["observation_error"] is None:
+            view["data_through"] = cutoff
+    except IdentityUnavailable as exc:
+        view["observation_error"] = view["observation_error"] or str(exc)
+    except Exception:
+        view["observation_error"] = view["observation_error"] or "observation_unavailable"
+    return view
