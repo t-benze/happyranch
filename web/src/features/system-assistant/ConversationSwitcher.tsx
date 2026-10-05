@@ -1,15 +1,12 @@
 /**
- * ConversationSwitcher — the conversation list surfaced inside the assistant
- * dock (THR-056 STEP-B).
+ * ConversationSwitcher — the conversation list in the assistant dock
+ * (THR-056 STEP-B). N conversations live under one runtime-global assistant.
  *
- * N conversations live UNDER the one runtime-global assistant (single-assistant
- * framing). This panel lists them newest-first, indicates the active one, and
- * offers new / switch / rename / delete — modelled on the Threads inbox row
- * idiom (same surface/border/text tokens, `bg-accent-soft` for the active row).
- *
- * It is presentational: every side effect is a prop callback owned by
- * AssistantDockHost, which drives the mutations and reconnects the A-mode WS so
- * the transcript replays the resulting active conversation's history.
+ * Lists newest-first, marks the active conversation, and offers new / switch /
+ * rename / delete using the Threads inbox row's surface/border/text tokens and
+ * `bg-accent-soft` active row. Every side effect is a prop callback owned by
+ * AssistantDockHost, which drives mutations and reconnects the A-mode WS to
+ * replay the selected conversation's transcript.
  */
 import { useI18n } from '@/hooks/i18n';
 import { useState } from 'react';
