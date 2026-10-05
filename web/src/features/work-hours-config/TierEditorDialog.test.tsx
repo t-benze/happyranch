@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { Route, Routes } from 'react-router-dom';
 import { TierEditorDialog } from './TierEditorDialog';
 import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
@@ -37,7 +37,11 @@ function continuousWh(): WorkingHoursSettings {
   };
 }
 
-function renderDialog(locale: 'en' | 'zh-CN' = 'en') {
+function renderDialog(
+  locale: 'en' | 'zh-CN' = 'en',
+  onSaved = () => {},
+  onOpenChange = (_open: boolean) => {},
+) {
   return renderWithProviders(
     <Routes>
       <Route
@@ -45,12 +49,12 @@ function renderDialog(locale: 'en' | 'zh-CN' = 'en') {
         element={
           <TierEditorDialog
             open
-            onOpenChange={() => {}}
+            onOpenChange={onOpenChange}
             tier={{ kind: 'agent', agent: 'dev_agent' }}
             wh={continuousWh()}
             agentTeam={{ dev_agent: null }}
             allAgents={['dev_agent']}
-            onSaved={() => {}}
+            onSaved={onSaved}
           />
         }
       />
@@ -130,5 +134,41 @@ describe('TierEditorDialog — zh-CN close control and ErrorPanel (THR-118 W4b)'
     expect(alert).toHaveTextContent('保存被拒绝 — 配置未写入。');
     // The daemon error string stays verbatim.
     expect(alert).toHaveTextContent('interval 5h must evenly divide 24h');
+  });
+});
+
+
+describe('TierEditorDialog — reset through the saved tier patch', () => {
+  test.each(['en', 'zh-CN'] as const)('%s interval reset sends null and retains other leaves, then notifies and closes', async (locale) => {
+    const sent: unknown[] = [];
+    server.use(http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+      sent.push(await request.json());
+      return HttpResponse.json({});
+    }));
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    const user = userEvent.setup();
+    renderDialog(locale, onSaved, onOpenChange);
+    const dialog = await screen.findByRole('dialog');
+    const interval = within(dialog).getByPlaceholderText('2h');
+    expect(interval).toHaveValue('2h');
+    // The reset is an ordinary sibling control of this field, independent of
+    // its responsive position. Observe its value/provenance and actual HTTP.
+    await user.click(within(interval.parentElement!).getByRole('button', {
+      name: translate(locale, 'workHours.tier.reset'),
+    }));
+    expect(interval).toHaveValue('');
+    expect(within(dialog).getByText(translate(locale, 'workHours.tier.inheritedGhost', {
+      value: '2h', source: translate(locale, 'workHours.provenance.org'),
+    }))).toBeInTheDocument();
+    expect(sent).toEqual([]);
+    await user.click(within(dialog).getByRole('button', { name: translate(locale, 'common.save') }));
+    await waitFor(() => expect(sent).toEqual([{ working_hours: { overrides: { dev_agent: {
+      mode: 'continuous', interval: null, catch_up_on_startup: false,
+      window: { start: null, end: null, timezone: 'UTC' }, days: null,
+    } } } }]));
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(onOpenChange).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
