@@ -27,6 +27,85 @@ URL = "/api/v1/orgs/alpha/agents/dev_agent/system-prompt"
 MARKDOWN = "# 指令 🐎\n\n正文  \n\n    code\n\n```text\n例子\n```\n\n## Details\n保留内容\n"
 
 
+@pytest.fixture(params=["claude", "codex", "pi", "opencode", "prompt_codex"])
+def prompt_profile(request, monkeypatch):
+    """An isolated registered alias uses the existing Codex adapters."""
+    from runtime.orchestrator.executor_registry import get_registry
+
+    registry = get_registry()
+    if request.param == "prompt_codex":
+        monkeypatch.setattr(registry, "_profiles", dict(registry._profiles))
+        registry.register_custom_profile(replace(registry.get_profile("codex"), name=request.param))
+    return request.param
+
+
+def _record_next_task_delivery(org_state, monkeypatch, target, expected_prompt):
+    """Observe the production task launch; the child only reads workspace files."""
+    import json
+    import subprocess
+    import sys
+
+    from runtime.orchestrator.executors import ExecutorResult
+    from runtime.orchestrator.executor_registry import get_registry
+    from runtime.platform.session_backend import LaunchSpec
+
+    final, revision, raw = prompt_loader.load_agent_snapshot(_paths(org_state), target)
+    assert revision == hashlib.sha256(raw).hexdigest()
+    profile = get_registry().get_profile(final.executor)
+    assert profile is not None
+    assert profile.workspace_adapter_id == ("codex" if final.executor == "prompt_codex" else final.executor)
+    assert profile.command_adapter_id == profile.workspace_adapter_id
+    selected, launches = [], []
+
+    class Recorder:
+        def build_launch_spec(self, **kwargs):
+            return LaunchSpec(argv=(sys.executable, "-c", (
+                "import json,os,stat,sys; from pathlib import Path; sys.stdin.read(); "
+                "print(json.dumps({'cwd':str(Path.cwd()),'body':Path('AGENTS.md').read_text(),"
+                "'mode':os.lstat('AGENTS.md').st_mode,'link':os.readlink('CLAUDE.md')}))"
+            )), cwd=str(kwargs["workspace"]))
+
+        def run(self, **kwargs):
+            if kwargs.get("pre_launch_validator") is not None:
+                kwargs["pre_launch_validator"]()
+            running = kwargs.get("running")
+            if running is not None:
+                out, err = running.process.communicate(input=kwargs["prompt"], timeout=10)
+                assert running.process.returncode == 0, err
+            else:
+                spec = self.build_launch_spec(**kwargs)
+                out = subprocess.run(spec.argv, cwd=spec.cwd, input=kwargs["prompt"],
+                                     capture_output=True, text=True, timeout=10, check=True).stdout
+            launches.append({**json.loads(out), "model": kwargs["model"], "session": kwargs["session_id"]})
+            return ExecutorResult(success=True, duration_seconds=0, session_id=kwargs["session_id"])
+
+    def select(provider):
+        selected.append(provider)
+        return Recorder()
+
+    orchestrator = org_state.orchestrator
+    monkeypatch.setattr(orchestrator, "_build_executor", select)
+    task_id = orchestrator.create_task("Observe prompt delivery after the competing writer")
+    result, report = orchestrator._run_agent(task_id, target, "")
+    assert result.success, result.error
+    assert report is None
+    assert selected == [final.executor]
+    assert len(launches) == 1
+    launch = launches[0]
+    import stat
+    assert stat.S_ISREG(launch["mode"])
+    assert launch["cwd"] == str(_paths(org_state).workspaces_dir / target)
+    assert launch["link"] == "AGENTS.md"
+    assert "## System Prompt" in launch["body"]
+    assert expected_prompt.strip() in launch["body"]
+    assert "OLD" not in launch["body"]
+    assert launch["model"] == final.model
+    starts = [r for r in org_state.db.get_audit_logs(task_id) if r["action"] == "session_start"]
+    assert len(starts) == 1
+    assert starts[0]["payload"]["executor"] == final.executor
+    assert starts[0]["payload"]["session_id"] == launch["session"]
+
+
 def _seed(org_state, *, workspace: bool = True) -> tuple:
     _seed_active_agent(org_state, "dev_agent", system_prompt="OLD\n", model="kept-model")
     paths = _paths(org_state)
@@ -186,12 +265,16 @@ def test_prompt_absent_workspace_commits_canonical_only(app, org_state, auth_hea
     pytest.param("repo", "remove", id="repo-remove"),
 ])
 def test_prompt_winner_before_sibling_acquisition_survives(
-    org_state, monkeypatch, route: str, delta: str | None,
+    org_state, monkeypatch, prompt_profile, route: str, delta: str | None,
 ) -> None:
     """C14: accepted prompt winner precedes actual sibling gate acquisition."""
     from runtime.daemon.routes import agents as routes
 
-    _, revision, _ = _seed(org_state)
+    existing, _, _ = _seed(org_state)
+    paths = _paths(org_state)
+    (paths.agents_dir / "dev_agent.md").write_text(render_agent_text(replace(existing, executor=prompt_profile)))
+    _authority_generation(org_state)
+    revision = prompt_loader.agent_revision(paths, "dev_agent")
     real_interval = routes._consumer_writer_interval
     arrived, release = asyncio.Event(), asyncio.Event()
 
@@ -239,6 +322,7 @@ def test_prompt_winner_before_sibling_acquisition_survives(
         assert os.readlink(ws / "CLAUDE.md") == "AGENTS.md"
 
     asyncio.run(exercise())
+    _record_next_task_delivery(org_state, monkeypatch, "dev_agent", "WINNER\n")
 
 
 @pytest.mark.parametrize("workspace", [True, False], ids=["workspace", "absent"])
@@ -720,12 +804,21 @@ def test_prompt_identity_and_auth_refusals_have_no_alpha_effect(app, org_state, 
     assert _state(org_state) == before
 
 
-@pytest.mark.parametrize("route", ["init", "repo", "executor", "create", "approve"])
-def test_prompt_save_queues_through_sibling_bootstrap(org_state, monkeypatch, route: str) -> None:
+@pytest.mark.parametrize("route,phase", [
+    ("init", "bootstrap"), ("init", "clone"), ("init", "readiness"),
+    ("repo", "bootstrap"), ("repo", "clone"), ("executor", "materialize"),
+    ("create", "bootstrap"), ("approve", "bootstrap"),
+    ("model-set", "acquisition"), ("model-clear", "acquisition"),
+])
+def test_prompt_save_queues_through_sibling_bootstrap(org_state, monkeypatch, prompt_profile, route: str, phase: str) -> None:
     """C13/C14/C20: release bootstrap/gate before awaiting the queued save."""
     from runtime.daemon.routes import agents as routes
 
     existing, _, _ = _seed(org_state)
+    existing = replace(existing, executor=prompt_profile)
+    destination = "codex" if prompt_profile == "pi" else "pi"
+    (_paths(org_state).agents_dir / "dev_agent.md").write_text(render_agent_text(existing))
+    _authority_generation(org_state)
     target = "dev_agent"
     if route in {"create", "approve"}:
         target = f"prompt_{route}"
@@ -741,18 +834,25 @@ def test_prompt_save_queues_through_sibling_bootstrap(org_state, monkeypatch, ro
         if kwargs["publisher"] == "set_agent_system_prompt":
             attempted.set()
         async with real_interval(org, **kwargs) as interval:
+            if route.startswith("model-") and kwargs["publisher"] == "set_agent_model":
+                entered.set()
+                await asyncio.wait_for(release.wait(), 10)
             yield interval
 
     async def hold_bootstrap(func, *args, **kwargs):
         if ((route == "executor" and func is routes._executor_switch_materialize)
-            or (route != "executor" and getattr(func, "__name__", "") == "ensure_workspace_ready")):
+            or (phase == "bootstrap" and getattr(func, "__name__", "") == "ensure_workspace_ready")
+            or (phase == "clone" and getattr(func, "__name__", "") == "clone_repo")
+            or (phase == "readiness" and func is routes._bootstrap_readiness_marker)):
             entered.set()
             await asyncio.wait_for(release.wait(), 10)
         return await real_to_thread(func, *args, **kwargs)
 
     monkeypatch.setattr(routes, "_consumer_writer_interval", observe_interval)
     monkeypatch.setattr(routes.asyncio, "to_thread", hold_bootstrap)
-    monkeypatch.setattr(ContextBuilder, "clone_repo", lambda *args: True)
+    def clone_repo(*args):
+        return True
+    monkeypatch.setattr(ContextBuilder, "clone_repo", clone_repo)
 
     async def exercise():
         async def initialize():
@@ -763,16 +863,20 @@ def test_prompt_save_queues_through_sibling_bootstrap(org_state, monkeypatch, ro
         if route == "init":
             operation = initialize()
         elif route == "executor":
-            operation = routes.set_agent_executor("alpha", target, routes.SetExecutorBody(executor="pi"), org_state)
+            operation = routes.set_agent_executor("alpha", target, routes.SetExecutorBody(executor=destination), org_state)
         elif route == "repo":
             operation = routes.manage_repo("alpha", target, routes.ManageRepoBody(
                 action="add", repo_name="extra", url="https://example.test/extra.git",
             ), org_state)
         elif route == "approve":
             operation = routes.approve_agent("alpha", target, org_state)
+        elif route.startswith("model-"):
+            operation = routes.set_agent_model("alpha", target, routes.SetModelBody(
+                model="changed-model" if route == "model-set" else None,
+            ), org_state)
         else:
             operation = routes.founder_create_agent("alpha", routes.FounderCreateAgentBody(
-                name=target, role="worker", team="engineering", executor="claude",
+                name=target, role="worker", team="engineering", executor=prompt_profile,
                 description="created", system_prompt="OLD\n",
             ), org_state)
         sibling = asyncio.create_task(operation)
@@ -793,7 +897,7 @@ def test_prompt_save_queues_through_sibling_bootstrap(org_state, monkeypatch, ro
             release.set()
             await asyncio.wait_for(sibling, 10)
             if save is not None:
-                if route == "executor":
+                if route == "executor" or route.startswith("model-"):
                     from fastapi import HTTPException
                     with pytest.raises(HTTPException) as conflict:
                         await asyncio.wait_for(save, 10)
@@ -816,6 +920,271 @@ def test_prompt_save_queues_through_sibling_bootstrap(org_state, monkeypatch, ro
         assert "OLD" not in (workspace / "AGENTS.md").read_text()
         assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
         if route == "executor":
-            assert final.executor == "pi" and final.model is None
+            assert final.executor == destination and final.model is None
+        elif route.startswith("model-"):
+            assert final.model == ("changed-model" if route == "model-set" else None)
 
     asyncio.run(exercise())
+    _record_next_task_delivery(org_state, monkeypatch, target, "WINNER\n")
+
+
+def test_prompt_refresh_serializes_manager_without_durable_leases(org_state, monkeypatch):
+    """C13: actual prompt refresh owns only the process gate during await."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as routes
+    from tests.daemon.test_routes_agents import _activate_eh_session, _EH_TASK, _EH_SESSION
+
+    _activate_eh_session(org_state)
+    _, revision, _ = _seed(org_state)
+    generation = _authority_generation(org_state)
+    entered, release, attempted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    real_thread, real_interval = asyncio.to_thread, routes._consumer_writer_interval
+
+    async def held_writer(func, *args, **kwargs):
+        if getattr(func, "__name__", "") == "write_claude_md":
+            entered.set()
+            await asyncio.wait_for(release.wait(), 10)
+        return await real_thread(func, *args, **kwargs)
+
+    @asynccontextmanager
+    async def observed_interval(org, **kwargs):
+        if kwargs["publisher"] == "manage_agent_update":
+            attempted.set()
+        async with real_interval(org, **kwargs) as interval:
+            yield interval
+
+    monkeypatch.setattr(routes.asyncio, "to_thread", held_writer)
+    monkeypatch.setattr(routes, "_consumer_writer_interval", observed_interval)
+
+    async def exercise():
+        writer = asyncio.create_task(routes.set_agent_system_prompt("alpha", "dev_agent", routes.SystemPromptBody(
+            system_prompt=MARKDOWN, expected_revision=revision,
+        ), org_state))
+        manager = None
+        try:
+            await asyncio.wait_for(entered.wait(), 10)
+            assert not org_state.teams_lock.locked()
+            async with org_state.teams_lock:
+                assert prompt_loader.load_agent(_paths(org_state), "dev_agent").system_prompt == MARKDOWN
+            assert not org_state.db._conn.in_transaction
+            assert org_state.db.execute("SELECT COUNT(*) FROM workflow_publication_leases").fetchone()[0] == 0
+            assert org_state.db.execute("SELECT COUNT(*) FROM workflow_profile_leases").fetchone()[0] == 0
+            coordinator = org_state._profile_coordinator
+            with coordinator.profile_read("claude"):
+                assert org_state.db.execute("SELECT COUNT(*) FROM workflow_publication_leases").fetchone()[0] == 0
+            owner = "prompt-test-independent-lease"
+            org_state.workflow_authority._acquire_lease(owner)
+            org_state.workflow_authority._release_lease(owner)
+            pointer = org_state.db.execute(
+                "SELECT state FROM workflow_authority_pointers WHERE namespace=?",
+                (org_state.workflow_authority.namespace,),
+            ).fetchone()
+            assert pointer["state"] == "fenced"
+            manager = asyncio.create_task(routes.manage_agent("alpha", routes.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                system_prompt="MANAGER LOSER\n", expected_revision=revision,
+            ), org_state))
+            await asyncio.wait_for(attempted.wait(), 10)
+            assert not manager.done()
+            assert prompt_loader.load_agent(_paths(org_state), "dev_agent").system_prompt == MARKDOWN
+        finally:
+            release.set()
+            receipt = await asyncio.wait_for(writer, 10)
+            if manager is not None:
+                with pytest.raises(HTTPException) as stale:
+                    await asyncio.wait_for(manager, 10)
+                assert stale.value.status_code == 409
+        final = prompt_loader.load_agent_snapshot(_paths(org_state), "dev_agent")
+        assert final[0].system_prompt == MARKDOWN
+        assert final[1] == receipt.revision == hashlib.sha256(final[2]).hexdigest()
+
+    asyncio.run(exercise())
+    assert _authority_generation(org_state) == generation + 1
+    assert [r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"] == []
+    _record_next_task_delivery(org_state, monkeypatch, "dev_agent", MARKDOWN)
+
+
+def test_prompt_publication_failure_keeps_receipt_and_fences_readiness(app, org_state, auth_headers, monkeypatch):
+    """C13: canonical success does not assert workflow admission readiness."""
+    from runtime.workflows.authority import WorkflowAuthorityError
+
+    _, revision, _ = _seed(org_state)
+    def failed_publication(**kwargs):
+        raise RuntimeError("injected prompt publication failure")
+    monkeypatch.setattr(org_state.workflow_authority, "publish_current", failed_publication)
+    response = TestClient(app).put(URL, headers=auth_headers, json={
+        "system_prompt": MARKDOWN, "expected_revision": revision,
+    })
+    assert response.status_code == 200, response.text
+    final = prompt_loader.load_agent_snapshot(_paths(org_state), "dev_agent")
+    assert final[0].system_prompt == response.json()["system_prompt"] == MARKDOWN
+    assert final[1] == response.json()["revision"] == hashlib.sha256(final[2]).hexdigest()
+    pair = _state(org_state)[1]
+    assert MARKDOWN.strip().encode() in pair[0][1]
+    assert pair[1][1] == "AGENTS.md"
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org_state.workflow_authority.verify_admission_ready()
+
+
+@pytest.mark.parametrize("ownership", ["owned", "newer-pair", "pair-restore-failure"])
+def test_prompt_route_pair_replay_requires_owned_fingerprint(app, org_state, auth_headers, monkeypatch, ownership):
+    """C12: receipt failure after pair write independently exercises route replay."""
+    from runtime.orchestrator import workspace_adapters as adapters
+
+    _, revision, _ = _seed(org_state)
+    before = _state(org_state)
+    workspace = _paths(org_state).workspaces_dir / "dev_agent"
+    real_snapshot = prompt_loader.load_agent_snapshot
+    real_restore = adapters._restore_instruction_path
+    written, refused, newer = False, False, None
+    real_writer = ContextBuilder.write_claude_md
+
+    def observe_write(*args, **kwargs):
+        nonlocal written
+        result = real_writer(*args, **kwargs)
+        written = True
+        return result
+
+    def failed_receipt(paths, name):
+        nonlocal refused, newer
+        if written and not refused:
+            refused = True
+            assert "NEW" in (workspace / "AGENTS.md").read_text()
+            if ownership == "newer-pair":
+                (workspace / "AGENTS.md").write_bytes(b"DETECTED NEWER PAIR\n")
+                (workspace / "AGENTS.md").chmod(0o600)
+                (workspace / "CLAUDE.md").unlink()
+                (workspace / "CLAUDE.md").symlink_to("newer-target.md")
+                (workspace / "newer-target.md").write_bytes(b"UNTOUCHED LINK TARGET\n")
+                newer = _state(org_state)[1]
+            raise RuntimeError("injected same-read receipt failure")
+        return real_snapshot(paths, name)
+
+    def fail_restore(path, state):
+        if ownership == "pair-restore-failure" and path.name == "AGENTS.md":
+            raise OSError("injected pair path restore failure")
+        return real_restore(path, state)
+
+    monkeypatch.setattr(prompt_loader, "load_agent_snapshot", failed_receipt)
+    monkeypatch.setattr(ContextBuilder, "write_claude_md", observe_write)
+    monkeypatch.setattr(adapters, "_restore_instruction_path", fail_restore)
+    response = TestClient(app).put(URL, headers=auth_headers, json={
+        "system_prompt": "NEW\n", "expected_revision": revision,
+    })
+    assert response.status_code == 400, response.text
+    compensation = response.json()["detail"]["compensation"]
+    assert compensation["canonical"] == "restored"
+    assert _state(org_state)[0] == before[0]
+    assert _state(org_state)[2] == before[2]
+    if ownership == "owned":
+        assert compensation["workspace"] == "restored"
+        assert _state(org_state) == before
+    elif ownership == "newer-pair":
+        assert compensation["workspace"] == "not_owned"
+        assert _state(org_state)[1] == newer
+        assert (workspace / "newer-target.md").read_bytes() == b"UNTOUCHED LINK TARGET\n"
+    else:
+        assert compensation["workspace"] == "failed"
+        assert "NEW" in (workspace / "AGENTS.md").read_text()
+        assert prompt_loader.load_agent(_paths(org_state), "dev_agent").system_prompt == "OLD\n"
+
+
+def test_prompt_external_mid_pair_failure_reports_actual_inner_restore(app, org_state, auth_headers, monkeypatch):
+    """C12: captured inner rollback is not a global external-writer fence."""
+    from runtime.orchestrator import workspace_adapters as adapters
+
+    _, revision, _ = _seed(org_state)
+    workspace = _paths(org_state).workspaces_dir / "dev_agent"
+    (workspace / "CLAUDE.md").unlink()
+    (workspace / "CLAUDE.md").write_bytes(b"LEGACY RAW CLAUDE\n")
+    (workspace / "CLAUDE.md").chmod(0o600)
+    before = _state(org_state)
+    observed = []
+    def fail_link(path):
+        assert "NEW" in (workspace / "AGENTS.md").read_text()
+        (workspace / "AGENTS.md").write_bytes(b"EXTERNAL MID PAIR\n")
+        observed.append((workspace / "AGENTS.md").read_bytes())
+        raise OSError("injected canonical CLAUDE link failure")
+    monkeypatch.setattr(adapters, "_replace_with_canonical_claude_link", fail_link)
+    response = TestClient(app).put(URL, headers=auth_headers, json={
+        "system_prompt": "NEW\n", "expected_revision": revision,
+    })
+    assert response.status_code == 400, response.text
+    assert observed == [b"EXTERNAL MID PAIR\n"]
+    assert response.json()["detail"]["compensation"] == {"canonical": "restored", "workspace": "restored"}
+    assert "link" in response.json()["detail"]["error"].lower()
+    assert _state(org_state) == before
+
+
+def test_prompt_same_name_org_cas_and_legitimate_beta_write_are_isolated(app, daemon_state, org_state, auth_headers):
+    """C08: real OrgDep resolves beta; an alpha hash cannot authorize beta."""
+    _seed(org_state)
+    paths = _paths(org_state)
+    beta_root = daemon_state.runtime.orgs_dir / "beta"
+    (beta_root / "org" / "agents").mkdir(parents=True)
+    (beta_root / "org" / "teams.yaml").write_bytes(paths.teams_config_path.read_bytes())
+    for file in paths.agents_dir.glob("*.md"):
+        (beta_root / "org" / "agents" / file.name).write_bytes(file.read_bytes())
+    beta = asyncio.run(daemon_state.add_org("beta"))
+    beta_agent, _, _ = _seed(beta)
+    (_paths(beta).agents_dir / "dev_agent.md").write_text(
+        render_agent_text(replace(beta_agent, system_prompt="BETA OLD\n")),
+    )
+    _authority_generation(beta)
+    alpha_before, beta_before = _state(org_state), _state(beta)
+    alpha_hash = prompt_loader.agent_revision(paths, "dev_agent")
+    beta_hash = prompt_loader.agent_revision(_paths(beta), "dev_agent")
+    assert beta_hash != alpha_hash
+    client = TestClient(app)
+    url = URL.replace("/alpha/", "/beta/")
+    rejected = client.put(url, headers=auth_headers, json={
+        "system_prompt": "CROSS ORG LOSER\n", "expected_revision": alpha_hash,
+    })
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == {"code": "stale_agent_revision", "current_revision": beta_hash}
+    assert _state(org_state) == alpha_before and _state(beta) == beta_before
+    saved = client.put(url, headers=auth_headers, json={
+        "system_prompt": "BETA NEW\n", "expected_revision": beta_hash,
+    })
+    assert saved.status_code == 200, saved.text
+    beta_final = prompt_loader.load_agent_snapshot(_paths(beta), "dev_agent")
+    assert beta_final[0].system_prompt == saved.json()["system_prompt"] == "BETA NEW\n"
+    assert beta_final[1] == saved.json()["revision"] == hashlib.sha256(beta_final[2]).hexdigest()
+    assert _state(org_state) == alpha_before
+    assert b"BETA NEW" in _state(beta)[1][0][1]
+    assert len(_state(beta)[2]) == len(beta_before[2]) + 1
+    (_paths(beta).agents_dir / "dev_agent.md").unlink()
+    deleted = client.put(url, headers=auth_headers, json={
+        "system_prompt": "DO NOT RESURRECT\n", "expected_revision": beta_final[1],
+    })
+    assert deleted.status_code == 404 and deleted.json()["detail"]["code"] == "agent_not_found"
+    assert not (_paths(beta).agents_dir / "dev_agent.md").exists()
+    assert _state(org_state) == alpha_before
+
+
+@pytest.mark.parametrize("name", ["bad%20name", "%2e%2e%2fdev_agent", "%2e%2e%2f%2e%2e%2fdev_agent"])
+def test_prompt_invalid_encoded_name_cannot_escape_org(app, org_state, auth_headers, name):
+    """C08: measure the normal router/loader refusal, without new policy."""
+    _, revision, _ = _seed(org_state)
+    before = _state(org_state)
+    response = TestClient(app).put(URL.replace("dev_agent", name), headers=auth_headers, json={
+        "system_prompt": "INVALID TARGET\n", "expected_revision": revision,
+    })
+    assert response.status_code == 404, response.text
+    assert _state(org_state) == before
+
+
+def test_prompt_registration_token_and_idle_runtime_refuse_without_write(app, app_idle, daemon_state, org_state, auth_headers):
+    """C08: genuine fixture registration token cannot edit founder content."""
+    _, revision, _ = _seed(org_state)
+    before = _state(org_state)
+    token, _ = daemon_state.registration_token_store.mint("alpha", "prompt-fixture")
+    rejected = TestClient(app).put(URL, headers={"Authorization": f"Bearer {token}"}, json={
+        "system_prompt": "REGISTRATION LOSER\n", "expected_revision": revision,
+    })
+    assert rejected.status_code == 401
+    idle = TestClient(app_idle).put(URL, headers=auth_headers, json={
+        "system_prompt": "IDLE LOSER\n", "expected_revision": revision,
+    })
+    assert idle.status_code == 409 and idle.json()["detail"]["code"] == "no_active_runtime"
+    assert _state(org_state) == before

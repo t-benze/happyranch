@@ -20,7 +20,8 @@ function FixtureControls(): JSX.Element {
   const client = useQueryClient();
   const navigate = useNavigate();
   return <><button onClick={() => void client.invalidateQueries({ queryKey: ['agents', 'prompt-test'] })}>poll fixture</button>
-    <button onClick={() => navigate('/orgs/prompt-test/agents/other')}>select other fixture</button></>;
+    <button onClick={() => navigate('/orgs/prompt-test/agents/other')}>select other fixture</button>
+    <button onClick={() => navigate('/orgs/prompt-beta/agents/writer')}>select beta fixture</button></>;
 }
 
 function setup(read: () => Response | Promise<Response>, put: Parameters<typeof http.put>[1], surface = 'pane') {
@@ -209,3 +210,90 @@ test('initial failed GET can recover with explicit GET without a PUT', async () 
   await waitFor(() => expect(screen.getByRole('button', { name: 'Edit system prompt' })).toBeEnabled());
   expect(puts).toBe(0);
 });
+
+test.each(['validation', 'reconciliation', 'audit', 'network-before', 'network-after', 'conflict'] as const)(
+  '%s failure keeps the same localized draft and requires GET inspection before reapply', async (fault) => {
+    let reads = 0; let puts = 0; let current = { ...base };
+    setup(() => { reads += 1; return HttpResponse.json({ agents: [current] }); }, () => {
+      puts += 1;
+      if (fault === 'audit' || fault === 'network-after') {
+        current = { ...base, system_prompt: authored, revision: 'b'.repeat(64) };
+      }
+      if (fault.startsWith('network')) return HttpResponse.error();
+      const detail = fault === 'audit' ? { code: 'system_prompt_audit_failed', commit_state: 'possibly_committed' }
+        : fault === 'reconciliation' ? { code: 'system_prompt_reconciliation_failed', error: 'raw fixture diagnostic 中文',
+          compensation: { canonical: 'failed', workspace: 'not_owned' } }
+        : fault === 'conflict' ? { code: 'stale_agent_revision', current_revision: 'c'.repeat(64) }
+        : { code: 'expected_revision_required' };
+      return HttpResponse.json({ detail }, { status: fault === 'audit' ? 500 : fault === 'reconciliation' ? 400 : fault === 'conflict' ? 409 : 422 });
+    });
+    const edit = await screen.findByRole('button', { name: 'Edit system prompt' });
+    await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+    const textarea = screen.getByRole('textbox', { name: 'System prompt' }) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: authored } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Your draft is kept');
+    expect(textarea).toHaveValue(authored);
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save system prompt' })).toBeDisabled();
+    const observedReads = reads;
+    textarea.focus(); textarea.setSelectionRange(3, 8);
+    fireEvent.click(screen.getByRole('button', { name: 'switch to zh-CN' }));
+    expect(screen.getByRole('textbox', { name: '系统提示词' })).toBe(textarea);
+    expect(textarea).toHaveValue(authored); expect(textarea).toHaveFocus();
+    expect(textarea.selectionStart).toBe(3); expect(textarea.selectionEnd).toBe(8);
+    expect(screen.getByRole('alert')).toHaveTextContent('草稿已保留');
+    if (fault === 'reconciliation') expect(screen.getByRole('alert')).toHaveTextContent('raw fixture diagnostic 中文');
+    fireEvent.click(screen.getByRole('button', { name: 'switch to en' }));
+    expect(reads).toBe(observedReads); expect(puts).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Reload latest' }));
+    await waitFor(() => expect(reads).toBe(observedReads + 1));
+    await waitFor(() => expect(textarea).toBeEnabled());
+    expect(textarea).toHaveValue(authored); expect(puts).toBe(1);
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save system prompt' })).toHaveProperty('disabled',
+      fault === 'audit' || fault === 'network-after');
+  },
+);
+
+test.each(['put-success', 'put-error', 'get-success', 'get-error'] as const)(
+  'late %s after same-name org navigation cannot alter beta draft', async (phase) => {
+    let release!: () => void; let waiting = false; let puts = 0; let settled = false;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    setup(async () => {
+      if (puts && phase.startsWith('get')) { waiting = true; await pending; settled = true; }
+      return phase === 'get-error' && puts ? HttpResponse.json({ detail: 'offline' }, { status: 500 })
+        : HttpResponse.json({ agents: [{ ...base, system_prompt: puts ? authored : base.system_prompt,
+          revision: puts ? 'b'.repeat(64) : base.revision }] });
+    }, async () => {
+      puts += 1;
+      if (phase.startsWith('put')) { waiting = true; await pending; settled = true; }
+      return phase === 'put-error' ? HttpResponse.json({ detail: 'offline' }, { status: 500 })
+        : HttpResponse.json({ agent: 'writer', system_prompt: authored, revision: 'b'.repeat(64) });
+    });
+    server.use(
+      http.get('/api/v1/orgs/prompt-beta/agents', () => HttpResponse.json({
+        agents: [{ ...base, system_prompt: 'BETA PROMPT\n', revision: 'c'.repeat(64) }],
+      })),
+      http.get('/api/v1/orgs/prompt-beta/agents/:name/memory/entries/', () => HttpResponse.json({ entries: [] })),
+      http.get('/api/v1/orgs/prompt-beta/agents/:name/cleanup-activity', () => HttpResponse.json({ activities: [] })),
+      http.get('/api/v1/orgs/prompt-beta/teams', () => HttpResponse.json({ teams: [] })),
+      http.get('/api/v1/orgs/prompt-beta/tasks', () => HttpResponse.json({ tasks: [] })),
+      http.get('/api/v1/orgs/prompt-beta/jobs/', () => HttpResponse.json({ jobs: [] })),
+    );
+    const edit = await screen.findByRole('button', { name: 'Edit system prompt' });
+    await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+    fireEvent.change(screen.getByRole('textbox', { name: 'System prompt' }), { target: { value: authored } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+    await waitFor(() => expect(waiting).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'select beta fixture' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit system prompt' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Edit system prompt' }));
+    const betaText = screen.getByRole('textbox', { name: 'System prompt' });
+    expect(betaText).toHaveValue('BETA PROMPT\n');
+    release(); await waitFor(() => expect(settled).toBe(true));
+    expect(betaText).toHaveValue('BETA PROMPT\n'); expect(betaText).toBeEnabled();
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(puts).toBe(1);
+  },
+);
