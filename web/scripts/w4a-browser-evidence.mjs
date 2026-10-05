@@ -468,9 +468,12 @@ const USAGE_BUTTON = label => `[...document.querySelectorAll('#usage-efficiency-
 async function chooseUsage(page, h) {
   await h.waitTrue(page, bodyHas('Raw_CLI'), 'Usage cohort options');
   await h.clickSrc(page, USAGE_BUTTON('Raw_CLI'));
+  // The default response inserts a table above/below the same controls. Finish
+  // that layout change before measuring a named-model button for a real click.
+  await h.waitTrue(page, `document.querySelectorAll('section table').length === 2`, 'default Efficiency response');
   await h.waitTrue(page, `Boolean(${USAGE_BUTTON('Raw_Model')})`, 'named model option');
   await h.clickSrc(page, USAGE_BUTTON('Raw_Model'));
-  await h.waitTrue(page, `document.querySelectorAll('section table').length === 2`, 'selected Efficiency');
+  await h.waitTrue(page, `${USAGE_BUTTON('Raw_Model')}.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('section table').length === 2`, 'selected named Efficiency response');
 }
 const usageGeometry = (locale, width) => [['labelled scroll regions, contained sections, sticky identity and narrow hint', `(() => {
   const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')];
@@ -512,7 +515,15 @@ const VIEW_ROUTES = [
   },
   {
     id: 'usage-stale', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=stale`, ready: () => bodyHas('Raw_Agent'),
-    prep: async (page, h) => { await chooseUsage(page, h); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas('−0.4%'), 'comparison'); await sleep(31000); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas(tr(await h.evaluate(page, 'document.documentElement.lang'), 'usage.stale')), 'stale Usage'); },
+    prep: async (page, h) => {
+      await chooseUsage(page, h);
+      await h.clickSrc(page, `document.querySelector('[role="switch"]')`);
+      await h.waitTrue(page, bodyHas('−0.4%'), 'comparison');
+      await sleep(31000);
+      await h.clickSrc(page, `document.querySelector('[role="switch"]')`);
+      const stale = tr(await h.evaluate(page, 'document.documentElement.lang'), 'usage.stale');
+      await h.waitTrue(page, `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.includes(${JSON.stringify(stale)})); })()`, 'both stale Usage responses');
+    },
     keys: ['usage.stale', 'usage.retry'], verbatim: ['Raw_Agent', 'Raw_Model', 'Asia/Shanghai'],
     checks: (locale) => [['stale data retains original timestamp and cohort', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.includes(${JSON.stringify(tr(locale, 'usage.dataThrough', { stamp: locale === 'en' ? 'Sep 29, 14:03 (Asia/Shanghai)' : '9月29日 14:03 (Asia/Shanghai)' }))})) && ${USAGE_BUTTON('Raw_Model')}.getAttribute('aria-pressed') === 'true'; })()`, true]],
   },
