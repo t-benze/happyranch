@@ -448,6 +448,36 @@ fixtures stay unchanged; necessary executable task-output probes supplement
 the fourteen inherited assertion rows. Static inventories are requirements,
 not executable QA. All independent exact-head delivery gates below remain.
 
+## R3 prompt-reader ownership (TASK-9711)
+
+`runtime/orchestrator/task_prompt_headers.py` owns exactly seven unchanged
+functions: `_list_candidate_agents`, `_revisit_header_if_applicable`,
+`_auto_revisit_header`, `_resolved_escalation_header_if_applicable`,
+`_build_prior_steps_from_db`, `_summarize_recent_chain`, and
+`_fanout_join_header_if_applicable`, plus their single mutable
+`_REVISIT_DISCIPLINE_LINES` list. `run_step.py` re-exports the identical objects.
+The retained `_build_agent_prompt` composes them; its logger-dependent
+`_blocked_jobs_resume_header_if_applicable` stays in the facade. TaskStatus is
+imported at runtime; StepRecord/JSON stay local and Orchestrator stays a
+postponed, TYPE_CHECKING-only dependency. Database owns the dynamic readers,
+row-decoding errors, shared RLock and clocks. No writer or rendered behavior
+changes ownership in this slice.
+
+S8g PR #975 is a merged foundation (`74c2b0cca117445a4db2fa162242c12e94859903`);
+its successful delivery is preserved rather than rebuilt. Database escalation
+logger keepers remain retained, and result/admission writers and their actual
+callback caller remain held for #840. R1 state/cache/shared lock/__file__/whole
+clock/helper consumers remain retained. #682's **eleven-function R2** and actual
+R4/R6 completion/chain/carrier/parent/fanout collisions remain held. #684's real
+attachment insertion **and enqueue** admission overlap remains acknowledged.
+R5, remaining R4/R6, models and executors are later serial work. R3 ownership
+does not claim those units complete or authorize foreign PR repair or merge.
+TASK-9704 accepts TASK-9708's C1–C8 case design after independent DESIGN-ONLY
+TASK-9710 PASS; executable maker verification, independent full-diff review,
+executable QA and exact-head CI retain the per-slice gates below. Integration
+SUITE remains SKIPPED under Founder THR-243 seq42; selected hosted callback
+smoke remains separate and required.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target
