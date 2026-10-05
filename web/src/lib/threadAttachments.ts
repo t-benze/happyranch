@@ -67,7 +67,7 @@ export function attachmentContentType(file: File): string | null {
   return file.type || null;
 }
 
-export function formatAttachmentSize(sizeBytes: number | null | undefined): string | null {
+export function formatAttachmentSize(sizeBytes: number | null | undefined, locale?: string): string | null {
   if (sizeBytes === null || sizeBytes === undefined || !Number.isFinite(sizeBytes)) return null;
   if (sizeBytes < 0) return null;
   let value = sizeBytes;
@@ -79,5 +79,6 @@ export function formatAttachmentSize(sizeBytes: number | null | undefined): stri
   const amount = unitIndex === 0 || value >= 10
     ? Math.round(value).toString()
     : value.toFixed(1).replace(/\.0$/, '');
-  return `${amount} ${SIZE_UNITS[unitIndex]}`;
+  const display = locale ? new Intl.NumberFormat(locale, { useGrouping: false, maximumFractionDigits: 1 }).format(Number(amount)) : amount;
+  return `${display} ${SIZE_UNITS[unitIndex]}`;
 }
