@@ -132,4 +132,3 @@ def _payload_dict(row: dict) -> dict:
     if isinstance(p, dict):
         return p
     return _json.loads(p)
-
