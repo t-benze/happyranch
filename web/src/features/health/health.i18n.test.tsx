@@ -10,18 +10,19 @@
  */
 import { act, fireEvent, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
+const NOW = Date.parse('2026-10-05T12:00:00Z');
 
 const SNAPSHOT = {
   uptime_seconds: 3 * 3600 + 14 * 60,
   loops: {
     work_hours_scheduler_loop: {
-      last_tick_iso: new Date(Date.now() - 30_000).toISOString(),
+      last_tick_iso: new Date(NOW - 30_000).toISOString(),
       interval_seconds: 60,
       last_duration_seconds: 0.012,
     },
@@ -95,8 +96,14 @@ async function countRequests(fn: () => Promise<void>): Promise<string[]> {
 }
 
 beforeEach(() => {
+  // Share the fixture's clock with fmtRelTime while MSW/query timers stay real.
+  vi.spyOn(Date, 'now').mockReturnValue(NOW);
   sessionStorage.setItem('happyranch.token', 'tok');
   localStorage.clear();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe('Runtime Health i18n', () => {
