@@ -130,6 +130,15 @@ def _sweep_org_zombies(
         if t is None:
             continue
 
+        from runtime.workflows.recovery import classify_task
+        ownership = classify_task(db, task_id, org_slug=getattr(orchestrator, "_slug", None))
+        if ownership.kind != "legacy":
+            # TTL/dead PID are never proof of workflow host quiescence.
+            drafts = getattr(orchestrator, "_workflow_drafts", None)
+            if ownership.kind == "draft" and drafts is not None:
+                drafts.reconcile(task_id)
+            continue
+
         # ── STATE ALLOWLIST (requirement 3) ──
         # Explicit allowlist: in_progress + block_kind NULL. Never touch a
         # healthy in_progress (fresh heartbeat), nor any blocked/terminal task.

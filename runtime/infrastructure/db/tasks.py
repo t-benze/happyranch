@@ -90,6 +90,16 @@ class _RetryEvidenceRefusal(Exception):
 class TasksMixin:
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
+        self._insert_task_uncommitted(task)
+        self._conn.commit()
+
+    def _insert_task_uncommitted(self, task: TaskRecord) -> None:
+        """Insert through the caller-owned synchronized transaction.
+
+        The ordinary wrapper deliberately retains its self-commit boundary,
+        including when the caller already opened a transaction. Workflow
+        admission owns the lock, writer reservation and entire graph commit.
+        """
         params = (
             task.id,
             task.status.value,
@@ -122,8 +132,6 @@ class TasksMixin:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
-        self._conn.commit()
-
     @_synchronized
     def get_task(self, task_id: str) -> TaskRecord | None:
         cursor = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,))

@@ -19,7 +19,7 @@ import os
 import threading
 import uuid
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -55,6 +55,17 @@ class AuthorityReadiness:
     generation: int
     snapshot_digest: str
     snapshot_bytes: bytes
+
+
+@dataclass(frozen=True)
+class AuthorityAdmissionCapture:
+    """Discovery captured outside every durable lease and writer transaction."""
+
+    ready: AuthorityReadiness
+    pointer: tuple
+    profile_names: tuple[str, ...]
+    profile_digests: tuple[tuple[str, str], ...]
+    profile_mirror: tuple
 
 
 @dataclass(frozen=True)
@@ -1019,6 +1030,95 @@ class WorkflowAuthorityCoordinator:
         """Read-only readiness check for later units; U2A has no consumer."""
         with self._publisher_lock, self._db._lock:
             return self._verify_ready_locked(self._db._conn)
+
+    def capture_admission(self) -> AuthorityAdmissionCapture:
+        """Capture the complete org and profile closure without leasing scans."""
+        with self._db._lock:
+            before = self._pointer(self._db._conn, self.namespace)
+        ready = self.verify_admission_ready()
+        snapshot = self.capture_snapshot()
+        if snapshot != ready.snapshot_bytes:
+            raise WorkflowAuthorityError("workflow_activation_authority_stale")
+        projection = json.loads(snapshot)["machine_global_profiles"]
+        names = tuple(sorted(item["profile_name"] for item in projection))
+        coordinator = self._profile_coordinator
+        if coordinator is None:
+            raise WorkflowAuthorityError("authority_profile_coordinator_unavailable")
+        mirror = coordinator._dependency_mirror_snapshot(coordinator.orgs[self._org_slug])
+        effective = tuple((name, coordinator.profile_digest(name)) for name in names)
+        if any(dict(effective)[item["profile_name"]] != item["profile_digest"] for item in projection):
+            raise WorkflowAuthorityError("authority_pointer_not_ready")
+        with self._db._lock:
+            if before != self._pointer(self._db._conn, self.namespace):
+                raise WorkflowAuthorityError("workflow_activation_authority_stale")
+        return AuthorityAdmissionCapture(ready, before, names, effective, mirror)
+
+    @contextmanager
+    def _admission_transaction(self) -> Iterator[sqlite3.Connection]:
+        """Retain writer ownership through rollback of a failed admission commit.
+
+        The shared publication transaction contract is unchanged. Activation
+        and prelaunch require their failed commit to roll back before the org
+        publication lease can be released or another writer can observe it.
+        """
+        with self._db._lock:
+            conn = self._db._conn
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield conn
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    @contextmanager
+    def admission_writer(self, capture: AuthorityAdmissionCapture) -> Iterator[sqlite3.Connection]:
+        """Consume captured bytes under profile→org→SQLite ownership.
+
+        Async consumers acquire their coroutine locks before entering. All
+        discovery/effective profile reads precede this context. The yielded
+        connection is the sole admission transaction; no await or host work
+        may occur until this context exits.
+        """
+        coordinator = self._profile_coordinator
+        if coordinator is None:
+            raise WorkflowAuthorityError("authority_profile_coordinator_unavailable")
+        with ExitStack() as stack:
+            for name in capture.profile_names:
+                stack.enter_context(coordinator.profile_read(name))
+                coordinator._assert_no_active_operation(name)
+            stack.enter_context(self._publisher_lock)
+            owner = f"workflow-admission:{uuid.uuid4().hex}"
+            self._acquire_lease(owner)
+            try:
+                with self._admission_transaction() as conn:
+                    pointer = self._pointer(conn, self.namespace)
+                    if pointer != capture.pointer or self._active_journal(conn, self.namespace) is not None:
+                        raise WorkflowAuthorityError("workflow_activation_authority_stale")
+                    generation, journal_id, digest, state, _fence = pointer
+                    if state != "ready" or journal_id is None or self._cache.get(self.namespace) != (generation, digest):
+                        raise WorkflowAuthorityError("authority_pointer_not_ready")
+                    journal = self._journal(conn, journal_id)
+                    if (journal["state"] != "cache_installed" or journal["generation"] != generation
+                            or journal["snapshot_digest"] != digest
+                            or bytes(journal["snapshot_bytes"]) != capture.ready.snapshot_bytes
+                            or _digest(capture.ready.snapshot_bytes) != digest):
+                        raise WorkflowAuthorityError("authority_pointer_not_ready")
+                    # SELECT-only projection and mirror checks consume captured
+                    # global digests; never call the file-reading readiness or
+                    # effective-profile resolver under these ownership scopes.
+                    org = coordinator.orgs[self._org_slug]
+                    if coordinator._dependency_mirror_snapshot(org) != capture.profile_mirror:
+                        raise WorkflowAuthorityError("workflow_activation_authority_stale")
+                    profiles = self._profile_projection()
+                    if (tuple(sorted(item["profile_name"] for item in profiles)) != capture.profile_names
+                            or profiles != json.loads(capture.ready.snapshot_bytes)["machine_global_profiles"]
+                            or any(dict(capture.profile_digests)[item["profile_name"]] != item["profile_digest"]
+                                   for item in profiles)):
+                        raise WorkflowAuthorityError("workflow_activation_authority_stale")
+                    yield conn
+            finally:
+                self._release_lease(owner)
 
     def recover(self) -> str:
         """Reconcile one interrupted publisher using only durable ownership."""

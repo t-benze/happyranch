@@ -786,3 +786,20 @@ uv run pytest tests/ -v -m ""            # unit + integration
 Integration tests spawn a real daemon and fake CLIs. They are isolated from `~/.happyranch/` via `HAPPYRANCH_DAEMON_HOME`. Run integration tests locally before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
 
 `tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures.
+
+
+### S2 activation attachment and recovery
+
+Actual OrgState attachment installs the consumed activation/draft services before
+workers; the generic Database constructor and runtime-audit remain workflow-free.
+The S1 explicit migration/new-org contract remains unchanged: existing F startup,
+reopen and enable never install E. Empty orgs stay fenced until real coherent
+roster/team/profile publication makes them ready. Initial activation requires
+ready E and the actual Founder cutover chain. A queued committed intent survives
+lost enqueue notification; startup rediscovers its existing task. Missing/malformed
+workflow evidence fences legacy effects. Possible host launch cannot be recovered
+from PID absence, TTL expiration or session registration: it remains uncertain
+under workflow_recovery and blocks drain until genuine containment evidence exists.
+Disable fences new admission/prelaunch and preserves ownership of already admitted
+work. No startup deployment, live migration, enable, assignment or restart follows
+from publishing S2 source.

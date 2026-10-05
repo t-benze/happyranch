@@ -177,9 +177,74 @@ def cmd_workflow_cutover(args: argparse.Namespace) -> None:
     if args.cutover_command == "downgrade-preflight" and not result["eligible"]:
         raise SystemExit(1)
 
+def _activation_payload(path: str) -> dict:
+    from runtime.workflows.activation import WorkflowActivationError, parse_request
+
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            raise ValueError("absolute path required")
+        with absolute.open("rb") as source:
+            raw = source.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("payload too large")
+        body = json.loads(raw.decode("utf-8"))
+        parse_request(body)
+    except (OSError, UnicodeError, ValueError, WorkflowActivationError) as exc:
+        print("error: activation requires an absolute --from-file path containing a valid closed JSON request", file=sys.stderr)
+        raise SystemExit(2) from exc
+    return body
+
+
+def cmd_workflow_activation(args: argparse.Namespace) -> None:
+    body = _activation_payload(args.from_file) if args.activation_command == "activate" else None
+    try:
+        client = _founder_client()
+        slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+        base = f"/api/v1/orgs/{slug}/workflows/activations"
+        if args.activation_command == "activate":
+            response = client.post(base, json=body)
+            valid_statuses = {200, 201}
+        else:
+            from urllib.parse import quote
+            target = base if args.activation_command == "list" else base + "/" + quote(args.activation_id, safe="")
+            response = client.get(target)
+            valid_statuses = {200}
+    except httpx.HTTPError as exc:
+        print("error: workflow activation transport failed; retry activation with the same body/key", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code not in valid_statuses:
+        _print_error(response)
+    result = response.json()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+        return
+    for receipt in result if isinstance(result, list) else [result]:
+        print(f"{receipt['activation_id']}: {receipt['state']} root={receipt['root_task_id']} "
+              f"execution_started={str(receipt['execution_started']).lower()} "
+              f"pending={str(receipt['pending']).lower()} "
+              f"reconciliation_required={str(receipt['reconciliation_required']).lower()}")
+        for blocker in receipt['current_eligibility']['blockers']:
+            print(f"{blocker}: responsible owner {receipt['responsible_owner']}")
+
+
 def register(sub: argparse._SubParsersAction) -> None:
-    workflows = sub.add_parser("workflows", help="Manage inert workflow definitions")
+    workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    activation = workflow_sub.add_parser("activate", help="Founder activation of an exact template version")
+    activation.add_argument("--org", required=True)
+    activation.add_argument("--from-file", required=True)
+    activation.add_argument("--json", action="store_true")
+    activation.set_defaults(func=cmd_workflow_activation, activation_command="activate")
+    activations = workflow_sub.add_parser("activations", help="Read original activation receipts and current eligibility")
+    activation_sub = activations.add_subparsers(dest="activation_command", required=True)
+    for form in ("list", "show"):
+        command = activation_sub.add_parser(form)
+        command.add_argument("--org", required=True)
+        command.add_argument("--json", action="store_true")
+        if form == "show":
+            command.add_argument("activation_id")
+        command.set_defaults(func=cmd_workflow_activation)
     cutover = workflow_sub.add_parser("cutover", help="Request and inspect workflow cutover")
     cutover_sub = cutover.add_subparsers(dest="cutover_command", required=True)
     for form in ("show", "request", "downgrade-preflight"):

@@ -324,3 +324,35 @@ def test_cutover_openapi_has_closed_request_and_truthful_projection() -> None:
     projection = schema["components"]["schemas"]["CutoverProjection"]["properties"]
     assert {"events", "blockers", "reconciliation_required", "allowed_actions", "verification"} <= projection.keys()
     assert "execution_started" not in projection
+
+
+def test_activation_openapi_pins_closed_request_and_complete_receipt():
+    full = create_app(DaemonState.idle(Settings())).openapi()
+    base = '/api/v1/orgs/{slug}/workflows/activations'
+    post = full['paths'][base]['post']
+    request = post['requestBody']['content']['application/json']['schema']
+    assert request['additionalProperties'] is False
+    assert set(request['required']) == {
+        'operation_key', 'instance_id', 'expected_activation_revision', 'template',
+        'authority', 'scope', 'bindings', 'eligible_replacements', 'allowed_actions', 'inputs',
+    }
+    assert request['properties']['expected_activation_revision']['type'] == 'integer'
+    assert request['properties']['expected_activation_revision']['maximum'] == 0
+    assert request['properties']['bindings']['additionalProperties'] is False
+    schemas = full['components']['schemas']
+    response = post['responses']['201']['content']['application/json']['schema']
+    assert response == {'$ref': '#/components/schemas/ActivationReceipt'}
+    receipt = schemas['ActivationReceipt']
+    assert receipt['additionalProperties'] is False
+    assert set(receipt['required']) == {
+        'activation_id', 'instance_id', 'instance_reference', 'activation_revision',
+        'root_task_id', 'intent_id', 'template', 'authority', 'bindings',
+        'eligible_replacements', 'allowed_actions', 'scope_digest', 'context_digest',
+        'activated_by', 'created_at', 'original_request_digest', 'replayed', 'state',
+        'execution_started', 'pending', 'reconciliation_required', 'cancellation_requested',
+        'current_eligibility', 'responsible_owner',
+    }
+    assert set(post['responses']) == {'200', '201', '403', '409', '422', '500'}
+    assert post['responses']['200']['content']['application/json']['schema'] == response
+    assert full['paths'][base]['get']['responses']['200']['content']['application/json']['schema']['items'] == response
+    assert full['paths'][base+'/{activation_id}']['get']['responses']['200']['content']['application/json']['schema'] == response
