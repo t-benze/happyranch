@@ -212,7 +212,8 @@ export function ScrollTable({ label, children }: { label: string; children: Reac
         aria-label={t('usage.scrollLabel', { label })}
         // Keyboard users can scroll the region once focused.
         tabIndex={0}
-        className="focus-visible:ring-accent-ring overflow-x-auto rounded-lg focus-visible:ring-2 focus-visible:outline-none"
+        // Contain absolutely positioned assistive text inside the table scroll.
+        className="focus-visible:ring-accent-ring relative overflow-x-auto rounded-lg focus-visible:ring-2 focus-visible:outline-none"
       >
         {children}
       </div>

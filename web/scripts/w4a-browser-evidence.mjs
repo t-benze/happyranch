@@ -476,13 +476,13 @@ const usageGeometry = (locale, width) => [['labelled scroll regions, contained s
   const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')];
   const regions = sections.flatMap(s => [...s.querySelectorAll('[role="region"]')]);
   const hints = regions.map(r => r.previousElementSibling);
-  return { sections: sections.length, tables: document.querySelectorAll('section table').length,
+  return { sections: sections.length, tables: document.querySelectorAll('section table').length, regions: regions.length,
     contained: sections.every(s => s.scrollWidth <= s.clientWidth + 1),
     labelled: regions.every(r => r.getAttribute('aria-label') === (r.closest('section').getAttribute('aria-labelledby').includes('workload') ? ${JSON.stringify(tr(locale, 'usage.scrollLabel', { label: tr(locale, 'usage.workloadTable') }))} : ${JSON.stringify(tr(locale, 'usage.scrollLabel', { label: tr(locale, 'usage.efficiencyTable') }))}) && r.tabIndex === 0),
     sticky: regions.every(r => [...r.querySelectorAll('th:first-child')].every(th => getComputedStyle(th).position === 'sticky')),
     hint: hints.every(p => p.textContent === ${JSON.stringify(tr(locale, 'usage.scrollHint'))} && (getComputedStyle(p).display !== 'none') === ${width < 768}),
     overflow: regions.every(r => r.scrollWidth > r.clientWidth) };
-})()`, { sections: 2, tables: 2, contained: true, labelled: true, sticky: true, hint: true, overflow: width === 390 }]];
+})()`, { sections: 2, tables: 2, regions: 2, contained: true, labelled: true, sticky: true, hint: true, overflow: width === 390 }]];
 
 const VIEW_ROUTES = [
   {
@@ -497,7 +497,8 @@ const VIEW_ROUTES = [
   },
   {
     id: 'usage-empty', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=empty`, ready: locale => bodyHas(tr(locale, 'usage.workloadEmpty')),
-    keys: ['usage.workloadEmpty', 'usage.efficiencyEmpty', 'usage.workloadDefinitions', 'usage.taskRunsDefinition', 'usage.threadWakesDefinition', 'usage.runtimeDefinition', 'usage.deliveriesDefinition', 'usage.repliesDefinition'], verbatim: ['Asia/Shanghai'],
+    keys: ['usage.workloadEmpty', 'usage.efficiencyEmpty', 'usage.taskRunsDefinition', 'usage.threadWakesDefinition', 'usage.runtimeDefinition', 'usage.deliveriesDefinition', 'usage.repliesDefinition'], verbatim: ['Asia/Shanghai'],
+    checks: locale => [['localized Workload definitions list accessible name', `document.querySelector('section[aria-labelledby="usage-workload-heading"] ul').getAttribute('aria-label')`, tr(locale, 'usage.workloadDefinitions')]],
   },
   {
     id: 'usage-loading', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=loading`, ready: () => `document.querySelectorAll('[data-testid="usage-skeleton"]').length === 2`,
@@ -507,13 +508,13 @@ const VIEW_ROUTES = [
   {
     id: 'usage-error', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=error`, ready: locale => bodyHas(tr(locale, 'usage.loadError', { view: tr(locale, 'usage.efficiency') })),
     keys: [['usage.loadError', { view: '@usage.workload' }], ['usage.loadError', { view: '@usage.efficiency' }], 'usage.retry', 'usage.workloadFailed', 'usage.efficiencyOptionsFailed'], verbatim: [],
-    checks: () => [['independent retry controls and Compare survive', `document.querySelectorAll('section button').length === 2 && Boolean(document.querySelector('[role="switch"]'))`, true]],
+    checks: locale => [['independent retry controls and Compare survive', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => { const buttons = [...s.querySelectorAll('button')]; return buttons.length === 1 && buttons[0].textContent.trim() === ${JSON.stringify(tr(locale, 'usage.retry'))}; }) && Boolean(document.querySelector('[role="switch"]')); })()`, true]],
   },
   {
     id: 'usage-stale', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=stale`, ready: () => bodyHas('Raw_Agent'),
     prep: async (page, h) => { await chooseUsage(page, h); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas('−0.4%'), 'comparison'); await sleep(31000); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas(tr(await h.evaluate(page, 'document.documentElement.lang'), 'usage.stale')), 'stale Usage'); },
     keys: ['usage.stale', 'usage.retry'], verbatim: ['Raw_Agent', 'Raw_Model', 'Asia/Shanghai'],
-    checks: (locale) => [['stale data retains original timestamp and cohort', `document.querySelector('section').textContent.includes(${JSON.stringify(tr(locale, 'usage.dataThrough', { stamp: locale === 'en' ? 'Sep 29, 14:03 (Asia/Shanghai)' : '9月29日 14:03 (Asia/Shanghai)' }))}) && ${USAGE_BUTTON('Raw_Model')}.getAttribute('aria-pressed') === 'true'`, true]],
+    checks: (locale) => [['stale data retains original timestamp and cohort', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.includes(${JSON.stringify(tr(locale, 'usage.dataThrough', { stamp: locale === 'en' ? 'Sep 29, 14:03 (Asia/Shanghai)' : '9月29日 14:03 (Asia/Shanghai)' }))})) && ${USAGE_BUTTON('Raw_Model')}.getAttribute('aria-pressed') === 'true'; })()`, true]],
   },
   {
     id: 'kb-list', route: 'kb', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
