@@ -320,6 +320,9 @@ def test_unknown_version_owner_or_noninitial_state_fails_without_writes(
     db = Database(path)
     install_or_recover(db)
     if corruption is None:
+        from runtime.infrastructure.workflow_schema import migrate_draft_schema
+        with db.workflow_schema_transaction() as conn:
+            migrate_draft_schema(conn, expected_org_slug="alpha")
         from runtime.workflows.cutover import WorkflowCutoverStore
         assert WorkflowCutoverStore(db, org_slug="alpha").request(
             action="enable", operation_key="authentic", expected_generation=1,

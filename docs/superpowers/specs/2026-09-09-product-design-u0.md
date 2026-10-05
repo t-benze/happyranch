@@ -1395,10 +1395,12 @@ after `Database(paths.db_path)` completes all required generic
 preflight/migration owners and before teams/settings/orchestrator loading or
 org attachment. It is never called by `Database.__init__`; therefore
 `runtime-audit.db` and every other generic Database instance remain untouched.
-The legacy authority hook's org-release reference is the sole isolated
-exception: it creates a private temporary generic Database, applies this same
-canonical installer, and hashes the complete resulting `sqlite_master`
-surface. The live-org comparison remains full and fail-closed; no workflow
+The legacy authority hook's complete org-release reference is an isolated
+consumer: it creates a private temporary generic Database, applies this same
+independently constructed canonical F or E layout selected only after
+full live layout/discriminator/history/data validation, and hashes every non-null
+SQL object in the complete resulting `sqlite_master` surface. References cache
+per layout; no candidate-derived baseline is permitted. The live-org comparison remains full and fail-closed; no workflow
 object is filtered, substituted or whitelisted, and no persistent generic or
 runtime-audit store is modified.
 The Database-owned workflow transaction holds the existing RLock and one
@@ -1427,8 +1429,9 @@ The accepted production cutover chain continues through `disable_requested ->
 draining -> drained` after enabled. `WorkflowCutoverStore.request` authenticates
 at the existing Founder route boundary and commits enable_requested before
 separate short compatibility_verified/enabled commits. Disable similarly commits
-the admission fence before drain. Cold recovery advances only an authentic
-committed request; GET/preflight never advance. Every authoritative reread keeps
+the admission fence before drain. Cold recovery advances an authentic
+committed request only with ready E; existing F retains actual history and
+migration guidance without advancement. GET/preflight never advance. Every authoritative reread keeps
 complete canonical layout equality and validates exact contiguous events,
 request operation groups/unique keys, org-bound deterministic canonical UTF8
 SHA256 preimages (fixed Founder request facts and verifier policy plus previous
@@ -1473,8 +1476,10 @@ old binary cannot observe `workflow_cutover_state`, the bridge, activation pins
 or `uncertain`; therefore it cannot be made fail closed by this new protocol.
 The supported operator sequence is: while the current binary still owns the
 store, call the downgrade preflight; proceed only in
-`installed_legacy_only` when no enable history, template version, activation or
-dispatch exists. Once enable was requested or workflow data exists, downgrade
+`installed_legacy_only` on pristine F when no enable history, template version,
+activation or dispatch exists. Every E (migrated or deliberately created) requires
+a compatible reader, even when its business tables are empty. The preceding
+faf40744 reader accepts pristine F and refuses E without workflow mutation. Once enable was requested or workflow data exists, downgrade
 is explicitly unsupported. The operator must retain/start a compatible binary;
 running an old binary anyway is outside the guarantee and may mutate legacy
 tables without understanding workflow ownership.
@@ -1590,7 +1595,8 @@ an isolated request/task/outbox/uncertain-launch contract; its six production
 deltas remain protected. F6 now supplies the recommended compatibility/cutover
 decision and proof. U1B ships D1 authoring. The existing-schema cutover prerequisite now supplies
 request/replay/verification, truthful deferred drain and pristine-only downgrade
-preflight. D2 activation, initial-draft lane, U2D-U6 execution and separate actual
+preflight. S1 now supplies the explicit org-only draft migration, complete E fresh creation
+and F/E readiness/closure validation. D2 activation, initial-draft production, U2D-U6 execution and separate actual
 Founder Request changes/Sign off/operator acceptance remain pending, as do this
 cutover head's independent FULL review/executable QA/exact-head CI gates. Comparative study
 is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
@@ -1608,3 +1614,37 @@ still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
 operation evidence, unfinished canonical writers, and stale captures refuse this
 exception before synchronization. Reviewer policy and snapshot validation do not
 change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
+
+### 2026-10-05 S1 manual migration amendment (THR139 seq372/374, manager375)
+
+F is the unchanged U1A foundation; E is F plus the exact reviewed TASK9655
+three-table/six-explicit-index draft extension (SQL SHA256
+078706fa690f72038c8fedcc3b46331e6fc6cc61705f3f2054bc70f9e411cc62), its automatic
+constraint indexes and version1 marker. The original foundation DDL, versions,
+column meanings and initial cutover event are preserved. Complete F/E validation
+compares independently constructed whole layouts and retained history/data;
+partial/unknown objects are never adopted or repaired. The draft marker alone
+is structural metadata; retained intents/events and result closure are work.
+Queued attempts must cancel before retirement; running/uncertain/cancel-pending
+history cannot be hidden by a current/terminal pointer. S1 validators and
+SQL-seeded cases are not activation, host execution, callback or S2 acceptance.
+
+Existing databases never acquire E on startup/reopen/enable. An operator uses
+`python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root>
+--org <slug> [--check]` against the validated actual org DB. It does not instantiate
+generic Database merely to inspect/migrate. Full validation precedes DDL; one
+writer transaction installs only the extension/marker and validates E before
+commit. Replay on populated E is a no-op. Check is read-only: ready0,
+migration-needed3, refusal1, parser2. Contention is bounded and refusal/rollback
+preserves original data and files; crash journals/SQLite WAL sidecars are not
+workflow schema. No live execution is authorized by script publication.
+
+Deliberate POST /orgs creation proves its newly created skeleton before complete
+E initialization and attachment, using existing cleanup ownership. Generic
+Database/runtime-audit remain workflow-free. F legacy work remains loadable with
+actual script guidance; missing readiness never mints enable/reconciliation
+events. E requires a compatible reader in all cases; no extension stripping or
+old-reader compatibility claim applies to E. Full independent review, executable
+QA and exact-head CI remain required; activation/dispatch and U3-U6/operator
+acceptance remain later units.

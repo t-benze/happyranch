@@ -646,9 +646,17 @@ invalid input422, corrupt layout/history500, operation conflicts/stale CAS/
 illegal edges409, precommit operational failure safe500. Errors expose only a
 machine category. CLI exits0 for accepted reads/requests (including pending) or
 eligible preflight, 1 for denied preflight/domain/input/transport failures, and
-2 for usage. Preflight is read-only and permits only pristine initial history
-with no workflow data; even empty drained or template-only stores refuse.
-Old binaries are not claimed to enforce this decision. Activation, first-draft
+2 for usage. An existing F enable refuses before event/CAS writes with the
+existing500 category `draft_schema_migration_required`; GET's existing blocker
+`required_action` names `python scripts/migrate_workflow_draft_schema.py
+--runtime-root <absolute-root> --org <slug>`. The operator runs that script
+explicitly; `--check` exits3 when needed, 0 ready, 1 refusal, 2 parser. Existing F
+history remains visible without recovery advancement. New `orgs init`/POST /orgs
+creation initializes complete E directly. Preflight is read-only and permits only
+pristine F initial history with no workflow data; every E needs a compatible
+reader, including empty new/migrated orgs; even empty drained or template-only stores refuse.
+The pinned preceding reader accepts pristine F and refuses E; older binaries
+are not claimed to enforce the current cutover decision. Activation, first-draft
 work and cancellation/dispatch remain later units; no live enable or deployment
 is implied by these methods.
 

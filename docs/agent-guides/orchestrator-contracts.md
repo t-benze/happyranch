@@ -209,15 +209,21 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   under ownership; event1 retains its shipped identity/digest. Progressed event
   SHA256 binds canonical UTF8 fields, fixed verifier/Founder request facts,
   actual org and previous digest. Timestamps must be UTC, not monotonic.
-  Installer and initial-only release oracle remain unchanged. One post-install
-  cold-load call before teams/settings resumes only authentic requests; pure
+  The original foundation DDL/event1 remain unchanged. Complete F and E
+  are independently constructed release layouts; the legacy authority oracle
+  validates layout/history/data, selects that layout's whole generic+workflow
+  reference, and hashes all non-null SQL without filtering. Current v2 remains
+  observed-only. Existing-org load/enable do not install the draft extension.
+  One cold-load call before teams/settings resumes only authentic requests on E;
+  F retains history and the explicit migration remedy without advancing; pure
   reads never advance. Enable verifies real integrity/FKs and absence of
   contradictory work before compatibility_verified and again before enabled.
   Disable commits its admission fence before separate drain commits. F5 closure
   inspection retains actual owners and terminal history; queued cancellation,
   callbacks and uncertain host reconciliation remain U2D/U4/U5 responsibilities.
   Future activation must consume this same SQLite marker under its separately
-  accepted profile-to-org lock order; no consumer or first-draft lane ships here.
+  accepted profile-to-org lock order; S1 ships only draft schema/validation, explicit operator migration and fresh
+  creation. Activation/dispatch/callback writers remain S2 or later.
 - **U2A/U2B boundary.** The readiness verifier is intentionally not consumed
   by task, chain, fan-out, activation, or dispatch paths yet. U2B now routes
   supported machine-global executor-profile and adapter writers through
@@ -493,7 +499,8 @@ budgets, permission evidence, atomicity, replay, and closed audit evidence
 remain authoritative. K/P retain the real claim-time schema observation (raw
 DDL digest, inventory digest, and object count), but v2 never compares or
 rechecks those values and schema structure cannot refuse continuation. The
-legacy v1 schema clause remains unchanged.
+legacy v1 full-DB comparison remains authoritative, selecting the independently
+constructed S1 F/E release reference after complete validation.
 
 The injected active-policy block shows the exact top-level
 `manager_self_evaluation` object shape beside `decision` and the code-derived
@@ -595,7 +602,7 @@ placeholders, compared, or rechecked, and schema structure never produces a v2
 claim with the existing bounded `claim_failed` outcome. The legacy v1
 `_release_schema_digest`/`_live_schema_digest`/`_server_evidence`/
 `_server_fact_clause`/`_during_attempt_drift_clause` behavior and all callers
-remain unchanged. The checked-in full historical schema fixture
+retain full-DB fail-closed comparison with S1 F/E reference selection. The checked-in full historical schema fixture
 `tests/fixtures/authority_v2_historical_schema.json` and reconstruction support
 in `tests/authority_v2_historical_schema.py` remain real migration-path test
 support; organic `ADD COLUMN` histories, including `agent_enrollments`, require

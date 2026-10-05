@@ -1,7 +1,8 @@
 """Installed U1A workflow schema and compatibility boundary.
 
-The complete version-one layout is inert foundation. This module installs it
-only when explicitly invoked by OrgState.load; generic Database construction,
+F is the unchanged inert version-one foundation. Existing OrgState.load installs
+only F and validates complete F/E; explicit new-org creation initializes E. The
+operator script alone upgrades existing F. Generic Database construction,
 including runtime-audit.db, has no workflow side effect.
 """
 from __future__ import annotations
@@ -145,6 +146,113 @@ CREATE TABLE workflow_activation_operations (org_slug TEXT NOT NULL, principal T
 CREATE TABLE workflow_recovery_claims (record_id TEXT PRIMARY KEY, record_class TEXT NOT NULL CHECK(record_class IN ('legacy_task','workflow_task')), recovery_owner TEXT NOT NULL CHECK(recovery_owner IN ('legacy_recovery','workflow_recovery')), claim_token TEXT NOT NULL UNIQUE, effect_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL CHECK(state IN ('claimed','effect_recorded')), created_at TEXT NOT NULL);
 """
 
+CANONICAL_WORKFLOW_DRAFT_DDL = """\
+CREATE TABLE workflow_draft_adapter_versions (
+  version INTEGER PRIMARY KEY CHECK(version=1)
+);
+CREATE TABLE workflow_draft_dispatch_intents (
+  id TEXT NOT NULL PRIMARY KEY,
+  instance_id TEXT NOT NULL REFERENCES workflow_instances(id),
+  activation_id TEXT NOT NULL REFERENCES workflow_activations(id),
+  activation_revision INTEGER NOT NULL CHECK(activation_revision>0),
+  attempt_sequence INTEGER NOT NULL CHECK(attempt_sequence>0),
+  predecessor_intent_id TEXT,
+  admission_kind TEXT NOT NULL
+    CHECK(admission_kind IN ('initial','retry','reassignment','reactivation')),
+  admission_principal TEXT NOT NULL,
+  operation_key TEXT NOT NULL,
+  request_bytes BLOB NOT NULL CHECK(length(request_bytes)>0),
+  request_digest TEXT NOT NULL,
+  task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
+  context_id TEXT NOT NULL REFERENCES workflow_contexts(id),
+  binding_snapshot_id TEXT NOT NULL REFERENCES workflow_binding_snapshots(id),
+  assigned_principal TEXT NOT NULL,
+  assignment_generation INTEGER NOT NULL CHECK(assignment_generation>0),
+  authority_namespace TEXT NOT NULL,
+  authority_generation INTEGER NOT NULL CHECK(authority_generation>0),
+  authority_digest TEXT NOT NULL,
+  task_scope_bytes BLOB NOT NULL CHECK(length(task_scope_bytes)>0),
+  task_scope_digest TEXT NOT NULL,
+  effect_key TEXT NOT NULL UNIQUE,
+  host_execution_key TEXT NOT NULL UNIQUE,
+  is_current INTEGER NOT NULL CHECK(is_current IN (0,1)),
+  state TEXT NOT NULL
+    CHECK(state IN ('queued','claimed','running','uncertain','cancelled','failed','completed')),
+  cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancellation_requested IN (0,1)),
+  claim_token TEXT,
+  claim_owner TEXT,
+  host_launch_started INTEGER NOT NULL DEFAULT 0 CHECK(host_launch_started IN (0,1)),
+  host_execution_id TEXT,
+  session_id TEXT,
+  final_result_id INTEGER REFERENCES task_results(id),
+  recovery_owner TEXT NOT NULL CHECK(recovery_owner='workflow_recovery'),
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(instance_id,attempt_sequence),
+  UNIQUE(instance_id,assignment_generation),
+  UNIQUE(id,instance_id),
+  UNIQUE(instance_id,admission_principal,operation_key),
+  FOREIGN KEY(predecessor_intent_id,instance_id)
+    REFERENCES workflow_draft_dispatch_intents(id,instance_id),
+  CHECK(predecessor_intent_id IS NULL OR predecessor_intent_id!=id),
+  CHECK((attempt_sequence=1 AND predecessor_intent_id IS NULL
+         AND admission_kind='initial' AND assignment_generation=1 AND activation_revision=1)
+     OR (attempt_sequence>1 AND predecessor_intent_id IS NOT NULL AND admission_kind!='initial')),
+  CHECK(is_current=1 OR state IN ('cancelled','failed','completed')),
+  CHECK(state NOT IN ('claimed','running','uncertain')
+        OR (claim_token IS NOT NULL AND claim_owner IS NOT NULL)),
+  CHECK(state!='queued' OR (host_launch_started=0 AND host_execution_id IS NULL AND session_id IS NULL)),
+  CHECK(state NOT IN ('running','completed')
+        OR (host_launch_started=1 AND host_execution_id IS NOT NULL AND session_id IS NOT NULL)),
+  CHECK(state!='completed' OR final_result_id IS NOT NULL),
+  CHECK(final_result_id IS NULL OR session_id IS NOT NULL)
+);
+CREATE UNIQUE INDEX workflow_draft_current_idx
+  ON workflow_draft_dispatch_intents(instance_id) WHERE is_current=1;
+CREATE UNIQUE INDEX workflow_draft_predecessor_idx
+  ON workflow_draft_dispatch_intents(predecessor_intent_id)
+  WHERE predecessor_intent_id IS NOT NULL;
+CREATE UNIQUE INDEX workflow_draft_session_idx
+  ON workflow_draft_dispatch_intents(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX workflow_draft_dispatch_state_idx
+  ON workflow_draft_dispatch_intents(state,recovery_owner,is_current);
+
+CREATE TABLE workflow_draft_dispatch_events (
+  id TEXT NOT NULL PRIMARY KEY,
+  intent_id TEXT NOT NULL REFERENCES workflow_draft_dispatch_intents(id),
+  event_seq INTEGER NOT NULL CHECK(event_seq>0),
+  event_kind TEXT NOT NULL CHECK(event_kind IN
+    ('admitted','claimed','requeued','launch_reserved','running','uncertain',
+     'host_reconciled','cancel_requested','cancelled','failed','completed',
+     'retired','callback_recorded','callback_rejected')),
+  state_before TEXT CHECK(state_before IN
+    ('queued','claimed','running','uncertain','cancelled','failed','completed')),
+  state_after TEXT NOT NULL CHECK(state_after IN
+    ('queued','claimed','running','uncertain','cancelled','failed','completed')),
+  event_bytes BLOB NOT NULL CHECK(length(event_bytes)>0),
+  event_digest TEXT NOT NULL,
+  session_id TEXT,
+  result_id INTEGER REFERENCES task_results(id),
+  result_digest TEXT,
+  callback_accepted INTEGER CHECK(callback_accepted IN (0,1)),
+  disposition TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(intent_id,event_seq),
+  UNIQUE(intent_id,event_digest),
+  CHECK((result_id IS NULL AND result_digest IS NULL AND callback_accepted IS NULL)
+     OR (result_id IS NOT NULL AND session_id IS NOT NULL AND result_digest IS NOT NULL
+         AND callback_accepted IS NOT NULL AND disposition IS NOT NULL)),
+  CHECK(event_kind!='callback_recorded' OR (result_id IS NOT NULL AND callback_accepted=1)),
+  CHECK(event_seq!=1 OR (event_kind='admitted' AND state_before IS NULL AND state_after='queued')),
+  CHECK(event_seq=1 OR state_before IS NOT NULL)
+);
+CREATE UNIQUE INDEX workflow_draft_result_idx
+  ON workflow_draft_dispatch_events(result_id) WHERE result_id IS NOT NULL;
+CREATE INDEX workflow_draft_activation_idx
+  ON workflow_draft_dispatch_intents(activation_id,attempt_sequence);
+"""
+
 _INSTALL_EVENT = {
     "event": "adapter_installed",
     "state_before": None,
@@ -222,12 +330,16 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
     return normalized_objects, tuple(table_metadata), tuple(index_metadata)
 
 
-@lru_cache(maxsize=1)
-def _canonical_layout() -> tuple[object, ...]:
+@lru_cache(maxsize=2)
+def _canonical_layout(layout: Literal["F", "E"] = "F") -> tuple[object, ...]:
     expected = sqlite3.connect(":memory:")
     try:
         expected.execute("PRAGMA foreign_keys=ON")
         _execute_ddl(expected, CANONICAL_WORKFLOW_DDL)
+        if layout == "E":
+            _execute_ddl(expected, CANONICAL_WORKFLOW_DRAFT_DDL)
+        elif layout != "F":
+            raise ValueError("unsupported_workflow_layout")
         return _layout(expected)
     finally:
         expected.close()
@@ -341,9 +453,11 @@ def _validate_cutover_data(
 
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
-) -> None:
+    validate_data: bool = True,
+) -> Literal["F", "E"]:
     actual = _layout(conn)
-    expected = _canonical_layout()
+    layout = "E" if any(row[1] == "workflow_draft_adapter_versions" for row in actual[0]) else "F"
+    expected = _canonical_layout(layout)
     if _object_keys(actual) != _object_keys(expected):
         raise ValueError("workflow_schema_object_set_mismatch")
     if actual != expected:
@@ -359,6 +473,13 @@ def _validate_installed(
         raise ValueError("workflow_schema_marker_mismatch")
 
     _validate_cutover_data(conn, expected_org_slug=expected_org_slug)
+    if layout == "E":
+        draft_versions = [tuple(row) for row in conn.execute("SELECT version FROM workflow_draft_adapter_versions")]
+        if draft_versions != [(1,)]:
+            raise ValueError("workflow_draft_schema_marker_mismatch")
+        if validate_data:
+            _validate_draft_data(conn, expected_org_slug=expected_org_slug)
+    return layout
 
 
 class WorkflowCompatibilityStore:
@@ -379,28 +500,7 @@ class WorkflowCompatibilityStore:
                 _validate_installed(conn, expected_org_slug=expected_org_slug)
                 return "reopened"
 
-            _execute_ddl(conn, CANONICAL_WORKFLOW_DDL)
-            timestamp = datetime.now(timezone.utc).isoformat()
-            conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
-            conn.execute(
-                "INSERT INTO workflow_cutover_state VALUES "
-                "(1,1,\'installed_legacy_only\',\'workflow_cutover_reconciler\',"
-                "1,NULL,NULL,?)",
-                (timestamp,),
-            )
-            conn.execute(
-                "INSERT INTO workflow_cutover_events VALUES (?,?,?,?,?,?,?)",
-                (
-                    "cutover-event-1",
-                    1,
-                    None,
-                    "installed_legacy_only",
-                    None,
-                    _INSTALL_EVENT_DIGEST,
-                    timestamp,
-                ),
-            )
-            _validate_installed(conn, expected_org_slug=expected_org_slug)
+            _install_foundation(conn, expected_org_slug=expected_org_slug)
             if before_commit is not None:
                 before_commit()
             return "installed_legacy_only"
@@ -416,3 +516,321 @@ def install_or_recover(
     return WorkflowCompatibilityStore(database).install_or_recover(
         before_commit=before_commit, expected_org_slug=expected_org_slug,
     )
+
+
+def _install_foundation(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
+    _execute_ddl(conn, CANONICAL_WORKFLOW_DDL)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    conn.execute("INSERT INTO workflow_adapter_versions VALUES (1)")
+    conn.execute(
+        "INSERT INTO workflow_cutover_state VALUES "
+        "(1,1,\'installed_legacy_only\',\'workflow_cutover_reconciler\',"
+        "1,NULL,NULL,?)",
+        (timestamp,),
+    )
+    conn.execute(
+        "INSERT INTO workflow_cutover_events VALUES (?,?,?,?,?,?,?)",
+        (
+            "cutover-event-1",
+            1,
+            None,
+            "installed_legacy_only",
+            None,
+            _INSTALL_EVENT_DIGEST,
+            timestamp,
+        ),
+    )
+    _validate_installed(conn, expected_org_slug=expected_org_slug)
+
+
+def draft_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-root>') -> str:
+    """Concrete operator remedy; never an authorization to execute it."""
+    import shlex
+    root = runtime_root if runtime_root == '<absolute-root>' else shlex.quote(runtime_root)
+    return (f'python scripts/migrate_workflow_draft_schema.py --runtime-root {root} '
+            f'--org {shlex.quote(org_slug)}; retain a compatible reader for every E database')
+
+
+def _records(conn: sqlite3.Connection, sql: str, args: tuple = ()) -> list[dict]:
+    cursor = conn.execute(sql, args)
+    names = [column[0] for column in cursor.description]
+    return [dict(zip(names, tuple(row), strict=True)) for row in cursor]
+
+
+def _canonical_bytes(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
+                      allow_nan=False).encode('utf-8')
+
+
+def _stored_json(raw: object, digest: object, *, code: str = "workflow_source_data_corrupt") -> object:
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError(code)
+    try:
+        value = json.loads(raw)
+        if _canonical_bytes(value) != raw or hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError(code)
+        return value
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise ValueError(code) from exc
+
+
+def _validate_source_data(conn: sqlite3.Connection) -> None:
+    """DB-resident contracts only; historical eligibility is not re-authorized."""
+    if ([row[0] for row in conn.execute('PRAGMA integrity_check')] != ['ok']
+            or conn.execute('PRAGMA foreign_key_check').fetchone() is not None):
+        raise ValueError('workflow_source_data_corrupt')
+    for table, column, digest in (
+        ('workflow_template_drafts', 'definition_bytes', 'definition_digest'),
+        ('workflow_template_versions', 'definition_bytes', 'definition_digest'),
+        ('workflow_authorization_revisions', 'authority_bytes', 'authority_digest'),
+        ('workflow_binding_snapshots', 'binding_bytes', 'binding_digest'),
+        ('workflow_contexts', 'context_bytes', 'context_digest'),
+    ):
+        for row in _records(conn, f'SELECT * FROM {table}'):
+            value = _stored_json(row[column], row[digest])
+            if table.startswith('workflow_template_'):
+                from runtime.workflows.templates import _validate_definition
+                if _validate_definition(value) != row[column]:
+                    raise ValueError('workflow_source_data_corrupt')
+    for version in _records(conn, 'SELECT * FROM workflow_template_versions'):
+        draft = _records(conn, 'SELECT * FROM workflow_template_drafts WHERE id=?', (version['draft_id'],))[0]
+        for key in ('namespace', 'template_name', 'definition_bytes', 'definition_digest',
+                    'compiler_pin', 'validator_pin', 'source_pin'):
+            if version[key] != draft[key]:
+                raise ValueError('workflow_source_data_corrupt')
+    for activation in _records(conn, 'SELECT * FROM workflow_activations'):
+        row = _records(conn, 'SELECT i.id AS instance_id,t.namespace,t.id AS version_id,m.template_identity_id '
+                       'FROM workflow_instances i JOIN workflow_template_versions t ON t.id=? '
+                       'JOIN workflow_template_identity_versions m ON m.template_version_id=t.id WHERE i.id=?',
+                       (activation['template_version_id'], activation['instance_id']))
+        if (len(row) != 1 or row[0]['version_id'] != activation['template_version_id']
+                or row[0]['namespace'] != activation['authority_namespace']
+                or row[0]['template_identity_id'] != activation['template_identity_id']):
+            raise ValueError('workflow_source_data_corrupt')
+    for pointer in _records(conn, 'SELECT * FROM workflow_active_activations'):
+        row = _records(conn, 'SELECT * FROM workflow_activations WHERE id=?', (pointer['activation_id'],))[0]
+        if (row['instance_id'] != pointer['instance_id'] or row['activation_revision'] != pointer['activation_revision']
+                or row['state'] != 'active'):
+            raise ValueError('workflow_source_data_corrupt')
+
+
+_DRAFT_PROJECTION = ('state', 'is_current', 'cancellation_requested', 'claim_token', 'claim_owner',
+                     'host_launch_started', 'host_execution_id', 'session_id', 'final_result_id')
+_DRAFT_MUTABLE = set(_DRAFT_PROJECTION) | {'last_error', 'updated_at'}
+_DRAFT_EDGES = {
+    'admitted': {(None, 'queued')}, 'claimed': {('queued', 'claimed')},
+    'requeued': {('claimed', 'queued')}, 'launch_reserved': {('claimed', 'claimed')},
+    'running': {('claimed', 'running')},
+    'uncertain': {('claimed', 'uncertain'), ('running', 'uncertain')},
+    'host_reconciled': {('uncertain', 'running'), ('uncertain', 'cancelled'), ('uncertain', 'failed'), ('uncertain', 'completed')},
+    'cancelled': {(state, 'cancelled') for state in ('queued', 'claimed', 'running', 'uncertain')},
+    'failed': {(state, 'failed') for state in ('claimed', 'running', 'uncertain')},
+    'completed': {('running', 'completed'), ('uncertain', 'completed')},
+}
+
+
+def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
+    """Validate every retained SQL-seeded or future-produced attempt and event.
+
+    No writer, dispatcher, settlement or host-evidence producer lives here.
+    Event bytes use the accepted workflow-draft-event@1 immutable tuple and
+    before/after projection, plus terminal evidence and normalized result.
+    """
+    def refuse() -> None:
+        raise ValueError('workflow_draft_data_corrupt')
+
+    intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents ORDER BY instance_id,attempt_sequence')
+    if intents and not expected_org_slug:
+        refuse()
+    previous_by_instance: dict[str, dict] = {}
+    accepted_results: dict[str, dict] = {}
+    for intent in intents:
+        for key, value in intent.items():
+            if isinstance(value, str) and (not value or value.strip() != value):
+                refuse()
+        request = _stored_json(intent['request_bytes'], intent['request_digest'], code='workflow_draft_data_corrupt')
+        scope = _stored_json(intent['task_scope_bytes'], intent['task_scope_digest'], code='workflow_draft_data_corrupt')
+        if not isinstance(request, dict) or not isinstance(scope, dict):
+            refuse()
+        instance = _records(conn, 'SELECT * FROM workflow_instances WHERE id=?', (intent['instance_id'],))
+        activation = _records(conn, 'SELECT * FROM workflow_activations WHERE id=?', (intent['activation_id'],))
+        task = _records(conn, 'SELECT * FROM tasks WHERE id=?', (intent['task_id'],))
+        context = _records(conn, 'SELECT * FROM workflow_contexts WHERE id=?', (intent['context_id'],))
+        binding = _records(conn, 'SELECT * FROM workflow_binding_snapshots WHERE id=?', (intent['binding_snapshot_id'],))
+        if not all(len(rows) == 1 for rows in (instance, activation, task, context, binding)):
+            refuse()
+        instance, activation, task, context, binding = instance[0], activation[0], task[0], context[0], binding[0]
+        if (activation['instance_id'] != intent['instance_id'] or activation['activation_revision'] != intent['activation_revision']
+                or activation['authority_namespace'] != intent['authority_namespace']
+                or activation['authority_generation'] != intent['authority_generation']
+                or activation['authority_digest'] != intent['authority_digest']
+                or binding['template_version_id'] != activation['template_version_id']
+                or context['binding_snapshot_id'] != intent['binding_snapshot_id']
+                or task['assigned_agent'] != intent['assigned_principal']
+                or scope != {'assigned_agent': task['assigned_agent'], 'team': task['team'], 'brief': task['brief']}
+                or intent['effect_key'] != f"workflow-initial-draft:{intent['instance_id']}:{intent['attempt_sequence']}"
+                or intent['host_execution_key'] != f"workflow-draft-host:{intent['id']}"):
+            refuse()
+        admission = {key: intent[key] for key in ('instance_id', 'activation_id', 'activation_revision', 'attempt_sequence',
+                                                 'predecessor_intent_id', 'admission_principal', 'operation_key', 'request_digest')}
+        admission['org_slug'] = expected_org_slug
+        if intent['id'] != hashlib.sha256(_canonical_bytes(admission)).hexdigest():
+            refuse()
+        previous = previous_by_instance.get(intent['instance_id'])
+        if previous is None:
+            if (intent['attempt_sequence'] != 1 or instance['root_task_id'] != intent['task_id']
+                    or instance['binding_snapshot_id'] != intent['binding_snapshot_id']
+                    or instance['context_id'] != intent['context_id']):
+                refuse()
+        elif (intent['attempt_sequence'] != previous['attempt_sequence'] + 1
+              or intent['assignment_generation'] != previous['assignment_generation'] + 1
+              or intent['predecessor_intent_id'] != previous['id'] or previous['is_current'] != 0
+              or previous['state'] not in ('cancelled', 'failed', 'completed')
+              or (intent['admission_kind'] == 'retry' and previous['state'] != 'failed')):
+            refuse()
+        previous_by_instance[intent['instance_id']] = intent
+        events = _records(conn, 'SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq', (intent['id'],))
+        if not events or events[0]['created_at'] != intent['created_at']:
+            refuse()
+        projection = None
+        digest = None
+        immutable = {key: (value.hex() if isinstance(value, bytes) else value)
+                     for key, value in intent.items() if key not in _DRAFT_MUTABLE}
+        for seq, event in enumerate(events, 1):
+            payload = _stored_json(event['event_bytes'], event['event_digest'], code='workflow_draft_data_corrupt')
+            if not isinstance(payload, dict) or set(payload) != {'format', 'org_slug', 'event', 'previous_digest', 'intent', 'before', 'after', 'terminal_evidence', 'result'}:
+                refuse()
+            event_identity = {key: event[key] for key in ('id', 'event_seq', 'event_kind', 'created_at')}
+            before, after = payload['before'], payload['after']
+            if (payload['format'] != 'workflow-draft-event@1' or payload['org_slug'] != expected_org_slug
+                    or event['event_seq'] != seq or event['id'] != f"{intent['id']}:{seq}"
+                    or payload['event'] != event_identity or payload['previous_digest'] != digest
+                    or payload['intent'] != immutable or before != projection
+                    or not isinstance(after, dict) or set(after) != set(_DRAFT_PROJECTION)
+                    or event['state_before'] != (None if before is None else before['state'])
+                    or event['state_after'] != after['state']):
+                refuse()
+            kind = event['event_kind']
+            try:
+                timestamp = datetime.fromisoformat(event['created_at'])
+                if timestamp.tzinfo is None or timestamp.utcoffset().total_seconds() != 0:
+                    refuse()
+            except (ValueError, TypeError, AttributeError):
+                refuse()
+            for key in ('is_current', 'cancellation_requested', 'host_launch_started'):
+                if type(after[key]) is not int or after[key] not in (0, 1):
+                    refuse()
+            if (after['state'] not in ('queued', 'claimed', 'running', 'uncertain', 'cancelled', 'failed', 'completed')
+                    or (after['is_current'] == 0 and after['state'] not in ('cancelled', 'failed', 'completed'))
+                    or (after['state'] in ('claimed', 'running', 'uncertain') and not (after['claim_token'] and after['claim_owner']))
+                    or (after['state'] == 'queued' and (after['host_launch_started'] or after['host_execution_id'] or after['session_id']))
+                    or (after['state'] in ('running', 'completed') and not (after['host_launch_started'] and after['host_execution_id'] and after['session_id']))
+                    or (after['final_result_id'] is not None and (type(after['final_result_id']) is not int or not after['session_id']))):
+                refuse()
+            edge = (event['state_before'], event['state_after'])
+            if kind in ('cancel_requested', 'callback_recorded', 'callback_rejected', 'retired'):
+                if before is None or edge[0] != edge[1]:
+                    refuse()
+            elif edge not in _DRAFT_EDGES.get(kind, set()):
+                refuse()
+            if seq == 1 and after != dict(state='queued', is_current=1, cancellation_requested=0, claim_token=None,
+                                         claim_owner=None, host_launch_started=0, host_execution_id=None, session_id=None, final_result_id=None):
+                refuse()
+            if before is not None:
+                if ((before['host_launch_started'] and not after['host_launch_started'])
+                        or (before['cancellation_requested'] and not after['cancellation_requested'])
+                        or (before['session_id'] is not None and before['session_id'] != after['session_id'])
+                        or (before['final_result_id'] is not None and before['final_result_id'] != after['final_result_id'])
+                        or (before['host_execution_id'] is not None and before['host_execution_id'] != after['host_execution_id'])):
+                    refuse()
+            if before is not None and before['is_current'] != after['is_current'] and kind != 'retired':
+                refuse()
+            if before is not None and before['final_result_id'] != after['final_result_id'] and kind != 'callback_recorded':
+                refuse()
+            if kind in ('cancel_requested', 'retired', 'callback_rejected', 'callback_recorded'):
+                permitted = {'cancel_requested': {'cancellation_requested'}, 'retired': {'is_current'},
+                             'callback_rejected': set(), 'callback_recorded': {'final_result_id', 'session_id'}}[kind]
+                if any(before[key] != after[key] for key in _DRAFT_PROJECTION if key not in permitted):
+                    refuse()
+            if kind == 'retired' and (edge[0] not in ('cancelled', 'failed', 'completed') or after['is_current'] != 0):
+                refuse()
+            if kind == 'requeued' and (before['host_launch_started'] or before['session_id'] is not None):
+                refuse()
+            if kind == 'running' and not before['host_launch_started']:
+                refuse()
+            if kind == 'launch_reserved' and (before['host_launch_started'] or not after['host_launch_started']):
+                refuse()
+            if kind == 'cancel_requested' and after['cancellation_requested'] != 1:
+                refuse()
+            if edge[1] in ('cancelled', 'failed', 'completed') and edge[0] != edge[1]:
+                # Prelaunch queued cancellation needs no invented host proof.
+                if after['host_launch_started']:
+                    witness = payload['terminal_evidence']
+                    if (not isinstance(witness, dict) or set(witness) != {'host_quiescent'}
+                            or witness['host_quiescent'] is not True):
+                        refuse()
+                if edge[1] in ('failed', 'cancelled') and task['status'] != edge[1]:
+                    refuse()
+            if ((kind in ('callback_recorded', 'callback_rejected')) != (event['result_id'] is not None)):
+                refuse()
+            if kind == 'callback_rejected' and event['callback_accepted'] != 0:
+                refuse()
+            if event['result_id'] is not None:
+                results = _records(conn, 'SELECT * FROM task_results WHERE id=?', (event['result_id'],))
+                if len(results) != 1:
+                    refuse()
+                result = results[0]
+                result_closure = {'record': result, 'id': event['result_id'], 'digest': event['result_digest'],
+                                  'disposition': event['disposition'], 'accepted': event['callback_accepted']}
+                if (_canonical_bytes(payload['result']) != _canonical_bytes(result_closure) or hashlib.sha256(_canonical_bytes(result)).hexdigest() != event['result_digest']
+                        or result['task_id'] != intent['task_id'] or result['agent'] != intent['assigned_principal']
+                        or result['session_id'] != event['session_id'] or event['session_id'] != after['session_id']
+                        or conn.execute('SELECT 1 FROM workflow_dispatch_callbacks WHERE result_id=?', (str(event['result_id']),)).fetchone()):
+                    refuse()
+                if kind == 'callback_recorded':
+                    if (event['callback_accepted'] != 1 or after['final_result_id'] != result['id']
+                            or intent['id'] in accepted_results or after['cancellation_requested']):
+                        refuse()
+                    accepted_results[intent['id']] = result_closure
+            elif kind not in ('completed', 'host_reconciled', 'retired') and payload['result'] is not None:
+                refuse()
+            if after['state'] == 'completed':
+                result = accepted_results.get(intent['id'])
+                if (after['cancellation_requested'] or result is None or result['record']['status'] != 'completed' or result['id'] != after['final_result_id']
+                        or payload['result'] != result or task['status'] != 'completed'):
+                    refuse()
+            projection, digest = after, event['event_digest']
+        if projection != {key: intent[key] for key in _DRAFT_PROJECTION} or events[-1]['created_at'] != intent['updated_at']:
+            refuse()
+    if any(not intent['is_current'] for intent in previous_by_instance.values()):
+        refuse()
+    if conn.execute('SELECT 1 FROM workflow_draft_dispatch_events e LEFT JOIN workflow_draft_dispatch_intents i ON i.id=e.intent_id WHERE i.id IS NULL').fetchone():
+        refuse()
+
+
+def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E']:
+    """Complete layout/discriminator/history and stored source/data validation."""
+    layout = _validate_installed(conn, expected_org_slug=expected_org_slug)
+    _validate_source_data(conn)
+    return layout
+
+
+def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
+    """Explicit operator/fresh-owner primitive; never opens or commits a DB."""
+    if not conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+        raise ValueError('workflow_draft_migration_requires_writer_and_foreign_keys')
+    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) == 'E':
+        return 'ready'
+    _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+    conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
+    validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    return 'migrated'
+
+
+def initialize_complete_org_schema(database: Database, *, expected_org_slug: str) -> None:
+    """Deliberate creation only; the POST owner proves the skeleton is fresh."""
+    with database.workflow_schema_transaction() as conn:
+        if _layout(conn)[0]:
+            raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
+        _install_foundation(conn, expected_org_slug=expected_org_slug)
+        migrate_draft_schema(conn, expected_org_slug=expected_org_slug)

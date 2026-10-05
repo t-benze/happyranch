@@ -232,3 +232,42 @@ def test_cutover_cli_errors_are_nonzero_and_keep_safe_categories(
     error = capsys.readouterr().err
     assert {"domain": "cutover_generation_stale", "transport": "retry requests with the same body/key", "relative": "must be absolute"}[failure] in error
     assert "private transport detail" not in error
+
+
+def test_actual_cutover_cli_f_remedy_and_refusal_use_real_http_service(tmp_path: Path, capsys, monkeypatch) -> None:
+    """YES test transport seam: OpcClient.from_env uses real TestClient HTTP."""
+    from fastapi.testclient import TestClient
+    from cli.commands.workflows import cmd_workflow_cutover
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+    from tests.daemon.test_org_state import _seed_org
+    home = tmp_path / 'daemon-home'
+    home.mkdir()
+    monkeypatch.setenv('HAPPYRANCH_DAEMON_HOME',str(home))
+    from runtime.daemon.paths import ensure_token
+    token = ensure_token()
+    runtime = RuntimeDir.init(tmp_path / 'runtime')
+    _seed_org(runtime.orgs_dir / 'alpha')
+    state = DaemonState.from_runtime(runtime,Settings())
+    client = TestClient(create_app(state),headers={'Authorization':f'Bearer {token}'})
+    monkeypatch.setattr('cli.commands.workflows.OpcClient.from_env',lambda:client)
+    org = state.orgs['alpha']
+    try:
+        args = argparse.Namespace(cutover_command='show',org='alpha',json=False)
+        cmd_workflow_cutover(args)
+        output = capsys.readouterr().out
+        assert 'migrate_workflow_draft_schema.py' in output and '--org alpha' in output
+        assert str(runtime.root) in output
+        payload = tmp_path / 'request.json'
+        payload.write_text(json.dumps(dict(action='enable',operation_key='new',expected_generation=1)))
+        before = tuple(org.db._conn.iterdump())
+        with pytest.raises(SystemExit) as exc:
+            cmd_workflow_cutover(argparse.Namespace(cutover_command='request',org='alpha',json=False,from_file=str(payload)))
+        assert exc.value.code == 1
+        assert 'draft_schema_migration_required' in capsys.readouterr().err
+        assert tuple(org.db._conn.iterdump()) == before
+    finally:
+        org.close()
+        client.close()

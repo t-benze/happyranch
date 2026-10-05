@@ -422,6 +422,9 @@ def test_cutover_cold_attachment_preserves_initial_or_recovers_authentic_request
     path = OrgPaths(root=root).db_path
     original = org.db._conn
     if requested:
+        from runtime.infrastructure.workflow_schema import migrate_draft_schema
+        with org.db.workflow_schema_transaction() as conn:
+            migrate_draft_schema(conn, expected_org_slug="alpha")
         def response_loss() -> None:
             raise RuntimeError("committed request response lost")
 

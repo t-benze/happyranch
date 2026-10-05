@@ -6,7 +6,7 @@ HappyRanch is an org-agnostic runtime for operating a multi-agent organization s
 
 **Current THR-229 contract.** The current implementation contains the complete dual-text control/editor path, selector-family launch binding, strict completion admission, automatic pre-final/final/post-final continuation, startup/reaper recovery, authenticated publication/admission, and single-use next-result spend. The maintained shipping proof runs a real ordinary child through queue/Dispatcher/run-step/provider launch on a fully historical-migrated database, retains `REQUEST_CHANGES` and the accepted raw-DDL inequality as diagnostics, wakes the same root, reports an arbitrary-reason escalation with a valid dual assessment through the real CLI, observes that root Pending before tagged dequeue, and spends/applies exactly one reserved next result. Every live manager with exactly one matching `teams.yaml` registration uses the same team-scoped surface, server-projected neutral v2 starter, selector/binding path, and downstream identity propagation; workers and stale, mismatched, or duplicate registrations fail closed before policy access. Existing persisted Engineering identities remain unchanged, while legacy compatibility is data-driven by `POLICY_BY_TEAM`. The UI retains immutable dual-text history but removes the two legacy read-only sections and eager requests. `web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs` remains the owned browser receipt. No production policy is saved or activated by landing code. Older THR-229 checkpoint paragraphs below are historical implementation snapshots: their statements that later stages, the hook, recovery, or editor were dark/unimplemented apply only to that named checkpoint and are superseded by this current-state paragraph. Source merge is not rollout: compatible binaries must be deployed and every old manager launch/completion consumer drained before any future production activation; rollback is compatible-code-only. Exact-final-head CI, independent review/QA, guarded merge, deployment, and natural production continuation remain outstanding/unobserved, so the combined feature remains unaccepted.
 
-**Current THR-229 v2 schema-observation correction (founder seq351).** The v2 decision path no longer performs a schema-integrity/reference comparison or schema recheck. Candidate and pin rows still store the real claim-time raw-schema digest, inventory digest, and object count as observed-only diagnostics; those values are never placeholders, compared, or rechecked, and structural differences cannot produce a v2 `schema_drift` refusal. Genuine observation failure retains the bounded `claim_failed` outcome. The historical fixture remains real migration-path test support, while the legacy v1 schema clause and every non-schema v2 fence remain unchanged. The checkpoint C3a and issue #918 paragraphs below are historical implementation records superseded only for this removed gate; their recovery and idempotency behavior remains current.
+**Current THR-229 v2 schema-observation correction (founder seq351).** The v2 decision path no longer performs a schema-integrity/reference comparison or schema recheck. Candidate and pin rows still store the real claim-time raw-schema digest, inventory digest, and object count as observed-only diagnostics; those values are never placeholders, compared, or rechecked, and structural differences cannot produce a v2 `schema_drift` refusal. Genuine observation failure retains the bounded `claim_failed` outcome. The historical fixture remains real migration-path test support, while the legacy v1 full-schema comparison (with S1 F/E references) and every non-schema v2 fence remain in force. The checkpoint C3a and issue #918 paragraphs below are historical implementation records superseded only for this removed gate; their recovery and idempotency behavior remains current.
 
 **Current THR-279 v2 final-return diagnostic.** When the automatic v2 hook's final continuation call returns a bounded non-success status, the hook records that exact closed status and reason through the existing best-effort `authority_hook` `capture_failure` action before requesting the unchanged `final_commit_failed` refusal. A raised finalizer exception retains its distinct existing diagnostic. This changes no continuation decision, refusal code, audit action, task note, or identity semantics.
 
@@ -61,9 +61,16 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   `insufficient_instrumentation`. See the memory section in the feature guide.
 
 - **Workflow schema U1A foundation (THR-139).** U1A installs the
-  complete inert version-1 workflow layout only from `OrgState.load`, after
+  unchanged inert version-1 foundation F from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
-  membership validation, or orchestrator construction. Generic
+  membership validation, or orchestrator construction. Deliberate POST /orgs
+  creation proves a fresh skeleton, then initializes complete E (F plus the
+  reviewed three draft tables/six explicit indexes and draft version1) in one
+  transaction before attachment. Existing startup/reopen/enable never installs
+  E: use `python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> [--check]`
+  only with operator authorization. Check exits0 ready, 3 migration-needed,
+  1 refusal (parser2); bounded contention/invalid targets refuse without partial
+  installation. Generic
   `Database(...)` construction never installs it: machine-global
   `runtime-audit.db` and every adapter/executor audit caller remain untouched.
   One Database-owned synchronized `BEGIN IMMEDIATE` installs all workflow
@@ -75,7 +82,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
-  canonical org installer, and hashes the complete schema; it never filters
+  canonical F or E reference after full layout/history/data validation, caches
+  independently by layout, and hashes every non-null sqlite_master SQL object; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
   store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain
   from installed_legacy_only through enable_requested, compatibility_verified,
@@ -83,11 +91,16 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   strict action/key/generation input; request/fence commits precede separate
   bounded reconciliation. Every authoritative reread validates the full layout
   and org-bound deterministic event chain; cold load advances only authentic
-  committed requests before teams/settings mutation. GET/preflight never advance.
+  committed requests only on ready E before teams/settings mutation. F keeps
+  authentic history and actionable script guidance without recovery advancement.
+  GET/preflight never advance.
   SQLite integrity/FKs and contradictory pre-enable work block verification;
   incomplete/nonterminal F5 closures block drain with actual ownership and
   deferred U2D/U4/U5 actions, never cancellation or task/outbox mutation.
-  Downgrade is eligible only for pristine initial history and zero workflow data.
+  Downgrade is eligible only for pristine F initial history and zero workflow data.
+  Every E requires a compatible reader, including empty marker-only E; the marker
+  is structural metadata, while draft intents/events are work and their complete
+  retained history/result closure is validated. Drain never settles draft work.
   Integrity hashes are cooperative coherence, not hostile same-UID proof.
   Activation, first draft/dispatch, callbacks, operator UI and full U2C-U6
   acceptance remain deferred. U1B adds only

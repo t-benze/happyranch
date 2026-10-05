@@ -18,6 +18,8 @@ from runtime.infrastructure.workflow_schema import (
     _cutover_event_digest,
     _validate_cutover_data,
     _validate_installed,
+    draft_migration_guidance,
+    _validate_draft_data,
 )
 
 
@@ -53,7 +55,7 @@ class WorkflowCutoverStore:
 
     def _read(self, conn: sqlite3.Connection) -> tuple[dict, list[dict]]:
         try:
-            _validate_installed(conn, expected_org_slug=self._org_slug)
+            _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
             return _validate_cutover_data(conn, expected_org_slug=self._org_slug)
         except (ValueError, sqlite3.DatabaseError) as exc:
             raise WorkflowCutoverError("cutover_storage_corrupt") from exc
@@ -90,8 +92,11 @@ class WorkflowCutoverStore:
         try:
             with self._transaction(write=True) as conn:
                 marker, events = self._read(conn)
+                layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
                 original = next((e for e in events if e["event_seq"] in (2, 5)
                                  and e["operation_key"] == operation_key), None)
+                if layout == "E" and self._draft_readiness_blockers(conn):
+                    raise WorkflowCutoverError("cutover_storage_corrupt")
                 replayed = original is not None
                 if original is not None:
                     original_action = "enable" if original["event_seq"] == 2 else "disable"
@@ -105,6 +110,8 @@ class WorkflowCutoverStore:
                     )
                     if action != allowed:
                         raise WorkflowCutoverError("cutover_transition_not_allowed")
+                    if action == "enable" and layout == "F":
+                        raise WorkflowCutoverError("draft_schema_migration_required")
                     self._advance(conn, marker, events, key=operation_key)
                     original = {"id": f"cutover-event-{marker['generation'] + 1}",
                                 "event_seq": marker["generation"] + 1}
@@ -129,6 +136,8 @@ class WorkflowCutoverStore:
                 with self._transaction(write=True) as conn:
                     marker, events = self._read(conn)
                     state = marker["state"]
+                    if self._draft_readiness_blockers(conn):
+                        break
                     if state in ("enable_requested", "compatibility_verified"):
                         if self._compatibility_blockers(conn):
                             break
@@ -159,14 +168,14 @@ class WorkflowCutoverStore:
             raise WorkflowCutoverError("cutover_operation_failed") from exc
 
     def _projection(self, conn: sqlite3.Connection, marker: dict, events: list[dict]) -> dict:
-        blockers = []
+        blockers = self._draft_readiness_blockers(conn)
         if marker["state"] in ("enable_requested", "compatibility_verified"):
             blockers = self._compatibility_blockers(conn)
         elif marker["state"] in ("disable_requested", "draining", "drained"):
             blockers = self._drain_blockers(conn)
         return {
             "org_slug": self._org_slug, **marker, "events": events,
-            "allowed_actions": ["enable"] if marker["generation"] == 1 else (
+            "allowed_actions": (["enable"] if not blockers else []) if marker["generation"] == 1 else (
                 ["disable"] if marker["state"] == "enabled" else []
             ),
             "blockers": blockers, "reconciliation_required": bool(blockers),
@@ -195,12 +204,28 @@ class WorkflowCutoverStore:
                                   required_action="reconcile_storage")]
         return []
 
+    def _draft_readiness_blockers(self, conn: sqlite3.Connection) -> list[dict]:
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "E":
+            try:
+                _validate_draft_data(conn, expected_org_slug=self._org_slug)
+            except (ValueError, sqlite3.DatabaseError):
+                return [self._blocker("cutover_draft_closure", owner="workflow_recovery",
+                                     required_action="reconcile_draft_closure", deferred_to="U2D/U5")]
+            return []
+        path = self._database.path
+        runtime_root = str(path.parent.parent.parent) if (
+            path.name == "happyranch.db" and path.parent.name == self._org_slug
+            and path.parent.parent.name == "orgs"
+        ) else "<absolute-root>"
+        return [self._blocker("draft_schema_migration_required", owner="operator",
+                             required_action=draft_migration_guidance(org_slug=self._org_slug, runtime_root=runtime_root))]
+
     def _compatibility_blockers(self, conn: sqlite3.Connection) -> list[dict]:
-        blockers = self._integrity_blockers(conn)
+        blockers = self._draft_readiness_blockers(conn) + self._integrity_blockers(conn)
         # Inert template and coordinated authority/profile foundations are
         # permitted. Every other workflow work relation must still be empty.
         for table in self._workflow_tables(conn):
-            if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events"):
+            if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events", "workflow_draft_adapter_versions"):
                 continue
             if table.startswith(("workflow_template_", "workflow_authority_",
                                  "workflow_publication_", "workflow_profile_")):
@@ -216,7 +241,7 @@ class WorkflowCutoverStore:
         return blockers
 
     def _drain_blockers(self, conn: sqlite3.Connection) -> list[dict]:
-        blockers = self._integrity_blockers(conn)
+        blockers = self._draft_readiness_blockers(conn) + self._integrity_blockers(conn)
         outboxes = [dict(row) for row in conn.execute("SELECT * FROM workflow_dispatch_outbox ORDER BY id")]
         by_operation = {o["operation_id"]: o for o in outboxes}
         for table in ("workflow_dispatch_operations", "workflow_request_task_bridges"):
@@ -288,6 +313,20 @@ class WorkflowCutoverStore:
                     "cutover_recovery_owned_work", record_id=row[0], state=row[2], owner=row[1],
                     required_action="reconcile_owned_work", deferred_to="U5",
                 ))
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "E":
+            for row in conn.execute("SELECT * FROM workflow_draft_dispatch_intents ORDER BY id"):
+                intent = dict(row)
+                if intent["state"] in ("cancelled", "failed", "completed"):
+                    continue
+                if intent["state"] in ("queued", "claimed") and not intent["host_launch_started"]:
+                    code, action = "cutover_prelaunch_work", "cancel_prelaunch_work"
+                elif intent["state"] == "uncertain" or (intent["state"] == "claimed" and intent["host_launch_started"]):
+                    code, action = "cutover_uncertain_work", "reconcile_host_execution"
+                else:
+                    code, action = "cutover_running_work", "await_callback_or_cancel"
+                blockers.append(self._blocker(code, record_id=intent["id"], state=intent["state"],
+                                              owner=intent["claim_owner"] or intent["recovery_owner"],
+                                              required_action=action, deferred_to="U2D/U4/U5"))
         return blockers
 
     def downgrade_preflight(self) -> dict:
@@ -295,13 +334,16 @@ class WorkflowCutoverStore:
             with self._transaction(write=False) as conn:
                 marker, events = self._read(conn)
                 blockers = self._integrity_blockers(conn)
+                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "E":
+                    blockers.append(self._blocker("draft_schema_requires_compatible_reader", owner="operator",
+                                                  required_action="retain_compatible_runtime"))
                 if marker["generation"] != 1:
                     blockers.append(self._blocker(
                         "cutover_history_prevents_downgrade", owner="workflow_cutover_reconciler",
                         required_action="retain_current_runtime",
                     ))
                 for table in self._workflow_tables(conn):
-                    if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events"):
+                    if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events", "workflow_draft_adapter_versions"):
                         continue
                     if conn.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone() is not None:
                         blockers.append(self._blocker(

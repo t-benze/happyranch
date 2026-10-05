@@ -514,3 +514,32 @@ async def test_init_org_loaded_org_still_409_org_exists(
     r = client.post("/api/v1/orgs", headers=auth, json={"slug": "alpha"})
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "org_exists"
+
+
+@pytest.mark.parametrize('from_example', [False, True], ids=['default', 'example'])
+def test_deliberate_creation_is_complete_e_before_attachment_and_reopens_twice(tmp_path: Path, auth, from_example: bool) -> None:
+    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+    runtime = RuntimeDir.init(tmp_path / 'runtime')
+    state = DaemonState.from_runtime(runtime, Settings())
+    client = TestClient(create_app(state))
+    body = {'slug': 'alpha'}
+    if from_example:
+        example = tmp_path / 'example'
+        (example / 'org/agents').mkdir(parents=True)
+        (example / 'org/teams.yaml').write_text('teams: {}\n')
+        body['from_example'] = str(example)
+    result = client.post('/api/v1/orgs', json=body, headers=auth)
+    assert result.status_code == 200, result.text
+    org = state.orgs['alpha']
+    assert validate_workflow_schema(org.db._conn, expected_org_slug='alpha') == 'E'
+    initial_events = [tuple(row) for row in org.db.execute('SELECT * FROM workflow_cutover_events')]
+    assert len(initial_events) == 1
+    org.close()
+    for _ in range(2):
+        reopened = DaemonState.from_runtime(runtime, Settings())
+        try:
+            org = reopened.orgs['alpha']
+            assert validate_workflow_schema(org.db._conn, expected_org_slug='alpha') == 'E'
+            assert [tuple(row) for row in org.db.execute('SELECT * FROM workflow_cutover_events')] == initial_events
+        finally:
+            org.close()
