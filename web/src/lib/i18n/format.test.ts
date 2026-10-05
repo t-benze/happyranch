@@ -144,6 +144,8 @@ describe('explicit display locale is host-independent (W1 acceptance case 1)', (
 describe('formatDateShapeFor — centrally owned date/time shapes (THR-118 W4b)', () => {
   const instant = new Date('2026-06-10T06:05:09Z');
   const cases: Array<[Parameters<typeof formatDateShapeFor>[2], string, string]> = [
+    ['monthShort', 'Jun', '6月'],
+    ['monthDayClock24', 'Jun 10, 06:05', '6月10日 06:05'],
     ['weekdayDate', 'Wed, Jun 10, 2026', '2026年6月10日周三'],
     ['weekdayMonthDay', 'Wed, Jun 10', '6月10日周三'],
     ['monthDay', 'Jun 10', '6月10日'],

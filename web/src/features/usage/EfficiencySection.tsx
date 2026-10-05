@@ -36,37 +36,32 @@ import {
   TableSkeleton,
   UsageSection,
 } from './UsageParts';
-import {
-  ROW_LEVEL_WITHHELD_REASONS,
-  formatExactTokens,
-  formatInstant,
-  formatRate,
-  formatTokenValue,
-  withheldExplanation,
-} from './usageFormat';
+import { ROW_LEVEL_WITHHELD_REASONS } from './usageFormat';
+import { useUsagePresentation, type UsagePresentation } from './strings';
+import type { MessageKey } from '@/lib/i18n';
 
-const RUN_TYPES: Array<[EfficiencyRunType, string]> = [
-  ['worker_task', 'Worker task'],
-  ['manager_decision', 'Manager decision'],
-  ['thread_reply', 'Thread reply'],
-  ['thread_followup', 'Thread follow-up'],
-  ['dream', 'Dream'],
+const RUN_TYPES: Array<[EfficiencyRunType, MessageKey]> = [
+  ['worker_task', 'usage.workerTask'],
+  ['manager_decision', 'usage.managerDecision'],
+  ['thread_reply', 'usage.threadReply'],
+  ['thread_followup', 'usage.threadFollowup'],
+  ['dream', 'usage.dream'],
 ];
 
-const COLUMNS = ['Run type', 'Runs', 'Median fresh input', 'Median re-read', 'Median output', 'Decline waste'];
+const COLUMNS: MessageKey[] = ['usage.runType', 'usage.runs', 'usage.freshMedian', 'usage.rereadMedian', 'usage.outputMedian', 'usage.declineWaste'];
 
-const UNPINNED_LABEL = 'CLI default (not pinned)';
+const UNPINNED_LABEL = 'usage.unpinned';
 
 const TOKEN_CLASSES = [
-  ['fresh_input', 'Fresh input'],
-  ['reread', 'Re-read'],
-  ['output', 'Output'],
+  ['fresh_input', 'usage.freshInput'],
+  ['reread', 'usage.reread'],
+  ['output', 'usage.output'],
 ] as const;
 
 type TokenClass = (typeof TOKEN_CLASSES)[number][0];
 
-function modelLabel(model: string | null): string {
-  return model === null ? UNPINNED_LABEL : model;
+function modelLabel(model: string | null, { t }: UsagePresentation): string {
+  return model === null ? t(UNPINNED_LABEL) : model;
 }
 
 /* ------------------------------------------------------------------ */
@@ -112,6 +107,8 @@ function CohortPicker({
   onExecutor: (executor: string) => void;
   onModel: (model: string | null) => void;
 }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t } = presentation;
   const executors = useMemo(() => [...new Set(cohorts.map((c) => c.executor))], [cohorts]);
   // The unpinned cohort is always offered for the chosen CLI, even when it has
   // no runs in this window (and so no cohort row).
@@ -122,7 +119,7 @@ function CohortPicker({
   return (
     <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-3">
       <div role="group" aria-labelledby="usage-cli-label" className="flex flex-wrap items-center gap-2">
-        <span id="usage-cli-label" className="text-caption text-text-muted mr-1">CLI</span>
+        <span id="usage-cli-label" className="text-caption text-text-muted mr-1">{t('usage.cli')}</span>
         {executors.map((ex) => (
           <Pill key={ex} pressed={executor === ex} onClick={() => onExecutor(ex)}>
             {ex}
@@ -130,9 +127,9 @@ function CohortPicker({
         ))}
       </div>
       <div role="group" aria-labelledby="usage-model-label" className="flex flex-wrap items-center gap-2">
-        <span id="usage-model-label" className="text-caption text-text-muted mr-1">Model</span>
+        <span id="usage-model-label" className="text-caption text-text-muted mr-1">{t('usage.model')}</span>
         {executor === null ? (
-          <span className="text-caption text-text-muted">Choose a CLI first</span>
+          <span className="text-caption text-text-muted">{t('usage.chooseCliFirst')}</span>
         ) : (
           models.map((model) => (
             <Pill
@@ -140,7 +137,7 @@ function CohortPicker({
               pressed={selection !== null && selection.executor === executor && selection.model === model}
               onClick={() => onModel(model)}
             >
-              {modelLabel(model)}
+              {modelLabel(model, presentation)}
             </Pill>
           ))
         )}
@@ -157,14 +154,14 @@ function Sub({ children }: { children: ReactNode }): JSX.Element {
   return <span className="text-2xs text-text-muted mt-1 block font-sans">{children}</span>;
 }
 
-function coverageFor(p: EfficiencyPeriod): string {
-  return `${p.usage_coverage.known} of ${p.usage_coverage.total}`;
+function coverageFor(p: EfficiencyPeriod, { t, formatCount }: UsagePresentation): string {
+  return t('usage.fraction', { known: formatCount(p.usage_coverage.known), total: formatCount(p.usage_coverage.total) });
 }
 
-function tokenDisplay(m: TokenMetric, p: EfficiencyPeriod): string {
+function tokenDisplay(m: TokenMetric, p: EfficiencyPeriod, { t, formatTokenValue }: UsagePresentation): string {
   if (p.runs === 0) return DASH;
   if (m.value !== null) return formatTokenValue(m.value);
-  return p.usage_coverage.known === 0 ? 'Unknown' : 'Not reported';
+  return p.usage_coverage.known === 0 ? t('usage.unknown') : t('usage.notReported');
 }
 
 interface RowCompare {
@@ -182,9 +179,11 @@ function TokenCell({
   period: EfficiencyPeriod;
   cmp: RowCompare | null;
 }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount, formatExactTokens, formatTokenValue } = presentation;
   const m = period[name];
   const known = period.usage_coverage.known;
-  const display = tokenDisplay(m, period);
+  const display = tokenDisplay(m, period, presentation);
   const partial = name === 'fresh_input' && m.partial_count > 0 && period.runs > 0;
   return (
     <td className={CELL_CLASS}>
@@ -197,22 +196,22 @@ function TokenCell({
       {partial ? (
         <>
           <span className="text-2xs bg-attention-soft text-attention-text mt-1 inline-block rounded-sm px-1 font-sans">
-            Partial
+            {t('usage.partial')}
           </span>
           <Sub>
-            median of {m.n_reported} of {known} runs; cache write not reported for {m.partial_count}
+            {t('usage.partialDetail', { reported: formatCount(m.n_reported), known: formatCount(known), partial: formatCount(m.partial_count) })}
           </Sub>
         </>
       ) : (
         m.value !== null &&
-        m.n_reported < known && <Sub>{m.n_reported} of {known} class-reported</Sub>
+        m.n_reported < known && <Sub>{t('usage.classReported', { reported: formatCount(m.n_reported), known: formatCount(known) })}</Sub>
       )}
       {cmp && (
         <DeltaLine
           delta={cmp.deltas[name]}
           formatAbsolute={formatTokenValue}
-          previous={tokenDisplay(cmp.previous[name], cmp.previous)}
-          coverage={`usage known ${coverageFor(period)} now · ${coverageFor(cmp.previous)} before`}
+          previous={tokenDisplay(cmp.previous[name], cmp.previous, presentation)}
+          coverage={t('usage.usageNowBefore', { current: coverageFor(period, presentation), previous: coverageFor(cmp.previous, presentation) })}
           rowWithheld={cmp.rowWithheld}
         />
       )}
@@ -227,6 +226,8 @@ function DeclineCell({
   period: EfficiencyPeriod;
   cmp: RowCompare | null;
 }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount, formatExactTokens, formatRate, formatTokenValue } = presentation;
   const d: DeclineWaste | null = period.decline_waste;
   if (d === null) return <td className={CELL_CLASS} />;
   if (period.runs === 0) {
@@ -237,7 +238,7 @@ function DeclineCell({
     );
   }
   const prev = cmp?.previous.decline_waste ?? null;
-  const declineCoverage = (x: DeclineWaste) => `${x.usage_known} of ${x.declined}`;
+  const declineCoverage = (x: DeclineWaste) => t('usage.fraction', { known: formatCount(x.usage_known), total: formatCount(x.declined) });
   const delta = (key: string, previous: string) =>
     cmp && (
       <DeltaLine
@@ -246,8 +247,8 @@ function DeclineCell({
         previous={previous}
         coverage={
           prev
-            ? `decline usage known ${declineCoverage(d)} now · ${declineCoverage(prev)} before`
-            : `decline usage known ${declineCoverage(d)}`
+            ? t('usage.declineNowBefore', { current: declineCoverage(d), previous: declineCoverage(prev) })
+            : t('usage.declineCoverage', { value: declineCoverage(d) })
         }
         rowWithheld={cmp.rowWithheld}
       />
@@ -257,7 +258,7 @@ function DeclineCell({
   if (d.state === 'no_declines') {
     return (
       <td className={CELL_CLASS}>
-        <span className="text-text-primary">0% · no declines</span>
+        <span className="text-text-primary">{t('usage.noDeclines')}</span>
         {rateDelta}
       </td>
     );
@@ -266,30 +267,30 @@ function DeclineCell({
     <td className={CELL_CLASS}>
       <span className="text-text-primary">{d.rate !== null ? formatRate(d.rate) : DASH}</span>
       <Sub>
-        {d.declined} of {d.total} declined
+        {t('usage.declined', { declined: formatCount(d.declined), total: formatCount(d.total) })}
       </Sub>
       {rateDelta}
       {d.usage_known === 0 ? (
-        <Sub>usage unknown for all declined wakes</Sub>
+        <Sub>{t('usage.declinesUnknown')}</Sub>
       ) : (
         <>
-          <Sub>Known totals for declined wakes</Sub>
+          <Sub>{t('usage.declineTotals')}</Sub>
           <dl className="text-2xs mt-1 space-y-1">
             {TOKEN_CLASSES.map(([key, label]) => {
               const total = d[key];
               const prevTotal = prev?.[key];
               return (
                 <div key={key} className="flex flex-wrap items-baseline justify-end gap-x-2">
-                  <dt className="text-text-muted font-sans">{label}</dt>
+                  <dt className="text-text-muted font-sans">{t(label)}</dt>
                   <dd className="text-text-primary">
                     {total.value !== null ? (
                       <span title={formatExactTokens(total.value)}>{formatTokenValue(total.value)}</span>
                     ) : (
-                      <span className="text-text-muted font-sans">Not reported</span>
+                      <span className="text-text-muted font-sans">{t('usage.notReported')}</span>
                     )}
                     {delta(
                       `decline_${key}`,
-                      prevTotal && prevTotal.value !== null ? formatTokenValue(prevTotal.value) : 'Not reported',
+                      prevTotal && prevTotal.value !== null ? formatTokenValue(prevTotal.value) : t('usage.notReported'),
                     )}
                   </dd>
                 </div>
@@ -297,7 +298,7 @@ function DeclineCell({
             })}
           </dl>
           <Sub>
-            usage known for {d.usage_known} of {d.declined} declined wakes
+            {t('usage.declineKnown', { known: formatCount(d.usage_known), total: formatCount(d.declined) })}
           </Sub>
         </>
       )}
@@ -314,6 +315,8 @@ function RunTypeRow({
   row: EfficiencyRow;
   compare: boolean;
 }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount, withheldExplanation } = presentation;
   const cur = row.current;
   let cmp: RowCompare | null = null;
   if (compare && row.previous && row.deltas) {
@@ -331,24 +334,24 @@ function RunTypeRow({
     <tr className="border-border-default border-b last:border-0">
       <th scope="row" className={IDENTITY_CLASS}>
         <span className="text-text-primary block font-medium">{label}</span>
-        {cur.runs === 0 && <Sub>No runs in this period</Sub>}
+        {cur.runs === 0 && <Sub>{t('usage.noRuns')}</Sub>}
         {cmp ? (
           <Sub>
-            Usage known for {coverageFor(cur)} runs now and {coverageFor(cmp.previous)} in the previous 7 days
+            {t('usage.rowCoverageCompare', { current: coverageFor(cur, presentation), previous: coverageFor(cmp.previous, presentation) })}
           </Sub>
         ) : (
-          cur.runs > 0 && <Sub>Usage known for {coverageFor(cur)} runs</Sub>
+          cur.runs > 0 && <Sub>{t('usage.rowCoverage', { value: coverageFor(cur, presentation) })}</Sub>
         )}
         {rowReason && <Sub>{withheldExplanation(rowReason)}</Sub>}
       </th>
       <td className={CELL_CLASS}>
-        <span className="text-text-primary">{cur.runs}</span>
+        <span className="text-text-primary">{formatCount(cur.runs)}</span>
         {cmp && (
           <DeltaLine
             delta={cmp.deltas.runs}
-            formatAbsolute={(n) => String(n)}
-            previous={String(cmp.previous.runs)}
-            coverage={`usage known ${coverageFor(cur)} now · ${coverageFor(cmp.previous)} before`}
+            formatAbsolute={formatCount}
+            previous={formatCount(cmp.previous.runs)}
+            coverage={t('usage.usageNowBefore', { current: coverageFor(cur, presentation), previous: coverageFor(cmp.previous, presentation) })}
             rowWithheld={cmp.rowWithheld}
           />
         )}
@@ -370,27 +373,29 @@ function EfficiencyTable({
   selection: CohortSelection;
   compare: boolean;
 }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t } = presentation;
   const byType = new Map(data.rows.map((r) => [r.run_type, r]));
   return (
-    <ScrollTable label="Efficiency table">
+    <ScrollTable label={t('usage.efficiencyTable')}>
       <table className="text-body min-w-content-form md:min-w-content-narrow w-full table-fixed border-collapse">
         <caption className="sr-only">
-          Efficiency by run type for {selection.executor} · {modelLabel(selection.model)}
+          {t('usage.efficiencyCaption', { executor: selection.executor, model: modelLabel(selection.model, presentation) })}
         </caption>
         <thead>
           <tr>
-            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 w-1/5 text-left`}>Run type</th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Runs</th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Median fresh input<FootnoteMark n={1} /></th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Median re-read<FootnoteMark n={2} /></th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Median output<FootnoteMark n={3} /></th>
-            <th scope="col" className={`${TH_CLASS} w-1/5 text-right`}>Decline waste<FootnoteMark n={4} /></th>
+            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 w-1/5 text-left`}>{t('usage.runType')}</th>
+            <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.runs')}</th>
+            <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.freshMedian')}<FootnoteMark n={1} /></th>
+            <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.rereadMedian')}<FootnoteMark n={2} /></th>
+            <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.outputMedian')}<FootnoteMark n={3} /></th>
+            <th scope="col" className={`${TH_CLASS} w-1/5 text-right`}>{t('usage.declineWaste')}<FootnoteMark n={4} /></th>
           </tr>
         </thead>
         <tbody>
           {RUN_TYPES.map(([type, label]) => {
             const row = byType.get(type);
-            return row ? <RunTypeRow key={type} label={label} row={row} compare={compare} /> : null;
+            return row ? <RunTypeRow key={type} label={t(label)} row={row} compare={compare} /> : null;
           })}
         </tbody>
       </table>
@@ -398,10 +403,10 @@ function EfficiencyTable({
   );
 }
 
-const UNATTRIBUTED_LABELS: Array<[keyof UnattributedCounts, string]> = [
-  ...RUN_TYPES.map(([key, label]) => [key, `${label} (no CLI/model on record)`] as [keyof UnattributedCounts, string]),
-  ['task_unclassified', 'Task sessions without a run type'],
-  ['recovery', 'Completion-recovery sessions'],
+const UNATTRIBUTED_LABELS: Array<[keyof UnattributedCounts, MessageKey]> = [
+  ...RUN_TYPES,
+  ['task_unclassified', 'usage.taskUnclassified'],
+  ['recovery', 'usage.recovery'],
 ];
 
 function UnattributedBlock({
@@ -409,23 +414,25 @@ function UnattributedBlock({
   period,
 }: {
   counts: UnattributedCounts;
-  period: 'this period' | 'the previous 7 days';
+  period: 'current' | 'previous';
 }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount } = presentation;
+  const periodLabel = t(period === 'current' ? 'usage.thisPeriod' : 'usage.previousPeriod');
   const entries = UNATTRIBUTED_LABELS.filter(([key]) => counts[key] > 0);
   const total = entries.reduce((n, [key]) => n + counts[key], 0);
   if (total === 0) {
-    return <p>All lifecycle runs in {period} have a CLI/model on record.</p>;
+    return <p>{t('usage.allAttributed', { period: periodLabel })}</p>;
   }
   return (
     <div>
       <p>
-        {total} lifecycle run{total === 1 ? '' : 's'} in {period} {total === 1 ? 'is' : 'are'} outside every
-        cohort and {total === 1 ? 'is' : 'are'} not counted in the rows above.
+        {t('usage.unattributed', { count: total, n: formatCount(total), period: periodLabel })}
       </p>
-      <ul aria-label={`Unattributed lifecycle runs ${period}`} className="mt-1 list-disc pl-5">
+      <ul aria-label={t('usage.unattributedLabel', { period: periodLabel })} className="mt-1 list-disc pl-5">
         {entries.map(([key, label]) => (
           <li key={key}>
-            {label}: {counts[key]}
+            {RUN_TYPES.some(([type]) => type === key) ? t('usage.unattributedType', { label: t(label) }) : t(label)}: {formatCount(counts[key])}
           </li>
         ))}
       </ul>
@@ -434,6 +441,8 @@ function UnattributedBlock({
 }
 
 function UsageSentence({ data, compare }: { data: EfficiencyResponse; compare: boolean }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount } = presentation;
   const sum = (pick: (r: EfficiencyRow) => EfficiencyPeriod | null) =>
     data.rows.reduce(
       (acc, r) => {
@@ -450,9 +459,9 @@ function UsageSentence({ data, compare }: { data: EfficiencyResponse; compare: b
   const prev = compare ? sum((r) => r.previous) : null;
   return (
     <p className="text-body text-text-secondary mt-3">
-      <span>Usage known for {cur.known} of {cur.total} runs in this period.</span>
-      {prev && <span> {prev.known} of {prev.total} in the previous 7 days.</span>}{' '}
-      Runs without usage stay in the count and are never treated as zero.
+      <span>{t('usage.usageSentence', { known: formatCount(cur.known), total: formatCount(cur.total) })}</span>
+      {prev && <span>{t('usage.usagePrevious', { known: formatCount(prev.known), total: formatCount(prev.total) })}</span>}{' '}
+      {t('usage.usageMissingFootnote')}
     </p>
   );
 }
@@ -462,6 +471,8 @@ function UsageSentence({ data, compare }: { data: EfficiencyResponse; compare: b
 /* ------------------------------------------------------------------ */
 
 export function EfficiencySection({ compare }: { compare: boolean }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatInstant } = presentation;
   const optionsQ = useEfficiencyOptions(compare);
   const [executor, setExecutor] = useState<string | null>(null);
   const [selection, setSelection] = useState<CohortSelection | null>(null);
@@ -503,7 +514,7 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
 
   const shown = chosen ? dataQ.data : optionsQ.data;
   const meta = shown
-    ? `Data through ${formatInstant(shown.data_through, shown.timezone)} (${shown.timezone}) · generated ${formatInstant(shown.generated_at, shown.timezone)}`
+    ? t('usage.meta', { through: formatInstant(shown.data_through, shown.timezone), timezone: shown.timezone, generated: formatInstant(shown.generated_at, shown.timezone) })
     : null;
 
   let status: string;
@@ -511,40 +522,39 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
   const optionsFailed = optionsQ.isError && optionsQ.data === undefined;
 
   if (optionsQ.isPending) {
-    status = 'Loading efficiency cohorts';
-    body = <TableSkeleton columns={COLUMNS} rows={5} />;
+    status = t('usage.efficiencyOptionsLoading');
+    body = <TableSkeleton columns={COLUMNS.map(key => t(key))} rows={5} />;
   } else if (optionsFailed) {
-    status = 'Efficiency cohorts failed to load';
-    body = <SectionError view="Efficiency" onRetry={() => void optionsQ.refetch()} retrying={optionsQ.isFetching} />;
+    status = t('usage.efficiencyOptionsFailed');
+    body = <SectionError view={t('usage.efficiency')} onRetry={() => void optionsQ.refetch()} retrying={optionsQ.isFetching} />;
   } else if (cohorts.length === 0) {
-    status = 'No CLI/model cohorts have runs in this period';
+    status = t('usage.efficiencyNoCohorts');
     body = (
       <p className="text-body text-text-secondary">
-        No CLI/model cohort has runs in this period, so there is nothing to compare within a cohort.
+        {t('usage.efficiencyEmpty')}
       </p>
     );
   } else if (chosen === null) {
-    status = 'Choose a CLI to see Efficiency';
+    status = t('usage.efficiencyChooseCli');
     body = (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
         <p className="text-body text-text-primary">
-          Choose one CLI. Its CLI default (not pinned) cohort is preselected and you can pick a named
-          model. Token reporting differs by CLI and model, so there is no combined view.
+          {t('usage.chooseCohort')}
         </p>
       </div>
     );
   } else if (dataQ.isPending) {
-    status = 'Loading efficiency';
-    body = <TableSkeleton columns={COLUMNS} rows={5} />;
+    status = t('usage.efficiencyLoading');
+    body = <TableSkeleton columns={COLUMNS.map(key => t(key))} rows={5} />;
   } else if (!dataQ.data) {
-    status = 'Efficiency failed to load';
-    body = <SectionError view="Efficiency" onRetry={() => void dataQ.refetch()} retrying={dataQ.isFetching} />;
+    status = t('usage.efficiencyFailed');
+    body = <SectionError view={t('usage.efficiency')} onRetry={() => void dataQ.refetch()} retrying={dataQ.isFetching} />;
   } else {
     const data = dataQ.data;
     const stale = dataQ.isError;
     status = stale
-      ? 'Efficiency is stale: the latest refresh failed'
-      : `Efficiency loaded for ${chosen.executor} · ${modelLabel(chosen.model)}`;
+      ? t('usage.efficiencyStale')
+      : t('usage.efficiencyLoaded', { executor: chosen.executor, model: modelLabel(chosen.model, presentation) });
     body = (
       <>
         {stale && (
@@ -557,23 +567,20 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
         <EfficiencyTable data={data} selection={chosen} compare={compare} />
         <UsageSentence data={data} compare={compare} />
         <div className="text-body text-text-secondary mt-3 space-y-2">
-          <UnattributedBlock counts={data.unattributed.current} period="this period" />
+          <UnattributedBlock counts={data.unattributed.current} period="current" />
           {compare && data.unattributed.previous && (
-            <UnattributedBlock counts={data.unattributed.previous} period="the previous 7 days" />
+            <UnattributedBlock counts={data.unattributed.previous} period="previous" />
           )}
         </div>
         <Footnotes>
-          <p><sup>1</sup> Fresh input = uncached input + cache-write tokens reported by the provider.</p>
-          <p><sup>2</sup> Re-read = cache-read tokens.</p>
-          <p><sup>3</sup> Output includes reasoning once, whether the provider reports it inside output or separately.</p>
+          <p><sup>1</sup> {t('usage.freshFootnote')}</p>
+          <p><sup>2</sup> {t('usage.rereadFootnote')}</p>
+          <p><sup>3</sup> {t('usage.outputFootnote')}</p>
           <p>
-            <sup>4</sup> Share of wakes that declined, with the usage known for those declined wakes. Token
-            classes are kept separate.
+            <sup>4</sup> {t('usage.declineFootnote')}
           </p>
           <p>
-            Medians are over runs with known usage. The three classes are never added together, and
-            nothing is compared across CLIs or models. Not reported means the provider does not report
-            that class; 0 is a reported zero.
+            {t('usage.medianFootnote')}
           </p>
         </Footnotes>
       </>
@@ -583,8 +590,8 @@ export function EfficiencySection({ compare }: { compare: boolean }): JSX.Elemen
   return (
     <UsageSection
       id="usage-efficiency"
-      title="Efficiency"
-      question="Within one CLI and one model, which run types use tokens inefficiently?"
+      title={t('usage.efficiency')}
+      question={t('usage.efficiencyQuestion')}
       meta={meta}
       status={status}
       controls={

@@ -19,28 +19,29 @@ import {
   TableSkeleton,
   UsageSection,
 } from './UsageParts';
-import { formatCount, formatDuration, formatInstant } from './usageFormat';
+import { useUsagePresentation, type UsagePresentation } from './strings';
+import type { MessageKey } from '@/lib/i18n';
 
-const COLUMNS = ['Agent', 'Task runs', 'Thread wakes', 'Recorded runtime', 'Deliveries', 'Replies'];
+const COLUMNS: MessageKey[] = ['usage.agent', 'usage.taskRuns', 'usage.threadWakes', 'usage.runtime', 'usage.deliveries', 'usage.replies'];
 
-const DEFINITIONS: Array<[string, string]> = [
-  ['Task runs', 'Task execution sessions that started in the period, including retries, recovery turns and manager decisions.'],
-  ['Thread wakes', 'Thread invocations that started in the period, whatever their outcome.'],
-  ['Recorded runtime', 'Agent runtime as recorded for those runs. Missing durations are not counted as zero; this is not human working time.'],
-  ['Deliveries', 'Distinct tasks that reached an accepted, completed worker delivery in the period.'],
-  ['Replies', 'Thread reply wakes that produced one persisted agent message.'],
+const DEFINITIONS: Array<[MessageKey, MessageKey]> = [
+  ['usage.taskRuns', 'usage.taskRunsDefinition'],
+  ['usage.threadWakes', 'usage.threadWakesDefinition'],
+  ['usage.runtime', 'usage.runtimeDefinition'],
+  ['usage.deliveries', 'usage.deliveriesDefinition'],
+  ['usage.replies', 'usage.repliesDefinition'],
 ];
 
-function runtimeValue(p: WorkloadPeriod): string {
-  return p.recorded_runtime.known === 0 ? 'Not recorded' : formatDuration(p.recorded_runtime.seconds);
+function runtimeValue(p: WorkloadPeriod, { t, formatDuration }: UsagePresentation): string {
+  return p.recorded_runtime.known === 0 ? t('usage.notRecorded') : formatDuration(p.recorded_runtime.seconds);
 }
 
-function runtimeCoverage(p: WorkloadPeriod): string {
-  return `recorded for ${p.recorded_runtime.known} of ${p.recorded_runtime.total} runs`;
+function runtimeCoverage(p: WorkloadPeriod, { t, formatCount }: UsagePresentation): string {
+  return t('usage.runtimeCoverage', { known: formatCount(p.recorded_runtime.known), total: formatCount(p.recorded_runtime.total) });
 }
 
-function replyCoverage(p: WorkloadPeriod): string {
-  return `${p.reply_outcome_coverage.recorded} of ${p.reply_outcome_coverage.total_consumed}`;
+function replyCoverage(p: WorkloadPeriod, { t, formatCount }: UsagePresentation): string {
+  return t('usage.fraction', { known: formatCount(p.reply_outcome_coverage.recorded), total: formatCount(p.reply_outcome_coverage.total_consumed) });
 }
 
 function CountCell({
@@ -66,6 +67,8 @@ function SubLine({ children }: { children: ReactNode }): JSX.Element {
 }
 
 function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount, formatDuration } = presentation;
   const cur = row.current;
   const prev = row.previous;
   const showDelta = compare && prev !== null;
@@ -95,11 +98,11 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
       {count('task_runs')}
       {count('thread_wakes')}
       <CountCell
-        value={runtimeValue(cur)}
+        value={runtimeValue(cur, presentation)}
         extra={
           <>
-            <SubLine>{runtimeCoverage(cur)}</SubLine>
-            {showDelta && <SubLine>before: {runtimeCoverage(prev)}</SubLine>}
+            <SubLine>{runtimeCoverage(cur, presentation)}</SubLine>
+            {showDelta && <SubLine>{t('usage.before', { value: runtimeCoverage(prev, presentation) })}</SubLine>}
           </>
         }
         delta={
@@ -107,8 +110,8 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
             <DeltaLine
               delta={row.deltas?.recorded_runtime_seconds}
               formatAbsolute={formatDuration}
-              previous={runtimeValue(prev)}
-              coverage={`${runtimeCoverage(cur)} now · ${runtimeCoverage(prev)} before`}
+              previous={runtimeValue(prev, presentation)}
+              coverage={t('usage.nowBefore', { current: runtimeCoverage(cur, presentation), previous: runtimeCoverage(prev, presentation) })}
             />
           )
         }
@@ -118,8 +121,8 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
         value={formatCount(cur.replies)}
         extra={
           <>
-            <SubLine>recorded {replyCoverage(cur)}</SubLine>
-            {unknownReplies > 0 && <SubLine>{unknownReplies} reply outcome not recorded</SubLine>}
+            <SubLine>{t('usage.replyRecorded', { value: replyCoverage(cur, presentation) })}</SubLine>
+            {unknownReplies > 0 && <SubLine>{t('usage.replyUnknown', { n: formatCount(unknownReplies) })}</SubLine>}
           </>
         }
         delta={
@@ -128,7 +131,7 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
               delta={row.deltas?.replies}
               formatAbsolute={formatCount}
               previous={formatCount(prev.replies)}
-              coverage={`recorded ${replyCoverage(cur)} now · ${replyCoverage(prev)} before`}
+              coverage={t('usage.replyNowBefore', { current: replyCoverage(cur, presentation), previous: replyCoverage(prev, presentation) })}
             />
           )
         }
@@ -138,24 +141,26 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
 }
 
 function WorkloadTable({ data, compare }: { data: WorkloadResponse; compare: boolean }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t } = presentation;
   return (
-    <ScrollTable label="Workload table">
+    <ScrollTable label={t('usage.workloadTable')}>
       <table className="text-body min-w-content-form w-full table-fixed border-collapse">
-        <caption className="sr-only">Workload by agent</caption>
+        <caption className="sr-only">{t('usage.workloadCaption')}</caption>
         <thead>
           <tr>
-            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 w-1/4 text-left`}>Agent</th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Task runs</th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Thread wakes</th>
+            <th scope="col" className={`${TH_CLASS} bg-surface sticky left-0 z-10 w-1/4 text-left`}>{t('usage.agent')}</th>
+            <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.taskRuns')}</th>
+            <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.threadWakes')}</th>
             <th scope="col" className={`${TH_CLASS} text-right`}>
-              Recorded runtime<span className="sr-only"> (agent runtime, not human hours)</span>
+              {t('usage.runtime')}<span className="sr-only">{t('usage.runtimeAssistive')}</span>
               <FootnoteMark n={1} />
             </th>
             <th scope="col" className={`${TH_CLASS} text-right`}>
-              Deliveries
+              {t('usage.deliveries')}
               <FootnoteMark n={2} />
             </th>
-            <th scope="col" className={`${TH_CLASS} text-right`}>Replies</th>
+            <th scope="col" className={`${TH_CLASS} text-right`}>{t('usage.replies')}</th>
           </tr>
         </thead>
         <tbody>
@@ -169,6 +174,8 @@ function WorkloadTable({ data, compare }: { data: WorkloadResponse; compare: boo
 }
 
 function CoverageSentence({ data, compare }: { data: WorkloadResponse; compare: boolean }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount } = presentation;
   const sum = (pick: (a: WorkloadAgent) => WorkloadPeriod | null) =>
     data.agents.reduce(
       (acc, a) => {
@@ -185,57 +192,60 @@ function CoverageSentence({ data, compare }: { data: WorkloadResponse; compare: 
   const prev = compare ? sum((a) => a.previous) : null;
   return (
     <p className="text-body text-text-secondary mt-3">
-      Runtime recorded for {cur.known} of {cur.total} task runs and thread wakes in this period.
+      {t('usage.runtimeSentence', { known: formatCount(cur.known), total: formatCount(cur.total) })}
       {prev && (
-        <> Previous 7 days, for the agents listed: {prev.known} of {prev.total}.</>
+        <>{t('usage.runtimePrevious', { known: formatCount(prev.known), total: formatCount(prev.total) })}</>
       )}
     </p>
   );
 }
 
 function UnclassifiedFootnote({ data }: { data: WorkloadResponse }): JSX.Element | null {
+  const presentation = useUsagePresentation();
+  const { t, formatCount } = presentation;
   const rows = data.agents.filter((a) => a.current.delivery_unclassified_results > 0);
   if (rows.length === 0) return null;
   const total = rows.reduce((n, a) => n + a.current.delivery_unclassified_results, 0);
-  const detail = rows.map((a) => `${a.agent} ${a.current.delivery_unclassified_results}`).join(', ');
+  const detail = rows.map((a) => `${a.agent} ${formatCount(a.current.delivery_unclassified_results)}`).join(', ');
   return (
     <p>
-      {total} completed results could not be classified as worker delivery and are not counted in
-      Deliveries ({detail}).
+      {t('usage.unclassifiedDelivery', { n: formatCount(total), detail })}
     </p>
   );
 }
 
 export function WorkloadSection({ compare }: { compare: boolean }): JSX.Element {
+  const presentation = useUsagePresentation();
+  const { t, formatCount, formatInstant } = presentation;
   const q = useWorkload(compare);
   const data = q.data;
   const meta = data
-    ? `Data through ${formatInstant(data.data_through, data.timezone)} (${data.timezone}) · generated ${formatInstant(data.generated_at, data.timezone)}`
+    ? t('usage.meta', { through: formatInstant(data.data_through, data.timezone), timezone: data.timezone, generated: formatInstant(data.generated_at, data.timezone) })
     : null;
   const stale = q.isError && data !== undefined;
   const retry = () => void q.refetch();
 
   let status: string;
-  if (q.isPending) status = 'Loading workload';
-  else if (!data) status = 'Workload failed to load';
-  else if (stale) status = 'Workload is stale: the latest refresh failed';
-  else status = `Workload loaded for ${data.agents.length} agent${data.agents.length === 1 ? '' : 's'}`;
+  if (q.isPending) status = t('usage.workloadLoading');
+  else if (!data) status = t('usage.workloadFailed');
+  else if (stale) status = t('usage.workloadStale');
+  else status = t('usage.workloadLoaded', { count: data.agents.length, n: formatCount(data.agents.length) });
 
   let body: ReactNode;
   if (q.isPending) {
-    body = <TableSkeleton columns={COLUMNS} />;
+    body = <TableSkeleton columns={COLUMNS.map(key => t(key))} />;
   } else if (!data) {
-    body = <SectionError view="Workload" onRetry={retry} retrying={q.isFetching} />;
+    body = <SectionError view={t('usage.workload')} onRetry={retry} retrying={q.isFetching} />;
   } else if (data.agents.length === 0) {
     body = (
       <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-5">
         <p className="text-body text-text-primary font-medium">
-          No task runs or thread wakes started in this period.
+          {t('usage.workloadEmpty')}
         </p>
-        <ul aria-label="Workload column definitions" className="text-caption text-text-secondary mt-3 space-y-2">
+        <ul aria-label={t('usage.workloadDefinitions')} className="text-caption text-text-secondary mt-3 space-y-2">
           {DEFINITIONS.map(([term, def]) => (
             <li key={term}>
-              <strong className="text-text-primary font-semibold">{term}</strong> — {def}
+              <strong className="text-text-primary font-semibold">{t(term)}</strong> — {t(def)}
             </li>
           ))}
         </ul>
@@ -255,15 +265,13 @@ export function WorkloadSection({ compare }: { compare: boolean }): JSX.Element 
         <CoverageSentence data={data} compare={compare} />
         <Footnotes>
           <p>
-            <sup>1</sup> Agent runtime as recorded, including provider latency, retries and timeouts.
-            Parallel runs add up; this is not human working time.
+            <sup>1</sup> {t('usage.runtimeFootnote')}
           </p>
           <p>
-            <sup>2</sup> Completed worker deliveries only. Manager decisions, child callbacks, thread
-            follow-ups, declines, retries and failures are activity, not delivery.
+            <sup>2</sup> {t('usage.deliveryFootnote')}
           </p>
           <UnclassifiedFootnote data={data} />
-          <p>Counts are CLI-neutral. Changes compare with the previous 7 days and do not mean better or worse.</p>
+          <p>{t('usage.countFootnote')}</p>
         </Footnotes>
       </>
     );
@@ -272,8 +280,8 @@ export function WorkloadSection({ compare }: { compare: boolean }): JSX.Element 
   return (
     <UsageSection
       id="usage-workload"
-      title="Workload"
-      question="Who is carrying the workload?"
+      title={t('usage.workload')}
+      question={t('usage.workloadQuestion')}
       meta={meta}
       status={status}
     >

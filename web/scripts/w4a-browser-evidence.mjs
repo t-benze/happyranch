@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; W4c agents + skills; later W4 slices add rows).
+ * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; W4c agents + skills; W4d KB/Artifacts + Usage; later W4 slices add rows).
  *
  * Same mechanism as `w3b-jobs-browser-evidence.mjs` (no new dependency): ONE
  * isolated headless Chrome driven over the DevTools Protocol against the
@@ -308,7 +308,29 @@ const W4D_ARTIFACTS = [
   { name: 'Raw_Agent-2026-06-16-THR-042-Raw_Title.pdf', size_bytes: 1536, modified_at: '2026-06-20T14:30:00Z' },
   { name: 'Raw_Folder/Raw_File.txt', size_bytes: 512, modified_at: '' },
 ];
+// W4d-2 Usage response fixtures: windows are org wall-clock parts, not viewer instants.
+const USAGE_META = {
+  generated_at: '2026-09-29T06:03:00Z', data_through: '2026-09-29T06:03:00Z', timezone: 'Asia/Shanghai',
+  current_window: { start_utc: '2026-09-22T06:03:00Z', end_utc: '2026-09-29T06:03:00Z', start_local: '2026-09-22T14:03:00+08:00', end_local: '2026-09-29T14:03:00+08:00' },
+  previous_window: { start_utc: '2026-09-15T06:03:00Z', end_utc: '2026-09-22T06:03:00Z', start_local: '2026-09-15T14:03:00+08:00', end_local: '2026-09-22T14:03:00+08:00' },
+};
+const USAGE_WORKLOAD = { ...USAGE_META, agents: [{ agent: 'Raw_Agent',
+  current: { task_runs: 12345, thread_wakes: 62, recorded_runtime: { seconds: 15000, known: 71, total: 72 }, deliveries: 2, delivery_unclassified_results: 1, replies: 22, reply_outcome_coverage: { recorded: 22, total_consumed: 24 } },
+  previous: { task_runs: 12340, thread_wakes: 62, recorded_runtime: { seconds: 15000, known: 71, total: 72 }, deliveries: 0, delivery_unclassified_results: 0, replies: 22, reply_outcome_coverage: { recorded: 22, total_consumed: 24 } },
+  deltas: { task_runs: { kind: 'absolute', value: 5, withheld_reason: null }, thread_wakes: { kind: 'no_change', value: 0, withheld_reason: null }, deliveries: { kind: 'new_from_zero', value: 2, withheld_reason: null }, replies: { kind: 'withheld', value: null, withheld_reason: 'reply_outcome_not_recorded' } },
+}] };
+const USAGE_COHORTS = [null, 'Raw_Model', 'Other_Model'].map(model => ({ executor: 'Raw_CLI', model, model_unpinned: model === null, current_runs: 20, previous_runs: 20 }));
+const USAGE_UNATTRIBUTED = { worker_task: 0, manager_decision: 0, thread_reply: 0, thread_followup: 0, dream: 0, task_unclassified: 0, recovery: 1 };
+const USAGE_ROWS = ['worker_task', 'manager_decision', 'thread_reply', 'thread_followup', 'dream'].map(run_type => {
+  const period = { runs: 20, usage_coverage: { known: 20, total: 20, ratio: 1 }, fresh_input: { value: 12000, n_reported: 20, partial_count: 0 }, reread: { value: 54000, n_reported: 20, partial_count: 0 }, output: { value: 4100, n_reported: 20, partial_count: 0 }, decline_waste: run_type.startsWith('thread_') ? { state: 'no_declines', declined: 0, total: 20, rate: 0, usage_known: 0, fresh_input: { value: null, n_reported: 0 }, reread: { value: null, n_reported: 0 }, output: { value: null, n_reported: 0 } } : null };
+  return { run_type, current: period, previous: period, deltas: { runs: { kind: 'absolute', value: 0, withheld_reason: null }, fresh_input: { kind: 'percent', value: -0.4, withheld_reason: null } } };
+});
+const USAGE_EFFICIENCY = search => ({ ...USAGE_META, cohorts: USAGE_COHORTS, rows: new URLSearchParams(search).has('executor') ? USAGE_ROWS : [], unattributed: { current: USAGE_UNATTRIBUTED, previous: USAGE_UNATTRIBUTED } });
+const USAGE_REFRESH_FAILED = new Set();
+
 const API_ROUTES = {
+  [`/api/v1/orgs/${ORG}/usage/workload`]: USAGE_WORKLOAD,
+  [`/api/v1/orgs/${ORG}/usage/efficiency`]: USAGE_EFFICIENCY,
   [`/api/v1/orgs/${ORG}/kb`]: { entries: [W4D_KB] },
   [`/api/v1/orgs/${ORG}/kb/stats`]: { entries: [{ slug: W4D_KB.slug, view_count: 1000 }] },
   [`/api/v1/orgs/${ORG}/kb/raw-knowledge`]: W4D_KB,
@@ -382,8 +404,20 @@ function startServer(root) {
             HUNG.push(response);
             return;
           }
+          // Usage-only scenario fixtures, selected by the evidence page URL.
+          // These exercise ordinary shipping fetches; no app/bundle seam is added.
+          const ref = new URL(request.headers.referer || 'http://127.0.0.1');
+          const mode = ref.searchParams.get('usageFixture');
+          if (p.includes('/usage/') && mode === 'loading') { HUNG.push(response); return; }
+          if (p.includes('/usage/') && (mode === 'error' || (mode === 'stale' && USAGE_REFRESH_FAILED.has(p + url.search + ref.search)))) {
+            response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+            response.end(JSON.stringify({ detail: 'Raw diagnostic' })); return;
+          }
+          if (p.includes('/usage/') && mode === 'stale') USAGE_REFRESH_FAILED.add(p + url.search + ref.search);
+          let payload = api(p, url.search);
+          if (p.includes('/usage/') && mode === 'empty') payload = p.endsWith('/workload') ? { ...USAGE_META, agents: [] } : { ...USAGE_META, cohorts: [], rows: [], unattributed: { current: USAGE_UNATTRIBUTED, previous: null } };
           response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-          response.end(JSON.stringify(api(p, url.search)));
+          response.end(JSON.stringify(payload));
           return;
         }
         if (p === '/__w4a_blank') {
@@ -430,7 +464,57 @@ const DREAM_CARD = (id) => `[...document.querySelectorAll('li > button')].find((
  * visible; `verbatim` are daemon bytes that must render unchanged; `ready` is
  * the content predicate; optional `prep(page, h)` drives the page to the state.
  */
+const USAGE_BUTTON = label => `[...document.querySelectorAll('#usage-efficiency-heading ~ * button, section[aria-labelledby="usage-efficiency-heading"] button')].find(b => b.textContent.trim() === ${JSON.stringify(label)})`;
+async function chooseUsage(page, h) {
+  await h.waitTrue(page, bodyHas('Raw_CLI'), 'Usage cohort options');
+  await h.clickSrc(page, USAGE_BUTTON('Raw_CLI'));
+  await h.waitTrue(page, `Boolean(${USAGE_BUTTON('Raw_Model')})`, 'named model option');
+  await h.clickSrc(page, USAGE_BUTTON('Raw_Model'));
+  await h.waitTrue(page, `document.querySelectorAll('section table').length === 2`, 'selected Efficiency');
+}
+const usageGeometry = (locale, width) => [['labelled scroll regions, contained sections, sticky identity and narrow hint', `(() => {
+  const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')];
+  const regions = sections.flatMap(s => [...s.querySelectorAll('[role="region"]')]);
+  const hints = regions.map(r => r.previousElementSibling);
+  return { sections: sections.length, tables: document.querySelectorAll('section table').length,
+    contained: sections.every(s => s.scrollWidth <= s.clientWidth + 1),
+    labelled: regions.every(r => r.getAttribute('aria-label') === (r.closest('section').getAttribute('aria-labelledby').includes('workload') ? ${JSON.stringify(tr(locale, 'usage.scrollLabel', { label: tr(locale, 'usage.workloadTable') }))} : ${JSON.stringify(tr(locale, 'usage.scrollLabel', { label: tr(locale, 'usage.efficiencyTable') }))}) && r.tabIndex === 0),
+    sticky: regions.every(r => [...r.querySelectorAll('th:first-child')].every(th => getComputedStyle(th).position === 'sticky')),
+    hint: hints.every(p => p.textContent === ${JSON.stringify(tr(locale, 'usage.scrollHint'))} && (getComputedStyle(p).display !== 'none') === ${width < 768}),
+    overflow: regions.every(r => r.scrollWidth > r.clientWidth) };
+})()`, { sections: 2, tables: 2, contained: true, labelled: true, sticky: true, hint: true, overflow: width === 390 }]];
+
 const VIEW_ROUTES = [
+  {
+    id: 'usage-unselected', route: 'usage', path: `/orgs/${ORG}/usage`, ready: () => bodyHas('Raw_Agent'),
+    keys: ['usage.chooseCohort', 'usage.chooseCliFirst', 'usage.workload', 'usage.efficiency'], verbatim: ['Raw_Agent', 'Raw_CLI', 'Asia/Shanghai'],
+    checks: () => [['first load retains no selected CLI/model and no Efficiency figures', `document.querySelectorAll('section table').length === 1 && document.querySelector('section[aria-labelledby="usage-efficiency-heading"]').querySelectorAll('button[aria-pressed="true"]').length === 0`, true]],
+  },
+  {
+    id: 'usage-populated', route: 'usage', path: `/orgs/${ORG}/usage`, ready: () => bodyHas('Raw_Agent'), prep: chooseUsage,
+    keys: ['usage.title', 'usage.compare', 'usage.workload', 'usage.efficiency', 'usage.workloadQuestion', 'usage.efficiencyQuestion', 'usage.agent', 'usage.taskRuns', 'usage.threadWakes', 'usage.runtime', 'usage.deliveries', 'usage.replies', 'usage.runType', 'usage.runs', 'usage.freshMedian', 'usage.rereadMedian', 'usage.outputMedian', 'usage.declineWaste', 'usage.workerTask', 'usage.managerDecision', 'usage.threadReply', 'usage.threadFollowup', 'usage.dream', 'usage.unpinned', 'usage.runtimeFootnote', 'usage.deliveryFootnote', 'usage.countFootnote', 'usage.freshFootnote', 'usage.rereadFootnote', 'usage.outputFootnote', 'usage.declineFootnote', 'usage.medianFootnote', 'usage.usageMissingFootnote'],
+    verbatim: ['Raw_Agent', 'Raw_CLI', 'Raw_Model', 'Asia/Shanghai', '12,345'], checks: usageGeometry,
+  },
+  {
+    id: 'usage-empty', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=empty`, ready: locale => bodyHas(tr(locale, 'usage.workloadEmpty')),
+    keys: ['usage.workloadEmpty', 'usage.efficiencyEmpty', 'usage.workloadDefinitions', 'usage.taskRunsDefinition', 'usage.threadWakesDefinition', 'usage.runtimeDefinition', 'usage.deliveriesDefinition', 'usage.repliesDefinition'], verbatim: ['Asia/Shanghai'],
+  },
+  {
+    id: 'usage-loading', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=loading`, ready: () => `document.querySelectorAll('[data-testid="usage-skeleton"]').length === 2`,
+    keys: ['usage.workloadLoading', 'usage.efficiencyOptionsLoading', 'usage.taskRuns', 'usage.freshMedian'], verbatim: [],
+    checks: () => [['two loading sections remain busy without figures', `document.querySelectorAll('[aria-busy="true"]').length`, 2]],
+  },
+  {
+    id: 'usage-error', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=error`, ready: locale => bodyHas(tr(locale, 'usage.loadError', { view: tr(locale, 'usage.efficiency') })),
+    keys: [['usage.loadError', { view: '@usage.workload' }], ['usage.loadError', { view: '@usage.efficiency' }], 'usage.retry', 'usage.workloadFailed', 'usage.efficiencyOptionsFailed'], verbatim: [],
+    checks: () => [['independent retry controls and Compare survive', `document.querySelectorAll('section button').length === 2 && Boolean(document.querySelector('[role="switch"]'))`, true]],
+  },
+  {
+    id: 'usage-stale', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=stale`, ready: () => bodyHas('Raw_Agent'),
+    prep: async (page, h) => { await chooseUsage(page, h); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas('−0.4%'), 'comparison'); await sleep(31000); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas(tr(await h.evaluate(page, 'document.documentElement.lang'), 'usage.stale')), 'stale Usage'); },
+    keys: ['usage.stale', 'usage.retry'], verbatim: ['Raw_Agent', 'Raw_Model', 'Asia/Shanghai'],
+    checks: (locale) => [['stale data retains original timestamp and cohort', `document.querySelector('section').textContent.includes(${JSON.stringify(tr(locale, 'usage.dataThrough', { stamp: locale === 'en' ? 'Sep 29, 14:03 (Asia/Shanghai)' : '9月29日 14:03 (Asia/Shanghai)' }))}) && ${USAGE_BUTTON('Raw_Model')}.getAttribute('aria-pressed') === 'true'`, true]],
+  },
   {
     id: 'kb-list', route: 'kb', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
     keys: ['kb.pageTitle', 'kb.railAllEntries', 'kb.railTagsSection', ['kb.headerEyebrow', { count: 1, number: '1' }], ['kb.viewedLabel', { count: 1000, number: '1,000' }]],
@@ -720,6 +804,16 @@ const VIEW_ROUTES = [
  */
 const SWITCH_ROUTES = [
   {
+    id: 'usage-cohort-compare', path: `/orgs/${ORG}/usage`,
+    open: async (page, h) => { await chooseUsage(page, h); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas('−0.4%'), 'comparison response'); await h.evaluate(page, `window.__usageCompare = document.querySelector('[role="switch"]'); window.__usageTable = document.querySelectorAll('section table')[1]; true`); },
+    control: USAGE_BUTTON('Raw_Model'), container: `CONTROL.closest('section')`,
+    copy: locale => [tr(locale, 'usage.efficiencyLoaded', { executor: 'Raw_CLI', model: 'Raw_Model' }), tr(locale, 'usage.unpinned'), tr(locale, 'usage.noChange'), tr(locale, 'usage.withheldReply').trim(), locale === 'en' ? '12.0K' : '1.2万', locale === 'en' ? 'Sep 29, 14:03' : '9月29日 14:03'],
+    checks: () => [['Compare, cohort, table and route kept', `window.__usageCompare === document.querySelector('[role="switch"]') && window.__usageCompare.getAttribute('aria-checked') === 'true' && window.__w4aCtl.deref().getAttribute('aria-pressed') === 'true' && window.__usageTable === document.querySelectorAll('section table')[1] && location.pathname === '/orgs/${ORG}/usage'`, true], ['exact token tooltip kept', `window.__usageTable.querySelector('[title="12,000"]') !== null`, true]],
+    // Normal action after both measured switches: change the model and observe its real request.
+    after: async (page, h) => { await h.clickSrc(page, USAGE_BUTTON('Other_Model')); await h.waitTrue(page, `${USAGE_BUTTON('Other_Model')}.getAttribute('aria-pressed') === 'true'`, 'normal action'); },
+    shot: 'zh-usage-cohort-compare-switch-1440',
+  },
+  {
     id: 'artifacts-upload-file', path: `/orgs/${ORG}/artifacts`,
     open: async (page, h) => {
       await h.waitTrue(page, bodyHas('THR-042-Raw_Title.pdf'), 'artifact grid');
@@ -859,9 +953,9 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts'].includes(selectedSlice)) throw new Error('unknown --slice');
-const ACTIVE_VIEWS = selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith('artifacts-'));
+if (!['all', 'kb-artifacts', 'usage'].includes(selectedSlice)) throw new Error('unknown --slice');
+const ACTIVE_VIEWS = selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -978,6 +1072,7 @@ async function main() {
       const short = locale === 'en' ? 'en' : 'zh';
       for (const [w, ht] of [[1440, 900], [390, 844]]) {
         for (const row of ACTIVE_VIEWS) {
+          if (row.id === 'usage-stale') USAGE_REFRESH_FAILED.clear();
           const page = await openPage(`${base}${row.path}`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width: w, height: ht });
           await waitTrue(page, row.ready(locale), `${row.id} content`);
           if (row.prep) await row.prep(page, h);
@@ -1035,6 +1130,11 @@ async function main() {
         check(`S ${row.id} -> ${locale} <html lang>`, s.lang, locale);
         check(`S ${row.id} -> ${locale} zero /api requests in switch window`, LEDGER.slice(from), []);
         if (locale === 'zh-CN' && row.shot) await capture(page, row.shot, { viewport: '1440x900', locale, state: `${row.id} after en->zh-CN switch` });
+      }
+      if (row.after) {
+        const from = LEDGER.length;
+        await row.after(page, h); await sleep(400);
+        check(`S ${row.id} ordinary user action executes after switches`, LEDGER.slice(from).some(r => r.path.endsWith('/usage/efficiency') && new URLSearchParams(r.search).get('model') === 'Other_Model'), true);
       }
       await closePage(page);
     }

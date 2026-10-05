@@ -70,6 +70,10 @@ export function formatDateTimeFor(
  * date/time on a translated surface goes through this module.
  */
 const DATE_SHAPES = {
+  /** Locale month name, for already-resolved org wall-clock parts. */
+  monthShort: { month: 'short' },
+  /** Usage UTC instants in the response timezone: Sep 29, 14:03 / 9月29日 14:03. */
+  monthDayClock24: { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' },
   /** `Wed, Jun 10, 2026` / `2026年6月10日周三` */
   weekdayDate: { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' },
   /** `Wed, Jun 10` / `6月10日周三` */

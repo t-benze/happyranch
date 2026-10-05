@@ -10,7 +10,8 @@
 import type { ReactNode } from 'react';
 import { Button } from '@/design-system/primitives/Button';
 import type { UsageDelta } from './useUsageData';
-import { formatPercentDelta, signed, withheldExplanation } from './usageFormat';
+import { signed } from './usageFormat';
+import { useUsagePresentation } from './strings';
 
 export const DASH = '—';
 
@@ -40,13 +41,14 @@ export function DeltaLine({
   coverage,
   rowWithheld = false,
 }: DeltaLineProps): JSX.Element {
-  const prior = <span className="sr-only"> (previous 7 days: {previous})</span>;
+  const { t, formatPercentDelta, withheldExplanation } = useUsagePresentation();
+  const prior = <span className="sr-only">{t('usage.prior', { previous })}</span>;
   if (rowWithheld || !delta || delta.kind === 'withheld' || delta.value === null && delta.kind !== 'no_change') {
     return (
       <span className="text-2xs text-text-muted mt-1 block font-sans">
         <span data-delta="withheld" className="font-mono">{DASH}</span>
         {rowWithheld ? (
-          <span className="sr-only"> Comparison withheld for this row.</span>
+          <span className="sr-only">{t('usage.rowWithheld')}</span>
         ) : (
           <>
             <span className="block">{withheldExplanation(delta?.withheld_reason ?? null)}</span>
@@ -61,10 +63,10 @@ export function DeltaLine({
   // absolute movement of 0; a zero movement always reads "No change" (PRD §4).
   switch (delta.kind === 'absolute' && delta.value === 0 ? 'no_change' : delta.kind) {
     case 'no_change':
-      text = 'No change';
+      text = t('usage.noChange');
       break;
     case 'new_from_zero':
-      text = 'New from 0';
+      text = t('usage.newFromZero');
       break;
     case 'percent':
       text = formatPercentDelta(delta.value as number);
@@ -131,14 +133,15 @@ export function SectionError({
   onRetry: () => void;
   retrying: boolean;
 }): JSX.Element {
+  const { t } = useUsagePresentation();
   return (
     <div className="border-feedback-danger/30 bg-feedback-danger/5 rounded-lg border p-4">
-      <p className="text-body text-text-primary font-medium">Couldn’t load {view}.</p>
+      <p className="text-body text-text-primary font-medium">{t('usage.loadError', { view })}</p>
       <p className="text-caption text-text-secondary mt-1">
-        The {view.toLowerCase()} view failed to load. The controls above still work.
+        {t('usage.loadErrorBody', { view: view.toLowerCase() })}
       </p>
       <Button variant="secondary" size="sm" className="mt-3" onClick={onRetry} disabled={retrying}>
-        Retry
+        {t('usage.retry')}
       </Button>
     </div>
   );
@@ -153,16 +156,17 @@ export function StaleNotice({
   onRetry: () => void;
   retrying: boolean;
 }): JSX.Element {
+  const { t } = useUsagePresentation();
   return (
     <div className="border-feedback-warning/40 bg-attention-soft mb-3 flex flex-wrap items-center gap-3 rounded-lg border p-3">
       <div className="min-w-0 flex-1">
         <p className="text-body text-text-primary font-medium">
-          Stale: showing figures from an earlier load. The latest refresh failed.
+          {t('usage.stale')}
         </p>
-        <p className="text-caption text-text-secondary">Data through {dataThrough}</p>
+        <p className="text-caption text-text-secondary">{t('usage.dataThrough', { stamp: dataThrough })}</p>
       </div>
       <Button variant="secondary" size="sm" onClick={onRetry} disabled={retrying}>
-        Retry
+        {t('usage.retry')}
       </Button>
     </div>
   );
@@ -197,14 +201,15 @@ export function TableSkeleton({ columns, rows = 4 }: { columns: string[]; rows?:
 /* ------------------------------------------------------------------ */
 
 export function ScrollTable({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  const { t } = useUsagePresentation();
   return (
     <div className="bg-surface border-border-default shadow-pasture-sm rounded-lg border">
       <p className="text-caption text-text-muted border-border-default border-b px-4 py-2 md:hidden">
-        Scroll sideways to see every column.
+        {t('usage.scrollHint')}
       </p>
       <div
         role="region"
-        aria-label={`${label}, scrolls sideways`}
+        aria-label={t('usage.scrollLabel', { label })}
         // Keyboard users can scroll the region once focused.
         tabIndex={0}
         className="focus-visible:ring-accent-ring overflow-x-auto rounded-lg focus-visible:ring-2 focus-visible:outline-none"
