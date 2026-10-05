@@ -454,17 +454,45 @@ def test_real_systemd_missing_credential_accepts_null_peer_map_as_no_identity() 
     assert '(d.get("Peer") or {}).values()' in harness
 
 
-def test_real_systemd_uses_plain_shipping_unit_without_af_netlink_ab_arms() -> None:
+def test_real_systemd_uses_plain_shipping_unit_without_af_netlink_ab_arms(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     assert "acceptance_arms" not in harness
     assert "ordering-a-control" not in harness
     assert "ordering-a-candidate" not in harness
     assert "ordering-b-candidate" not in harness
     assert "ordering-b-control" not in harness
-    assert "reset_shipping_unit" in harness
-    assert "capture_denial_matrix shipping-unit" in harness
     assert "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK" in harness
     assert "90-ci-af-netlink.conf" not in harness
+    result, events, _ = _run_positive_start_cleanup_scenario(tmp_path, outer_startup=True)
+    observations = [json.loads(event) for event in events]
+    resets = [event for event in observations if event["event"] == "shipping-reset-boundary"]
+    assert resets == [{
+        "event": "shipping-reset-boundary", "installed": True,
+        "reset_log": "shipping_unit_reset=complete cleanup_complete=true\n",
+    }], observations
+    probes = [event for event in observations if event["event"] == "denial-argv"]
+    assert probes == [{"event": "denial-argv", "argv": [
+        "15", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+        "--unit=happyranch-n3-denial-shipping-unit", "--property=User=happyranch",
+        "--property=Group=happyranch", "--property=NoNewPrivileges=yes",
+        "--property=PrivateDevices=yes", "--property=ProtectSystem=strict",
+        "--property=ProtectHome=yes", "--property=ReadWritePaths=/var/lib/happyranch-tsnet-sidecar",
+        "--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK",
+        "--property=CapabilityBoundingSet=", "/usr/bin/python3", "-", "shipping-unit",
+    ]}], observations
+    installs = [event for event in observations if event["event"] == "reset-install"]
+    cleanup_resets = [event for event in observations if event["event"] == "reset-cleanup"]
+    reloads = [event for event in observations if event["event"] == "reset-reload"]
+    starts = [event for event in observations if event["event"] == "start"]
+    assert len(installs) == len(reloads) == 1 and len(starts) == 2, observations
+    assert cleanup_resets == [{"event": "reset-cleanup", "argv": [
+        "reset-failed", "happyranch-managed.target", "happyranch-tsnet-sidecar.service",
+        "happyranch-connector.service",
+    ]}], observations
+    assert observations.index(cleanup_resets[0]) < observations.index(installs[0]), observations
+    assert observations.index(installs[0]) < observations.index(reloads[0]) < observations.index(resets[0]), observations
+    assert observations.index(resets[0]) < observations.index(starts[0]) < observations.index(probes[0]) < observations.index(starts[1]), observations
+    assert result.returncode == 0, result.stderr
 
 
 def test_real_systemd_denial_probe_follows_shipping_state_directory_creation(tmp_path: Path) -> None:
@@ -1755,6 +1783,10 @@ if tool == "systemctl":
     if verb == "start":
         assert args == [units[0]], argv
         credential = local("/etc/happyranch/enrollment.key").exists()
+        if not credential:
+            reset_log = root / "diagnostics/shipping-unit.log"
+            record("shipping-reset-boundary", installed=state["installed"],
+                   reset_log=reset_log.read_text() if reset_log.exists() else None)
         directory = local("/var/lib/happyranch-tsnet-sidecar")
         created = not directory.exists()
         directory.mkdir(parents=True, exist_ok=True)
@@ -1774,12 +1806,16 @@ if tool == "systemctl":
         elif verb == "disable":
             assert args == [units[0]], argv
         else:
+            if not state["installed"]:
+                record("reset-cleanup", argv=argv)
             if state["installed"] and not state["positive"]:
                 record("negative-reset", argv=argv)
             state["restart_pending"] = False
         finish(status)
     if verb == "daemon-reload":
         assert not args, argv
+        if state["installed"] and not state["positive"]:
+            record("reset-reload")
         finish()
     if verb == "list-unit-files":
         assert len(args) == 4 and set(args[:-1]) == set(units) and args[-1] == "--no-legend", argv
@@ -1836,6 +1872,7 @@ if tool == "env":
     assert argv == ["PATH=" + os.environ["PATH"], "uv", "run", "python", "-", "fixture-package"], argv
     assert sys.stdin.read() == "import sys\nfrom pathlib import Path\nfrom runtime.remote_access.linux_package import install_linux_package\ninstall_linux_package(Path(sys.argv[1]), Path('/'), system_service=True)\n"
     state["installed"] = True
+    record("reset-install")
     finish()
 if tool == "headscale":
     if argv == ["preauthkeys", "create", "--user", "ci", "--reusable=false", "--expiration", "10m", "--config", str(work / "hs/config.yaml")]:
@@ -1850,12 +1887,15 @@ if tool == "tailscale":
     finish()
 if tool == "timeout":
     if argv[:2] == ["15", "systemd-run"]:
-        assert argv == ["15", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+        record("denial-argv", argv=argv)
+        expected = ["15", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
             "--unit=happyranch-n3-denial-shipping-unit", "--property=User=happyranch", "--property=Group=happyranch",
             "--property=NoNewPrivileges=yes", "--property=PrivateDevices=yes", "--property=ProtectSystem=strict",
             "--property=ProtectHome=yes", "--property=ReadWritePaths=/var/lib/happyranch-tsnet-sidecar",
             "--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "--property=CapabilityBoundingSet=",
-            "/usr/bin/python3", "-", "shipping-unit"], argv
+            "/usr/bin/python3", "-", "shipping-unit"]
+        if argv != expected:
+            finish(64)  # Record the attempted boundary, then refuse without forwarding.
         record("denial-probe", state_directory_present=local("/var/lib/happyranch-tsnet-sidecar").is_dir())
         sys.stdin.read()  # Never execute privileged denial-probe input locally.
         print("{}")
