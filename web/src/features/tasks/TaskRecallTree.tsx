@@ -38,7 +38,7 @@ function CollapsibleBody({
     : body;
   return (
     <div className={muted ? 'text-fg-muted text-xs' : 'text-fg text-sm'}>
-      <Markdown body={shown} />
+      <Markdown body={shown} mermaidLoadingLabel={t('common.mermaidLoading')} />
       {shouldCollapse && (
         <button
           type="button"

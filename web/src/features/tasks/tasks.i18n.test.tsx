@@ -28,6 +28,17 @@ import {
 } from '@/test/render';
 import { server } from '@/test/server';
 
+const mermaidChunk = vi.hoisted(() => {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => { release = resolve; });
+  return { ready, release };
+});
+// External library-load delay; actual Markdown, lazy import and callers stay real.
+vi.mock('mermaid', async () => {
+  await mermaidChunk.ready;
+  return { default: { initialize: vi.fn(), render: vi.fn(async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' })) } };
+});
+
 const SLUG = 'alpha';
 const BRIEF = 'Ship `v2` checkout — keep **authored** text';
 const NOTE = 'needs founder sign-off on refund_policy';
@@ -439,6 +450,7 @@ describe('Task detail i18n', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Cancel' }));
     const dialog = await screen.findByRole('dialog', { name: 'Cancel task' });
+    const close = within(dialog).getByRole('button', { name: 'Close' });
     const textarea = within(dialog).getByPlaceholderText('Reason for cancellation (optional)');
     await user.type(textarea, 'draft reason');
     expect(textarea).toHaveFocus();
@@ -446,11 +458,13 @@ describe('Task detail i18n', () => {
     const requests = await countRequests(async () => {
       await switchLocale('zh-CN');
       expect(screen.getByRole('dialog', { name: '取消任务' })).toBe(dialog);
+      expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
       expect(within(dialog).getByPlaceholderText('取消原因（可选）')).toBe(textarea);
       expect(textarea).toHaveValue('draft reason');
       expect(textarea).toHaveFocus();
       await switchLocale('en');
       expect(screen.getByRole('dialog', { name: 'Cancel task' })).toBe(dialog);
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
       expect(textarea).toHaveValue('draft reason');
       expect(textarea).toHaveFocus();
     });
@@ -570,6 +584,7 @@ describe('Task detail i18n', () => {
 
     await user.click(await screen.findByRole('button', { name: '重做' }));
     const dialog = await screen.findByRole('dialog', { name: '重做任务' });
+    const close = within(dialog).getByRole('button', { name: '关闭' });
     const timeout = within(dialog).getByPlaceholderText('会话超时（秒，可选）');
     await user.type(timeout, 'soon');
     const requests = await countRequests(async () => {
@@ -577,9 +592,38 @@ describe('Task detail i18n', () => {
       expect(within(dialog).getByText('会话超时必须是正整数。')).toBeInTheDocument();
       await switchLocale('en');
       expect(within(dialog).getByText('Session timeout must be a positive integer.')).toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
       expect(timeout).toHaveValue('soon');
+      await switchLocale('zh-CN');
+      expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
     });
     expect(requests).toEqual([]);
+  });
+
+  test('continue dialog close names follow both locale switches without replacing the draft or posting', async () => {
+    stubDetail(rootTask({ status: 'escalated', block_kind: 'escalated' }));
+    const user = userEvent.setup();
+    mount(`/orgs/${SLUG}/tasks/TASK-77`, 'en');
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Continue task' });
+    const closeButtons = within(dialog).getAllByRole('button', { name: 'Close' });
+    expect(closeButtons).toHaveLength(2); // Footer action and the built-in X.
+    const field = within(dialog).getByPlaceholderText('Rationale (required)');
+    await user.type(field, 'Keep this authored rationale');
+    const requests = await countRequests(async () => {
+      await switchLocale('zh-CN');
+      expect(within(dialog).getAllByRole('button', { name: '关闭' })).toEqual(closeButtons);
+      expect(within(dialog).queryByRole('button', { name: 'Close' })).toBeNull();
+      await switchLocale('en');
+      expect(within(dialog).getAllByRole('button', { name: 'Close' })).toEqual(closeButtons);
+      expect(field).toHaveValue('Keep this authored rationale');
+      expect(field).toHaveFocus();
+      expect(screen.getByRole('dialog', { name: 'Continue task' })).toBe(dialog);
+    });
+    expect(requests).toEqual([]);
+    await user.click(closeButtons[1]!);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Continue task' })).toBeNull());
+    expect(dialog.isConnected).toBe(false);
   });
 });
 
@@ -595,4 +639,33 @@ describe('shared StatusBadge seam', () => {
     expect(screen.getByText('· waiting on subtasks')).toBeInTheDocument();
     expect(screen.getByText('· 等待作业')).toBeInTheDocument();
   });
+});
+
+test('Task detail and recall forward Mermaid loading copy while the cancel draft stays focused with zero requests', async () => {
+  const body = 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```';
+  stubDetail(rootTask({ brief: body }));
+  server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/TASK-77/recall`, () => HttpResponse.json({
+    task_id: 'TASK-77', assigned_agent: 'engineering_manager', brief: body,
+    status: 'in_progress', output_summary: null, children: [],
+  })));
+  const view = mount(`/orgs/${SLUG}/tasks/TASK-77`, 'en');
+  try {
+    await waitFor(() => expect(view.container.querySelectorAll('.gl-prose-mermaid-loading')).toHaveLength(2));
+    const fallbacks = Array.from(view.container.querySelectorAll('.gl-prose-mermaid-loading'));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    const dialog = screen.getByRole('dialog', { name: /Cancel/ });
+    const input = within(dialog).getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'raw draft /任务' } }); input.focus();
+    const requests = await countRequests(async () => {
+      for (const locale of ['zh-CN', 'en'] as const) {
+        await switchLocale(locale);
+        expect(fallbacks.map(node => node.textContent)).toEqual(fallbacks.map(() => locale === 'en' ? 'Rendering diagram…' : '正在渲染图表…'));
+        expect(Array.from(view.container.querySelectorAll('.gl-prose-mermaid-loading'))).toEqual(fallbacks);
+        expect(within(dialog).getByRole('textbox')).toBe(input);
+        expect(input).toHaveFocus(); expect(input).toHaveValue('raw draft /任务');
+      }
+    });
+    expect(requests).toEqual([]);
+  } finally { await act(async () => mermaidChunk.release()); }
+  await waitFor(() => expect(view.container.querySelectorAll('svg[data-w5a-diagram]')).toHaveLength(2));
 });

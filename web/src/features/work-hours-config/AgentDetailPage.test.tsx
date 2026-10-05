@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -132,6 +132,14 @@ describe('Work-Hours Agent Detail (S2)', () => {
         screen.getByText(translate('en', 'workHours.detail.provenanceHeading')),
       ).toBeInTheDocument();
     });
+
+    const region = screen.getByRole('region', { name: 'Schedule reconciliation table' });
+    expect(region.tabIndex).toBe(0);
+    region.focus();
+    expect(region).toHaveFocus();
+    const table = within(region).getByRole('table');
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Leaf', 'Org default', 'Team: eng', 'This agent', 'Effective']);
+    expect(within(table).getByText("▶ America/Los_Angeles")).toBeInTheDocument();
 
     // Effective winners (mosaic): interval 30m (agent), end 19:00 (agent),
     // tz America/Los_Angeles (team).

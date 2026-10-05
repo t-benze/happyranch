@@ -386,7 +386,7 @@ function BriefSection({ brief }: { brief: string }): JSX.Element {
         {t('tasks.detail.brief.heading')}
       </h3>
       <div className="border-border-default bg-surface-sunken rounded-md border p-3">
-        <Markdown body={preview} />
+        <Markdown body={preview} mermaidLoadingLabel={t('common.mermaidLoading')} />
         {shouldCollapse && (
           <button
             type="button"

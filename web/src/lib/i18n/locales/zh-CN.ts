@@ -8,6 +8,7 @@
 import type { MessageKey, MessageValue } from '../catalog';
 
 export const zhCN: Record<MessageKey, MessageValue> = {
+  "common.mermaidLoading": "正在渲染图表…",
   "usage.localStamp": "{month}{day}日 {time}",
   // W4d-2: Usage app-owned presentation; daemon identities and metrics stay verbatim.
   "usage.compare": "与前7天比较",
@@ -1758,6 +1759,9 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   // @w4b-end:todos
 
   // --- W4b: Work Hours route family + shared EligibilityEditorDialog -------
+  'workHours.detail.scrollLabel': '计划来源核对表',
+  'workHours.roster.scrollLabel': '工时智能体列表',
+  'workHours.scrollHint': '表格超出视图时，可聚焦表格并使用方向键滚动。',
   'workHours.loading': '正在加载工时…',
   'workHours.saved': '已保存 ✓ — 将在下一次调度器轮询时生效（≈ 约 60 秒内）。',
   'workHours.header.eyebrow': '工时 · 仅限创始人配置',

@@ -233,7 +233,7 @@ function ReconfigureDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('settings.assistant.reconfigure.title')}</DialogTitle>
         </DialogHeader>
