@@ -514,6 +514,56 @@ or authorize maker merge/deployment. Integration SUITE remains SKIPPED
 Founder THR-243 seq42, including followup E2E; selected hosted Codex callback
 smoke remains a distinct requirement.
 
+## Terminal-reader ownership (TASK-9829)
+
+`runtime/orchestrator/task_terminal_readers.py` owns exactly four unchanged
+definitions in their original source order: `_verdict_for_delegated` (15 lines),
+`_is_carrier` (24), `_child_has_modern_fingerprint` (9), and
+`_child_landed_terminal_report` (30): FOUR/78 definition lines. `run_step.py`
+re-exports the identical callable objects at their original binding sites.
+The local FanoutState import and postponed TYPE_CHECKING TaskRecord/Orchestrator
+dependencies remain local/type-only. No selected runtime state changes owner.
+
+All 73 recursive retained facade definitions remain unchanged, including
+`_log_verdict_if_delegated`, `_child_has_landed_terminal_result`, every chain,
+carrier, parent, fanout and dispatch consumer, and the sentinel class/object.
+They still resolve the old facade reader names, including the actual dotted
+fingerprint replacement in the THR-211 shipping keeper. TaskStatus, clocks,
+logger, cache/path/lock and Database readers/decoder/synchronized wrapper/RLock
+retain their owners. There is no bridge, wrapper, copied state or new seam.
+
+TASK-9785 explicitly accepted TASK-9826/terminal-readers/T1–T5/revision1
+(SHA256 `0e05c33aec654e3e5bb7dd289b1fbe5e6953ca12384547d121e4e2707d3ba7ee`)
+and independent TASK-9828 DESIGN-ONLY PASS before this move. The accepted
+18-case map governs the finite forward-only supplements in
+`tests/test_task_terminal_readers.py`; existing tests/fixtures remain unchanged.
+Extraction replay, full AST/decorated-source/ordered-literal proofs, pristine
+literal oracles, Native Impact and selected-only mutation/restoration receipts
+live in `dev_agent/output/TASK-9829`.
+
+At immutable base `af311314d193a2466a9c37ca339639ce4cf54d24`, rederived file
+counts are database2168/run_step4812/models4711/executors2624. This slice leaves
+database2168/run_step4738/models4711/executors2624; the new reader module has
+97 total lines (78 moved definition lines plus 19 import/context/separator
+lines). All21 landed slices, steps1–4 and the R5 two-definition/122-line subset
+remain foundations. The independently accepted formatter STOP/RETAIN stays
+retained; no full17-case formatter or wholeR4/R6 completion is claimed.
+
+PR #682's 173 actual retained run_step changes include an added `_is_carrier`
+caller: selected-body equality does not remove that caller overlap. Its
+eleven-function R2 and actual R4/R6 completion/chain/carrier/fanout/followup
+work remains held, as do #684 attachment insertion AND enqueue/revisit
+admission and #840 result/admission/insert_task_result. R1 state/clock/lock,
+R3 compositor/logger, Database logger, models/executors and remaining R4/R6
+stay separate scopes. No foreign behavior is transplanted or cleared.
+
+Independent full-diff reviewer APPROVE then executable QA PASS at the same
+final SHA, task-owned terminal local-CI JOB EXIT0, four exact-head PR checks,
+distinct selected hosted Codex callback smoke, and manager moving-main
+composition/guarded merge remain mandatory. This ownership record asserts no
+review/QA/CI verdict or merge authority. Integration SUITE, including followup
+E2E, remains SKIPPED Founder THR-243 seq42, never PASS.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target
