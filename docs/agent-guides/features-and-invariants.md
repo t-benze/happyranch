@@ -32,8 +32,11 @@ preserving rank. Pending input/search or metadata refresh hides stale results;
 metadata errors or missing hit metadata show the existing recoverable Knowledge
 error, never successful-empty. Retry refreshes search and list metadata. Clearing
 search restores the list immediately, and old query settlements cannot replace
-the current query. Narrow 390px clipping remains an existing desktop-only
-limitation; shared App/Drawer layout is unchanged.
+the current query. Below 640px, the feature-local filter rail stacks above the
+list, stays full-width and scrolls within a 16rem height bound. Header actions
+stack below the title, and the list and detail drawer remain contained at 390px.
+Desktop retains the side rail and header arrangement; shared App/Drawer
+primitives are unchanged.
 
 
 Generic remote jobs remain dormant. `runtime/remote_jobs/` provides contextual

@@ -61,10 +61,34 @@ describe('Artifacts bilingual display', () => {
   });
   test('plain filename date stays calendar-only and mtime display uses explicit Chinese locale', () => {
     expect(formatProvenanceDate('2026-06-16', 'zh-CN')).toBe('2026年6月16日');
-    expect(formatArtifactModifiedAt('2026-06-20T14:30:00Z', 'zh-CN')).toMatch(/2026年6月20日/);
+    const viewerTime = new Date('2026-06-20T14:30:00Z');
+    const hour = String(viewerTime.getHours()).padStart(2, '0');
+    const minute = String(viewerTime.getMinutes()).padStart(2, '0');
+    expect(formatArtifactModifiedAt('2026-06-20T14:30:00Z', 'zh-CN')).toBe(
+      `${viewerTime.getFullYear()}年${viewerTime.getMonth() + 1}月${viewerTime.getDate()}日 ${hour}:${minute}`,
+    );
     expect(formatProvenanceDate('2026-02-30', 'zh-CN')).toBeNull();
     expect(formatProvenanceDate('not-a-date', 'en')).toBeNull();
     expect(formatArtifactModifiedAt('not-a-date', 'zh-CN')).toBeNull();
+  });
+  test.each([
+    ['UTC', '2026年6月20日 14:30'],
+    ['Pacific/Kiritimati', '2026年6月21日 04:30'],
+  ])('plain filename date stays June 16 while viewer-local Chinese mtime in %s is %s', (timeZone, expectedMtime) => {
+    // Simulate the viewer default only; preserve explicit UTC for filename dates.
+    const NativeDateTimeFormat = Intl.DateTimeFormat;
+    const viewerDefault = vi.spyOn(Intl, 'DateTimeFormat').mockImplementation((locales, options) =>
+      new NativeDateTimeFormat(locales, { ...options, timeZone: options?.timeZone ?? timeZone }),
+    );
+    try {
+      expect(formatProvenanceDate('2026-06-16', 'zh-CN')).toBe('2026年6月16日');
+      expect(formatArtifactModifiedAt('2026-06-20T14:30:00Z', 'zh-CN')).toBe(expectedMtime);
+      expect(formatProvenanceDate('2026-02-30', 'zh-CN')).toBeNull();
+      expect(formatProvenanceDate('not-a-date', 'zh-CN')).toBeNull();
+      expect(formatArtifactModifiedAt('not-a-date', 'zh-CN')).toBeNull();
+    } finally {
+      viewerDefault.mockRestore();
+    }
   });
   test.each(['en', 'zh-CN'] as const)('empty/error + Retry chrome in %s', async locale => {
     base();
