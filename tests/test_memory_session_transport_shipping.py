@@ -391,13 +391,67 @@ def test_task_bootstrap_forwards_runtime_session_to_real_cli_and_audit(
         assert report_body["decision"] == "insufficient_instrumentation"
         assert report_body["observation_period"]["thresholds_met"] is False
         assert org.db.get_audit_logs_by_action("memory_collection_epoch_started") == []
+        # G1 source observation is released; it grants no collection/epoch authority.
+        before_seal_get = org.db._conn.total_changes
+        persisted_seals = org.db.fetch_all_readonly(
+            "SELECT id FROM audit_log WHERE action='memory_collection_seal' ORDER BY id ASC"
+        )
+        before_audit_id = org.db.fetch_all_readonly("SELECT max(id) AS id FROM audit_log")[0]["id"]
         seal_response = httpx.get(
             f"http://127.0.0.1:{sock.getsockname()[1]}/api/v1/orgs/alpha/audit",
             params={"action": "memory_collection_seal"},
             headers={"Authorization": f"Bearer {paths.token_file().read_text().strip()}"},
         )
         assert seal_response.status_code == 200
-        assert set(seal_response.json()) == {"entries", "next_cursor"}  # B1 is deferred.
+        seal_body = seal_response.json()
+        assert set(seal_body) == {"entries", "next_cursor", "memory_collection_observation"}
+        assert [entry["id"] for entry in seal_body["entries"]] == [row["id"] for row in persisted_seals]
+        assert all(entry["action"] == "memory_collection_seal" for entry in seal_body["entries"])
+        assert seal_body["next_cursor"] is None
+        serving = seal_body["memory_collection_observation"]
+        assert set(serving) == {
+            "contract_version", "org", "boot_id", "installed_identity", "generation",
+            "assigned_intents", "intent_digest", "phase_counts", "phase_digests",
+            "active_preparations", "observation_error", "latest_seal_audit_id",
+            "epoch_id", "epoch_audit_id", "sampled_at", "data_through",
+        }
+        assert type(serving["contract_version"]) is int and serving["contract_version"] == 1
+        assert serving["org"] == "alpha" == org.slug
+        assert serving["boot_id"] == org.memory_collection.boot_id
+        assert type(serving["assigned_intents"]) is int and serving["assigned_intents"] == 1
+        launched = 2 if provider_plan["retry_once"] else 1
+        assert type(serving["generation"]) is int and serving["generation"] == 5 + launched
+        expected_counts = {phase: {"attempted": 1, "persisted": 1}
+                           for phase in ("intent", "identity", "expectation", "binding", "terminal")}
+        expected_counts["launched"] = {"attempted": launched, "persisted": launched}
+        assert serving["phase_counts"] == expected_counts
+        assert all(type(count) is int for counts in serving["phase_counts"].values()
+                   for count in counts.values())
+        assert set(serving["phase_digests"]) == set(expected_counts)
+        for digests in serving["phase_digests"].values():
+            assert set(digests) == {"attempted", "persisted"}
+            assert digests["attempted"] == digests["persisted"]
+            assert isinstance(digests["attempted"], str) and len(digests["attempted"]) == 64
+            assert set(digests["attempted"]) <= set("0123456789abcdef")
+        assert serving["intent_digest"] == serving["phase_digests"]["intent"]["attempted"]
+        assert serving["active_preparations"] == []
+        assert type(serving["latest_seal_audit_id"]) is int
+        assert serving["latest_seal_audit_id"] == persisted_seals[-1]["id"]
+        assert serving["epoch_id"] is None and serving["epoch_audit_id"] is None
+        from datetime import datetime, timezone
+        assert datetime.fromisoformat(serving["sampled_at"]).utcoffset() == timezone.utc.utcoffset(None)
+        if serving["installed_identity"] is None:
+            # A disposable source venue may lack installed identity; it is unavailable.
+            assert isinstance(serving["observation_error"], str) and serving["observation_error"]
+            assert serving["data_through"] is None
+        else:
+            assert serving["installed_identity"]["org_root"] == str(org.root.resolve())
+            assert serving["installed_identity"]["source_root"] == str(Path(__file__).resolve().parents[1])
+            assert serving["observation_error"] is None
+            assert datetime.fromisoformat(serving["data_through"]).utcoffset() == timezone.utc.utcoffset(None)
+        assert org.db._conn.total_changes == before_seal_get
+        assert org.db.fetch_all_readonly("SELECT max(id) AS id FROM audit_log")[0]["id"] == before_audit_id
+        assert org.db.get_audit_logs_by_action("memory_collection_epoch_started") == []
         assert org.memory_collection.snapshot()["assigned_intents"] == 1
         # G3-P07/P10 negative-only: unregistered/provider/stale contexts remain
         # descriptive reads and cannot create an observer binding or intent.
