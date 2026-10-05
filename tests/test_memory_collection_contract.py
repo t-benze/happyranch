@@ -1115,7 +1115,15 @@ def test_serving_acquisition_failures_are_bounded_and_launch_safe(observation_cl
     view = observed(client)
     assert view["installed_identity"] is None and view["data_through"] is None
     assert view["observation_error"] is not None and view["epoch_id"] is None
+    assert view["observation_error"] == {
+        "read": "observation_unavailable", "registry": "observation_unavailable",
+        "source": "identity_loaded_source_mismatch", "interpreter": "observation_unavailable",
+        "bool": "observer_snapshot_invalid", "missing_observer": "observer_unavailable",
+        "snapshot": "observation_unavailable", "import": "observation_unavailable",
+    }[fault]
     assert "SECRET" not in json.dumps(view)
+    if fault == "missing_observer":
+        assert view["assigned_intents"] is view["generation"] is view["phase_counts"] is None
     assert client.get("/api/v1/orgs/test/audit", params={"action": "session_start"}).status_code == 200
     if fault not in ("bool", "interpreter", "snapshot", "import"):
         bootstrap(org)  # observation read failures do not affect bootstrap outcome
@@ -1342,6 +1350,7 @@ def test_new_observation_cannot_enable_backend_or_canonical_cli(observation_clie
     cmd_memory_report(Namespace(org="test", json=False))
     text = capsys.readouterr().out
     assert "insufficient_instrumentation" in text and "Thresholds:    NOT MET" in text
+    assert "DECISION: insufficient_instrumentation" in text
     assert rows(org, "memory_collection_epoch_started") == []
 
 
@@ -1358,6 +1367,9 @@ def test_serving_observation_is_tenant_local_and_cursor_errors_stay_usable(obser
         other = observed(client, "beta")
         assert own["assigned_intents"] == 1 and other["assigned_intents"] == 0
         assert own["boot_id"] != other["boot_id"]
+        assert own["org"] == org.slug
+        assert own["installed_identity"]["org_root"] == str(org.root.resolve())
+        assert other["installed_identity"]["org_root"] == str(beta_root.resolve())
         assert other["installed_identity"]["runtime_root"] == str(beta_root.parent.parent)
         assert other["org"] == "beta" and other["latest_seal_audit_id"] is None
         assert client.get("/api/v1/orgs/beta/audit", params={"action": "memory_collection_seal"}).json()["entries"] == []
@@ -1366,6 +1378,8 @@ def test_serving_observation_is_tenant_local_and_cursor_errors_stay_usable(obser
         assert response.status_code == 422 and response.json() == {"detail": "Invalid cursor"}
         forged = client.get("/api/v1/orgs/test/audit", params={"action": "memory_collection_seal", "healthy": "true", "epoch_id": "claimed"})
         assert forged.json()["memory_collection_observation"]["epoch_id"] is None
+        assert rows(org, "memory_collection_epoch_started") == []
+        assert rows(beta, "memory_collection_epoch_started") == []
     finally:
         client.app.state.daemon.orgs.pop("beta")
         beta.close()
