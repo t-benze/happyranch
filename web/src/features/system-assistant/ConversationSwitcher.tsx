@@ -1,16 +1,14 @@
 /**
- * ConversationSwitcher — the conversation list surfaced inside the assistant
- * dock (THR-056 STEP-B).
+ * ConversationSwitcher — the conversation list in the assistant dock
+ * (THR-056 STEP-B). N conversations live under one runtime-global assistant.
  *
- * N conversations live UNDER the one runtime-global assistant (single-assistant
- * framing). This panel lists them newest-first, indicates the active one, and
- * offers new / switch / rename / delete — modelled on the Threads inbox row
- * idiom (same surface/border/text tokens, `bg-accent-soft` for the active row).
- *
- * It is presentational: every side effect is a prop callback owned by
- * AssistantDockHost, which drives the mutations and reconnects the A-mode WS so
- * the transcript replays the resulting active conversation's history.
+ * Lists newest-first, marks the active conversation, and offers new / switch /
+ * rename / delete using the Threads inbox row's surface/border/text tokens and
+ * `bg-accent-soft` active row. Every side effect is a prop callback owned by
+ * AssistantDockHost, which drives mutations and reconnects the A-mode WS to
+ * replay the selected conversation's transcript.
  */
+import { useI18n } from '@/hooks/i18n';
 import { useState } from 'react';
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { ConversationSummary } from '@/hooks/assistant';
@@ -57,20 +55,21 @@ export function ConversationSwitcher({
   onDelete,
   onClose,
 }: ConversationSwitcherProps): JSX.Element {
+  const { t } = useI18n();
   const ordered = sortConversationsNewestFirst(conversations);
 
   return (
     <div
       className="border-border-default bg-surface-raised absolute inset-0 z-10 flex flex-col"
       role="region"
-      aria-label="Conversations"
+      aria-label={t('assistantDock.conversations')}
     >
       <div className="border-border-default flex shrink-0 items-center justify-between border-b px-4 py-3">
-        <span className="text-text-primary font-display text-sm">Conversations</span>
+        <span className="text-text-primary font-display text-sm">{t('assistantDock.conversations')}</span>
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close conversations"
+          aria-label={t('assistantDock.closeConversations')}
           className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors"
         >
           <X size={16} aria-hidden="true" />
@@ -85,21 +84,21 @@ export function ConversationSwitcher({
           className="border-border-default text-text-secondary hover:text-text-primary hover:bg-surface-hover flex w-full items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Plus size={16} aria-hidden="true" />
-          <span>New conversation</span>
+          <span>{t('assistantDock.newConversation')}</span>
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
         {loading ? (
-          <p className="text-text-muted px-1 py-2 text-sm">Loading conversations…</p>
+          <p className="text-text-muted px-1 py-2 text-sm">{t('assistantDock.loadingConversations')}</p>
         ) : error ? (
           <p role="alert" className="text-feedback-danger px-1 py-2 text-sm">
             {error}
           </p>
         ) : ordered.length === 0 ? (
-          <p className="text-text-muted px-1 py-2 text-sm">No conversations yet.</p>
+          <p className="text-text-muted px-1 py-2 text-sm">{t('assistantDock.noConversations')}</p>
         ) : (
-          <ul className="flex flex-col gap-1" aria-label="Conversation list">
+          <ul className="flex flex-col gap-1" aria-label={t('assistantDock.conversationList')}>
             {ordered.map((conv) => (
               <ConversationRow
                 key={conv.id}
@@ -130,6 +129,7 @@ function ConversationRow({
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
 }): JSX.Element {
+  const { t } = useI18n();
   const [mode, setMode] = useState<'idle' | 'rename' | 'confirm-delete'>('idle');
   const [draft, setDraft] = useState(conv.title);
 
@@ -157,14 +157,14 @@ function ConversationRow({
                 setMode('idle');
               }
             }}
-            aria-label="Conversation title"
+            aria-label={t('assistantDock.conversationTitle')}
             className="text-text-primary min-w-0 flex-1 bg-transparent px-2 py-1 text-sm focus:outline-none"
           />
           <button
             type="button"
             onClick={commitRename}
             disabled={busy}
-            aria-label="Save title"
+            aria-label={t('assistantDock.saveTitle')}
             className="text-feedback-success hover:bg-surface-hover inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors disabled:opacity-40"
           >
             <Check size={15} aria-hidden="true" />
@@ -175,7 +175,7 @@ function ConversationRow({
               setDraft(conv.title);
               setMode('idle');
             }}
-            aria-label="Cancel rename"
+            aria-label={t('assistantDock.cancelRename')}
             className="text-text-secondary hover:bg-surface-hover inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors"
           >
             <X size={15} aria-hidden="true" />
@@ -190,7 +190,7 @@ function ConversationRow({
       <li>
         <div className="border-border-default bg-surface-sunken flex items-center gap-2 rounded-lg border px-3 py-2">
           <span className="text-text-secondary min-w-0 flex-1 truncate text-sm">
-            Delete “{conv.title}”?
+            {t('assistantDock.deleteConfirm', { title: conv.title })}
           </span>
           <button
             type="button"
@@ -198,14 +198,14 @@ function ConversationRow({
             disabled={busy}
             className="text-feedback-danger hover:bg-surface-hover rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-40"
           >
-            Delete
+            {t('assistantDock.delete')}
           </button>
           <button
             type="button"
             onClick={() => setMode('idle')}
             className="text-text-secondary hover:bg-surface-hover rounded-md px-2 py-1 text-xs transition-colors"
           >
-            Cancel
+            {t('assistantDock.cancel')}
           </button>
         </div>
       </li>
@@ -238,7 +238,7 @@ function ConversationRow({
             setDraft(conv.title);
             setMode('rename');
           }}
-          aria-label={`Rename ${conv.title}`}
+          aria-label={t('assistantDock.renameTitle', { title: conv.title })}
           className="text-text-muted hover:text-text-primary hover:bg-surface-hover inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors"
         >
           <Pencil size={14} aria-hidden="true" />
@@ -246,7 +246,7 @@ function ConversationRow({
         <button
           type="button"
           onClick={() => setMode('confirm-delete')}
-          aria-label={`Delete ${conv.title}`}
+          aria-label={t('assistantDock.deleteTitle', { title: conv.title })}
           className="text-text-muted hover:text-feedback-danger hover:bg-surface-hover inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors"
         >
           <Trash2 size={14} aria-hidden="true" />

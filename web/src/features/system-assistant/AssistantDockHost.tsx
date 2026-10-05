@@ -29,6 +29,9 @@ import {
 import type { AssistantStatus } from '@/lib/api/types';
 import { MessageBubble } from '@/design-system/patterns/MessageBubble';
 import { TypingBubble } from '@/design-system/patterns/TypingBubble';
+import { useI18n } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
+import { formatElapsed } from '@/lib/elapsed';
 import { ConversationSwitcher } from './ConversationSwitcher';
 
 // ---------------------------------------------------------------------------
@@ -156,6 +159,8 @@ function useFocusTrap(
 interface ToolActivity {
   id: string;
   name: string;
+  /** Presentation only; a supplied tool name (including empty) stays raw. */
+  fallbackName: boolean;
   /** null while pending; true/false once a tool_result arrives. */
   ok: boolean | null;
 }
@@ -255,7 +260,7 @@ function hydrateHistory(
           break;
         case 'tool_call':
           if (current) {
-            current.tools.push({ id: nextId(), name: frame.name ?? 'tool', ok: null });
+            current.tools.push({ id: nextId(), name: frame.name ?? 'tool', fallbackName: frame.name == null, ok: null });
           }
           break;
         case 'tool_result':
@@ -297,6 +302,10 @@ function useNowMs(active: boolean): number {
 // A-mode WebSocket hook
 // ---------------------------------------------------------------------------
 
+// Capture provenance, never infer it by comparing raw text to catalog values.
+// Rendering resolves app fallbacks with the current locale; transport stays stable.
+type DockError = { key: MessageKey } | { raw: string } | { connectionDetail: string };
+
 interface UseAssistantAModeChat {
   turns: DockTurn[];
   sendMessage: (text: string) => void;
@@ -304,7 +313,7 @@ interface UseAssistantAModeChat {
   // A turn is in flight (turn_start seen, turn_end not yet).
   inFlight: boolean;
   turnStartedAt: string | null;
-  error: string | null;
+  error: DockError | null;
 }
 
 function useAssistantAModeChat(
@@ -317,7 +326,7 @@ function useAssistantAModeChat(
   const [connecting, setConnecting] = useState(false);
   const [inFlight, setInFlight] = useState(false);
   const [turnStartedAt, setTurnStartedAt] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DockError | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const openSession = useAssistantAModeSessionOpener();
 
@@ -337,7 +346,7 @@ function useAssistantAModeChat(
     // Don't decide until the status query has actually resolved.
     if (statusLoading) return;
     if (status?.state !== 'configured') {
-      setError('Assistant not configured. Set it up in Settings.');
+      setError({ key: 'assistantDock.notConfigured' });
       return;
     }
 
@@ -367,7 +376,7 @@ function useAssistantAModeChat(
           } else if (frame.code === 'session_closed') {
             // session closed — the socket will close and the cleanup fires
           } else if (frame.code === 'error') {
-            setError(frame.detail ?? 'Assistant error.');
+            setError(frame.detail == null ? { key: 'assistantDock.assistantError' } : { raw: frame.detail });
             setInFlight(false);
           }
           break;
@@ -406,7 +415,7 @@ function useAssistantAModeChat(
           setTurns((prev) =>
             prev.map((t) =>
               t.id === id
-                ? { ...t, tools: [...t.tools, { id: toolId, name: frame.name ?? 'tool', ok: null }] }
+                ? { ...t, tools: [...t.tools, { id: toolId, name: frame.name ?? 'tool', fallbackName: frame.name == null, ok: null }] }
                 : t,
             ),
           );
@@ -444,7 +453,7 @@ function useAssistantAModeChat(
           break;
         }
         case 'error':
-          setError(frame.message ?? 'Unknown error');
+          setError(frame.message == null ? { key: 'assistantDock.unknownError' } : { raw: frame.message });
           setConnecting(false);
           setInFlight(false);
           break;
@@ -483,14 +492,14 @@ function useAssistantAModeChat(
         };
 
         ws.onerror = () => {
-          setError('WebSocket connection failed.');
+          setError({ key: 'assistantDock.socketError' });
           setConnecting(false);
           setInFlight(false);
         };
       })
       .catch((err: unknown) => {
         if (!disposed) {
-          setError(`Connection failed: ${String(err)}`);
+          setError({ connectionDetail: String(err) });
           setConnecting(false);
         }
       });
@@ -526,7 +535,7 @@ function useAssistantAModeChat(
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'start', text: trimmed }));
       } else {
-        setError('Not connected. Reopen the dock to reconnect.');
+        setError({ key: 'assistantDock.disconnected' });
       }
     },
     [nextId],
@@ -547,6 +556,7 @@ function useAssistantAModeChat(
 // ---------------------------------------------------------------------------
 
 export function AssistantDockHost(): JSX.Element {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [composerDraft, setComposerDraft] = useState('');
   // Bumping this reconnects the A-mode WS so it attaches to (and replays) the
@@ -686,7 +696,7 @@ export function AssistantDockHost(): JSX.Element {
   };
 
   // Assistant speaker label — data-backed executor name when available.
-  const assistantSpeaker = status?.selected_executor ?? 'assistant';
+  const assistantSpeaker = status?.selected_executor ?? t('assistantDock.speaker');
 
   // Show the loading skeleton only while first connecting with nothing to show;
   // once history has hydrated (or a turn exists) render the conversation.
@@ -707,7 +717,7 @@ export function AssistantDockHost(): JSX.Element {
       <div
         ref={containerRef}
         role="dialog"
-        aria-label="Ranch Assistant"
+        aria-label={t('assistantDock.title')}
         aria-modal={open ? 'true' : undefined}
         className={[
           'border-border-default bg-surface-raised fixed right-0 top-0 z-50 flex h-full w-full max-w-lg flex-col border-l shadow-pasture-lg rounded-l-lg transition-transform duration-200',
@@ -718,7 +728,7 @@ export function AssistantDockHost(): JSX.Element {
         <div className="border-border-default flex shrink-0 items-center gap-2 border-b px-4 py-3">
           <div className="min-w-0 flex-1">
             <span className="text-text-primary font-display block text-base">
-              Ranch Assistant
+              {t('assistantDock.title')}
             </span>
           </div>
 
@@ -728,14 +738,14 @@ export function AssistantDockHost(): JSX.Element {
             <button
               type="button"
               onClick={() => setSwitcherOpen((s) => !s)}
-              aria-label="Conversations"
+              aria-label={t('assistantDock.conversations')}
               aria-expanded={switcherOpen}
-              title="Conversations"
+              title={t('assistantDock.conversations')}
               className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex max-w-40 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors"
             >
               <MessagesSquare size={14} aria-hidden="true" />
               <span className="truncate">
-                {activeConversation?.title ?? 'Conversations'}
+                {activeConversation?.title ?? t('assistantDock.conversations')}
               </span>
             </button>
           )}
@@ -743,7 +753,7 @@ export function AssistantDockHost(): JSX.Element {
           <button
             type="button"
             onClick={() => setOpen(false)}
-            aria-label="Close assistant"
+            aria-label={t('assistantDock.close')}
             className="text-text-secondary hover:text-text-primary hover:bg-surface-hover inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors"
           >
             <X size={16} aria-hidden="true" />
@@ -758,7 +768,7 @@ export function AssistantDockHost(): JSX.Element {
             loading={conversationsQuery.isLoading}
             error={
               conversationsQuery.isError
-                ? 'Could not load conversations.'
+                ? t('assistantDock.conversationError')
                 : null
             }
             busy={convBusy}
@@ -773,13 +783,13 @@ export function AssistantDockHost(): JSX.Element {
         {/* Messages area — thread-style transcript */}
         <div className="flex-1 overflow-y-auto px-4 py-3">
           {statusQuery.isLoading ? (
-            <EmptyState text="Loading…" calm />
+            <EmptyState text={t('assistantDock.loading')} calm />
           ) : !assistantConfigured ? (
             <EmptyState
               text={
                 status
-                  ? 'Assistant is not ready. Set it up from Settings → Assistant.'
-                  : 'Could not load assistant status.'
+                  ? t('assistantDock.notReady')
+                  : t('assistantDock.statusError')
               }
               error={!status}
               calm
@@ -788,7 +798,7 @@ export function AssistantDockHost(): JSX.Element {
             <LoadingState />
           ) : turns.length === 0 && !inFlight ? (
             <EmptyState
-              text="Ask the assistant anything — or type / to run a command."
+              text={t('assistantDock.empty')}
               calm
             />
           ) : (
@@ -807,6 +817,8 @@ export function AssistantDockHost(): JSX.Element {
                   status="working"
                   startedAt={turnStartedAt}
                   nowMs={nowMs}
+                  caption={t('assistantDock.replyingCaption', { elapsed: formatElapsed(turnStartedAt, nowMs) }).trimEnd()}
+                  ariaLabel={t('assistantDock.replyingLabel', { speaker: assistantSpeaker })}
                 />
               )}
               <div ref={transcriptEndRef} />
@@ -818,7 +830,9 @@ export function AssistantDockHost(): JSX.Element {
               role="alert"
               className="border-border-default bg-surface-sunken text-feedback-danger mt-3 rounded-lg border p-2 text-xs"
             >
-              {wsError}
+              {'raw' in wsError ? wsError.raw : 'connectionDetail' in wsError
+                ? t('assistantDock.connectionError', { detail: wsError.connectionDetail })
+                : t(wsError.key)}
             </div>
           )}
         </div>
@@ -832,10 +846,10 @@ export function AssistantDockHost(): JSX.Element {
                 value={composerDraft}
                 onChange={(e) => setComposerDraft(e.target.value)}
                 onKeyDown={handleComposerKeyDown}
-                placeholder="Ask the assistant, or type / to run a command…"
+                placeholder={t('assistantDock.placeholder')}
                 rows={1}
                 className="border-border-default bg-surface-sunken text-text-primary placeholder:text-text-muted focus:border-accent-ring min-h-9 flex-1 resize-none rounded-lg border px-3 py-2 text-sm focus:outline-none"
-                aria-label="Assistant composer"
+                aria-label={t('assistantDock.composer')}
               />
               <button
                 type="button"
@@ -843,12 +857,12 @@ export function AssistantDockHost(): JSX.Element {
                 disabled={!composerDraft.trim() || connecting}
                 className="bg-accent-default text-text-inverse hover:bg-accent-hover inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Send
+                {t('assistantDock.send')}
               </button>
             </div>
             <p className="text-text-muted mt-1 text-xs">
-              <kbd className="font-mono">Enter</kbd> to send ·{' '}
-              <kbd className="font-mono">Shift+Enter</kbd> for new line
+              <kbd className="font-mono">Enter</kbd> {t('assistantDock.sendHint')} ·{' '}
+              <kbd className="font-mono">Shift+Enter</kbd> {t('assistantDock.newlineHint')}
             </p>
           </div>
         )}
@@ -876,14 +890,18 @@ function DockTurnView({
   seq: number;
   assistantSpeaker: string;
 }): JSX.Element {
+  const { t, locale } = useI18n();
+  // Same host timezone/full timestamp semantics as MessageBubble's default.
+  const formatTimestamp = (iso: string) => new Date(iso).toLocaleString(locale);
   if (turn.role === 'user') {
     return (
       <MessageBubble
         variant="founder"
         seq={seq}
-        speaker="you"
+        speaker={t('assistantDock.you')}
         speakerRole="founder"
         timestamp={turn.timestamp}
+        formatTimestamp={formatTimestamp}
         body={turn.text}
       />
     );
@@ -892,7 +910,7 @@ function DockTurnView({
   return (
     <div className="flex flex-col gap-1">
       {turn.tools.length > 0 && (
-        <ul className="flex flex-col gap-0.5" aria-label="Tool activity">
+        <ul className="flex flex-col gap-0.5" aria-label={t('assistantDock.toolActivity')}>
           {turn.tools.map((tool) => (
             <li
               key={tool.id}
@@ -901,7 +919,7 @@ function DockTurnView({
               <span aria-hidden="true">
                 {tool.ok === null ? '⋯' : tool.ok ? '✓' : '✗'}
               </span>
-              <span className="truncate">{tool.name}</span>
+              <span className="truncate">{tool.fallbackName ? t('assistantDock.genericTool') : tool.name}</span>
             </li>
           ))}
         </ul>
@@ -913,6 +931,7 @@ function DockTurnView({
           speaker={assistantSpeaker}
           speakerRole="worker"
           timestamp={turn.timestamp}
+          formatTimestamp={formatTimestamp}
           body={turn.text}
         />
       )}
@@ -944,13 +963,14 @@ function EmptyState({
 }
 
 function LoadingState(): JSX.Element {
+  const { t } = useI18n();
   const widths = [
     ['w-3/5', 'w-2/5'],
     ['w-2/3', 'w-1/2'],
     ['w-3/4', 'w-2/3'],
   ];
   return (
-    <div className="flex flex-col gap-3" aria-label="Loading">
+    <div className="flex flex-col gap-3" aria-label={t('assistantDock.loadingLabel')}>
       {widths.map(([w1, w2], i) => (
         <div
           key={i}

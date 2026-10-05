@@ -202,19 +202,20 @@ stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
 in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` remains
-english-only. Preview remains enabled with unset
+`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. Preview remains enabled with unset
 English and secondary-page disclosure; W5 and native N0/N1 remain later work.
 Browser evidence adds representative KB list/detail/candidates and artifact
 list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
 upload filename/selected File/focus/control-preservation switch in both directions
 with zero requests. Final-head evidence is recorded in the task handoff.
 
-The rest of the console is still English: **the assistant dock body remains English**; the opt-in preview selector discloses this. Native preference persistence is N0/N1; full-mode automatic
+The mounted Assistant dock and conversation controls are translated in en/zh-CN.
+The opt-in preview selector retains its secondary-page disclosure until the W5
+audit of all mounted routes, dialogs and accessibility copy. Native preference persistence is N0/N1; full-mode automatic
 environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1-migrated namespaces
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2/Assistant-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
-`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`, `system-assistant`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
@@ -977,8 +978,8 @@ parts already describe org-local wall-clock time and never shift with viewer
 TZ; UTC instants use the response timezone and explicit locale. Invalid-format
 fallbacks keep their original behavior. Compare/cohort/default/manual selection
 and all query/refetch/server metric semantics are unchanged; locale changes
-preserve nodes, focus and selection without new API calls. Usage alone becomes
-translated; Assistant remains english-only, preview stays unset-English with
+preserve nodes, focus and selection without new API calls. Usage is translated; the mounted Assistant dock and conversation controls are
+also translated. Preview stays unset-English with
 Chinese opt-in, and W5/native N0/N1 remain deferred. Browser evidence:
 `web/scripts/w4a-browser-evidence.mjs --slice usage` (ordinary bundle).
 
@@ -1105,3 +1106,9 @@ These are invoked by skills inside agent sessions. Do not invoke them by hand; d
 - `happyranch threads {reply,decline,dispatch}`
 
 Callbacks should use `--from-file <path>` where payloads have multiple fields. **The path MUST be absolute** (e.g. `/tmp/completion.json`). A relative path silently resolves against the agent's cwd and can litter stray files under the runtime orgs root. The CLI rejects relative paths with a clear error in the callback family (`report-completion`, `threads reply/decline/dispatch/compose`). See `docs/agent-guides/agent-executors-and-permissions.md`.
+
+### System Assistant mounted copy (THR-118)
+
+The global `AssistantDockHost` and its mounted `ConversationSwitcher` bind en/zh-CN app-owned visible/accessibility copy, including composer/state/key hints, typing/tool activity and conversation actions/rename/delete confirmation. Shared MessageBubble/TypingBubble copy overrides are reused. Errors retain capture-time provenance: app fallback keys resolve at render time; raw daemon detail/message and caught diagnostic values (including empty or catalog-equal values) stay exact. Executor/tool names, titles, authored content and IDs remain data. Viewer-local timestamp and elapsed semantics remain unchanged.
+
+Locale switches preserve mounted nodes, active conversation, transcript/inflight state, drafts, focus and selection without entering connection-effect dependencies or issuing requests/mutations/reconnects. The detailed boundary is [Assistant Web UI §6.12](../superpowers/specs/2026-06-12-system-assistant-web-ui-design.md#612-mounted-dock-locale-presentation-thr-118). Ordinary-build evidence is `web/scripts/w4a-browser-evidence.mjs --slice assistant`: real HTTP/WS seams and request/socket ledger plus 390/1440 screenshots. Coverage inventory includes both consumers and marks only `system-assistant` translated in this slice, supported by component regressions and ordinary-build mounted-copy evidence. Preview stays unset-English/Chinese-opt-in; W5 and native restart acceptance remain separate.
