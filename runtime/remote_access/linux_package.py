@@ -806,8 +806,8 @@ def _write_record(root: Path, record: dict, guard) -> None:
         | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         0o600,
     )
-    _seam(guard, "after", "record_temp_create", temporary)
     try:
+        _seam(guard, "after", "record_temp_create", temporary)
         _seam(guard, "before", "record_temp_write", temporary)
         view = memoryview(raw)
         while view:

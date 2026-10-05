@@ -55,6 +55,7 @@ proof framework):
 from __future__ import annotations
 
 import atexit
+import errno
 import hashlib
 import json
 import os
@@ -765,7 +766,65 @@ def _assert_old_evidence(root: Path, cache: dict) -> None:
 # A/B/C. Publication-path finite matrix (P0-P5, I1-I4, C1-C3, M9)
 # ---------------------------------------------------------------------------
 
-def test_publication_operation_fault_matrix(tmp_path: Path, pub_case: _PubCase) -> None:
+@pytest.fixture
+def record_descriptors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Observe real temp-file opens/closes, including unlinked fault residue."""
+    real_open, real_close = os.open, os.close
+    pending = {}
+    records = []
+
+    def identity(descriptor):
+        info = os.fstat(descriptor)
+        return info.st_dev, info.st_ino
+
+    def observed_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if (isinstance(path, (str, Path))
+                and Path(path).is_relative_to(tmp_path)
+                and Path(path).name == _record_temp(tmp_path).name):
+            record = {"descriptor": descriptor, "identity": identity(descriptor),
+                      "closes": 0, "released": False}
+            pending[descriptor] = record
+            records.append(record)
+        return descriptor
+
+    def observed_close(descriptor):
+        record = pending.get(descriptor)
+        if record is not None:
+            assert identity(descriptor) == record["identity"]
+        real_close(descriptor)
+        if record is not None:
+            record["closes"] += 1
+            with pytest.raises(OSError) as closed:
+                os.fstat(descriptor)
+            assert closed.value.errno == errno.EBADF
+            record["released"] = True
+            del pending[descriptor]
+
+    monkeypatch.setattr(os, "open", observed_open)
+    monkeypatch.setattr(os, "close", observed_close)
+    yield records
+    retained = []
+    for descriptor, record in pending.items():
+        try:
+            if identity(descriptor) == record["identity"]:
+                retained.append(descriptor)
+        except OSError as exc:
+            assert exc.errno == errno.EBADF
+    try:
+        assert retained == [], f"retained transaction-temp descriptors: actual={len(retained)}, expected=0"
+        assert all(record["released"] and record["closes"] == 1 for record in records)
+    finally:
+        # Only this probe's positively identified leaked descriptors, after the
+        # failed assertion has been recorded. Never a process-wide sweep.
+        for descriptor in retained:
+            if identity(descriptor) == pending[descriptor]["identity"]:
+                real_close(descriptor)
+
+
+def test_publication_operation_fault_matrix(
+    tmp_path: Path, pub_case: _PubCase, record_descriptors,
+) -> None:
     cache = pub_case.cache
     config = cache["config"]
     old, new = _packages()
@@ -858,7 +917,9 @@ def _build_interrupted_state(case: Path, config: _Config, new: Path,
                               guard=_SeamGuard(armed=False, trigger=trigger))
 
 
-def test_recovery_operation_fault_matrix(tmp_path: Path, rr_case: _RRCase) -> None:
+def test_recovery_operation_fault_matrix(
+    tmp_path: Path, rr_case: _RRCase, record_descriptors,
+) -> None:
     cache = rr_case.cache
     config = cache["config"]
     _old, new = _packages()
