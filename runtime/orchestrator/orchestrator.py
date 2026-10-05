@@ -1330,7 +1330,14 @@ class Orchestrator:
             )
         else:
             from runtime.workflows.recovery import classify_task
-            if classify_task(self._db, task_id, org_slug=self._slug).kind != "legacy":
+            # The lower host method also serves callers without a task store.
+            # Actual persisted tasks are always classified, even when the
+            # dispatcher or org identity is unavailable (which fences owners).
+            task_db = getattr(self, "_db", None)
+            if ((task_db is not None and classify_task(
+                    task_db, task_id, org_slug=getattr(self, "_slug", None),
+                ).kind != "legacy") or (task_db is None
+                                       and getattr(self, "_workflow_drafts", None) is not None)):
                 # Workflow-owned work cannot silently self-launch without
                 # actual supervisor identity/terminal evidence.
                 return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
@@ -1425,8 +1432,12 @@ class Orchestrator:
         )
         from runtime.platform.session_backend import RunningHandle
 
-        from runtime.workflows.recovery import classify_task
-        ownership = classify_task(self._db, task_id, org_slug=self._slug)
+        from runtime.workflows.recovery import WorkflowTaskOwnership, classify_task
+        task_db = getattr(self, "_db", None)
+        ownership = (classify_task(task_db, task_id, org_slug=getattr(self, "_slug", None))
+                     if task_db is not None else WorkflowTaskOwnership(
+                         "reconciliation_required" if getattr(self, "_workflow_drafts", None) is not None
+                         else "legacy"))
         drafts = getattr(self, "_workflow_drafts", None) if ownership.kind == "draft" else None
         if ownership.kind != "legacy" and drafts is None:
             return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,

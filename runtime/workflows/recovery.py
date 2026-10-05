@@ -87,7 +87,7 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
 
 def route_owned_task(orch: Any, task_id: str) -> bool:
     """Refuse all legacy effects for owned work, including completion decisions."""
-    ownership = classify_task(orch._db, task_id, org_slug=orch._slug)
+    ownership = classify_task(orch._db, task_id, org_slug=getattr(orch, "_slug", None))
     if ownership.kind == "legacy":
         return False
     dispatcher = getattr(orch, "_workflow_drafts", None)

@@ -1459,7 +1459,7 @@ def _consume_completion_report(
     if task is None:
         return
     from runtime.workflows.recovery import classify_task
-    if classify_task(db, task_id, org_slug=orch._slug).kind != "legacy":
+    if classify_task(db, task_id, org_slug=getattr(orch, "_slug", None)).kind != "legacy":
         # A result is transport evidence only. The draft owner joins exact
         # accepted result and actual host quiescence; no manager decision tail.
         return
