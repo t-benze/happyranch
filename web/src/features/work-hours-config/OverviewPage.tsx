@@ -185,7 +185,7 @@ export function OverviewPage(): JSX.Element {
             tabIndex={0}
             className="border-border focus-visible:ring-accent-ring overflow-x-auto rounded-md border focus-visible:ring-2 focus-visible:outline-none"
           >
-            <table className="w-full text-sm">
+            <table className="w-full min-w-max text-sm">
               <thead className="bg-bg-subtle text-text-muted text-xs uppercase">
                 <tr>
                   <Th>{t('workHours.roster.agent')}</Th>

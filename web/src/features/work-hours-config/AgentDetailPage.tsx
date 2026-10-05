@@ -194,7 +194,7 @@ export function AgentDetailPage(): JSX.Element {
                       {renderLeaf(row.cell.agent)}
                     </Cell>
                     <td className="px-3 py-1.5">
-                      <div className="max-w-60 break-all [&>span]:max-w-full">
+                      <div className="w-60 max-w-60 break-all [&>span]:max-w-full">
                         <span className="text-text-primary mr-2 font-mono text-xs tabular-nums">
                           ▶ {renderLeaf(row.cell.effective)}
                         </span>

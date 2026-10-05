@@ -1103,7 +1103,7 @@ async function main() {
     if (selectedSlice === 'assistant') {
       await runAssistantCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, switchOnly: arg('assistant-case', 'all') === 'switch' }, ASSISTANT_FIXTURE);
     } else if (selectedSlice === 'work-hours-reachability') {
-      await runWorkHoursCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, geometryOnly: arg('work-hours-case', 'all') === 'geometry', entryOnly: arg('work-hours-case', 'all') === 'entry' });
+      await runWorkHoursCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, geometryOnly: arg('work-hours-case', 'all') === 'geometry', entryOnly: arg('work-hours-case', 'all') === 'entry', longOnly: arg('work-hours-case', 'all') === 'long-cell' });
     } else {
     // ============================================================ G
     beginCase('G', 'ordinary bundle (no build flag) carries the zh-CN catalog copy of every V route');

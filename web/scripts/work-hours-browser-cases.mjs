@@ -27,7 +27,7 @@ const dialog = `document.querySelector('[role="dialog"][data-state="open"]')`;
 const input = `${dialog}?.querySelector('input[placeholder="2h"]')`;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-export async function runWorkHoursCases(h, { org, geometryOnly = false, entryOnly = false }) {
+export async function runWorkHoursCases(h, { org, geometryOnly = false, entryOnly = false, longOnly = false }) {
   const { openPage, closePage, evaluate, waitTrue, check, beginCase, endCase, capture, cdp, tr, base, seedLocale, chineseNavigator, ledger, crossTabSwitch } = h;
   async function clickSrc(page, expression) {
     await cdp.send('Page.bringToFront', {}, page.sessionId);
@@ -85,7 +85,7 @@ export async function runWorkHoursCases(h, { org, geometryOnly = false, entryOnl
       const reached = await evaluate(page, `(() => {
         const el = ${scroll}; const r = el.getBoundingClientRect(); const table = el.querySelector('table');
         const targets = [table.querySelector('thead tr > :last-child'), table.querySelector('tbody tr > :last-child')];
-        return { lastRects: targets.map(cell => { const b = cell.getBoundingClientRect(); return { left: b.left, right: b.right, width: b.width, text: cell.textContent }; }), regionBounds: { left: r.left, right: r.right, clientWidth: el.clientWidth, scrollWidth: el.scrollWidth, scrollLeft: el.scrollLeft }, localOverflow: el.scrollWidth > el.clientWidth, moved: el.scrollLeft > ${before}, atEnd: el.scrollLeft + el.clientWidth >= el.scrollWidth - 2, lastVisible: targets.every(cell => { const b = cell.getBoundingClientRect(); return b.width > 0 && b.right <= r.right + 1 && b.left >= r.left - 1; }), rawKept: table.textContent === window.__whRawTable, focused: document.activeElement === el };
+        return { lastRects: targets.map(cell => { const b = cell.getBoundingClientRect(); return { left: b.left, right: b.right, width: b.width, text: cell.textContent }; }), regionBounds: { left: r.left, right: r.right, clientWidth: el.clientWidth, scrollWidth: el.scrollWidth, scrollLeft: el.scrollLeft }, localOverflow: el.scrollWidth > el.clientWidth, moved: el.scrollLeft > ${before}, atEnd: el.scrollLeft + el.clientWidth >= el.scrollWidth - 2, lastVisible: targets.every(cell => { const b = cell.getBoundingClientRect(); return b.width >= (${detail} ? 80 : 24) && b.right <= r.right + 1 && b.left >= r.left - 1; }), rawKept: table.textContent === window.__whRawTable, focused: document.activeElement === el };
       })()`);
       check(`${label} last effective/eligibility header AND cell visible by keyboard ${JSON.stringify({ cells: reached.lastRects, bounds: reached.regionBounds })}`, reached.lastVisible, true);
       check(`${label} keyboard reaches end`, reached.atEnd, true);
@@ -151,10 +151,16 @@ export async function runWorkHoursCases(h, { org, geometryOnly = false, entryOnl
     await clickSrc(page, `[...document.querySelectorAll('main a')].find(a => a.textContent.trim() === ${quote(tr(locale, 'workHours.manageOperatingControl'))})`);
     check(`${label} Operating-controls link navigates`, await waitTrue(page, `location.pathname === '/orgs/${org}/settings/organization'`, 'Operating controls'), true);
   }
-  for (const width of entryOnly ? [390] : [390, 1440]) {
+  for (const width of entryOnly || longOnly ? [390] : [390, 1440]) {
     for (const locale of entryOnly ? ['en'] : ['en', 'zh-CN']) {
-      for (const detail of entryOnly ? [true] : [true, false]) {
+      for (const detail of entryOnly || longOnly ? [true] : [true, false]) {
         const id = `WH-${detail ? 'detail' : 'overview'}-${locale}-${width}`;
+        if (longOnly) {
+          beginCase(`${id}-long`, 'actual last-cell readable width at390 with long raw team');
+          const page = await openPage(`${base}/orgs/${org}/work-hours/${LONG_AGENT}?workHoursFixture=long`, { init: `${seedLocale(locale)}\n${chineseNavigator}`, width, height: 844 });
+          await geometry(page, locale, width, detail, true);
+          await closePage(page); endCase(); continue;
+        }
         beginCase(id, 'all essential controls and columns reachable; ordinary mounted state');
         const page = await openPage(`${base}/orgs/${org}/work-hours${detail ? '/dev_agent' : ''}`, { init: `${seedLocale(locale)}\n${chineseNavigator}`, width, height: width === 390 ? 844 : 900 });
         await geometry(page, locale, width, detail, false);
