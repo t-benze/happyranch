@@ -109,12 +109,12 @@ production builds.
 **W3b-1** translated the mounted Tasks route family (`features/tasks/**`: list/detail panes, filters, status/rollup/fan-out presentation, states and the owned Cancel/Revisit/ResolveEscalation dialogs). `StatusBadge` takes an optional localized `waitingLabels` prop with an English default (Jobs/TaskCard callers unchanged). Dialog errors are `TaskErrorView` descriptors (`features/tasks/strings.ts`: mapped key; an unmapped daemon code or, with no code, a non-empty string diagnostic rendered verbatim; otherwise the localized fallback) rendered at render time; briefs, notes, names, IDs, machine values, unknown flavors/work-status states and raw event actions/payloads stay verbatim, and group/lineage React keys are locale-neutral so a switch keeps rows, dialogs, drafts and focus with no request. Browser evidence: `scripts/w3b-tasks-browser-evidence.mjs` against the ORDINARY dist.
 **W3b-2** translated the mounted Jobs route family (`features/jobs/**`: list chrome/status groups/callout/columns/relative age, detail states/actions/command card/cascade/gated notice/rail/output, and the owned Run/Reject dialogs). Daemon values (IDs, titles, script text, rationale, agent names, status tokens, `exit <code>`, stdout/stderr, reasons) stay verbatim. Run/Reject/Stop errors are `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same boundary as `classifyTaskError`). W3b-2 also enabled the opt-in language preview: Settings ▸ Preferences ▸ Language is mounted in ordinary builds, an unset preference stays English (preview mode never reads the browser language), and the selector discloses that secondary pages may still appear in English. Browser evidence: `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
 
-**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB/Artifacts shipped; Usage later W4d).
+**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB/Artifacts shipped; Usage presentation W4d-2).
 
 **W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, enforced by a `format.test.ts` source scan). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
 **W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; en/zh-CN rendered-state regressions complement the source scan, which rejects direct locale-formatting calls), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
-Usage and the assistant dock body (later W4/W5) and the assistant dock body (W4) remain
+The assistant dock body (later W4/W5) remains
 untranslated. The mount-time coverage
 inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
 (root shell `index`, the `*` NotFound catch-all and onboarding — now
@@ -211,13 +211,29 @@ stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
 in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` and `system-assistant` remain
+`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` remains
 english-only. Preview remains enabled with unset
 English and secondary-page disclosure; W5 and native N0/N1 remain later work.
 Browser evidence adds representative KB list/detail/candidates and artifact
 list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
 upload filename/selected File/focus/control-preservation switch in both directions
 with zero requests. Final-head evidence is recorded in the task handoff.
+
+
+### Usage presentation locales (THR-118 W4d-2)
+
+The Usage v1 page translates app-owned Workload/Efficiency labels, columns,
+run types, statuses, comparison/coverage explanations, help, retry/stale/empty
+copy, ARIA, counts and units through `usage.*`. Raw agents, CLIs, model names,
+authored values and timezone identifiers remain verbatim. Window `*_local`
+parts already describe org-local wall-clock time and never shift with viewer
+TZ; UTC instants use the response timezone and explicit locale. Invalid-format
+fallbacks keep their original behavior. Compare/cohort/default/manual selection
+and all query/refetch/server metric semantics are unchanged; locale changes
+preserve nodes, focus and selection without new API calls. Usage alone becomes
+translated; Assistant remains english-only, preview stays unset-English with
+Chinese opt-in, and W5/native N0/N1 remain deferred. Browser evidence:
+`web/scripts/w4a-browser-evidence.mjs --slice usage` (ordinary bundle).
 
 ## What is intentionally not in here
 

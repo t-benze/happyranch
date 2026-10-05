@@ -19,7 +19,7 @@ import { PageHeader } from '@/design-system/patterns/PageHeader';
 import { EfficiencySection } from './EfficiencySection';
 import { WorkloadSection } from './WorkloadSection';
 import { useEfficiencyOptions, useWorkload } from './useUsageData';
-import { formatWindow } from './usageFormat';
+import { useUsagePresentation } from './strings';
 
 function CompareSwitch({
   checked,
@@ -28,6 +28,7 @@ function CompareSwitch({
   checked: boolean;
   onChange: (next: boolean) => void;
 }): JSX.Element {
+  const { t } = useUsagePresentation();
   return (
     <button
       type="button"
@@ -48,24 +49,25 @@ function CompareSwitch({
           }`}
         />
       </span>
-      Compare with previous 7 days
+      {t('usage.compare')}
     </button>
   );
 }
 
 function PeriodLabel({ compare }: { compare: boolean }): JSX.Element {
+  const { t, formatWindow } = useUsagePresentation();
   // The window always comes from a daemon response; until one arrives only the
   // fixed period name is shown. Both queries are shared with the sections.
   const workload = useWorkload(compare).data;
   const options = useEfficiencyOptions(compare).data;
   const source = workload ?? options;
-  if (!source) return <>Last 7 days</>;
+  if (!source) return <>{t('usage.period')}</>;
   return (
     <>
-      Last 7 days · {formatWindow(source.current_window)} ({source.timezone})
+      {t('usage.window', { window: formatWindow(source.current_window), timezone: source.timezone })}
       {compare && source.previous_window && (
         <span className="block">
-          Compared with {formatWindow(source.previous_window)}
+          {t('usage.previousWindow', { window: formatWindow(source.previous_window) })}
         </span>
       )}
     </>
@@ -73,12 +75,13 @@ function PeriodLabel({ compare }: { compare: boolean }): JSX.Element {
 }
 
 export function UsagePage(): JSX.Element {
+  const { t } = useUsagePresentation();
   const [compare, setCompare] = useState(false);
   return (
     <ContentWrap>
       <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
-          <PageHeader title="Usage" meta={<PeriodLabel compare={compare} />} />
+          <PageHeader title={t('usage.title')} meta={<PeriodLabel compare={compare} />} />
         </div>
         <CompareSwitch checked={compare} onChange={setCompare} />
       </header>
