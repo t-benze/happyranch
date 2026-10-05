@@ -6,7 +6,7 @@
  * locale switch keeps the same input node, its value and its focus, and
  * re-translates an error that is already on screen.
  */
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { useI18n } from '@/hooks/i18n';
@@ -193,7 +193,15 @@ describe('DaemonCapacitySection i18n (W2c capacity)', () => {
     act(() => { void view.router.navigate('/orgs/alpha/settings/assistant'); });
 
     const dialog = await screen.findByRole('dialog', { name: '放弃未保存的容量更改？' });
+    const close = within(dialog).getByRole('button', { name: '关闭' });
     expect(dialog).not.toHaveAttribute('aria-label');
     expect(screen.getByRole('heading', { name: '放弃未保存的容量更改？' })).toBeInTheDocument();
+    close.focus();
+    switchTo('en');
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
+    expect(close).toHaveFocus();
+    switchTo('zh-CN');
+    expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
+    expect(close).toHaveFocus();
   });
 });

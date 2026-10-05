@@ -12,7 +12,7 @@ import { describe, expect, test, beforeEach } from 'vitest';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { Route, Routes } from 'react-router-dom';
+import { Route, Routes, useLocation } from 'react-router-dom';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import type { OrgSettings } from '@/lib/api/types';
@@ -53,6 +53,12 @@ const AGENTS_PAYLOAD = {
   ],
 };
 
+let observedRoute = '';
+function RouteObservation(): null {
+  observedRoute = useLocation().pathname;
+  return null;
+}
+
 function renderSection(locale: 'en' | 'zh-CN') {
   return renderWithProviders(
     <>
@@ -64,6 +70,7 @@ function renderSection(locale: 'en' | 'zh-CN') {
       </Routes>
       <LocaleTestSwitch to="zh-CN" />
       <LocaleTestSwitch to="en" />
+      <RouteObservation />
     </>,
     {
       route: `/orgs/${SLUG}/settings/organization`,
@@ -355,5 +362,69 @@ describe('OrganizationSection ▸ EligibilityEditorDialog zh-CN', () => {
     const alert = await within(dialog).findByRole('alert');
     expect(alert).toHaveTextContent('保存被拒绝 — 配置未写入。');
     expect(alert).toHaveTextContent('Unknown agent reference: ghost_agent');
+  });
+});
+
+describe('OrganizationSection disable-confirm close control (W5a)', () => {
+  test.each([
+    ['en', 'close'], ['en', 'cancel'], ['en', 'escape'], ['en', 'confirm'],
+    ['zh-CN', 'close'], ['zh-CN', 'cancel'], ['zh-CN', 'escape'], ['zh-CN', 'confirm'],
+  ] as const)('%s: modal locale switching then %s preserves the original action', async (from, action) => {
+    const puts: unknown[] = [];
+    server.use(http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+      puts.push(await request.json());
+      return HttpResponse.json(ORG);
+    }));
+    const user = userEvent.setup();
+    renderSection(from);
+    const input = await screen.findByPlaceholderText(
+      from === 'en' ? 'use system default' : '使用系统默认值',
+    );
+    await user.type(input, '61');
+    const toggle = screen.getByRole('switch', { name: from === 'en' ? 'Work Hours' : '工时' });
+    await user.click(toggle);
+    const dialog = await screen.findByRole('dialog', {
+      name: translate(from, 'settings.organization.disableDialog.title'),
+    });
+    const close = within(dialog).getByRole('button', { name: from === 'en' ? 'Close' : '关闭' });
+    const cancel = within(dialog).getByRole('button', {
+      name: translate(from, 'settings.organization.disableDialog.cancel'),
+    });
+    const confirm = within(dialog).getByRole('button', {
+      name: translate(from, 'settings.organization.disableDialog.confirm'),
+    });
+    close.focus();
+    const ledger = recordRequests();
+    const to = from === 'en' ? 'zh-CN' : 'en';
+    for (const locale of [to, from] as const) {
+      act(() => screen.getByTestId(`test-set-locale-${locale}`).click());
+      await waitFor(() => expect(within(dialog).getByRole('button', {
+        name: locale === 'en' ? 'Close' : '关闭',
+      })).toBe(close));
+      expect(screen.getByRole('dialog', {
+        name: translate(locale, 'settings.organization.disableDialog.title'),
+      })).toBe(dialog);
+      expect(within(dialog).getByRole('button', {
+        name: translate(locale, 'settings.organization.disableDialog.cancel'),
+      })).toBe(cancel);
+      expect(within(dialog).getByRole('button', {
+        name: translate(locale, 'settings.organization.disableDialog.confirm'),
+      })).toBe(confirm);
+      expect(input).toHaveValue(61);
+      expect(input.isConnected).toBe(true);
+      expect(toggle).toHaveAttribute('aria-checked', 'true');
+      expect(close).toHaveFocus();
+      expect(observedRoute).toBe(`/orgs/${SLUG}/settings/organization`);
+    }
+    expect(ledger).toEqual([]);
+    expect(puts).toEqual([]);
+    if (action === 'escape') await user.keyboard('{Escape}');
+    else await user.click(action === 'close' ? close : action === 'cancel' ? cancel : confirm);
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(toggle).toHaveFocus());
+    if (action === 'confirm') {
+      await waitFor(() => expect(puts).toEqual([{ working_hours: { enabled: false } }]));
+    } else expect(puts).toEqual([]);
+    expect(input).toHaveValue(61);
   });
 });

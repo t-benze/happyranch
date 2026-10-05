@@ -10,7 +10,7 @@
  * raw machine values (rc, unknown category) byte-identical.
  */
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { useState, type ReactElement } from 'react';
@@ -69,6 +69,15 @@ async function switchTo(locale: 'en' | 'zh-CN') {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
   });
+  const dialog = screen.queryByRole('dialog');
+  if (dialog) {
+    expect(within(dialog).getByRole('button', {
+      name: locale === 'en' ? 'Close' : '关闭',
+    })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', {
+      name: locale === 'en' ? '关闭' : 'Close',
+    })).toBeNull();
+  }
 }
 
 type Reply = 'mapped' | 'unmapped' | 'ok';

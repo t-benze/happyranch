@@ -139,6 +139,7 @@ describe('NewThreadDialog i18n (THR-118 W3a)', () => {
   test('locale switch preserves draft, nodes, focus, attachment identity and issues no request; one create posts once', async () => {
     const user = userEvent.setup();
     renderDialog('en');
+    const close = screen.getByRole('button', { name: 'Close' });
     const subject = screen.getByLabelText(EN.subject) as HTMLInputElement;
     const recipients = screen.getByLabelText(EN.recipients) as HTMLInputElement;
     const body = screen.getByLabelText(EN.body) as HTMLTextAreaElement;
@@ -156,6 +157,7 @@ describe('NewThreadDialog i18n (THR-118 W3a)', () => {
     const ledger = recordRequests();
     await switchTo('zh-CN');
     expect(screen.getByRole('dialog', { name: ZH.title })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '关闭' })).toBe(close);
     expect(screen.getByLabelText(ZH.subject)).toBe(subject);
     expect(screen.getByLabelText(ZH.recipients)).toBe(recipients);
     expect(screen.getByLabelText(ZH.body)).toBe(body);
@@ -172,6 +174,7 @@ describe('NewThreadDialog i18n (THR-118 W3a)', () => {
 
     await switchTo('en');
     expect(screen.getByRole('dialog', { name: EN.title })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBe(close);
     expect(screen.getByLabelText(EN.subject)).toBe(subject);
     expect(screen.getByLabelText(EN.body)).toBe(body);
     expect(body.value).toBe('Hello **world**');

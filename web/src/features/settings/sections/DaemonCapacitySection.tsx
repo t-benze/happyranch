@@ -1594,7 +1594,7 @@ export function DaemonCapacitySection(): JSX.Element {
           if (!open && blocker.state === 'blocked') blocker.reset();
         }}
       >
-        <DialogContent className={DIALOG_FOCUS_RING}>
+        <DialogContent className={DIALOG_FOCUS_RING} closeLabel={t('common.close')}>
           <DialogHeader>
             <DialogTitle>{t('settings.capacity.dialog.title')}</DialogTitle>
             <DialogDescription>

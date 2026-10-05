@@ -8,6 +8,7 @@
 import type { MessageKey, MessageValue } from '../catalog';
 
 export const zhCN: Record<MessageKey, MessageValue> = {
+  "common.mermaidLoading": "正在渲染图表…",
   "usage.localStamp": "{month}{day}日 {time}",
   // W4d-2: Usage app-owned presentation; daemon identities and metrics stay verbatim.
   "usage.compare": "与前7天比较",

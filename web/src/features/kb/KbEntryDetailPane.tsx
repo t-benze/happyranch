@@ -169,7 +169,7 @@ export function KbEntryDetailPane({
             </div>
           ) : entry ? (
             <div className="space-y-4">
-              <Markdown body={entry.body} />
+              <Markdown body={entry.body} mermaidLoadingLabel={t('common.mermaidLoading')} />
 
               {/* Source task badge */}
               {entry.source_task && (

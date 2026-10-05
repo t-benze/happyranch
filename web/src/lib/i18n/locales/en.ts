@@ -9,6 +9,7 @@
 import type { Catalog } from '../catalog';
 
 export const en = {
+  "common.mermaidLoading": "Rendering diagram…",
   "usage.localStamp": "{month} {day}, {time}",
   // W4d-2: Usage app-owned presentation; daemon identities and metrics stay verbatim.
   "usage.compare": "Compare with previous 7 days",

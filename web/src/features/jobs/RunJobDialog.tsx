@@ -74,7 +74,7 @@ export function RunJobDialog({ job, open, onClose, onSuccess }: Props): JSX.Elem
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle className="font-display">
             {job.review_required

@@ -285,6 +285,10 @@ deferred. Ordinary browser evidence uses the narrow `--slice usage` rows in
 same-origin preference switching. Actual final-head receipts live in task
 output/attachments.
 
+### W5a modal and Markdown loading-copy boundary
+
+**W5a copy repair:** the mounted Jobs Run/Reject, Settings Assistant/Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads and both Assistant turn variants supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. Preview disclosure and unset-English behavior remain until separate W5b acceptance; desktop N0/N1 are deferred.
+
 ## 2. Exports
 
 | Module | Contract |
