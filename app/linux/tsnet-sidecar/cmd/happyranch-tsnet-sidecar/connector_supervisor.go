@@ -333,14 +333,18 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 		}
 		return observation, true
 	}
-	resetStale := func() {
+	// Each accepted pair owns an absolute freshness deadline. Anchor it at
+	// publication, so query/result/notify delivery cannot restart elapsed time.
+	var freshnessDeadlineAt time.Time
+	resetStale := func(publishedAt time.Time) {
+		freshnessDeadlineAt = publishedAt.Add(staleAfter)
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
 			default:
 			}
 		}
-		timer.Reset(staleAfter)
+		timer.Reset(time.Until(freshnessDeadlineAt))
 	}
 	// finishChildExit handles the child's single owned Wait exactly once.  It
 	// is shared by the priority check and the blocking select so the terminal
@@ -436,12 +440,17 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						if code, exited := fenceChildExit(); exited {
 							return code
 						}
+						publishedAt := time.Now()
+						if ctx.Err() != nil || !publishedAt.Before(startupDeadlineAt) {
+							stopChild()
+							continue
+						}
 						if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 							stopChild()
 							continue
 						}
 						ready = true
-						resetStale()
+						resetStale(publishedAt)
 					}
 				}
 			case "healthy":
@@ -469,20 +478,30 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 					if code, exited := fenceChildExit(); exited {
 						return code
 					}
+					publishedAt := time.Now()
+					if ctx.Err() != nil || !publishedAt.Before(startupDeadlineAt) {
+						stopChild()
+						continue
+					}
 					if notifier.Notify("READY=1", "STATUS=composite healthy") != nil {
 						stopChild()
 						continue
 					}
 					ready = true
-					resetStale()
+					resetStale(publishedAt)
 				} else {
-					// Post-READY watchdog: the query result is rechecked
-					// against cancellation before any positive publication,
-					// so a receipt that completes after cancellation can
-					// never refresh the watchdog window.
-					observation := sidecarHealthy(ctx)
+					// The query cannot borrow time beyond current freshness.
+					// A pending timer event is not proof that its deadline
+					// remains open: query/result delivery may win the select.
+					if !time.Now().Before(freshnessDeadlineAt) {
+						stopChild()
+						continue
+					}
+					observationCtx, cancelObservation := context.WithDeadline(ctx, freshnessDeadlineAt)
+					observation := sidecarHealthy(observationCtx)
+					cancelObservation()
 					switch {
-					case ctx.Err() != nil:
+					case ctx.Err() != nil || !time.Now().Before(freshnessDeadlineAt):
 						stopChild()
 					case observation != sidecarPresentHealthy:
 						stopChild()
@@ -490,10 +509,17 @@ func superviseConnector(parent context.Context, argv []string, notifier notifySe
 						if code, exited := fenceChildExit(); exited {
 							return code
 						}
+						// Recheck at publication after the child-exit fence;
+						// no expired result can emit or renew WATCHDOG.
+						publishedAt := time.Now()
+						if ctx.Err() != nil || !publishedAt.Before(freshnessDeadlineAt) {
+							stopChild()
+							continue
+						}
 						if notifier.Notify("WATCHDOG=1") != nil {
 							stopChild()
 						} else {
-							resetStale()
+							resetStale(publishedAt)
 						}
 					}
 				}

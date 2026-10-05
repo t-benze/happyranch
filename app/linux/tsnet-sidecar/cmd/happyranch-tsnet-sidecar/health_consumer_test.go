@@ -2642,3 +2642,255 @@ func TestConsumerFailurePathTeardownReleasesEnteredGateAndJoins(t *testing.T) {
 	}
 	assertHR8466NoFixtureLeak(t, f)
 }
+
+func TestReviewExpiredPostReadyObservationCannotRefreshWatchdog(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready", "healthy")
+	f.setState("healthy")
+	const stale = 400 * time.Millisecond
+	h := startHR8466Supervisor(t, f, 10*time.Second, stale)
+	defer h.teardown()
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	h.waitCount("READY=1", 1, hr8466NormalBarrier)
+	h.armProbeGate()
+	f.waitChildWaiting(t, 1)
+	f.releaseChild(1)
+	index := h.waitProbeGateEntered(hr8466NormalBarrier)
+	if index != 2 {
+		t.Fatalf("unexpected observation: %d", index)
+	}
+	if _, result, ok := h.probe.resultAt(index - 1); !ok || result != sidecarPresentHealthy {
+		t.Fatalf("real observation did not complete healthy before delayed delivery")
+	}
+	held := time.Now()
+	time.Sleep(stale + 50*time.Millisecond)
+	if elapsed := time.Since(held); elapsed < stale {
+		t.Fatalf("completed observation released before freshness elapsed: %s", elapsed)
+	}
+	h.releaseProbeGate()
+	h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+	if got := h.count("WATCHDOG=1"); got != 0 {
+		t.Errorf("expired post-READY observation refreshed WATCHDOG: got %d, want 0; calls=%v", got, h.calls())
+	}
+	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+		t.Fatalf("expired-health ordered cleanup exit=%d, want0", code)
+	}
+	if got := h.count("READY=1"); got != 1 {
+		t.Errorf("READY=%d want1", got)
+	}
+	if got := h.count("STOPPING=1"); got != 1 {
+		t.Errorf("STOPPING=%d want1", got)
+	}
+	assertHR8466TermAfterAbsence(t, f.productEvents())
+	assertHR8466NoFixtureLeak(t, f)
+}
+
+// The real query must inherit the remaining post-READY freshness window,
+// rather than using its independent one-second cap to extend stale liveness.
+func TestConsumerPostReadyQueryBoundedByRemainingFreshness(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready", "healthy")
+	f.setState("healthy")
+	const stale = 400 * time.Millisecond
+	h := startHR8466Supervisor(t, f, 10*time.Second, stale)
+	defer h.teardown()
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	h.waitCount("READY=1", 1, hr8466NormalBarrier)
+	h.armProbeGate()
+	f.waitChildWaiting(t, 1)
+	f.setState("delay")
+	f.releaseChild(1)
+	f.waitEvent(t, "show:delay", hr8466NormalBarrier)
+	index := h.waitProbeGateEntered(hr8466QueryBound)
+	if index != 2 {
+		t.Fatalf("unexpected in-flight observation: %d", index)
+	}
+	duration, result, ok := h.probe.resultAt(1)
+	if !ok || result != sidecarUnknown {
+		t.Fatalf("crossing query result=%d ok=%v, want unknown", result, ok)
+	}
+	if duration > 800*time.Millisecond {
+		t.Errorf("post-READY query exceeded remaining freshness: duration=%s, want <800ms for400ms window", duration)
+	}
+	entries := hr8466Events(f.entered)
+	if len(entries) != 2 {
+		t.Fatalf("query entry count=%d, want2", len(entries))
+	}
+	pid, err := strconv.Atoi(entries[1])
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid query PID receipt: %q", entries[1])
+	}
+	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+		t.Fatalf("expired query PID%d not reaped: %v", pid, err)
+	}
+	// Cleanup observes absence only after the timed-out query was recorded.
+	f.setState("absent")
+	h.releaseProbeGate()
+	h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+	if got := h.count("WATCHDOG=1"); got != 0 {
+		t.Errorf("crossing query emitted WATCHDOG: got%d want0", got)
+	}
+	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+		t.Fatalf("ordered cleanup exit=%d want0", code)
+	}
+	if got := h.count("STOPPING=1"); got != 1 {
+		t.Errorf("STOPPING count=%d want1", got)
+	}
+	assertHR8466TermAfterAbsence(t, f.productEvents())
+	assertHR8466NoFixtureLeak(t, f)
+}
+
+// A timely complete pair renews the existing configured window. Silence then
+// expires relative to that legitimate renewal, not relative to initial READY.
+func TestConsumerTimelyPostReadyPairRenewsThenMissingHealthExpires(t *testing.T) {
+	f := newHR8466Fixture(t)
+	f.setPlan("ready", "healthy")
+	f.setState("healthy")
+	const stale = 800 * time.Millisecond
+	h := startHR8466Supervisor(t, f, 10*time.Second, stale)
+	defer h.teardown()
+	f.waitChildWaiting(t, 0)
+	f.releaseChild(0)
+	h.waitCount("READY=1", 1, hr8466NormalBarrier)
+	time.Sleep(stale / 2)
+	f.waitChildWaiting(t, 1)
+	f.releaseChild(1)
+	h.waitCount("WATCHDOG=1", 1, hr8466NormalBarrier)
+	renewed := time.Now()
+	time.Sleep(stale/2 + 50*time.Millisecond)
+	if got := h.count("STOPPING=1"); got != 0 {
+		t.Fatalf("timely pair failed to renew: STOPPING=%d want0; calls=%v", got, h.calls())
+	}
+	h.waitCount("STOPPING=1", 1, stale+hr8466NormalBarrier)
+	if elapsed := time.Since(renewed); elapsed < stale-50*time.Millisecond || elapsed > stale+hr8466NormalBarrier {
+		t.Errorf("missing health expiry elapsed=%s, want latest800ms window within scheduling bound", elapsed)
+	}
+	if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+		t.Fatalf("missing-health cleanup exit=%d want0", code)
+	}
+	if got := h.count("READY=1"); got != 1 {
+		t.Errorf("READY=%d want1", got)
+	}
+	if got := h.count("WATCHDOG=1"); got != 1 {
+		t.Errorf("WATCHDOG=%d want1", got)
+	}
+	if got := h.count("STOPPING=1"); got != 1 {
+		t.Errorf("STOPPING=%d want1", got)
+	}
+	assertHR8466TermAfterAbsence(t, f.productEvents())
+	assertHR8466NoFixtureLeak(t, f)
+}
+
+// Expiry is terminal even while admission removal is unknown or refused.
+// Later healthy records cannot revive it or authorize child cleanup.
+func TestConsumerExpiredPostReadyDeliveryRetainsTerminalAdmissionFence(t *testing.T) {
+	for _, admission := range []string{"refused", "unknown"} {
+		for _, ending := range []string{"absent", "child-exit"} {
+			t.Run(admission+"/"+ending, func(t *testing.T) {
+				f := newHR8466Fixture(t)
+				f.setPlan("ready", "healthy", "healthy", "healthy", "healthy")
+				f.setState("healthy")
+				f.requireStopFailure()
+				const stale = 400 * time.Millisecond
+				h := startHR8466Supervisor(t, f, 10*time.Second, stale)
+				defer h.teardown()
+				f.waitChildWaiting(t, 0)
+				f.releaseChild(0)
+				h.waitCount("READY=1", 1, hr8466NormalBarrier)
+				h.armProbeGate()
+				f.waitChildWaiting(t, 1)
+				f.releaseChild(1)
+				index := h.waitProbeGateEntered(hr8466NormalBarrier)
+				if index != 2 {
+					t.Fatalf("unexpected expiry observation: %d", index)
+				}
+				if _, result, ok := h.probe.resultAt(1); !ok || result != sidecarPresentHealthy {
+					t.Fatal("held query did not complete healthy")
+				}
+				held := time.Now()
+				time.Sleep(stale + 50*time.Millisecond)
+				if time.Since(held) < stale {
+					t.Fatal("freshness boundary not crossed")
+				}
+				if admission == "unknown" {
+					f.setState("unknownstate")
+				}
+				h.releaseProbeGate()
+				h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+				if admission == "refused" {
+					f.waitEvent(t, "stop-failed", hr8466NormalBarrier)
+				} else {
+					f.waitEvent(t, "show-done:unknownstate", hr8466NormalBarrier)
+				}
+				// show-done is before cmd.Output/parser return, so it cannot
+				// safely arm a gate for the next observation. Keep the actual
+				// completed-result receipts instead. Two later records and two
+				// healthy admission completions prove at least one later record
+				// was consumed even if the elapsed timer also won a select.
+				probesBefore := h.probe.count()
+				failuresBefore := hr8466EventCount(f.productEvents(), "stop-failed")
+				f.setState("healthy")
+				for _, record := range []int{2, 3} {
+					f.waitChildWaiting(t, record)
+					f.releaseChild(record)
+					f.waitChildEmitted(t, record)
+				}
+				consumedBy := time.Now().Add(hr8466NormalBarrier)
+				for {
+					healthy := 0
+					for i := probesBefore; i < h.probe.count(); i++ {
+						if _, result, ok := h.probe.resultAt(i); ok && result == sidecarPresentHealthy {
+							healthy++
+						}
+					}
+					failures := hr8466EventCount(f.productEvents(), "stop-failed")
+					if healthy >= 2 && failures >= failuresBefore+2 {
+						break
+					}
+					if time.Now().After(consumedBy) {
+						t.Fatalf("later healthy records did not complete refused admission: healthy=%d want>=2, failures=%d want>=%d", healthy, failures, failuresBefore+2)
+					}
+					time.Sleep(time.Millisecond)
+				}
+				if got := h.count("WATCHDOG=1"); got != 0 {
+					t.Errorf("expired delivery or later health revived WATCHDOG: got%d want0; calls=%v", got, h.calls())
+				}
+				if got := h.count("READY=1"); got != 1 {
+					t.Errorf("terminal READY=%d want1", got)
+				}
+				if events := f.productEvents(); hr8466HasEvent(events, "term") {
+					t.Fatalf("child TERM before admission absence: %v", events)
+				}
+				if ending == "absent" {
+					f.setState("absent")
+					f.waitChildWaiting(t, 4)
+					f.releaseChild(4)
+					if code := h.waitDone(hr8466AdmissionBound); code != 0 {
+						t.Fatalf("confirmed-absence cleanup exit=%d want0", code)
+					}
+					assertHR8466TermAfterAbsence(t, f.productEvents())
+				} else {
+					f.exitChild()
+					if code := h.waitDone(hr8466AdmissionBound); code != 1 {
+						t.Fatalf("refused cleanup/spontaneous exit=%d want1", code)
+					}
+					if events := f.productEvents(); hr8466HasEvent(events, "term") {
+						t.Fatalf("spontaneous exit manufactured cleanup permission: %v", events)
+					}
+				}
+				if got := h.count("WATCHDOG=1"); got != 0 {
+					t.Errorf("terminal final WATCHDOG=%d want0", got)
+				}
+				if got := h.count("READY=1"); got != 1 {
+					t.Errorf("terminal final READY=%d want1", got)
+				}
+				if got := h.count("STOPPING=1"); got != 1 {
+					t.Errorf("terminal STOPPING=%d want1; calls=%v", got, h.calls())
+				}
+				assertHR8466NoFixtureLeak(t, f)
+			})
+		}
+	}
+}
