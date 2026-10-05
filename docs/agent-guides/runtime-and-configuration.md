@@ -364,6 +364,35 @@ shared-map insertion; its mirror
 digest must equal the current global digest before readiness is exposed.
 Startup does not dispatch, activate, or admit workflow work.
 
+THR139 S1 separates existing and new databases. Existing `OrgState.load` retains
+foundation installation where required, validates full F/E before workflow
+recovery, and never adds the draft extension. F remains usable for legacy work;
+its cutover projection/log names the operator migration and recovery waits for E.
+POST /orgs creates a fresh skeleton, initializes complete E before attachment,
+and retains its existing cleanup/error ownership. Empty files/missing tables or
+startup discovery are not proof of new creation. Generic Database/runtime-audit
+construction remains workflow-free.
+
+Explicit existing-org migration (operator authorization required):
+
+```bash
+python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> --check
+python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug>
+```
+
+The script validates the schema-v2 runtime and actual org path, full F/E SQL,
+markers/history/integrity and stored source/draft closure without running generic
+migrations. One bounded SQLite writer transaction installs only the exact three
+draft tables/six indexes and version1 marker, validates E, then commits. Partial,
+unknown/corrupt layouts and nonorg/missing/symlink targets refuse; complete E
+replay preserves existing data. `--check` performs no migration, exits0 for ready
+E or3 for migration-needed F; refusal1, parser2. Pristine F retains preceding-reader
+compatibility until migration. **Every E requires a compatible reader**, including
+new empty orgs; no downgrade stripping or live migration is implied by shipping
+this script. Read-only WAL inspection can use SQLite sidecars; crash rollback may
+leave a non-hot journal, while original data/schema/files remain intact.
+
+
 Adapter approval propagates the profile target selected before lease
 acquisition into its existing serialized registry writer, including an empty
 selection. It revalidates that target before approval, idempotent return or

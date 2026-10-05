@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from runtime.infrastructure.workflow_schema import migrate_draft_schema
 
 BASE = "/api/v1/orgs/alpha/workflows/cutover"
 
 
 def test_scoped_founder_request_and_historical_replay(client_with_runtime) -> None:
     client, org = client_with_runtime
+    with org.db.workflow_schema_transaction() as conn:
+        migrate_draft_schema(conn, expected_org_slug="alpha")
     initial = client.get(BASE)
     assert initial.status_code == 200
     assert initial.json()["generation"] == 1
@@ -74,6 +77,8 @@ def test_auth_org_and_safe_syntax_precedence_on_actual_wire(client_with_runtime)
 
 def test_pending_reconciliation_corruption_and_replay_error_categories(client_with_runtime) -> None:
     client, org = client_with_runtime
+    with org.db.workflow_schema_transaction() as conn:
+        migrate_draft_schema(conn, expected_org_slug="alpha")
     org.db.execute("INSERT INTO workflow_recovery_claims VALUES ('owner','workflow_task','workflow_recovery','token','effect','claimed','now')")
     org.db._conn.commit()
     body = {"action": "enable", "operation_key": "enable", "expected_generation": 1}
@@ -98,9 +103,13 @@ def test_actual_second_org_does_not_disclose_or_replay_first_org_key(client_with
     from tests.daemon.test_org_state import _seed_org
 
     client, org = client_with_runtime
+    with org.db.workflow_schema_transaction() as conn:
+        migrate_draft_schema(conn, expected_org_slug="alpha")
     state = client.app.state.daemon
     _seed_org(state.runtime.orgs_dir / "beta")
     beta = asyncio.run(state.add_org("beta"))
+    with beta.db.workflow_schema_transaction() as conn:
+        migrate_draft_schema(conn, expected_org_slug="beta")
     try:
         body = {"action": "enable", "operation_key": "same-key", "expected_generation": 1}
         alpha = client.post(BASE + "/requests", json=body)
@@ -122,4 +131,18 @@ def test_server_provenance_claims_precede_invalid_generation(client_with_runtime
     before = tuple(org.db._conn.iterdump())
     response = client.post(BASE + "/requests", json={field: "forged", "expected_generation": True})
     assert response.status_code == 403 and response.json()["detail"] == {"code": "body_identity_rejected"}
+    assert tuple(org.db._conn.iterdump()) == before
+
+
+def test_existing_f_http_refuses_enable_without_event_and_get_has_actual_remedy(client_with_runtime) -> None:
+    client, org = client_with_runtime
+    before = tuple(org.db._conn.iterdump())
+    result = client.post(BASE + '/requests', json={'action': 'enable', 'operation_key': 'needs-migration', 'expected_generation': 1})
+    assert result.status_code == 500
+    assert result.json()['detail'] == {'code': 'draft_schema_migration_required'}
+    projection = client.get(BASE).json()
+    assert projection['state'] == 'installed_legacy_only'
+    assert projection['blockers'][0]['code'] == 'draft_schema_migration_required'
+    assert 'python scripts/migrate_workflow_draft_schema.py --runtime-root' in projection['blockers'][0]['required_action']
+    assert '--org alpha' in projection['blockers'][0]['required_action']
     assert tuple(org.db._conn.iterdump()) == before

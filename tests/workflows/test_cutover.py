@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from runtime.infrastructure.database import Database
-from runtime.infrastructure.workflow_schema import install_or_recover
+from runtime.infrastructure.workflow_schema import install_or_recover, migrate_draft_schema
 from runtime.workflows.cutover import WorkflowCutoverStore
 
 
@@ -31,11 +31,17 @@ from tests.workflows.test_u0_migration_recovery import (
 )
 
 
+def _migrate(db: Database) -> None:
+    with db.workflow_schema_transaction() as conn:
+        migrate_draft_schema(conn, expected_org_slug="alpha")
+
+
 def test_founder_request_verifies_then_enables_and_replays_history(tmp_path: Path) -> None:
     path = tmp_path / "org.db"
     db = Database(path)
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         result = store.request(action="enable", operation_key="enable-1", expected_generation=1)
         assert result["state"] == "enabled"
@@ -59,6 +65,7 @@ def test_pre_enable_work_retains_authentic_pending_request(tmp_path: Path) -> No
     db = Database(tmp_path / "blocked.db")
     try:
         install_or_recover(db)
+        _migrate(db)
         db.execute("INSERT INTO workflow_recovery_claims VALUES ('legacy', 'legacy_task', 'legacy_recovery','token','effect','claimed','now')")
         db._conn.commit()
         store = WorkflowCutoverStore(db, org_slug="alpha")
@@ -108,6 +115,7 @@ def test_cutover_chain_corruption_refuses_without_any_write(tmp_path: Path, sql:
     db = Database(path)
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         store.request(action="enable", operation_key="enable", expected_generation=1)
         store.request(action="disable", operation_key="disable", expected_generation=4)
@@ -140,6 +148,7 @@ def test_progressed_history_requires_actual_org_and_accepts_nonmonotonic_utc(tmp
     db = Database(tmp_path / "org.db")
     try:
         install_or_recover(db)
+        _migrate(db)
         monkeypatch.setattr(module, "datetime", Clock)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         assert store.request(action="enable", operation_key="one", expected_generation=1)["state"] == "enabled"
@@ -185,6 +194,7 @@ def test_replay_precedes_obsolete_gates_and_conflicts_are_read_only(
     db = Database(path)
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         store.request(action="enable", operation_key="one", expected_generation=1)
         before = _all_rows(path), _file_snapshot(path)
@@ -204,7 +214,7 @@ def test_readers_never_advance_and_caller_transaction_is_left_owned(tmp_path: Pa
         install_or_recover(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         before = _all_rows(path), _file_snapshot(path)
-        assert store.get()["allowed_actions"] == ["enable"]
+        assert store.get()["allowed_actions"] == []
         assert store.downgrade_preflight()["eligible"]
         assert (_all_rows(path), _file_snapshot(path)) == before
         db.execute("BEGIN")
@@ -223,6 +233,7 @@ def test_two_request_cas_contenders_have_one_gap_free_history(tmp_path: Path, sa
     path = tmp_path / "org.db"
     dbs = [Database(path)]
     install_or_recover(dbs[0])
+    _migrate(dbs[0])
     dbs.append(Database(path))
     barrier = threading.Barrier(2, timeout=10)
 
@@ -294,6 +305,7 @@ def test_every_durable_boundary_observed_then_twice_cold_recovers(
     (root / "org" / "teams.yaml").write_text("teams: {}\n")
     org = OrgState.load(slug="alpha", root=root, settings=Settings())
     path = OrgPaths(root=root).db_path
+    _migrate(org.db)
     if generation >= 5:
         WorkflowCutoverStore(org.db, org_slug="alpha").request(action="enable", operation_key="enable", expected_generation=1)
     org.close()
@@ -351,6 +363,7 @@ def test_source_pinned_historical_baseline_cutover_preserves_legacy_rows_and_fil
     legacy_before = _legacy_snapshot(path)
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         assert store.get()["generation"] == 1
         assert store.request(action="enable", operation_key="historical", expected_generation=1)["state"] == "enabled"
@@ -382,6 +395,7 @@ def test_downgrade_refuses_template_only_and_empty_drained_without_mutation(tmp_
         before = _all_rows(tmp_path / "org.db"), _file_snapshot(tmp_path / "org.db")
         assert not store.downgrade_preflight()["eligible"]
         assert (_all_rows(tmp_path / "org.db"), _file_snapshot(tmp_path / "org.db")) == before
+        _migrate(db)
         assert store.request(action="enable", operation_key="enable", expected_generation=1)["state"] == "enabled"
         assert store.request(action="disable", operation_key="disable", expected_generation=4)["state"] == "drained"
         assert not store.downgrade_preflight()["eligible"]
@@ -437,6 +451,7 @@ def test_f5_drain_projects_actual_work_without_settling_or_cancelling(
     db = Database(path)
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         store.request(action="enable", operation_key="enable", expected_generation=1)
         _seed_adversarial_f5(db, state, launch_started=launch)
@@ -469,6 +484,7 @@ def test_incomplete_f5_closure_blocks_drain_without_repair(tmp_path: Path, corru
     db = Database(path)
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         store.request(action="enable", operation_key="enable", expected_generation=1)
         _seed_adversarial_f5(db, "queued")
@@ -487,6 +503,7 @@ def test_bad_foreign_keys_prevent_verification_and_leave_pending(tmp_path: Path)
     db = Database(tmp_path / "org.db")
     try:
         install_or_recover(db)
+        _migrate(db)
         db.execute("PRAGMA foreign_keys=OFF")
         db.execute("INSERT INTO workflow_template_versions VALUES ('bad','missing','org/alpha/team/engineering','bad',1,X'61','digest','c','v','s','founder','now')")
         db._conn.commit()
@@ -524,6 +541,7 @@ def test_verifier_rechecks_before_enabled_and_response_loss_replays_same_request
     original = db._conn
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
 
         def introduce_work() -> None:
@@ -559,6 +577,7 @@ def test_two_recovery_callers_resume_authentic_request_once(tmp_path: Path) -> N
     first = Database(path)
     original = first._conn
     install_or_recover(first)
+    _migrate(first)
 
     def interrupt() -> None:
         raise RuntimeError("request committed")
@@ -598,6 +617,7 @@ def test_atomic_exception_rolls_back_attempt_only_and_pending_recovery_is_honest
     original = db._conn
     try:
         install_or_recover(db)
+        _migrate(db)
         before = _all_rows(path)
 
         def fail() -> None:
@@ -624,6 +644,7 @@ def test_terminal_outbox_cannot_hide_nonterminal_operation_or_bridge(tmp_path: P
     db = Database(tmp_path / "org.db")
     try:
         install_or_recover(db)
+        _migrate(db)
         store = WorkflowCutoverStore(db, org_slug="alpha")
         store.request(action="enable", operation_key="enable", expected_generation=1)
         _seed_adversarial_f5(db, "queued")

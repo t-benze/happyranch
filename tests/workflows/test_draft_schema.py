@@ -1,0 +1,500 @@
+"""S1 store cases; seeded draft rows are validator evidence, not S2 execution."""
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from runtime.infrastructure.database import Database
+from runtime.infrastructure import workflow_schema as schema
+from runtime.workflows.cutover import WorkflowCutoverStore, WorkflowCutoverError
+
+
+def test_foundation_enable_refuses_before_any_event_and_names_script(tmp_path: Path) -> None:
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        before = [tuple(r) for r in db.execute('SELECT * FROM workflow_cutover_events')]
+        store = WorkflowCutoverStore(db, org_slug='alpha')
+        with pytest.raises(WorkflowCutoverError, match='draft_schema_migration_required'):
+            store.request(action='enable', operation_key='enable', expected_generation=1)
+        assert [tuple(r) for r in db.execute('SELECT * FROM workflow_cutover_events')] == before
+        projection = store.get()
+        assert projection['state'] == 'installed_legacy_only'
+        assert 'migrate_workflow_draft_schema.py' in projection['blockers'][0]['required_action']
+        assert '--org alpha' in projection['blockers'][0]['required_action']
+        assert not db.execute("SELECT 1 FROM sqlite_schema WHERE name='workflow_draft_adapter_versions'").fetchall()
+    finally:
+        db.close()
+
+
+def _migrate(db: Database, slug: str = 'alpha') -> None:
+    with db.workflow_schema_transaction() as conn:
+        schema.migrate_draft_schema(conn, expected_org_slug=slug)
+
+
+def test_separate_ddl_matches_reviewed_fixture_and_complete_f_e_layouts(tmp_path: Path) -> None:
+    fixture = Path(__file__).parents[1] / 'fixtures/workflow_u0/proposed_workflow_draft_schema.sql'
+    assert schema.CANONICAL_WORKFLOW_DRAFT_DDL.encode() == fixture.read_bytes()
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        assert schema.validate_workflow_schema(db._conn, expected_org_slug='alpha') == 'F'
+        original = [tuple(r) for r in db.execute('SELECT * FROM workflow_cutover_events')]
+        _migrate(db)
+        assert schema.validate_workflow_schema(db._conn, expected_org_slug='alpha') == 'E'
+        assert [tuple(r) for r in db.execute('SELECT * FROM workflow_cutover_events')] == original
+        assert schema.install_or_recover(db, expected_org_slug='alpha') == 'reopened'
+        assert schema._layout(db._conn) == schema._canonical_layout('E')
+        assert len([r for r in schema._layout(db._conn)[0] if r[0] == 'table']) == 47
+        assert len([r for r in schema._layout(db._conn)[0] if r[0] == 'index' and r[3] and r[1].startswith('workflow_draft_')]) == 6
+        store = WorkflowCutoverStore(db, org_slug='alpha')
+        assert store.get()['blockers'] == []
+        assert store.request(action='enable', operation_key='enable', expected_generation=1)['state'] == 'enabled'
+        assert store.request(action='disable', operation_key='disable', expected_generation=4)['state'] == 'drained'
+        assert not store.downgrade_preflight()['eligible']
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize('sql', [
+    'DROP INDEX workflow_draft_current_idx',
+    'CREATE INDEX workflow_rogue ON workflow_cutover_state(state)',
+    'DELETE FROM workflow_draft_adapter_versions',
+    'PRAGMA ignore_check_constraints=ON; UPDATE workflow_draft_adapter_versions SET version=2',
+    'ALTER TABLE workflow_draft_dispatch_events ADD COLUMN forged TEXT',
+])
+def test_partial_wrong_or_unknown_extension_refuses_without_repair(tmp_path: Path, sql: str) -> None:
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        _migrate(db)
+        db._conn.executescript(sql)
+        before = tuple(db._conn.iterdump())
+        for _ in range(2):
+            with pytest.raises(ValueError, match='workflow_.*(mismatch|corrupt)'):
+                with db.workflow_schema_transaction() as conn:
+                    schema.migrate_draft_schema(conn, expected_org_slug='alpha')
+            assert tuple(db._conn.iterdump()) == before
+    finally:
+        db.close()
+
+
+def test_empty_extension_always_requires_compatible_reader_but_is_not_work(tmp_path: Path) -> None:
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        store = WorkflowCutoverStore(db, org_slug='alpha')
+        assert store.downgrade_preflight()['eligible']
+        _migrate(db)
+        result = store.downgrade_preflight()
+        assert not result['eligible']
+        assert [b['code'] for b in result['blockers']] == ['draft_schema_requires_compatible_reader']
+        assert store._compatibility_blockers(db._conn) == []
+        assert store._drain_blockers(db._conn) == []
+    finally:
+        db.close()
+
+
+def test_existing_org_missing_database_load_twice_never_creates_extension(tmp_path: Path) -> None:
+    from runtime.config import Settings
+    from runtime.daemon.org_state import OrgState
+    root = tmp_path / 'runtime/orgs/alpha'
+    (root / 'org/agents').mkdir(parents=True)
+    (root / 'org/teams.yaml').write_text('teams: {}\n')
+    for _ in range(2):
+        org = OrgState.load(slug='alpha', root=root, settings=Settings())
+        try:
+            assert schema.validate_workflow_schema(org.db._conn, expected_org_slug='alpha') == 'F'
+            assert WorkflowCutoverStore(org.db, org_slug='alpha').get()['blockers'][0]['code'] == 'draft_schema_migration_required'
+        finally:
+            org.close()
+
+
+@pytest.mark.parametrize('extension_origin', ['migration', 'new-org'])
+def test_source_pinned_preceding_reader_reopens_f_and_refuses_e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extension_origin: str) -> None:
+    import hashlib
+    import io
+    import os
+    import subprocess
+    import sys
+    import tarfile
+    from runtime.config import Settings
+    from runtime.daemon.org_state import OrgState
+    pin = 'faf40744f8a0119d54056338865777588121b7af'
+    source = tmp_path / 'preceding-source'
+    source.mkdir()
+    archived = subprocess.run(['git', 'archive', pin], check=True, capture_output=True, timeout=30)
+    with tarfile.open(fileobj=io.BytesIO(archived.stdout)) as archive:
+        archive.extractall(source, filter='data')
+    assert hashlib.sha256((source / 'runtime/infrastructure/workflow_schema.py').read_bytes()).hexdigest() == '01acbc4bc5c9745c481baa9e920dd244f5b32ea4fb511eac4941da3f95620538'
+    root = tmp_path / 'runtime/orgs/alpha'
+    (root / 'org/agents').mkdir(parents=True)
+    (root / 'org/teams.yaml').write_text('teams: {}\n')
+    org = OrgState.load(slug='alpha', root=root, settings=Settings())
+    from runtime.models import TaskRecord
+    org.db.insert_task(TaskRecord(id='TASK-100',brief='preserved legacy row',assigned_agent='maker',team='engineering'))
+    org.close()
+    f_before = {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in root.rglob('*') if p.is_file()}
+    driver = '''import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import runtime.daemon.org_state as module
+assert str(Path(module.__file__).resolve()).startswith(str(Path(sys.argv[1]).resolve()))
+from runtime.config import Settings
+org = module.OrgState.load(slug='alpha', root=Path(sys.argv[2]), settings=Settings())
+org.close()
+print('pinned-reader-reopened')
+'''
+    for _ in range(2):
+        old = subprocess.run([sys.executable, '-c', driver, str(source), str(root)], text=True, capture_output=True, timeout=15)
+        assert old.returncode == 0 and 'pinned-reader-reopened' in old.stdout, old.stderr
+        assert {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in root.rglob('*') if p.is_file()} == f_before
+    if extension_origin == 'migration':
+        db = Database(root / 'happyranch.db')
+        _migrate(db)
+        db.close()
+    else:
+        from fastapi.testclient import TestClient
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from runtime.runtime import RuntimeDir
+        home = tmp_path / 'daemon-home'
+        home.mkdir()
+        monkeypatch.setenv('HAPPYRANCH_DAEMON_HOME',str(home))
+        from runtime.daemon.paths import ensure_token
+        token = ensure_token()
+        runtime = RuntimeDir.init(tmp_path / 'new-runtime')
+        state = DaemonState.from_runtime(runtime,Settings())
+        client = TestClient(create_app(state),headers={'Authorization':f'Bearer {token}'})
+        response = client.post('/api/v1/orgs',json={'slug':'alpha'})
+        assert response.status_code == 200, response.text
+        root = state.orgs['alpha'].root
+        state.orgs['alpha'].close()
+        client.close()
+    before = {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in root.rglob('*') if p.is_file()}
+    old = subprocess.run([sys.executable, '-c', driver, str(source), str(root)], text=True, capture_output=True, timeout=15)
+    assert old.returncode != 0 and 'workflow_schema_object_set_mismatch' in old.stderr
+    assert {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in root.rglob('*') if p.is_file()} == before
+    for _ in range(2):
+        current = OrgState.load(slug='alpha', root=root, settings=Settings())
+        assert schema.validate_workflow_schema(current.db._conn, expected_org_slug='alpha') == 'E'
+        current.close()
+
+
+def _json(value: object) -> bytes:
+    import json
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode()
+
+
+def _digest(value: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(value).hexdigest()
+
+
+def _seed_valid_draft(db: Database) -> str:
+    """SQL/validator case only. No S2 activation/dispatch acceptance is claimed."""
+    from runtime.models import TaskRecord
+    from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore
+    from tests.workflows.test_template_store import VALID_DEFINITION
+    db.insert_task(TaskRecord(id='TASK-001', brief='draft', team='engineering', assigned_agent='maker'))
+    principal = WorkflowTemplatePrincipal.founder(org_slug='alpha', team_slug='engineering', revalidate=lambda: None)
+    version = WorkflowTemplateStore(db).publish_version(org_slug='alpha', principal=principal,
+        namespace='org/alpha/team/engineering', operation_key='publish', template_name='product-design',
+        definition=VALID_DEFINITION, expected_current_version=0)
+    empty = _json({})
+    digest = _digest(empty)
+    timestamp = '2026-10-05T00:00:00+00:00'
+    db.execute('INSERT INTO workflow_authorization_revisions VALUES (?,?,?,?,?,?,?)', ('auth','org/alpha/team/engineering',1,empty,digest,'source',timestamp))
+    db.execute('INSERT INTO workflow_binding_snapshots VALUES (?,?,?,?,?,?)', ('binding',version.version_id,'auth',empty,digest,timestamp))
+    db.execute('INSERT INTO workflow_contexts VALUES (?,?,?,?,?,?)', ('context','binding',empty,digest,'task','TASK-001'))
+    db.execute('INSERT INTO workflow_instances VALUES (?,?,?,?,?,?)', ('instance','binding','context','TASK-001','founder','draft'))
+    db.execute('INSERT INTO workflow_activations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        ('activation','instance',1,version.identity_id,version.version_id,'org/alpha/team/engineering',1,digest,digest,'founder','active',timestamp))
+    db.execute('INSERT INTO workflow_active_activations VALUES (?,?,?)', ('instance','activation',1))
+    request = _json({'action': 'activate', 'instance_id': 'instance'})
+    scope = _json({'assigned_agent': 'maker', 'team': 'engineering', 'brief': 'draft'})
+    admission = dict(org_slug='alpha', instance_id='instance', activation_id='activation', activation_revision=1,
+                     attempt_sequence=1, predecessor_intent_id=None, admission_principal='founder', operation_key='activate', request_digest=_digest(request))
+    intent_id = _digest(_json(admission))
+    intent = dict(id=intent_id, instance_id='instance', activation_id='activation', activation_revision=1, attempt_sequence=1,
+        predecessor_intent_id=None, admission_kind='initial', admission_principal='founder', operation_key='activate',
+        request_bytes=request, request_digest=_digest(request), task_id='TASK-001', context_id='context',
+        binding_snapshot_id='binding', assigned_principal='maker', assignment_generation=1,
+        authority_namespace='org/alpha/team/engineering', authority_generation=1, authority_digest=digest,
+        task_scope_bytes=scope, task_scope_digest=_digest(scope), effect_key='workflow-initial-draft:instance:1',
+        host_execution_key='workflow-draft-host:'+intent_id, is_current=1, state='queued', cancellation_requested=0,
+        claim_token=None, claim_owner=None, host_launch_started=0, host_execution_id=None, session_id=None,
+        final_result_id=None, recovery_owner='workflow_recovery', last_error=None, created_at=timestamp, updated_at=timestamp)
+    columns = ','.join(intent)
+    db.execute(f'INSERT INTO workflow_draft_dispatch_intents ({columns}) VALUES ({",".join("?" for _ in intent)})', tuple(intent.values()))
+    _seed_event(db, intent_id, 'admitted', before=None)
+    db._conn.commit()
+    return intent_id
+
+
+_PROJECTION = ('state', 'is_current', 'cancellation_requested', 'claim_token', 'claim_owner', 'host_launch_started', 'host_execution_id', 'session_id', 'final_result_id')
+
+
+def _seed_event(db: Database, intent_id: str, kind: str, *, before: dict | None, terminal: bool = False, result: dict | None = None, **changes: object) -> None:
+    intent = dict(db.execute('SELECT * FROM workflow_draft_dispatch_intents WHERE id=?', (intent_id,)).fetchone())
+    old = db.execute('SELECT event_seq,event_digest FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq DESC LIMIT 1', (intent_id,)).fetchone()
+    seq = 1 if old is None else old['event_seq'] + 1
+    after = {key: intent[key] for key in _PROJECTION}
+    after.update(changes)
+    mutable = set(_PROJECTION) | {'last_error', 'updated_at'}
+    immutable = {key: (value.hex() if isinstance(value, bytes) else value) for key, value in intent.items() if key not in mutable}
+    event_id = f'{intent_id}:{seq}'
+    timestamp = f'2026-10-05T00:00:{seq-1:02d}+00:00'
+    callback = kind in ('callback_recorded','callback_rejected')
+    closure = None
+    if result is not None:
+        if callback:
+            closure = dict(record=result,id=result['id'],digest=_digest(_json(result)),disposition='accepted',accepted=int(kind=='callback_recorded'))
+        else:
+            import json
+            accepted = db.execute("SELECT event_bytes FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind='callback_recorded'",(intent_id,)).fetchone()
+            closure = json.loads(accepted[0])['result']
+    payload = dict(format='workflow-draft-event@1', org_slug='alpha', event=dict(id=event_id,event_seq=seq,event_kind=kind,created_at=timestamp),
+                   previous_digest=None if old is None else old['event_digest'], intent=immutable, before=before, after=after,
+                   terminal_evidence={'host_quiescent': True} if terminal else None, result=closure)
+    raw = _json(payload)
+    callback = kind in ('callback_recorded','callback_rejected')
+    db.execute('INSERT INTO workflow_draft_dispatch_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (event_id,intent_id,seq,kind,None if before is None else before['state'],after['state'],raw,_digest(raw),
+         after['session_id'] if callback else None, result['id'] if callback else None,
+         _digest(_json(result)) if callback else None, int(kind=='callback_recorded') if callback else None,
+         'accepted' if callback else None,timestamp))
+    db.execute('UPDATE workflow_draft_dispatch_intents SET '+','.join(key+'=?' for key in _PROJECTION)+',updated_at=? WHERE id=?',
+               tuple(after[key] for key in _PROJECTION)+(timestamp,intent_id))
+
+
+def _projection(db: Database, intent_id: str) -> dict:
+    row = dict(db.execute('SELECT * FROM workflow_draft_dispatch_intents WHERE id=?', (intent_id,)).fetchone())
+    return {key: row[key] for key in _PROJECTION}
+
+
+@pytest.mark.parametrize('state', ['queued','claimed','running','uncertain','cancel-pending','cancelled','failed','completed'])
+def test_sql_seeded_draft_closure_and_drain_projection(tmp_path: Path, state: str) -> None:
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        _migrate(db)
+        store = WorkflowCutoverStore(db, org_slug='alpha')
+        assert store.request(action='enable', operation_key='enable', expected_generation=1)['state'] == 'enabled'
+        intent = _seed_valid_draft(db)
+        if state not in ('queued', 'cancelled'):
+            _seed_event(db,intent,'claimed',before=_projection(db,intent),state='claimed',claim_token='claim',claim_owner='owner')
+        if state not in ('queued','claimed','cancelled'):
+            _seed_event(db,intent,'launch_reserved',before=_projection(db,intent),host_launch_started=1)
+            _seed_event(db,intent,'running',before=_projection(db,intent),state='running',host_execution_id='host',session_id='session')
+        if state == 'uncertain':
+            _seed_event(db,intent,'uncertain',before=_projection(db,intent),state='uncertain')
+        if state == 'cancel-pending':
+            _seed_event(db,intent,'cancel_requested',before=_projection(db,intent),cancellation_requested=1)
+        if state in ('cancelled','failed'):
+            db.execute('UPDATE tasks SET status=? WHERE id=?', (state,'TASK-001'))
+            _seed_event(db,intent,state,before=_projection(db,intent),state=state,terminal=state=='failed')
+        if state == 'completed':
+            cursor = db.execute("INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES ('TASK-001','maker','session','completed','2026-10-05T00:00:00Z')")
+            result = dict(db.execute('SELECT * FROM task_results WHERE id=?',(cursor.lastrowid,)).fetchone())
+            _seed_event(db,intent,'callback_recorded',before=_projection(db,intent),final_result_id=result['id'],result=result)
+            db.execute("UPDATE tasks SET status='completed' WHERE id='TASK-001'")
+            _seed_event(db,intent,'completed',before=_projection(db,intent),state='completed',terminal=True,result=result)
+        db._conn.commit()
+        assert schema.validate_workflow_schema(db._conn,expected_org_slug='alpha') == 'E'
+        result = store.request(action='disable',operation_key='disable',expected_generation=4)
+        if state in ('cancelled','failed','completed'):
+            assert result['state'] == 'drained' and result['blockers'] == []
+        else:
+            assert result['state'] == 'draining' and result['reconciliation_required']
+            assert result['blockers'][0]['record_id'] == intent
+        # Replay is a byte-preserving read even with populated extension.
+        before = tuple(db._conn.iterdump())
+        assert schema.install_or_recover(db,expected_org_slug='alpha') == 'reopened'
+        _migrate(db)
+        assert tuple(db._conn.iterdump()) == before
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize('corruption', ['digest','root','missing-event','projection','terminal-pointer','foreign-session'])
+def test_sql_seeded_invalid_draft_cannot_hide_behind_terminal_projection(tmp_path: Path, corruption: str) -> None:
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        _migrate(db)
+        intent = _seed_valid_draft(db)
+        if corruption == 'digest':
+            db.execute("UPDATE workflow_draft_dispatch_events SET event_digest='forged'")
+        elif corruption == 'root':
+            db.execute("UPDATE workflow_instances SET root_task_id='TASK-other'")
+        elif corruption == 'missing-event':
+            db.execute('DELETE FROM workflow_draft_dispatch_events')
+        elif corruption == 'projection':
+            db.execute("UPDATE workflow_draft_dispatch_intents SET state='cancelled'")
+        elif corruption == 'terminal-pointer':
+            db.execute("UPDATE workflow_draft_dispatch_intents SET state='cancelled',is_current=0")
+        else:
+            db.execute("UPDATE workflow_draft_dispatch_intents SET session_id='foreign',state='cancelled'")
+        db._conn.commit()
+        before = tuple(db._conn.iterdump())
+        with pytest.raises(ValueError, match='workflow_draft_data_corrupt'):
+            schema.validate_workflow_schema(db._conn,expected_org_slug='alpha')
+        projection = WorkflowCutoverStore(db,org_slug='alpha').get()
+        assert projection['reconciliation_required']
+        assert projection['blockers'][0]['code'] == 'cutover_draft_closure'
+        assert tuple(db._conn.iterdump()) == before
+    finally:
+        db.close()
+
+
+@pytest.fixture(scope='module')
+def preceding_source(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    import io
+    import subprocess
+    import tarfile
+    source = tmp_path_factory.mktemp('S1-preceding-source')
+    archived = subprocess.run(['git','archive','faf40744f8a0119d54056338865777588121b7af'],check=True,capture_output=True,timeout=30)
+    with tarfile.open(fileobj=io.BytesIO(archived.stdout)) as archive:
+        archive.extractall(source,filter='data')
+    return source
+
+
+@pytest.mark.parametrize('generation', range(1,8))
+def test_source_pinned_progressed_f_never_auto_advances_and_actual_script_migrates(tmp_path: Path, preceding_source: Path, generation: int) -> None:
+    """YES test-side commit observation over the actual pinned cutover writer."""
+    import subprocess
+    import sys
+    from runtime.config import Settings
+    from runtime.daemon.org_state import OrgState
+    from runtime.runtime import RuntimeDir
+    from tests.test_workflow_draft_migration_script import _run
+    runtime = RuntimeDir.init(tmp_path / 'runtime')
+    root = runtime.orgs_dir / 'alpha'
+    (root / 'org/agents').mkdir(parents=True)
+    (root / 'org/teams.yaml').write_text('teams: {}\n')
+    driver = '''import sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from runtime.daemon.org_state import OrgState
+from runtime.config import Settings
+from runtime.workflows.cutover import WorkflowCutoverStore
+org=OrgState.load(slug='alpha',root=Path(sys.argv[2]),settings=Settings())
+target=int(sys.argv[3]); original=org.db._conn
+class Boundary(Exception): pass
+class Observer:
+    def __getattr__(self,key): return getattr(original,key)
+    def commit(self):
+        original.commit()
+        if original.execute('SELECT generation FROM workflow_cutover_state').fetchone()[0] == target:
+            raise Boundary()
+if target>1:
+    org.db._conn=Observer()
+    store=WorkflowCutoverStore(org.db,org_slug='alpha')
+    try:
+        store.request(action='enable',operation_key='historical-enable',expected_generation=1)
+        if target>=5:
+            store.request(action='disable',operation_key='historical-disable',expected_generation=4)
+    except Boundary: pass
+    finally: org.db._conn=original
+assert original.execute('SELECT generation FROM workflow_cutover_state').fetchone()[0]==target
+org.close()
+'''
+    producer = subprocess.run([sys.executable,'-c',driver,str(preceding_source),str(root),str(generation)],text=True,capture_output=True,timeout=15)
+    assert producer.returncode == 0, producer.stderr
+    def snapshot() -> tuple:
+        conn = sqlite3.connect(root / 'happyranch.db')
+        try:
+            schema_rows = tuple(conn.execute('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY name'))
+            tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")]
+            return schema_rows,tuple((table,tuple(conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid'))) for table in tables)
+        finally:
+            conn.close()
+    before = snapshot()
+    for _ in range(2):
+        org = OrgState.load(slug='alpha',root=root,settings=Settings())
+        try:
+            status = WorkflowCutoverStore(org.db,org_slug='alpha').get()
+            assert status['generation'] == generation
+            assert 'migrate_workflow_draft_schema.py' in status['blockers'][0]['required_action']
+            assert schema.validate_workflow_schema(org.db._conn,expected_org_slug='alpha') == 'F'
+        finally:
+            org.close()
+        assert snapshot() == before
+    migrated = _run(runtime.root)
+    assert migrated.returncode == 0 and 'migrated:' in migrated.stdout, migrated.stderr
+    org = OrgState.load(slug='alpha',root=root,settings=Settings())
+    try:
+        expected = 1 if generation==1 else (4 if generation<=4 else 7)
+        assert WorkflowCutoverStore(org.db,org_slug='alpha').get()['generation'] == expected
+        assert schema.validate_workflow_schema(org.db._conn,expected_org_slug='alpha') == 'E'
+    finally:
+        org.close()
+
+
+def test_sql_seeded_causal_replacement_keeps_original_root_and_requires_cancel_before_retirement(tmp_path: Path) -> None:
+    from runtime.models import TaskRecord
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        _migrate(db)
+        first = _seed_valid_draft(db)
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute('UPDATE workflow_draft_dispatch_intents SET is_current=0 WHERE id=?', (first,))
+        db.execute("UPDATE tasks SET status='cancelled' WHERE id='TASK-001'")
+        _seed_event(db,first,'cancelled',before=_projection(db,first),state='cancelled')
+        _seed_event(db,first,'retired',before=_projection(db,first),is_current=0)
+        db._conn.commit()
+        db.insert_task(TaskRecord(id='TASK-002',brief='draft2',assigned_agent='maker',team='engineering'))
+        second = dict(db.execute('SELECT * FROM workflow_draft_dispatch_intents WHERE id=?',(first,)).fetchone())
+        request = _json({'action':'reassignment','predecessor_intent_id':first})
+        second.update(attempt_sequence=2,assignment_generation=2,admission_kind='reassignment',predecessor_intent_id=first,
+                      operation_key='replace',task_id='TASK-002',is_current=1,state='queued',request_bytes=request,request_digest=_digest(request),
+                      task_scope_bytes=_json({'assigned_agent':'maker','team':'engineering','brief':'draft2'}),effect_key='workflow-initial-draft:instance:2')
+        second['task_scope_digest'] = _digest(second['task_scope_bytes'])
+        admission = {key:second[key] for key in ('instance_id','activation_id','activation_revision','attempt_sequence','predecessor_intent_id','admission_principal','operation_key','request_digest')}
+        admission['org_slug']='alpha'
+        second['id']=_digest(_json(admission))
+        second['host_execution_key']='workflow-draft-host:'+second['id']
+        db.execute('INSERT INTO workflow_draft_dispatch_intents ('+','.join(second)+') VALUES ('+','.join('?' for _ in second)+')',tuple(second.values()))
+        _seed_event(db,second['id'],'admitted',before=None)
+        db._conn.commit()
+        assert schema.validate_workflow_schema(db._conn,expected_org_slug='alpha')=='E'
+        assert db.execute('SELECT root_task_id FROM workflow_instances').fetchone()[0]=='TASK-001'
+        assert db.execute('SELECT COUNT(*) FROM workflow_draft_dispatch_intents').fetchone()[0]==2
+        assert db.execute('SELECT state FROM workflow_draft_dispatch_intents WHERE id=?',(first,)).fetchone()[0]=='cancelled'
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize('corruption',['disposition','accepted','result-bytes'])
+def test_sql_seeded_callback_preimage_binds_full_normalized_result_and_disposition(tmp_path: Path, corruption: str) -> None:
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        _migrate(db)
+        intent = _seed_valid_draft(db)
+        _seed_event(db,intent,'claimed',before=_projection(db,intent),state='claimed',claim_token='claim',claim_owner='owner')
+        _seed_event(db,intent,'launch_reserved',before=_projection(db,intent),host_launch_started=1)
+        _seed_event(db,intent,'running',before=_projection(db,intent),state='running',host_execution_id='host',session_id='session')
+        cursor = db.execute("INSERT INTO task_results(task_id,agent,session_id,status,created_at) VALUES ('TASK-001','maker','session','completed','2026-10-05T00:00:00Z')")
+        result = dict(db.execute('SELECT * FROM task_results WHERE id=?',(cursor.lastrowid,)).fetchone())
+        _seed_event(db,intent,'callback_recorded',before=_projection(db,intent),final_result_id=result['id'],result=result)
+        db._conn.commit()
+        assert schema.validate_workflow_schema(db._conn,expected_org_slug='alpha') == 'E'
+        if corruption == 'disposition':
+            db.execute("UPDATE workflow_draft_dispatch_events SET disposition='changed' WHERE event_kind='callback_recorded'")
+        elif corruption == 'accepted':
+            db.execute('PRAGMA ignore_check_constraints=ON')
+            db.execute("UPDATE workflow_draft_dispatch_events SET callback_accepted=0 WHERE event_kind='callback_recorded'")
+        else:
+            db.execute("UPDATE task_results SET output_summary='changed' WHERE id=?",(result['id'],))
+        db._conn.commit()
+        before = tuple(db._conn.iterdump())
+        with pytest.raises(ValueError,match='workflow_draft_data_corrupt'):
+            schema.validate_workflow_schema(db._conn,expected_org_slug='alpha')
+        assert tuple(db._conn.iterdump()) == before
+    finally:
+        db.close()

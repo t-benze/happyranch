@@ -13,6 +13,8 @@ from pydantic import BaseModel
 from runtime.daemon.auth import require_token
 from runtime.daemon.org_state import OrgState
 from runtime.daemon.state import DaemonState
+from runtime.infrastructure.database import Database
+from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
 from runtime.orchestrator._paths import OrgPaths
 
 logger = logging.getLogger(__name__)
@@ -182,6 +184,16 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
             shutil.rmtree(org_root)
         raise
     try:
+        # This request just created the skeleton with exist_ok=False. An
+        # absent database on startup is never sufficient creation evidence.
+        db_path = OrgPaths(org_root).db_path
+        if db_path.exists():
+            raise ValueError("fresh_org_database_already_exists")
+        database = Database(db_path)
+        try:
+            initialize_complete_org_schema(database, expected_org_slug=body.slug)
+        finally:
+            database.close()
         org = await state.add_org(body.slug)
     except Exception:
         # add_org failed AFTER we seeded the skeleton. Roll back the skeleton

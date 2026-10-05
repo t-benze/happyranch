@@ -26,7 +26,9 @@ from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
-from runtime.infrastructure.workflow_schema import install_or_recover
+from runtime.infrastructure.workflow_schema import (
+    draft_migration_guidance, install_or_recover, validate_workflow_schema,
+)
 from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
@@ -216,6 +218,12 @@ class OrgState:
         db = Database(paths.db_path)
         try:
             install_or_recover(db, expected_org_slug=slug)
+            with db._lock:
+                layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            if layout == "F":
+                logger.warning("org %r: %s", slug, draft_migration_guidance(
+                    org_slug=slug, runtime_root=str(root.parent.parent),
+                ))
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
