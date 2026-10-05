@@ -1,8 +1,13 @@
 """S1 store cases; seeded draft rows are validator evidence, not S2 execution."""
 from __future__ import annotations
 
+import gzip
+import hashlib
+import io
+import json
 import sqlite3
-from pathlib import Path
+import tarfile
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -113,22 +118,12 @@ def test_existing_org_missing_database_load_twice_never_creates_extension(tmp_pa
 
 
 @pytest.mark.parametrize('extension_origin', ['migration', 'new-org'])
-def test_source_pinned_preceding_reader_reopens_f_and_refuses_e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extension_origin: str) -> None:
-    import hashlib
-    import io
-    import os
+def test_source_pinned_preceding_reader_reopens_f_and_refuses_e(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extension_origin: str, preceding_source: Path) -> None:
     import subprocess
     import sys
-    import tarfile
     from runtime.config import Settings
     from runtime.daemon.org_state import OrgState
-    pin = 'faf40744f8a0119d54056338865777588121b7af'
-    source = tmp_path / 'preceding-source'
-    source.mkdir()
-    archived = subprocess.run(['git', 'archive', pin], check=True, capture_output=True, timeout=30)
-    with tarfile.open(fileobj=io.BytesIO(archived.stdout)) as archive:
-        archive.extractall(source, filter='data')
-    assert hashlib.sha256((source / 'runtime/infrastructure/workflow_schema.py').read_bytes()).hexdigest() == '01acbc4bc5c9745c481baa9e920dd244f5b32ea4fb511eac4941da3f95620538'
+    source = preceding_source
     root = tmp_path / 'runtime/orgs/alpha'
     (root / 'org/agents').mkdir(parents=True)
     (root / 'org/teams.yaml').write_text('teams: {}\n')
@@ -137,14 +132,12 @@ def test_source_pinned_preceding_reader_reopens_f_and_refuses_e(tmp_path: Path, 
     org.db.insert_task(TaskRecord(id='TASK-100',brief='preserved legacy row',assigned_agent='maker',team='engineering'))
     org.close()
     f_before = {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in root.rglob('*') if p.is_file()}
-    driver = '''import sys
-from pathlib import Path
-sys.path.insert(0, sys.argv[1])
+    driver = _PRECEDING_IMPORT_CHECK + '''
 import runtime.daemon.org_state as module
-assert str(Path(module.__file__).resolve()).startswith(str(Path(sys.argv[1]).resolve()))
 from runtime.config import Settings
 org = module.OrgState.load(slug='alpha', root=Path(sys.argv[2]), settings=Settings())
 org.close()
+assert_pinned_imports()
 print('pinned-reader-reopened')
 '''
     for _ in range(2):
@@ -350,16 +343,146 @@ def test_sql_seeded_invalid_draft_cannot_hide_behind_terminal_projection(tmp_pat
         db.close()
 
 
+# Trusted identities are independent of the supplied manifest. The bundle is
+# the exact public historical runtime subtree, never a candidate schema oracle.
+_PRECEDING_PIN = 'faf40744f8a0119d54056338865777588121b7af'
+_PRECEDING_TAR_SHA256 = '948a51b79ebe3632489c7bb82371363f70b4d8890b93097d5ff82fe0b319cc89'
+_PRECEDING_GZIP_SHA256 = 'bf1dbd80a7600c3bb7ea92791dd9f6db77a7f9539885dc0092e8c6ddf4d067d9'
+_PRECEDING_MANIFEST_SHA256 = 'af53ce5b65535208808c4c32baf9e6919aa73b6eda6b9bbd8b50efb92f110adf'
+_PRECEDING_SCHEMA_SHA256 = '01acbc4bc5c9745c481baa9e920dd244f5b32ea4fb511eac4941da3f95620538'
+_PRECEDING_FIXTURES = Path(__file__).parents[1] / 'fixtures/workflow_u0'
+_PRECEDING_STEM = 'preceding_reader_faf40744_runtime'
+_PRECEDING_IMPORT_CHECK = '''import importlib, sys
+from pathlib import Path
+source = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(source))
+for name in ('runtime', 'runtime.daemon.org_state', 'runtime.config',
+             'runtime.infrastructure.database', 'runtime.infrastructure.workflow_schema',
+             'runtime.workflows.cutover'):
+    module = importlib.import_module(name)
+    assert Path(module.__file__).resolve().is_relative_to(source / 'runtime'), (name, module.__file__)
+def assert_pinned_imports():
+    for name, module in tuple(sys.modules.items()):
+        if name == 'runtime' or name.startswith('runtime.'):
+            assert Path(module.__file__).resolve().is_relative_to(source / 'runtime'), (name, module.__file__)
+assert_pinned_imports()
+'''
+
+
+def _extract_preceding_source(fixture_dir: Path, source: Path) -> Path:
+    def read(suffix: str, expected: str) -> bytes:
+        path = fixture_dir / (_PRECEDING_STEM + suffix)
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError as exc:
+            raise ValueError(f'preceding_source_missing: {path.name}') from exc
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise ValueError(f'preceding_source_hash_mismatch: {path.name}')
+        return raw
+
+    packed = read('.tar.gz', _PRECEDING_GZIP_SHA256)
+    manifest = json.loads(read('.manifest.json', _PRECEDING_MANIFEST_SHA256))
+    if (manifest['format'], manifest['commit'], manifest['tree'], manifest['runtime_tree'], manifest['subtree']) != (
+        'workflow-preceding-reader-source@1', _PRECEDING_PIN,
+        '0c1b6ca39dde2e81b3feae795335e60daa14ecea',
+        '87a09c834af88cabe151bc96cb7cdb48ac3ecf72', 'runtime',
+    ):
+        raise ValueError('preceding_source_identity_mismatch')
+    raw = gzip.decompress(packed)
+    if len(raw) != 6318080 or hashlib.sha256(raw).hexdigest() != _PRECEDING_TAR_SHA256:
+        raise ValueError('preceding_source_tar_mismatch')
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        files = []
+        paths = set()
+        for member in archive.getmembers():
+            path = PurePosixPath(member.name)
+            if (path.is_absolute() or '..' in path.parts or not path.parts
+                or path.parts[0] != 'runtime' or member.name in paths
+                or not (member.isdir() or member.isfile())):
+                raise ValueError('preceding_source_unsafe_member')
+            paths.add(member.name)
+            if member.isfile():
+                files.append(dict(path=member.name, mode=oct(member.mode), size=member.size,
+                                  sha256=hashlib.sha256(archive.extractfile(member).read()).hexdigest()))
+        if files != manifest['files']:
+            raise ValueError('preceding_source_file_manifest_mismatch')
+        if source.exists():
+            raise ValueError('preceding_source_destination_exists')
+        source.mkdir()
+        archive.extractall(source, filter='data')
+        # The safe data filter removes group-write bits. Restore only modes
+        # authenticated in the pinned tar, after path/type validation.
+        for entry in files:
+            (source / entry['path']).chmod(int(entry['mode'], 8))
+    actual = []
+    for entry in files:
+        path = source / entry['path']
+        actual.append(dict(path=entry['path'], mode=oct(path.stat().st_mode & 0o777),
+                           size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+    if actual != files:
+        raise ValueError('preceding_source_extracted_manifest_mismatch')
+    if hashlib.sha256((source / 'runtime/infrastructure/workflow_schema.py').read_bytes()).hexdigest() != _PRECEDING_SCHEMA_SHA256:
+        raise ValueError('preceding_source_schema_mismatch')
+    return source
+
+
 @pytest.fixture(scope='module')
 def preceding_source(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    import io
-    import subprocess
-    import tarfile
-    source = tmp_path_factory.mktemp('S1-preceding-source')
-    archived = subprocess.run(['git','archive','faf40744f8a0119d54056338865777588121b7af'],check=True,capture_output=True,timeout=30)
-    with tarfile.open(fileobj=io.BytesIO(archived.stdout)) as archive:
-        archive.extractall(source,filter='data')
-    return source
+    source = tmp_path_factory.mktemp('S1-preceding-source') / 'source'
+    return _extract_preceding_source(_PRECEDING_FIXTURES, source)
+
+
+@pytest.mark.parametrize('damage', [
+    'missing-archive', 'truncated-archive', 'corrupt-archive', 'unknown-archive',
+    'missing-manifest', 'wrong-commit', 'wrong-file-mode', 'unknown-manifest',
+])
+def test_preceding_source_refuses_untrusted_fixture_before_extraction(tmp_path: Path, damage: str) -> None:
+    fixture_dir = tmp_path / 'fixtures'
+    fixture_dir.mkdir()
+    archive = fixture_dir / (_PRECEDING_STEM + '.tar.gz')
+    manifest = fixture_dir / (_PRECEDING_STEM + '.manifest.json')
+    archive.write_bytes((_PRECEDING_FIXTURES / archive.name).read_bytes())
+    manifest.write_bytes((_PRECEDING_FIXTURES / manifest.name).read_bytes())
+    if damage == 'missing-archive':
+        archive.unlink()
+    elif damage == 'truncated-archive':
+        archive.write_bytes(archive.read_bytes()[:-1])
+    elif damage == 'corrupt-archive':
+        raw = bytearray(archive.read_bytes())
+        raw[len(raw) // 2] ^= 1
+        archive.write_bytes(raw)
+    elif damage == 'unknown-archive':
+        archive.write_bytes(gzip.compress(b'unrelated historical source', mtime=0))
+    elif damage == 'missing-manifest':
+        manifest.unlink()
+    else:
+        supplied = json.loads(manifest.read_bytes())
+        if damage == 'wrong-commit':
+            supplied['commit'] = '0' * 40
+        elif damage == 'wrong-file-mode':
+            supplied['files'][0]['mode'] = '0o777'
+        else:
+            supplied['format'] = 'unknown@1'
+        manifest.write_text(json.dumps(supplied))
+    source = tmp_path / 'source'
+    expected = 'preceding_source_missing' if damage.startswith('missing-') else 'preceding_source_hash_mismatch'
+    with pytest.raises(ValueError, match=expected):
+        _extract_preceding_source(fixture_dir, source)
+    assert not source.exists()
+
+
+def test_preceding_source_extracts_exact_bytes_modes_and_refuses_existing_destination(tmp_path: Path) -> None:
+    source = _extract_preceding_source(_PRECEDING_FIXTURES, tmp_path / 'source')
+    manifest = json.loads((_PRECEDING_FIXTURES / (_PRECEDING_STEM + '.manifest.json')).read_bytes())
+    assert {str(p.relative_to(source)) for p in source.rglob('*') if p.is_file()} == {e['path'] for e in manifest['files']}
+    before = {str(p.relative_to(source)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in source.rglob('*') if p.is_file()}
+    for entry in manifest['files']:
+        raw, mode = before[entry['path']]
+        assert hashlib.sha256(raw).hexdigest() == entry['sha256']
+        assert len(raw) == entry['size'] and oct(mode) == entry['mode']
+    with pytest.raises(ValueError, match='preceding_source_destination_exists'):
+        _extract_preceding_source(_PRECEDING_FIXTURES, source)
+    assert {str(p.relative_to(source)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in source.rglob('*') if p.is_file()} == before
 
 
 @pytest.mark.parametrize('generation', range(1,8))
@@ -375,9 +498,7 @@ def test_source_pinned_progressed_f_never_auto_advances_and_actual_script_migrat
     root = runtime.orgs_dir / 'alpha'
     (root / 'org/agents').mkdir(parents=True)
     (root / 'org/teams.yaml').write_text('teams: {}\n')
-    driver = '''import sys
-from pathlib import Path
-sys.path.insert(0,sys.argv[1])
+    driver = _PRECEDING_IMPORT_CHECK + '''
 from runtime.daemon.org_state import OrgState
 from runtime.config import Settings
 from runtime.workflows.cutover import WorkflowCutoverStore
@@ -401,6 +522,7 @@ if target>1:
     finally: org.db._conn=original
 assert original.execute('SELECT generation FROM workflow_cutover_state').fetchone()[0]==target
 org.close()
+assert_pinned_imports()
 '''
     producer = subprocess.run([sys.executable,'-c',driver,str(preceding_source),str(root),str(generation)],text=True,capture_output=True,timeout=15)
     assert producer.returncode == 0, producer.stderr
