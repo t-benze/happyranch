@@ -99,4 +99,7 @@ def list_audit(
     )
     if include_thread_origin:
         entries = _enrich_thread_dream_origin(entries, org.db)
-    return {"entries": entries, "next_cursor": next_cursor}
+    response = {"entries": entries, "next_cursor": next_cursor}
+    if action == "memory_collection_seal":
+        response["memory_collection_observation"] = org.memory_collection_observation()
+    return response

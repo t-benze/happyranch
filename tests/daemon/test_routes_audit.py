@@ -136,3 +136,11 @@ def test_audit_bad_cursor_returns_422(tmp_home, app, org_state, auth_headers) ->
         headers=auth_headers,
     )
     assert r.status_code == 422
+
+
+def test_seal_observation_retains_existing_auth_dependency(tmp_home, app) -> None:
+    response = TestClient(app).get(
+        "/api/v1/orgs/alpha/audit", params={"action": "memory_collection_seal"},
+    )
+    assert response.status_code == 401
+    assert "memory_collection_observation" not in response.json()

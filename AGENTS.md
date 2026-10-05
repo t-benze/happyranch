@@ -54,7 +54,9 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   `census_not_reconciled`. Exhaustive read validation is bounded and compares
   closing semantic observer/database facts; movement or work exhaustion refuses.
   Internal census validity is never collection health or epoch authority.
-  G1/B1/current-serving acquisition, both health consumers, installed acceptance,
+  Seal-action `/audit` adds the closed optional serving-observation/loaded-identity
+  view described in the corrective memory spec; it performs zero durable writes.
+  G1 durable acceptance/B1, both health consumers, installed acceptance,
   canary/deferred venues and full reporting remain open; backend/CLI guards stay
   `insufficient_instrumentation`. See the memory section in the feature guide.
 

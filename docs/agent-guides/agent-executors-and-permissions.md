@@ -193,6 +193,18 @@ remain `census_not_reconciled`. Bounded exhaustive read validation rejects
 moving captures and unresolved authoritative task/parent/type facts without
 changing ordinary launch/refusal behavior. These source facts confer no
 installed/epoch/collection authority.
+The seal-action `/audit` source view fingerprints declared actually loaded
+Python functions at their import origins and compares them to bounded compiled
+source without execution. It records the actual interpreter, registered
+TeamsRegistry cohort, current agent executor/model definitions, registered
+profiles, pinned provider or approved adapter/dependency file identities and
+already cached launch-backend capabilities. GET never constructs an executor,
+launches a provider, refreshes a capability probe or changes profiles. Missing,
+moving or mismatched components are bounded unavailable metadata; matching
+files in another checkout cannot impersonate loaded serving code. Same-UID
+integrity is detective only. See the corrective memory spec for exact nested
+keys and limits; this projection is not installed QA or attestation.
+
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
 contract by `runtime/skills/system_contracts.py`) delivers a stdlib-only guard

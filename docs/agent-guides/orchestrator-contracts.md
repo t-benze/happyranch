@@ -1893,7 +1893,7 @@ Recovery/unattributed launches do not gain task eligibility from a version;
 `session_start` is intended invocation rather than complete launch census.
 The source-side G3 observer records independent intended invocations and frozen
 expectations as described in the feature guide. G1 canary/epoch authority,
-current-serving census acquisition/acceptance, G4 consistent acquisition,
+current-serving census acceptance, G4 consistent acquisition,
 full reporting and installed acceptance remain OPEN; both reports stay
 fail-closed. No collection starts here.
 
@@ -1915,3 +1915,15 @@ validation reconciles history, using at most 256 rows per primary-key page and
 live observer facts bracket capture; changing, incomplete or exhausted capture
 is unavailable. Unresolved task population, parent knowledge or task type is
 unavailable even when identity, binding and start rows exist.
+
+The seal-action audit GET reads the actual serving OrgState through its
+`memory_collection_observation` accessor. Nonblocking short observer snapshots
+and database-revision reads bracket bounded interpreter/source/registry/file
+identity acquisition; no database-held callback enters the observer, no metadata
+lock spans file reads, and GET never reseals or exhaustively validates history.
+A held metadata/database lock, pending preparation/writer, sticky error, changed
+boot/context or moving bookends withholds `data_through`. Failure is local to
+this read and cannot poison launch/callback/startup outcomes. A stable cutoff is
+source evidence only. Durable independent acceptance/atomic epoch transition
+and both health consumers remain a later G1 unit; epoch refs are always null.
+The exact closed projection is in the corrective memory spec.
