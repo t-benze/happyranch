@@ -26,6 +26,7 @@
  *   node scripts/w4a-browser-evidence.mjs --dist <tmp>/dist-ordinary \
  *     --out <evidence dir> --head <sha>
  */
+import { assistantFixture, runAssistantCases } from './assistant-dock-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -156,6 +157,7 @@ const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
+const ASSISTANT_FIXTURE = assistantFixture(LEDGER, HUNG);
 
 // Daemon bytes that must survive every locale unchanged.
 const HEALTH_SNAPSHOT = {
@@ -399,6 +401,7 @@ function startServer(root) {
         const p = url.pathname;
         if (p.startsWith('/api/')) {
           LEDGER.push({ method: request.method, path: p, search: url.search, t: Date.now() });
+          if (selectedSlice === 'assistant' && ASSISTANT_FIXTURE.handle(request, response, p)) return;
           if (p.endsWith('/events') || p.includes('/stream') || p.endsWith('/tail')) {
             response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             HUNG.push(response);
@@ -435,6 +438,7 @@ function startServer(root) {
         response.end(String(error));
       }
     });
+    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.attach(server);
     server.on('error', fail);
     server.listen(0, '127.0.0.1', () => ok({ server, url: `http://127.0.0.1:${server.address().port}` }));
   });
@@ -966,7 +970,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant'].includes(selectedSlice)) throw new Error('unknown --slice');
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -983,8 +987,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = selectedSlice === 'assistant' ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = selectedSlice === 'assistant' ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1043,11 +1047,12 @@ async function main() {
       // load event. Fonts fall back to local faces; recorded in the receipt.
       await cdp.send('Network.setBlockedURLs', { urls: EXTERNAL_BLOCK }, sessionId);
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sessionId);
-      if (init) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: init }, sessionId);
+      let initializationScript;
+      if (init) initializationScript = (await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: init }, sessionId)).identifier;
       const loaded = cdp.waitFor('Page.loadEventFired', { sessionId });
       await cdp.send('Page.navigate', { url }, sessionId);
       await loaded;
-      return { targetId, sessionId };
+      return { targetId, sessionId, initializationScript };
     }
     const closePage = async (page) => { try { await cdp.send('Target.closeTarget', { targetId: page.targetId }); } catch { /* closed */ } };
     async function evaluate(page, expression) {
@@ -1090,6 +1095,9 @@ async function main() {
     }
     const h = { clickSrc, waitTrue, evaluate };
 
+    if (selectedSlice === 'assistant') {
+      await runAssistantCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, switchOnly: arg('assistant-case', 'all') === 'switch' }, ASSISTANT_FIXTURE);
+    } else {
     // ============================================================ G
     beginCase('G', 'ordinary bundle (no build flag) carries the zh-CN catalog copy of every V route');
     for (const [key, present] of Object.entries(fingerprint.zhCatalogLiterals)) check(`G ordinary JS contains zh-CN ${key}`, present, true);
@@ -1168,7 +1176,9 @@ async function main() {
       await closePage(page);
     }
     endCase();
+    }
   } finally {
+    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.cleanup();
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();
     if (chrome && !chrome.killed) chrome.kill('SIGKILL');

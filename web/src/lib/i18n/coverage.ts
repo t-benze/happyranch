@@ -271,8 +271,8 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     // Assistant dock BODY copy is W4; only its shell slot is mounted here.
     namespace: 'system-assistant',
     routeTokens: [],
-    status: 'english-only',
-    surfaces: ['AssistantDockHost'],
+    status: 'translated',
+    surfaces: ['AssistantDockHost', 'ConversationSwitcher'],
   },
   {
     namespace: 'prototypes',

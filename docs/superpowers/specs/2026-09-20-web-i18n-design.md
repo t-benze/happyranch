@@ -88,7 +88,8 @@ Delivery status at W1 (keep separate from later phases):
 | Agents + Skills (W4c: AgentsPage/AgentDetailPane/AgentDetailDrawer/PendingEnrollmentsTab + AddAgentDialog; TeamEscalationPolicyPage/Card; SkillsPage/SkillValidationPage/SkillDetailPage/SkillAssignmentPanel and the custom-skill list/create/detail pages) | **shipped — W4c** |
 | KB + Artifacts chrome (W4d-1) | **shipped — W4d-1** |
 | Usage chrome (W4d-2) | **shipped — W4d-2** |
-| Other route/page translation | **W4d/W5** — the assistant dock body remains open |
+| Mounted Assistant dock + conversation controls | en/zh-CN app-owned visible and accessible copy; component and ordinary-build browser evidence in the task handoff |
+| Final mounted-console audit | **W5** — remains open before full-mode browser-language defaults |
 | Public language selector / opt-in preview | **shipped — W3b-2** (English when unset; secondary-pages coverage disclosure) |
 | Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
@@ -253,8 +254,7 @@ stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
 in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` remains
-english-only. Preview remains enabled with unset
+`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. Preview remains enabled with unset
 English and secondary-page disclosure; W5 and native N0/N1 remain later work.
 Browser evidence adds representative KB list/detail/candidates and artifact
 list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
@@ -278,9 +278,8 @@ both locales); `monthShort` supplies localized month names for wall-clock
 parts. Malformed local/instant/timezone fallback behavior remains unchanged.
 English compact token suffixes retain the canonical K/M shape; Chinese uses
 万/亿. Switching en→zh-CN→en re-renders presentation without remounting
-controls, losing focus/cohort/Compare, or issuing API requests. Usage is the
-only newly translated namespace; Assistant remains english-only and preview
-remains unset-English/Chinese-opt-in. W5/full-mode and desktop N0/N1 remain
+controls, losing focus/cohort/Compare, or issuing API requests. Usage is translated; the mounted Assistant dock and conversation controls are
+also translated. Preview remains unset-English/Chinese-opt-in. W5/full-mode and desktop N0/N1 remain
 deferred. Ordinary browser evidence uses the narrow `--slice usage` rows in
 `web/scripts/w4a-browser-evidence.mjs`, including 390/1440 geometry and
 same-origin preference switching. Actual final-head receipts live in task
@@ -404,8 +403,8 @@ later slice and route family is still visibly `english-only`, so English
 fallback is never mistaken for coverage. The `settings` namespace includes the
 (production-enabled since W3b-2) `preferences` token and `PreferencesSection`; the shared
 `EligibilityEditorDialog` it lists is owned by Work Hours and is translated by
-W4b. The `system-assistant` namespace records only
-`AssistantDockHost` (the W4 dock body); the help/palette hosts moved to the
+W4b. The `system-assistant` namespace records both
+`AssistantDockHost` and its mounted `ConversationSwitcher`; the help/palette hosts moved to the
 `help-and-palette` namespace.
 
 ## 7. Formatting contract
@@ -596,7 +595,7 @@ Frontend readiness map (actual evidence):
 
 | Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2 |
 | --- | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2), Health/Dreams (W4a-1), Todos/Work Hours/Audit (W4b), Agents/Skills (W4c) and KB/Artifacts (W4d-1); Usage presentation (W4d-2); the assistant dock body still `english-only` |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2), Health/Dreams (W4a-1), Todos/Work Hours/Audit (W4b), Agents/Skills (W4c) and KB/Artifacts (W4d-1); Usage presentation (W4d-2); the mounted Assistant dock and conversation controls are translated with component and ordinary-build browser evidence |
 | Public language selector | N/A — W3b-2 | W3b-2: Settings ▸ Preferences mounted in ordinary builds; Vitest proves sub-nav + direct URL without a flag, unset-on-Chinese-browser stays English, disclosure visible, zh-CN switch keeps nodes/focus with zero requests; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
@@ -618,11 +617,10 @@ No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
 translation campaign beyond W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2 (W4a-1 translated Health
 and Dreams; W4b translated Todos, Work Hours and Audit; W4c translated Agents
-and Skills; W4d-1 translates KB and Artifacts; W4d-2 translates Usage presentation; the assistant remains
-open), browser-language
+and Skills; W4d-1 translates KB and Artifacts; W4d-2 translates Usage presentation; the mounted Assistant dock and conversation controls are translated), browser-language
 default resolution (W5), deployment, or caller migration of display
 formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads,
-W3b-1 Tasks, W3b-2 Jobs, W4a-1 Health/Dreams, W4b Todos/Work Hours/Audit, W4c Agents/Skills W4d-1 KB/Artifacts and W4d-2 Usage route families. Existing query/data/auth
+W3b-1 Tasks, W3b-2 Jobs, W4a-1 Health/Dreams, W4b Todos/Work Hours/Audit, W4c Agents/Skills W4d-1 KB/Artifacts, W4d-2 Usage route families and mounted Assistant presentation. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no
@@ -634,3 +632,13 @@ the single implementation for onboarding and Settings ▸ Executors. The
 Assistant/Organization/Executors/Capacity sections; the Work Hours-owned
 `EligibilityEditorDialog` stayed English until W4 and is translated by W4b); the Preferences
 route/selector is mounted in ordinary builds since W3b-2.
+
+## Mounted System Assistant copy (THR-118)
+
+The mounted `AssistantDockHost` and its `ConversationSwitcher` resolve app-owned visible and accessible copy through `assistantDock.*` in en/zh-CN. This includes configuration/loading/empty states, header/composer/key hints, conversation list/actions/rename/delete confirmation, tool activity and fallback speaker labels. The existing MessageBubble speaker/timestamp and TypingBubble caption/ariaLabel overrides are reused; timestamps retain the viewer-local full date/time display and elapsed values retain the existing seconds/minutes calculation.
+
+Errors capture provenance when they arrive: `{ key }` is an app fallback, `{ raw }` is daemon detail/message, and `{ connectionDetail }` preserves `String(caughtValue)` under a localized wrapper. Rendering resolves keys with the current locale, including an already-visible fallback. A raw empty value or one equal to an English catalog string remains raw. Supplied executor/tool names, conversation titles/IDs, authored prompts/replies/Markdown and timestamps as data remain verbatim. Missing tool-name presentation has its own provenance flag; tool matching keeps the existing raw/default name semantics.
+
+Locale changes do not key/remount the dock or enter its connection-effect dependencies. They preserve the active conversation, history/inflight state, composer/rename draft, selection/focus and open delete confirmation, and issue no HTTP/session/socket activity. Existing A-mode parsing/order/hydration, query/polling keys, activation/new/rename/delete callbacks, reconnect triggers, optimistic send/trim/clear semantics, hotkeys, focus trap/restore and SPA navigation remain unchanged. Help and Command Palette chrome already use the shared locale context and retain their current interaction ownership.
+
+Ordinary-build evidence uses `web/scripts/w4a-browser-evidence.mjs --slice assistant` and the narrow `assistant-dock-browser-cases.mjs` fixture/cases: real shipping HTTP/WS seams, server request/socket ledger, mounted-node/focus assertions and 390/1440 captures. The coverage inventory includes both actual mounted consumers. The `system-assistant` marker is translated after complete mounted-copy coverage is established by component regressions and ordinary-build browser evidence; catalog binding alone does not prove coverage. Preview remains English when unset, with opt-in Chinese. W5 final audit, Settings Organization disable-confirm closeLabel, full-mode/browser-language defaults and desktop restart persistence remain separate work; no deployment/live acceptance is implied.

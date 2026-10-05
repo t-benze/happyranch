@@ -6,6 +6,8 @@
  */
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, expect, test, vi } from 'vitest';
+import { I18nProvider } from '@/hooks/i18n';
+import { savedLocaleAdapter } from '@/test/render';
 import type { ConversationSummary } from '@/hooks/assistant';
 import {
   ConversationSwitcher,
@@ -35,7 +37,7 @@ function renderSwitcher(over: Partial<React.ComponentProps<typeof ConversationSw
     onClose: vi.fn(),
     ...over,
   };
-  render(<ConversationSwitcher {...props} />);
+  render(<ConversationSwitcher {...props} />, { wrapper: I18nProvider });
   return props;
 }
 
@@ -206,5 +208,74 @@ function baseProps(
 function renderReturning(
   over: Partial<React.ComponentProps<typeof ConversationSwitcher>> = {},
 ) {
-  return render(<ConversationSwitcher {...baseProps(over)} />);
+  return render(<ConversationSwitcher {...baseProps(over)} />, { wrapper: I18nProvider });
 }
+
+
+describe('Conversation switcher mounted localization', () => {
+  test('Chinese loading, error, empty and busy controls localize while raw errors remain exact', () => {
+    const props = baseProps({ loading: true, busy: true });
+    const wrapper = ({ children }: { children: React.ReactNode }) => <I18nProvider adapter={savedLocaleAdapter('zh-CN')}>{children}</I18nProvider>;
+    const { rerender } = render(<ConversationSwitcher {...props} />, { wrapper });
+    expect(screen.getByRole('region', { name: '会话' })).toBeInTheDocument();
+    expect(screen.getByText('正在加载会话…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '新建会话' })).toBeDisabled();
+    rerender(<ConversationSwitcher {...props} loading={false} />);
+    expect(screen.getByText('暂无会话。')).toBeInTheDocument();
+    rerender(<ConversationSwitcher {...props} loading={false} error='Could not load conversations.' />);
+    expect(screen.getByRole('alert').textContent).toBe('Could not load conversations.');
+    fireEvent.click(screen.getByRole('button', { name: '关闭会话列表' }));
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+    expect(props.onNew).not.toHaveBeenCalled();
+    rerender(<ConversationSwitcher {...props} loading={false} busy={false} conversations={[conv({ id: 'raw/id', title: 'Raw title' })]} />);
+    fireEvent.click(screen.getByRole('button', { name: '新建会话' }));
+    expect(props.onNew).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Raw title' }));
+    expect(props.onSwitch).toHaveBeenCalledWith('raw/id');
+    fireEvent.click(screen.getByRole('button', { name: '重命名 Raw title' }));
+    fireEvent.change(screen.getByRole('textbox', { name: '会话标题' }), { target: { value: 'cancelled' } });
+    fireEvent.click(screen.getByRole('button', { name: '取消重命名' }));
+    expect(props.onRename).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Raw title' })).toBeInTheDocument();
+  });
+
+  test('locale switching preserves rename selection and delete confirmation with verbatim callback arguments', () => {
+    const rawTitle = 'Raw “会话” / Title';
+    const props = baseProps({ conversations: [conv({ id: 'raw/id', title: rawTitle, active: true })] });
+    const { rerender } = render(<ConversationSwitcher {...props} />, { wrapper: I18nProvider });
+    fireEvent.click(screen.getByRole('button', { name: `Rename ${rawTitle}` }));
+    const input = screen.getByRole('textbox', { name: 'Conversation title' }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '  Raw /新题  ' } });
+    input.focus(); input.setSelectionRange(2, 9);
+    fireEvent(window, new StorageEvent('storage', { key: 'happyranch.ui.locale', newValue: 'zh-CN' }));
+    expect(screen.getByRole('textbox', { name: '会话标题' })).toBe(input);
+    expect(input).toHaveValue('  Raw /新题  ');
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([2, 9]);
+    rerender(<ConversationSwitcher {...props} busy />);
+    expect(screen.getByRole('button', { name: '保存标题' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '取消重命名' })).toBeEnabled();
+    rerender(<ConversationSwitcher {...props} />);
+    fireEvent(window, new StorageEvent('storage', { key: 'happyranch.ui.locale', newValue: 'en' }));
+    expect(screen.getByRole('textbox', { name: 'Conversation title' })).toBe(input);
+    expect(document.activeElement).toBe(input);
+    fireEvent.click(screen.getByRole('button', { name: 'Save title' }));
+    expect(props.onRename).toHaveBeenCalledTimes(1);
+    expect(props.onRename).toHaveBeenCalledWith('raw/id', 'Raw /新题');
+    fireEvent.click(screen.getByRole('button', { name: `Delete ${rawTitle}` }));
+    const confirmation = screen.getByText(`Delete “${rawTitle}”?`);
+    fireEvent(window, new StorageEvent('storage', { key: 'happyranch.ui.locale', newValue: 'zh-CN' }));
+    expect(screen.getByText(`删除“${rawTitle}”？`)).toBe(confirmation);
+    rerender(<ConversationSwitcher {...props} busy />);
+    expect(screen.getByRole('button', { name: '删除' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '取消' })).toBeEnabled();
+    expect(props.onDelete).not.toHaveBeenCalled();
+    rerender(<ConversationSwitcher {...props} />);
+    fireEvent(window, new StorageEvent('storage', { key: 'happyranch.ui.locale', newValue: 'en' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(props.onDelete).toHaveBeenCalledTimes(1);
+    expect(props.onDelete).toHaveBeenCalledWith('raw/id');
+    expect(props.onSwitch).not.toHaveBeenCalled();
+    expect(props.onNew).not.toHaveBeenCalled();
+  });
+});

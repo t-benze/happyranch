@@ -114,8 +114,8 @@ production builds.
 **W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, enforced by a `format.test.ts` source scan). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
 
 **W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; en/zh-CN rendered-state regressions complement the source scan, which rejects direct locale-formatting calls), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
-The assistant dock body (later W4/W5) remains
-untranslated. The mount-time coverage
+The assistant dock body and conversation controls are translated in en/zh-CN
+with complete mounted-copy evidence; W5 remains the final console audit. The mount-time coverage
 inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
 (root shell `index`, the `*` NotFound catch-all and onboarding — now
 `translated`) from
@@ -211,8 +211,7 @@ stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
 in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` remains
-english-only. Preview remains enabled with unset
+`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. Preview remains enabled with unset
 English and secondary-page disclosure; W5 and native N0/N1 remain later work.
 Browser evidence adds representative KB list/detail/candidates and artifact
 list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
@@ -230,8 +229,8 @@ parts already describe org-local wall-clock time and never shift with viewer
 TZ; UTC instants use the response timezone and explicit locale. Invalid-format
 fallbacks keep their original behavior. Compare/cohort/default/manual selection
 and all query/refetch/server metric semantics are unchanged; locale changes
-preserve nodes, focus and selection without new API calls. Usage alone becomes
-translated; Assistant remains english-only, preview stays unset-English with
+preserve nodes, focus and selection without new API calls. Usage is translated; the mounted Assistant dock and conversation controls are
+also translated. Preview stays unset-English with
 Chinese opt-in, and W5/native N0/N1 remain deferred. Browser evidence:
 `web/scripts/w4a-browser-evidence.mjs --slice usage` (ordinary bundle).
 
@@ -243,3 +242,9 @@ Chinese opt-in, and W5/native N0/N1 remain deferred. Browser evidence:
   only and would be a privilege-escalation if exposed in the browser.
 - `--as-founder` impersonation surface for KB deletes. Stays TTY-gated in CLI.
 - Multi-user concerns: login screens, account model, RBAC. Localhost only.
+
+### System Assistant mounted copy (THR-118)
+
+The global `AssistantDockHost` and its mounted `ConversationSwitcher` bind en/zh-CN app-owned visible/accessibility copy, including composer/state/key hints, typing/tool activity and conversation actions/rename/delete confirmation. Shared MessageBubble/TypingBubble copy overrides are reused. Errors retain capture-time provenance: app fallback keys resolve at render time; raw daemon detail/message and caught diagnostic values (including empty or catalog-equal values) stay exact. Executor/tool names, titles, authored content and IDs remain data. Viewer-local timestamp and elapsed semantics remain unchanged.
+
+Locale switches preserve mounted nodes, active conversation, transcript/inflight state, drafts, focus and selection without entering connection-effect dependencies or issuing requests/mutations/reconnects. The detailed boundary is [Assistant Web UI §6.12](../docs/superpowers/specs/2026-06-12-system-assistant-web-ui-design.md#612-mounted-dock-locale-presentation-thr-118). Ordinary-build evidence is `scripts/w4a-browser-evidence.mjs --slice assistant`: real HTTP/WS seams and request/socket ledger plus 390/1440 screenshots. Coverage inventory includes both consumers and marks only `system-assistant` translated in this slice, supported by component regressions and ordinary-build mounted-copy evidence. Preview stays unset-English/Chinese-opt-in; W5 and native restart acceptance remain separate.
