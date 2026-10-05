@@ -764,8 +764,11 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
                 refuse()
             if edge[1] in ('cancelled', 'failed', 'completed') and edge[0] != edge[1]:
                 # Prelaunch queued cancellation needs no invented host proof.
-                if after['host_launch_started'] and payload['terminal_evidence'] != {'host_quiescent': True}:
-                    refuse()
+                if after['host_launch_started']:
+                    witness = payload['terminal_evidence']
+                    if (not isinstance(witness, dict) or set(witness) != {'host_quiescent'}
+                            or witness['host_quiescent'] is not True):
+                        refuse()
                 if edge[1] in ('failed', 'cancelled') and task['status'] != edge[1]:
                     refuse()
             if ((kind in ('callback_recorded', 'callback_rejected')) != (event['result_id'] is not None)):

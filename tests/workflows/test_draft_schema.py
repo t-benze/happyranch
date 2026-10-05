@@ -268,6 +268,104 @@ def _projection(db: Database, intent_id: str) -> dict:
     return {key: row[key] for key in _PROJECTION}
 
 
+def _seed_launched_terminal_history(db: Database, source: str, target: str, kind: str) -> str:
+    """Retained SQL history only; no host producer or S2 execution proof."""
+    intent = _seed_valid_draft(db)
+    _seed_event(db, intent, 'claimed', before=_projection(db, intent), state='claimed',
+                claim_token='claim', claim_owner='owner')
+    _seed_event(db, intent, 'launch_reserved', before=_projection(db, intent), host_launch_started=1)
+    if source != 'claimed':
+        _seed_event(db, intent, 'running', before=_projection(db, intent), state='running',
+                    host_execution_id='host', session_id='session')
+    if source == 'uncertain':
+        _seed_event(db, intent, 'uncertain', before=_projection(db, intent), state='uncertain')
+    result = None
+    if target == 'completed':
+        cursor = db.execute("INSERT INTO task_results(task_id,agent,session_id,status,created_at) "
+                            "VALUES ('TASK-001','maker','session','completed','2026-10-05T00:00:00Z')")
+        result = dict(db.execute('SELECT * FROM task_results WHERE id=?', (cursor.lastrowid,)).fetchone())
+        _seed_event(db, intent, 'callback_recorded', before=_projection(db, intent),
+                    final_result_id=result['id'], result=result)
+    db.execute('UPDATE tasks SET status=? WHERE id=?', (target, 'TASK-001'))
+    _seed_event(db, intent, kind, before=_projection(db, intent), state=target, terminal=True, result=result)
+    db._conn.commit()
+    return intent
+
+
+@pytest.mark.parametrize('source,target,kind', [
+    ('claimed', 'cancelled', 'cancelled'), ('claimed', 'failed', 'failed'),
+    ('running', 'cancelled', 'cancelled'), ('running', 'failed', 'failed'),
+    ('running', 'completed', 'completed'),
+    ('uncertain', 'cancelled', 'cancelled'), ('uncertain', 'failed', 'failed'),
+    ('uncertain', 'completed', 'completed'),
+    ('uncertain', 'cancelled', 'host_reconciled'), ('uncertain', 'failed', 'host_reconciled'),
+    ('uncertain', 'completed', 'host_reconciled'),
+])
+@pytest.mark.parametrize('witness', [
+    pytest.param({'host_quiescent': True}, id='literal-true'),
+    pytest.param({'host_quiescent': 1}, id='integer-one'),
+    pytest.param({'host_quiescent': 1.0}, id='float-one'),
+    pytest.param({'host_quiescent': False}, id='false'),
+    pytest.param({'host_quiescent': 0}, id='zero'),
+    pytest.param({'host_quiescent': None}, id='null-value'),
+    pytest.param({}, id='missing-key'),
+    pytest.param({'host_quiescent': True, 'extra': True}, id='extra-key'),
+    pytest.param(None, id='missing-evidence'),
+    pytest.param([{'host_quiescent': True}], id='array-shape'),
+    pytest.param(True, id='boolean-shape'),
+    pytest.param('true', id='string-shape'),
+])
+def test_launched_terminal_witness_requires_literal_true_without_writes(
+    tmp_path: Path, source: str, target: str, kind: str, witness: object,
+) -> None:
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.install_or_recover(db)
+        _migrate(db)
+        store = WorkflowCutoverStore(db, org_slug='alpha')
+        assert store.request(action='enable', operation_key='enable', expected_generation=1)['state'] == 'enabled'
+        intent = _seed_launched_terminal_history(db, source, target, kind)
+        # Validate the complete legal closure before changing only its witness.
+        assert schema.validate_workflow_schema(db._conn, expected_org_slug='alpha') == 'E'
+        event = dict(db.execute('SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? '
+                                'ORDER BY event_seq DESC LIMIT 1', (intent,)).fetchone())
+        payload = json.loads(event['event_bytes'])
+        payload['terminal_evidence'] = witness
+        raw = schema._canonical_bytes(payload)
+        digest = hashlib.sha256(raw).hexdigest()
+        db.execute('UPDATE workflow_draft_dispatch_events SET event_bytes=?,event_digest=? WHERE id=?',
+                   (raw, digest, event['id']))
+        db._conn.commit()
+        assert hashlib.sha256(db.execute('SELECT event_bytes FROM workflow_draft_dispatch_events WHERE id=?',
+                                        (event['id'],)).fetchone()[0]).hexdigest() == digest
+        before = tuple(db._conn.iterdump())
+        file_bytes, file_mode = db.db_path.read_bytes(), db.db_path.stat().st_mode
+        valid = isinstance(witness, dict) and set(witness) == {'host_quiescent'} and witness['host_quiescent'] is True
+        for _ in range(2):
+            if valid:
+                assert schema.validate_workflow_schema(db._conn, expected_org_slug='alpha') == 'E'
+                assert schema.install_or_recover(db, expected_org_slug='alpha') == 'reopened'
+                assert not store.get()['blockers']
+            else:
+                with pytest.raises(ValueError, match='workflow_draft_data_corrupt'):
+                    schema.validate_workflow_schema(db._conn, expected_org_slug='alpha')
+                with pytest.raises(ValueError, match='workflow_draft_data_corrupt'):
+                    schema.install_or_recover(db, expected_org_slug='alpha')
+                projection = store.recover_authorized()
+                assert projection['state'] == 'enabled'
+                assert projection['reconciliation_required']
+                assert projection['blockers'][0]['code'] == 'cutover_draft_closure'
+                with pytest.raises(WorkflowCutoverError, match='cutover_storage_corrupt'):
+                    store.request(action='disable', operation_key='disable', expected_generation=4)
+            assert tuple(db._conn.iterdump()) == before
+            assert db.db_path.read_bytes() == file_bytes and db.db_path.stat().st_mode == file_mode
+        if valid:
+            drained = store.request(action='disable', operation_key='disable', expected_generation=4)
+            assert drained['state'] == 'drained' and drained['blockers'] == []
+    finally:
+        db.close()
+
+
 @pytest.mark.parametrize('state', ['queued','claimed','running','uncertain','cancel-pending','cancelled','failed','completed'])
 def test_sql_seeded_draft_closure_and_drain_projection(tmp_path: Path, state: str) -> None:
     db = Database(tmp_path / 'happyranch.db')
