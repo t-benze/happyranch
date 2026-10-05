@@ -90,7 +90,7 @@ export function OverviewPage(): JSX.Element {
       t,
     );
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex h-full min-w-0 flex-col">
         <Header slug={slug} />
         <WorkHoursTabs slug={slug} active="overview" />
         <div className="p-4">
@@ -101,13 +101,13 @@ export function OverviewPage(): JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 flex-col">
       <Header slug={slug} />
       <WorkHoursTabs slug={slug} active="overview" />
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-w-0 flex-1 overflow-y-auto">
         {/* a-workhours wh-wrap: 1120 centered cap (THR-099 Slice 8). */}
-        <div className="max-w-content-wide mx-auto p-4">
+        <div className="max-w-content-wide mx-auto min-w-0 p-4">
         {saved && <SavedBanner message={t('workHours.saved')} />}
 
         {/* Read-only status bar + tier editing */}
@@ -177,7 +177,14 @@ export function OverviewPage(): JSX.Element {
             body={t('workHours.empty.body')}
           />
         ) : (
-          <div className="border-border overflow-hidden rounded-md border">
+          <>
+          <p className="text-text-muted mb-2 text-xs">{t('workHours.scrollHint')}</p>
+          <div
+            role="region"
+            aria-label={t('workHours.roster.scrollLabel')}
+            tabIndex={0}
+            className="border-border focus-visible:ring-accent-ring overflow-x-auto rounded-md border focus-visible:ring-2 focus-visible:outline-none"
+          >
             <table className="w-full text-sm">
               <thead className="bg-bg-subtle text-text-muted text-xs uppercase">
                 <tr>
@@ -232,6 +239,7 @@ export function OverviewPage(): JSX.Element {
               </tbody>
             </table>
           </div>
+          </>
         )}
         </div>
       </div>

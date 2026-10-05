@@ -26,6 +26,7 @@
  *   node scripts/w4a-browser-evidence.mjs --dist <tmp>/dist-ordinary \
  *     --out <evidence dir> --head <sha>
  */
+import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
 import { assistantFixture, runAssistantCases } from './assistant-dock-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -410,6 +411,10 @@ function startServer(root) {
           // Usage-only scenario fixtures, selected by the evidence page URL.
           // These exercise ordinary shipping fetches; no app/bundle seam is added.
           const ref = new URL(request.headers.referer || 'http://127.0.0.1');
+          if (selectedSlice === 'work-hours-reachability') {
+            const fixture = workHoursFixture(p, ref, { org: ORG, settings: WH_SETTINGS, roster: ROSTER });
+            if (fixture !== undefined) { response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(fixture)); return; }
+          }
           const mode = ref.searchParams.get('usageFixture');
           if (p.includes('/usage/') && mode === 'loading') { HUNG.push(response); return; }
           if (p.includes('/usage/') && (mode === 'error' || (mode === 'stale' && USAGE_REFRESH_FAILED.has(p + url.search + ref.search)))) {
@@ -970,7 +975,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability'].includes(selectedSlice)) throw new Error('unknown --slice');
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -987,8 +992,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = selectedSlice === 'assistant' ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = selectedSlice === 'assistant' ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['assistant', 'work-hours-reachability'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['assistant', 'work-hours-reachability'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1097,6 +1102,8 @@ async function main() {
 
     if (selectedSlice === 'assistant') {
       await runAssistantCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, switchOnly: arg('assistant-case', 'all') === 'switch' }, ASSISTANT_FIXTURE);
+    } else if (selectedSlice === 'work-hours-reachability') {
+      await runWorkHoursCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, geometryOnly: arg('work-hours-case', 'all') === 'geometry', entryOnly: arg('work-hours-case', 'all') === 'entry' });
     } else {
     // ============================================================ G
     beginCase('G', 'ordinary bundle (no build flag) carries the zh-CN catalog copy of every V route');

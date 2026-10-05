@@ -94,7 +94,7 @@ export function AgentDetailPage(): JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-w-0 flex-col">
       {/* Header */}
       <header className="border-border-default border-b p-4">
         <Link
@@ -104,8 +104,8 @@ export function AgentDetailPage(): JSX.Element {
           {t('workHours.detail.backToWorkHours')}
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-3">
-          <h1 className="font-display text-h2 text-text-primary">{agent}</h1>
-          <span className="text-text-muted text-sm">{team ?? t('workHours.detail.noTeam')}</span>
+          <h1 className="font-display text-h2 text-text-primary min-w-0 max-w-full break-all">{agent}</h1>
+          <span className="text-text-muted min-w-0 max-w-full break-all text-sm">{team ?? t('workHours.detail.noTeam')}</span>
           <EligibilityChip eligible={eligible} />
           <OnDot on={on} />
         </div>
@@ -116,18 +116,18 @@ export function AgentDetailPage(): JSX.Element {
         )}
       </header>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-w-0 flex-1 overflow-y-auto">
         {/* a-workhours wh-wrap: 1120 centered cap (THR-099 Slice 8). */}
-        <div className="max-w-content-wide mx-auto p-4">
+        <div className="max-w-content-wide mx-auto min-w-0 p-4">
         {saved && <SavedBanner message={t('workHours.saved')} />}
 
         {/* Reconciliation table */}
         <section className="mb-6">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-text-primary text-sm font-semibold">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-text-primary max-w-full shrink-0 text-sm font-semibold">
               {t('workHours.detail.provenanceHeading')}
             </h2>
-            <div className="flex gap-2">
+            <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
               <Button size="sm" variant="outline" onClick={() => setTier({ kind: 'org' })}>
                 {t('workHours.editOrgDefault')}
               </Button>
@@ -135,6 +135,7 @@ export function AgentDetailPage(): JSX.Element {
                 <Button
                   size="sm"
                   variant="outline"
+                  className="max-w-full break-all whitespace-normal"
                   onClick={() => setTier({ kind: 'team', team })}
                 >
                   {t('workHours.editTeam', { team })}
@@ -156,7 +157,13 @@ export function AgentDetailPage(): JSX.Element {
             </div>
           </div>
 
-          <div className="border-border overflow-hidden rounded-md border">
+          <p className="text-text-muted mb-2 text-xs">{t('workHours.scrollHint')}</p>
+          <div
+            role="region"
+            aria-label={t('workHours.detail.scrollLabel')}
+            tabIndex={0}
+            className="border-border focus-visible:ring-accent-ring overflow-x-auto rounded-md border focus-visible:ring-2 focus-visible:outline-none"
+          >
             <table className="w-full text-sm">
               <thead className="bg-bg-subtle text-text-muted text-xs uppercase">
                 <tr>
@@ -187,10 +194,12 @@ export function AgentDetailPage(): JSX.Element {
                       {renderLeaf(row.cell.agent)}
                     </Cell>
                     <td className="px-3 py-1.5">
-                      <span className="text-text-primary mr-2 font-mono text-xs tabular-nums">
-                        ▶ {renderLeaf(row.cell.effective)}
-                      </span>
-                      <ProvenanceBadge source={row.cell.source} teamName={team} />
+                      <div className="max-w-60 break-all [&>span]:max-w-full">
+                        <span className="text-text-primary mr-2 font-mono text-xs tabular-nums">
+                          ▶ {renderLeaf(row.cell.effective)}
+                        </span>
+                        <ProvenanceBadge source={row.cell.source} teamName={team} />
+                      </div>
                     </td>
                   </tr>
                 ))}

@@ -1863,6 +1863,9 @@ export const en = {
   // @w4b-end:todos
 
   // --- W4b: Work Hours route family + shared EligibilityEditorDialog -------
+  'workHours.detail.scrollLabel': 'Schedule reconciliation table',
+  'workHours.roster.scrollLabel': 'Work Hours roster table',
+  'workHours.scrollHint': 'If columns extend beyond the view, focus the table and use the arrow keys to scroll.',
   'workHours.loading': 'Loading work hours…',
   'workHours.saved': 'Saved ✓ — takes effect at the next scheduler pass (≈ within ~60s).',
   'workHours.header.eyebrow': 'Working hours · Founder-only configuration',

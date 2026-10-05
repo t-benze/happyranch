@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
@@ -108,6 +108,14 @@ describe('Work-Hours Overview (S1)', () => {
       expect(screen.getByText('dev_agent')).toBeInTheDocument();
       expect(screen.getByText('support_bot')).toBeInTheDocument();
     });
+
+    const region = screen.getByRole('region', { name: 'Work Hours roster table' });
+    expect(region.tabIndex).toBe(0);
+    region.focus();
+    expect(region).toHaveFocus();
+    const table = within(region).getByRole('table');
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Agent', 'Team', 'Mode', 'Cadence (effective)', 'On', 'Eligibility']);
+    expect(within(table).getByText("dev_agent")).toBeInTheDocument();
 
     // Effective cadence from the org default.
     expect(
