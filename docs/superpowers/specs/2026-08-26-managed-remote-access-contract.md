@@ -9,6 +9,10 @@ The two failure-only snapshots also read the existing Headscale fixture before a
 
 Headscale PID/read/parser stages each reserve one second plus one second for group termination/reaping; node query separately reserves three seconds plus one second, and its parser separately one plus one. Reads/query output are bounded at 64 KiB (log has one overflow detector), log parsing at 256 lines, nodes at 64 and each safe parser output at 2048 bytes. Budgets are independent of sidecar, systemd and credential sections. Dedicated Linux capture owns and reaps its child groups, including adopted pipe-holding descendants; inability to establish that ownership launches no observation. Raw observations stay in private memory and never enter uploaded diagnostics. Closed losses distinguish observed, empty, unavailable, launch_failure, query_error, timeout, truncated, parse_loss and unattempted. Capture failure preserves the initiating exit and once-only complete cleanup. Local shell fixtures remain causal verification, not real-systemd Managed N3 acceptance.
 
+**Bounded review correction (THR-228 seq331).** Each observation keeps its original absolute deadline through launch, writes, selector/read/EOF delivery, exit observation and final positive acceptance. A successful result delivered after expiry is timeout with no payload or inferred empty/count/state; its separately reserved termination/reaping still runs. Independently timely sibling observations retain their evidence.
+
+Sidecar shutdown retains one listener-first teardown owner, closes active connections, drains proxies and closes the engine exactly once. An accept-error caller that loses ownership returns so the owner can join the accept loop; it cannot wait on the teardown that is waiting for it. Every concurrent or repeated Stop waits for teardown and accept-loop completion and reports the winning owner's same safe error. In-flight Start/Listen resolution and no post-stop admission remain unchanged.
+
 > **Status:** current
 > **Date:** 2026-08-26
 > **Merge unit:** A — normative contracts and threat fixtures only (TASK-5771)

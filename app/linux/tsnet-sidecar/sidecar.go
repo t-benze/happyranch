@@ -124,7 +124,7 @@ type Sidecar struct {
 	starting        bool
 	startDone       chan struct{}
 	stopping        bool
-	stopOnce        sync.Once
+	stopDone        chan struct{}
 	engineCloseOnce sync.Once
 	acceptWG        sync.WaitGroup
 	proxyWG         sync.WaitGroup
@@ -389,6 +389,9 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 
 func (s *Sidecar) Stop() error {
 	s.shutdown(nil, false)
+	// An accept-owned teardown cannot join itself. Every external caller
+	// still waits for the accept loop to release its registration.
+	s.acceptWG.Wait()
 	s.mu.Lock()
 	err := s.stopErr
 	s.mu.Unlock()
@@ -399,43 +402,52 @@ func (s *Sidecar) closeEngine() {
 	s.engineCloseOnce.Do(func() { s.engineErr = s.engine.Close() })
 }
 
-// shutdown is the single listener-first teardown path. acceptCaller avoids
-// waiting on the accept goroutine that is currently executing this method.
+// shutdown is the single listener-first teardown path. A losing acceptCaller
+// must return instead of waiting on an owner that may be joining acceptWG.
+// External callers wait for the owner's completion, then Stop joins acceptWG.
 func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
-	s.stopOnce.Do(func() {
-		s.mu.Lock()
-		s.stopping = true
-		startDone := s.startDone
-		starting := s.starting
+	s.mu.Lock()
+	if s.stopping {
+		done := s.stopDone
 		s.mu.Unlock()
-		if starting {
-			<-startDone
-		}
-		s.mu.Lock()
-		l := s.listener
-		s.listener = nil
-		s.mu.Unlock()
-		var teardownFailed bool
-		if l != nil {
-			teardownFailed = l.Close() != nil
-		}
-		s.mu.Lock()
-		for c := range s.active {
-			_ = c.Close()
-		}
-		s.mu.Unlock()
-		s.proxyWG.Wait()
 		if !acceptCaller {
-			s.acceptWG.Wait()
+			<-done
 		}
-		s.closeEngine()
-		teardownFailed = teardownFailed || s.engineErr != nil
-		s.mu.Lock()
-		if cause != nil {
-			s.stopErr = cause
-		} else if teardownFailed {
-			s.stopErr = ErrEngine
-		}
-		s.mu.Unlock()
-	})
+		return
+	}
+	s.stopping = true
+	s.stopDone = make(chan struct{})
+	startDone := s.startDone
+	starting := s.starting
+	s.mu.Unlock()
+	if starting {
+		<-startDone
+	}
+	s.mu.Lock()
+	l := s.listener
+	s.listener = nil
+	s.mu.Unlock()
+	var teardownFailed bool
+	if l != nil {
+		teardownFailed = l.Close() != nil
+	}
+	s.mu.Lock()
+	for c := range s.active {
+		_ = c.Close()
+	}
+	s.mu.Unlock()
+	s.proxyWG.Wait()
+	if !acceptCaller {
+		s.acceptWG.Wait()
+	}
+	s.closeEngine()
+	teardownFailed = teardownFailed || s.engineErr != nil
+	s.mu.Lock()
+	if cause != nil {
+		s.stopErr = cause
+	} else if teardownFailed {
+		s.stopErr = ErrEngine
+	}
+	close(s.stopDone)
+	s.mu.Unlock()
 }

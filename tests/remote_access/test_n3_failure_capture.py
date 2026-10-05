@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -212,6 +213,193 @@ def test_headscale_safe_parser_output_limit(size: int, loss: str) -> None:
     )
     assert observed_loss == loss
     assert len(output) == (size if loss == "observed" else 0)
+
+
+@pytest.mark.parametrize("boundary", ["launch", "selector", "write", "read", "eof", "wait", "acceptance"])
+def test_observation_deadline_rejects_late_delivery(monkeypatch: pytest.MonkeyPatch, boundary: str) -> None:
+    """Delay delivery, not completion or the production deadline calculation."""
+    actual_popen = subprocess.Popen
+    actual_selector = n3_failure_capture.selectors.DefaultSelector
+    actual_read = os.read
+    actual_write = os.write
+    children: list[subprocess.Popen[bytes]] = []
+    delivered: list[str] = []
+    expires = time.monotonic() + 1
+
+    def delay() -> None:
+        time.sleep(max(0, expires + 0.05 - time.monotonic()))
+        delivered.append(boundary)
+
+    def popen(argv: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+        child = actual_popen(argv, **kwargs)
+        children.append(child)
+        if boundary == "launch":
+            delay()
+        if boundary == "wait":
+            actual_wait = child.wait
+
+            def wait(*args: object, **kwargs: object) -> int:
+                status = actual_wait(*args, **kwargs)
+                if not delivered:
+                    delay()
+                return status
+
+            child.wait = wait
+        return child
+
+    class LateSelector(actual_selector):
+        def select(self, timeout: float | None = None) -> list:
+            ready = super().select(timeout)
+            if boundary == "selector" and ready and not delivered:
+                # Both pipes are EOF after the real empty producer exits.
+                children[0].wait(timeout=0.2)
+                delay()
+                return super().select(0)
+            return ready
+
+    eof_count = 0
+
+    def read(fd: int, size: int) -> bytes:
+        nonlocal eof_count
+        chunk = actual_read(fd, size)
+        if not children or fd not in {children[0].stdout.fileno(), children[0].stderr.fileno()}:
+            return chunk
+        if boundary == "read" and chunk and not delivered:
+            delay()
+        if boundary == "eof" and not chunk:
+            eof_count += 1
+            if eof_count == 2:
+                delay()
+        return chunk
+
+    def write(fd: int, data: bytes) -> int:
+        count = actual_write(fd, data)
+        if children and children[0].stdin is not None and fd == children[0].stdin.fileno():
+            delay()
+        return count
+
+    def payload(value: bytearray) -> bytes:
+        result = bytes(value)
+        delay()
+        return result
+
+    monkeypatch.setattr(n3_failure_capture.subprocess, "Popen", popen)
+    monkeypatch.setattr(n3_failure_capture.selectors, "DefaultSelector", LateSelector)
+    monkeypatch.setattr(n3_failure_capture.os, "read", read)
+    if boundary == "write":
+        monkeypatch.setattr(n3_failure_capture.os, "write", write)
+    if boundary == "acceptance":
+        monkeypatch.setattr(n3_failure_capture, "bytes", payload, raising=False)
+    try:
+        code = "pass" if boundary in {"selector", "eof"} else "print('[]')"
+        data = None
+        if boundary == "write":
+            code = "import sys; sys.stdin.buffer.read(); print('[]')"
+            data = b"input"
+        output, loss = n3_failure_capture._bounded_observation([sys.executable, "-c", code], seconds=1, cap=2048, data=data)
+        assert delivered == [boundary], "the intended delivery boundary was not reached"
+        assert loss == "timeout", f"late {boundary} success was accepted"
+        assert output == b"", "expired observation retained a payload"
+        assert all(child.poll() is not None for child in children)
+    finally:
+        for child in children:
+            if child.poll() is None:
+                os.killpg(child.pid, 9)
+            child.wait(timeout=2)
+
+
+@pytest.mark.parametrize("stage", ["query", "parser"])
+@pytest.mark.parametrize("payload", ["empty", "complete", "partial"])
+def test_headscale_late_success_cannot_establish_node_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, payload: str) -> None:
+    work = tmp_path / "fixture"
+    (work / "hs").mkdir(parents=True)
+    (work / "hs/config.yaml").write_text("CONFIG_CANARY")
+    (work / "headscale.log").write_text('{"level":"info","message":"history","credential":"CREDENTIAL_CANARY"}\n')
+    raw = {
+        "empty": "[]",
+        "complete": '[{"name":"synthetic-peer-ci","online":true,"key":"TOKEN_CANARY"}]',
+        "partial": '[{"name":"synthetic-peer-ci","online":true},{"name":7}]',
+    }[payload]
+    # The query exits successfully, leaving an owned, non-pipe-holding child.
+    descendant = (
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path(__file__).with_name('descendant-pid').write_text(str(child.pid))\n"
+        if sys.platform.startswith("linux") else ""
+    )
+    (work / "headscale").write_text(
+        "#!" + sys.executable + "\nimport pathlib,subprocess,sys\n" + descendant +
+        f"print({raw!r})\n"
+    )
+    (work / "headscale").chmod(0o700)
+    libc = ctypes.CDLL(None, use_errno=True) if sys.platform.startswith("linux") else None
+    previous = ctypes.c_int()
+    if libc is not None:
+        assert libc.prctl(37, ctypes.byref(previous), 0, 0, 0) == 0
+        assert libc.prctl(36, 1, 0, 0, 0) == 0
+    actual_popen = subprocess.Popen
+    children: list[subprocess.Popen[bytes]] = []
+    statuses: list[int] = []
+
+    def delayed_wait(argv: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+        child = actual_popen(argv, **kwargs)
+        children.append(child)
+        target = argv[0] == str(work / "headscale") if stage == "query" else "headscale-nodes" in argv
+        if target:
+            actual_wait = child.wait
+            expires = time.monotonic() + (3 if stage == "query" else 1)
+            first = True
+
+            def wait(*args: object, **kwargs: object) -> int:
+                nonlocal first
+                status = actual_wait(*args, **kwargs)
+                if first:
+                    first = False
+                    time.sleep(max(0, expires + 0.05 - time.monotonic()))
+                    statuses.append(status)
+                return status
+
+            child.wait = wait
+        return child
+
+    monkeypatch.setattr(n3_failure_capture.subprocess, "Popen", delayed_wait)
+    try:
+        result = n3_failure_capture.capture_headscale(work, str(os.getpid()))
+        assert statuses == [0], "the real successful wait was not delivered late"
+        assert result["nodes"]["losses"] == ["timeout"], "late success established node evidence"
+        for role in ("peer", "sidecar"):
+            assert result["nodes"][role] == {"count": None, "state": "unknown"}
+        assert result["process_state"] == "running"
+        assert result["log"] == {"events": [{"event": "unclassified", "count": 1}], "losses": ["observed"]}
+        assert "CANARY" not in json.dumps(result)
+        assert all(child.poll() is not None for child in children)
+        if libc is not None:
+            descendant_reaped = not Path("/proc", (work / "descendant-pid").read_text()).exists()
+            assert descendant_reaped, "owned query descendant was not reaped"
+    finally:
+        for child in children:
+            if child.poll() is None:
+                os.killpg(child.pid, 9)
+            child.wait(timeout=2)
+        pid_file = work / "descendant-pid"
+        if pid_file.exists():
+            pid = int(pid_file.read_text())
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    reaped, _ = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    break
+                if reaped:
+                    break
+                time.sleep(0.01)
+            descendant_reaped = not Path(f"/proc/{pid}").exists()
+            assert descendant_reaped, "test watchdog left its owned descendant"
+        if libc is not None:
+            assert libc.prctl(36, previous.value, 0, 0, 0) == 0
 START_BEGIN_MESSAGE_ID = "7d4958e842da4a758f6c1cdc7b36dcc5"
 START_SUCCESS_MESSAGE_ID = "39f53479d3a045ac8e11786248231fbf"
 START_FAILURE_MESSAGE_ID = "be02cf6855d2428ba40df7e9d022f03d"

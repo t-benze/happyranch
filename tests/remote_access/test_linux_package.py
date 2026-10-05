@@ -1673,6 +1673,7 @@ kill -{signal} $$
 def _run_positive_start_cleanup_scenario(
     tmp_path: Path, *, fault: str = "none", signal: str | None = None,
     headscale_capture: bool = False, capture_reentry: bool = False,
+    late_headscale: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     """Run the actual positive-start EXIT/trap seam with a failing teardown command."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
@@ -1728,11 +1729,40 @@ print('[{"name":"synthetic-peer-ci","online":true},{"name":"home-sidecar-ci"}]')
         for private in (work / "hs/config.yaml", work / "headscale.log"):
             private.chmod(0o600)
         fixture_setup = 'sleep 60 & headscale_pid=$!\nexport HEADSCALE_PID="$headscale_pid" SHIPPING_PID="$$"\nprintf "%s\\n" "$headscale_pid" >"$FIXTURE_PID_FILE"\n'
+    capture_driver = Path("app/linux/package/n3_failure_capture.py").resolve() if headscale_capture else Path("/missing")
+    if late_headscale:
+        # Execute the real shipped CLI; delay only delivery of a real successful
+        # query wait. Its worker/parser source and group cleanup remain intact.
+        wrapper = tmp_path / "late-capture-driver.py"
+        wrapper.write_text(f'''import importlib.util,subprocess,time
+spec=importlib.util.spec_from_file_location("shipping_capture",{str(capture_driver)!r})
+capture=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(capture)
+actual_popen=subprocess.Popen
+def delayed_popen(argv,**kwargs):
+ child=actual_popen(argv,**kwargs)
+ if argv[0]=={str(work / "headscale")!r}:
+  actual_wait=child.wait
+  expires=time.monotonic()+3
+  first=True
+  def wait(*args,**kwargs):
+   nonlocal first
+   status=actual_wait(*args,**kwargs)
+   if first:
+    first=False
+    time.sleep(max(0,expires+0.05-time.monotonic()))
+   return status
+  child.wait=wait
+ return child
+capture.subprocess.Popen=delayed_popen
+raise SystemExit(capture.main())
+''')
+        capture_driver = wrapper
     trigger = f"kill -{signal} $$" if signal else 'start_managed_target || exit "$?"'
     script = f'''set -euo pipefail
 diagnostics={tmp_path / 'diagnostics' if headscale_capture else tmp_path!s}; mkdir -p "$diagnostics"
 work={work!s}; evidence_driver={fake_bin / "evidence"!s}; evidence_artifact=/missing
-failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve() if headscale_capture else '/missing'}
+failure_capture_driver={capture_driver}
 peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
 port_open() {{ return 1; }}
 tsnet_open() {{ return 1; }}
@@ -1762,9 +1792,10 @@ trap 'cleanup 143' TERM
 
 @pytest.mark.parametrize("signal,expected", [(None, 37), ("INT", 130), ("TERM", 143)])
 @pytest.mark.parametrize("reentry", [False, True])
-def test_real_systemd_headscale_capture_precedes_teardown_and_reaps_fixture_once(tmp_path: Path, signal: str | None, expected: int, reentry: bool) -> None:
+@pytest.mark.parametrize("late", [False, True])
+def test_real_systemd_headscale_capture_precedes_teardown_and_reaps_fixture_once(tmp_path: Path, signal: str | None, expected: int, reentry: bool, late: bool) -> None:
     result, events, work = _run_positive_start_cleanup_scenario(
-        tmp_path, signal=signal, headscale_capture=True, capture_reentry=reentry,
+        tmp_path, signal=signal, headscale_capture=True, capture_reentry=reentry, late_headscale=late,
     )
     assert result.returncode == expected, result.stderr
     assert not work.exists()
@@ -1781,7 +1812,11 @@ def test_real_systemd_headscale_capture_precedes_teardown_and_reaps_fixture_once
         raw = (diagnostics / f"{name}.json").read_text()
         snapshot = json.loads(raw)
         assert snapshot["headscale"]["process_state"] == "running"
-        assert snapshot["headscale"]["nodes"]["peer"] == {"count": 1, "state": "online"}
+        assert snapshot["headscale"]["nodes"]["peer"] == ({"count": None, "state": "unknown"} if late else {"count": 1, "state": "online"})
+        if late:
+            assert snapshot["headscale"]["nodes"]["losses"] == ["timeout"]
+            assert snapshot["headscale"]["nodes"]["sidecar"] == {"count": None, "state": "unknown"}
+            assert snapshot["headscale"]["log"]["losses"] == ["observed"]
         assert "CANARY" not in raw + result.stdout + result.stderr
     _assert_secret_free_diagnostics(result, diagnostics)
 

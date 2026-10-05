@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -352,6 +353,389 @@ func TestUnexpectedAcceptFailureAutomaticallyTearsDownAndIsReported(t *testing.T
 	}
 	if strings.Join(events[len(events)-2:], ",") != "listener-close,engine-close" {
 		t.Fatalf("teardown order = %v", events)
+	}
+}
+
+// These fixtures control only the production Engine/Listener/Dialer contracts.
+// They never implement Sidecar ownership, completion or draining themselves.
+type shutdownEvents struct {
+	mu     sync.Mutex
+	values []string
+}
+
+func (e *shutdownEvents) add(value string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.values = append(e.values, value)
+}
+func (e *shutdownEvents) snapshot() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.values...)
+}
+
+type shutdownListener struct {
+	conn                                        net.Conn
+	failure, closed, closeEntered, closeRelease chan struct{}
+	acceptEntered, acceptRelease                chan struct{}
+	closeOnce                                   sync.Once
+	events                                      *shutdownEvents
+}
+
+func (l *shutdownListener) Accept() (net.Conn, error) {
+	if l.conn != nil {
+		if l.acceptEntered != nil {
+			close(l.acceptEntered)
+			<-l.acceptRelease
+		}
+		conn := l.conn
+		l.conn = nil
+		return conn, nil
+	}
+	select {
+	case <-l.failure:
+	case <-l.closed:
+	}
+	return nil, errors.New("private listener failure")
+}
+func (l *shutdownListener) Close() error {
+	l.events.add("listener-close")
+	l.closeOnce.Do(func() { close(l.closed); close(l.closeEntered) })
+	<-l.closeRelease
+	return nil
+}
+func (l *shutdownListener) Addr() net.Addr { return &net.TCPAddr{} }
+
+type shutdownEngine struct {
+	listener         net.Listener
+	events           *shutdownEvents
+	entered, release chan struct{}
+	err              error
+}
+
+func (e *shutdownEngine) Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error) {
+	return RedemptionReceipt{true, true, true}, nil
+}
+func (e *shutdownEngine) Listen(string) (net.Listener, error) { return e.listener, nil }
+func (e *shutdownEngine) Close() error {
+	e.events.add("engine-close")
+	close(e.entered)
+	<-e.release
+	return e.err
+}
+func awaitShutdown(t *testing.T, done <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal(message)
+	}
+}
+
+func TestShutdownAcceptCallerYieldsToStopOwner(t *testing.T) {
+	if os.Getenv("HAPPYRANCH_SHUTDOWN_HELPER") != "1" {
+		// A pre-fix wait cycle must fail its assertion and leave no blocked test
+		// goroutines/resources in sibling repetitions. Own and reap the helper.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestShutdownAcceptCallerYieldsToStopOwner$", "-test.count=1", "-test.timeout=4s")
+		command.Env = append(os.Environ(), "HAPPYRANCH_SHUTDOWN_HELPER=1")
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("accept/Stop coordination helper failed: %v\n%s", err, output)
+		}
+		return
+	}
+	// Drive the real shutdown entry with an accept error observed before Stop
+	// election and delivered afterward. This isolates the stale caller at the
+	// exact method boundary without a scheduler hook in acceptLoop.
+	events := &shutdownEvents{}
+	l := &shutdownListener{failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), events: events}
+	close(l.failure)
+	if _, err := l.Accept(); err == nil {
+		t.Fatal("unexpected listener error was not observed")
+	}
+	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
+	close(e.release)
+	s := New(validConfig(t), e, &net.Dialer{})
+	s.listener = l
+	s.acceptWG.Add(1)
+	resume, acceptDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		defer s.acceptWG.Done()
+		<-resume
+		s.shutdown(ErrListener, true)
+	}()
+	results := make(chan error, 8)
+	for i := 0; i < cap(results); i++ {
+		go func() { results <- s.Stop() }()
+	}
+	awaitShutdown(t, l.closeEntered, "Stop did not acquire listener-first teardown")
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(l.closeRelease) }) })
+	close(resume)
+	awaitShutdown(t, acceptDone, "accept-error teardown blocked the accept drain while Stop owns teardown")
+	releaseOnce.Do(func() { close(l.closeRelease) })
+	for i := 0; i < cap(results); i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("Stop error = %v, want nil", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Stop did not complete after accept drain")
+		}
+	}
+	if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" {
+		t.Fatalf("teardown = %s", got)
+	}
+	if err := s.Stop(); err != nil {
+		t.Fatalf("repeated Stop = %v", err)
+	}
+}
+
+func TestStopJoinsAcceptOwnerAfterTeardown(t *testing.T) {
+	events := &shutdownEvents{}
+	l := &shutdownListener{failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), events: events}
+	close(l.closeRelease)
+	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
+	close(e.release)
+	s := New(validConfig(t), e, &net.Dialer{})
+	s.listener = l
+	s.acceptWG.Add(1)
+	teardownDone, releaseAccept, acceptDone := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		defer s.acceptWG.Done()
+		s.shutdown(ErrListener, true)
+		close(teardownDone)
+		<-releaseAccept // hold the real caller's registration after teardown
+	}()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseAccept) }) }
+	t.Cleanup(release)
+	awaitShutdown(t, teardownDone, "accept-owned teardown did not complete")
+	results := make(chan error, 8)
+	for i := 0; i < cap(results); i++ {
+		go func() { results <- s.Stop() }()
+	}
+	select {
+	case err := <-results:
+		t.Fatalf("Stop returned before accept-owner registration drained: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	release()
+	awaitShutdown(t, acceptDone, "accept owner did not drain")
+	for i := 0; i < cap(results); i++ {
+		select {
+		case err := <-results:
+			if err != ErrListener {
+				t.Fatalf("Stop = %v, want ErrListener", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Stop did not join accept owner")
+		}
+	}
+	if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" {
+		t.Fatalf("teardown = %s", got)
+	}
+}
+
+func TestStopRejectsConnectionReturnedAfterListenerClose(t *testing.T) {
+	events := &shutdownEvents{}
+	probe, probePeer := net.Pipe()
+	tail, inbound := net.Pipe()
+	for _, c := range []net.Conn{probe, probePeer, tail, inbound} {
+		defer c.Close()
+	}
+	l := &shutdownListener{conn: inbound, failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), acceptEntered: make(chan struct{}), acceptRelease: make(chan struct{}), events: events}
+	close(l.closeRelease)
+	e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
+	close(e.release)
+	var dialMu sync.Mutex
+	dials := 0
+	s := New(validConfig(t), e, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+		dialMu.Lock()
+		defer dialMu.Unlock()
+		dials++
+		if dials != 1 {
+			return nil, errors.New("post-stop dial")
+		}
+		return probe, nil
+	}))
+	if err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	awaitShutdown(t, l.acceptEntered, "Accept did not begin")
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(l.acceptRelease) }) }
+	t.Cleanup(release)
+	results := make(chan error, 8)
+	for i := 0; i < cap(results); i++ {
+		go func() { results <- s.Stop() }()
+	}
+	awaitShutdown(t, l.closeEntered, "Stop did not close listener first")
+	select {
+	case <-e.entered:
+		t.Fatal("engine closed before pending Accept resolved")
+	case <-time.After(20 * time.Millisecond):
+	}
+	release()
+	for i := 0; i < cap(results); i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("Stop = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("Stop did not drain late Accept")
+		}
+	}
+	proxyDone := make(chan struct{})
+	go func() { s.proxyWG.Wait(); close(proxyDone) }()
+	awaitShutdown(t, proxyDone, "late-accept proxy observation did not settle")
+	dialMu.Lock()
+	gotDials := dials
+	dialMu.Unlock()
+	if gotDials != 1 {
+		t.Fatalf("post-stop connection admitted: dials=%d, want probe only", gotDials)
+	}
+	_ = tail.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := tail.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("late connection was not closed: %v", err)
+	}
+	if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" {
+		t.Fatalf("teardown = %s", got)
+	}
+}
+
+func TestShutdownOwnersDrainProxiesAndAgreeOnStopError(t *testing.T) {
+	for _, owner := range []string{"stop", "listener"} {
+		for _, proxy := range []string{"active", "inflight"} {
+			for _, fail := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/close-failure-%t", owner, proxy, fail), func(t *testing.T) {
+					events := &shutdownEvents{}
+					probe, probePeer := net.Pipe()
+					tail, inbound := net.Pipe()
+					outbound, connector := net.Pipe()
+					for _, c := range []net.Conn{probe, probePeer, tail, inbound, outbound, connector} {
+						defer c.Close()
+					}
+					l := &shutdownListener{conn: inbound, failure: make(chan struct{}), closed: make(chan struct{}), closeEntered: make(chan struct{}), closeRelease: make(chan struct{}), events: events}
+					e := &shutdownEngine{listener: l, events: events, entered: make(chan struct{}), release: make(chan struct{})}
+					if fail {
+						e.err = errors.New("private engine failure")
+					}
+					dialEntered, dialRelease := make(chan struct{}), make(chan struct{})
+					var dials int
+					dial := dialFunc(func(context.Context, string, string) (net.Conn, error) {
+						dials++ // probe is synchronous; exactly one proxy follows it
+						if dials == 1 {
+							return probe, nil
+						}
+						close(dialEntered)
+						<-dialRelease
+						return outbound, nil
+					})
+					s := New(validConfig(t), e, dial)
+					if err := s.Start(context.Background()); err != nil {
+						t.Fatal(err)
+					}
+					_ = probePeer.Close()
+					awaitShutdown(t, dialEntered, "proxy did not enter Dial")
+					var dialOnce, listenerOnce, engineOnce sync.Once
+					releaseDial := func() { dialOnce.Do(func() { close(dialRelease) }) }
+					releaseListener := func() { listenerOnce.Do(func() { close(l.closeRelease) }) }
+					releaseEngine := func() { engineOnce.Do(func() { close(e.release) }) }
+					t.Cleanup(func() { releaseDial(); releaseListener(); releaseEngine() })
+					if proxy == "active" {
+						releaseDial()
+						deadline := time.Now().Add(time.Second)
+						for {
+							s.mu.Lock()
+							active := len(s.active)
+							s.mu.Unlock()
+							if active == 2 {
+								break
+							}
+							if time.Now().After(deadline) {
+								t.Fatal("proxy did not register active flows")
+							}
+							time.Sleep(time.Millisecond)
+						}
+					}
+					results := make(chan error, 8)
+					if owner == "listener" {
+						close(l.failure)
+						awaitShutdown(t, l.closeEntered, "unexpected listener error did not own teardown")
+					}
+					for i := 0; i < cap(results); i++ {
+						go func() { results <- s.Stop() }()
+					}
+					awaitShutdown(t, l.closeEntered, "listener-first teardown did not begin")
+					if owner == "stop" {
+						close(l.failure)
+					}
+					releaseListener()
+					if proxy == "inflight" {
+						select {
+						case <-e.entered:
+							t.Fatal("engine closed before in-flight proxy drain")
+						case <-time.After(20 * time.Millisecond):
+						}
+						releaseDial()
+					}
+					awaitShutdown(t, e.entered, "engine close did not follow proxy drain")
+					select {
+					case err := <-results:
+						t.Fatalf("Stop returned before engine completion: %v", err)
+					default:
+					}
+					s.mu.Lock()
+					active := len(s.active)
+					s.mu.Unlock()
+					if active != 0 {
+						t.Fatalf("active connections after drain = %d", active)
+					}
+					for _, c := range []net.Conn{tail, connector} {
+						_ = c.SetReadDeadline(time.Now().Add(time.Second))
+						if _, err := c.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+							t.Fatalf("drained connection read = %v", err)
+						}
+					}
+					releaseEngine()
+					var want error
+					if owner == "listener" {
+						want = ErrListener
+					} else if fail {
+						want = ErrEngine
+					}
+					for i := 0; i < cap(results); i++ {
+						select {
+						case err := <-results:
+							if err != want {
+								t.Fatalf("Stop = %v, want %v", err, want)
+							}
+						case <-time.After(time.Second):
+							t.Fatal("concurrent Stop did not complete")
+						}
+					}
+					if err := s.Stop(); err != want {
+						t.Fatalf("repeated Stop = %v, want %v", err, want)
+					}
+					if err := s.Start(context.Background()); !errors.Is(err, ErrListener) {
+						t.Fatalf("post-stop Start = %v", err)
+					}
+					if got := strings.Join(events.snapshot(), ","); got != "listener-close,engine-close" {
+						t.Fatalf("teardown = %s", got)
+					}
+					acceptDone := make(chan struct{})
+					go func() { s.acceptWG.Wait(); close(acceptDone) }()
+					awaitShutdown(t, acceptDone, "Stop returned with undrained accept loop")
+				})
+			}
+		}
 	}
 }
 

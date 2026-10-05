@@ -387,6 +387,8 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
     total = 0
     written = 0
     try:
+        if time.monotonic() >= deadline:
+            return b"", "timeout"
         with selectors.DefaultSelector() as selector:
             for pipe in (process.stdout, process.stderr):
                 assert pipe is not None
@@ -400,16 +402,22 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
                 if remaining <= 0:
                     return b"", "timeout"
                 for key, _ in selector.select(remaining):
+                    if time.monotonic() >= deadline:
+                        return b"", "timeout"
                     if key.fileobj is process.stdin:
                         try:
                             written += os.write(key.fd, data[written:written + 4096])  # type: ignore[index]
                         except BrokenPipeError:
                             written = len(data or b"")
+                        if time.monotonic() >= deadline:
+                            return b"", "timeout"
                         if written == len(data or b""):
                             selector.unregister(key.fileobj)
                             key.fileobj.close()
                         continue
                     chunk = os.read(key.fd, min(4096, cap + 1 - total))
+                    if time.monotonic() >= deadline:
+                        return b"", "timeout"
                     if not chunk:
                         selector.unregister(key.fileobj)
                         continue
@@ -418,13 +426,21 @@ def _bounded_observation(argv: list[str], *, seconds: float, cap: int, data: byt
                         return b"", "truncated"
                     if key.fileobj is process.stdout:
                         output.extend(chunk)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return b"", "timeout"
             try:
-                status = process.wait(timeout=max(0, deadline - time.monotonic()))
+                status = process.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
+                return b"", "timeout"
+            if time.monotonic() >= deadline:
                 return b"", "timeout"
             if status != 0:
                 return b"", "query_error"
-            return bytes(output), "observed"
+            payload = bytes(output)
+            if time.monotonic() >= deadline:
+                return b"", "timeout"
+            return payload, "observed"
     finally:
         _terminate_observation(process)
         for pipe in (process.stdin, process.stdout, process.stderr):
