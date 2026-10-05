@@ -237,6 +237,15 @@ def test_materializes_into_both_provider_roots_for_no_repo_workspace(tmp_path):
         marker = root / "workspace-cleanup" / "SKILL.md"
         assert marker.is_file(), f"workspace-cleanup not materialized at {marker}"
         assert marker.read_text(encoding="utf-8") == expected
+        reporting = marker.read_text(encoding="utf-8").split("## Reporting", 1)[1]
+        assert "existing agent page" in reporting
+        assert "per-agent cleanup thread" not in reporting
+        assert "happyranch threads send" not in reporting
+        for required in ("inventory.json", "final-ledger.jsonl", "report.md", "literal argv",
+                         "timestamps", "exit status", "stop reason", "allocated", "apparent",
+                         "unknown", "independent verification", "happyranch report-completion",
+                         "current session", "final action", "Explicit founder-requested coordination"):
+            assert required in reporting, required
         shipped_procedure = root / "workspace-cleanup" / "scripts" / PROCEDURE.name
         assert shipped_procedure.is_file()
         assert shipped_procedure.read_bytes() == expected_procedure

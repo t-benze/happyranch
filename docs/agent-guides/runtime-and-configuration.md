@@ -452,6 +452,20 @@ recovery. `false` prevents those action admissions and affects later admissions
 only; it cannot revoke an already admitted call. Malformed values retain the
 shared loader's existing error behavior.
 
+Routine scheduled and exact-marker manual cleanup reports remain durable on the
+existing agent page via ordinary completion/results (THR-259 seq418). The scheduler
+admits a clean-root task without report-thread configuration, lookup, ID allocation
+or composite creation. Task ID allocation, composition and ordinary insertion stay
+synchronous under `org.db_lock` after awaited measurement; enqueue follows successful
+insertion. Complete marker history, ordinals, cadence and deduplication are unchanged.
+There is no routine thread posting/reuse obligation. Preserve all historical threads,
+messages, associations, results and audits, explicit founder-requested coordination,
+truthful anomalies/partial failures/unknown bytes/independent verification gaps and
+the current-session final `happyranch report-completion` callback. Exact manual
+first-line display eligibility (alone/LF/CRLF) neither creates trigger audits nor
+changes daemon count or action authority. Runtime and canonical bundled-skill
+rollout require separately authorized deployment after merge.
+
 The daemon-composed daily brief and manual dispatch both follow the ONE shared
 `workspace-cleanup` TASK system contract (`requires_repo=false`; source
 `runtime/skills/bundled/workspace-cleanup/SKILL.md`), whose exact manual first

@@ -252,13 +252,15 @@ def scan_stale_pending_jobs_readonly(
 class WorkspaceCleanupMixin:
     @_synchronized
     def list_workspace_cleanup_activity(self, agent: str, limit: int = 5) -> list[dict]:
-        """Return the newest distinct scheduler-triggered cleanup tasks for an agent.
+        """Read latest distinct own-agent scheduled or exact-marker manual reports.
 
-        The audit action is the sole eligibility marker.  Joining it before the
-        limit avoids a bounded audit-page scan and duplicate trigger rows cannot
-        displace another task.  A correlated result lookup keeps the task's
-        current lifecycle status separate from its latest agent result.
+        Historical same-agent trigger audits remain eligible. Manual eligibility
+        is exactly the first line (alone, LF or CRLF), never a prefix/substring.
+        This display predicate grants no action authority or daemon run count.
+        Eligibility precedes the limit; results remain latest same-agent by ID.
         """
+        manual_marker = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)"
+
         rows = self._conn.execute(
             """SELECT t.id AS task_id, t.status, t.created_at,
                       (SELECT r.status FROM task_results r
@@ -268,12 +270,16 @@ class WorkspaceCleanupMixin:
                        WHERE r.task_id=t.id AND r.agent=?
                        ORDER BY r.id DESC LIMIT 1) AS output_summary
                FROM tasks t
-               JOIN (SELECT DISTINCT task_id FROM audit_log
-                     WHERE action='workspace_cleanup_triggered' AND agent=?) a
-                 ON a.task_id=t.id
-               WHERE t.assigned_agent=?
+               WHERE t.assigned_agent=? AND (
+                   EXISTS (SELECT 1 FROM audit_log a WHERE a.task_id=t.id
+                           AND a.action='workspace_cleanup_triggered' AND a.agent=?)
+                   OR t.brief=?
+                   OR substr(t.brief, 1, length(?) + 1)=? || char(10)
+                   OR substr(t.brief, 1, length(?) + 2)=? || char(13) || char(10)
+               )
                ORDER BY t.created_at DESC, t.id DESC LIMIT ?""",
-            (agent, agent, agent, agent, limit),
+            (agent, agent, agent, agent, manual_marker, manual_marker, manual_marker,
+             manual_marker, manual_marker, limit),
         ).fetchall()
         return [dict(row) for row in rows]
 
