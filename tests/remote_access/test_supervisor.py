@@ -1070,11 +1070,28 @@ class TestLabProvisioning:
         assert ctx.forwarder.target.port == 9876
 
 
+def _record_child_notify_attempts(monkeypatch: pytest.MonkeyPatch) -> list[tuple[object, ...]]:
+    """Observe socket creation without forwarding a child datagram to the host."""
+    import socket
+
+    attempts: list[tuple[object, ...]] = []
+
+    def refused_socket(*args: object, **kwargs: object) -> None:
+        attempts.append((*args, kwargs))
+        raise OSError("fixture refuses socket forwarding")
+
+    monkeypatch.setattr(socket, "socket", refused_socket)
+    monkeypatch.setenv("NOTIFY_SOCKET", "/must/not/be/used")
+    return attempts
+
+
 class TestSdNotify:
     def test_child_health_transport_is_structured_and_does_not_touch_notify_socket(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         read_fd, write_fd = os.pipe()
+        attempts = _record_child_notify_attempts(monkeypatch)
+        os.set_blocking(read_fd, False)
         try:
             monkeypatch.setenv("HAPPYRANCH_CHILD_HEALTH_FD", str(write_fd))
             monkeypatch.setenv("HAPPYRANCH_CHILD_HEALTH_GENERATION", "a" * 32)
@@ -1088,6 +1105,15 @@ class TestSdNotify:
                 "version": 1,
             }
             assert type(record["sequence"]) is int and record["sequence"] > 0
+            assert sd_notify("WATCHDOG=1\n") is True
+            next_record = json.loads(os.read(read_fd, 4096))
+            assert next_record == {
+                "generation": "a" * 32, "sequence": next_record["sequence"],
+                "state": "healthy", "version": 1,
+            }
+            assert type(next_record["sequence"]) is int
+            assert next_record["sequence"] > record["sequence"], (record, next_record)
+            assert attempts == [], attempts
         finally:
             os.close(read_fd)
             os.close(write_fd)
@@ -1097,10 +1123,18 @@ class TestSdNotify:
         self, monkeypatch: pytest.MonkeyPatch, generation: str,
     ) -> None:
         read_fd, write_fd = os.pipe()
+        attempts = _record_child_notify_attempts(monkeypatch)
+        os.set_blocking(read_fd, False)
         try:
             monkeypatch.setenv("HAPPYRANCH_CHILD_HEALTH_FD", str(write_fd))
             monkeypatch.setenv("HAPPYRANCH_CHILD_HEALTH_GENERATION", generation)
             assert sd_notify("READY=1\n") is False
+            try:
+                emitted = os.read(read_fd, 4096)
+            except BlockingIOError:
+                emitted = b""
+            assert emitted == b"", (generation, emitted)
+            assert attempts == [], (generation, attempts)
         finally:
             os.close(read_fd)
             os.close(write_fd)

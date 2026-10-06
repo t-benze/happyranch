@@ -384,10 +384,97 @@ def test_real_systemd_harness_has_valid_bash_syntax() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_real_systemd_harness_uses_headscale_025_policy_schema() -> None:
+
+
+def _shipping_declarations(harness: str) -> str:
+    '''Extract actual top-level shell declarations, including their heredocs.'''
+    declarations = []
+    for declaration in re.finditer(r"(?m)^\w+\(\) \{", harness):
+        line_end = harness.index("\n", declaration.start())
+        if harness[declaration.start():line_end].endswith("}"):
+            end = line_end
+        else:
+            closing = re.search(r"(?m)^\}$", harness[line_end:])
+            assert closing is not None
+            end = line_end + closing.end()
+        declarations.append(harness[declaration.start():end])
+    return "\n".join(declarations)
+
+
+def _shipping_task_variable(harness: str) -> str:
+    assignment = re.search(r'(?m)^(\w+)="\$\(mktemp -d\)"$', harness)
+    assert assignment is not None, "shipping task-root allocation missing"
+    return assignment[1]
+
+
+def _run_shipping_fragment(
+    tmp_path: Path, fragment: str, *, peer: object = None,
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
+    '''Execute selected shipping statements; intercept external commands before forwarding.'''
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert "'{\"acls\":[{\"action\":\"accept\",\"src\":[\"*\"],\"dst\":[\"*:*\"]}]}'" in harness
-    assert '"proto"' not in harness
+    task_variable = _shipping_task_variable(harness)
+    (tmp_path / "hs").mkdir()
+    (tmp_path / "tls").mkdir()
+    for name in ("daemon.token", "enrollment.key"):
+        (tmp_path / name).write_text("synthetic-fixture-only\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fixture = fake_bin / "fixture"
+    fixture.write_text(f"#!{sys.executable}\n" + r'''
+import json, os, pathlib, sys
+root = pathlib.Path(os.environ["FRAGMENT_ROOT"])
+argv = [pathlib.Path(sys.argv[0]).name, *sys.argv[1:]]
+with (root / "argv.jsonl").open("a") as stream: stream.write(json.dumps(argv) + "\n")
+if argv[0] == "stat":
+    if argv[1:3] != ["-c", "%U:%G:%a"]: raise SystemExit(64)
+    print("root:root:755")
+elif argv[0] == "curl":
+    pass  # Observation only: no curl request is forwarded.
+elif argv[0] == "sudo":
+    args = argv[1:]
+    barrier = "/var/lib/happyranch-tsnet-sidecar/.n3-barrier-fixture"
+    executables = ["/opt/happyranch/bin/happyranch-connector", "/opt/happyranch/bin/happyranch-tsnet-sidecar"]
+    if args[:2] == ["-u", "happyranch"] and args[2:4] == ["test", "-x"] and args[4:] in [[x] for x in executables]: pass
+    elif args[:7] == ["install", "-m", "0600", "-o", "root", "-g", "root"] and args[7:] in [[str(root / name), "/etc/happyranch/" + name] for name in ["daemon.token", "enrollment.key"]]: pass
+    elif args[:2] == ["test", "-e"]: pass  # Observe only; never forward path probes.
+    elif args[:1] == ["tee"] and args[1:] in [[barrier + "/" + name] for name in ["start-release", "stop-release"]]: sys.stdin.read()
+    elif args == ["install", "-d", "-m", "0700", "-o", "happyranch", "-g", "happyranch", barrier]: pass
+    elif args == ["rm", "-f", *[barrier + "/" + name for name in ["start-entered", "start-release", "stop-entered", "stop-release"]]]: pass
+    elif args == ["rmdir", barrier]: pass
+    elif args == [str(root / "tailscale"), "--socket=" + str(root / "peer.sock"), "status", "--json"]: print(os.environ["PEER_JSON"])
+    else: raise SystemExit(64)
+else: raise SystemExit(64)
+''')
+    fixture.chmod(0o700)
+    for command in ("sudo", "stat", "curl"):
+        (fake_bin / command).symlink_to(fixture)
+    # Retain the actual external barrier assignment; command fixtures record
+    # its selected paths without touching them.
+    barrier_assignment = re.search(r'(?m)^(\w+)="[^\n]*\.n3-barrier-\$run_id"$', harness)
+    assert barrier_assignment is not None
+    script = f'''set -euo pipefail
+{task_variable}={str(tmp_path)!r}; diagnostics={str(tmp_path)!r}; ts_dir={str(tmp_path)!r}; run_id=fixture
+{barrier_assignment[0]}
+{_shipping_declarations(harness)}
+{fragment}
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False, timeout=10,
+        env=os.environ | {"PATH": f"{fake_bin}:{Path(sys.executable).parent}:/usr/bin:/bin",
+                          "FRAGMENT_ROOT": str(tmp_path), "PEER_JSON": json.dumps({"Peer": peer})},
+    )
+    log = tmp_path / "argv.jsonl"
+    return result, [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def test_real_systemd_harness_uses_headscale_025_policy_schema(tmp_path: Path) -> None:
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    fragment = harness[harness.index('cat >'):harness.index('sudo install -m 0644')]
+    result, _ = _run_shipping_fragment(tmp_path, fragment)
+    policy = tmp_path / "hs/policy.json"
+    observed = json.loads(policy.read_text()) if policy.exists() else None
+    assert observed == {"acls": [{"action": "accept", "src": ["*"], "dst": ["*:*"]}]}, observed
+    assert result.returncode == 0, result.stderr
 
 
 def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment(tmp_path: Path) -> None:
@@ -407,51 +494,80 @@ def test_real_systemd_harness_quiesces_failed_staging_before_first_enrollment(tm
     assert result.returncode == 0, result.stderr
 
 
-def test_real_systemd_harness_keeps_headscale_control_socket_in_task_root() -> None:
+
+def test_real_systemd_harness_keeps_headscale_control_socket_in_task_root(tmp_path: Path) -> None:
+    import yaml
+
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert "unix_socket: $work/hs/headscale.sock" in harness
+    fragment = harness[harness.index('cat >'):harness.index('sudo install -m 0644')]
+    result, _ = _run_shipping_fragment(tmp_path, fragment)
+    config = tmp_path / "hs/config.yaml"
+    observed = yaml.safe_load(config.read_text()) if config.exists() else {}
+    assert observed.get("unix_socket") == str(tmp_path / "hs/headscale.sock"), observed
+    assert result.returncode == 0, result.stderr
 
 
-def test_real_systemd_harness_probes_headscale_health_over_configured_https() -> None:
+
+def test_real_systemd_harness_probes_headscale_health_over_configured_https(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert (
-        'curl --silent --fail --cacert "$work/tls/cert.pem" '
-        "https://127.0.0.1:18080/health"
-    ) in harness
-    assert "http://127.0.0.1:19090/health" not in harness
+    fragment = "\n".join(line for line in harness.splitlines() if re.match(r'^\w+ "Headscale health" ', line))
+    result, argv = _run_shipping_fragment(tmp_path, fragment)
+    assert argv == [["curl", "--silent", "--fail", "--cacert", str(tmp_path / "tls/cert.pem"), "https://127.0.0.1:18080/health"]], argv
+    assert result.returncode == 0, result.stderr
 
 
-def test_real_systemd_harness_proves_root_owned_binary_is_service_executable() -> None:
+
+def test_real_systemd_harness_proves_root_owned_binary_is_service_executable(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert 'stat -c %U:%G:%a /opt/happyranch)' in harness
-    assert 'stat -c %U:%G:%a /opt/happyranch/bin)' in harness
-    assert '== "root:root:755"' in harness
-    assert 'sudo -u happyranch test -x "$binary"' in harness
+    start = next(line for line in harness.splitlines() if '|| fail "system-service payload root custody mismatch"' in line)
+    fragment = harness[harness.index(start):harness.index('sudo systemctl daemon-reload', harness.index(start))]
+    result, argv = _run_shipping_fragment(tmp_path, fragment)
+    expected = [["stat", "-c", "%U:%G:%a", path] for path in ["/opt/happyranch", "/opt/happyranch/bin"]]
+    for binary in ["/opt/happyranch/bin/happyranch-connector", "/opt/happyranch/bin/happyranch-tsnet-sidecar"]:
+        expected.extend([["stat", "-c", "%U:%G:%a", binary], ["sudo", "-u", "happyranch", "test", "-x", binary]])
+    assert argv == expected, argv
+    assert result.returncode == 0, result.stderr
 
 
-def test_real_systemd_harness_keeps_load_credential_source_root_custodied() -> None:
+
+def test_real_systemd_harness_keeps_load_credential_source_root_custodied(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert (
-        'sudo install -m 0600 -o root -g root "$work/daemon.token" '
-        "/etc/happyranch/daemon.token"
-    ) in harness
-    assert (
-        'sudo install -m 0600 -o root -g root "$work/enrollment.key" '
-        "/etc/happyranch/enrollment.key"
-    ) in harness
+    initial = harness[:harness.index('|| fail "system-service payload root custody mismatch"')]
+    fragment = "\n".join(line for line in initial.splitlines() if line.startswith('sudo install ') and any(name in line for name in ['daemon.token', 'enrollment.key']))
+    result, argv = _run_shipping_fragment(tmp_path, fragment)
+    assert argv == [["sudo", "install", "-m", "0600", "-o", "root", "-g", "root", str(tmp_path / name), "/etc/happyranch/" + name] for name in ["daemon.token", "enrollment.key"]], argv
+    assert result.returncode == 0, result.stderr
 
 
-def test_real_systemd_early_failure_cleanup_is_bounded_and_redacted() -> None:
+
+def test_real_systemd_early_failure_cleanup_is_bounded_and_redacted(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert "wait_status" not in harness
     assert 'cp "$work/$log.log" "$diagnostics/$log.log"' not in harness
     assert 'journalctl -u happyranch-connector.service -u happyranch-tsnet-sidecar.service' not in harness
-    assert 'cleanup-status.txt' in harness
+    started = time.monotonic()
+    result, events, work = _run_positive_start_cleanup_scenario(tmp_path, headscale_capture=True, early_failure=True)
+    assert time.monotonic() - started < 40
+    assert result.returncode == 37, (result.returncode, result.stderr)
+    assert "systemctl:start" not in events, events
+    assert "headscale:queried" in events and events.index("headscale:queried") < events.index("systemctl:stop"), events
+    _assert_secret_free_diagnostics(result, tmp_path / "diagnostics")
+    assert (tmp_path / "diagnostics/cleanup-status.txt").read_text() == "fixtures_reaped=1\n"
+    assert not work.exists()
+    bounds = [json.loads(line) for line in (tmp_path / "timeout-argv.jsonl").read_text().splitlines()]
+    assert len(bounds) == 22, bounds
+    assert all(argv[0] == "--kill-after=1" and argv[1] in {"1", "3", "16"} for argv in bounds), bounds
 
 
-def test_real_systemd_missing_credential_accepts_null_peer_map_as_no_identity() -> None:
+
+def test_real_systemd_missing_credential_accepts_null_peer_map_as_no_identity(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert '(d.get("Peer") or {}).values()' in harness
+    fragment = "\n".join(line for line in harness.splitlines() if '|| fail "failed-start TSNet identity remained visible"' in line)
+    cases = [None, {}, {"other": {"HostName": "unrelated"}}, {"sidecar": {"HostName": "home-sidecar-ci"}}]
+    for index, peer in enumerate(cases):
+        root = tmp_path / str(index); root.mkdir()
+        result, argv = _run_shipping_fragment(root, fragment, peer=peer)
+        assert argv == [["sudo", str(root / "tailscale"), "--socket=" + str(root / "peer.sock"), "status", "--json"]], argv
+        assert result.returncode == (1 if index == 3 else 0), (peer, result.returncode, result.stderr)
 
 
 def test_real_systemd_uses_plain_shipping_unit_without_af_netlink_ab_arms(tmp_path: Path) -> None:
@@ -509,15 +625,101 @@ def test_real_systemd_denial_probe_follows_shipping_state_directory_creation(tmp
     assert result.returncode == 0, result.stderr
 
 
-def test_real_systemd_denial_matrix_executes_every_bounded_probe() -> None:
+def _run_shipping_denial_probes(tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], list[list[str]], dict[str, object]]:
+    """Run the real measurement body and validator with non-forwarding external fixtures."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    for probe in ("socket.AF_NETLINK", "socket.SOCK_RAW", "/dev/net/tun", "probe-write", "create_connection"):
-        assert probe in harness
-    assert 'validate-denial-matrix' in harness
-    assert '"measured":True' in harness
-    assert 'systemd-run --quiet --wait --collect --pipe' in harness
-    for sandbox_property in ("PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "CapabilityBoundingSet="):
-        assert sandbox_property in harness
+    fake_bin = tmp_path / "bin"; fake_bin.mkdir()
+    fixture = fake_bin / "fixture"
+    fixture.write_text(f"#!{sys.executable}\n" + r'''
+import builtins, errno, json, os, pathlib, socket, subprocess, sys
+root = pathlib.Path(os.environ["DENIAL_ROOT"])
+argv = [pathlib.Path(sys.argv[0]).name, *sys.argv[1:]]
+def record(value):
+    with (root / "argv.jsonl").open("a") as stream: stream.write(json.dumps(value) + "\n")
+record(argv)
+if argv[0] == "sudo":
+    expected = ["timeout", "15", "systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+        "--unit=happyranch-n3-denial-shipping-unit", "--property=User=happyranch", "--property=Group=happyranch",
+        "--property=NoNewPrivileges=yes", "--property=PrivateDevices=yes", "--property=ProtectSystem=strict",
+        "--property=ProtectHome=yes", "--property=ReadWritePaths=/var/lib/happyranch-tsnet-sidecar",
+        "--property=RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "--property=CapabilityBoundingSet=",
+        "/usr/bin/python3", "-", "shipping-unit"]
+    if argv[1:] != expected: raise SystemExit(64)
+    body = sys.stdin.read()
+    class ClosedFixture:
+        def close(self): pass
+    def socket_result(family, kind, protocol=0):
+        record(["socket", family, kind, protocol])
+        if (family, kind, protocol) == (socket.AF_NETLINK, socket.SOCK_RAW, 0): return ClosedFixture()
+        if (family, kind, protocol) == (socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP): raise PermissionError(errno.EPERM, "synthetic")
+        raise SystemExit(64)
+    def device_result(path, mode, buffering=-1):
+        record(["device", path, mode, buffering])
+        if (path, mode, buffering) != ("/dev/net/tun", "rb", 0): raise SystemExit(64)
+        raise PermissionError(errno.EACCES, "synthetic")
+    def write_result(path, flags, mode):
+        record(["write", path, flags, mode])
+        if (path, flags, mode) != ("/var/lib/happyranch-tsnet-sidecar/probe-write", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600): raise SystemExit(64)
+        return os.dup(sys.stdout.fileno())
+    def unlink_result(path):
+        record(["unlink", path])
+        if path != "/var/lib/happyranch-tsnet-sidecar/probe-write": raise SystemExit(64)
+    def control_result(address, timeout):
+        record(["control", list(address), timeout])
+        if (address, timeout) != (("127.0.0.1", 18080), 2): raise SystemExit(64)
+        return ClosedFixture()
+    socket.socket = socket_result; socket.create_connection = control_result
+    builtins.open = device_result; os.open = write_result; os.unlink = unlink_result
+    sys.argv = ["-", "shipping-unit"]
+    exec(compile(body, "<shipping-denial-probes>", "exec"))
+elif argv[0] == "python":
+    expected = [os.environ["EVIDENCE_DRIVER"], "validate-denial-matrix", str(root / "shipping-unit-denial-matrix.json"), "--expected-arm", "shipping-unit"]
+    if argv[1:] != expected: raise SystemExit(64)
+    raise SystemExit(subprocess.run([sys.executable, *argv[1:]], check=False).returncode)
+else: raise SystemExit(64)
+''')
+    fixture.chmod(0o700)
+    for command in ("sudo", "python"):
+        (fake_bin / command).symlink_to(fixture)
+    driver = Path("app/linux/package/n3_evidence.py").resolve()
+    # Select the real main consumer by its external shipping arm, independently
+    # of the declaration's private identifier; an omitted consumer executes none.
+    consumer = "\n".join(re.findall(r"(?m)^\w+ shipping-unit$", harness))
+    script = f'''set -euo pipefail
+diagnostics={str(tmp_path)!r}; evidence_driver={str(driver)!r}
+{_shipping_declarations(harness)}
+{consumer}
+'''
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False, timeout=10,
+        env=os.environ | {"PATH": f"{fake_bin}:{Path(sys.executable).parent}:/usr/bin:/bin", "DENIAL_ROOT": str(tmp_path), "EVIDENCE_DRIVER": str(driver)},
+    )
+    log = tmp_path / "argv.jsonl"; matrix = tmp_path / "shipping-unit-denial-matrix.json"
+    return result, [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else [], json.loads(matrix.read_text()) if matrix.exists() and matrix.read_text().strip() else {}
+
+def test_real_systemd_denial_matrix_executes_every_bounded_probe(tmp_path: Path) -> None:
+    import socket
+
+    result, argv, matrix = _run_shipping_denial_probes(tmp_path)
+    external = [row[0] for row in argv if row[0] in {"socket", "device", "write", "unlink", "control"}]
+    assert external == ["socket", "socket", "device", "write", "unlink", "control"], argv
+    assert [row for row in argv if row[0] == "socket"] == [["socket", socket.AF_NETLINK, socket.SOCK_RAW, 0], ["socket", socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_ICMP]], argv
+    operations = matrix.get("operations", [])
+    assert operations == [
+        {"id": name, "measured": True, "result": result, "category": category, "errno": code}
+        for name, result, category, code in [
+            ("address_family_netlink", "allow", "none", None), ("linux_capabilities", "deny", "permission_denied", "EPERM"),
+            ("device_access", "deny", "permission_denied", "EACCES"), ("writable_paths", "allow", "none", None),
+            ("control_plane_operations", "allow", "none", None),
+        ]
+    ], matrix
+    launches = [row for row in argv if row[0] == "sudo"]
+    assert len(launches) == 1 and launches[0][1:8] == ["timeout", "15", "systemd-run", "--quiet", "--wait", "--collect", "--pipe"], argv
+    for property in ["User=happyranch", "Group=happyranch", "NoNewPrivileges=yes", "PrivateDevices=yes", "ProtectSystem=strict", "ProtectHome=yes", "ReadWritePaths=/var/lib/happyranch-tsnet-sidecar", "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK", "CapabilityBoundingSet="]:
+        assert "--property=" + property in launches[0], launches
+    validators = [row for row in argv if row[0] == "python"]
+    assert validators == [["python", str(Path("app/linux/package/n3_evidence.py").resolve()), "validate-denial-matrix", str(tmp_path / "shipping-unit-denial-matrix.json"), "--expected-arm", "shipping-unit"]], argv
+    assert result.returncode == 0, result.stderr
 
 
 def _run_real_systemd_failure_snapshot(tmp_path: Path, *, malformed: bool = False) -> subprocess.CompletedProcess[str]:
@@ -592,11 +794,14 @@ def test_real_systemd_failure_snapshot_executes_shipping_source_and_is_secret_fr
     assert "jobs" not in snapshot["observation_loss"]
 
 
-def test_real_systemd_labels_deliberate_negative_credential_leg_as_expected() -> None:
-    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert 'negative_leg_diagnostic_id="$run_id:negative-leg-expected:credential_input"' in harness
-    assert 'expectation=expected category=credential_input' in harness
-    assert 'diagnostic credential_input input_acquisition systemd happyranch-tsnet-sidecar.service "$negative_leg_diagnostic_id"' in harness
+
+def test_real_systemd_labels_deliberate_negative_credential_leg_as_expected(tmp_path: Path) -> None:
+    result, events, _ = _run_positive_start_cleanup_scenario(tmp_path, outer_startup=True)
+    argv = [json.loads(event)["argv"] for event in events if json.loads(event)["event"] == "diagnostic-argv"]
+    assert argv == [["diagnose", str(tmp_path / "diagnostics/execution-evidence.json"), "--id", "fixture:negative-leg-expected:credential_input", "--category", "credential_input", "--phase", "input_acquisition", "--actor", "systemd", "--unit", "happyranch-tsnet-sidecar.service"]], argv
+    expectations = (tmp_path / "diagnostics/diagnostic-expectations.log").read_text()
+    assert expectations == "diagnostic_id=fixture:negative-leg-expected:credential_input expectation=expected category=credential_input\n", expectations
+    assert result.returncode == 0, result.stderr
 
 
 def _assert_secret_free_diagnostics(result: subprocess.CompletedProcess[str], diagnostics: Path) -> None:
@@ -976,9 +1181,39 @@ def test_seq305_job_loss_is_closed_and_does_not_zero_receipt_or_later_sections(t
     assert any(event.startswith("show:happyranch-connector.service:") for event in event_log.read_text().splitlines())
 
 
+def _observe_exhausted_presence(tmp_path: Path) -> tuple[object, str, int]:
+    """Execute shipping presence/admission declarations with zero remaining budget."""
+    harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
+    call = re.search(r'(\w+) /etc/happyranch/enrollment\.key -e; source="\$(\w+)"; source_loss="\$(\w+)"', harness)
+    assert call is not None
+    declarations = _shipping_declarations(harness)
+    # Discover the deadline/cap variables from the real admission predicate;
+    # private identifier spelling is not the expected-result oracle.
+    predicate = re.search(r'SECONDS < (\w+) && (\w+) > 0', declarations)
+    assert predicate is not None
+    admission = re.findall(r'^(\w+)\(\) \{', declarations[:predicate.start()], re.MULTILINE)[-1]
+    script = f'''set -euo pipefail
+{declarations}
+{predicate[1]}=$((SECONDS + 5)); {predicate[2]}=128
+{admission}
+{predicate[1]}=0; {predicate[2]}=128
+attempts=0
+timeout() {{ attempts=$((attempts + 1)); return 1; }}
+sudo() {{ attempts=$((attempts + 1)); return 1; }}
+{call[1]} "{tmp_path / 'synthetic-absent'}" -e
+printf '%s|%s|%s\\n' "${{{call[2]}}}" "${{{call[3]}}}" "$attempts"
+'''
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, timeout=3)
+    assert result.returncode == 0, result.stderr
+    value, loss, attempts = result.stdout.strip().split("|")
+    return json.loads(value), loss, int(attempts)
+
+
 def test_real_systemd_failure_snapshot_uses_real_timeout_and_never_claims_unattempted_as_absent(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    snapshot_helpers = "safe_systemctl_value() {" + harness.split("safe_systemctl_value() {", 1)[1].split("\ncleanup() {", 1)[0]
+    snapshot_helpers = _shipping_declarations(harness)
+    snapshot_call = re.search(r"(\w+) first-positive-start-failure \|\| true", harness)
+    assert snapshot_call is not None
     fake_bin = tmp_path / "bin"; fake_bin.mkdir()
     (fake_bin / "systemctl").write_text("#!/bin/bash\nsleep 2\nprintf '%s\\n' failed\n")
     (fake_bin / "journalctl").write_text("#!/bin/bash\nsleep 2\n")
@@ -986,17 +1221,18 @@ def test_real_systemd_failure_snapshot_uses_real_timeout_and_never_claims_unatte
         executable.chmod(0o700)
     script = f'''set -euo pipefail
 diagnostics={tmp_path!s}; mkdir -p "$diagnostics"
-sudo() {{ "$@"; }}
+sudo() {{ case "$1" in test) return 1 ;; systemctl|journalctl) "$@" ;; *) return 64 ;; esac; }}
 failure_capture_driver={Path("app/linux/package/n3_failure_capture.py").resolve()!s}
 {snapshot_helpers}
-capture_failure_snapshot real-timeout
+{snapshot_call[1]} real-timeout
 cat "$diagnostics/real-timeout.json"
 '''
-    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"})
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, timeout=45, env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}"})
     assert result.returncode == 0, result.stderr
     snapshot = json.loads(result.stdout)
     assert "timeout" in snapshot["observation_loss"].values()
     assert snapshot["credential_presence"]["source"] is False
+    assert _observe_exhausted_presence(tmp_path) == ("unknown", "unattempted", 0)
 
 
 def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: Path) -> None:
@@ -1013,16 +1249,26 @@ def test_real_systemd_failure_snapshot_bounds_malformed_observations(tmp_path: P
     assert snapshot["observation_loss"]["sidecar_failure_lines"] == "empty"
 
 
-def test_real_systemd_barriers_use_restrictive_service_state_directory_and_controller_sudo() -> None:
+
+def test_real_systemd_barriers_use_restrictive_service_state_directory_and_controller_sudo(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    assert 'barrier_dir="/var/lib/happyranch-tsnet-sidecar/.n3-barrier-$run_id"' in harness
-    assert 'install -d -m 0700 -o happyranch -g happyranch "$barrier_dir"' in harness
-    assert 'sudo test -e "$barrier_dir/start-entered"' in harness
-    assert 'sudo test -e "$barrier_dir/stop-entered"' in harness
-    assert 'sudo tee "$barrier_dir/start-release"' in harness
-    assert 'sudo tee "$barrier_dir/stop-release"' in harness
-    assert 'sudo rm -f "$barrier_dir/start-entered" "$barrier_dir/start-release" "$barrier_dir/stop-entered" "$barrier_dir/stop-release"' in harness
-    assert 'sudo rmdir "$barrier_dir" || fail "barrier residue"' in harness
+    region = harness[harness.index('# semantic evidence: concurrency_reentry'):harness.index('# semantic evidence: readiness_loss')]
+    statements = []
+    for line in region.splitlines():
+        if (line.startswith('sudo install -d ') and '/etc/systemd' not in line) or re.match(r'^\w+ "(?:start|stop) barrier entered" ', line) or line.startswith(': | sudo tee ') or line.startswith('sudo rmdir ') or (line.startswith('sudo rm -f ') and '90-ci-barrier.conf' not in line):
+            statements.append(line.split('; wait', 1)[0])
+    result, argv = _run_shipping_fragment(tmp_path, "\n".join(statements))
+    barrier = "/var/lib/happyranch-tsnet-sidecar/.n3-barrier-fixture"
+    assert argv == [
+        ["sudo", "install", "-d", "-m", "0700", "-o", "happyranch", "-g", "happyranch", barrier],
+        ["sudo", "test", "-e", barrier + "/start-entered"],
+        ["sudo", "tee", barrier + "/start-release"],
+        ["sudo", "test", "-e", barrier + "/stop-entered"],
+        ["sudo", "tee", barrier + "/stop-release"],
+        ["sudo", "rm", "-f", *[barrier + "/" + name for name in ["start-entered", "start-release", "stop-entered", "stop-release"]]],
+        ["sudo", "rmdir", barrier],
+    ], argv
+    assert result.returncode == 0, result.stderr
 
 
 def test_real_systemd_cleanup_releases_both_held_barriers_before_teardown(tmp_path: Path) -> None:
@@ -1062,6 +1308,8 @@ cleanup 0
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(event_log), "N3_UNIT_ROOT": str(tmp_path)})
     assert result.returncode == 0, result.stderr
     events = event_log.read_text().splitlines()
+    assert "sudo:tee:/visible/service-owned/barrier/start-release" in events, events
+    assert "sudo:tee:/visible/service-owned/barrier/stop-release" in events, events
     start_release = next(index for index, event in enumerate(events) if event.endswith(":/visible/service-owned/barrier/start-release"))
     stop_release = next(index for index, event in enumerate(events) if event.endswith(":/visible/service-owned/barrier/stop-release"))
     teardown = events.index("systemctl:stop")
@@ -1139,7 +1387,19 @@ barrier_dir="{barrier_dir}"
 def _seed_n3_evidence(artifact: Path, *, run_id: str, include_cleanup: bool) -> Path:
     """Use the real shipping evidence driver to make a valid isolated ledger."""
     driver = Path("app/linux/package/n3_evidence.py").resolve()
-    phases = runpy.run_path(str(driver))["PHASES"]
+    # Fixed accepted v4 lifecycle inputs; never follow a shrunken candidate.
+    phases = {
+        "startup": ("process_absent", "tsnet_admission_absent", "connector_staged_credential_service_readable_non_writable", "sidecar_staged_credential_service_readable_non_writable", "credential_source_retired", "credential_dropin_retired", "composite_ready_after_sidecar", "missing_consumed_state_failed_closed"),
+        "admission": ("tsnet_admission_reachable",),
+        "active_flow": ("production_process_active", "watchdog_composite_current", "watchdog_ceased_on_sidecar_loss"),
+        "readiness_loss": ("tsnet_admission_removed_before_connector",),
+        "revocation": ("stop_before_connector_cleanup", "tsnet_admission_absent"),
+        "shutdown": ("same_instance_stop_twice", "no_double_close", "no_residue"),
+        "partial_failure": ("fresh_pid", "fresh_composite_gates"),
+        "concurrency_reentry": ("start_then_stop_barrier", "stop_then_start_barrier", "stop_wins"),
+        "recovery": ("fresh_install_rollback_reentry_each_checkpoint", "upgrade_rollback", "retained_payload_units", "fresh_composite_gates", "no_transaction_residue", "credential_free_stopped_restart", "interrupted_retirement_reentry", "explicit_fresh_reenrollment"),
+        "cleanup": ("virtual_admission_removed_while_peer_alive", "all_residue_absent", "task_work_removed"),
+    }
     subject = "a" * 40
     subprocess.run([sys.executable, str(driver), "init", str(artifact), "--git-head", subject,
                     "--package-sha256", "b" * 64, "--run-id", run_id], check=True)
@@ -1715,7 +1975,7 @@ kill -{signal} $$
 def _run_positive_start_cleanup_scenario(
     tmp_path: Path, *, fault: str = "none", signal: str | None = None,
     headscale_capture: bool = False, capture_reentry: bool = False,
-    late_headscale: bool = False, outer_startup: bool = False,
+    late_headscale: bool = False, outer_startup: bool = False, early_failure: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
     """Run the actual positive-start EXIT/trap seam with a failing teardown command."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
@@ -1939,7 +2199,7 @@ raise AssertionError((tool, argv))
         (work / "headscale").symlink_to(fixture)
         (work / "tailscale").symlink_to(fixture)
         driver = tmp_path / "evidence.py"
-        driver.write_text('''import sys
+        driver.write_text('''import json, sys
 from pathlib import Path
 args = sys.argv[1:]
 directory = Path(__file__).parent / "diagnostics"
@@ -1951,9 +2211,11 @@ if args[0] == "observe":
     assert args == ["observe", artifact, "--phase", phase, "--observation", observation,
         "--assertion-id", "fixture:" + phase + ":" + observation], args
 elif args[0] == "diagnose":
-    assert args == ["diagnose", artifact, "--id", "fixture:negative-leg-expected:credential_input",
+    with (Path(__file__).parent / "events.log").open("a") as stream:
+        stream.write(json.dumps({"event": "diagnostic-argv", "argv": args}) + "\\n")
+    if args != ["diagnose", artifact, "--id", "fixture:negative-leg-expected:credential_input",
         "--category", "credential_input", "--phase", "input_acquisition", "--actor", "systemd",
-        "--unit", "happyranch-tsnet-sidecar.service"], args
+        "--unit", "happyranch-tsnet-sidecar.service"]: raise SystemExit(64)
 elif args[0] == "validate-denial-matrix":
     assert args == ["validate-denial-matrix", str(directory / "shipping-unit-denial-matrix.json"),
         "--expected-arm", "shipping-unit"], args
@@ -2061,7 +2323,10 @@ capture.subprocess.Popen=delayed_popen
 raise SystemExit(capture.main())
 ''')
         capture_driver = wrapper
-    trigger = f"kill -{signal} $$" if signal else 'start_managed_target || exit "$?"'
+    if early_failure:
+        (fake_bin / "timeout").write_text(f"#!{sys.executable}\n" + "import json,os,sys\nfrom pathlib import Path\nwith (Path(os.environ['EVENT_LOG']).parent/'timeout-argv.jsonl').open('a') as stream: stream.write(json.dumps(sys.argv[1:])+'\\n')\nos.execv('/usr/bin/timeout',['timeout',*sys.argv[1:]])\n")
+        (fake_bin / "timeout").chmod(0o700)
+    trigger = "exit 37" if early_failure else f"kill -{signal} $$" if signal else 'start_managed_target || exit "$?"'
     script = f'''set -euo pipefail
 diagnostics={tmp_path / 'diagnostics' if headscale_capture else tmp_path!s}; mkdir -p "$diagnostics"
 work={work!s}; evidence_driver={fake_bin / "evidence"!s}; evidence_artifact=/missing
@@ -2435,19 +2700,29 @@ def test_archive_rejects_non_root_payload_ownership_before_write(tmp_path: Path,
 
 
 @pytest.mark.parametrize("boundary", ["payload_old_retained", "payload_published", *[f"unit_published:{name}" for name in ("happyranch-connector.service", "happyranch-tsnet-sidecar.service", "happyranch-managed.target")]])
-def test_upgrade_rolls_back_at_every_publication_boundary(tmp_path: Path, boundary: str) -> None:
+@pytest.mark.parametrize("upgrade_kind", ["same", "distinct"])
+def test_upgrade_rolls_back_at_every_publication_boundary(
+    tmp_path: Path, boundary: str, upgrade_kind: str,
+) -> None:
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
     install_linux_package(package, root)
     before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    before_snapshot = _installer_snapshot(root)
+    upgrade = package
+    if upgrade_kind == "distinct":
+        from tests.remote_access.test_linux_package_transaction import _distinct_unit_package
+
+        upgrade = _distinct_unit_package(tmp_path, "2", b"new")
     def fault(name: str) -> None:
         if name == boundary:
             raise RuntimeError("injected")
     with pytest.raises(RuntimeError, match="injected"):
-        install_linux_package(package, root, fault=fault)
+        install_linux_package(upgrade, root, fault=fault)
     after = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
     assert after == before
     assert not list(root.glob(".happyranch-*"))
+    assert _installer_snapshot(root) == before_snapshot
 
 
 def test_archive_rejects_duplicate_member(tmp_path: Path) -> None:
@@ -2887,6 +3162,46 @@ def test_malformed_or_foreign_record_is_refused_unchanged(tmp_path: Path, mutati
         install_linux_package(package, root)
     assert _installer_snapshot(root) == before
 
+    # Retain the original combined-invalid shape above. These records come
+    # from the real durable writer so unrelated missing fields cannot mask
+    # the independently supplied root, phase, or value-type fault.
+    values = ["yes", 1] if mutation == "wrong-type" else [None]
+    for index, value in enumerate(values):
+        isolated = tmp_path / f"isolated-{index}"
+        install_linux_package(package, isolated)
+        guard = _InstallerGuard(
+            operation="payload_publish", stage="after", exception=KeyboardInterrupt,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            install_linux_package(package, isolated, guard=guard)
+        assert len(guard.receipts()) == 1
+        isolated_marker = isolated / TRANSACTION_MARKER
+        isolated_record = json.loads(isolated_marker.read_text())
+        assert isolated_record["schema_version"] == 2
+        assert isolated_record["phase"] == "payload_retained"
+        if mutation == "bad-json":
+            isolated_marker.write_text("{not json")
+        elif mutation == "non-object":
+            isolated_marker.write_text(json.dumps([1, 2, 3]))
+        else:
+            if mutation == "missing-key":
+                isolated_record.pop("attempt_id")
+            elif mutation == "extra-key":
+                isolated_record["unexpected"] = 1
+            elif mutation == "wrong-type":
+                isolated_record["payload_present"] = value
+            elif mutation == "unknown-phase":
+                isolated_record["phase"] = "invented"
+            else:
+                isolated_record["root"] = str(isolated / "elsewhere")
+            isolated_marker.write_text(json.dumps(isolated_record))
+        isolated_marker.chmod(0o600)
+        isolated_before = _installer_snapshot(isolated)
+        for _ in range(2):
+            with pytest.raises(PackageError, match="transaction_state_invalid"):
+                install_linux_package(package, isolated)
+            assert _installer_snapshot(isolated) == isolated_before
+
 
 def test_enrollment_source_retirement_is_atomic_reentrant_and_rolls_back(tmp_path: Path) -> None:
     source = tmp_path / "enrollment.key"
@@ -3221,7 +3536,7 @@ def test_packaged_preflight_rejects_invalid_systemd_staging_provenance(
 )
 @pytest.mark.parametrize(
     "category",
-    ("credential_wrong_type", "credential_unsafe_symlink", "credential_wrong_custody", "credential_staging_incompatible"),
+    ("credential_wrong_type", "credential_unsafe_symlink", "credential_wrong_custody", "credential_staging_incompatible", "credential_absent"),
 )
 def test_each_rendered_unit_rejects_invalid_staged_type_mode_or_path_without_leak(
     tmp_path: Path,
@@ -3231,29 +3546,62 @@ def test_each_rendered_unit_rejects_invalid_staged_type_mode_or_path_without_lea
     unit: str,
     category: str,
 ) -> None:
+    """Observe real staged object refusals; custody row retains dispatch only."""
     secret = "forbidden-credential-material"
     staged = tmp_path / unit
     staged.mkdir()
-    staged.chmod(0o500)
+    credential = staged / name
     monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(staged))
     monkeypatch.setattr(
         "runtime.remote_access.cli._expected_systemd_credentials_directory",
         lambda _unit: staged,
     )
-    monkeypatch.setattr(
-        "runtime.remote_access.cli.credential_capability",
-        lambda *_args, **_kwargs: category,
-    )
-    assert connector_cli_main([
-        "credential-capability", "--name", name, "--unit", unit,
-    ]) == 1
-    error = capsys.readouterr().err.strip()
-    assert error == category
-    assert secret not in error
-    assert "/run/credentials" not in error
+    # Staged custody is deliberately ownership-neutral. Preserve this original
+    # category propagation row without pretending to impose direct-source policy.
+    states = {
+        "credential_wrong_type": ("directory",),
+        "credential_unsafe_symlink": ("symlink",),
+        "credential_wrong_custody": ("category_dispatch",),
+        "credential_staging_incompatible": ("writable", "empty"),
+        "credential_absent": ("absent",),
+    }[category]
+    for state in states:
+        if state == "directory":
+            credential.mkdir()
+            (credential / "synthetic").write_text(secret)
+        elif state == "symlink":
+            target = tmp_path / "synthetic-target"
+            target.write_text(secret)
+            credential.symlink_to(target)
+        elif state in {"writable", "empty"}:
+            credential.write_text(secret if state == "writable" else "")
+            credential.chmod(0o600 if state == "writable" else 0o400)
+        staged.chmod(0o500)
+        before = _tree_snapshot(tmp_path)
+        link = os.readlink(credential) if credential.is_symlink() else None
+        try:
+            with monkeypatch.context() as dispatch:
+                if state == "category_dispatch":
+                    dispatch.setattr("runtime.remote_access.cli.credential_capability", lambda *_args, **_kwargs: category)
+                assert connector_cli_main([
+                    "credential-capability", "--name", name, "--unit", unit,
+                ]) == 1
+            captured = capsys.readouterr()
+            error = captured.err.strip()
+            assert error == category
+            assert captured.out == ""
+            assert secret not in error
+            assert "/run/credentials" not in error
+            assert str(tmp_path) not in error
+            assert _tree_snapshot(tmp_path) == before
+            assert (os.readlink(credential) if credential.is_symlink() else None) == link
+        finally:
+            staged.chmod(0o700)
+        if credential.is_file() and not credential.is_symlink():
+            credential.unlink()
 
 
-def test_packaged_preflight_uses_each_units_staged_credential(
+def test_packaged_preflight_refuses_missing_staging_and_accepts_consumed_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     staged = tmp_path / "happyranch-connector.service"
@@ -3280,7 +3628,8 @@ def test_packaged_preflight_uses_each_units_staged_credential(
     ]) == 0
 
 
-def test_packaged_connector_binary_executes_outside_source_checkout(tmp_path: Path) -> None:
+def test_installed_fixture_payload_executes_outside_source_checkout(tmp_path: Path) -> None:
+    """The copied interpreter payload survives installer relocation; no frozen CLI claim."""
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     root = tmp_path / "root"
     install_linux_package(package, root)

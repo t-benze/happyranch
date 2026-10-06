@@ -2049,6 +2049,7 @@ func TestConsumerHealthQuerySpanningStartupDeadlineCannotReady(t *testing.T) {
 		// Release the healthy result only after the original deadline.
 		time.Sleep(time.Until(start.Add(crossingStartup)) + 50*time.Millisecond)
 		h.releaseProbeGate()
+		assertHR8466NoReadyWatchdog(t, h, 0, 0, 250*time.Millisecond)
 		h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
 		assertHR8466NoReadyWatchdog(t, h, 0, 0, 250*time.Millisecond)
 		assertHR8466HelpersReaped(t, f)
@@ -2086,6 +2087,7 @@ func TestConsumerHealthQuerySpanningStartupDeadlineCannotReady(t *testing.T) {
 		}
 		time.Sleep(time.Until(start.Add(crossingStartup)) + 50*time.Millisecond)
 		h.releaseProbeGate()
+		assertHR8466NoReadyWatchdog(t, h, 0, 0, 250*time.Millisecond)
 		h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
 		assertHR8466NoReadyWatchdog(t, h, 0, 0, 250*time.Millisecond)
 		assertHR8466HelpersReaped(t, f)
@@ -2138,55 +2140,82 @@ func TestConsumerHealthQuerySpanningStartupDeadlineCannotReady(t *testing.T) {
 func TestConsumerTerminalChildStatesBlockLateNotifications(t *testing.T) {
 	for _, terminalState := range []string{"failed", "stopping"} {
 		terminalState := terminalState
-		t.Run("child-"+terminalState, func(t *testing.T) {
-			f := newHR8466Fixture(t)
-			f.setPlan("ready", "healthy", terminalState, "healthy", "healthy")
-			f.setState("healthy")
-			h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
-			defer h.teardown()
-
-			f.waitChildWaiting(t, 0)
-			f.releaseChild(0)
-			f.waitChildEmitted(t, 0)
-			h.waitCount("READY=1", 1, hr8466NormalBarrier)
-			f.waitChildWaiting(t, 1)
-			f.setState("healthy")
-			f.releaseChild(1)
-			f.waitChildEmitted(t, 1)
-			h.waitCount("WATCHDOG=1", 1, hr8466NormalBarrier)
-
-			f.setState("garbage")
-			f.waitChildWaiting(t, 2)
-			f.releaseChild(2)
-			f.waitChildEmitted(t, 2)
-			h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
-			f.waitShowComplete(t, "garbage", 1, hr8466NormalBarrier)
-			if hr8466HasEvent(f.productEvents(), "term") {
-				t.Fatalf("terminal child state cleaned up while admission was unknown: events=%v", f.productEvents())
+		for _, lateHealthy := range []bool{false, true} {
+			name := "child-" + terminalState
+			if lateHealthy {
+				name += "-late-healthy-stop-failed"
 			}
-			beforeReady := h.count("READY=1")
-			beforeWatchdog := h.count("WATCHDOG=1")
+			t.Run(name, func(t *testing.T) {
+				f := newHR8466Fixture(t)
+				if lateHealthy {
+					f.requireStopFailure()
+				}
+				f.setPlan("ready", "healthy", terminalState, "healthy", "healthy")
+				f.setState("healthy")
+				h := startHR8466Supervisor(t, f, 10*time.Second, 10*time.Second)
+				defer h.teardown()
 
-			f.waitChildWaiting(t, 3)
-			f.releaseChild(3)
-			f.waitChildEmitted(t, 3)
-			f.waitShowComplete(t, "garbage", 2, hr8466NormalBarrier)
-			f.waitChildWaiting(t, 4)
-			f.releaseChild(4)
-			f.waitChildEmitted(t, 4)
-			f.waitShowComplete(t, "garbage", 3, hr8466NormalBarrier)
+				f.waitChildWaiting(t, 0)
+				f.releaseChild(0)
+				f.waitChildEmitted(t, 0)
+				h.waitCount("READY=1", 1, hr8466NormalBarrier)
+				f.waitChildWaiting(t, 1)
+				f.setState("healthy")
+				f.releaseChild(1)
+				f.waitChildEmitted(t, 1)
+				h.waitCount("WATCHDOG=1", 1, hr8466NormalBarrier)
 
-			if got := h.count("READY=1"); got != beforeReady {
-				t.Fatalf("READY after child %s: count=%d want=%d calls=%v", terminalState, got, beforeReady, h.calls())
-			}
-			if got := h.count("WATCHDOG=1"); got != beforeWatchdog {
-				t.Fatalf("WATCHDOG after child %s: count=%d want=%d calls=%v", terminalState, got, beforeWatchdog, h.calls())
-			}
-			if hr8466HasEvent(f.productEvents(), "term") {
-				t.Fatalf("child cleanup while admission was unknown: events=%v", f.productEvents())
-			}
-			assertHR8466NoFixtureLeak(t, f)
-		})
+				f.setState("garbage")
+				f.waitChildWaiting(t, 2)
+				f.releaseChild(2)
+				f.waitChildEmitted(t, 2)
+				h.waitCount("STOPPING=1", 1, hr8466NormalBarrier)
+				f.waitShowComplete(t, "garbage", 1, hr8466NormalBarrier)
+				if hr8466HasEvent(f.productEvents(), "term") {
+					t.Fatalf("terminal child state cleaned up while admission was unknown: events=%v", f.productEvents())
+				}
+				beforeReady := h.count("READY=1")
+				beforeWatchdog := h.count("WATCHDOG=1")
+				healthyBefore := hr8466EventCount(f.productEvents(), "show-done:healthy")
+				if lateHealthy {
+					// Healthy late data makes positive publication eligible; failed
+					// stop separately withholds child cleanup after terminal readiness.
+					f.setState("healthy")
+				}
+
+				f.waitChildWaiting(t, 3)
+				f.releaseChild(3)
+				f.waitChildEmitted(t, 3)
+				if lateHealthy {
+					assertHR8466NoReadyWatchdog(t, h, 1, 1, 250*time.Millisecond)
+					f.waitShowComplete(t, "healthy", healthyBefore+1, hr8466NormalBarrier)
+					f.waitEvent(t, "stop-failed", hr8466NormalBarrier)
+				} else {
+					f.waitShowComplete(t, "garbage", 2, hr8466NormalBarrier)
+				}
+				f.waitChildWaiting(t, 4)
+				f.releaseChild(4)
+				f.waitChildEmitted(t, 4)
+				if lateHealthy {
+					assertHR8466NoReadyWatchdog(t, h, 1, 1, 250*time.Millisecond)
+					f.waitShowComplete(t, "healthy", healthyBefore+2, hr8466NormalBarrier)
+					f.waitEvent(t, "stop-failed", hr8466NormalBarrier)
+				} else {
+					f.waitShowComplete(t, "garbage", 3, hr8466NormalBarrier)
+				}
+
+				if got := h.count("READY=1"); got != beforeReady {
+					t.Fatalf("READY after child %s: count=%d want=%d calls=%v", terminalState, got, beforeReady, h.calls())
+				}
+				if got := h.count("WATCHDOG=1"); got != beforeWatchdog {
+					t.Fatalf("WATCHDOG after child %s: count=%d want=%d calls=%v", terminalState, got, beforeWatchdog, h.calls())
+				}
+				if hr8466HasEvent(f.productEvents(), "term") {
+					t.Fatalf("child cleanup while admission was unknown: events=%v", f.productEvents())
+				}
+				assertHR8466NoFixtureLeak(t, f)
+			})
+		}
 	}
 
 	t.Run("parent-cancel", func(t *testing.T) {

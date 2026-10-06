@@ -232,6 +232,7 @@ func TestTSNetEngineCarriesConsumedUpDeadlineIntoPeerPoll(t *testing.T) {
 }
 
 func TestTSNetEngineCapsBackgroundStartupAtEightySeconds(t *testing.T) {
+	const requiredStartupBudget = 80 * time.Second
 	statusRelease := make(chan struct{})
 	server := &fakeTSNetServer{
 		upStatus:      runningWithPeer("other", ""),
@@ -251,10 +252,10 @@ func TestTSNetEngineCapsBackgroundStartupAtEightySeconds(t *testing.T) {
 	if !server.upDeadline.Equal(server.statusDeadline) {
 		t.Fatalf("waits used different deadlines: up=%s status=%s", server.upDeadline, server.statusDeadline)
 	}
-	if remaining := time.Until(server.upDeadline); remaining > tsnetStartupBudget || remaining < tsnetStartupBudget-2*time.Second {
-		t.Fatalf("background startup budget remaining=%s, want near %s", remaining, tsnetStartupBudget)
+	if remaining := time.Until(server.upDeadline); remaining > requiredStartupBudget || remaining < requiredStartupBudget-2*time.Second {
+		t.Fatalf("background startup budget remaining=%s, want near %s", remaining, requiredStartupBudget)
 	}
-	if server.upDeadline.After(started.Add(tsnetStartupBudget + 100*time.Millisecond)) {
+	if server.upDeadline.After(started.Add(requiredStartupBudget + 100*time.Millisecond)) {
 		t.Fatalf("startup deadline=%s exceeds 80-second cap from %s", server.upDeadline, started)
 	}
 	cancel()
@@ -283,6 +284,13 @@ func TestTSNetEngineDoesNotRefreshCallerDeadlineWhilePeerIsAbsent(t *testing.T) 
 	}
 	if server.statusCalls < 1 {
 		t.Fatal("expected peer polling")
+	}
+	callerDeadline, ok := ctx.Deadline()
+	if !ok || !server.upDeadline.Equal(callerDeadline) {
+		t.Fatalf("absent-peer Up deadline=%s want caller=%s", server.upDeadline, callerDeadline)
+	}
+	if !server.statusDeadline.Equal(callerDeadline) {
+		t.Fatalf("absent-peer poll deadline=%s want caller=%s", server.statusDeadline, callerDeadline)
 	}
 }
 

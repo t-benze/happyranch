@@ -1349,11 +1349,27 @@ def _upgrade_loss_detecting_root(tmp_path: Path) -> tuple[Path, Path]:
 @pytest.mark.parametrize("when", ["before", "after"])
 def test_real_commit_replace_restores_old_or_preserves_new(tmp_path: Path, when: str) -> None:
     """I5: the real os.replace of the committed record owns the decision."""
+    import tarfile
+
     root, new = _upgrade_loss_detecting_root(tmp_path)
     old = _full_snapshot(root)
     expected = tmp_path / "expected"
     shutil.copytree(root, expected, symlinks=True)
     install_linux_package(new, expected)
+    # Bind the reference to the supplied NEW bytes and documented no-root modes
+    # before comparing snapshots produced through the same installer.
+    with tarfile.open(new) as archive:
+        for member in archive.getmembers():
+            relative = Path(member.name).relative_to("happyranch-linux-amd64")
+            target = (
+                expected / "etc/systemd/system" / relative.name
+                if relative.parts[0] == "systemd"
+                else expected / "opt/happyranch" / relative
+            )
+            assert target.read_bytes() == archive.extractfile(member).read()
+            assert stat.S_IMODE(target.stat().st_mode) == (
+                0o700 if relative.parts[0] == "bin" else 0o600
+            )
     new_snapshot = _full_snapshot(expected)
 
     hits: list[dict] = []

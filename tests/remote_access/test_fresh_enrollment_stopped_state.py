@@ -545,6 +545,7 @@ def test_capture_retains_at_most_cap_plus_one(tmp_path: Path) -> None:
     cli._close_and_reap_query_process(long_process, deadline)
     assert overflowed is True
     assert len(retained) == cli._SERVICE_QUERY_MAX_OUTPUT_BYTES + 1
+    assert len(retained) == 4097  # Accepted 4096-byte cap plus one overflow sentinel.
 
     short_process = subprocess.Popen(
         [sys.executable, "-c", code],

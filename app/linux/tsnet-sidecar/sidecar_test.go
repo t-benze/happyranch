@@ -200,7 +200,7 @@ func TestStartSuccessConsumesCredentialThenProxiesRawBytes(t *testing.T) {
 	}
 }
 
-func TestSystemdStagedCredentialIsReadOnceAndNeverUnlinked(t *testing.T) {
+func TestSystemdStagedCredentialIsConsumedOnceAndNeverUnlinked(t *testing.T) {
 	cfg := validConfig(t)
 	credentialDir := filepath.Join(filepath.Dir(cfg.StateDir), "systemd-credentials")
 	if err := os.Mkdir(credentialDir, 0o700); err != nil {
@@ -231,6 +231,12 @@ func TestSystemdStagedCredentialIsReadOnceAndNeverUnlinked(t *testing.T) {
 		t.Fatalf("durable consumption marker missing: %v", err)
 	}
 	_ = s.Stop()
+	replayEvents := []string{}
+	// Halt before dialing if a regression wrongly reaches the second engine.
+	replayEngine := &fakeEngine{startErr: ErrEngineStart, events: &replayEvents}
+	if err := New(cfg, replayEngine, &net.Dialer{}).Start(context.Background()); !errors.Is(err, ErrCredentialInput) || len(replayEvents) != 0 {
+		t.Fatalf("staged replay error = %v; engine events = %v", err, replayEvents)
+	}
 }
 
 func TestEnrolledStateRestartDoesNotReadOrRequireCredential(t *testing.T) {

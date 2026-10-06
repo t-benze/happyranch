@@ -589,6 +589,30 @@ def test_collect_jobs_rejects_malformed_or_misattributed_records_without_prose()
     assert result["loss"] == "parse_loss"
     assert secret not in json.dumps(result)
 
+    # Distinct IDs and isolated loss classes prevent deduplication or a
+    # neighboring malformed record from masking an attribution/result guard.
+    for case, invalid, loss in (
+        ("wrong_boot", _job_record(job_id="42", boot="f" * 32), "attribution_loss"),
+        ("lower_window", _job_record(job_id="42", timestamp="99"), "attribution_loss"),
+        ("upper_window", _job_record(job_id="42", timestamp="201"), "attribution_loss"),
+        ("invalid_result", _job_record(job_id="42", result=secret), "parse_loss"),
+        ("malformed_id", _job_record(job_id="not-an-id"), "parse_loss"),
+        ("malformed_json", "not-json " + secret, "parse_loss"),
+    ):
+        isolated = collect_jobs(
+            lines=[_job_record(), invalid],
+            boot_id=BOOT,
+            since_us=100,
+            until_us=200,
+        )
+        assert isolated == {
+            "jobs": [
+                {"id": 41, "unit": "happyranch-tsnet-sidecar.service", "type": "start", "result": "failed"},
+            ],
+            "loss": loss,
+        }, case
+        assert secret not in json.dumps(isolated), case
+
 
 def test_collect_jobs_reports_empty_for_no_completed_start_job() -> None:
     assert collect_jobs(lines=[], boot_id=BOOT, since_us=100, until_us=200) == {"jobs": [], "loss": "empty"}
