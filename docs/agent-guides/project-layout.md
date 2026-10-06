@@ -55,6 +55,7 @@ Tracked source is split by product surface:
 |   |   `-- db/                  # Database facade mixins: task core, dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |   |-- task_prompt_headers.py # read-only roster, revisit/resolution, prior-step/chain and fanout headers; same-object exports through run_step.py
+|   |   |-- task_terminal_readers.py # four unchanged verdict/carrier/fingerprint/terminal-report readers; same-object run_step exports; consumers, sentinel, state and patch lookup remain in the facade
 |   |   `-- task_thread_posting.py # unchanged append/mint/enqueue tail and audit-payload decoder; same-object run_step exports; followup/escalation callers retain facade-global patch lookup
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
