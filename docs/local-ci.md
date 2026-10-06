@@ -290,12 +290,22 @@ job submission substitutes for actual hosted evidence. Required PR checks and
 the selected actual hosted Codex callback remain separate gates.
 
 The fixed source controls run only after successful all and before repetitions,
-in separate archives of the authenticated committed head. Each control records
+in separate archives of the authenticated committed head. The complete-object
+control accepts a differing layout before attempting row validation, so missing
+objects reach the unchanged refusal assertion (`DID NOT RAISE`) rather than an
+unrelated missing-table exception. The intact-layout path still validates rows.
+Fixed pytest commands use short tracebacks and assertion verbosity zero to avoid
+repeating entire nested layout diffs for every origin error. They retain the
+named assertion, observed/expected difference, JUnit cases and actual exits;
+all selectors and parameter dimensions remain unchanged. Each control records
 its exact source patch, original and restored SHA256 and modes, named-node RED
 JUnit and the identical-command restored GREEN. The 64 unchanged consumers use
 explicitly labeled origin-regression RED at their full-layout observer; setup or
 import errors never count as business RED. Controls refuse absent attribution,
-syntax errors, missing receipts, or failed restoration. Actual source-control
+syntax errors, missing receipts, or failed restoration. After exact restoration
+and successful identical-command GREEN, an attribution failure is retained while
+the remaining independent controls run. Any such failure prevents the completion
+receipt and repetitions; a failed restored GREEN still aborts immediately. Actual source-control
 completion is recorded separately from all and from the 580-process repetitions.
 
 The G07 keeper distinguishes authentic compatible cold reopens from physical
