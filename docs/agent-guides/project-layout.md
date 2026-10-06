@@ -101,6 +101,15 @@ Capability-owned methods move incrementally into mixins under
 `runtime/infrastructure/db/`; callers continue importing and instantiating the
 facade from its original module.
 
+
+`db/threads.py` owns the unchanged 13-line
+`_set_thread_status_archived_uncommitted` archive helper in `ThreadsMixin`.
+Its inherited `Database` attribute remains the patch/dispatch path. The existing
+late `_now` and shared `_synchronized` keep facade clock/time patches visible
+and use the same Database-owned RLock and lock logger. The committed setter,
+archive transaction, participant reset, audit, HTTP route and transcript owners
+remain in their existing modules; this leaf does not move those boundaries.
+
 `db/tasks.py` owns `TasksMixin`: task core CRUD, query filtering/pagination,
 subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`
 and `LineageTooDeep`, plus verified retry lineage, atomic single/fanout child
