@@ -248,6 +248,7 @@ def test_real_diy_acceptance(tmp_path) -> None:
     # ── 1. the loopback daemon (real TCP on 127.0.0.1) ────────────────────
     daemon = FakeDaemon(BEARER)
     daemon.start()
+    primary_failure = None
     try:
         # ── 2. hermetic connector config ───────────────────────────────────
         token_path = tmp_path / "daemon.token"
@@ -484,17 +485,48 @@ def test_real_diy_acceptance(tmp_path) -> None:
             transcript_path.write_text("\n".join(transcript) + "\n")
             print(f"\n=== ACCEPTANCE TRANSCRIPT ===\n{chr(10).join(transcript)}\n=== END TRANSCRIPT ===")
         except BaseException as primary:
+            primary_failure = primary
             _record_diy_failure(primary, lambda: _diy_failure_facts(config_path, proc, daemon))
             raise
         finally:
-            if proc is not None and proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
+            if proc is not None:
+                # Attempt each owned operation even when an earlier one fails.
+                # Cleanup errors remain failures on success, but cannot replace
+                # the original acceptance failure. Never export their text.
+                cleanup_failure = None
+                running = True
                 try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+                    running = proc.poll() is None
+                except BaseException as exc:
+                    cleanup_failure = exc
+                if running:
+                    try:
+                        proc.send_signal(signal.SIGTERM)
+                    except BaseException as exc:
+                        cleanup_failure = cleanup_failure or exc
+                    try:
+                        proc.wait(timeout=10)
+                    except BaseException as exc:
+                        cleanup_failure = cleanup_failure or exc
+                        try:
+                            proc.kill()
+                        except BaseException as kill_error:
+                            cleanup_failure = cleanup_failure or kill_error
+                        try:
+                            proc.wait(timeout=10)
+                        except BaseException as reap_error:
+                            cleanup_failure = cleanup_failure or reap_error
+                if cleanup_failure is not None and primary_failure is None:
+                    raise cleanup_failure
+    except BaseException as primary:
+        primary_failure = primary_failure or primary
+        raise
     finally:
-        daemon.stop()
+        try:
+            daemon.stop()
+        except BaseException:
+            if primary_failure is None:
+                raise
 
 
 @pytest.mark.skipif(

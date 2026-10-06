@@ -46,12 +46,21 @@ nodes remain UNTESTED. SSE acceptance retains bounded first-frame admission,
 heartbeat/no-action controls, causal revoke/remove/reopen assertions and owned
 failure-path cleanup; a timeout is never credited as stream closure.
 The two-org observer's static identities include the inspected pre-session active
-policy resolver and authenticated selector readers; unlisted inner frames remain
-unknown. Full DIY acceptance records failure-only readiness facts through the
+policy resolver and authenticated selector readers. Loaded callable code must match
+independently compiled, hash-verified source; copied filename/name or `__wrapped__`
+labels alone cannot admit changed code. Python exception classes require a
+source-matching constructor with an actual defining `__class__` closure; metadata-only
+classes stay unknown, including docstring-only policy/agent errors. A counterfeit
+copying that constructor fails the defining-type identity check. Unlisted inner
+frames remain unknown. Full DIY acceptance records failure-only readiness facts through the
 shipping `remote_access.cli readiness` command (5-second deadline, 8192-byte cap),
 closed gate categories/booleans and owned connector/fake-daemon state. Observation
 failure stays unavailable and preserves the original exception and finalizers;
 raw command output and configuration are never exported by this observation.
+Safe controls execute the unchanged acceptance owner body with external callouts
+doubled, checking primary identity and independent connector/daemon finalization
+attempts, including kill/reap on wait failure. These controls establish invocation
+and error preservation; actual resource absence requires disposable execution.
 
 ## Prerequisites
 

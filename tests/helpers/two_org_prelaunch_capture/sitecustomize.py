@@ -15,6 +15,7 @@ import re
 import stat
 import sys
 import time
+from types import CodeType, FunctionType
 
 MODULE_SYMBOLS = {
     "runtime.orchestrator.orchestrator": (
@@ -156,6 +157,60 @@ def _write_record(directory: Path, row, *, deadline: float | None = None):
         os.close(parent)
 
 
+def _source_codes(path, expected_hash, *, deadline):
+    """Compile verified bytes without executing any production module/class body."""
+    with path.open('rb') as stream:
+        data = stream.read(2 * 1024 * 1024 + 1)
+    if (len(data) > 2 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != expected_hash
+            or time.monotonic() >= deadline):
+        raise ValueError('capture_source_unavailable')
+    root = compile(data, str(path), 'exec', dont_inherit=True, optimize=sys.flags.optimize)
+    pending, codes = [(root, 0)], {}
+    count = 0
+    while pending:
+        code, depth = pending.pop()
+        count += 1
+        if count > 4096 or depth > 32 or time.monotonic() >= deadline:
+            raise ValueError('capture_code_unavailable')
+        if code.co_qualname in codes:
+            # Ambiguous definitions cannot establish an identity.
+            codes[code.co_qualname] = None
+        else:
+            codes[code.co_qualname] = code
+        pending.extend((child, depth + 1) for child in code.co_consts if isinstance(child, CodeType))
+    return codes
+
+
+def _source_callable(value, symbol, expected, *, deadline):
+    # Decorator labels/__wrapped__ never establish code authenticity.
+    for _ in range(8):
+        if type(value) is not FunctionType or time.monotonic() >= deadline:
+            return None
+        code = value.__code__
+        if (code.co_qualname == symbol and expected is not None and code == expected
+                and code.co_filename == expected.co_filename):
+            return code
+        value = value.__dict__.get('__wrapped__')
+    return None
+
+
+def _source_exception_class(value, module_name, symbol, source_codes, *, deadline):
+    # A docstring-only class has no authenticated code tying the live type to
+    # its defining source. Copied module/name/doc metadata is insufficient.
+    # The one finite class with a source-owned __class__ closure can prove the
+    # actual defining type; a counterfeit copying its method points at the old type.
+    if (symbol != 'WorkspaceIntegrityError' or type(value) is not type
+            or value.__module__ != module_name or value.__qualname__ != symbol
+            or value.__bases__ != (Exception,)):
+        return False
+    method = vars(value).get('__init__')
+    expected = source_codes.get(symbol + '.__init__')
+    if _source_callable(method, symbol + '.__init__', expected, deadline=deadline) is None:
+        return False
+    cells = dict(zip(method.__code__.co_freevars, method.__closure__ or ()))
+    return '__class__' in cells and cells['__class__'].cell_contents is value
+
+
 def _install_capture():
     if "HAPPYRANCH_TWO_ORG_CAPTURE" not in os.environ:
         return
@@ -175,31 +230,37 @@ def _install_capture():
             return
     codes, classes = {}, {RuntimeError: "builtins.RuntimeError", ValueError: "builtins.ValueError",
                           OSError: "builtins.OSError", TimeoutError: "builtins.TimeoutError"}
-    modules = {}
+    modules, compiled = {}, {}
+    identity_deadline = time.monotonic() + 1
     for module_name, symbols in MODULE_SYMBOLS.items():
         module = importlib.import_module(module_name)
         if Path(module.__file__).resolve() != source / (module_name.replace(".", "/") + ".py"):
             return
         modules[module_name] = module
+        compiled[module_name] = _source_codes(Path(module.__file__).resolve(),
+            binding['hashes'][module_name], deadline=identity_deadline)
         for symbol in symbols:
             value = module
             for part in symbol.split("."):
                 value = getattr(value, part)
-            while hasattr(value, "__wrapped__"):
-                value = value.__wrapped__
-            if (hasattr(value, "__code__") and value.__code__.co_qualname == symbol
-                    and Path(value.__code__.co_filename).resolve() == Path(module.__file__).resolve()):
-                codes[value.__code__] = module_name + "." + symbol
+            code = _source_callable(value, symbol, compiled[module_name].get(symbol),
+                                    deadline=identity_deadline)
+            if code is not None:
+                codes[code] = module_name + '.' + symbol
     for name in EXCEPTION_NAMES - {"unknown"}:
         module_name, _, symbol = name.rpartition(".")
         module = modules.get(module_name)
         if module is not None:
             value = getattr(module, symbol)
-            if (isinstance(value, type) and issubclass(value, BaseException)
-                    and value.__module__ == module_name and value.__qualname__ == symbol):
+            if _source_exception_class(value, module_name, symbol, compiled[module_name],
+                                       deadline=identity_deadline):
                 classes[value] = name
     orchestrator = modules["runtime.orchestrator.orchestrator"].Orchestrator
     original = orchestrator._run_agent
+    if _source_callable(original, 'Orchestrator._run_agent',
+            compiled['runtime.orchestrator.orchestrator'].get('Orchestrator._run_agent'),
+            deadline=identity_deadline) is None:
+        return
     seen = set()
     directory = Path(os.environ["HAPPYRANCH_TWO_ORG_CAPTURE"]).parent
     def capture(exc, args, kwargs):

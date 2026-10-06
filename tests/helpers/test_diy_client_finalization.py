@@ -116,13 +116,18 @@ def _diy_observation_namespace():
     source = Path(__file__).resolve().parents[1] / 'remote_access/test_diy_acceptance.py'
     tree = ast.parse(source.read_text())
     names = {'_run_client', '_admit_readiness_report', '_bounded_readiness_command',
-             '_diy_failure_facts', '_record_diy_failure'}
+             '_diy_failure_facts', '_record_diy_failure', 'test_real_diy_acceptance'}
     nodes = [node for node in tree.body if
              (isinstance(node, ast.FunctionDef) and node.name in names) or
              (isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and
                 t.id == '_DIY_GATE_CATEGORIES' for t in node.targets))]
+    # Preserve the complete owning function body, excluding only collection decorators.
+    # No top-level imports/address discovery are executed.
+    for node in nodes:
+        if isinstance(node, ast.FunctionDef):
+            node.decorator_list = []
     namespace = dict(json=json, os=os, selectors=selectors, subprocess=subprocess,
-                     sys=sys, time=time, Path=Path, CLIENT=Path('scripted-client'))
+                     sys=sys, time=time, Path=Path, CLIENT=Path('scripted-client'), __file__=str(source))
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), namespace)
     return namespace
 
@@ -201,8 +206,12 @@ def test_diy_failure_facts_export_only_closed_readiness_and_owned_state(observat
     assert 'PLANTED' not in encoded and '/private/path' not in encoded and 'not exported' not in encoded
 
 
-@pytest.mark.parametrize('fault', ['observe', 'note', 'none'])
-def test_diy_failure_observation_keeps_primary_and_all_outer_finalizers(fault):
+@pytest.mark.parametrize('fault', ['observe', 'note', 'none', 'signal', 'wait', 'timeout', 'kill', 'reap', 'daemon', 'poll'])
+def test_diy_failure_observation_keeps_primary_and_all_outer_finalizers(tmp_path, fault):
+    """Invoke the actual owner after connector acquisition with no OS callouts."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    import signal
     namespace = _diy_observation_namespace()
     events = []
     class Primary(RuntimeError):
@@ -212,23 +221,70 @@ def test_diy_failure_observation_keeps_primary_and_all_outer_finalizers(fault):
                 raise RuntimeError('PLANTED private')
             super().add_note(note)
     primary = Primary('original')
-    def observe():
+    def operation(name):
+        events.append(name)
+        if fault == name:
+            raise OSError('PLANTED private cleanup')
+    class Process:
+        def poll(self):
+            operation('poll')
+            return None
+        def send_signal(self, value):
+            assert value == signal.SIGTERM
+            operation('signal')
+        def wait(self, *, timeout):
+            assert timeout == 10
+            name = 'reap' if 'kill' in events else 'wait'
+            operation(name)
+            if fault in {'timeout', 'kill', 'reap'} and name == 'wait':
+                raise namespace['subprocess'].TimeoutExpired('owned', timeout)
+            return 0
+        def kill(self):
+            operation('kill')
+    proc = Process()
+    class Daemon:
+        port = 0
+        def __init__(self, *args, **kwargs):
+            pass
+        def start(self):
+            events.append('daemon_started')
+        def stop(self):
+            operation('daemon')
+    def popen(*args, **kwargs):
+        events.append('connector_acquired')
+        return proc
+    def fail_after_acquisition(*args, **kwargs):
+        assert 'connector_acquired' in events
+        events.append('primary')
+        raise primary
+    def observe(*args):
         events.append('observe')
         if fault == 'observe':
             raise RuntimeError('PLANTED private')
         return {'readiness': 'unavailable'}
+    def unexpected(*args, **kwargs):
+        raise AssertionError('unexpected OS/network callout')
+    # Replace entire callout namespaces, not process-wide socket/subprocess modules.
+    namespace.update(
+        subprocess=SimpleNamespace(Popen=popen, run=unexpected, PIPE=-1,
+                                   TimeoutExpired=namespace['subprocess'].TimeoutExpired),
+        socket=SimpleNamespace(create_connection=unexpected),
+        threading=SimpleNamespace(Timer=unexpected),
+        time=SimpleNamespace(monotonic=unexpected, sleep=unexpected),
+        os=SimpleNamespace(environ={}), signal=signal,
+        NETWORK_IPV4='scripted', _free_port=lambda host: 0,
+        _connector_reachable=unexpected, _wait_until=fail_after_acquisition,
+        FakeDaemon=Daemon, BEARER='fake', datetime=datetime, timedelta=timedelta,
+        timezone=timezone, load_fixture=lambda name: {},
+        make_policy_envelope=lambda *args, **kwargs: SimpleNamespace(model_dump_json=lambda: '{}'),
+        _diy_failure_facts=observe, pytest=pytest,
+    )
     with pytest.raises(Primary) as caught:
-        try:
-            try:
-                raise primary
-            except BaseException as exc:
-                namespace['_record_diy_failure'](exc, observe)
-                raise
-        finally:
-            events.extend(['connector_finalized', 'daemon_finalized'])
-    assert caught.value is primary
-    assert events[-2:] == ['connector_finalized', 'daemon_finalized']
-    assert 'observe' in events
+        namespace['test_real_diy_acceptance'](tmp_path)
+    assert caught.value is primary, 'actual owner cleanup replaced the primary'
+    assert {'connector_acquired', 'primary', 'observe', 'signal', 'wait', 'daemon'} <= set(events), events
+    if fault in {'timeout', 'kill', 'reap'}:
+        assert {'kill', 'reap'} <= set(events), events
     assert 'PLANTED' not in str(getattr(primary, '__notes__', []))
     if fault == 'none':
         assert primary.__notes__ == ['DIY_FAILURE_FACTS {"readiness":"unavailable"}']
