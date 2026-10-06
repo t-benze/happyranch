@@ -48,10 +48,12 @@ failure-path cleanup; a timeout is never credited as stream closure.
 The two-org observer's static identities include the inspected pre-session active
 policy resolver and authenticated selector readers. Loaded callable code must match
 independently compiled, hash-verified source; copied filename/name or `__wrapped__`
-labels alone cannot admit changed code. Python exception classes require a
-source-matching constructor with an actual defining `__class__` closure; metadata-only
-classes stay unknown, including docstring-only policy/agent errors. A counterfeit
-copying that constructor fails the defining-type identity check. Unlisted inner
+labels alone cannot admit changed code. Only exact built-in exception type identities
+are classified as known. All custom Python exception types stay unknown, including
+genuine workspace-integrity and docstring-only policy/agent errors: copied constructor
+code and a self-consistent `__class__` closure cannot authenticate the defining type.
+This deliberately reduces test-only observation specificity; it does not verify
+custom-class identity or change the original return/raise behavior. Unlisted inner
 frames remain unknown. Full DIY acceptance records failure-only readiness facts through the
 shipping `remote_access.cli readiness` command (5-second deadline, 8192-byte cap),
 closed gate categories/booleans and owned connector/fake-daemon state. Observation

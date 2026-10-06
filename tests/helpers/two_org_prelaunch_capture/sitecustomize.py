@@ -194,23 +194,6 @@ def _source_callable(value, symbol, expected, *, deadline):
     return None
 
 
-def _source_exception_class(value, module_name, symbol, source_codes, *, deadline):
-    # A docstring-only class has no authenticated code tying the live type to
-    # its defining source. Copied module/name/doc metadata is insufficient.
-    # The one finite class with a source-owned __class__ closure can prove the
-    # actual defining type; a counterfeit copying its method points at the old type.
-    if (symbol != 'WorkspaceIntegrityError' or type(value) is not type
-            or value.__module__ != module_name or value.__qualname__ != symbol
-            or value.__bases__ != (Exception,)):
-        return False
-    method = vars(value).get('__init__')
-    expected = source_codes.get(symbol + '.__init__')
-    if _source_callable(method, symbol + '.__init__', expected, deadline=deadline) is None:
-        return False
-    cells = dict(zip(method.__code__.co_freevars, method.__closure__ or ()))
-    return '__class__' in cells and cells['__class__'].cell_contents is value
-
-
 def _install_capture():
     if "HAPPYRANCH_TWO_ORG_CAPTURE" not in os.environ:
         return
@@ -228,6 +211,9 @@ def _install_capture():
         spec = importlib.util.find_spec(name)
         if spec is None or Path(spec.origin).resolve() != source / relative:
             return
+    # Static source/code/closure facts cannot authenticate a reconstructed
+    # defining type. All custom Python exception types remain unknown;
+    # only exact built-in type identities are admitted here.
     codes, classes = {}, {RuntimeError: "builtins.RuntimeError", ValueError: "builtins.ValueError",
                           OSError: "builtins.OSError", TimeoutError: "builtins.TimeoutError"}
     modules, compiled = {}, {}
@@ -247,14 +233,6 @@ def _install_capture():
                                     deadline=identity_deadline)
             if code is not None:
                 codes[code] = module_name + '.' + symbol
-    for name in EXCEPTION_NAMES - {"unknown"}:
-        module_name, _, symbol = name.rpartition(".")
-        module = modules.get(module_name)
-        if module is not None:
-            value = getattr(module, symbol)
-            if _source_exception_class(value, module_name, symbol, compiled[module_name],
-                                       deadline=identity_deadline):
-                classes[value] = name
     orchestrator = modules["runtime.orchestrator.orchestrator"].Orchestrator
     original = orchestrator._run_agent
     if _source_callable(original, 'Orchestrator._run_agent',

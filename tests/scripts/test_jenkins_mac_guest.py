@@ -705,7 +705,7 @@ def test_two_org_prelaunch_installer_authenticates_real_source_and_closed_symbol
         connection.close()
 
 
-@pytest.mark.parametrize('case', ['known', 'foreign_inner', 'foreign_class', 'source_changed', 'copied_code', 'wrapped_code', 'copied_class', 'copied_class_exact', 'builtin_known', 'source_class', 'copied_method_class'])
+@pytest.mark.parametrize('case', ['known', 'foreign_inner', 'foreign_class', 'source_changed', 'copied_code', 'wrapped_code', 'copied_class', 'copied_class_exact', 'builtin_known', 'source_class', 'copied_method_class', 'rebound_closure_class'])
 def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkeypatch, case):
     """Pure resolver/thrower control: no executor, daemon or provider launch."""
     import threading
@@ -750,13 +750,34 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
         })
         monkeypatch.setattr(policy, 'ActiveAuthorityPolicyError', counterfeit)
     from runtime.orchestrator import workspace_adapters as adapters
-    if case == 'copied_method_class':
+    adapters_disk_before = Path(adapters.__file__).read_bytes()
+    if case in {'copied_method_class', 'rebound_closure_class'}:
         original_integrity_class = adapters.WorkspaceIntegrityError
         counterfeit = type('WorkspaceIntegrityError', (Exception,), {
             '__module__': adapters.__name__, '__qualname__': 'WorkspaceIntegrityError',
             '__doc__': original_integrity_class.__doc__,
             '__init__': original_integrity_class.__init__,
         })
+        if case == 'rebound_closure_class':
+            from types import FunctionType
+            def cell(value):
+                return (lambda: value).__closure__[0]
+            def foreign_string(self):
+                raise AssertionError('exception text must never be inspected')
+            original_init = original_integrity_class.__init__
+            closure = tuple(cell(counterfeit) if name == '__class__' else old
+                            for name, old in zip(original_init.__code__.co_freevars,
+                                                 original_init.__closure__))
+            counterfeit.__init__ = FunctionType(original_init.__code__, original_init.__globals__,
+                                               original_init.__name__, original_init.__defaults__, closure)
+            counterfeit.__str__ = foreign_string
+            assert counterfeit is not original_integrity_class
+            assert counterfeit.__init__ is not original_init
+            assert counterfeit.__init__.__code__ is original_init.__code__
+            cells = dict(zip(counterfeit.__init__.__code__.co_freevars,
+                             counterfeit.__init__.__closure__))
+            assert cells['__class__'].cell_contents is counterfeit
+            assert vars(counterfeit)['__str__'] is foreign_string
         monkeypatch.setattr(adapters, 'WorkspaceIntegrityError', counterfeit)
     class Foreign(policy.ActiveAuthorityPolicyError):
         pass
@@ -766,7 +787,7 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
                 raise Foreign('PLANTED_CREDENTIAL /private/path')
             if case == 'foreign_inner':
                 raise policy.ActiveAuthorityPolicyError('PLANTED_CREDENTIAL /private/path')
-            if case in {'source_class', 'copied_method_class'}:
+            if case in {'source_class', 'copied_method_class', 'rebound_closure_class'}:
                 if case == 'copied_method_class':
                     counterfeit_error = adapters.WorkspaceIntegrityError.__new__(adapters.WorkspaceIntegrityError)
                     BaseException.__init__(counterfeit_error, 'PLANTED_CREDENTIAL /private/path')
@@ -792,10 +813,11 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
     capture._install_capture()
     try:
         with pytest.raises(ValueError if case == 'builtin_known' else adapters.WorkspaceIntegrityError
-                           if case in {'source_class', 'copied_method_class'} else policy.ActiveAuthorityPolicyError) as caught:
+                           if case in {'source_class', 'copied_method_class', 'rebound_closure_class'} else policy.ActiveAuthorityPolicyError) as caught:
             owner._run_agent('TASK-001', 'engineering_head', 'PLANTED_PROMPT')
         assert caught.value is seen[0]
         assert disk_before == Path(policy.__file__).read_bytes()
+        assert adapters_disk_before == Path(adapters.__file__).read_bytes()
         row = guest._read_two_org_prelaunch_exception(
             directory, 'alpha', deadline=time.monotonic() + 1,
             revision='a' * 40, source_digest=binding['digest'],
@@ -806,11 +828,11 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
             if case in {'copied_class', 'copied_class_exact', 'foreign_class'}:
                 assert row['exception'] == 'unknown'
             elif case == 'source_class':
-                assert row['exception'] == 'runtime.orchestrator.workspace_adapters.WorkspaceIntegrityError'
+                assert row['exception'] == 'unknown'  # custom defining types are not authenticated
             elif case == 'builtin_known':
                 assert row['exception'] == 'builtins.ValueError'
             else:
-                assert row['exception'] == 'unknown'  # docstring-only class cannot establish identity
+                assert row['exception'] == 'unknown'  # custom defining types are not authenticated
             assert row['symbol'] == ('runtime.orchestrator.active_authority_policy.resolve_active_team_policy_snapshot'
                                      if case in {'known', 'copied_class', 'copied_class_exact'} else
                                      'runtime.infrastructure.db.authority_policy.AuthorityPolicyMixin._validate_authority_selector_team'
