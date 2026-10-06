@@ -106,8 +106,118 @@ def _run_client(host: str, port: int, args: list[str], timeout: int = 20) -> dic
         text=True,
         timeout=timeout,
     )
-    assert proc.returncode == 0, f"client failed: {proc.stderr}"
+    assert proc.returncode == 0, "client_exit_nonzero"
     return json.loads(proc.stdout)
+
+
+# Only the shipping readiness CLI's closed categories are admitted for failure evidence.
+_DIY_GATE_CATEGORIES = {
+    "daemon_loopback": {"daemon_loopback_ok", "daemon_unavailable"},
+    "credential_permissions": {"credential_ok", "credential_unreadable"},
+    "current_policy": {"policy_current", "policy_missing", "policy_malformed",
+                       "policy_compile_failed", "policy_apply_failed", "policy_denied",
+                       "policy_rollback", "policy_stale", "policy_future"},
+    "bind_identity": {"identity_ok", "identity_denied", "identity_mismatch"},
+    "trust_state": {"state_ok", "state_unavailable", "state_corrupt"},
+}
+
+
+def _admit_readiness_report(data: bytes, status: int) -> dict:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("readiness_unavailable")
+            result[key] = value
+        return result
+    if len(data) > 8192 or status not in (0, 1):
+        raise ValueError("readiness_unavailable")
+    report = json.loads(data, object_pairs_hook=unique)
+    if (not isinstance(report, dict) or set(report) != {"ready", "gates"}
+            or type(report["ready"]) is not bool or not isinstance(report["gates"], dict)
+            or set(report["gates"]) != set(_DIY_GATE_CATEGORIES)):
+        raise ValueError("readiness_unavailable")
+    for name, gate in report["gates"].items():
+        if (not isinstance(gate, dict) or set(gate) != {"ok", "category"}
+                or type(gate["ok"]) is not bool or not isinstance(gate["category"], str)
+                or gate["category"] not in _DIY_GATE_CATEGORIES[name]):
+            raise ValueError("readiness_unavailable")
+    if (report["ready"] != all(gate["ok"] for gate in report["gates"].values())
+            or status != (0 if report["ready"] else 1)):
+        raise ValueError("readiness_unavailable")
+    return report
+
+
+def _bounded_readiness_command(config_path: Path) -> tuple[bytes, int]:
+    deadline = time.monotonic() + 5
+    proc = None
+    selector = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "runtime.remote_access.cli", "readiness", "--config", str(config_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        selector = selectors.DefaultSelector()
+        os.set_blocking(proc.stdout.fileno(), False)
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        data = bytearray()
+        while time.monotonic() < deadline:
+            events = selector.select(timeout=max(0, deadline - time.monotonic()))
+            if not events:
+                break
+            chunk = os.read(proc.stdout.fileno(), 8193 - len(data))
+            if not chunk:
+                return bytes(data), proc.wait(timeout=max(0, deadline - time.monotonic()))
+            data.extend(chunk)
+            if len(data) > 8192:
+                raise ValueError("readiness_unavailable")
+        raise ValueError("readiness_unavailable")
+    finally:
+        # Observation owns its command, selector and pipe. Attempt every finalizer.
+        failures = False
+        for action in (
+            lambda: proc.kill() if proc is not None and proc.poll() is None else None,
+            lambda: proc.wait(timeout=1) if proc is not None else None,
+            lambda: proc.stdout.close() if proc is not None and proc.stdout is not None else None,
+            lambda: selector.close() if selector is not None else None,
+        ):
+            try:
+                action()
+            except BaseException:
+                failures = True
+        if failures:
+            raise ValueError("readiness_unavailable")
+
+
+def _diy_failure_facts(config_path: Path, proc, daemon) -> dict:
+    facts = {"readiness": "unavailable", "connector": "unavailable", "daemon": "unavailable"}
+    try:
+        status = proc.poll() if proc is not None else None
+        if proc is not None and (status is None or (type(status) is int and -128 <= status <= 255)):
+            facts["connector"] = {"state": "running" if status is None else "exited", "status": status}
+    except BaseException:
+        pass
+    try:
+        facts["daemon"] = {"thread_alive": bool(daemon._thread.is_alive()),
+                           "server_open": daemon._server.fileno() >= 0,
+                           "released": bool(daemon.release.is_set())}
+    except BaseException:
+        pass
+    try:
+        data, status = _bounded_readiness_command(config_path)
+        report = _admit_readiness_report(data, status)
+        facts.update(readiness="observed", ready=report["ready"], gates=report["gates"])
+    except BaseException:
+        pass
+    return facts
+
+
+def _record_diy_failure(primary: BaseException, observe) -> None:
+    try:
+        primary.add_note("DIY_FAILURE_FACTS " + json.dumps(observe(), sort_keys=True, separators=(",", ":")))
+    except BaseException:
+        # Neither observations nor note/finalizer failures replace the primary.
+        pass
 
 
 def _wait_until(predicate, timeout: float = 30.0, interval: float = 0.2, what: str = "condition") -> None:
@@ -373,6 +483,9 @@ def test_real_diy_acceptance(tmp_path) -> None:
             transcript_path = tmp_path / "acceptance-transcript.txt"
             transcript_path.write_text("\n".join(transcript) + "\n")
             print(f"\n=== ACCEPTANCE TRANSCRIPT ===\n{chr(10).join(transcript)}\n=== END TRANSCRIPT ===")
+        except BaseException as primary:
+            _record_diy_failure(primary, lambda: _diy_failure_facts(config_path, proc, daemon))
+            raise
         finally:
             if proc is not None and proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)

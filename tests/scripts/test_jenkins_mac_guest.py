@@ -703,3 +703,70 @@ def test_two_org_prelaunch_installer_authenticates_real_source_and_closed_symbol
             assert row == {"org": "alpha", "prelaunch_capture": "unavailable"}, row
     finally:
         connection.close()
+
+
+@pytest.mark.parametrize('case', ['known', 'foreign_inner', 'foreign_class', 'source_changed'])
+def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkeypatch, case):
+    """Pure resolver/thrower control: no executor, daemon or provider launch."""
+    import threading
+    from types import SimpleNamespace
+    from tests.helpers.two_org_prelaunch_capture import sitecustomize as capture
+    from runtime.orchestrator import active_authority_policy as policy
+    from runtime.orchestrator.orchestrator import Orchestrator
+    source = Path(__file__).resolve().parents[2]
+    directory = tmp_path / 'capture'
+    directory.mkdir(mode=0o700)
+    binding = capture.source_binding(source, 'a' * 40, deadline=time.monotonic() + 1)
+    if case == 'source_changed':
+        binding['hashes']['runtime.orchestrator.active_authority_policy'] = 'c' * 64
+    binding_file = directory / 'binding.json'
+    binding_file.write_text(json.dumps(binding))
+    binding_file.chmod(0o600)
+    monkeypatch.setenv('HAPPYRANCH_TWO_ORG_CAPTURE', str(binding_file))
+    monkeypatch.setattr(sys, 'orig_argv', [sys.executable, '-m', 'runtime.daemon'])
+    monkeypatch.syspath_prepend(str(source / 'tests/helpers/integration_stub_guard'))
+    monkeypatch.setattr(Orchestrator, '_run_agent', Orchestrator._run_agent)
+    # The resolver itself is real; only roster eligibility and storage are doubles.
+    monkeypatch.setattr(policy, 'resolve_policy_manager_team', lambda **kwargs: 'engineering')
+    seen = []
+    class Foreign(policy.ActiveAuthorityPolicyError):
+        pass
+    def invocation(*args, **kwargs):
+        try:
+            if case == 'foreign_class':
+                raise Foreign('PLANTED_CREDENTIAL /private/path')
+            if case == 'foreign_inner':
+                raise policy.ActiveAuthorityPolicyError('PLANTED_CREDENTIAL /private/path')
+            policy.resolve_active_team_policy_snapshot(
+                store=SimpleNamespace(get_authority_selector=lambda team: None),
+                root=tmp_path, teams=None, team='engineering',
+                agent_name='engineering_head', eligible=True,
+            )
+        except BaseException as exc:
+            seen.append(exc)
+            raise
+    monkeypatch.setattr(Orchestrator, '_run_agent_impl', invocation)
+    connection = sqlite3.connect(':memory:')
+    connection.execute('CREATE TABLE audit_log(task_id TEXT,action TEXT)')
+    owner = Orchestrator.__new__(Orchestrator)
+    owner._slug = 'alpha'
+    owner._db = SimpleNamespace(_conn=connection, _lock=threading.RLock())
+    capture._install_capture()
+    try:
+        with pytest.raises(policy.ActiveAuthorityPolicyError) as caught:
+            owner._run_agent('TASK-001', 'engineering_head', 'PLANTED_PROMPT')
+        assert caught.value is seen[0]
+        row = guest._read_two_org_prelaunch_exception(
+            directory, 'alpha', deadline=time.monotonic() + 1,
+            revision='a' * 40, source_digest=binding['digest'],
+        )
+        if case == 'source_changed':
+            assert row == {'org': 'alpha', 'prelaunch_capture': 'unavailable'}
+        else:
+            assert row['exception'] == ('unknown' if case == 'foreign_class' else
+                'runtime.orchestrator.active_authority_policy.ActiveAuthorityPolicyError')
+            assert row['symbol'] == ('runtime.orchestrator.active_authority_policy.resolve_active_team_policy_snapshot'
+                                     if case == 'known' else 'unknown')
+            assert 'PLANTED' not in json.dumps(row) and '/private/path' not in json.dumps(row)
+    finally:
+        connection.close()

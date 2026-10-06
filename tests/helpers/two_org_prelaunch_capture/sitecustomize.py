@@ -27,9 +27,40 @@ MODULE_SYMBOLS = {
         "ensure_system_contracts_materialized", "validate_workspace_skills_integrity",
     ),
     "runtime.orchestrator.executors": ("_resolve_binary",),
+    # Inspected pre-session policy closure; only these original code objects.
+    "runtime.orchestrator.active_authority_policy": (
+        "assert_no_reserved_team_policy_header", "resolve_policy_manager_team",
+        "resolve_active_team_policy_snapshot", "persist_session_policy_binding",
+        "render_selected_team_policy", "render_active_team_policy",
+        "render_active_team_policy_v2", "_legacy_binding_payload", "_selector_binding_payload",
+    ),
+    "runtime.orchestrator.authority_policy_store": (
+        "AuthorityPolicyStore.get_authority_selector", "AuthorityPolicyStore.get_activation",
+        "AuthorityPolicyStore.get_release", "AuthorityPolicyStore.get_v2_activation",
+        "AuthorityPolicyStore.get_v2_release",
+    ),
+    "runtime.infrastructure.db.authority_policy": (
+        "AuthorityPolicyMixin.get_authority_selector",
+        "AuthorityPolicyMixin._get_authority_selector_uncommitted",
+        "AuthorityPolicyMixin._load_authority_selector_history_chain",
+        "AuthorityPolicyMixin._authority_policy_selector_from_row",
+        "AuthorityPolicyMixin._authenticate_authority_selector_control_audit",
+        "AuthorityPolicyMixin._validate_authority_selector_team",
+        "AuthorityPolicyMixin.get_authority_policy_activation",
+        "AuthorityPolicyMixin.get_authority_policy_release",
+        "AuthorityPolicyMixin.get_authority_policy_v2_activation",
+        "AuthorityPolicyMixin.get_authority_policy_v2_release",
+        "AuthorityPolicyMixin._authority_policy_activation_from_row",
+        "AuthorityPolicyMixin._authority_policy_release_from_row",
+        "AuthorityPolicyMixin._authority_policy_v2_activation_from_row",
+        "AuthorityPolicyMixin._authority_policy_v2_release_from_row",
+        "AuthorityPolicyMixin.bind_authority_policy_legacy_session",
+        "AuthorityPolicyMixin.bind_authority_policy_v2_session",
+    ),
 }
 EXCEPTION_NAMES = frozenset({"unknown", "builtins.RuntimeError", "builtins.ValueError",
                             "builtins.OSError", "builtins.TimeoutError",
+                            "runtime.orchestrator.active_authority_policy.ActiveAuthorityPolicyError",
                             "runtime.orchestrator.orchestrator.WorkspaceNotInitialized",
                             "runtime.orchestrator.orchestrator.AgentUnavailableError",
                             "runtime.orchestrator.executors.ExecutorBinaryBlocked",
@@ -163,7 +194,10 @@ def _install_capture():
         module_name, _, symbol = name.rpartition(".")
         module = modules.get(module_name)
         if module is not None:
-            classes[getattr(module, symbol)] = name
+            value = getattr(module, symbol)
+            if (isinstance(value, type) and issubclass(value, BaseException)
+                    and value.__module__ == module_name and value.__qualname__ == symbol):
+                classes[value] = name
     orchestrator = modules["runtime.orchestrator.orchestrator"].Orchestrator
     original = orchestrator._run_agent
     seen = set()

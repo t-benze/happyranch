@@ -45,6 +45,13 @@ pin change. Historical two-org cause is UNKNOWN, and the 28 unavailable systemd
 nodes remain UNTESTED. SSE acceptance retains bounded first-frame admission,
 heartbeat/no-action controls, causal revoke/remove/reopen assertions and owned
 failure-path cleanup; a timeout is never credited as stream closure.
+The two-org observer's static identities include the inspected pre-session active
+policy resolver and authenticated selector readers; unlisted inner frames remain
+unknown. Full DIY acceptance records failure-only readiness facts through the
+shipping `remote_access.cli readiness` command (5-second deadline, 8192-byte cap),
+closed gate categories/booleans and owned connector/fake-daemon state. Observation
+failure stays unavailable and preserves the original exception and finalizers;
+raw command output and configuration are never exported by this observation.
 
 ## Prerequisites
 
