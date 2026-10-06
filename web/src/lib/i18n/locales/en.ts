@@ -635,7 +635,7 @@ export const en = {
   'settings.preferences.status.failed':
     'Could not save in this browser. The language applies to this session only.',
   'settings.preferences.coverageDisclosure':
-    'Preview: some secondary pages are not translated yet and may still appear in English.',
+    'English and Simplified Chinese are available. Your saved choice comes first; otherwise, we follow your browser language.',
   // @w2c-end:preferences
 
   // --- W2c: settings/assistant (anchor; keys go below) ---
