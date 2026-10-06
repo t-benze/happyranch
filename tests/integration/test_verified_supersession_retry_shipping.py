@@ -302,7 +302,7 @@ def test_installed_verified_supersession_retry(tmp_path: Path, monkeypatch: pyte
     """Installed candidate: real Codex/CLI callback through verified cross-root retry."""
     if not Path("/proc").is_dir():
         pytest.skip("assigned installed identity proof requires Linux /proc")
-    candidate_python = Path(os.environ["CANDIDATE_PY"]).resolve()
+    candidate_python = Path(os.environ["CANDIDATE_PY"]).absolute()
     expected_source = Path(os.environ["EXPECTED_SOURCE"]).resolve()
     expected_sha = os.environ["EXPECTED_SHA"]
     assert candidate_python.is_file()
@@ -330,12 +330,6 @@ def test_installed_verified_supersession_retry(tmp_path: Path, monkeypatch: pyte
     fake_codex.chmod(0o755)
     _write_driver(proof)
     launcher = _write_launcher(proof)
-    bin_dir = proof / "bin"
-    bin_dir.mkdir()
-    _write_executable(
-        bin_dir / "happyranch",
-        f"#!/usr/bin/env bash\nset -euo pipefail\nexec {candidate_python} -m cli.main \"$@\"\n",
-    )
     plan = proof / "plan.sh"
     _write_executable(
         plan,
@@ -345,9 +339,18 @@ def test_installed_verified_supersession_retry(tmp_path: Path, monkeypatch: pyte
         '"$task_id" "$session_id" "$org_slug" "$agent"\n',
     )
 
+    from tests.helpers.deterministic_plan import approve_plan
+    approve_plan(plan)
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
     monkeypatch.setenv("HAPPYRANCH_DAEMON_PORT", "0")
-    save_registry({"codex": str(fake_codex)})
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    binding["stubs"]["codex"]["path"] = str(fake_codex)
+    test_manifest = proof / "stub-manifest.json"
+    test_manifest.write_text(json.dumps(binding, sort_keys=True))
+    test_manifest.chmod(0o600)
+    monkeypatch.setenv("HAPPYRANCH_TEST_PARENT_MANIFEST", str(test_manifest))
+    save_registry({p: row["path"] for p, row in binding["stubs"].items()})
     environment = os.environ.copy()
     environment.update({
         "HAPPYRANCH_DAEMON_HOME": str(daemon_home),
@@ -358,9 +361,8 @@ def test_installed_verified_supersession_retry(tmp_path: Path, monkeypatch: pyte
         "EXPECTED_SOURCE": str(expected_source),
         "EXPECTED_SHA": expected_sha,
         "PROOF_ROOT": str(proof),
-        "PATH": str(bin_dir) + os.pathsep + environment["PATH"],
+        "PATH": environment["PATH"],
     })
-    environment.pop("PYTHONPATH", None)
     environment.pop("HAPPYRANCH_TASK_TMP_ROOT", None)
     environment.pop("HAPPYRANCH_TASK_SCRATCH_MANIFEST", None)
     stdout_log = (proof / "daemon.stdout").open("wb")

@@ -10,6 +10,7 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from tests.integration.conftest import seed_workspace
+from tests.helpers.integration_stub_guard.guard import assert_launch_witness
 
 
 pytestmark = pytest.mark.integration
@@ -169,6 +170,7 @@ def test_register_and_run_completes_via_callback(
     assert body["task"]["status"] == "completed"
     assert any(res["session_id"] for res in body["results"])
     assert body["task"].get("note") != "agent session failed"
+    assert_launch_witness("claude")
 
 
 def test_completion_callback_rejected_when_session_unknown(
@@ -329,6 +331,7 @@ def test_register_and_run_completes_via_codex_callback(
     assert body["task"]["status"] == "completed"
     assert body["task"]["assigned_agent"] == "engineering_head"
     assert any(res["session_id"] for res in body["results"])
+    assert_launch_witness("codex")
 
 
 def test_mixed_fleet_roundtrip_uses_claude_and_codex(
@@ -551,3 +554,16 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
     pre_task = r_pre.json()["task"]
     assert pre_task["status"] == "superseded"
     assert pre_task["block_kind"] is None
+
+
+def test_deterministic_provider_nonzero_is_real_launch_failure(live_daemon, runtime, fake_plan_env):
+    """An explicit failing executable plan exercises real orchestration failure."""
+    fake_plan_env.write_text("#!/bin/sh\nexit 7\n")
+    seed_workspace(runtime, "engineering_head")
+    base = f"http://127.0.0.1:{live_daemon}/api/v1/orgs/test"
+    task_id = _submit_task(base, brief="explicit deterministic failure")
+    assert _wait_for_terminal_status(base, task_id, timeout=20) == "failed"
+    audit = httpx.get(f"{base}/audit", params={"task_id": task_id},
+                     headers=_auth_headers(), timeout=5).json()["entries"]
+    assert any(row["action"] == "session_start" for row in audit), "failure occurred before executable launch"
+    assert_launch_witness("claude", callbacks=0)

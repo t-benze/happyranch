@@ -17,103 +17,32 @@ on the candidate branch instead. The other local commands in this guide remain
 available; Mac integration verification uses the separately authorized
 disposable container-VM path.
 
+The ordinary nightly selection remains `tests/ -m integration`; the launcher
+`uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
+fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.
+It uses only source-hashed deterministic Claude/Codex/OpenCode stubs and an exact
+candidate-Python/tested-source completion CLI. Every plan is explicitly written
+through the test plan fixture and hash-approved; missing/stale/unexpected or
+nonexecutable identities fail visibly before execution. Intentional no-ops require
+explicit plans. Stub argv witnesses retain only fixed flags/counts and digests;
+callback witnesses bind the actual CLI source. No provider PATH fallback or model
+network request is permitted. The unit/Web targets keep their existing selections.
 
-The existing manual nightly workflow also accepts the fixed internal `mode=diy-proof`,
-`phase=proof-admission|proof-causality|proof-protocol-cleanup|repeat-1..repeat-5`
-and `expected_candidate=<40-character committed SHA>` inputs. Dispatch on the
-maker branch; the hash is an equality guard and targeted checkout uses the event
-SHA. Raw inputs are validated before dependency sync or pytest; only validated
-`full` selects the original full-suite command. Run the eight targeted phases
-serially at one immutable candidate, reconciling each exact run/attempt, source
-manifest, actual JUnit nodes, restoration, owned cleanup and uploaded artifact
-before the next request. The unchanged 30-minute cap allocates 300s setup, 30s
-identity, 1260s payload, 60s cleanup, 90s finalization/upload and 60s contingency;
-no input accepts arbitrary commands, selectors, source overlays or credentials.
-`TARGETED DIY` receipts/artifacts are separate from default nightly evidence,
-old-pin Jenkins, ARM64 and general integration coverage. Missing/ambiguous
-identity, skip, cleanup or upload is incomplete; a phase exit zero is not QA.
-Real integration execution remains forbidden on the Linux daemon host. General
-integration is SKIPPED under THR-243 seq42; this bounded disposable proof is
-separately authorized. Default/scheduled behavior and reporting are unchanged.
-
-On a targeted command failure, the driver retains completed command receipts and
-sanitized failed-command JUnit/status, fixed failure category and observed owned
-group/pipe cleanup. Ordinary assertion failures also retain only an allowlisted
-test module and a positive source line validated against the candidate source,
-candidate/source digests, and fixed assertion or failure-boundary categories.
-For exactly `tests/remote_access/test_diy_acceptance.py::test_real_diy_acceptance`,
-only uniquely resolved top-level `_run_client` and `_wait_until` helpers directly
-called by that test additionally own assertion sites. No transitive or unlisted
-helper is eligible. A validated assertion site is `assert` or an explicit literal
-builtin `AssertionError` raise; source bindings or shadowing refuse the raise.
-This records an observed boundary, never a transport, authentication or launch
-cause. Serialized failure projections alone carry a closed rejection reason:
-`not_owned`, `not_assertion`, `out_of_range`, `helper_unavailable`, or null.
-Missing/foreign/ambiguous/source-unknown gates keep null reasons; invalid sites
-export no rejected line. Safe JUnit and stdout/stderr carry no reason. Absent,
-malformed, foreign or ambiguous locations remain unknown; oversized or malformed
-private JUnit is refused. Assertion values remain unknown. Raw assertions, code,
-locals, credentials and child output remain private.
-For that exact test, only the unique source-validated `_run_client` return-code
-assertion additionally carries a fixed JSON-only `client` object: `caller_line`,
-static `action` (`redeem`/`request`), `returncode`, `outcome` (`exit`/`signal`/`unknown`)
-and `exception`. The caller must be one observed frame at a unique single-line
-direct call in the selected function; action comes only from the first literal
-item of its third positional list operand. A valid caller can have a null action.
-Only the final owned helper frame's canonical rewritten integer comparison admits
-exits 1..255 or signals -64..-1. Class observations require one normal traceback
-with source-bound `main` and `_request` frames in the manifest-authenticated fixed
-client file, and one terminal `http.client.RemoteDisconnected`,
-`ConnectionResetError`, `ConnectionRefusedError` or `TimeoutError` token. Suffixes,
-arguments, values, paths and captured output remain private. Caller, result and
-class groups are independently nullable after common ownership gates. Optional
-malformed, ambiguous, unsafe or over-16KiB/128-line text stays unknown without
-changing the original failure, location, exit or budget; existing whole-JUnit and
-receipt gates still control. Whitespace-only trailing stderr continuation is
-nontext. Safe JUnit and stdout/stderr carry neither this object nor its keys.
-These are observations, never cause or historical attribution; deleted private
-history remains unknown.
-Receipt finalization uses sorted compact JSON with default ASCII escaping and
-preserves every field, type, null and ordered command record. The unchanged
-65536-byte/privacy/evidence guards still refuse oversized or unsafe receipts.
-This is a conditional finite size envelope: complete serialization is required
-when the encoded receipt fits, not guaranteed for arbitrary identity strings or
-failure multiplicities. A 61-failure overcap receipt still refuses; nothing is
-truncated or inferred. Owned-cleanup consumers compare parsed values, and a late
-final-target write failure remains incomplete despite successful XML/cleanup.
-Historical missing command metadata and failure categories remain unknown.
-
-Common finalization independently observes every returned command's owned group
-absence/direct-child reap and closed pipes (including the failed command), exact
-source restoration, and removal of the invocation's private directory. The
-bounded owned-cleanup artifact and receipt preserve true, false and unknown
-observations on both success and failure; a failed test stays failed even when
-its owned cleanup is complete. Interrupted results or pre-admission refusals
-cannot borrow prior cleanup evidence, and cleanup exceptions preserve the
-primary failure. This is invocation-owned evidence, not OS-wide absence;
-uncatchable termination remains incomplete. Historical unknown receipts remain
-unknown. A corrective head requires renewed final-head proof and CI.
-
-DIY owned cleanup contains individual operation failures and attempts every registered
-resource within one shared 25s deadline, followed by the frozen fixture's 5s
-allowance. Clients and CLI children precede the connector, then fixture shutdown.
-Delivered TERM keeps its 10s grace; refused TERM falls back to KILL without that
-grace. Expired waits receive zero, never a renewed positive allowance. Descriptor,
-selector and watchdog finalizers continue after faults; refusal, survivor and
-unavailable observations remain truthful. The original primary and traceback
-survive with private category-only notes; cleanup errors without a primary fail.
-The fixed program retains all original 94/41/61 nodes and adds 18 cleanup leaves:
-112 isolated nodes, 59 acceptance and 61 reporting siblings, 120 distinct nodes
-and 232 passing observations per complete repeat. All 50 mutation pairs plus the
-separate pre-fix-owner assertion RED/restored GREEN require exact bytes and modes
-restoration. Protocol restoration groups are D39/E28; its reservation is 1005s.
-Repeat isolation reserves 661.8+15=676.8s under 677s, and siblings reserve
-420+120+15=555s under 555s. Each lane includes 15s bookkeeping; joint reservation
-1231.8s and ceiling sum 1232s fit the unchanged 1260s payload/1800s job. Static
-inventory and actual command bounds must agree; measured overruns refuse.
-Selected 270s, E9 10s, actual 25+5s cleanup, TERM 10s and 16s controls remain.
-All eight phases and five isolated plus five sibling observations authenticate one
-frozen candidate; definitions and historical results are not repaired-head proof.
+Only the original concurrent alpha/beta two-org case opts into the observational
+`tests/helpers/two_org_prelaunch_capture/sitecustomize.py` helper. It calls the
+original `_run_agent` unchanged, records only escaping pre-session exceptions for
+alpha/beta TASK-001 and rethrows unchanged. Records contain closed class/symbol/code
+identities and authenticated source SHA/digest, never exception text, notes, prompts,
+tokens, paths, locals, argv or environment. Each task has at most one private atomic
+record <=1KiB; unknown identities stay `unknown`, and failed capture stays unavailable.
+The guest collector accepts only owned, complete, unchanged, private records and
+an independently supplied `--source-sha` alongside its existing `--source`; no source
+identity means unavailable. Existing 64KiB diagnostic/8192-byte input limits,
+deadlines and cleanup remain. This adds no Jenkins submission, source overlay or
+pin change. Historical two-org cause is UNKNOWN, and the 28 unavailable systemd
+nodes remain UNTESTED. SSE acceptance retains bounded first-frame admission,
+heartbeat/no-action controls, causal revoke/remove/reopen assertions and owned
+failure-path cleanup; a timeout is never credited as stream closure.
 
 ## Prerequisites
 
@@ -150,7 +79,7 @@ scripts/local_ci.sh help         # List targets and caveats
 | `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
 | `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` |
 | `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration --basetemp <fresh per-run dir>` |
+| `integration` | `nightly-integration` | `uv sync --frozen; uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration --basetemp <fresh per-run dir>` |
 
 Local commands run the same test commands as the corresponding GitHub Actions job
 on your installed Python interpreter (3.12+). They **cannot** select or replace

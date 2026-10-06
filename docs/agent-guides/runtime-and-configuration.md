@@ -779,108 +779,22 @@ For where new test files belong, see the forward-only
 
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
-uv run pytest tests/ -v -m integration   # integration tests
-uv run pytest tests/ -v -m ""            # unit + integration
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable only
 ```
 
-Integration tests spawn a real daemon and fake CLIs. They are isolated from `~/.happyranch/` via `HAPPYRANCH_DAEMON_HOME`. Run integration tests locally before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
+Integration tests run real production orchestration with deterministic external
+CLI stubs in disposable GitHub runners or a separately authorized Mac Linux guest.
+The test parent is sanitized before pytest/runtime imports, with temporary homes,
+configuration, registries and runtime data plus exact source/callback/stub identity.
+Direct integration collection without that parent refuses. Never run integration
+on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
+`_nested_daemon_env` still copies the sanitized test parent and removes exactly
+its two outer containment markers; it does not sanitize a production environment.
 
-The existing manual nightly workflow also acceptsthe fixed internal `mode=diy-proof`,
-`phase=proof-admission|proof-causality|proof-protocol-cleanup|repeat-1..repeat-5`
-and `expected_candidate=<40-character committed SHA>` inputs. Dispatch on the
-maker branch; the hash is an equality guard and targeted checkout uses the event
-SHA. Raw inputs are validated before dependency sync or pytest; only validated
-`full` selects the original full-suite command. Run the eight targeted phases
-serially at one immutable candidate, reconciling each exact run/attempt, source
-manifest, actual JUnit nodes, restoration, owned cleanup and uploaded artifact
-before the next request. The unchanged 30-minute cap allocates 300s setup, 30s
-identity, 1260s payload, 60s cleanup, 90s finalization/upload and 60s contingency;
-no input accepts arbitrary commands, selectors, source overlays or credentials.
-`TARGETED DIY` receipts/artifacts are separate from default nightly evidence,
-old-pin Jenkins, ARM64 and general integration coverage. Missing/ambiguous
-identity, skip, cleanup or upload is incomplete; a phase exit zero is not QA.
-Real integration execution remains forbidden on the Linux daemon host. General
-integration is SKIPPED under THR-243 seq42; this bounded disposable proof is
-separately authorized. Default/scheduled behavior and reporting are unchanged.
-
-On a targeted command failure, the driver retains completed command receipts and
-sanitized failed-command JUnit/status, fixed failure category and observed owned
-group/pipe cleanup. Ordinary assertion failures also retain only an allowlisted
-test module and a positive source line validated against the candidate source,
-candidate/source digests, and fixed assertion or failure-boundary categories.
-For exactly `tests/remote_access/test_diy_acceptance.py::test_real_diy_acceptance`,
-only uniquely resolved top-level `_run_client` and `_wait_until` helpers directly
-called by that test additionally own assertion sites. No transitive or unlisted
-helper is eligible. A validated assertion site is `assert` or an explicit literal
-builtin `AssertionError` raise; source bindings or shadowing refuse the raise.
-This records an observed boundary, never a transport, authentication or launch
-cause. Serialized failure projections alone carry a closed rejection reason:
-`not_owned`, `not_assertion`, `out_of_range`, `helper_unavailable`, or null.
-Missing/foreign/ambiguous/source-unknown gates keep null reasons; invalid sites
-export no rejected line. Safe JUnit and stdout/stderr carry no reason. Absent,
-malformed, foreign or ambiguous locations remain unknown; oversized or malformed
-private JUnit is refused. Assertion values remain unknown. Raw assertions, code,
-locals, credentials and child output remain private.
-For that exact test, only the unique source-validated `_run_client` return-code
-assertion additionally carries a fixed JSON-only `client` object: `caller_line`,
-static `action` (`redeem`/`request`), `returncode`, `outcome` (`exit`/`signal`/`unknown`)
-and `exception`. The caller must be one observed frame at a unique single-line
-direct call in the selected function; action comes only from the first literal
-item of its third positional list operand. A valid caller can have a null action.
-Only the final owned helper frame's canonical rewritten integer comparison admits
-exits 1..255 or signals -64..-1. Class observations require one normal traceback
-with source-bound `main` and `_request` frames in the manifest-authenticated fixed
-client file, and one terminal `http.client.RemoteDisconnected`,
-`ConnectionResetError`, `ConnectionRefusedError` or `TimeoutError` token. Suffixes,
-arguments, values, paths and captured output remain private. Caller, result and
-class groups are independently nullable after common ownership gates. Optional
-malformed, ambiguous, unsafe or over-16KiB/128-line text stays unknown without
-changing the original failure, location, exit or budget; existing whole-JUnit and
-receipt gates still control. Whitespace-only trailing stderr continuation is
-nontext. Safe JUnit and stdout/stderr carry neither this object nor its keys.
-These are observations, never cause or historical attribution; deleted private
-history remains unknown.
-Receipt finalization uses sorted compact JSON with default ASCII escaping and
-preserves every field, type, null and ordered command record. The unchanged
-65536-byte/privacy/evidence guards still refuse oversized or unsafe receipts.
-This is a conditional finite size envelope: complete serialization is required
-when the encoded receipt fits, not guaranteed for arbitrary identity strings or
-failure multiplicities. A 61-failure overcap receipt still refuses; nothing is
-truncated or inferred. Owned-cleanup consumers compare parsed values, and a late
-final-target write failure remains incomplete despite successful XML/cleanup.
-Historical missing command metadata and failure categories remain unknown.
-
-Common finalization independently observes every returned command's owned group
-absence/direct-child reap and closed pipes (including the failed command), exact
-source restoration, and removal of the invocation's private directory. The
-bounded owned-cleanup artifact and receipt preserve true, false and unknown
-observations on both success and failure; a failed test stays failed even when
-its owned cleanup is complete. Interrupted results or pre-admission refusals
-cannot borrow prior cleanup evidence, and cleanup exceptions preserve the
-primary failure. This is invocation-owned evidence, not OS-wide absence;
-uncatchable termination remains incomplete. Historical unknown receipts remain
-unknown. A corrective head requires renewed final-head proof and CI.
-
-DIY owned cleanup contains individual operation failures and attempts every registered
-resource within one shared 25s deadline, followed by the frozen fixture's 5s
-allowance. Clients and CLI children precede the connector, then fixture shutdown.
-Delivered TERM keeps its 10s grace; refused TERM falls back to KILL without that
-grace. Expired waits receive zero, never a renewed positive allowance. Descriptor,
-selector and watchdog finalizers continue after faults; refusal, survivor and
-unavailable observations remain truthful. The original primary and traceback
-survive with private category-only notes; cleanup errors without a primary fail.
-The fixed program retains all original 94/41/61 nodes and adds 18 cleanup leaves:
-112 isolated nodes, 59 acceptance and 61 reporting siblings, 120 distinct nodes
-and 232 passing observations per complete repeat. All 50 mutation pairs plus the
-separate pre-fix-owner assertion RED/restored GREEN require exact bytes and modes
-restoration. Protocol restoration groups are D39/E28; its reservation is 1005s.
-Repeat isolation reserves 661.8+15=676.8s under 677s, and siblings reserve
-420+120+15=555s under 555s. Each lane includes 15s bookkeeping; joint reservation
-1231.8s and ceiling sum 1232s fit the unchanged 1260s payload/1800s job. Static
-inventory and actual command bounds must agree; measured overruns refuse.
-Selected 270s, E9 10s, actual 25+5s cleanup, TERM 10s and 16s controls remain.
-All eight phases and five isolated plus five sibling observations authenticate one
-frozen candidate; definitions and historical results are not repaired-head proof.
-
-
-`tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures.
+`tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures and write explicit
+`DeterministicPlan` bytes. Missing, changed or unavailable plans refuse before
+execution; an intentional no-op is an explicit plan. The original two-org fixture
+opts into a bounded, source-authenticated pre-session exception observer without
+changing launch, return or exception behavior. Historical two-org cause remains
+UNKNOWN; the offline missing-agent control is not a historical diagnosis.

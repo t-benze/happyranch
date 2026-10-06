@@ -94,8 +94,9 @@ def _admission_response(host: str, port: int, path: str, headers: dict):
                 pass
     watchdog = threading.Timer(_remaining(deadline), interrupt)
     watchdog.daemon = True
-    watchdog.start()
+    primary = None
     try:
+        watchdog.start()
         conn.connect()
         captured = conn.sock
         captured.settimeout(_remaining(deadline))
@@ -106,20 +107,41 @@ def _admission_response(host: str, port: int, path: str, headers: dict):
         _remaining(deadline)
         yield response, captured, deadline, watchdog
         _remaining(deadline) if expired.is_set() else None
-    except (OSError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException) as exc:
         if expired.is_set() or time.monotonic() >= deadline:
-            raise AdmissionError("deadline") from None
+            primary = AdmissionError("deadline")
+            raise primary from None
+        primary = exc
+        raise
+    except BaseException as exc:
+        primary = exc
         raise
     finally:
-        watchdog.cancel()
-        watchdog.join(timeout=1)
-        try:
-            if response is not None:
-                response.close()
-        finally:
-            conn.close()
-        if watchdog.is_alive():
-            raise AdmissionError("watchdog_cleanup")
+        cleanup_deadline = time.monotonic() + 1
+        errors = []
+        def finalize(operation, category):
+            for _ in range(2):
+                try:
+                    return operation()
+                except Exception:
+                    errors.append(category)
+            return None
+        finalize(watchdog.cancel, "watchdog")
+        finalize(lambda: watchdog.join(timeout=max(0, cleanup_deadline - time.monotonic())), "watchdog")
+        if response is not None:
+            finalize(response.close, "response")
+        finalize(conn.close, "connection")
+        if captured is not None:
+            finalize(captured.close, "socket")
+        if finalize(watchdog.is_alive, "watchdog") is not False:
+            errors.append("watchdog")
+        if errors:
+            if primary is None:
+                raise AdmissionError("owned_cleanup")
+            try:
+                primary.add_note("admission cleanup categories: " + ",".join(sorted(set(errors))))
+            except BaseException:
+                pass  # Unavailable secondary diagnostics cannot replace the primary.
 
 
 def _emit_lifecycle_record(record: dict) -> None:

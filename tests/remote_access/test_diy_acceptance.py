@@ -938,7 +938,10 @@ def _cleanup_owned(owner, daemon, primary):
         errors.append("fixture_cleanup")
     if primary is not None:
         if errors:
-            primary.add_note("owned cleanup categories: " + ",".join(sorted(set(errors))))
+            try:
+                primary.add_note("owned cleanup categories: " + ",".join(sorted(set(errors))))
+            except BaseException:
+                pass  # Preserve the primary even when secondary diagnostics refuse.
     elif errors:
         raise AssertionError("[D-cleanup] cleanup incomplete: " + ",".join(sorted(set(errors))))
 
@@ -1223,7 +1226,7 @@ def test_diy_lifecycle_records(case):
     "shared_deadline_expired", "shared_deadline_allowance_exhausted", "finalizer_error_pump_read", "finalizer_error_pipe_close",
     "finalizer_error_selector_unregister", "finalizer_error_selector_get_map", "finalizer_error_selector_close",
     "finalizer_error_watchdog_cancel", "finalizer_error_watchdog_join", "finalizer_error_descriptor_access", "no_primary",
-    "empty_exited_empty", "empty_exited_already_exited"])
+    "empty_exited_empty", "empty_exited_already_exited", "primary_note_error"])
 def test_diy_owned_cleanup(case, monkeypatch):
     if case == "success" or case not in {"admission_failure", "frame_read_failure", "cli_timeout", "close_wait_timeout", "cleanup_failure", "kill_survivor"}:
         # Faults wrap real operations. Snapshots precede independent containment;
@@ -1238,9 +1241,15 @@ def test_diy_owned_cleanup(case, monkeypatch):
         sentinel = None
         primary = AssertionError("[D-cleanup] primary retained")
         canary = "DIY_SECRET_CANARY operation details"
+        if case == "primary_note_error":
+            class Primary(AssertionError):
+                def add_note(self, value):
+                    raise OSError(canary)
+            primary = Primary("[D-cleanup] primary retained")
         marker = {
             "success": "[D5-role-order] clients before connector before fixture",
             "terminate_error": "[D5-terminate] later roles reaped",
+            "primary_note_error": "[D5-note] failed diagnostic preserves primary and finalization",
             "kill_error": "[D5-kill] later roles attempted; survivor truthful",
             "wait_poll_error_wait_once": "[D5-wait-once] finalizers completed",
             "wait_poll_error_poll_once": "[D5-poll-once] later roles attempted",
@@ -1320,7 +1329,7 @@ def test_diy_owned_cleanup(case, monkeypatch):
                     proc, role = item["proc"], item["row"]["role"]
                     first = role == "cli"
                     for method in ("terminate", "kill"):
-                        refuse = first and ((method == "terminate" and case in {"terminate_error", "no_primary"}) or
+                        refuse = first and ((method == "terminate" and case in {"terminate_error", "no_primary", "primary_note_error"}) or
                             (method == "kill" and case == "kill_error") or
                             (method == "poll" and case in {"wait_poll_error_poll_once", "wait_poll_error_poll_unknown"}))
                         persistent = case in {"kill_error", "wait_poll_error_poll_unknown"}
@@ -1415,7 +1424,7 @@ def test_diy_owned_cleanup(case, monkeypatch):
                 assert secondary is not None and "process_cleanup" in str(secondary), f"{marker}: observed={secondary} expected=cleanup failure"
             else:
                 assert secondary is None, f"{marker}: observed={secondary} expected=no replacement failure"
-            if case.startswith("finalizer_error_") or case in {"terminate_error", "kill_error", "wait_poll_error_wait_once", "wait_poll_error_poll_once", "wait_poll_error_poll_unknown", "no_primary"}:
+            if case.startswith("finalizer_error_") or case in {"terminate_error", "kill_error", "wait_poll_error_wait_once", "wait_poll_error_poll_once", "wait_poll_error_poll_unknown", "no_primary", "primary_note_error"}:
                 assert faults, f"{marker}: observed={faults} expected=reached fault boundary"
             if case == "finalizer_error_selector_close":
                 assert "descriptor" in notes and "selector:close" in captured_events, f"{marker}: observed={(notes,captured_events)} expected=attempted refused close, incomplete"

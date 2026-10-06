@@ -209,3 +209,6 @@ def test_two_orgs_run_tasks_concurrently_under_one_daemon(
     assert all("/orgs/beta/" in w for w in workspaces_b), workspaces_b
     assert all("/orgs/beta/" not in w for w in workspaces_a), workspaces_a
     assert all("/orgs/alpha/" not in w for w in workspaces_b), workspaces_b
+
+    from tests.helpers.integration_stub_guard.guard import assert_launch_witness
+    assert_launch_witness("claude", callbacks=2)

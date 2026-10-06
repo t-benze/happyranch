@@ -12,6 +12,7 @@ import yaml
 from runtime.daemon import paths as paths_mod
 from runtime.daemon import runtimes as runtimes_mod
 from runtime.runtime import RuntimeDir
+from tests.helpers.deterministic_plan import DeterministicPlan
 
 
 def pytest_configure(config):
@@ -168,33 +169,6 @@ def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> P
 
 
 @pytest.fixture
-def fake_claude(tmp_path: Path) -> Path:
-    src = Path(__file__).parent / "fake_claude.sh"
-    dst = tmp_path / "fake_claude.sh"
-    dst.write_bytes(src.read_bytes())
-    dst.chmod(0o755)
-    return dst
-
-
-@pytest.fixture
-def fake_codex(tmp_path: Path) -> Path:
-    src = Path(__file__).parent / "fake_codex.sh"
-    dst = tmp_path / "fake_codex.sh"
-    dst.write_bytes(src.read_bytes())
-    dst.chmod(0o755)
-    return dst
-
-
-@pytest.fixture
-def fake_opencode(tmp_path: Path) -> Path:
-    src = Path(__file__).parent / "fake_opencode.sh"
-    dst = tmp_path / "fake_opencode.sh"
-    dst.write_bytes(src.read_bytes())
-    dst.chmod(0o755)
-    return dst
-
-
-@pytest.fixture
 def fake_claude_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Pre-declare FAKE_CLAUDE_PLAN so the daemon inherits it at launch time.
 
@@ -203,7 +177,7 @@ def fake_claude_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     Setting the env var in the daemon's parent process is a no-op once the
     daemon is running, so this must happen during fixture setup.
     """
-    plan_path = tmp_path / "plan.sh"
+    plan_path = DeterministicPlan(tmp_path / "plan.sh")
     monkeypatch.setenv("FAKE_CLAUDE_PLAN", str(plan_path))
     return plan_path
 
@@ -211,7 +185,7 @@ def fake_claude_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
 @pytest.fixture
 def fake_codex_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Pre-declare FAKE_CODEX_PLAN so the daemon inherits it at launch time."""
-    plan_path = tmp_path / "plan_codex.sh"
+    plan_path = DeterministicPlan(tmp_path / "plan_codex.sh")
     monkeypatch.setenv("FAKE_CODEX_PLAN", str(plan_path))
     return plan_path
 
@@ -223,7 +197,7 @@ def fake_opencode_thread_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     Same shape as fake_claude_thread_plan_env but routes to a separate
     script for thread invocations (detected by `Your invocation_token:`).
     """
-    plan_path = tmp_path / "thread_plan_opencode.sh"
+    plan_path = DeterministicPlan(tmp_path / "thread_plan_opencode.sh")
     monkeypatch.setenv("FAKE_OPENCODE_THREAD_PLAN", str(plan_path))
     return plan_path
 
@@ -235,7 +209,7 @@ def fake_claude_thread_plan_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     Same shape as fake_claude_plan_env but routes to a separate script when
     the prompt is a thread invocation (detected by `Your invocation_token:`).
     """
-    plan_path = tmp_path / "thread_plan.sh"
+    plan_path = DeterministicPlan(tmp_path / "thread_plan.sh")
     monkeypatch.setenv("FAKE_CLAUDE_THREAD_PLAN", str(plan_path))
     return plan_path
 
@@ -267,6 +241,7 @@ def live_daemon(
     fake_claude_thread_plan_env,
     fake_opencode_thread_plan_env,
     monkeypatch,
+    request,
 ):
     """Start the daemon via scripts/daemon.sh and stop it after the test."""
     monkeypatch.setenv("HAPPYRANCH_CLAUDE_CLI_PATH", str(fake_claude))
@@ -291,23 +266,51 @@ def live_daemon(
 
     runtimes_mod.register(runtime_container)
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
-    subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
-    # Wait for /health to respond
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if paths_mod.port_file().exists():
-            port = paths_mod.port_file().read_text().strip()
-            try:
-                r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
-                if r.status_code == 200:
-                    yield port
-                    break
-            except httpx.HTTPError:
-                pass
-        time.sleep(0.2)
-    else:
-        raise RuntimeError("daemon failed to start")
-    subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
+    capture_binding = None
+    capture_directory = None
+    if request.node.name == "test_two_orgs_run_tasks_concurrently_under_one_daemon":
+        from tests.helpers.two_org_prelaunch_capture.sitecustomize import source_binding
+        from tests.helpers.integration_stub_guard.guard import manifest
+        parent = manifest()
+        capture_directory = tmp_home / "two-org-prelaunch"
+        capture_directory.mkdir(parents=True, mode=0o700)
+        capture_binding = source_binding(Path(parent["source"]), parent["revision"],
+                                         deadline=time.monotonic() + 1)
+        binding_path = capture_directory / "binding.json"
+        import json
+        binding_path.write_text(json.dumps(capture_binding, sort_keys=True))
+        binding_path.chmod(0o600)
+        monkeypatch.setenv("HAPPYRANCH_TWO_ORG_CAPTURE", str(binding_path))
+        observer = Path(parent["source"]) / "tests/helpers/two_org_prelaunch_capture"
+        monkeypatch.setenv("PYTHONPATH", str(observer) + os.pathsep + os.environ["PYTHONPATH"])
+    try:
+        subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
+        # Wait for /health to respond
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if paths_mod.port_file().exists():
+                port = paths_mod.port_file().read_text().strip()
+                try:
+                    r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
+                    if r.status_code == 200:
+                        yield port
+                        break
+                except httpx.HTTPError:
+                    pass
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("daemon failed to start")
+
+    finally:
+        subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
+        if capture_binding is not None:
+            from scripts.jenkins_mac_guest import _read_two_org_prelaunch_exception
+            import json
+            for org in ("alpha", "beta"):
+                row = _read_two_org_prelaunch_exception(
+                    capture_directory, org, deadline=time.monotonic() + 1,
+                    revision=capture_binding["revision"], source_digest=capture_binding["digest"])
+                print("two-org prelaunch observation: " + json.dumps(row, sort_keys=True))
 
 
 @pytest.fixture
@@ -338,19 +341,22 @@ def live_daemon_idle(
         "opencode": str(fake_opencode),
     })
     script = Path(__file__).resolve().parent.parent.parent / "scripts" / "daemon.sh"
-    subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if paths_mod.port_file().exists():
-            port = paths_mod.port_file().read_text().strip()
-            try:
-                r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
-                if r.status_code == 200:
-                    yield port
-                    break
-            except httpx.HTTPError:
-                pass
-        time.sleep(0.2)
-    else:
-        raise RuntimeError("daemon failed to start")
-    subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
+    try:
+        subprocess.run([str(script), "start"], check=True, env=_nested_daemon_env())
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if paths_mod.port_file().exists():
+                port = paths_mod.port_file().read_text().strip()
+                try:
+                    r = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=1.0)
+                    if r.status_code == 200:
+                        yield port
+                        break
+                except httpx.HTTPError:
+                    pass
+            time.sleep(0.2)
+        else:
+            raise RuntimeError("daemon failed to start")
+
+    finally:
+        subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())

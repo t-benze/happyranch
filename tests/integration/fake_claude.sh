@@ -2,6 +2,11 @@
 # Fake Claude binary — reads scripted behavior from $FAKE_CLAUDE_PLAN
 # and optionally calls happyranch to simulate an agent's session.
 set -e
+STUB_ARGV=("$@")
+if [[ -z "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" || -z "${HAPPYRANCH_TEST_STUB_GUARD:-}" ]]; then
+    echo 'deterministic stub requires isolated test parent' >&2
+    exit 86
+fi
 
 PROMPT=""
 JSON_OUTPUT=0
@@ -63,6 +68,13 @@ if [[ -n "$THREAD_INVOCATION_TOKEN" ]]; then
     # so derive the agent name from the workspace directory instead (last
     # component of PWD = <runtime>/orgs/<slug>/workspaces/<agent>).
     THREAD_AGENT="${PWD##*/}"
+    if [[ -z "${FAKE_CLAUDE_THREAD_PLAN:-}" || ! -f "$FAKE_CLAUDE_THREAD_PLAN" || ! -x "$FAKE_CLAUDE_THREAD_PLAN" ]]; then
+        echo 'deterministic stub plan missing or unavailable' >&2
+        exit 86
+    fi
+    if [[ -n "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" ]]; then
+        python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_THREAD_PLAN" "${STUB_ARGV[@]}"
+    fi
     if [[ -n "${FAKE_CLAUDE_THREAD_PLAN:-}" && -f "$FAKE_CLAUDE_THREAD_PLAN" ]]; then
         bash "$FAKE_CLAUDE_THREAD_PLAN" \
             "$THREAD_ID" "$THREAD_INVOCATION_TOKEN" "$THREAD_AGENT" "$ORG_SLUG" "$THREAD_PURPOSE" 1>&2
@@ -86,7 +98,14 @@ fi
 # any happyranch-error messages or plan diagnostic prints would otherwise corrupt
 # the JSON parse. Plans only need stdout-clean execution; their side effects
 # (calling happyranch, touching files) are unaffected.
-if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
+if [[ -z "${FAKE_CLAUDE_PLAN:-}" || ! -f "$FAKE_CLAUDE_PLAN" || ! -x "$FAKE_CLAUDE_PLAN" ]]; then
+        echo 'deterministic stub plan missing or unavailable' >&2
+        exit 86
+    fi
+    if [[ -n "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" ]]; then
+        python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_PLAN" "${STUB_ARGV[@]}"
+    fi
+    if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
     bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG" 1>&2
 fi
 
