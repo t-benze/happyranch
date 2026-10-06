@@ -448,6 +448,72 @@ fixtures stay unchanged; necessary executable task-output probes supplement
 the fourteen inherited assertion rows. Static inventories are requirements,
 not executable QA. All independent exact-head delivery gates below remain.
 
+## R3 prompt-reader ownership (TASK-9711)
+
+`runtime/orchestrator/task_prompt_headers.py` owns exactly seven unchanged
+functions: `_list_candidate_agents`, `_revisit_header_if_applicable`,
+`_auto_revisit_header`, `_resolved_escalation_header_if_applicable`,
+`_build_prior_steps_from_db`, `_summarize_recent_chain`, and
+`_fanout_join_header_if_applicable`, plus their single mutable
+`_REVISIT_DISCIPLINE_LINES` list. `run_step.py` re-exports the identical objects.
+The retained `_build_agent_prompt` composes them; its logger-dependent
+`_blocked_jobs_resume_header_if_applicable` stays in the facade. TaskStatus is
+imported at runtime; StepRecord/JSON stay local and Orchestrator stays a
+postponed, TYPE_CHECKING-only dependency. Database owns the dynamic readers,
+row-decoding errors, shared RLock and clocks. No writer or rendered behavior
+changes ownership in this slice.
+
+S8g PR #975 is a merged foundation (`74c2b0cca117445a4db2fa162242c12e94859903`);
+its successful delivery is preserved rather than rebuilt. Database escalation
+logger keepers remain retained, and result/admission writers and their actual
+callback caller remain held for #840. R1 state/cache/shared lock/__file__/whole
+clock/helper consumers remain retained. #682's **eleven-function R2** and actual
+R4/R6 completion/chain/carrier/parent/fanout collisions remain held. #684's real
+attachment insertion **and enqueue** admission overlap remains acknowledged.
+Remaining R5 callers, R4/R6, models and executors are later serial work. R3 ownership
+does not claim those units complete or authorize foreign PR repair or merge.
+TASK-9704 accepts TASK-9708's C1–C8 case design after independent DESIGN-ONLY
+TASK-9710 PASS; executable maker verification, independent full-diff review,
+executable QA and exact-head CI retain the per-slice gates below. Integration
+SUITE remains SKIPPED under Founder THR-243 seq42; selected hosted callback
+smoke remains separate and required.
+
+## R5 append/decoder ownership (TASK-9793)
+
+`runtime/orchestrator/task_thread_posting.py` owns only the unchanged
+`_append_followup_system_and_reinvoke` (113 definition lines) and
+`_payload_dict` (9 lines). `run_step.py` re-exports the same callable objects
+at their original binding sites. Local model, asyncio, ThreadJob and JSON
+imports remain local; Orchestrator remains a postponed TYPE_CHECKING-only
+dependency. Database retains cap/mint transactions, clocks, shared RLock and
+all audit/store ownership. This is a two-definition, 122-line R5 subset.
+
+The prospective `_maybe_post_thread_escalation` (119 lines) and
+`_maybe_post_thread_followup` (169 lines) stay byte-identical in `run_step.py`.
+The four-definition disposable candidate bypassed actual old-facade append
+and payload replacements through shipping completion/root-escalation and
+malformed-payload consumers after both import orders. Under patched-global
+rule 3 those two callers retain their facade globals; no bridge, wrapper or
+body change forces extraction. Retention of their 288 lines is not completed
+extraction of the original four-definition/410-line proposal.
+
+TASK-9785 explicitly accepted TASK-9736/R5/P1-P8/revision2 after independent
+DESIGN-ONLY TASK-9789 PASS. Native Impact, untouched-base observables,
+selected-only mutation/restoration receipts and subset replay live in
+dev_agent/output/TASK-9793. Existing tests and earlier landed slices remain
+unchanged. #682's eleven-function R2 and actual completion/chain/carrier/
+parent/fanout plus added followup-caller overlaps, #684's attachment insertion
+and enqueue/revisit admission, and #840's result/admission writers including
+insert_task_result remain held. R1 state/cache/lock/path/whole-clock/helper,
+R3 compositor/logger headers, Database logger, formatter/store/authority/
+routing and R4/R6/model/executor owners remain retained.
+
+Independent full-diff review, executable QA and exact-head delivery gates
+below remain required; this ownership record does not assert their verdicts
+or authorize maker merge/deployment. Integration SUITE remains SKIPPED
+Founder THR-243 seq42, including followup E2E; selected hosted Codex callback
+smoke remains a distinct requirement.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target

@@ -1710,6 +1710,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
                     attachments={m.attachments}
                     labels={{
                       declined: t('threads.page.message.declined'),
+                      mermaidLoading: t('common.mermaidLoading'),
                       systemEvent: t('threads.page.system.event'),
                     }}
                     formatTimestamp={(iso) => localeTimestamp(locale, iso)}

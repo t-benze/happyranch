@@ -366,3 +366,211 @@ def test_shipping_cli_loopback_present_invalid_values_reach_v1_validator(
     persisted = decision["_manager_self_evaluation"]
     assert persisted["_error_code"] == "malformed_output"
     assert len(persisted["payload_digest"]) == 64
+
+
+# THR-259 seq418: reporting input is synthetic, never proof of real removal.
+_CLEANUP_REPORT_INPUTS = [
+    pytest.param("completed", '{"action":"done","summary":"Removed 0; skipped 2 (live use, uncertain owner); allocated 0 B; apparent 0 B; unique reclaimed bytes unknown; report-only."}',
+                 "Independent audit not performed", "completed", id="report_only"),
+    pytest.param("completed", '{"action":"done","summary":"Removed 2; skipped 1 (protected); allocated reclaimed 8192 B; apparent removed 12288 B; filesystem delta 4096 B unattributed; unique reclaimed bytes unknown."}',
+                 "Concurrent writes prevent causal free-space attribution", "completed", id="recorded_actions"),
+    pytest.param("failed", '{"action":"done","summary":"Removed 1; skipped 2; failed 1; partial batch stopped; allocated reclaimed 4096 B; apparent removed 8192 B; residual allocated 2048 B; unique reclaimed bytes unknown."}',
+                 "Protected-path postcheck unavailable; independent audit pending", "completed", id="partial_failure"),
+    pytest.param("blocked", "Removed 0; skipped all; sizing unavailable; allocated/apparent/unique reclaimed bytes unknown; independent verification incomplete.",
+                 "Independent verification incomplete", "failed", id="unavailable"),
+    pytest.param("completed", "Removed 0; skipped 2 (live use, uncertain owner); allocated 0 B; apparent 0 B; unique reclaimed bytes unknown; report-only.",
+                 "Independent audit not performed", "escalated", id="plain_prose_control"),
+]
+
+
+def _prepare_cleanup_worker(org, monkeypatch):
+    from runtime.orchestrator.authority import StrictFakeAuthorityEvaluator
+    _seed_workspace(org, "dev_agent")
+    _install_engineering_team(org, "engineering_head")
+    evaluator = StrictFakeAuthorityEvaluator()
+    evaluator.provider_id = "strict-fake"
+    evaluator._executor_kind = "test"
+    org.orchestrator._authority_evaluator = evaluator
+    org.orchestrator._host_supervisor = None
+    # Ordinary _run_agent creates this session's actual durable/tracker binding.
+    monkeypatch.setattr(org.orchestrator, "_build_session_id", lambda: "sess-cleanup-report")
+
+
+@pytest.mark.parametrize("source", ["scheduled", "manual_alone", "manual_lf", "manual_crlf"])
+@pytest.mark.parametrize("callback_status,summary,risk,terminal_status", _CLEANUP_REPORT_INPUTS)
+def test_cleanup_shipping_callback_to_activity_and_terminal(
+    tmp_home, daemon_state, monkeypatch, tmp_path, cleanup_thread_queue, source, callback_status, summary, risk, terminal_status,
+):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    from cli.client.client import OpcClient
+    from runtime.daemon import workspace_cleanup_scheduler as wcs
+    from runtime.daemon import task_scratch_reclamation
+    from runtime.models import TaskRecord, ThreadRecord
+    from runtime.orchestrator.executors import ExecutorResult
+    from tests.test_workspace_cleanup_scheduler import _reporting_thread_state
+
+    org = daemon_state.orgs["alpha"]
+    _prepare_cleanup_worker(org, monkeypatch)
+    db = org.db
+    admissions = []
+    if source == "scheduled":
+        monkeypatch.setattr(wcs, "measure_workspace_context", lambda *a, **kw: wcs.WorkspaceContextSnapshot(
+            available=True, workspaces_bytes=1024 ** 3, workspaces_count=1,
+            largest=[("dev_agent", 1024 ** 3)],
+        ))
+        tid = asyncio.run(wcs.trigger_cleanup(org, agent="dev_agent", enqueue=lambda slug, task: admissions.append((slug, task))))
+        assert admissions == [("alpha", tid)]
+    else:
+        # Two old daemon occurrences do not grant a manual owner action authority.
+        for i in range(2):
+            db.insert_task(TaskRecord(id=f"TASK-{i+1}", brief=wcs._CLEANUP_BRIEF_MARKER+"\nprior",
+                team="engineering", assigned_agent="dev_agent", status=TaskStatus.COMPLETED,
+                created_at=datetime.now(timezone.utc)-timedelta(days=30-i)))
+            db.insert_audit_log(f"TASK-{i+1}", "dev_agent", "workspace_cleanup_triggered", {
+                "report_thread_id": None, "measurement_available": True, "measurement_reason": None,
+                "measurement_truncated": False, "run_number": i+1, "brief_kind": "report_only",
+            })
+        ending = {"manual_alone": "", "manual_lf": "\nbody", "manual_crlf": "\r\nbody"}[source]
+        tid = db.next_task_id()
+        db.insert_task(TaskRecord(id=tid, brief="HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)"+ending,
+                                  team="engineering", assigned_agent="dev_agent"))
+        org.orchestrator._paths.org_config_path.write_text("workspace_cleanup:\n  reclamation_actions_enabled: true\n")
+    before_history = db.summarize_workspace_cleanup_marker_history(wcs._CLEANUP_BRIEF_MARKER, assigned_agent="dev_agent")
+    # Historical composed-from association is never a dispatched-from identity.
+    db.insert_thread(ThreadRecord(id="THR-HISTORY", subject="Preserved historical report",
+                                 composed_by="dev_agent", composed_from_task_id=tid))
+    db.add_thread_participant("THR-HISTORY", "dev_agent", added_by="founder")
+    thread_before = _reporting_thread_state(db)
+    attempted_actions = []
+    def forbidden_action(*args, **kwargs):
+        attempted_actions.append((args, kwargs))
+        raise AssertionError("reporting must not execute cleanup")
+    monkeypatch.setattr(task_scratch_reclamation, "collect_revalidate_seal_consume_disposable", forbidden_action)
+    monkeypatch.setattr(task_scratch_reclamation, "execute_ledger", forbidden_action)
+    assert db.get_task(tid).task_type == "task"
+    assert db.get_task(tid).parent_task_id is None
+    assert db.get_task(tid).dispatched_from_thread_id is None
+    capture = _CaptureCompletionTraffic(create_app(daemon_state))
+    executor = MagicMock()
+    observed = []
+    output_dir = f"output/{tid}"
+    def activity(client):
+        r = client.get("/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity")
+        assert r.status_code == 200
+        return next(row for row in r.json()["activities"] if row["task_id"] == tid)
+    def run(**kwargs):
+        kwargs["on_started"](4243)
+        body = {"task_id": tid, "session_id": "sess-cleanup-report", "agent": "dev_agent",
+                "status": callback_status, "confidence": 80, "summary": summary,
+                "risks": [risk], "output_dir": output_dir}
+        payload_path = _completion_file(tmp_path, body)
+        _run_shipping_completion_cli(payload_path)
+        client = OpcClient.from_env()
+        first = activity(client)
+        assert first["status"] == "in_progress"
+        assert first["result_status"] == callback_status
+        assert first["output_summary"] == summary
+        observed.append(first)
+        row = db.get_latest_task_result(tid, "dev_agent", "sess-cleanup-report")
+        assert row["output_summary"] == summary and row["output_dir"] == output_dir
+        assert row["risks_flagged"] == [risk]
+        result_count = db.execute("SELECT COUNT(*) FROM task_results WHERE task_id=?", (tid,)).fetchone()[0]
+        # Exact shipping retry after tracker clearing remains idempotent.
+        _run_shipping_completion_cli(payload_path)
+        assert db.execute("SELECT COUNT(*) FROM task_results WHERE task_id=?", (tid,)).fetchone()[0] == result_count == 1
+        foreign = client.post(f"/api/v1/orgs/alpha/tasks/{tid}/completion", json={
+            "agent": "dev_agent", "session_id": "foreign-session", "status": "completed", "confidence": 80, "output_summary": "foreign"})
+        assert foreign.status_code == 409
+        assert activity(client) == first
+        assert _reporting_thread_state(db) == thread_before
+        return ExecutorResult(success=True, duration_seconds=1, session_id="provider-session")
+    executor.run.side_effect = run
+    with _LoopbackServer(capture):
+        with patch.object(org.orchestrator, "_build_executor", return_value=executor):
+            org.orchestrator.run_step(tid)
+        assert executor.run.call_count == 1
+        final = activity(OpcClient.from_env())
+    assert len(observed) == 1
+    assert final["status"] == terminal_status, db.get_task(tid).note
+    assert final["result_status"] == callback_status
+    assert final["output_summary"] == summary
+    assert [r["status"] for r in capture.records] == [200, 200, 409]
+    received = json.loads(capture.records[0]["body"])
+    assert received["output_summary"] == summary and received["risks_flagged"] == [risk]
+    assert received["output_dir"] == output_dir and "decision" not in received
+    assert _reporting_thread_state(db) == thread_before
+    assert attempted_actions == []
+    assert cleanup_thread_queue[0].size == 0
+    assert not any(a["action"] == "workspace_cleanup_reclamation_attempt" for a in db.get_audit_logs(tid))
+    after_history = db.summarize_workspace_cleanup_marker_history(wcs._CLEANUP_BRIEF_MARKER, assigned_agent="dev_agent")
+    assert after_history.count == before_history.count == (1 if source == "scheduled" else 2)
+    if source != "scheduled":
+        assert not any(a["action"] == "workspace_cleanup_triggered" for a in db.get_audit_logs(tid))
+    if callback_status == "blocked":
+        assert "self-blocked" in db.get_task(tid).note
+    if terminal_status == "escalated":
+        assert "decision" in db.get_task(tid).note and "JSON" in db.get_task(tid).note
+
+
+def test_explicit_cleanup_coordination_callback_terminal_followup(tmp_home, daemon_state, monkeypatch, tmp_path, cleanup_thread_queue):
+    import asyncio
+    from runtime.models import ThreadRecord, ThreadInvocationPurpose, ThreadMessageKind
+    from runtime.orchestrator.executors import ExecutorResult
+    org = daemon_state.orgs["alpha"]
+    _prepare_cleanup_worker(org, monkeypatch)
+    db = org.db
+    db.insert_thread(ThreadRecord(id="THR-COORD", subject="Founder-requested cleanup coordination"))
+    db.add_thread_participant("THR-COORD", "engineering_head", added_by="founder")
+    tid = db.next_task_id()
+    from runtime.models import TaskRecord
+    db.insert_task(TaskRecord(id=tid, brief="Explicit founder coordination", team="engineering",
+                              assigned_agent="dev_agent", dispatched_from_thread_id="THR-COORD"))
+    org.orchestrator._audit.log_thread_dispatch("THR-COORD", task_id=tid,
+        dispatcher="engineering_head", target_agent="dev_agent", team="engineering")
+    queue, loop = cleanup_thread_queue
+    capture = _CaptureCompletionTraffic(create_app(daemon_state))
+    executor = MagicMock()
+    def run(**kwargs):
+        kwargs["on_started"](4243)
+        _run_shipping_completion_cli(_completion_file(tmp_path, {
+            "task_id": tid, "session_id": "sess-cleanup-report", "agent": "dev_agent",
+            "status": "completed", "summary": '{"action":"done","summary":"Coordination recorded; no removal performed."}',
+        }))
+        assert db.get_task(tid).status == TaskStatus.IN_PROGRESS
+        assert not [i for i in db.list_thread_invocations("THR-COORD") if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+        return ExecutorResult(success=True, duration_seconds=1, session_id="provider-session")
+    executor.run.side_effect = run
+    with _LoopbackServer(capture):
+        with patch.object(org.orchestrator, "_build_executor", return_value=executor):
+            org.orchestrator.run_step(tid)
+    assert executor.run.call_count == 1
+    assert db.get_task(tid).status == TaskStatus.COMPLETED
+    followups = [i for i in db.list_thread_invocations("THR-COORD") if i.purpose == ThreadInvocationPurpose.TASK_FOLLOWUP]
+    assert len(followups) == 1 and followups[0].agent_name == "engineering_head"
+    job = asyncio.run_coroutine_threadsafe(queue.get(), loop).result(timeout=2)
+    assert job.org_slug == "alpha" and job.invocation_token == followups[0].invocation_token
+    messages = [m for m in db.list_thread_messages("THR-COORD") if m.kind == ThreadMessageKind.SYSTEM]
+    assert len(messages) == 1
+    assert messages[0].system_payload["kind_tag"] == "task_completed"
+    assert messages[0].system_payload["task_id"] == tid
+    assert _captured_completion_json(capture)["output_summary"] == '{"action":"done","summary":"Coordination recorded; no removal performed."}'
+
+
+@pytest.fixture
+def cleanup_thread_queue(daemon_state):
+    """Real isolated queue/loop, mirroring the existing follow-up owner fixture."""
+    import asyncio
+    from runtime.daemon.thread_queue import ThreadQueue
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    queue = ThreadQueue()
+    daemon_state.orgs["alpha"].orchestrator.attach_thread_queue(queue, loop)
+    try:
+        yield queue, loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        loop.close()

@@ -34,6 +34,7 @@ import type {
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { I18nTestBoundary } from '@/test/render';
 import { UsagePage } from './UsagePage';
+import { LOCALE_STORAGE_KEY, type Locale } from '@/lib/i18n';
 
 const getWorkload = vi.mocked(usage.getWorkload);
 const getEfficiency = vi.mocked(usage.getEfficiency);
@@ -192,7 +193,8 @@ function fullRows(overrides: Partial<Record<EfficiencyRunType, Partial<Efficienc
 /*  Render                                                              */
 /* ------------------------------------------------------------------ */
 
-function renderPage() {
+function renderPage(locale?: Locale) {
+  if (locale) localStorage.setItem(LOCALE_STORAGE_KEY, locale);
   const client = makeQueryClient();
   const utils = render(
     <MemoryRouter initialEntries={[`/orgs/${SLUG}/usage`]}>
@@ -249,6 +251,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  localStorage.removeItem(LOCALE_STORAGE_KEY);
 });
 
 /* ================================================================== */
@@ -1340,4 +1343,137 @@ describe('Usage v1 — narrow viewport and accessibility', () => {
     const efficiencyStatus = within(screen.getByRole('region', { name: 'Efficiency' })).getByRole('status');
     expect(efficiencyStatus).toHaveTextContent('Choose a CLI to see Efficiency');
   });
+});
+
+
+describe.each(['en', 'zh-CN'] as const)('Usage presentation — %s', (locale) => {
+  const zh = locale === 'zh-CN';
+  it('renders populated Workload and selected Efficiency in each locale', async () => {
+    serve(); renderPage(locale);
+    const w = await screen.findByRole('table', { name: zh ? '按代理列出的工作量' : 'Workload by agent' });
+    expect(within(w).getAllByRole('columnheader').map(h => h.textContent?.replace(/\d+$/, '').replace(/\(.*\)|（.*）/, '').trim())).toEqual(
+      zh ? ['代理', '任务运行', '线程唤醒', '已记录运行时间', '交付', '回复'] : ['Agent', 'Task runs', 'Thread wakes', 'Recorded runtime', 'Deliveries', 'Replies']);
+    expect(within(w).getByText('product_lead')).toBeInTheDocument();
+    expect(within(w).getByText(zh ? '4小时 10分钟' : '4h 10m')).toBeInTheDocument();
+    expect(screen.getByText(zh ? '最近7天 · 9月22日 14:03 – 9月29日 14:03 (Asia/Shanghai)' : 'Last 7 days · Sep 22, 14:03 – Sep 29, 14:03 (Asia/Shanghai)')).toBeInTheDocument();
+    await selectCohort('claude', 'sonnet');
+    const e = await screen.findByRole('table', { name: zh ? 'claude · sonnet 按运行类型列出的效率' : 'Efficiency by run type for claude · sonnet' });
+    expect(within(e).getAllByRole('columnheader').map(h => h.textContent?.replace(/\d+$/, ''))).toEqual(zh ?
+      ['运行类型', '运行次数', '新鲜输入中位数', '重读中位数', '输出中位数', '拒绝浪费'] :
+      ['Run type', 'Runs', 'Median fresh input', 'Median re-read', 'Median output', 'Decline waste']);
+    expect(within(e).getAllByRole('rowheader').map(h => h.firstChild?.textContent)).toEqual(zh ?
+      ['工作任务', '管理决策', '线程回复', '线程后续', '梦境'] : ['Worker task', 'Manager decision', 'Thread reply', 'Thread follow-up', 'Dream']);
+    expect(within(e).getAllByTitle('12,000')).toHaveLength(5);
+    expect(within(e).getAllByText(zh ? '1.2万' : '12.0K')).toHaveLength(5);
+    expect(screen.getByRole('button', { name: zh ? 'CLI 默认（未固定）' : 'CLI default (not pinned)' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getAllByText(zh ? '数据截至 9月29日 14:03 (Asia/Shanghai) · 生成于 9月29日 14:03' : 'Data through Sep 29, 14:03 (Asia/Shanghai) · generated Sep 29, 14:03')).toHaveLength(2);
+    expect(screen.getByRole('region', { name: zh ? '工作量表，可横向滚动' : 'Workload table, scrolls sideways' })).toHaveAttribute('tabindex', '0');
+  });
+
+  it('localizes independent loading, empty, error and retry states', async () => {
+    let finish!: (data: WorkloadResponse) => void;
+    serve({ workload: () => new Promise(resolve => { finish = resolve; }), options: async () => { throw new Error('raw daemon diagnostic'); } });
+    renderPage(locale);
+    expect(screen.getByText(zh ? '正在加载工作量' : 'Loading workload')).toHaveAttribute('role', 'status');
+    expect(await screen.findByText(zh ? '无法加载效率。' : 'Couldn’t load Efficiency.')).toBeInTheDocument();
+    expect(screen.queryByText('raw daemon diagnostic')).toBeNull();
+    getEfficiency.mockResolvedValue(efficiency({ cohorts: [] }));
+    fireEvent.click(screen.getByRole('button', { name: zh ? '重试' : 'Retry' }));
+    expect(await screen.findByText(zh ? '此期间没有 CLI/模型队列运行，因此无法在队列内比较。' : 'No CLI/model cohort has runs in this period, so there is nothing to compare within a cohort.')).toBeInTheDocument();
+    await act(async () => finish(workload([])));
+    expect(await screen.findByText(zh ? '此期间没有任务运行或线程唤醒开始。' : 'No task runs or thread wakes started in this period.')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: zh ? '工作量列定义' : 'Workload column definitions' })).toBeInTheDocument();
+    expect(screen.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('localizes retained stale figures and their original Data through', async () => {
+    serve(); const { client } = renderPage(locale);
+    await selectCohort('claude', 'sonnet');
+    await screen.findByRole('table', { name: zh ? 'claude · sonnet 按运行类型列出的效率' : 'Efficiency by run type for claude · sonnet' });
+    getWorkload.mockRejectedValue(new Error('raw diagnostic'));
+    getEfficiency.mockRejectedValue(new Error('raw diagnostic'));
+    await act(async () => { await client.invalidateQueries(); });
+    await waitFor(() => expect(screen.getAllByText(zh ? '数据过期：显示先前加载的数值。最近刷新失败。' : 'Stale: showing figures from an earlier load. The latest refresh failed.')).toHaveLength(2));
+    expect(screen.getAllByText(zh ? '数据截至 9月29日 14:03 (Asia/Shanghai)' : 'Data through Sep 29, 14:03 (Asia/Shanghai)')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'sonnet' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getAllByRole('button', { name: zh ? '重试' : 'Retry' })).toHaveLength(2);
+  });
+
+  it('localizes selected Efficiency loading and failure independently of Workload', async () => {
+    let reject!: (reason: Error) => void;
+    serve({ selected: () => new Promise((_resolve, fail) => { reject = fail; }) });
+    renderPage(locale); await selectCohort('claude', 'sonnet');
+    const section = screen.getByRole('region', { name: zh ? '效率' : 'Efficiency' });
+    expect(within(section).getByText(zh ? '正在加载效率' : 'Loading efficiency')).toHaveAttribute('role', 'status');
+    expect(screen.getByRole('table', { name: zh ? '按代理列出的工作量' : 'Workload by agent' })).toBeInTheDocument();
+    await act(async () => reject(new Error('raw diagnostic')));
+    expect(await within(section).findByText(zh ? '无法加载效率。' : 'Couldn’t load Efficiency.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'sonnet' })).toHaveAttribute('aria-pressed', 'true');
+    serve(); fireEvent.click(within(section).getByRole('button', { name: zh ? '重试' : 'Retry' }));
+    expect(await within(section).findByRole('table', { name: zh ? 'claude · sonnet 按运行类型列出的效率' : 'Efficiency by run type for claude · sonnet' })).toBeInTheDocument();
+  });
+
+  it('localizes Workload error and retry without changing Efficiency choice', async () => {
+    serve({ workload: async () => { throw new Error('raw diagnostic'); } });
+    renderPage(locale); await selectCohort('claude', 'sonnet');
+    const section = screen.getByRole('region', { name: zh ? '工作量' : 'Workload' });
+    expect(await within(section).findByText(zh ? '无法加载工作量。' : 'Couldn’t load Workload.')).toBeInTheDocument();
+    getWorkload.mockResolvedValue(workload([wAgent('Raw_Agent')]));
+    fireEvent.click(within(section).getByRole('button', { name: zh ? '重试' : 'Retry' }));
+    expect(await within(section).findByText('Raw_Agent')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'sonnet' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('localizes server comparisons, partial observations, decline and unknown coverage', async () => {
+    serve({ workload: () => workload([wAgent('Raw_Agent', { current: wPeriod({ recorded_runtime: { known: 0, total: 6, seconds: 0 }, replies: 0, reply_outcome_coverage: { recorded: 0, total_consumed: 2 }, delivery_unclassified_results: 1 }) })], true), selected: () => efficiency({ rows: fullRows({
+      worker_task: { current: ePeriod({ fresh_input: metric(12000, 18, 2), reread: metric(null, 0), output: metric(0, 20) }), previous: ePeriod(), deltas: { runs: abs(0), fresh_input: pct(-0.4), reread: withheld('invalid_baseline'), output: NEW_FROM_ZERO(0) } },
+      manager_decision: { current: ePeriod({ usage_coverage: { known: 0, total: 20, ratio: 0 }, fresh_input: metric(null, 0) }), previous: ePeriod(), deltas: { runs: withheld('future_code') } },
+      thread_reply: { current: ePeriod({ decline_waste: declines() }), previous: ePeriod({ decline_waste: declines() }), deltas: { runs: abs(2), decline_rate: pct(1), decline_output: withheld('usage_coverage_below_95_percent') } },
+      thread_followup: { current: ePeriod({ decline_waste: declines({ usage_known: 0 }) }) },
+    }), unattributed: { current: unattributed({ recovery: 1 }), previous: unattributed() } }, true) });
+    renderPage(locale); fireEvent.click(screen.getByRole('switch')); await selectCohort('claude', 'sonnet');
+    const e = await screen.findByRole('table', { name: zh ? 'claude · sonnet 按运行类型列出的效率' : 'Efficiency by run type for claude · sonnet' });
+    const w = screen.getByRole('table', { name: zh ? '按代理列出的工作量' : 'Workload by agent' });
+    expect(within(w).getByText(zh ? '未记录' : 'Not recorded')).toBeInTheDocument();
+    expect(within(w).queryByText(/^0秒$|^0s$/)).toBeNull();
+    expect(within(w).getByText(zh ? '2个回复结果未记录' : '2 reply outcome not recorded')).toBeInTheDocument();
+    expect(within(e).getAllByText('0').length).toBeGreaterThan(0);
+    expect(within(e).getByText(zh ? '部分报告' : 'Partial')).toBeInTheDocument();
+    expect(within(e).getByText(zh ? '中位数来自20次运行中的18次；2次未报告缓存写入' : 'median of 18 of 20 runs; cache write not reported for 2')).toBeInTheDocument();
+    expect(within(e).getByText(zh ? '未知' : 'Unknown')).toBeInTheDocument();
+    expect(within(e).getAllByText(zh ? '未报告' : 'Not reported').length).toBeGreaterThan(0);
+    expect(within(e).getByText('−0.4%')).toBeInTheDocument();
+    expect(within(e).getByText(zh ? '无变化' : 'No change')).toBeInTheDocument();
+    expect(within(e).getByText(zh ? '从0新增' : 'New from 0')).toBeInTheDocument();
+    expect(within(e).getByText(zh ? '不予比较：某个期间没有可比较的值。' : 'Comparison withheld: there is no comparable value in one of the periods.')).toBeInTheDocument();
+    expect(within(e).getAllByText(zh ? '此值无法比较。' : 'Comparison not available for this value.').length).toBeGreaterThan(0);
+    expect(within(e).getByText(zh ? '所有拒绝唤醒的用量均未知' : 'usage unknown for all declined wakes')).toBeInTheDocument();
+    expect(screen.getByText(zh ? '此期间的1次生命周期运行不属于任何队列，未计入上面的行。' : '1 lifecycle run in this period is outside every cohort and is not counted in the rows above.')).toBeInTheDocument();
+  });
+});
+
+it('preserves Compare, named model, focus and nodes across both locale changes without requests', async () => {
+  serve(); renderPage('en'); fireEvent.click(screen.getByRole('switch')); await selectCohort('claude', 'sonnet');
+  await efficiencyTable();
+  const toggle = screen.getByRole('switch');
+  const model = screen.getByRole('button', { name: 'sonnet' });
+  const table = await efficiencyTable();
+  model.focus();
+  for (const locale of ['zh-CN', 'en'] as const) {
+    const before = [getWorkload.mock.calls.length, getEfficiency.mock.calls.length];
+    await act(async () => {
+      localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+      window.dispatchEvent(new StorageEvent('storage', { key: LOCALE_STORAGE_KEY, newValue: locale, storageArea: localStorage }));
+    });
+    expect(screen.getByRole('switch')).toBe(toggle);
+    expect(model).toHaveFocus();
+    expect(model).toHaveAttribute('aria-pressed', 'true');
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('table', { name: locale === 'en' ? 'Efficiency by run type for claude · sonnet' : 'claude · sonnet 按运行类型列出的效率' })).toBe(table);
+    expect(screen.getByRole('heading', { name: locale === 'en' ? 'Efficiency' : '效率', level: 2 })).toBeInTheDocument();
+    expect(within(table).getAllByText(locale === 'en' ? '12.0K' : '1.2万')).toHaveLength(5);
+    expect([getWorkload.mock.calls.length, getEfficiency.mock.calls.length]).toEqual(before);
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'opus' }));
+  await waitFor(() => expect(getEfficiency).toHaveBeenCalledWith(SLUG, { compare: true, executor: 'claude', model: 'opus' }));
 });

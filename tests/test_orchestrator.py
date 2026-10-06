@@ -836,13 +836,19 @@ def test_run_agent_registers_active_session_when_tracker_attached(
     monkeypatch.setattr(orchestrator, "_build_session_id", lambda: "sess-eh")
 
     mock_executor = MagicMock()
-    mock_executor.run.return_value = ExecutorResult(
+    expected_result = ExecutorResult(
         success=True, duration_seconds=1, session_id="sess-eh",
     )
-    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
-        orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+    def run(**kwargs):
+        assert tracker.get_active(task_id, "engineering_head") == "sess-eh"
+        return expected_result
 
-    assert tracker.get_active(task_id, "engineering_head") == "sess-eh"
+    mock_executor.run.side_effect = run
+    with patch.object(orchestrator, "_build_executor", return_value=mock_executor):
+        result, report = orchestrator._run_agent(task_id, "engineering_head", "any prompt")
+
+    assert tracker.get_active(task_id, "engineering_head") is None
+    assert result is expected_result
 
 
 def test_run_step_codex_clean_omission_recovers_through_real_callback_admission(

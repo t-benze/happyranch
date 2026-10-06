@@ -301,6 +301,7 @@ describe('Job dialogs i18n', () => {
 
     const cwd = await screen.findByLabelText('覆盖工作目录');
     const dialog = dialogOwning(cwd);
+    const close = within(dialog).getByRole('button', { name: '关闭' });
     expect(within(dialog).getByRole('heading', { name: '批准并运行 JOB-0001' })).toBeInTheDocument();
     expect(within(dialog).getByText('（bash · cwd 提示：repos/app）')).toBeInTheDocument();
     expect(within(dialog).getByLabelText('超时（秒）')).toHaveValue(300);
@@ -311,7 +312,9 @@ describe('Job dialogs i18n', () => {
       await switchLocale('en');
       expect(within(dialog).getByRole('heading', { name: 'Approve & run JOB-0001' })).toBeInTheDocument();
       expect(screen.getByLabelText('Working directory override')).toBe(cwd);
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
       await switchLocale('zh-CN');
+      expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
     });
     expect(requests).toEqual([]);
     expect(screen.getByLabelText('覆盖工作目录')).toBe(cwd);
@@ -389,6 +392,7 @@ describe('Job dialogs i18n', () => {
     await user.click(await screen.findByRole('button', { name: '拒绝' }));
     const reason = await screen.findByLabelText('原因');
     const dialog = dialogOwning(reason);
+    const close = within(dialog).getByRole('button', { name: '关闭' });
     expect(within(dialog).getByRole('heading', { name: '拒绝 JOB-0001' })).toBeInTheDocument();
     expect(reason).toHaveAttribute('placeholder', '原因（必填，最多 1000 个字符）');
     await user.type(reason, 'Too risky');
@@ -396,7 +400,9 @@ describe('Job dialogs i18n', () => {
     const requests = await countRequests(async () => {
       await switchLocale('en');
       expect(screen.getByLabelText('Reason')).toBe(reason);
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
       await switchLocale('zh-CN');
+      expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
     });
     expect(requests).toEqual([]);
     expect(reason).toHaveValue('Too risky');

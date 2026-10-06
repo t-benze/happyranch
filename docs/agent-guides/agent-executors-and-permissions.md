@@ -173,6 +173,39 @@ bootstrap and same-agent overlap; codebuddy, additional contained/custom variant
 thread/dream population and genuinely nonshown follow-on reads remain separate
 canary obligations.
 
+The ordinary uncontained task launch keeps its registered runtime SID through
+internal 429 process retries, then retires only its own SessionTracker binding
+after the executor's final return or exception. Retired hints remain usable for
+memory get/search with no task/session credit. Generation-safe retirement leaves
+newer same-task generations and other same-agent tasks intact; provider identity
+and retry policy are unchanged. This ordinary source behavior does not establish
+installed, custom or contained acceptance.
+
+The observation-only G3 census is owned by actual `OrgState`/`_run_agent`, not
+executor environment hints or provider resume IDs. Each runtime entry owns one
+boot ordinal and immutable render expectation; actual started callbacks are
+occurrences under that entry, so provider retries do not add invocations.
+Terminal observation never clears another SessionTracker generation. Direct
+executor/manual/thread/dream launches create no task-bootstrap census binding.
+Observation failures do not change executor results, retries or application
+exceptions. Callback sealing performs no history acquisition; diagnostic seals
+remain `census_not_reconciled`. Bounded exhaustive read validation rejects
+moving captures and unresolved authoritative task/parent/type facts without
+changing ordinary launch/refusal behavior. These source facts confer no
+installed/epoch/collection authority.
+The seal-action `/audit` source view fingerprints declared actually loaded
+Python functions at their import origins and compares them to bounded compiled
+source without execution. It records the actual interpreter, registered
+TeamsRegistry cohort, current agent executor/model definitions, registered
+profiles, pinned provider or approved adapter/dependency file identities and
+already cached launch-backend capabilities. GET never constructs an executor,
+launches a provider, refreshes a capability probe or changes profiles. Missing,
+moving or mismatched components are bounded unavailable metadata; matching
+files in another checkout cannot impersonate loaded serving code. Same-UID
+integrity is detective only. See the corrective memory spec for exact nested
+keys and limits; this projection is not installed QA or attestation.
+
+
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
 contract by `runtime/skills/system_contracts.py`) delivers a stdlib-only guard
 script (``worktree_guard.py``) alongside its ``SKILL.md``. The guard runs at

@@ -11,15 +11,16 @@ import { Button } from '@/design-system/primitives/Button';
 import { Input } from '@/design-system/primitives/Input';
 import { Textarea } from '@/design-system/primitives/Textarea';
 import { FormField } from '@/design-system/patterns/FormField';
-import { ApiError } from '@/lib/api';
 import { useAddKBEntry, useKbRoutes } from '@/hooks/kb';
-import { KB_STRINGS, describeError } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { classifyKbError, renderKbError, type KbErrorView } from './strings';
 
 export function ComposeKbEntryDialog({
   onClose,
 }: {
   onClose: () => void;
 }): JSX.Element {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const routes = useKbRoutes();
   const mutation = useAddKBEntry();
@@ -42,7 +43,7 @@ export function ComposeKbEntryDialog({
   const [body, setBody] = useState('');
   const [sourceTask, setSourceTask] = useState('');
   const [related, setRelated] = useState('');
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<KbErrorView | null>(null);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,19 +69,19 @@ export function ComposeKbEntryDialog({
       navigate(routes.detail(result.slug));
     } catch (err) {
       setErrorMsg(
-        err instanceof ApiError ? describeError(err.code, `HTTP ${err.status}`) : String(err),
+        classifyKbError(err, 'kb.error.compose'),
       );
     }
   };
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
-          <DialogTitle>{KB_STRINGS.composeDialogTitle}</DialogTitle>
+          <DialogTitle>{t('kb.composeDialogTitle')}</DialogTitle>
         </DialogHeader>
         <form className="flex flex-col gap-3" onSubmit={onSubmit}>
-          <FormField label="Slug" htmlFor={slugId}>
+          <FormField label={t('kb.form.slug')} htmlFor={slugId}>
             <Input
               id={slugId}
               value={slug}
@@ -88,7 +89,7 @@ export function ComposeKbEntryDialog({
               required
             />
           </FormField>
-          <FormField label="Title" htmlFor={titleId}>
+          <FormField label={t('kb.form.title')} htmlFor={titleId}>
             <Input
               id={titleId}
               value={title}
@@ -96,7 +97,7 @@ export function ComposeKbEntryDialog({
               required
             />
           </FormField>
-          <FormField label="Type" htmlFor={typeId}>
+          <FormField label={t('kb.form.type')} htmlFor={typeId}>
             <Input
               id={typeId}
               value={type}
@@ -104,7 +105,7 @@ export function ComposeKbEntryDialog({
               required
             />
           </FormField>
-          <FormField label="Topic" htmlFor={topicId}>
+          <FormField label={t('kb.form.topic')} htmlFor={topicId}>
             <Input
               id={topicId}
               value={topic}
@@ -112,14 +113,14 @@ export function ComposeKbEntryDialog({
               required
             />
           </FormField>
-          <FormField label="Tags (comma-separated)" htmlFor={tagsId}>
+          <FormField label={t('kb.form.tags')} htmlFor={tagsId}>
             <Input
               id={tagsId}
               value={tags}
               onChange={(e) => setTags(e.target.value)}
             />
           </FormField>
-          <FormField label="Body (Markdown)" htmlFor={bodyId}>
+          <FormField label={t('kb.form.body')} htmlFor={bodyId}>
             <Textarea
               id={bodyId}
               value={body}
@@ -129,7 +130,7 @@ export function ComposeKbEntryDialog({
             />
           </FormField>
           <FormField
-            label="Source task (optional, e.g. TASK-0042)"
+            label={t('kb.form.source')}
             htmlFor={sourceTaskId}
           >
             <Input
@@ -139,7 +140,7 @@ export function ComposeKbEntryDialog({
             />
           </FormField>
           <FormField
-            label="Related entries (comma-separated slugs)"
+            label={t('kb.form.related')}
             htmlFor={relatedId}
           >
             <Input
@@ -148,15 +149,15 @@ export function ComposeKbEntryDialog({
               onChange={(e) => setRelated(e.target.value)}
             />
           </FormField>
-          {errorMsg && <p className="text-feedback-danger text-xs">{errorMsg}</p>}
+          {errorMsg && <p className="text-feedback-danger text-xs">{renderKbError(errorMsg, t)}</p>}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>
-              {KB_STRINGS.composeDialogCancel}
+              {t('kb.composeDialogCancel')}
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending
-                ? KB_STRINGS.composeDialogSubmitting
-                : KB_STRINGS.composeDialogSubmit}
+                ? t('kb.composeDialogSubmitting')
+                : t('kb.composeDialogSubmit')}
             </Button>
           </DialogFooter>
         </form>

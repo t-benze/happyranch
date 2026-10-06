@@ -31,6 +31,20 @@ in-memory `TeamsRegistry` agent and reconciles to the invocation's initial
 successful `0 -> 1` claim (the first two runs stay report-only); disabling the
 key affects later admissions only and cannot revoke an already admitted call.
 
+Routine scheduled and exact-marker manual cleanup reports remain durable on the
+existing agent page via ordinary completion/results (THR-259 seq418). The scheduler
+admits a clean-root task without report-thread configuration, lookup, ID allocation
+or composite creation. Task ID allocation, composition and ordinary insertion stay
+synchronous under `org.db_lock` after awaited measurement; enqueue follows successful
+insertion. Complete marker history, ordinals, cadence and deduplication are unchanged.
+There is no routine thread posting/reuse obligation. Preserve all historical threads,
+messages, associations, results and audits, explicit founder-requested coordination,
+truthful anomalies/partial failures/unknown bytes/independent verification gaps and
+the current-session final `happyranch report-completion` callback. Exact manual
+first-line display eligibility (alone/LF/CRLF) neither creates trigger audits nor
+changes daemon count or action authority. Runtime and canonical bundled-skill
+rollout require separately authorized deployment after merge.
+
 The daily trigger and manual dispatch share the ONE `workspace-cleanup` TASK
 system contract (`requires_repo=false`; source
 `runtime/skills/bundled/workspace-cleanup/SKILL.md`). Manual dispatch requires
@@ -186,6 +200,30 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   advances only its roster generation and adds no selector-history churn. Common task,
   thread, dream, wake, and schedule launch resolution is read-only and refuses
   an uninitialized selector rather than mutating authority during launch.
+- **Cutover request/recovery ownership.** `WorkflowCutoverStore` holds the
+  existing `Database._lock` plus a short `BEGIN IMMEDIATE` for each atomic
+  state/event transition and refuses caller-owned transactions. HTTP holds
+  existing `org.db_lock`; no profile lease, filesystem scan, host/network work
+  or await occurs inside the SQLite reservation. Full canonical layout/version,
+  chain cardinality/edges/keys/digests and marker pointer/time/reason are reread
+  under ownership; event1 retains its shipped identity/digest. Progressed event
+  SHA256 binds canonical UTF8 fields, fixed verifier/Founder request facts,
+  actual org and previous digest. Timestamps must be UTC, not monotonic.
+  The original foundation DDL/event1 remain unchanged. Complete F and E
+  are independently constructed release layouts; the legacy authority oracle
+  validates layout/history/data, selects that layout's whole generic+workflow
+  reference, and hashes all non-null SQL without filtering. Current v2 remains
+  observed-only. Existing-org load/enable do not install the draft extension.
+  One cold-load call before teams/settings resumes only authentic requests on E;
+  F retains history and the explicit migration remedy without advancing; pure
+  reads never advance. Enable verifies real integrity/FKs and absence of
+  contradictory work before compatibility_verified and again before enabled.
+  Disable commits its admission fence before separate drain commits. F5 closure
+  inspection retains actual owners and terminal history; queued cancellation,
+  callbacks and uncertain host reconciliation remain U2D/U4/U5 responsibilities.
+  Future activation must consume this same SQLite marker under its separately
+  accepted profile-to-org lock order; S1 ships only draft schema/validation, explicit operator migration and fresh
+  creation. Activation/dispatch/callback writers remain S2 or later.
 - **U2A/U2B boundary.** The readiness verifier is intentionally not consumed
   by task, chain, fan-out, activation, or dispatch paths yet. U2B now routes
   supported machine-global executor-profile and adapter writers through
@@ -461,7 +499,8 @@ budgets, permission evidence, atomicity, replay, and closed audit evidence
 remain authoritative. K/P retain the real claim-time schema observation (raw
 DDL digest, inventory digest, and object count), but v2 never compares or
 rechecks those values and schema structure cannot refuse continuation. The
-legacy v1 schema clause remains unchanged.
+legacy v1 full-DB comparison remains authoritative, selecting the independently
+constructed S1 F/E release reference after complete validation.
 
 The injected active-policy block shows the exact top-level
 `manager_self_evaluation` object shape beside `decision` and the code-derived
@@ -563,7 +602,7 @@ placeholders, compared, or rechecked, and schema structure never produces a v2
 claim with the existing bounded `claim_failed` outcome. The legacy v1
 `_release_schema_digest`/`_live_schema_digest`/`_server_evidence`/
 `_server_fact_clause`/`_during_attempt_drift_clause` behavior and all callers
-remain unchanged. The checked-in full historical schema fixture
+retain full-DB fail-closed comparison with S1 F/E reference selection. The checked-in full historical schema fixture
 `tests/fixtures/authority_v2_historical_schema.json` and reconstruction support
 in `tests/authority_v2_historical_schema.py` remain real migration-path test
 support; organic `ADD COLUMN` histories, including `agent_enrollments`, require
@@ -1859,9 +1898,53 @@ lifecycle/error handling stay unchanged. No metadata is recomputed from memory
 files after injection. The legacy extractor remains supported but bootstrap no
 longer uses it. The unchanged resolver still prefers digest to search.
 
+The ordinary `host_supervisor=None` launch retires its own SessionTracker
+binding after `executor.run` finally returns or raises, including all internal
+429 attempts. The existing `clear_if_active_session(task_id, agent, session_id)`
+removes only that generation's active context, PID and control; newer same-task
+generations and other tasks survive. The invocation remains usable for callbacks
+and memory attribution until that final exit. A retired SID still permits memory
+get/search but earns no task/session credit. Result identity, task classification,
+scratch/report ordering, one-shot recovery and contained pre-release cleanup
+remain unchanged. Ordinary source tests do not establish installed or contained
+acceptance.
+
 See the feature guide for the exact optional JSON validation/legacy contract.
 Recovery/unattributed launches do not gain task eligibility from a version;
 `session_start` is intended invocation rather than complete launch census.
-G1 canary/epoch authority, G3 launch/expectation census, G4 consistent acquisition,
+The source-side G3 observer records independent intended invocations and frozen
+expectations as described in the feature guide. G1 canary/epoch authority,
+current-serving census acceptance, G4 consistent acquisition,
 full reporting and installed acceptance remain OPEN; both reports stay
 fail-closed. No collection starts here.
+
+The `_run_agent` observation wrapper preserves its caller signature, bootstrap
+body, original registration/impression/start/launch/cleanup order and returns or
+raised exceptions. Intent reservation precedes preparation; SID and immutable
+expectation observations remain at their actual assignment/render boundaries.
+A finally observation retains unknown early phases and the exact invocation's
+terminal outcome without clearing or rewriting any SessionTracker generation.
+Counters/metadata use a short observer lock; persistence takes the observer
+writer before Database, with no Database-held caller entering the observer.
+Concurrent boundary metadata is drained synchronously by an observation boundary,
+without a timer/service and without holding metadata locks across application
+callbacks, rendering, executor/supervisor or task completion.
+Sealing checkpoints counters/digests without querying history on the callback
+path; its diagnostic is `census_not_reconciled`. Only a complete zero-write read
+validation reconciles history, using at most 256 rows per primary-key page and
+100,000 total audit rows. Database write counts/data versions and all semantic
+live observer facts bracket capture; changing, incomplete or exhausted capture
+is unavailable. Unresolved task population, parent knowledge or task type is
+unavailable even when identity, binding and start rows exist.
+
+The seal-action audit GET reads the actual serving OrgState through its
+`memory_collection_observation` accessor. Nonblocking short observer snapshots
+and database-revision reads bracket bounded interpreter/source/registry/file
+identity acquisition; no database-held callback enters the observer, no metadata
+lock spans file reads, and GET never reseals or exhaustively validates history.
+A held metadata/database lock, pending preparation/writer, sticky error, changed
+boot/context or moving bookends withholds `data_through`. Failure is local to
+this read and cannot poison launch/callback/startup outcomes. A stable cutoff is
+source evidence only. Durable independent acceptance/atomic epoch transition
+and both health consumers remain a later G1 unit; epoch refs are always null.
+The exact closed projection is in the corrective memory spec.

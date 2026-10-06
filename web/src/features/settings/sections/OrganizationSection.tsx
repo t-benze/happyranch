@@ -470,7 +470,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           if (!open) closeConfirmDisable();
         }}
       >
-        <DialogContent
+        <DialogContent closeLabel={t('common.close')}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
             workHoursToggleRef.current?.focus();

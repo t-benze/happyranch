@@ -6,7 +6,10 @@ study is **NOT RUN** and no detached lock has been issued. No route, daemon
 workflow, UI/CLI, migration, authority coordinator, or compatibility behavior
 was installed by U0 itself. U1A later shipped the inert layout, U1B shipped
 template authoring/versioning, and U2A now ships only the org-scoped production
-authority publisher described in the status note below. The study remains
+authority publisher described in the status note below. U2B adds profile
+coordination; the cutover prerequisite implements only the existing-schema
+Founder request/verification/drain marker described in active F6 below.
+Activation, dispatch and operator acceptance remain deferred. The study remains
 **NOT RUN**.
 
 The executable fixture calls the actual `RuntimeDir.init -> DaemonState.from_runtime
@@ -1324,9 +1327,11 @@ compatibility marker/event, and full-layout reopen validator are implemented
 in `runtime/infrastructure/workflow_schema.py` and invoked only by
 `OrgState.load`. U1A does not enable workflow behavior. U1B implements only
 inert immutable template authoring/versioning through the existing U1A tables,
-verified manager-session or Founder-bearer route, and CLI/API reads. Every
-later delta below — activation, authority coordination, dispatch/recovery,
-cutover transitions and workflow execution/operator UI — remains unimplemented.
+verified manager-session or Founder-bearer route, and CLI/API reads. U2A/U2B now supply authority/profile coordination. The cutover prerequisite
+implements `WorkflowCutoverStore` and Founder-only HTTP/CLI/TS methods over the
+unchanged U1A layout. Activation, first-draft persistence/dispatch, callback and
+recovery routing, workflow execution/operator UI and acceptance remain later
+units; this prerequisite is not feature completion.
 No old binary has been changed and no later production compatibility approval
 follows from U1A.
 
@@ -1390,10 +1395,12 @@ after `Database(paths.db_path)` completes all required generic
 preflight/migration owners and before teams/settings/orchestrator loading or
 org attachment. It is never called by `Database.__init__`; therefore
 `runtime-audit.db` and every other generic Database instance remain untouched.
-The legacy authority hook's org-release reference is the sole isolated
-exception: it creates a private temporary generic Database, applies this same
-canonical installer, and hashes the complete resulting `sqlite_master`
-surface. The live-org comparison remains full and fail-closed; no workflow
+The legacy authority hook's complete org-release reference is an isolated
+consumer: it creates a private temporary generic Database, applies this same
+independently constructed canonical F or E layout selected only after
+full live layout/discriminator/history/data validation, and hashes every non-null
+SQL object in the complete resulting `sqlite_master` surface. References cache
+per layout; no candidate-derived baseline is permitted. The live-org comparison remains full and fail-closed; no workflow
 object is filtered, substituted or whitelisted, and no persistent generic or
 runtime-audit store is modified.
 The Database-owned workflow transaction holds the existing RLock and one
@@ -1417,11 +1424,24 @@ event sequence records every transition. The later accepted state vocabulary is:
 
 `installed_legacy_only -> enable_requested -> compatibility_verified -> enabled`
 
-U1A installs and accepts only `installed_legacy_only` generation 1. It neither
-implements nor accepts a cutover transition. Future `enable_requested`
-requires a separately authorized implementation and operation. That later
-cold recovery may advance only an already-authorized request,
-committing compatibility verification before enabled. Reopen and repeated
+U1A installation still writes only `installed_legacy_only` generation1/event1.
+The accepted production cutover chain continues through `disable_requested ->
+draining -> drained` after enabled. `WorkflowCutoverStore.request` authenticates
+at the existing Founder route boundary and commits enable_requested before
+separate short compatibility_verified/enabled commits. Disable similarly commits
+the admission fence before drain. Cold recovery advances an authentic
+committed request only with ready E; existing F retains actual history and
+migration guidance without advancement. GET/preflight never advance. Every authoritative reread keeps
+complete canonical layout equality and validates exact contiguous events,
+request operation groups/unique keys, org-bound deterministic canonical UTF8
+SHA256 preimages (fixed Founder request facts and verifier policy plus previous
+digest), marker pointer/time/reason and valid UTC timestamps without monotonic
+wall-clock assumptions. Initial event ID/digest remain shipped bytes; progressed
+histories require actual expected_org_slug, while initial-only release references
+still validate without it. SQLite integrity/FKs and contradictory activation,
+instance, dispatch or recovery-owned work block compatibility before each enable
+transition; inert template/authority/profile foundations are permitted. Failed
+verification leaves the authentic request pending with safe blockers. Reopen and repeated
 recovery are state-idempotent. Interruption before the install commit leaves no
 workflow tables; interruption after any committed enable stage resumes forward
 under the same operation/owner and preserves every template/version/activation/
@@ -1456,8 +1476,10 @@ old binary cannot observe `workflow_cutover_state`, the bridge, activation pins
 or `uncertain`; therefore it cannot be made fail closed by this new protocol.
 The supported operator sequence is: while the current binary still owns the
 store, call the downgrade preflight; proceed only in
-`installed_legacy_only` when no enable history, template version, activation or
-dispatch exists. Once enable was requested or workflow data exists, downgrade
+`installed_legacy_only` on pristine F when no enable history, template version,
+activation or dispatch exists. Every E (migrated or deliberately created) requires
+a compatible reader, even when its business tables are empty. The preceding
+faf40744 reader accepts pristine F and refuses E without workflow mutation. Once enable was requested or workflow data exists, downgrade
 is explicitly unsupported. The operator must retain/start a compatible binary;
 running an old binary anyway is outside the guarantee and may mutate legacy
 tables without understanding workflow ownership.
@@ -1490,24 +1512,27 @@ Disable uses the same marker and begins with an admission fence:
 `request_workflow_disable` commits `disable_requested` before drain work.
 Template activation/template-start and F5 request admission then reject with
 zero residue. Existing history and immutable versions remain readable;
-publication alone remains allowed. During `draining`:
+publication alone remains allowed. During `draining`, the production store reads consistent F5 outbox plus
+operation/request/bridge closure and projects incomplete/uncertain work as
+reconciliation_required. Cancellation effects in retained U0 helpers are
+isolated evidence and deferred U2D/U4/U5 work, not production cutover effects:
 
 | F5 durable state | Allowed action | Owner / drain effect |
 | --- | --- | --- |
-| `queued` | cancel before launch | cutover reconciler; terminal history retained |
-| `claimed`, `host_launch_started=0` | cancel before launch | cutover reconciler; no effect row |
+| `queued` | cancel before launch | actual dispatch/recovery owner; cancellation deferred U2D/U4 |
+| `claimed`, `host_launch_started=0` | cancel before launch | actual dispatch/recovery owner; cancellation deferred U2D/U4 |
 | `claimed`, `host_launch_started=1` | reconcile possible host effect | operator; blocks drained |
 | `running` | exact callback reconciliation or supervised cancellation | callback/cancellation owner; blocks drained |
 | `uncertain` | explicit supported host reconciliation or `confirmed_no_launch` disposition | operator; never retryable; blocks drained |
 | `cancelled` / `completed` | history/read only | terminal; does not block drained |
 
-`project_workflow_drain` reports exact outbox state, responsible owner, stored
-owner and required action. It never calls `running`/`uncertain` complete or
-retryable. `advance_workflow_drain` cancels only queued and provably prelaunch
-claimed work; it declares `drained` only when no nonterminal outbox remains.
-Restart/reopen preserves the marker and projection. Legacy startup and workflow
-recovery cannot both launch one work item because the bridge-derived claim is
-exclusive before enqueue/effect.
+The retained isolated `project_workflow_drain`/`advance_workflow_drain` helpers
+model later cancellation and recovery. Production `WorkflowCutoverStore` never
+cancels, launches or settles tasks/outboxes, and never repairs a closure. Empty
+validated work can drain; nonterminal/incomplete work retains actual owner and
+required deferred action. Restart/reopen preserves authentic marker/history.
+Actual bridge-derived legacy/workflow startup exclusion remains U2D/U5 work,
+not a shipping claim from the isolated helper.
 
 ### Executable requirement map
 
@@ -1563,15 +1588,17 @@ concurrent publishers/recovery claimants, activation pinning, every drain state,
 downgrade refusal and public pending/error behavior. Exact current production
 symbols and hashes are recorded in TASK-8859 Native Impact Evidence.
 
-U1A additive schema/initial compatibility installation is implemented as a
-candidate; it does not implement the F4 coordinator. F4-D remains pending for
-supported-writer pre-fences, route barriers and startup republish. F5 remains delivered only as
+U1A additive schema/initial compatibility installation and U2A/U2B coordinated
+authority/profile foundations are implemented. Their accepted independent
+evidence remains historical; it is not cutover acceptance. F5 remains delivered only as
 an isolated request/task/outbox/uncertain-launch contract; its six production
 deltas remain protected. F6 now supplies the recommended compatibility/cutover
-decision and proof. U1B ships D1 authoring only; every post-install cutover
-transition, D2 activation authority, naming-reservation policy, U2-U6 production
-implementation, and the applicable independent review/QA/CI gates remain
-pending. Comparative study
+decision and proof. U1B ships D1 authoring. The existing-schema cutover prerequisite now supplies
+request/replay/verification, truthful deferred drain and pristine-only downgrade
+preflight. S1 now supplies the explicit org-only draft migration, complete E fresh creation
+and F/E readiness/closure validation. D2 activation, initial-draft production, U2D-U6 execution and separate actual
+Founder Request changes/Sign off/operator acceptance remain pending, as do this
+cutover head's independent FULL review/executable QA/exact-head CI gates. Comparative study
 is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
 fork/join, pipeline carriers and coding migration remain out of scope. Evidence
 remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder
@@ -1587,3 +1614,37 @@ still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
 operation evidence, unfinished canonical writers, and stale captures refuse this
 exception before synchronization. Reviewer policy and snapshot validation do not
 change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
+
+### 2026-10-05 S1 manual migration amendment (THR139 seq372/374, manager375)
+
+F is the unchanged U1A foundation; E is F plus the exact reviewed TASK9655
+three-table/six-explicit-index draft extension (SQL SHA256
+078706fa690f72038c8fedcc3b46331e6fc6cc61705f3f2054bc70f9e411cc62), its automatic
+constraint indexes and version1 marker. The original foundation DDL, versions,
+column meanings and initial cutover event are preserved. Complete F/E validation
+compares independently constructed whole layouts and retained history/data;
+partial/unknown objects are never adopted or repaired. The draft marker alone
+is structural metadata; retained intents/events and result closure are work.
+Queued attempts must cancel before retirement; running/uncertain/cancel-pending
+history cannot be hidden by a current/terminal pointer. S1 validators and
+SQL-seeded cases are not activation, host execution, callback or S2 acceptance.
+
+Existing databases never acquire E on startup/reopen/enable. An operator uses
+`python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root>
+--org <slug> [--check]` against the validated actual org DB. It does not instantiate
+generic Database merely to inspect/migrate. Full validation precedes DDL; one
+writer transaction installs only the extension/marker and validates E before
+commit. Replay on populated E is a no-op. Check is read-only: ready0,
+migration-needed3, refusal1, parser2. Contention is bounded and refusal/rollback
+preserves original data and files; crash journals/SQLite WAL sidecars are not
+workflow schema. No live execution is authorized by script publication.
+
+Deliberate POST /orgs creation proves its newly created skeleton before complete
+E initialization and attachment, using existing cleanup ownership. Generic
+Database/runtime-audit remain workflow-free. F legacy work remains loadable with
+actual script guidance; missing readiness never mints enable/reconciliation
+events. E requires a compatible reader in all cases; no extension stripping or
+old-reader compatibility claim applies to E. Full independent review, executable
+QA and exact-head CI remain required; activation/dispatch and U3-U6/operator
+acceptance remain later units.

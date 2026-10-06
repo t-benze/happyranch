@@ -256,10 +256,10 @@ export function TierEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl" closeLabel={t('common.close')}>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
+      <DialogContent className="max-w-xl min-w-0" closeLabel={t('common.close')}>
+        <DialogHeader className="min-w-0 pr-5">
+          <DialogTitle className="min-w-0 break-words">{title}</DialogTitle>
+          <DialogDescription className="min-w-0 break-words">
             {t('workHours.tier.description', { tier: t(TIER_KIND_KEYS[tier.kind]) })}
           </DialogDescription>
         </DialogHeader>
@@ -267,7 +267,7 @@ export function TierEditorDialog({
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (
-          <div className="text-sm">
+          <div className="min-w-0 text-sm break-words">
             <p className="text-text-primary">
               {render('workHours.tier.impact', {
                 count: impactedAgents.length,
@@ -285,7 +285,7 @@ export function TierEditorDialog({
             </p>
           </div>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             {/* mode */}
             <Row
               label="mode"
@@ -296,7 +296,7 @@ export function TierEditorDialog({
                 value={mode ?? UNSET}
                 onValueChange={(v) => setMode(v === UNSET ? null : v)}
               >
-                <SelectTrigger className="w-40">
+                <SelectTrigger className="h-auto min-h-6 w-40 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
                   <SelectValue placeholder={t('workHours.tier.inherited')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -316,7 +316,7 @@ export function TierEditorDialog({
                 >
                   <Input
                     type="time"
-                    className="w-32"
+                    className="w-32 min-w-0 max-w-full"
                     value={start ?? ''}
                     onChange={(e) => setStart(e.target.value || null)}
                   />
@@ -328,7 +328,7 @@ export function TierEditorDialog({
                 >
                   <Input
                     type="time"
-                    className="w-32"
+                    className="w-32 min-w-0 max-w-full"
                     value={end ?? ''}
                     onChange={(e) => setEnd(e.target.value || null)}
                   />
@@ -338,7 +338,7 @@ export function TierEditorDialog({
                   ghost={showGhosts && days === null ? ghostFor('days', (inherited.days ?? []).join(',') || '—') : undefined}
                   onReset={showGhosts && days !== null ? () => setDays(null) : undefined}
                 >
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex min-w-0 max-w-full flex-wrap gap-1">
                     {DAYS.map((d) => {
                       const selected = (days ?? []).includes(d);
                       return (
@@ -371,7 +371,7 @@ export function TierEditorDialog({
                 value={timezone ?? UNSET}
                 onValueChange={(v) => setTimezone(v === UNSET ? null : v)}
               >
-                <SelectTrigger className="w-56">
+                <SelectTrigger className="h-auto min-h-6 w-56 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
                   <SelectValue placeholder={t('workHours.tier.inherited')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -400,7 +400,7 @@ export function TierEditorDialog({
                   the '2h / 30m' shape and surfaces the PUT 422 if it's bad. */}
               <Input
                 type="text"
-                className="w-32"
+                className="w-32 min-w-0 max-w-full"
                 placeholder="2h"
                 value={interval ?? ''}
                 onChange={(e) => setInterval(e.target.value || null)}
@@ -431,7 +431,7 @@ export function TierEditorDialog({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="min-w-0 flex-wrap [&>button]:h-auto [&>button]:min-h-9 [&>button]:max-w-full [&>button]:whitespace-normal">
           {confirming ? (
             <>
               <Button variant="ghost" onClick={() => setConfirming(false)}>
@@ -476,21 +476,21 @@ function Row({
 }): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="flex min-w-0 flex-col">
+    <div className="flex min-w-0 flex-col items-start justify-between gap-2 sm:flex-row sm:gap-3">
+      <div className="flex min-w-0 max-w-full flex-col break-words">
         <span className="text-text-primary font-mono text-xs">{label}</span>
         {ghost && <span className="text-text-muted text-overline">{ghost}</span>}
         {hint && (
           <span className="text-text-muted text-overline">ⓘ {hint}</span>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:justify-end">
         {children}
         {onReset && (
           <button
             type="button"
             onClick={onReset}
-            className="text-accent-text text-overline hover:underline"
+            className="text-accent-text text-overline max-w-full whitespace-normal break-words hover:underline"
           >
             {t('workHours.tier.reset')}
           </button>

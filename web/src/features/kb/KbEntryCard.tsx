@@ -3,7 +3,9 @@ import { toneClass } from '@/design-system/patterns/semanticTone';
 import { cn } from '@/lib/utils';
 import type { KBEntry } from '@/lib/api/types';
 import type { KBEntrySummary } from '@/hooks/kb';
-import { KB_STRINGS } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { formatCountFor } from '@/lib/i18n';
+import { relativeKbAge } from './strings';
 
 type Density = 'comfortable' | 'compact';
 
@@ -26,16 +28,7 @@ function FileBadge({ className }: { className?: string }): JSX.Element {
   );
 }
 
-function relativeAge(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  const min = Math.round(ms / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h`;
-  const d = Math.round(hr / 24);
-  return `${d}d`;
-}
+
 
 export interface KbEntryCardProps {
   entry: KBEntrySummary | KBEntry;
@@ -55,6 +48,7 @@ export function KbEntryCard({
   density = 'comfortable',
   viewCount,
 }: KbEntryCardProps): JSX.Element {
+  const { t, locale } = useTranslation();
   const pad = density === 'compact' ? 'p-2' : 'p-3';
   return (
     <Link
@@ -77,13 +71,13 @@ export function KbEntryCard({
             types fall back to the neutral grey tone. */}
         <span
           className={cn(
-            'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-semibold uppercase tracking-wide',
+            'inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-semibold tracking-wide',
             toneClass(entry.type),
           )}
         >
           {entry.type}
         </span>
-        <span className="text-text-muted font-mono text-xs tabular-nums">· {relativeAge(entry.updated_at)}</span>
+        <span className="text-text-muted font-mono text-xs tabular-nums">· {relativeKbAge(entry.updated_at, locale, t)}</span>
       </div>
       {snippet && <p className="text-text-muted mt-1.5 text-sm">{snippet}</p>}
       {density === 'comfortable' && entry.tags.length > 0 && (
@@ -97,7 +91,7 @@ export function KbEntryCard({
       )}
       {viewCount !== undefined && (
         <div className="text-text-muted mt-1.5 font-mono text-xs tabular-nums">
-          {KB_STRINGS.viewedLabel(viewCount)}
+          {t('kb.viewedLabel', { count: viewCount, number: formatCountFor(locale, viewCount) })}
         </div>
       )}
     </Link>

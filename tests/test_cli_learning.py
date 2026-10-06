@@ -464,104 +464,90 @@ def test_memory_compact_requires_one_mode(monkeypatch):
 
 # ── Memory report ──
 
-def test_memory_report_paginates_and_prints_guarded_status(monkeypatch, capsys):
-    """The canonical report command exhausts audit pages and stays guarded."""
+def _report_clock(monkeypatch):
+    import runtime.infrastructure.memory_telemetry_report
+    import datetime as clock_module
+    actual = clock_module.datetime
+    now = actual(2026, 9, 12, tzinfo=clock_module.timezone.utc)
+    class Fixed(actual):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz else now.replace(tzinfo=None)
+    monkeypatch.setattr(clock_module, "datetime", Fixed)
+    return now
+
+
+def test_memory_report_single_page_four_stream_acquisition_and_guarded_status(monkeypatch, capsys, tmp_path):
+    """Acquire one page per stream in two sweeps; render guarded status/counts."""
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
-
-    class FakeResp:
-        status_code = 200
-
-        def __init__(self, body):
-            self._body = body
-
-        def json(self):
-            return self._body
-
+    now = _report_clock(monkeypatch)
+    db = Database(tmp_path / "report.db")
+    logger = AuditLogger(db)
+    logger.log_session_start("TASK-1", "dev_agent", "/fixture", session_id="s", invocation_purpose="worker_execution")
+    logger.log_memory_digest_impression(agent="dev_agent", task_id="TASK-1", session_id="s", digest_ids=["MEM-001"], budget=1500)
+    db.execute("UPDATE audit_log SET timestamp='2026-01-01T00:00:00+00:00'")
     calls = []
-    rows = {
-        "memory_digest_impression": [
-            {"timestamp": "2026-01-01T00:00:00+00:00", "agent": "dev_agent",
-             "task_id": "TASK-1", "payload": '{"session_id":"sess-1","digest_ids":["MEM-1"]}'},
-        ],
-        "memory_read": [
-            {"agent": "dev_agent", "task_id": "TASK-1",
-             "payload": '{"session_id":"sess-1","id":"MEM-1"}'},
-        ],
-        "memory_search": [],
-    }
-
-    class FakeClient:
-        @staticmethod
-        def from_env():
-            return FakeClient()
-
+    class Response:
+        status_code = 200
+        def __init__(self, body): self.body = body
+        def json(self): return self.body
+    class Client:
         def get(self, path, params=None):
             if path.endswith("/agents"):
-                return FakeResp({"agents": []})
-            assert path.endswith("/audit")
-            action = params["action"]
-            cursor = params.get("cursor")
-            calls.append((action, cursor))
-            if cursor is None:
-                return FakeResp({"entries": rows[action], "next_cursor": f"{action}-next"})
-            assert cursor == f"{action}-next"
-            return FakeResp({"entries": [], "next_cursor": None})
-
-    monkeypatch.setattr("cli.commands.learning.OpcClient", FakeClient)
-    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+                return Response({"agents": []})
+            calls.append((params["action"], params["limit"], params.get("cursor")))
+            entries, cursor = db.query_audit_logs(**params)
+            return Response({"entries": entries, "next_cursor": cursor})
+    monkeypatch.setattr("cli.commands.learning.OpcClient.from_env", lambda: Client())
     cmd_memory_report(Namespace(org="o", json=False))
-
-    assert calls == [
-        ("memory_digest_impression", None), ("memory_digest_impression", "memory_digest_impression-next"),
-        ("memory_read", None), ("memory_read", "memory_read-next"),
-        ("memory_search", None), ("memory_search", "memory_search-next"),
-    ]
+    assert calls == [(action, 5000, None) for _ in range(2) for action in
+                     ("session_start", "memory_digest_impression", "memory_read", "memory_search")]
     rendered = capsys.readouterr().out
     assert "DECISION: insufficient_instrumentation" in rendered
     assert "unversioned and invalid" in rendered
     assert "Thresholds:    NOT MET" in rendered
     assert "Canary-gated collection has NOT started" in rendered
+    assert "Sessions: 1 / 500" in rendered
+    assert now.isoformat() in rendered
+    db.close()
 
 
-def test_memory_report_exhausts_populated_pages_and_rejects_malformed_rows(monkeypatch, capsys):
-    """Real command output stays fail-closed after later-page malformed input."""
+def test_memory_report_single_page_returned_corruption_clears_metrics(monkeypatch, capsys, tmp_path):
+    """Validate single-page returned search corruption before diagnostic reduction."""
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
-
-    class FakeResp:
+    _report_clock(monkeypatch)
+    db = Database(tmp_path / "report.db")
+    logger = AuditLogger(db)
+    logger.log_memory_digest_impression(agent="dev_agent", task_id="TASK-1", session_id="s", digest_ids=["MEM-001"], budget=1500)
+    db.insert_audit_log(task_id="TASK-1", agent="dev_agent", action="memory_search", payload=[])
+    db.execute("UPDATE audit_log SET timestamp='2026-01-01T00:00:00+00:00'")
+    class Response:
         status_code = 200
-
-        def __init__(self, body): self._body = body
-        def json(self): return self._body
-
-    pages = {
-        "memory_digest_impression": [
-            [{"timestamp": "2026-01-01T00:00:00+00:00", "agent": "dev_agent", "task_id": "TASK-1", "payload": '{"session_id":"sess-1","digest_ids":["MEM-1"]}'}],
-            [{"timestamp": "2026-01-02T00:00:00+00:00", "agent": "dev_agent", "task_id": "TASK-2", "payload": '[]'}],
-        ],
-        "memory_read": [[{"agent": "dev_agent", "task_id": "TASK-1", "payload": '{"id":"MEM-1","session_id":"sess-1","task_id":"TASK-1"}'}], []],
-        "memory_search": [[{"agent": "dev_agent", "task_id": "TASK-1", "payload": '{"id":"MEM-2","session_id":"sess-1","task_id":"TASK-1","source":"search"}'}], []],
-    }
-
-    class FakeClient:
+        def __init__(self, body): self.body = body
+        def json(self): return self.body
+    class Client:
         def get(self, path, params=None):
             if path.endswith("/agents"):
-                return FakeResp({"agents": [{"name": "dev_agent", "role": "developer"}]})
-            action = params["action"]
-            index = 1 if params.get("cursor") else 0
-            return FakeResp({"entries": pages[action][index], "next_cursor": "next" if index == 0 else None})
-
-    monkeypatch.setattr("cli.commands.learning._learning_client", lambda: FakeClient())
-    monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
+                return Response({"agents": []})
+            entries, cursor = db.query_audit_logs(**params)
+            return Response({"entries": entries, "next_cursor": cursor})
+    monkeypatch.setattr("cli.commands.learning.OpcClient.from_env", lambda: Client())
+    cmd_memory_report(Namespace(org="o", json=True))
+    report = json.loads(capsys.readouterr().out)
+    assert report["diagnostic_errors"] == {"malformed_search": 1}
+    assert report["aggregate"] == report["by_agent"] == report["read_counts"] == {}
     cmd_memory_report(Namespace(org="o", json=False))
     rendered = capsys.readouterr().out
     assert "insufficient_instrumentation" in rendered
     assert "Thresholds:    NOT MET" in rendered
+    db.close()
 
 
-def test_memory_report_database_parity_exhausts_populated_pages(monkeypatch, capsys, tmp_path):
-    """CLI exhausts real populated audit pages and agrees with AuditLogger."""
+def test_memory_report_single_page_populated_backend_cli_parity(monkeypatch, capsys, tmp_path):
+    """501 rows fit one5000 page; backend/CLI parity and literal guarded text."""
+    _report_clock(monkeypatch)
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
 
@@ -596,18 +582,10 @@ def test_memory_report_database_parity_exhausts_populated_pages(monkeypatch, cap
         def get(self, path, params=None):
             if path.endswith("/agents"):
                 return FakeResp({"agents": [{"name": "dev_agent", "role": "developer"}]})
-            rows = [dict(row) for row in db.fetch_all_readonly(
-                "SELECT timestamp, agent, task_id, payload FROM audit_log"
-                " WHERE action = ? ORDER BY id ASC", (params["action"],),
-            )]
-            start = int(params.get("cursor", "0"))
-            end = start + 250
-            return FakeResp({
-                "entries": rows[start:end],
-                "next_cursor": str(end) if end < len(rows) else None,
-            })
+            entries, cursor = db.query_audit_logs(**params)
+            return FakeResp({"entries": entries, "next_cursor": cursor})
 
-    monkeypatch.setattr("cli.commands.learning._learning_client", PaginatingDatabaseClient)
+    monkeypatch.setattr("cli.commands.learning.OpcClient.from_env", PaginatingDatabaseClient)
     monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
     backend = logger.compute_memory_telemetry_report(
         agent_role_map={"dev_agent": "developer"},
@@ -640,6 +618,7 @@ def test_memory_report_database_parity_exhausts_populated_pages(monkeypatch, cap
 def test_memory_report_real_database_empty_and_short_populations_stay_guarded(
     monkeypatch, capsys, tmp_path, population, malformed_action, payload, timestamp,
 ):
+    _report_clock(monkeypatch)
     """Empty/short real audit populations cannot lift the report guard or crash it."""
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
@@ -674,15 +653,22 @@ def test_memory_report_real_database_empty_and_short_populations_stay_guarded(
         def get(self, path, params=None):
             if path.endswith("/agents"):
                 return Response({"agents": [{"name": "dev_agent", "role": "developer"}]})
-            rows = [dict(row) for row in db.fetch_all_readonly(
-                "SELECT timestamp, agent, task_id, payload FROM audit_log WHERE action=? ORDER BY id",
-                (params["action"],),
-            )]
-            return Response({"entries": rows, "next_cursor": None})
+            entries, cursor = db.query_audit_logs(**params)
+            return Response({"entries": entries, "next_cursor": cursor})
 
-    monkeypatch.setattr("cli.commands.learning._learning_client", lambda: Client())
+    monkeypatch.setattr("cli.commands.learning.OpcClient.from_env", lambda: Client())
     monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
     backend = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
+    if payload == "{":
+        # Production query decodes payload JSON before the report boundary.
+        # Decoder failure is acquisition_unavailable, never structural partial output.
+        with pytest.raises(SystemExit) as exc:
+            cmd_memory_report(Namespace(org="o", json=True))
+        captured = capsys.readouterr()
+        assert exc.value.code == 1
+        assert captured.out == "" and captured.err == "acquisition_unavailable\n"
+        assert backend["diagnostic_errors"] == {"malformed_read": 1}
+        return
     cmd_memory_report(Namespace(org="o", json=True))
     cli_json = json.loads(capsys.readouterr().out)
     cmd_memory_report(Namespace(org="o", json=False))
@@ -706,10 +692,11 @@ def test_memory_report_real_database_empty_and_short_populations_stay_guarded(
         ("memory_search", '{"session_id":"sess-500","task_id":"TASK-500","memory_ids":"MEM-500","hit_count":1,"kb_hit_count":0}', None),
     ],
 )
-def test_memory_report_real_database_rejects_malformed_later_pages_identically(
+def test_memory_report_single_page_returned_corruption_backend_cli_parity(
     monkeypatch, capsys, tmp_path, action, payload, timestamp,
 ):
-    """All consumed streams are exhausted and malformed later pages get no credit."""
+    """Returned corruption in501 rows fits one page; both consumers clear metrics."""
+    _report_clock(monkeypatch)
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
 
@@ -752,16 +739,11 @@ def test_memory_report_real_database_rejects_malformed_later_pages_identically(
             if path.endswith("/agents"):
                 return Response({"agents": [{"name": "dev_agent", "role": "developer"}]})
             event = params["action"]
-            rows = [dict(row) for row in db.fetch_all_readonly(
-                "SELECT timestamp, agent, task_id, payload FROM audit_log WHERE action=? ORDER BY id",
-                (event,),
-            )]
-            start = int(params.get("cursor", "0"))
-            end = start + 250
-            calls.append((event, start))
-            return Response({"entries": rows[start:end], "next_cursor": str(end) if end < len(rows) else None})
+            entries, cursor = db.query_audit_logs(**params)
+            calls.append((params["action"], params.get("cursor")))
+            return Response({"entries": entries, "next_cursor": cursor})
 
-    monkeypatch.setattr("cli.commands.learning._learning_client", Client)
+    monkeypatch.setattr("cli.commands.learning.OpcClient.from_env", Client)
     monkeypatch.setattr("cli._shared._fetch_available_orgs", lambda client: ["o"])
     backend = logger.compute_memory_telemetry_report(agent_role_map={"dev_agent": "developer"})
     cmd_memory_report(Namespace(org="o", json=True))
@@ -778,9 +760,10 @@ def test_memory_report_real_database_rejects_malformed_later_pages_identically(
     assert "Tuning advice" not in text
     assert calls == [
         (event, cursor)
-        for event in ("memory_digest_impression", "memory_read", "memory_search")
-        for cursor in (0, 250, 500)
-    ] * 2
+        for _ in range(4)
+        for event in ("session_start", "memory_digest_impression", "memory_read", "memory_search")
+        for cursor in (None,)
+    ]
 
 
 # ── Search with new flags ──

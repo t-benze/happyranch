@@ -175,40 +175,36 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks only the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c-migrated namespaces translated and keeps later slices incomplete', () => {
+  it('marks the migrated route namespaces and proven mounted Assistant translated without changing other classifications', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(17);
+    expect(summary.translated).toBe(21);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
       .map((entry) => entry.namespace)
       .sort();
     expect(translated).toEqual([
       'agents',
       'app-shell',
+      'artifacts',
       'audit',
       'dashboard',
       'dreams',
       'health',
       'help-and-palette',
       'jobs',
+      'kb',
       'not-found',
       'onboarding',
       'root-shell',
       'settings',
       'skills',
+      'system-assistant',
       'tasks',
       'threads',
       'todos',
+      'usage',
       'work-hours',
     ]);
-    // The later W4d/W5 surfaces (artifacts/usage, kb, the dock) remain honest English-only.
-    for (const namespace of [
-      'kb',
-      'usage',
-      'artifacts',
-      'system-assistant',
-    ]) {
-      expect(namespaceStatus(namespace), namespace).toBe('english-only');
-    }
+    expect(namespaceStatus('system-assistant')).toBe('translated');
     for (const entry of COVERAGE_MANIFEST) {
       expect(['translated', 'english-only', 'not-applicable']).toContain(entry.status);
       if (NOT_APPLICABLE_NAMESPACES.includes(entry.namespace)) {
@@ -234,6 +230,12 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
         }
       }
     }
+  });
+
+  it('anchors the Assistant dock and conversation switcher to actual mounted consumers', () => {
+    expect(read('src/routes.tsx')).toMatch(/<AssistantDockHost\s*\/>/);
+    expect(read('src/features/system-assistant/AssistantDockHost.tsx')).toMatch(/<ConversationSwitcher\b/);
+    expect(surfacesFor('system-assistant')).toEqual(['AssistantDockHost', 'ConversationSwitcher']);
   });
 
   it('contains no invented dialog/overlay names', () => {

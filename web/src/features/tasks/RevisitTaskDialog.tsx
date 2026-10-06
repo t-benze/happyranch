@@ -49,7 +49,7 @@ export function RevisitTaskDialog({ taskId, onClose }: Props): JSX.Element {
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('tasks.dialog.revisit.title')}</DialogTitle>
         </DialogHeader>

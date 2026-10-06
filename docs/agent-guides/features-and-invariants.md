@@ -6,6 +6,32 @@ For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/
 
 ## Feature Modules Overview
 
+### Workflow cutover prerequisite
+
+`runtime/workflows/cutover.py` owns the existing version-1 lifecycle marker and
+its contiguous org-bound event chain. Founder bearer requests commit the
+request/admission fence before verification or drain; recovery checks the full
+canonical layout/history, SQLite integrity/FKs and real work closure under each
+short writer reservation. GET and downgrade preflight never advance. Historical
+request replay reconstructs the original action/CAS before obsolete gates and
+returns its identity separately from current pending/enabled/draining state.
+
+Foundation installation still writes only generation1/event1. S1 independently
+validates foundation F or complete E; only explicit POST /orgs fresh creation
+initializes E automatically. Existing F requires the operator script documented in
+runtime-and-configuration.md; startup/reopen/enable never adds draft DDL. Cold
+`OrgState.load` forwards actual org context and resumes committed requests only
+on ready E, retaining earlier F history and actionable guidance. Existing templates,
+authority and profiles may remain inert; pre-enable activation/dispatch/recovery
+work blocks enabling. Drain never cancels or settles F5 or draft work: queued/prelaunch,
+running, uncertain and incomplete closures project actual owners and deferred
+U2D/U4/U5 actions. Terminal history remains. Downgrade requires pristine F initial
+history and no workflow data, including template-only data. Every E requires a
+compatible reader even with zero draft business rows; version1 alone is metadata. Historical v0/v1
+source-pinned initializer/migration tests prove preservation at that boundary,
+not whole-runtime conversion or old-binary gate compliance. S1 supplies draft storage/closure validation only. Activation/first
+draft production, dispatch/recovery routing and operator acceptance remain later work.
+
 ### Implemented boundaries for retained features
 
 KB input validation, duplicate detection, author stamps, and deletion checks live
@@ -32,8 +58,11 @@ preserving rank. Pending input/search or metadata refresh hides stale results;
 metadata errors or missing hit metadata show the existing recoverable Knowledge
 error, never successful-empty. Retry refreshes search and list metadata. Clearing
 search restores the list immediately, and old query settlements cannot replace
-the current query. Narrow 390px clipping remains an existing desktop-only
-limitation; shared App/Drawer layout is unchanged.
+the current query. Below 640px, the feature-local filter rail stacks above the
+list, stays full-width and scrolls within a 16rem height bound. Header actions
+stack below the title, and the list and detail drawer remain contained at 390px.
+Desktop retains the side rail and header arrangement; shared App/Drawer
+primitives are unchanged.
 
 
 Generic remote jobs remain dormant. `runtime/remote_jobs/` provides contextual
@@ -157,7 +186,7 @@ cannot exclude future writers or a hostile same-UID race.
 - **Manage-repo.** Add, remove, or update a repository in an agent's `org/agents/<name>.md` frontmatter. Spec `docs/superpowers/specs/2026-04-17-manage-repo-design.md`; CLI `happyranch manage-repo`.
 - **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end in the org `.md` frontmatter and executor bootstrap (THR-095: agent.yaml is no longer synced). A real executor change clears the old executor-specific `model`; an idempotent request preserves it. The shared canonical instruction pair (`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are preserved across a switch; only the executor-only `.claude/settings.json` is stale and WARNs by default; cleanup requires an explicit `--clean` flag. CLI-only — no web surface. Keep this distinct from the **system assistant self-registration** (`happyranch assistant register`), which is the assistant's own executor declaration. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
 - **Per-agent memory.** Each agent keeps durable `MEM-NNN` learnings plus task recall. Specs `docs/superpowers/specs/2026-04-18-agent-memory-design.md` (superseded), `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`; impl `runtime/infrastructure/learnings_store.py`. See [Per-Agent Learnings](#per-agent-learnings) below for traps.
-- **System assistant.** A founder-facing assistant surface reached via the **Cmd-K dock** (global &#8984;K A-mode structured chat dock mounted in the AppShell) and the **CLI** (`happyranch assistant status|init|register`). Onboarding is by **self-registration** (unchanged). The dock uses a JSON-framed WebSocket for structured conversations. **Action chips:** (a) *reference-existing* chips (Approve JOB-083, Open THR-021, Show diff, any TASK/JOB/THR/KB id) deep-link/navigate to the existing object's approval or detail surface — no POST, no self-approval; (b) *propose-new-action* chips (a chip proposing a gated op that does NOT yet exist as an object, e.g. "propose merging PR X") MUST create a PENDING `review_required` job through the EXISTING jobs gate (the already-authenticated assistant WS carries the structured frame; the daemon-side handler submits the job through the existing jobs mechanism). The assistant NEVER self-approves or self-executes a privileged op. Impl `runtime/daemon/routes/assistant_a_mode.py` (A-mode WS), `runtime/daemon/headless_assistant.py` (headless adapters), `web/src/features/system-assistant/AssistantDockHost.tsx` (⌘K dock).
+- **System assistant.** A founder-facing assistant surface reached via the **Cmd-K dock** (global &#8984;K A-mode structured chat dock mounted in the AppShell) and the **CLI** (`happyranch assistant status|init|register`). Onboarding is by **self-registration** (unchanged). The dock uses a JSON-framed WebSocket for structured conversations. **Action chips:** (a) *reference-existing* chips (Approve JOB-083, Open THR-021, Show diff, any TASK/JOB/THR/KB id) deep-link/navigate to the existing object's approval or detail surface — no POST, no self-approval; (b) *propose-new-action* chips (a chip proposing a gated op that does NOT yet exist as an object, e.g. "propose merging PR X") MUST create a PENDING `review_required` job through the EXISTING jobs gate (the already-authenticated assistant WS carries the structured frame; the daemon-side handler submits the job through the existing jobs mechanism). The assistant NEVER self-approves or self-executes a privileged op. Dock copy follows the locale/error/state boundary in `docs/superpowers/specs/2026-06-12-system-assistant-web-ui-design.md` §6.12. Impl `runtime/daemon/routes/assistant_a_mode.py` (A-mode WS), `runtime/daemon/headless_assistant.py` (headless adapters), `web/src/features/system-assistant/AssistantDockHost.tsx` (⌘K dock).
 - **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
 - **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
@@ -180,7 +209,10 @@ cannot exclude future writers or a hostile same-UID race.
 - **Token-usage tracking.** Per-task, per-agent, thread-scoped, dream-scoped, and work-hour-scoped token accounting with two complementary legacy metrics: **churn** (`churn_tokens` = input + output + reasoning, the cache-excluded value used for existing ranking/thresholds) and **context** (`context_tokens` = churn + cache_read + cache_creation). Codex ingest keeps issue #216's net-of-cache input normalization and now preserves integer `cache_write_input_tokens` exactly, including `0`; absence/non-integer stays `NULL`. The Usage v1 pure normalizer distinguishes reported zero from `not_reported`, exposes uncached-only Fresh input as partial when cache write is absent, and counts reasoning once from declared parser semantics. Lifecycle cohort identity is captured when a run starts: thread rows carry nullable executor/model, task `session_start` carries session ID, actual spawn purpose, executor/model, and `dream_started` carries executor/model. `thread_invocations.reply_message_seq` is the nullable, transaction-owned link to the one persisted reply message; NULL means “reply outcome not recorded” (legacy or no persisted message), never an inferred negative. Missing configured models and pre-change history stay unattributed/NULL and are never guessed or backfilled. The lifecycle-first Workload/Efficiency read model is exposed through bearer-authenticated `GET /usage/workload` and `GET /usage/efficiency`; Workload rows require current-window activity, Replies count only linked consumed REPLY wakes, recorded/total-consumed reply outcome coverage is explicit, and any unknown outcome withholds only the Replies comparison. Missing/ambiguous usage remains in lifecycle denominators, and dream usage correlates by dream ID + agent rather than provider session ID. It never consumes legacy churn, whose Codex reasoning double-count is intentionally unchanged. Specs `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`, `docs/superpowers/specs/2026-06-08-thread-talk-token-usage-scope-design.md`, and `docs/superpowers/specs/2026-09-30-usage-v1-design.md`; APIs `runtime/daemon/routes/tokens.py` and `runtime/daemon/routes/usage.py`; CLI `happyranch tokens` (issue #216).
 ### Web & CLI
 
-- **Web UI.** React SPA with a flat primary sidebar nav (Home · Threads · Tasks · Jobs · Todos · Agents · Work Hours · Skills · Knowledge · Artifacts · Audit · Dreams · Usage · Health), footer-pinned Settings + account row (founder-approved flattening: THR-140 seq 208 / PR #644 superseded the #633/#577 grouped-nav pilot), org switcher at the sidebar top, theme toggle in the AppBar; desktop window chrome, served from `web/dist/`. **Default landing route is Home** (the Dashboard page at `/orgs/:slug/dashboard`). Specs `docs/superpowers/specs/2026-05-14-web-ui-design.md`, `docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md`, `docs/design-overhaul/product_lead-2026-06-16-design-overhaul-PRD-build-spec.md` (Direction-A IA); architecture `web/ARCHITECTURE.md`; guide `docs/agent-guides/web-and-cli.md`.
+- **Web loading and modal copy (THR-118 W5a).** Mounted dialog close controls use `common.close`. Markdown’s optional `mermaidLoadingLabel`, forwarded by `MessageBubble.labels.mermaidLoading`, localizes only per-block lazy-loading chrome; omitted props retain English. KB, Task detail/recall, Threads and both Assistant turn variants provide the catalog label. Renderer identity and loaded SVGs remain stable on locale changes; authored text/code and Mermaid failure source stay verbatim. Namespace markers are inventory, not rendering acceptance. Preview disclosure, unset-English defaults and deferred native acceptance remain unchanged. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+- **Work Hours reachability (THR-118 W5a).** Local heading/actions wrap within agent detail; both reconciliation and roster preserve every raw column/value in localized named focusable horizontal scroll regions. Arrow keys reach the final effective/eligibility column. Shared primitives and editor/navigation/save semantics remain unchanged. Historical document-width assertions did not establish essential-child reachability; keep clipping evidence and assess the affected built-browser cases before independent W5a acceptance. Preview/default/W5b boundaries remain unchanged. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
+
+- **Web UI.** Usage v1 app-owned Workload/Efficiency presentation is translated in en/zh-CN (THR-118 W4d-2); locale switching preserves Compare/cohort/focus and issues no API requests. Org-wall-clock window parts do not shift with viewer TZ; instants use the response timezone. Assistant dock and conversation controls bind en/zh-CN app copy; complete mounted-copy coverage is recorded as translated. Preview remains unset-English/Chinese-opt-in. React SPA with a flat primary sidebar nav (Home · Threads · Tasks · Jobs · Todos · Agents · Work Hours · Skills · Knowledge · Artifacts · Audit · Dreams · Usage · Health), footer-pinned Settings + account row (founder-approved flattening: THR-140 seq 208 / PR #644 superseded the #633/#577 grouped-nav pilot), org switcher at the sidebar top, theme toggle in the AppBar; desktop window chrome, served from `web/dist/`. **Default landing route is Home** (the Dashboard page at `/orgs/:slug/dashboard`). Specs `docs/superpowers/specs/2026-05-14-web-ui-design.md`, `docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md`, `docs/design-overhaul/product_lead-2026-06-16-design-overhaul-PRD-build-spec.md` (Direction-A IA); architecture `web/ARCHITECTURE.md`; guide `docs/agent-guides/web-and-cli.md`.
 - **CLI.** `happyranch`, a thin HTTP client over the daemon API used by both the founder and agents for all side effects. Guide `docs/agent-guides/web-and-cli.md`; impl `cli/`.
 - **Audit log.** Append-only record of every state-changing action, keyed by task id (with scope prefixes for non-task actors). Impl `runtime/infrastructure/audit_logger.py`, `runtime/daemon/routes/audit.py`; CLI `happyranch audit`.
 - **Token-usage visibility (Phase 1 dashboard panel).** A `TopTokenThreadsPanel` on the org dashboard showing thread-scoped token spend ranked by total tokens, plus CLI drill-down (`happyranch tokens --by-thread`). This is a **dashboard panel**, NOT a dedicated page. The underlying token-accounting infrastructure (per-task, per-agent, thread-scoped) is documented under [Token-usage tracking](#org--runtime) below. Commit f1dd539; impl `web/src/features/dashboard/components/TopTokenThreadsPanel.tsx`, `cli/commands/tasks.py`.
@@ -251,7 +283,62 @@ Task bootstrap retains text and item IDs from one actual `MemoryStore.render_mem
 
 After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 
-The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority, G3 complete intended-launch/expectation census, G4 consistent acquisition, the whole-report matrix and installed health acceptance remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority and current-serving G3 census acceptance remain OPEN. The observation-only reporting core below supplies read-side G4 acquisition; full eligibility reporting, current-serving census acceptance and installed health remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+
+The source-side G3 observer is attached by real `OrgState` construction before
+workers. One actual `_run_agent` entry reserves an independent boot-local ordinal
+before telemetry writes. Metadata-only `memory_runtime_intent`,
+`memory_runtime_identity`, `memory_runtime_expectation`, `memory_runtime_binding`,
+`memory_runtime_launched`, `memory_runtime_terminal` and `memory_collection_seal`
+use the existing actual-task audit scope. SID is observed at its original
+assignment; parent relation and recovery purpose come from runtime facts,
+never provider resume or request claims. Provider retries add started-callback
+occurrences under one logical invocation. Each terminal belongs to its own
+ordinal/runtime SID; no latest-agent session-end inference is used.
+
+Expectation freezes the same structured render/config used by the unchanged
+prompt: `disabled/budget_zero`, `empty/memory_directory_absent`,
+`empty/renderer_empty`, `empty/no_valid_rendered_ids`, or
+`nonempty/rendered_ids`. Text presence is separate from eligible item exposure;
+full-body-only exposure is nonempty with zero pointer opportunities. No content
+is recorded and no missing expectation is inferred from an absent impression.
+
+Live attempted/persisted counts and chained digests are independent of stored
+rows. A short metadata lock never spans rendering, execution or application
+callbacks. Observation-boundary persistence drains concurrent metadata in
+generation order; another invocation's callback need not wait on a blocked
+observer writer. Writer failures are sticky and affect observation availability
+only. Seals checkpoint independent counters/digests without reading history;
+their diagnostic integrity is `census_not_reconciled`, never a validation or
+health claim. Exhaustive zero-write read validation rejects missing/duplicate/
+corrupt phases and seals, missing starts or expected impressions at zero reads,
+unresolved population/parent/type facts, unknown/pending preparation and zero
+population. It compares opening/closing semantic observer facts (including
+errors, pending writer/preparation state and seal progress), excluding sample
+timestamps. Audit history is acquired in primary-key pages of at most 256 rows,
+with no shared Database lock across pages or decoding, and a 100,000-row total
+work limit including unrelated/prior-boot history. Same-connection write counts
+and other-connection data versions bracket acquisition. Movement, read failure
+or work exhaustion returns unavailable; no partial history is validated and no
+retry-until-quiet loop or reader write is performed. A restart allocates a new
+observer boot and never reconstructs old completeness. Constructor/attachment
+failure preserves ordinary org startup with explicit unavailable observation.
+
+The seal-action audit GET now supplies an optional closed current-serving
+observation from the actual OrgState, with explicit unavailable/unknown fields,
+paired live counters and bounded loaded/disk/interpreter/registry identities.
+It does not write rows, reseal, reconcile full history or produce an epoch.
+Other audit response shapes remain unchanged. The exact response and nested
+identity are specified in the corrective memory spec; a stable empty N0 view
+is descriptive and unaccepted.
+
+This census and its seals are not collection health, installed acceptance or
+epoch authority. The seal-action serving source view is described here. G1
+durable acceptance/B1, both health consumers,
+installed canary/deferred executor/population coverage and full reporting remain
+unimplemented here. Existing backend and canonical CLI guards remain
+`insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
+transition, deployment, tuning or 48-hour clock starts from this source unit.
 
 `AuditLogger.compute_memory_telemetry_report` and `happyranch memory report`
 currently report `insufficient_instrumentation`. Current audit rows have no
@@ -266,10 +353,44 @@ accurate item IDs. Collection has not started. The frozen next-phase measurement
 Fail-closed output explicitly marks thresholds as not met and collection as not
 started; malformed diagnostic rows also remain ineligible rather than being
 credited or crashing the report.
-The report-local backend and CLI validators intentionally remain separate.
-Observation-only malformed read/search diagnostic parity and the full
-controlled-clock whole-report matrix are frozen acceptance obligations for the
-versioned reporting implementation; this guard does not claim either as passed.
+The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
+They acquire `session_start`, impressions, reads and searches before any empty or
+short return. Backend acquisition uses one synchronized SELECT statement snapshot;
+CLI exhausts real `/audit` pages at limit5000 in two complete sweeps and compares
+relevant audit identities/content and `/agents` roles at one aware UTC cutoff.
+Events at or after that cutoff are excluded. Backdated/content/role drift,
+cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
+`acquisition_unavailable`; CLI writes only that category to stderr and exits1,
+with no partial JSON. Unavailable `/agents` stays explicitly unknown and allows
+safe descriptive counts; it never supplies functional cohort authority.
+
+Structural returned-data corruption produces the full empty-metrics error object
+(null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
+errors). Task-only sources are `digest`, `search`, `explicit_or_other`; unsupported
+strings use `invalid_source`, nonstrings `malformed_read_source_type`, and causal
+or digest-first contradictions `source_contradiction`. Independently identified
+manual/thread/dream/recovery/legacy populations are excluded before task source
+validation. Runtime task credit requires the actual task/agent/runtime-session
+start tuple; prefixes, client claims and SID-only matching cannot establish it.
+
+Version1 observed pointer/full-body lists are validated, disjoint and duplicate
+free, with union matching digest IDs/count. Legacy impressions remain unversioned
+with unavailable mode metrics; no memory-file/body/directive inference occurs.
+Exact tuple+memory pairs deduplicate opportunities and reads; secondary activated
+sessions and per-agent/role/memory operation counts remain descriptive. Search
+ratios use distinct persisted, causally corroborated search-sourced read pairs.
+Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
+complete UTC days exclude partial first/current days. Raw day/session sample
+flags may be true; thresholds, diagnostics_valid_for_collection and
+evaluation_candidate remain false, decision `insufficient_instrumentation`.
+`session_start` records audited intended invocations, never a complete process
+launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
+current-serving census authority. Trusted canary/epoch, census and probe
+health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
+synthetic/natural eligibility claim, authority override or epoch start.
+The read-side snapshot/two-sweep contract detects observed drift; it adds no
+writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
+and actual shipping/installed canary cases remain separately gated.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 Runtime-owned task children automatically forward their actual invocation

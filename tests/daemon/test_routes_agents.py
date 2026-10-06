@@ -49,28 +49,38 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
 def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     app, daemon_state, org_state, auth_headers,
 ) -> None:
-    """The activity read uses trigger audits, before its five-row limit."""
+    """Audited history and exact manual rows union before the five-row limit."""
     _seed_active_agent(org_state, "dev_agent")
     _seed_active_agent(org_state, "qa_engineer")
     _authority_generation(org_state)
     db = org_state.db
+    def read_twice(path, *, headers):
+        first = TestClient(app).get(path, headers=headers)
+        second = TestClient(app).get(path, headers=headers)
+        assert first.status_code == second.status_code == 200
+        assert first.json() == second.json()
+        return first
     # Seed directly so this test exercises the projection without invoking a
     # lifecycle writer.  The same trigger twice must not displace TASK-4.
     for index in range(1, 7):
         task_id = f"TASK-{index}"
         db._conn.execute(
             "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, "dev_agent", "failed", "cleanup", f"2026-01-0{index}T00:00:00+00:00", f"2026-01-0{index}T00:00:00+00:00"),
+            (task_id, "dev_agent", "failed", "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\nmanual report" if index == 5 else "cleanup", f"2026-01-0{index}T00:00:00+00:00", f"2026-01-0{index}T00:00:00+00:00"),
         )
-        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+        if index != 5:
+            db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+    # TASK-6 qualifies both ways; duplicate audit rows still cannot displace peers.
+    db._conn.execute("UPDATE tasks SET brief=? WHERE id='TASK-6'", ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\nmanual report",))
     db.insert_audit_log("TASK-6", "dev_agent", "workspace_cleanup_triggered", None)
     # Equal run dates use immutable task ID as the stable descending tie-breaker.
     for task_id in ("TASK-TIE-A", "TASK-TIE-B"):
         db._conn.execute(
             "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, "dev_agent", "completed", "cleanup", "2026-03-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00"),
+            (task_id, "dev_agent", "completed", "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\r\nmanual report" if task_id == "TASK-TIE-A" else "cleanup", "2026-03-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00"),
         )
-        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+        if task_id != "TASK-TIE-A":
+            db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
     db._conn.execute(
         "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         ("TASK-wrong", "qa_engineer", "completed", "cleanup", "2026-02-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00"),
@@ -105,7 +115,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     )
     db._conn.execute(
         "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        ("TASK-6", "dev_agent", "sess-6-new", "blocked", "latest matching summary", "2026-01-07T00:00:00+00:00"),
+        ("TASK-6", "dev_agent", "sess-6-new", "blocked", "latest matching summary", "2025-01-07T00:00:00+00:00"),
     )
     db._conn.execute(
         "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -121,7 +131,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     )
     db._conn.commit()
     before = db._conn.total_changes
-    response = TestClient(app).get(
+    response = read_twice(
         "/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers,
     )
     assert response.status_code == 200
@@ -139,7 +149,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     assert response.json()["activities"][4]["result_status"] == "failed"
     assert response.json()["activities"][4]["output_summary"] == ""
     assert db._conn.total_changes == before
-    alpha_qa_response = TestClient(app).get(
+    alpha_qa_response = read_twice(
         "/api/v1/orgs/alpha/agents/qa_engineer/cleanup-activity", headers=auth_headers,
     )
     assert alpha_qa_response.status_code == 200
@@ -186,7 +196,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     beta.db.insert_audit_log("TASK-BETA-DEV", "dev_agent", "workspace_cleanup_triggered", None)
     beta.db._conn.commit()
     beta_before = beta.db._conn.total_changes
-    beta_response = TestClient(app).get(
+    beta_response = read_twice(
         "/api/v1/orgs/beta/agents/qa_engineer/cleanup-activity", headers=auth_headers,
     )
     assert beta_response.status_code == 200
@@ -196,7 +206,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
         "result_status": None, "output_summary": None,
     }]
     assert beta.db._conn.total_changes == beta_before
-    beta_dev_response = TestClient(app).get(
+    beta_dev_response = read_twice(
         "/api/v1/orgs/beta/agents/dev_agent/cleanup-activity", headers=auth_headers,
     )
     assert beta_dev_response.status_code == 200
@@ -8651,3 +8661,51 @@ def test_executor_switch_inner_pair_compensation_failure_is_caller_safe(
     _assert_exact_skill_root(
         org_state, workspace, ".agents/skills", present=True,
     )
+
+
+@pytest.mark.parametrize("brief,visible", [
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", True),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\nbody", True),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\r\nbody", True),
+    ("body\nHAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", False),
+    (" HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch) \nbody", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch) suffix", False),
+    ("happyranch system workspace cleanup run (manual-dispatch)", False),
+    ("\nHAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\rbody", False),
+])
+def test_cleanup_activity_exact_manual_first_line(app, org_state, auth_headers, brief, visible):
+    from runtime.models import TaskRecord
+    _seed_active_agent(org_state, "dev_agent")
+    _authority_generation(org_state)
+    db = org_state.db
+    db.insert_task(TaskRecord(id="TASK-1", brief=brief, team="engineering", assigned_agent="dev_agent"))
+    before = db._conn.total_changes
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers)
+    assert r.status_code == 200
+    assert [a["task_id"] for a in r.json()["activities"]] == (["TASK-1"] if visible else [])
+    assert db._conn.total_changes == before
+    assert db.get_audit_logs("TASK-1") == []
+
+
+@pytest.mark.parametrize("result_status,summary", [(None, None), ("completed", None), ("failed", ""), ("blocked", "   ")])
+def test_cleanup_activity_preserves_missing_null_blank_and_failure(app, org_state, auth_headers, result_status, summary):
+    from runtime.models import TaskRecord
+    _seed_active_agent(org_state, "dev_agent")
+    _authority_generation(org_state)
+    db = org_state.db
+    db.insert_task(TaskRecord(id="TASK-1", brief="HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", team="engineering", assigned_agent="dev_agent"))
+    if result_status:
+        db.insert_task_result("TASK-1", "dev_agent", "older-session", "older nonblank report", 80)
+        db._conn.execute("INSERT INTO task_results (task_id,agent,session_id,status,output_summary,created_at) VALUES ('TASK-1','dev_agent','sess-1',?,?,'2026-01-01T00:00:00+00:00')", (result_status, summary))
+        db._conn.commit()
+    before = db._conn.total_changes
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers)
+    assert r.status_code == 200
+    assert len(r.json()["activities"]) == 1
+    row = r.json()["activities"][0]
+    assert row["result_status"] == result_status
+    assert row["output_summary"] == summary
+    assert db._conn.total_changes == before

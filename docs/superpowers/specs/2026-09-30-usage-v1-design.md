@@ -343,3 +343,24 @@ states that reason once, with both coverages, and shows dashes. A per-metric
 `withheld` delta shows a dash, both coverages and a plain-language reason;
 reason codes are never displayed. A failed refetch keeps earlier figures under
 a visible stale label; the page applies no time-based staleness threshold.
+
+## Usage presentation locales (THR-118 W4d-2)
+
+App-owned Workload/Efficiency chrome is available in en/zh-CN through the
+existing web preview preference. This includes the CLI default (not pinned)
+label, fixed five run types/six columns, comparisons, coverage, missing/partial
+observations, help, statuses, ARIA, loading/empty/error/retry/stale copy and
+visible numeric/time displays. English metric semantics and canonical token
+shape remain unchanged; Chinese compact tokens use 万/亿. Raw identities,
+authored values, CLI/model names and timezone IDs remain verbatim. Known
+withheld reasons translate; unknown reasons retain the generic product
+fallback, without exposing raw reason codes.
+
+Window `*_local` strings are already org-local wall-clock parts and must not
+be shifted by viewer timezone. UTC instants use the response timezone with
+explicit locale and 24-hour clock. Malformed date/time/timezone fallbacks
+retain their original behavior. A locale change re-renders copy and display
+formatting without changing Compare, cohort/model, nodes/focus, route, queries
+or refetch behavior. It introduces no metric, aggregation, window/median/delta
+calculation or API change. See the current web-i18n design and Usage feature
+component/format tests; ordinary browser cases use `--slice usage`.

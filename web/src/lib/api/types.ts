@@ -1042,3 +1042,55 @@ export interface ScheduleEditFields {
 export interface ScheduleRenewBody {
   indefinite?: boolean;
 }
+
+// Existing-schema THR-139 cutover. No activation, dispatch or launch receipt.
+export type WorkflowCutoverState = 'installed_legacy_only' | 'enable_requested'
+  | 'compatibility_verified' | 'enabled' | 'disable_requested' | 'draining' | 'drained';
+export interface WorkflowCutoverEvent {
+  id: string;
+  event_seq: number;
+  state_before: WorkflowCutoverState | null;
+  state_after: WorkflowCutoverState;
+  operation_key: string | null;
+  event_digest: string;
+  created_at: string;
+}
+export interface WorkflowCutoverBlocker {
+  code: string;
+  record_id?: string | null;
+  state?: string | null;
+  owner: string;
+  required_action: string;
+  deferred_to?: string | null;
+}
+export interface WorkflowCutoverProjection {
+  org_slug: string;
+  schema_version: number;
+  state: WorkflowCutoverState;
+  recovery_owner: 'workflow_cutover_reconciler';
+  generation: number;
+  operation_key: string | null;
+  disable_reason: 'founder_disable_requested' | null;
+  updated_at: string;
+  events: WorkflowCutoverEvent[];
+  allowed_actions: ('enable' | 'disable')[];
+  blockers: WorkflowCutoverBlocker[];
+  reconciliation_required: boolean;
+  verification: { event_id: string; policy: 'workflow-cutover-verifier@1' } | null;
+}
+export interface WorkflowCutoverRequestInput {
+  action: 'enable' | 'disable';
+  operation_key: string;
+  expected_generation: number;
+}
+export interface WorkflowCutoverRequestResponse extends WorkflowCutoverProjection {
+  request_event_id: string;
+  request_generation: number;
+  request_action: 'enable' | 'disable';
+  replayed: boolean;
+}
+export interface WorkflowCutoverDowngradePreflight {
+  eligible: boolean;
+  blockers: WorkflowCutoverBlocker[];
+  projection: WorkflowCutoverProjection;
+}

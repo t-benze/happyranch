@@ -61,7 +61,7 @@ export function ResolveEscalationDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>
             {isContinue ? t('tasks.dialog.resolve.titleContinue') : t('tasks.dialog.resolve.titleSupersede')}

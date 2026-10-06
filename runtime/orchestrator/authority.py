@@ -251,35 +251,42 @@ _APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
 # Any divergence of the live DB from this release schema is an authoritative
 # schema/migration drift signal, so the attempt must escalate. Computed once per
 # process and cached.
-_release_schema_digest_cache: str | None = None
+_release_schema_digest_cache: dict[str, str] | None = None
 
 
-def _release_schema_digest() -> str:
+def _release_schema_digest(layout: str = "F") -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     The temporary generic database receives the same canonical workflow
     installation as ``OrgState.load`` before hashing.  No persistent generic
-    or runtime-audit database is changed.  Cached after first computation;
+    or runtime-audit database is changed.  Independently cached per release-process/layout after construction;
     never raises (``"unavailable"`` fails closed as a drift signal).
     """
     global _release_schema_digest_cache
-    if _release_schema_digest_cache is not None:
-        return _release_schema_digest_cache
+    if layout not in ("F", "E"):
+        return "unavailable"
+    if _release_schema_digest_cache is None:
+        _release_schema_digest_cache = {}
+    if layout in _release_schema_digest_cache:
+        return _release_schema_digest_cache[layout]
     try:
         import tempfile
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
-        from runtime.infrastructure.workflow_schema import install_or_recover
+        from runtime.infrastructure.workflow_schema import install_or_recover, initialize_complete_org_schema
         with tempfile.TemporaryDirectory() as td:
             fresh = Database(_Path(td) / "fresh-authority-schema.db")
             try:
-                install_or_recover(fresh)
-                _release_schema_digest_cache = _live_schema_digest(fresh)
+                if layout == "F":
+                    install_or_recover(fresh)
+                else:
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference")
+                _release_schema_digest_cache[layout] = _live_schema_digest(fresh)
             finally:
                 fresh.close()
     except Exception:
-        _release_schema_digest_cache = "unavailable"
-    return _release_schema_digest_cache
+        _release_schema_digest_cache[layout] = "unavailable"
+    return _release_schema_digest_cache[layout]
 
 
 def _live_schema_digest(db) -> str:
@@ -1668,8 +1675,16 @@ def _server_evidence(
         },
         sort_keys=True,
     )
-    live_schema_digest = _live_schema_digest(db)
-    schema_drift = live_schema_digest != _release_schema_digest()
+    live_schema_digest = "unavailable"
+    try:
+        from runtime.infrastructure.workflow_schema import validate_workflow_schema
+        with db.coherent_read_view() as conn:
+            live_schema_digest = _live_schema_digest(db)
+            layout = validate_workflow_schema(conn, expected_org_slug=orch._slug)
+        reference = _release_schema_digest(layout)
+    except Exception:
+        reference = "unavailable"
+    schema_drift = reference == "unavailable" or live_schema_digest == "unavailable" or live_schema_digest != reference
     facts["db_schema"] = json.dumps(
         {
             "digest": live_schema_digest,

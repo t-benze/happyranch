@@ -24,20 +24,12 @@ import { Markdown } from '@/design-system/patterns/Markdown';
 import { Button } from '@/design-system/primitives/Button';
 import { useKBEntry, useKbRoutes } from '@/hooks/kb';
 import { useTasksRoutes } from '@/hooks/tasks';
-import { KB_STRINGS } from './strings';
+import { useTranslation } from '@/hooks/i18n';
+import { relativeKbAge } from './strings';
 import { KbCandidateCard } from './KbCandidateCard';
 import type { DreamKbCandidate } from '@/hooks/dreams';
 
-function relativeAge(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime();
-  const min = Math.round(ms / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h`;
-  const d = Math.round(hr / 24);
-  return `${d}d`;
-}
+
 
 export interface KbEntryDetailPaneProps {
   /** Slug of a live KB entry. */
@@ -58,6 +50,7 @@ export function KbEntryDetailPane({
   onClose,
   onCandidateResolved,
 }: KbEntryDetailPaneProps): JSX.Element {
+  const { t, locale } = useTranslation();
   const queryClient = useQueryClient();
   const { slug: orgSlug } = useParams<{ slug: string }>();
   const kbRoutes = useKbRoutes();
@@ -86,7 +79,7 @@ export function KbEntryDetailPane({
 
   return (
     <Drawer open onOpenChange={(o) => !o && handleClose()}>
-      <DrawerContent className="flex flex-col">
+      <DrawerContent className="flex flex-col max-sm:w-full">
         {/* Header */}
         <header className="border-b border-border-default p-4">
           {isCandidate ? (
@@ -98,7 +91,7 @@ export function KbEntryDetailPane({
                 {candidate.title}
               </DrawerTitle>
               <p className="text-text-muted mt-1 text-xs font-mono tabular-nums">
-                {candidate.topic} · from {candidate.dream_id}
+                {t('kb.candidateFrom', { topic: candidate.topic, dream: candidate.dream_id })}
               </p>
             </>
           ) : entry ? (
@@ -108,8 +101,7 @@ export function KbEntryDetailPane({
                 {entry.title}
               </DrawerTitle>
               <p className="text-text-muted mt-1 text-xs">
-                {entry.type} · updated {relativeAge(entry.updated_at)} ·{' '}
-                {KB_STRINGS.authoredBy(entry.authored_by)}
+                {t('kb.entryMeta', { type: entry.type, age: relativeKbAge(entry.updated_at, locale, t), author: t('kb.authoredBy', { agent: entry.authored_by }) })}
               </p>
               {entry.tags.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -127,7 +119,7 @@ export function KbEntryDetailPane({
                 {entrySlug ?? ''}
               </div>
               <DrawerTitle className="font-display text-text-primary mt-1 text-lg font-medium">
-                {KB_STRINGS.drawerLoading}
+                {t('kb.drawerLoading')}
               </DrawerTitle>
             </>
           )}
@@ -161,7 +153,7 @@ export function KbEntryDetailPane({
           ) : entryQuery.isError ? (
             <div className="text-center space-y-3 p-4">
               <p className="text-feedback-danger text-sm">
-                Could not load entry
+                {t('kb.entryError')}
               </p>
               <Button
                 size="sm"
@@ -172,17 +164,17 @@ export function KbEntryDetailPane({
                   })
                 }
               >
-                {KB_STRINGS.retry}
+                {t('kb.retry')}
               </Button>
             </div>
           ) : entry ? (
             <div className="space-y-4">
-              <Markdown body={entry.body} />
+              <Markdown body={entry.body} mermaidLoadingLabel={t('common.mermaidLoading')} />
 
               {/* Source task badge */}
               {entry.source_task && (
                 <p className="text-text-muted mt-6 text-xs">
-                  {KB_STRINGS.sourceTaskLabel}{' '}
+                  {t('kb.sourceTaskLabel')}{' '}
                   <IdBadge
                     kind="task"
                     id={entry.source_task}
@@ -194,7 +186,7 @@ export function KbEntryDetailPane({
               {/* Related entries */}
               {entry.related_entries && entry.related_entries.length > 0 && (
                 <div className="text-text-muted mt-3 text-xs">
-                  <div>{KB_STRINGS.relatedEntriesLabel}</div>
+                  <div>{t('kb.relatedEntriesLabel')}</div>
                   <ul className="mt-1 list-disc pl-5">
                     {entry.related_entries.map((slug) => (
                       <li key={slug}>

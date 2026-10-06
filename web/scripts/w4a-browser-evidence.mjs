@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; W4c agents + skills; later W4 slices add rows).
+ * W4a browser-evidence harness (THR-118 W4a-1 health + dreams; W4b todos + work-hours + audit; W4c agents + skills; W4d KB/Artifacts + Usage; later W4 slices add rows).
  *
  * Same mechanism as `w3b-jobs-browser-evidence.mjs` (no new dependency): ONE
  * isolated headless Chrome driven over the DevTools Protocol against the
@@ -26,6 +26,8 @@
  *   node scripts/w4a-browser-evidence.mjs --dist <tmp>/dist-ordinary \
  *     --out <evidence dir> --head <sha>
  */
+import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
+import { assistantFixture, runAssistantCases } from './assistant-dock-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -156,6 +158,7 @@ const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
+const ASSISTANT_FIXTURE = assistantFixture(LEDGER, HUNG);
 
 // Daemon bytes that must survive every locale unchanged.
 const HEALTH_SNAPSHOT = {
@@ -303,7 +306,38 @@ const W4C_POLICY_HISTORY = { items: [], next_cursor: null };
 const ROSTER = [WH_AGENT('dev_agent', '## Routine Tasks\n- Review open PRs\n- Triage bugs'), WH_AGENT('support_bot', 'No routine section here.'), W4C_LEAD];
 
 /** pathname -> payload (or (search) => payload). Later W4 slices add rows here. */
+const W4D_KB = { slug: 'raw-knowledge', title: 'Authored «raw» Knowledge', type: 'RAW_Type', topic: 'Raw_Topic', tags: ['Raw_Tag'], body: 'Authored «raw» KB body.', authored_by: 'Raw_Agent', source_task: 'TASK-0042', related_entries: [], updated_at: iso(3600e3) };
+const W4D_ARTIFACTS = [
+  { name: 'Raw_Agent-2026-06-16-THR-042-Raw_Title.pdf', size_bytes: 1536, modified_at: '2026-06-20T14:30:00Z' },
+  { name: 'Raw_Folder/Raw_File.txt', size_bytes: 512, modified_at: '' },
+];
+// W4d-2 Usage response fixtures: windows are org wall-clock parts, not viewer instants.
+const USAGE_META = {
+  generated_at: '2026-09-29T06:03:00Z', data_through: '2026-09-29T06:03:00Z', timezone: 'Asia/Shanghai',
+  current_window: { start_utc: '2026-09-22T06:03:00Z', end_utc: '2026-09-29T06:03:00Z', start_local: '2026-09-22T14:03:00+08:00', end_local: '2026-09-29T14:03:00+08:00' },
+  previous_window: { start_utc: '2026-09-15T06:03:00Z', end_utc: '2026-09-22T06:03:00Z', start_local: '2026-09-15T14:03:00+08:00', end_local: '2026-09-22T14:03:00+08:00' },
+};
+const USAGE_WORKLOAD = { ...USAGE_META, agents: [{ agent: 'Raw_Agent',
+  current: { task_runs: 12345, thread_wakes: 62, recorded_runtime: { seconds: 15000, known: 71, total: 72 }, deliveries: 2, delivery_unclassified_results: 1, replies: 22, reply_outcome_coverage: { recorded: 22, total_consumed: 24 } },
+  previous: { task_runs: 12340, thread_wakes: 62, recorded_runtime: { seconds: 15000, known: 71, total: 72 }, deliveries: 0, delivery_unclassified_results: 0, replies: 22, reply_outcome_coverage: { recorded: 22, total_consumed: 24 } },
+  deltas: { task_runs: { kind: 'absolute', value: 5, withheld_reason: null }, thread_wakes: { kind: 'no_change', value: 0, withheld_reason: null }, deliveries: { kind: 'new_from_zero', value: 2, withheld_reason: null }, replies: { kind: 'withheld', value: null, withheld_reason: 'reply_outcome_not_recorded' } },
+}] };
+const USAGE_COHORTS = [null, 'Raw_Model', 'Other_Model'].map(model => ({ executor: 'Raw_CLI', model, model_unpinned: model === null, current_runs: 20, previous_runs: 20 }));
+const USAGE_UNATTRIBUTED = { worker_task: 0, manager_decision: 0, thread_reply: 0, thread_followup: 0, dream: 0, task_unclassified: 0, recovery: 1 };
+const USAGE_ROWS = ['worker_task', 'manager_decision', 'thread_reply', 'thread_followup', 'dream'].map(run_type => {
+  const period = { runs: 20, usage_coverage: { known: 20, total: 20, ratio: 1 }, fresh_input: { value: 12000, n_reported: 20, partial_count: 0 }, reread: { value: 54000, n_reported: 20, partial_count: 0 }, output: { value: 4100, n_reported: 20, partial_count: 0 }, decline_waste: run_type.startsWith('thread_') ? { state: 'no_declines', declined: 0, total: 20, rate: 0, usage_known: 0, fresh_input: { value: null, n_reported: 0 }, reread: { value: null, n_reported: 0 }, output: { value: null, n_reported: 0 } } : null };
+  return { run_type, current: period, previous: period, deltas: { runs: { kind: 'absolute', value: 0, withheld_reason: null }, fresh_input: { kind: 'percent', value: -0.4, withheld_reason: null } } };
+});
+const USAGE_EFFICIENCY = search => ({ ...USAGE_META, cohorts: USAGE_COHORTS, rows: new URLSearchParams(search).has('executor') ? USAGE_ROWS : [], unattributed: { current: USAGE_UNATTRIBUTED, previous: USAGE_UNATTRIBUTED } });
+const USAGE_REFRESH_FAILED = new Set();
+
 const API_ROUTES = {
+  [`/api/v1/orgs/${ORG}/usage/workload`]: USAGE_WORKLOAD,
+  [`/api/v1/orgs/${ORG}/usage/efficiency`]: USAGE_EFFICIENCY,
+  [`/api/v1/orgs/${ORG}/kb`]: { entries: [W4D_KB] },
+  [`/api/v1/orgs/${ORG}/kb/stats`]: { entries: [{ slug: W4D_KB.slug, view_count: 1000 }] },
+  [`/api/v1/orgs/${ORG}/kb/raw-knowledge`]: W4D_KB,
+  [`/api/v1/orgs/${ORG}/artifacts`]: { artifacts: W4D_ARTIFACTS },
   '/api/v1/auth/bootstrap': { token: 'w4a-evidence-token' },
   '/api/v1/orgs': { orgs: [{ slug: ORG, root: `/runtime/${ORG}` }], broken: [] },
   [`/api/v1/orgs/${ORG}/dashboard/summary`]: { org_age_days: 12 },
@@ -368,13 +402,31 @@ function startServer(root) {
         const p = url.pathname;
         if (p.startsWith('/api/')) {
           LEDGER.push({ method: request.method, path: p, search: url.search, t: Date.now() });
+          if (selectedSlice === 'assistant' && ASSISTANT_FIXTURE.handle(request, response, p)) return;
           if (p.endsWith('/events') || p.includes('/stream') || p.endsWith('/tail')) {
             response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             HUNG.push(response);
             return;
           }
+          // Usage-only scenario fixtures, selected by the evidence page URL.
+          // These exercise ordinary shipping fetches; no app/bundle seam is added.
+          const ref = new URL(request.headers.referer || 'http://127.0.0.1');
+          if (selectedSlice === 'work-hours-reachability') {
+            const fixture = workHoursFixture(p, ref, { org: ORG, settings: WH_SETTINGS, roster: ROSTER });
+            if (fixture !== undefined) { response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(fixture)); return; }
+          }
+          const mode = ref.searchParams.get('usageFixture');
+          if (p.includes('/usage/') && mode === 'loading') { HUNG.push(response); return; }
+          if (p.includes('/usage/') && (mode === 'error' || (mode === 'stale' && USAGE_REFRESH_FAILED.has(p + url.search + ref.search)))) {
+            response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+            response.end(JSON.stringify({ detail: 'Raw diagnostic' })); return;
+          }
+          if (p.includes('/usage/') && mode === 'stale') USAGE_REFRESH_FAILED.add(p + url.search + ref.search);
+          let payload = api(p, url.search);
+          if (p.includes('/usage/') && mode === 'empty-zone') payload = { ...payload, timezone: '' };
+          if (p.includes('/usage/') && mode === 'empty') payload = p.endsWith('/workload') ? { ...USAGE_META, agents: [] } : { ...USAGE_META, cohorts: [], rows: [], unattributed: { current: USAGE_UNATTRIBUTED, previous: null } };
           response.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-          response.end(JSON.stringify(api(p, url.search)));
+          response.end(JSON.stringify(payload));
           return;
         }
         if (p === '/__w4a_blank') {
@@ -391,6 +443,7 @@ function startServer(root) {
         response.end(String(error));
       }
     });
+    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.attach(server);
     server.on('error', fail);
     server.listen(0, '127.0.0.1', () => ok({ server, url: `http://127.0.0.1:${server.address().port}` }));
   });
@@ -421,7 +474,136 @@ const DREAM_CARD = (id) => `[...document.querySelectorAll('li > button')].find((
  * visible; `verbatim` are daemon bytes that must render unchanged; `ready` is
  * the content predicate; optional `prep(page, h)` drives the page to the state.
  */
+const USAGE_BUTTON = label => `[...document.querySelectorAll('#usage-efficiency-heading ~ * button, section[aria-labelledby="usage-efficiency-heading"] button')].find(b => b.textContent.trim() === ${JSON.stringify(label)})`;
+async function chooseUsage(page, h) {
+  await h.waitTrue(page, bodyHas('Raw_CLI'), 'Usage cohort options');
+  await h.clickSrc(page, USAGE_BUTTON('Raw_CLI'));
+  // The default response inserts a table above/below the same controls. Finish
+  // that layout change before measuring a named-model button for a real click.
+  await h.waitTrue(page, `document.querySelectorAll('section table').length === 2`, 'default Efficiency response');
+  await h.waitTrue(page, `Boolean(${USAGE_BUTTON('Raw_Model')})`, 'named model option');
+  await h.clickSrc(page, USAGE_BUTTON('Raw_Model'));
+  await h.waitTrue(page, `${USAGE_BUTTON('Raw_Model')}.getAttribute('aria-pressed') === 'true' && document.querySelectorAll('section table').length === 2`, 'selected named Efficiency response');
+}
+const usageGeometry = (locale, width) => [['labelled scroll regions, contained sections, sticky identity and narrow hint', `(() => {
+  const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')];
+  const regions = sections.flatMap(s => [...s.querySelectorAll('[role="region"]')]);
+  const hints = regions.map(r => r.previousElementSibling);
+  return { sections: sections.length, tables: document.querySelectorAll('section table').length, regions: regions.length,
+    contained: sections.every(s => s.scrollWidth <= s.clientWidth + 1),
+    labelled: regions.every(r => r.getAttribute('aria-label') === (r.closest('section').getAttribute('aria-labelledby').includes('workload') ? ${JSON.stringify(tr(locale, 'usage.scrollLabel', { label: tr(locale, 'usage.workloadTable') }))} : ${JSON.stringify(tr(locale, 'usage.scrollLabel', { label: tr(locale, 'usage.efficiencyTable') }))}) && r.tabIndex === 0),
+    sticky: regions.every(r => [...r.querySelectorAll('th:first-child')].every(th => getComputedStyle(th).position === 'sticky')),
+    hint: hints.every(p => p.textContent === ${JSON.stringify(tr(locale, 'usage.scrollHint'))} && (getComputedStyle(p).display !== 'none') === ${width < 768}),
+    overflow: regions.every(r => r.scrollWidth > r.clientWidth) };
+})()`, { sections: 2, tables: 2, regions: 2, contained: true, labelled: true, sticky: true, hint: true, overflow: width === 390 }]];
+
 const VIEW_ROUTES = [
+  {
+    id: 'usage-unselected', route: 'usage', path: `/orgs/${ORG}/usage`, ready: () => bodyHas('Raw_Agent'),
+    keys: ['usage.chooseCohort', 'usage.chooseCliFirst', 'usage.workload', 'usage.efficiency'], verbatim: ['Raw_Agent', 'Raw_CLI', 'Asia/Shanghai'],
+    checks: () => [['first load retains no selected CLI/model and no Efficiency figures', `document.querySelectorAll('section table').length === 1 && document.querySelector('section[aria-labelledby="usage-efficiency-heading"]').querySelectorAll('button[aria-pressed="true"]').length === 0`, true]],
+  },
+  {
+    id: 'usage-populated', route: 'usage', path: `/orgs/${ORG}/usage`, ready: () => bodyHas('Raw_Agent'), prep: chooseUsage,
+    keys: ['usage.title', 'usage.compare', 'usage.workload', 'usage.efficiency', 'usage.workloadQuestion', 'usage.efficiencyQuestion', 'usage.agent', 'usage.taskRuns', 'usage.threadWakes', 'usage.runtime', 'usage.deliveries', 'usage.replies', 'usage.runType', 'usage.runs', 'usage.freshMedian', 'usage.rereadMedian', 'usage.outputMedian', 'usage.declineWaste', 'usage.workerTask', 'usage.managerDecision', 'usage.threadReply', 'usage.threadFollowup', 'usage.dream', 'usage.unpinned', 'usage.runtimeFootnote', 'usage.deliveryFootnote', 'usage.countFootnote', 'usage.freshFootnote', 'usage.rereadFootnote', 'usage.outputFootnote', 'usage.declineFootnote', 'usage.medianFootnote', 'usage.usageMissingFootnote'],
+    verbatim: ['Raw_Agent', 'Raw_CLI', 'Raw_Model', 'Asia/Shanghai', '12,345'], checks: usageGeometry,
+  },
+  {
+    id: 'usage-empty', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=empty`, ready: locale => bodyHas(tr(locale, 'usage.workloadEmpty')),
+    keys: ['usage.workloadEmpty', 'usage.efficiencyEmpty', 'usage.taskRunsDefinition', 'usage.threadWakesDefinition', 'usage.runtimeDefinition', 'usage.deliveriesDefinition', 'usage.repliesDefinition'], verbatim: ['Asia/Shanghai'],
+    checks: locale => [['localized Workload definitions list accessible name', `document.querySelector('section[aria-labelledby="usage-workload-heading"] ul').getAttribute('aria-label')`, tr(locale, 'usage.workloadDefinitions')]],
+  },
+  {
+    id: 'usage-loading', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=loading`, ready: () => `document.querySelectorAll('[data-testid="usage-skeleton"]').length === 2`,
+    keys: ['usage.workloadLoading', 'usage.efficiencyOptionsLoading', 'usage.taskRuns', 'usage.freshMedian'], verbatim: [],
+    checks: () => [['two loading sections remain busy without figures', `document.querySelectorAll('[aria-busy="true"]').length`, 2]],
+  },
+  {
+    id: 'usage-error', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=error`, ready: locale => bodyHas(tr(locale, 'usage.loadError', { view: tr(locale, 'usage.efficiency') })),
+    keys: [['usage.loadError', { view: '@usage.workload' }], ['usage.loadError', { view: '@usage.efficiency' }], 'usage.retry', 'usage.workloadFailed', 'usage.efficiencyOptionsFailed'], verbatim: [],
+    checks: locale => [['independent retry controls and Compare survive', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => { const buttons = [...s.querySelectorAll('button')]; return buttons.length === 1 && buttons[0].textContent.trim() === ${JSON.stringify(tr(locale, 'usage.retry'))}; }) && Boolean(document.querySelector('[role="switch"]')); })()`, true]],
+  },
+  {
+    id: 'usage-stale', route: 'usage', path: `/orgs/${ORG}/usage?usageFixture=stale`, ready: () => bodyHas('Raw_Agent'),
+    prep: async (page, h) => {
+      await chooseUsage(page, h);
+      await h.clickSrc(page, `document.querySelector('[role="switch"]')`);
+      await h.waitTrue(page, bodyHas('−0.4%'), 'comparison');
+      await sleep(31000);
+      await h.clickSrc(page, `document.querySelector('[role="switch"]')`);
+      const stale = tr(await h.evaluate(page, 'document.documentElement.lang'), 'usage.stale');
+      await h.waitTrue(page, `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.includes(${JSON.stringify(stale)})); })()`, 'both stale Usage responses');
+    },
+    keys: ['usage.stale', 'usage.retry'], verbatim: ['Raw_Agent', 'Raw_Model', 'Asia/Shanghai'],
+    checks: (locale) => [['stale data retains original timestamp and cohort', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.includes(${JSON.stringify(tr(locale, 'usage.dataThrough', { stamp: locale === 'en' ? 'Sep 29, 14:03 (Asia/Shanghai)' : '9月29日 14:03 (Asia/Shanghai)' }))})) && ${USAGE_BUTTON('Raw_Model')}.getAttribute('aria-pressed') === 'true'; })()`, true]],
+  },
+  {
+    id: 'kb-list', route: 'kb', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
+    keys: ['kb.pageTitle', 'kb.railAllEntries', 'kb.railTagsSection', ['kb.headerEyebrow', { count: 1, number: '1' }], ['kb.viewedLabel', { count: 1000, number: '1,000' }]],
+    verbatim: [W4D_KB.title, 'RAW_Type', 'Raw_Tag', 'raw-knowledge'],
+    checks: () => [
+      ['heading and entry text fit their containers', `(() => {
+        const main = document.querySelector('main main');
+        const heading = main?.querySelector('h1');
+        const title = [...(main?.querySelectorAll('a span') ?? [])].find(el => el.textContent === ${JSON.stringify(W4D_KB.title)});
+        if (!main || !heading || !title) return false;
+        return [heading, title].every(el => {
+          const range = document.createRange(); range.selectNodeContents(el);
+          const rects = [...range.getClientRects()];
+          if (!rects.length) return false;
+          return rects.every(r => {
+            if (r.width <= 0 || r.left < 0 || r.right > innerWidth) return false;
+            for (let parent = el; parent; parent = parent.parentElement) {
+              if (!['hidden', 'auto', 'scroll', 'clip'].includes(getComputedStyle(parent).overflowX)) continue;
+              const box = parent.getBoundingClientRect();
+              if (r.left < box.left - 1 || r.right > box.right + 1) return false;
+            }
+            return true;
+          });
+        });
+      })()`, true],
+      ['raw type has no text transform', `(() => { const badge = [...document.querySelectorAll('main a span')].find(el => el.textContent === 'RAW_Type'); return Boolean(badge && getComputedStyle(badge).textTransform === 'none'); })()`, true],
+    ],
+  },
+  {
+    id: 'kb-detail', route: 'kb detail', path: `/orgs/${ORG}/kb/raw-knowledge`, ready: () => bodyHas(W4D_KB.body),
+    keys: ['kb.pageTitle', 'kb.sourceTaskLabel', ['kb.authoredBy', { agent: 'Raw_Agent' }]],
+    verbatim: [W4D_KB.title, W4D_KB.body, 'Raw_Agent', 'TASK-0042'],
+    // The closed Assistant dock also stays mounted with role=dialog. Bind the
+    // bounds oracle to this open drawer and its verbatim authored title.
+    checks: () => [['drawer fits viewport', `(() => { const el = [...document.querySelectorAll('[role="dialog"][data-state="open"]')].find(d => d.querySelector('h2')?.textContent === ${JSON.stringify(W4D_KB.title)}); if (!el) return false; const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`, true]],
+  },
+  {
+    id: 'kb-candidates', route: 'kb candidates', path: `/orgs/${ORG}/kb`, ready: () => bodyHas(W4D_KB.title),
+    prep: async (page, h) => {
+      const SELECT = `[...document.querySelectorAll('aside button')].find(b => b.textContent.includes(${JSON.stringify(tr('en', 'kb.railCandidates'))}) || b.textContent.includes(${JSON.stringify(tr('zh-CN', 'kb.railCandidates'))}))`;
+      await h.waitTrue(page, `Boolean(${SELECT})`, 'KB candidates count'); await h.clickSrc(page, SELECT);
+      await h.waitTrue(page, bodyHas('Spanish after-hours routing'), 'KB candidate row');
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.includes('Spanish after-hours routing'))`);
+      await h.waitTrue(page, `[...document.querySelectorAll('[role="dialog"][data-state="open"]')].some(d => d.querySelector('h2')?.textContent === 'Spanish after-hours routing')`, 'KB candidate detail');
+    },
+    keys: ['kb.acceptButton', 'kb.dismissButton', ['kb.candidatePendingLabel', { agent: 'product_lead' }]],
+    verbatim: ['Spanish after-hours routing', 'spanish-after-hours', 'Seen three times this week.', 'product_lead'],
+  },
+  {
+    id: 'artifacts-list', route: 'artifacts', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('THR-042-Raw_Title.pdf'),
+    keys: ['artifacts.pageTitle', 'artifacts.type.doc', 'artifacts.fromFilename', 'artifacts.download'],
+    checks: locale => [['localized filter accessible name', `document.querySelector('[role="tablist"]').getAttribute('aria-label')`, tr(locale, 'artifacts.filterLabel')]],
+    verbatim: ['Raw_Agent', 'Raw_Folder/', 'THR-042', 'THR-042-Raw_Title.pdf', '1.5 KB'],
+  },
+  {
+    id: 'artifacts-folder', route: 'artifacts folder', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('Raw_Folder/'),
+    prep: async (page, h) => { await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.includes('Raw_Folder/'))`); await h.waitTrue(page, bodyHas('Raw_File.txt'), 'artifact folder'); },
+    keys: ['artifacts.root', 'artifacts.modifiedUnavailable', 'artifacts.sortFolders', 'artifacts.download'],
+    verbatim: ['Raw_Folder', 'Raw_File.txt', '512 B'],
+  },
+  {
+    id: 'artifacts-upload', route: 'artifacts upload', path: `/orgs/${ORG}/artifacts`, ready: () => bodyHas('THR-042-Raw_Title.pdf'),
+    prep: async (page, h) => { await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(tr('en', 'artifacts.upload'))} || b.textContent.trim() === ${JSON.stringify(tr('zh-CN', 'artifacts.upload'))})`); },
+    keys: ['artifacts.uploadTitle', 'artifacts.file', 'artifacts.nameLabel', 'artifacts.nameHint', 'common.cancel'],
+    verbatim: ['[A-Za-z0-9._-]+', '10 MB'],
+  },
+
   {
     id: 'health', route: 'health', path: `/orgs/${ORG}/health`,
     ready: () => `${bodyHas('work_hours_scheduler_loop')} && ${bodyHas('GET /api/v1/orgs/{slug}/tasks')}`,
@@ -644,6 +826,34 @@ const VIEW_ROUTES = [
  */
 const SWITCH_ROUTES = [
   {
+    id: 'usage-cohort-compare', path: `/orgs/${ORG}/usage`,
+    open: async (page, h) => { await chooseUsage(page, h); await h.clickSrc(page, `document.querySelector('[role="switch"]')`); await h.waitTrue(page, bodyHas('−0.4%'), 'comparison response'); await h.evaluate(page, `window.__usageCompare = document.querySelector('[role="switch"]'); window.__usageTable = document.querySelectorAll('section table')[1]; true`); },
+    control: USAGE_BUTTON('Raw_Model'), container: `CONTROL.closest('section')`,
+    copy: locale => [tr(locale, 'usage.efficiencyLoaded', { executor: 'Raw_CLI', model: 'Raw_Model' }), tr(locale, 'usage.unpinned'), tr(locale, 'usage.noChange'), tr(locale, 'usage.withheldReply').trim(), locale === 'en' ? '12.0K' : '1.2万', locale === 'en' ? 'Sep 29, 14:03' : '9月29日 14:03'],
+    checks: () => [['Compare, cohort, table and route kept', `window.__usageCompare === document.querySelector('[role="switch"]') && window.__usageCompare.getAttribute('aria-checked') === 'true' && window.__w4aCtl.deref().getAttribute('aria-pressed') === 'true' && window.__usageTable === document.querySelectorAll('section table')[1] && location.pathname === '/orgs/${ORG}/usage'`, true], ['exact token tooltip kept', `window.__usageTable.querySelector('[title="12,000"]') !== null`, true]],
+    // Normal action after both measured switches: change the model and observe its real request.
+    after: async (page, h) => { await h.clickSrc(page, USAGE_BUTTON('Other_Model')); await h.waitTrue(page, `${USAGE_BUTTON('Other_Model')}.getAttribute('aria-pressed') === 'true'`, 'normal action'); },
+    shot: 'zh-usage-cohort-compare-switch-1440',
+  },
+  {
+    id: 'artifacts-upload-file', path: `/orgs/${ORG}/artifacts`,
+    open: async (page, h) => {
+      await h.waitTrue(page, bodyHas('THR-042-Raw_Title.pdf'), 'artifact grid');
+      await h.clickSrc(page, `[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Upload')`);
+      await h.waitTrue(page, `Boolean(document.querySelector('input[type="file"]'))`, 'upload form');
+      await h.evaluate(page, `(() => {
+        const input = document.querySelector('input[type="file"]'); const selected = new File(['exact raw bytes'], 'Raw_Selected.pdf', { type: 'application/pdf' });
+        const data = new DataTransfer(); data.items.add(selected); input.files = data.files; input.dispatchEvent(new Event('change', { bubbles: true }));
+        window.__w4dSelected = input.files[0]; window.__w4dFileInput = input;
+        window.__w4dUploadButton = [...document.querySelectorAll('section button')].find(b => b.textContent.trim() === 'Upload'); return true;
+      })()`);
+    },
+    control: `document.querySelector('section input[type="text"]')`, container: `CONTROL.closest('section')`, draft: 'Raw_Draft.pdf',
+    copy: locale => [tr(locale, 'artifacts.uploadTitle'), tr(locale, 'artifacts.nameLabel'), tr(locale, 'common.cancel')],
+    checks: () => [['selected File and file-input node retained', `document.querySelector('input[type="file"]') === window.__w4dFileInput && window.__w4dFileInput.files[0] === window.__w4dSelected && window.__w4dSelected.name === 'Raw_Selected.pdf'`, true], ['upload control retained', `window.__w4dUploadButton.isConnected && window.__w4dUploadButton.closest('section') === window.__w4aBox.deref()`, true]],
+    shot: 'zh-artifacts-upload-switch-1440',
+  },
+  {
     id: 'dream-drawer-accept', path: `/orgs/${ORG}/dreams`,
     open: async (page, h) => {
       await h.waitTrue(page, bodyHas('DREAM-0011'), 'feed');
@@ -764,6 +974,27 @@ const SWITCH_ROUTES = [
   },
 ];
 
+const selectedSlice = arg('slice', 'all');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability'].includes(selectedSlice)) throw new Error('unknown --slice');
+// F1 repair: reuse the real populated and switch cases with only malformed
+// response metadata. Keep the independent raw-string oracle out of formatters.
+const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
+const populatedUsage = VIEW_ROUTES.find(row => row.id === 'usage-populated');
+const switchUsage = SWITCH_ROUTES.find(row => row.id === 'usage-cohort-compare');
+const EMPTY_ZONE_VIEW = {
+  ...populatedUsage, id: 'usage-empty-zone', path: `/orgs/${ORG}/usage?usageFixture=empty-zone`,
+  verbatim: populatedUsage.verbatim.filter(value => value !== 'Asia/Shanghai').concat('2026-09-29T06:03:00Z'),
+  checks: (locale, width) => [...populatedUsage.checks(locale, width), ...emptyZoneChecks()],
+};
+const EMPTY_ZONE_SWITCH = {
+  ...switchUsage, id: 'usage-empty-zone-switch', path: EMPTY_ZONE_VIEW.path,
+  copy: locale => switchUsage.copy(locale).map(value => value === (locale === 'en' ? 'Sep 29, 14:03' : '9月29日 14:03') ? '2026-09-29T06:03:00Z' : value),
+  checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
+  shot: 'zh-usage-empty-zone-switch-1440',
+};
+const ACTIVE_VIEWS = ['assistant', 'work-hours-reachability'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['assistant', 'work-hours-reachability'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
   const [key, params = {}] = Array.isArray(spec) ? spec : [spec];
@@ -786,7 +1017,7 @@ async function main() {
   }
 
   const joined = distJs(dist).map((f) => readFileSync(f, 'utf8')).join('\n');
-  const bundleKeys = [...new Set(VIEW_ROUTES.flatMap((row) => row.keys.map((spec) => (Array.isArray(spec) ? spec[0] : spec))))];
+  const bundleKeys = [...new Set(ACTIVE_VIEWS.flatMap((row) => row.keys.map((spec) => (Array.isArray(spec) ? spec[0] : spec))))];
   // Template text before the first placeholder is what a minifier keeps verbatim.
   const literal = (key) => { const v = CATALOG['zh-CN'][key]; return (typeof v === 'string' ? v : v.other).split('{')[0].trim(); };
   const fingerprint = {
@@ -821,11 +1052,12 @@ async function main() {
       // load event. Fonts fall back to local faces; recorded in the receipt.
       await cdp.send('Network.setBlockedURLs', { urls: EXTERNAL_BLOCK }, sessionId);
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sessionId);
-      if (init) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: init }, sessionId);
+      let initializationScript;
+      if (init) initializationScript = (await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: init }, sessionId)).identifier;
       const loaded = cdp.waitFor('Page.loadEventFired', { sessionId });
       await cdp.send('Page.navigate', { url }, sessionId);
       await loaded;
-      return { targetId, sessionId };
+      return { targetId, sessionId, initializationScript };
     }
     const closePage = async (page) => { try { await cdp.send('Target.closeTarget', { targetId: page.targetId }); } catch { /* closed */ } };
     async function evaluate(page, expression) {
@@ -868,17 +1100,23 @@ async function main() {
     }
     const h = { clickSrc, waitTrue, evaluate };
 
+    if (selectedSlice === 'assistant') {
+      await runAssistantCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, switchOnly: arg('assistant-case', 'all') === 'switch' }, ASSISTANT_FIXTURE);
+    } else if (selectedSlice === 'work-hours-reachability') {
+      await runWorkHoursCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, geometryOnly: arg('work-hours-case', 'all') === 'geometry', entryOnly: arg('work-hours-case', 'all') === 'entry', longOnly: arg('work-hours-case', 'all') === 'long-cell', editorOnly: ['editor', 'editor-keyboard'].includes(arg('work-hours-case', 'all')), editorRed: arg('work-hours-case', 'all') === 'editor-red', editorKeyboard: arg('work-hours-case', 'all') === 'editor-keyboard' });
+    } else {
     // ============================================================ G
     beginCase('G', 'ordinary bundle (no build flag) carries the zh-CN catalog copy of every V route');
     for (const [key, present] of Object.entries(fingerprint.zhCatalogLiterals)) check(`G ordinary JS contains zh-CN ${key}`, present, true);
     endCase();
 
     // ============================================================ V
-    beginCase('V', `${VIEW_ROUTES.map((r) => r.id).join(' + ')}, en/zh-CN, 1440x900 + 390x844`);
+    beginCase('V', `${ACTIVE_VIEWS.map((r) => r.id).join(' + ')}, en/zh-CN, 1440x900 + 390x844`);
     for (const locale of ['en', 'zh-CN']) {
       const short = locale === 'en' ? 'en' : 'zh';
       for (const [w, ht] of [[1440, 900], [390, 844]]) {
-        for (const row of VIEW_ROUTES) {
+        for (const row of ACTIVE_VIEWS) {
+          if (row.id === 'usage-stale') USAGE_REFRESH_FAILED.clear();
           const page = await openPage(`${base}${row.path}`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width: w, height: ht });
           await waitTrue(page, row.ready(locale), `${row.id} content`);
           if (row.prep) await row.prep(page, h);
@@ -902,8 +1140,8 @@ async function main() {
     endCase();
 
     // ============================================================ S
-    beginCase('S', `${SWITCH_ROUTES.map((r) => r.id).join(' + ')}: en -> zh-CN -> en keeps nodes, focus (and draft), zero /api requests`);
-    for (const row of SWITCH_ROUTES) {
+    beginCase('S', `${ACTIVE_SWITCHES.map((r) => r.id).join(' + ')}: en -> zh-CN -> en keeps nodes, focus (and draft), zero /api requests`);
+    for (const row of ACTIVE_SWITCHES) {
       const page = await openPage(`${base}${row.path}`, { init: `${seedLocale('en')}\n${CHINESE_NAVIGATOR}` });
       await row.open(page, h);
       await sleep(400);
@@ -930,22 +1168,37 @@ async function main() {
         check(`S ${row.id} -> ${locale} same container node`, s.sameContainer, true);
         check(`S ${row.id} -> ${locale} same control node`, s.sameControl, true);
         if (row.draft) check(`S ${row.id} -> ${locale} draft value kept`, s.value, row.draft);
+        for (const [label, expression, result] of row.checks?.(locale) ?? []) check(`S ${row.id} -> ${locale} ${label}`, await evaluate(page, expression), result);
         check(`S ${row.id} -> ${locale} focus kept`, s.focused, true);
         for (const text of row.copy(locale)) check(`S ${row.id} -> ${locale} shows "${text}"`, await evaluate(page, bodyHas(text)), true);
         check(`S ${row.id} -> ${locale} <html lang>`, s.lang, locale);
         check(`S ${row.id} -> ${locale} zero /api requests in switch window`, LEDGER.slice(from), []);
         if (locale === 'zh-CN' && row.shot) await capture(page, row.shot, { viewport: '1440x900', locale, state: `${row.id} after en->zh-CN switch` });
       }
+      if (row.after) {
+        const from = LEDGER.length;
+        await row.after(page, h); await sleep(400);
+        check(`S ${row.id} ordinary user action executes after switches`, LEDGER.slice(from).some(r => r.path.endsWith('/usage/efficiency') && new URLSearchParams(r.search).get('model') === 'Other_Model'), true);
+      }
       await closePage(page);
     }
     endCase();
+    }
   } finally {
+    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.cleanup();
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();
-    if (chrome && !chrome.killed) chrome.kill('SIGKILL');
+    if (chrome && chrome.exitCode === null && chrome.signalCode === null) {
+      // kill() only sends the signal; wait before removing a writable profile.
+      await new Promise((resolve, reject) => {
+        const deadline = setTimeout(() => reject(new Error('Chrome teardown timed out')), 5000);
+        chrome.once('close', () => { clearTimeout(deadline); resolve(); });
+        chrome.kill('SIGKILL');
+      });
+    }
     server.closeAllConnections?.();
     server.close();
-    rmSync(userDataDir, { recursive: true, force: true });
+    rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 
   const failed = cases.filter((c) => !c.pass);
@@ -954,7 +1207,7 @@ async function main() {
     chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + navigator override: environment never defaults the locale)' },
     externalRequestsBlocked: EXTERNAL_BLOCK,
     dist: fingerprint,
-    routes: { view: VIEW_ROUTES.map((r) => r.id), switch: SWITCH_ROUTES.map((r) => r.id), api: Object.keys(API_ROUTES) },
+    routes: { view: ACTIVE_VIEWS.map((r) => r.id), switch: ACTIVE_SWITCHES.map((r) => r.id), api: Object.keys(API_ROUTES) },
     summary: cases.map((c) => ({ id: c.id, title: c.title, pass: c.pass, checks: c.checks.length, failedChecks: c.checks.filter((x) => !x.ok).map((x) => x.name) })),
     cases, screenshots, ledger: LEDGER, passed: cases.length - failed.length, failed: failed.length,
   };

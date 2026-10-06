@@ -23,7 +23,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { render } from '@testing-library/react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { renderWithProviders } from '@/test/render';
+import { renderWithProviders, I18nTestBoundary, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { AssistantDockHost } from './AssistantDockHost';
@@ -33,6 +33,17 @@ import type { ConversationSummary } from '@/hooks/assistant';
 // ---------------------------------------------------------------------------
 // Shared mock state (hoisted so vi.mock factories can close over it)
 // ---------------------------------------------------------------------------
+
+const mermaidChunk = vi.hoisted(() => {
+  let release!: () => void;
+  const ready = new Promise<void>((resolve) => { release = resolve; });
+  return { ready, release };
+});
+// External library-load delay; actual Markdown, lazy import and callers stay real.
+vi.mock('mermaid', async () => {
+  await mermaidChunk.ready;
+  return { default: { initialize: vi.fn(), render: vi.fn(async () => ({ svg: '<svg data-w5a-diagram="loaded"></svg>' })) } };
+});
 
 interface MockSocket {
   readyState: number;
@@ -300,9 +311,11 @@ describe('AssistantDockHost — network evidence (real provider + MSW)', () => {
     vi.useFakeTimers();
     render(
       <MemoryRouter initialEntries={[route]}>
-        <AppProvider client={client}>
-          <AssistantDockHost />
-        </AppProvider>
+        <I18nTestBoundary>
+          <AppProvider client={client}>
+            <AssistantDockHost />
+          </AppProvider>
+        </I18nTestBoundary>
       </MemoryRouter>,
     );
 
@@ -678,4 +691,231 @@ describe('AssistantDockHost — conversation switcher', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(h.openSessionMock).toHaveBeenCalledTimes(2));
   });
+});
+
+// THR-118: real data/provider/query path, only external WS transport doubled.
+function changeDockLocale(locale: 'en' | 'zh-CN') {
+  act(() => window.dispatchEvent(new StorageEvent('storage', {
+    key: 'happyranch.ui.locale', newValue: locale,
+  })));
+}
+
+describe('Assistant dock mounted localization', () => {
+  test('localized history and tool/inflight chrome preserve draft, focus, selection and connection ledger', async () => {
+    let statusReads = 0;
+    let conversationReads = 0;
+    server.use(
+      http.get('/api/v1/assistant/status', () => {
+        statusReads += 1;
+        return HttpResponse.json({ ...CONFIGURED, selected_executor: null });
+      }),
+      http.get('/api/v1/assistant/a-mode/conversations', () => {
+        conversationReads += 1;
+        return HttpResponse.json([{ id: 'raw-id', title: 'Raw «会话»', active: true, created_at: null }]);
+      }),
+    );
+    const sock = createMockSocket();
+    renderWithProviders(<AssistantDockHost />);
+    await openAndReady(sock);
+    fireFrame({ type: 'history', turns: [{ prompt: 'Raw prompt /任务', started_at: '2026-07-04T10:00:00Z', frames: [
+      { type: 'turn_start' }, { type: 'text_delta', text: '**Raw reply** /答复' }, { type: 'turn_end' },
+    ] }] });
+    fireFrame({ type: 'turn_start' });
+    fireFrame({ type: 'tool_call', name: 'raw_tool/工具' });
+    fireFrame({ type: 'tool_call' });
+    fireFrame({ type: 'tool_call', name: 'tool' });
+    const input = screen.getByRole('textbox', { name: 'Assistant composer' }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '  original /prompt  ' } });
+    // Let the existing open-focus timer finish before establishing focus.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    input.focus(); input.setSelectionRange(2, 10);
+    const dialog = screen.getByRole('dialog', { name: 'Ranch Assistant' });
+    const before = [statusReads, conversationReads, h.openSessionMock.mock.calls.length, sock.close.mock.calls.length, sock.send.mock.calls.length];
+    changeDockLocale('zh-CN');
+    expect(screen.getByRole('dialog', { name: '牧场助手' })).toBe(dialog);
+    expect(screen.getByRole('textbox', { name: '助手输入框' })).toBe(input);
+    expect(input).toHaveValue('  original /prompt  ');
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([2, 10]);
+    expect(screen.getByText('你')).toBeInTheDocument();
+    expect(screen.getByText('Raw prompt /任务')).toBeInTheDocument();
+    expect(screen.getByText('Raw reply')).toBeInTheDocument();
+    expect(screen.getByLabelText('工具活动')).toHaveTextContent('raw_tool/工具');
+    expect(screen.getByText('工具')).toBeInTheDocument();
+    expect(screen.getByText('tool')).toBeInTheDocument();
+    expect(screen.getByLabelText('助手正在回复')).toHaveTextContent('正在回复…');
+    expect(screen.getByRole('button', { name: '会话' })).toHaveTextContent('Raw «会话»');
+    changeDockLocale('en');
+    expect(screen.getByRole('textbox', { name: 'Assistant composer' })).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([2, 10]);
+    expect([statusReads, conversationReads, h.openSessionMock.mock.calls.length, sock.close.mock.calls.length, sock.send.mock.calls.length]).toEqual(before);
+    fireFrame({ type: 'tool_result', name: 'raw_tool/工具', ok: false });
+    fireFrame({ type: 'turn_end' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(sock.send).toHaveBeenCalledTimes(1);
+    expect(sock.send).toHaveBeenCalledWith(JSON.stringify({ type: 'start', text: 'original /prompt' }));
+    expect(input).toHaveValue('');
+  });
+
+  test.each([
+    ['status', 'Assistant error.', '助手出错。'],
+    ['error', 'Unknown error', '未知错误'],
+    ['socket', 'WebSocket connection failed.', 'WebSocket 连接失败。'],
+    ['disconnected', 'Not connected. Reopen the dock to reconnect.', '尚未连接。请重新打开助手面板以连接。'],
+  ])('visible %s fallback updates immediately without reopening the socket', async (kind, english, chinese) => {
+    const sock = createMockSocket();
+    renderWithProviders(<AssistantDockHost />);
+    await openAndReady(sock);
+    if (kind === 'status') fireFrame({ type: 'status', code: 'error' });
+    if (kind === 'error') fireFrame({ type: 'error' });
+    if (kind === 'socket') act(() => sock.onerror!());
+    if (kind === 'disconnected') {
+      sock.readyState = WebSocket.CLOSED;
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    }
+    expect(screen.getByRole('alert').textContent).toBe(english);
+    changeDockLocale('zh-CN');
+    expect(screen.getByRole('alert').textContent).toBe(chinese);
+    changeDockLocale('en');
+    expect(screen.getByRole('alert').textContent).toBe(english);
+    expect(h.openSessionMock).toHaveBeenCalledTimes(1);
+    expect(sock.close).not.toHaveBeenCalled();
+  });
+
+  test.each(['Assistant error.', 'Unknown error', '', 'Raw 错误\n<tag>'])('raw detail/message %j remains byte-exact through locale switches', async (raw) => {
+    const sock = createMockSocket();
+    renderWithProviders(<AssistantDockHost />);
+    await openAndReady(sock);
+    for (const frame of [{ type: 'status', code: 'error', detail: raw }, { type: 'error', message: raw }]) {
+      fireFrame(frame);
+      const alert = screen.getByRole('alert');
+      expect(alert.textContent).toBe(raw);
+      changeDockLocale('zh-CN');
+      expect(screen.getByRole('alert')).toBe(alert);
+      expect(alert.textContent).toBe(raw);
+      changeDockLocale('en');
+      expect(alert.textContent).toBe(raw);
+    }
+    expect(h.openSessionMock).toHaveBeenCalledTimes(1);
+    expect(sock.close).not.toHaveBeenCalled();
+  });
+
+  test.each(['Connection failed: diagnostic', 'Assistant error.', ''])('caught connection diagnostic %j keeps exact detail under localized wrapper', async (raw) => {
+    h.openSessionMock.mockRejectedValue(raw);
+    renderWithProviders(<AssistantDockHost />);
+    const trigger = document.createElement('button');
+    trigger.setAttribute('data-assistant-open', '');
+    document.body.appendChild(trigger); trigger.click(); trigger.remove();
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(`Connection failed: ${raw}`));
+    changeDockLocale('zh-CN');
+    expect(screen.getByRole('alert').textContent).toBe(`连接失败：${raw}`);
+    changeDockLocale('en');
+    expect(screen.getByRole('alert').textContent).toBe(`Connection failed: ${raw}`);
+    expect(h.openSessionMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('Chinese connecting, empty, composer/help, raw executor and keyboard behavior use existing controls', async () => {
+    const sock = createMockSocket();
+    renderWithProviders(<AssistantDockHost />, { i18n: { adapter: savedLocaleAdapter('zh-CN') } });
+    await openDock(sock);
+    expect(screen.getByLabelText('加载中')).toBeInTheDocument();
+    const send = screen.getByRole('button', { name: '发送' });
+    expect(send).toBeDisabled();
+    fireFrame({ type: 'status', code: 'ready' });
+    expect(screen.getByText('向助手提问，或输入 / 运行命令。')).toBeInTheDocument();
+    const input = screen.getByRole('textbox', { name: '助手输入框' });
+    expect(input).toHaveAttribute('placeholder', '向助手提问，或输入 / 运行命令…');
+    expect(screen.getByText(/发送 ·/)).toHaveTextContent('Enter 发送 · Shift+Enter 换行');
+    fireFrame({ type: 'turn_start' });
+    expect(screen.getByLabelText('claude正在回复')).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'payload' } });
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(sock.send).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(sock.send).toHaveBeenCalledWith(JSON.stringify({ type: 'start', text: 'payload' }));
+    expect(screen.getByRole('button', { name: '关闭助手' })).toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'next draft' } });
+    const first = screen.getByRole('button', { name: '会话' });
+    first.focus(); fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(send);
+    fireEvent.keyDown(send, { key: 'Tab' });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '会话' }));
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: '牧场助手' }).className).toContain('translate-x-full');
+  });
+
+  test.each(['loading', 'unconfigured', 'status-error'])('Chinese status %s renders owned fallback without a session', async (state) => {
+    server.use(http.get('/api/v1/assistant/status', () => state === 'loading'
+      ? new Promise(() => {})
+      : state === 'status-error' ? HttpResponse.json({ detail: 'raw backend' }, { status: 500 })
+        : HttpResponse.json({ ...CONFIGURED, state: 'unconfigured' })));
+    renderWithProviders(<AssistantDockHost />, { i18n: { adapter: savedLocaleAdapter('zh-CN') } });
+    const trigger = document.createElement('button'); trigger.setAttribute('data-assistant-open', '');
+    document.body.appendChild(trigger); trigger.click(); trigger.remove();
+    const expected = state === 'loading' ? '加载中…' : state === 'status-error' ? '无法加载助手状态。' : '助手尚未就绪。请在设置 → 助手中进行配置。';
+    await waitFor(() => expect(screen.getByText(expected)).toBeInTheDocument());
+    expect(h.openSessionMock).not.toHaveBeenCalled();
+    if (state !== 'loading') {
+      const fallback = screen.getByRole('alert');
+      expect(fallback.textContent).toBe('助手尚未配置。请在设置中进行配置。');
+      changeDockLocale('en');
+      expect(fallback.textContent).toBe('Assistant not configured. Set it up in Settings.');
+    }
+  });
+});
+
+
+test.each(['assistant', ''])('raw executor %j is not mistaken for the app speaker fallback', async (executor) => {
+  stubStatus({ ...CONFIGURED, selected_executor: executor });
+  const sock = createMockSocket();
+  renderWithProviders(<AssistantDockHost />);
+  await openAndReady(sock);
+  fireFrame({ type: 'turn_start' });
+  changeDockLocale('zh-CN');
+  expect(screen.getByLabelText(`${executor}正在回复`)).toBeInTheDocument();
+  changeDockLocale('en');
+  expect(screen.getByLabelText(`${executor} is replying`.trim())).toHaveAttribute('aria-label', `${executor} is replying`);
+  expect(h.openSessionMock).toHaveBeenCalledTimes(1);
+  expect(sock.close).not.toHaveBeenCalled();
+});
+
+test('Assistant user and reply Mermaid loaders switch while preserving draft, inflight turn and connection', async () => {
+  const sock = createMockSocket();
+  const view = renderWithProviders(<AssistantDockHost />);
+  await openAndReady(sock);
+  const body = 'Rendering diagram…\n\n```mermaid\nflowchart LR; A-->B\n```';
+  fireFrame({ type: 'history', turns: [{ prompt: body, started_at: '2026-07-04T10:00:00Z', frames: [
+    { type: 'turn_start' }, { type: 'text_delta', text: body }, { type: 'turn_end' },
+  ] }] });
+  try {
+    await waitFor(() => expect(view.container.querySelectorAll('.gl-prose-mermaid-loading')).toHaveLength(2));
+    const fallbacks = Array.from(view.container.querySelectorAll('.gl-prose-mermaid-loading'));
+    fireFrame({ type: 'turn_start' });
+    const articles = Array.from(view.container.querySelectorAll('article'));
+    const input = screen.getByRole('textbox', { name: 'Assistant composer' }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'raw unsent /任务' } });
+    await new Promise(resolve => setTimeout(resolve, 120));
+    input.focus(); input.setSelectionRange(2, 7);
+    const before = [h.openSessionMock.mock.calls.length, sock.send.mock.calls.length, sock.close.mock.calls.length];
+    const requests: string[] = [];
+    const observe = ({ request }: { request: Request }) => requests.push(request.url);
+    server.events.on('request:start', observe);
+    try {
+      for (const locale of ['zh-CN', 'en'] as const) {
+        changeDockLocale(locale);
+        expect(fallbacks.map(node => node.textContent)).toEqual(fallbacks.map(() => locale === 'en' ? 'Rendering diagram…' : '正在渲染图表…'));
+        expect(Array.from(view.container.querySelectorAll('.gl-prose-mermaid-loading'))).toEqual(fallbacks);
+        expect(Array.from(view.container.querySelectorAll('article'))).toEqual(articles);
+        expect(screen.getByRole('textbox', { name: locale === 'en' ? 'Assistant composer' : '助手输入框' })).toBe(input);
+        expect(input).toHaveFocus(); expect(input).toHaveValue('raw unsent /任务');
+        expect([input.selectionStart, input.selectionEnd]).toEqual([2, 7]);
+        expect(screen.getByLabelText(locale === 'en' ? 'claude is replying' : 'claude正在回复')).toBeInTheDocument();
+      }
+      expect(requests).toEqual([]);
+      expect([h.openSessionMock.mock.calls.length, sock.send.mock.calls.length, sock.close.mock.calls.length]).toEqual(before);
+    } finally { server.events.removeListener('request:start', observe); }
+  } finally { await act(async () => mermaidChunk.release()); }
+  await waitFor(() => expect(view.container.querySelectorAll('svg[data-w5a-diagram]')).toHaveLength(2));
 });

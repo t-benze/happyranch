@@ -308,30 +308,46 @@ def test_full_name_set_malformed_layout_fails_closed_without_writes(
             "UPDATE workflow_cutover_state SET state='enabled'",
             "workflow_schema_marker_mismatch",
         ),
+        (None, None),  # authentic progressed chain is now an approved reopen
     ],
 )
 def test_unknown_version_owner_or_noninitial_state_fails_without_writes(
     tmp_path: Path,
-    corruption: str,
-    error: str,
+    corruption: str | None,
+    error: str | None,
 ) -> None:
     path = tmp_path / "corrupt.db"
     db = Database(path)
     install_or_recover(db)
+    if corruption is None:
+        from runtime.infrastructure.workflow_schema import migrate_draft_schema
+        with db.workflow_schema_transaction() as conn:
+            migrate_draft_schema(conn, expected_org_slug="alpha")
+        from runtime.workflows.cutover import WorkflowCutoverStore
+        assert WorkflowCutoverStore(db, org_slug="alpha").request(
+            action="enable", operation_key="authentic", expected_generation=1,
+        )["state"] == "enabled"
     db.close()
 
-    corrupt = sqlite3.connect(path)
-    corrupt.execute("PRAGMA ignore_check_constraints=ON")
-    corrupt.execute(corruption)
-    corrupt.commit()
-    corrupt.close()
+    if corruption is not None:
+        corrupt = sqlite3.connect(path)
+        corrupt.execute("PRAGMA ignore_check_constraints=ON")
+        corrupt.execute(corruption)
+        corrupt.commit()
+        corrupt.close()
 
-    before = _workflow_snapshot(path)
-    reopened = Database(path)
-    with pytest.raises(ValueError, match=error):
-        install_or_recover(reopened)
-    reopened.close()
-    assert _workflow_snapshot(path) == before
+    before = _workflow_snapshot(path), path.read_bytes(), path.stat().st_mode
+    for _ in range(2):
+        reopened = Database(path)
+        try:
+            if error is not None:
+                with pytest.raises(ValueError, match=error):
+                    install_or_recover(reopened, expected_org_slug="alpha")
+            else:
+                assert install_or_recover(reopened, expected_org_slug="alpha") == "reopened"
+        finally:
+            reopened.close()
+        assert (_workflow_snapshot(path), path.read_bytes(), path.stat().st_mode) == before
 
 
 def test_partial_or_extra_workflow_layout_is_never_adopted(
@@ -429,8 +445,9 @@ def test_near_prefix_objects_survive_two_org_state_cold_reopens_unchanged(
     outcomes: list[str] = []
     real_install_or_recover = install_or_recover
 
-    def observe_install_or_recover(db: Database) -> str:
-        outcome = real_install_or_recover(db)
+    def observe_install_or_recover(db: Database, *, expected_org_slug: str) -> str:
+        assert expected_org_slug == "near-prefix"
+        outcome = real_install_or_recover(db, expected_org_slug=expected_org_slug)
         outcomes.append(outcome)
         return outcome
 

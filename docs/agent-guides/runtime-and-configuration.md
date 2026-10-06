@@ -364,6 +364,35 @@ shared-map insertion; its mirror
 digest must equal the current global digest before readiness is exposed.
 Startup does not dispatch, activate, or admit workflow work.
 
+THR139 S1 separates existing and new databases. Existing `OrgState.load` retains
+foundation installation where required, validates full F/E before workflow
+recovery, and never adds the draft extension. F remains usable for legacy work;
+its cutover projection/log names the operator migration and recovery waits for E.
+POST /orgs creates a fresh skeleton, initializes complete E before attachment,
+and retains its existing cleanup/error ownership. Empty files/missing tables or
+startup discovery are not proof of new creation. Generic Database/runtime-audit
+construction remains workflow-free.
+
+Explicit existing-org migration (operator authorization required):
+
+```bash
+python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> --check
+python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug>
+```
+
+The script validates the schema-v2 runtime and actual org path, full F/E SQL,
+markers/history/integrity and stored source/draft closure without running generic
+migrations. One bounded SQLite writer transaction installs only the exact three
+draft tables/six indexes and version1 marker, validates E, then commits. Partial,
+unknown/corrupt layouts and nonorg/missing/symlink targets refuse; complete E
+replay preserves existing data. `--check` performs no migration, exits0 for ready
+E or3 for migration-needed F; refusal1, parser2. Pristine F retains preceding-reader
+compatibility until migration. **Every E requires a compatible reader**, including
+new empty orgs; no downgrade stripping or live migration is implied by shipping
+this script. Read-only WAL inspection can use SQLite sidecars; crash rollback may
+leave a non-hot journal, while original data/schema/files remain intact.
+
+
 Adapter approval propagates the profile target selected before lease
 acquisition into its existing serialized registry writer, including an empty
 selection. It revalidates that target before approval, idempotent return or
@@ -451,6 +480,20 @@ admissions with at most five best-effort consumer calls and no refill or
 recovery. `false` prevents those action admissions and affects later admissions
 only; it cannot revoke an already admitted call. Malformed values retain the
 shared loader's existing error behavior.
+
+Routine scheduled and exact-marker manual cleanup reports remain durable on the
+existing agent page via ordinary completion/results (THR-259 seq418). The scheduler
+admits a clean-root task without report-thread configuration, lookup, ID allocation
+or composite creation. Task ID allocation, composition and ordinary insertion stay
+synchronous under `org.db_lock` after awaited measurement; enqueue follows successful
+insertion. Complete marker history, ordinals, cadence and deduplication are unchanged.
+There is no routine thread posting/reuse obligation. Preserve all historical threads,
+messages, associations, results and audits, explicit founder-requested coordination,
+truthful anomalies/partial failures/unknown bytes/independent verification gaps and
+the current-session final `happyranch report-completion` callback. Exact manual
+first-line display eligibility (alone/LF/CRLF) neither creates trigger audits nor
+changes daemon count or action authority. Runtime and canonical bundled-skill
+rollout require separately authorized deployment after merge.
 
 The daemon-composed daily brief and manual dispatch both follow the ONE shared
 `workspace-cleanup` TASK system contract (`requires_repo=false`; source
