@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -460,8 +461,21 @@ def test_g_existing_f_e_and_g_cold_load_preserve_workflow_histories(tmp_path: Pa
     runtime = RuntimeDir.init(tmp_path / 'runtime')
     root = runtime.orgs_dir / 'alpha'
     _seed_org(root)
+    # A migration source needs an actually closed authority owner. An empty
+    # roster with the default code_reviewer remains legitimately fenced.
+    (root / 'org/teams.yaml').write_text(
+        'teams:\n  engineering:\n    manager: engineering_manager\n    workers: [code_reviewer]\n'
+    )
+    for name, role in (('engineering_manager', 'manager'), ('code_reviewer', 'worker')):
+        definition = AgentDef(name=name, team='engineering', role=role,
+            executor='claude', allow_rules=(), repos={}, enrolled_by='founder',
+            enrolled_at_task=None, enrolled_at=None, system_prompt='Bounded cold-reader fixture.',
+            description='Canonical source owner', model=None)
+        (OrgPaths(root=root).agents_dir / f'{name}.md').write_text(render_agent_text(definition))
     org = OrgState.load(slug='alpha', root=root, settings=Settings())
     try:
+        org.workflow_authority.verify_admission_ready()
+        assert not org.db.execute("SELECT 1 FROM workflow_publication_journals WHERE state NOT IN ('cache_installed','aborted')").fetchone()
         if populated:
             _legacy_graph(org.db, 'E' if layout in ('E', 'G') else 'F', joined=True)
         elif layout in ('E', 'G'):
@@ -470,11 +484,11 @@ def test_g_existing_f_e_and_g_cold_load_preserve_workflow_histories(tmp_path: Pa
     finally:
         org.close()
     if layout == 'G':
-        with sqlite3.connect(root / 'happyranch.db') as writer:
+        with closing(sqlite3.connect(root / 'happyranch.db')) as writer:
             writer.execute('PRAGMA foreign_keys=ON')
             schema.migrate_submission_schema(writer, expected_org_slug='alpha')
     def workflow_history():
-        with sqlite3.connect(root / 'happyranch.db') as observer:
+        with closing(sqlite3.connect(root / 'happyranch.db')) as observer:
             objects = tuple(observer.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name LIKE 'workflow_%' ORDER BY name"))
             tables = [r[0] for r in observer.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'workflow_%' ORDER BY name")]
             return objects, tuple((table, tuple(observer.execute(f'SELECT rowid,* FROM "{table}" ORDER BY rowid'))) for table in tables)

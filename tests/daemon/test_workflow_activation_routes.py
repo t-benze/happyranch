@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 import copy
 import subprocess
 import sys
@@ -65,7 +66,7 @@ def _assert_activation_org_layout(db_path: Path, expected_layout: str, phase: st
             reference._conn.executescript(draft)
         if expected_layout == 'G':
             reference._conn.executescript(delta[delta.index('-- G-only additive objects.'):])
-        with sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True) as observer:
+        with closing(sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True)) as observer:
             assert inventory(observer) == inventory(reference._conn), (phase, expected_layout)
             assert observer.execute('PRAGMA foreign_key_check').fetchall() == [], phase
             assert observer.execute('SELECT version FROM workflow_adapter_versions').fetchall() == [(1,)]

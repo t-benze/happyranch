@@ -835,7 +835,13 @@ def test_g_source_pinned_faf_and_s2_readers_refuse_g_without_writes(tmp_path: Pa
     assert org.db.execute('SELECT state FROM workflow_draft_dispatch_intents').fetchone()[0] == 'completed'
     assert backend.calls['launch'] == backend.calls['finish'] == 1
     root = org.root
+    assert org.sessions.iter_active() == []
+    # Take the physical byte/mode baseline only after the actual committed
+    # callback is checkpointed and every fixture oracle has released its reader.
+    assert org.db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
     client.close(); org.close()
+    assert not (root / 'happyranch.db-wal').exists()
+    assert not (root / 'happyranch.db-shm').exists()
     s2 = _extract_s2_source(_PRECEDING_FIXTURES, tmp_path / 's2-source')
     driver = _PRECEDING_IMPORT_CHECK + """
 from runtime.daemon.org_state import OrgState
