@@ -806,3 +806,22 @@ execution; an intentional no-op is an explicit plan. The original two-org fixtur
 opts into a bounded, source-authenticated pre-session exception observer without
 changing launch, return or exception behavior. Historical two-org cause remains
 UNKNOWN; the offline missing-agent control is not a historical diagnosis.
+
+### S2 activation attachment and recovery
+
+Actual OrgState attachment installs the consumed activation/draft services before
+workers; the generic Database constructor and runtime-audit remain workflow-free.
+The S1 explicit migration/new-org contract remains unchanged: existing F startup,
+reopen and enable never install E. Empty orgs stay fenced until real coherent
+roster/team/profile publication makes them ready. Initial activation requires
+ready E and the actual Founder cutover chain. A queued committed intent survives
+lost enqueue notification; startup and periodic sweeps rediscover its existing
+eligible task. Live author-capacity refusal, including a claim requeued before
+launch, waits for a later sweep; deduplicated queue notification runs after every
+profile/org/publication/SQLite lease releases. Missing/malformed
+workflow evidence fences legacy effects. Possible host launch cannot be recovered
+from PID absence, TTL expiration or session registration: it remains uncertain
+under workflow_recovery and blocks drain until genuine containment evidence exists.
+Disable fences new admission/prelaunch and preserves ownership of already admitted
+work. No startup deployment, live migration, enable, assignment or restart follows
+from publishing S2 source.

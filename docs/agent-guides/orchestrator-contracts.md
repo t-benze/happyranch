@@ -1948,3 +1948,67 @@ this read and cannot poison launch/callback/startup outcomes. A stable cutoff is
 source evidence only. Durable independent acceptance/atomic epoch transition
 and both health consumers remain a later G1 unit; epoch refs are always null.
 The exact closed projection is in the corrective memory spec.
+
+
+### S2 initial draft consumers
+
+Current S2 source supersedes the earlier U2A/U2B prerequisite statements that
+activation has no readiness consumer. Admission and prelaunch use captured
+canonical/profile bytes, then async serialization, selected sorted profile
+leases, org publisher/publication ownership and the synchronized DB writer.
+Discovery/file reads/awaits and external host/queue operations stay outside
+durable ownership; changed selected targets refuse before fresh discovery.
+`TasksMixin._insert_task_uncommitted` is consumed by this admission writer;
+ordinary `insert_task` keeps its supplied-ID, all-field and self-commit behavior.
+Admission retains synchronized writer ownership through rollback on commit
+failure, before releasing the publication lease. Its complete canonical context
+includes the actual allocated root, original actor/time, exact template and
+authority pins, binding and intent identities. The 1MiB limit applies to those
+final bytes. Historical receipts verify the full retained closure against its
+original authority publication without reading current source files or
+substituting current eligibility.
+
+The workflow classifier reads genuine draft/F5 bridges before ordinary task
+claim, startup, completion decisions, retry, reaper or portability cancellation.
+Unrelated tasks retain legacy ownership. The attached activation owner verifies
+full canonical semantics before any draft enqueue/dispatch/reconciliation;
+missing attachment or invalid/dual closure remains reconciliation_required.
+Current author occupancy is captured from the real tracker outside durable
+ownership and rechecked against current task bindings and the wake runner's
+running work-hour rows in the writer. Work-hour occupancy does not require a
+task tracker binding. Admission,
+claim and prelaunch refuse a busy author, including another work-hour invocation;
+receipt eligibility reports the same pending blocker separately from immutable
+roles and original pins. The draft's own session does not occupy a second slot.
+No fallback principal or new work-hours scheduling policy follows. Postcommit enqueue is advisory; startup and the live periodic reaper rediscover
+that same authenticated intent. The periodic workflow owner revalidates queued,
+no-launch work and current authority/capacity under the existing admission fences,
+then uses the real queue deduplicator after profile/org/publication/SQLite release.
+Capacity refusal waits for a later periodic tick. Receipt replay remains read-only
+and does not notify. Final claim/prelaunch rechecks prevent a stale notification
+from granting execution; uncertain, foreign, malformed and dual closure never
+become replay permission.
+If the author becomes busy after claim but before launch reservation, the exact
+unlaunched claim requeues its same task/intent. The supervisor receives the
+original refusal and clears that registered session; no failed draft, replacement
+attempt or observed launch is fabricated.
+Claim0 with affirmative no-launch can recover; possible launch is uncertain.
+Orchestrator's existing session, prelaunch, genuine RunningHandle and finalized
+SessionOutcome/Receipt seams supply evidence without changing host/tracker APIs.
+Runtime session, effect key and backend handle remain distinct. Session
+registration is insufficient to establish running. The actual handle's request
+identity must match the durable host effect key. Final quiescence consumes the
+same AdmissionRequest object sent to the supervisor, with its initial attempt;
+a same-valued foreign request or retry-numbered outcome cannot settle the draft.
+The receipt remains supplied by the existing finalized supervisor callback.
+Neither supervisor return
+nor successful callback transport alone completes a draft.
+
+Database's existing INTEGER result writer joins callback and canonical draft
+event atomically; both transport retry seams validate full stored payload/result
+closure. Early callback can await host acknowledgment. Completed event retains
+SQL result_id NULL and joins accepted result in its canonical bytes. Cancellation
+fences before opaque containment outside locks; only affirmative no-launch or
+exact finalized quiescence permits terminal settlement. Missing callback, launch
+identity or quiescence stays owned and blocks drain. No ordinary manager decision,
+parent propagation, retry/delegation or F5 submission/review producer is used.

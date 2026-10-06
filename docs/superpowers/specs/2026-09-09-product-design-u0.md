@@ -1648,3 +1648,47 @@ events. E requires a compatible reader in all cases; no extension stripping or
 old-reader compatibility claim applies to E. Full independent review, executable
 QA and exact-head CI remain required; activation/dispatch and U3-U6/operator
 acceptance remain later units.
+
+### S2 current source — Founder activation and authentic first draft
+
+This current source disposition supersedes older dependency statements above
+that activation is inert/zero-task, that root IDs can be arbitrary, or that
+existing-org enable installs E. Accepted earlier design/evidence remains history.
+S1 manual migration, whole-layout oracle/validation and cutover meanings are
+unchanged. `WorkflowActivationStore` is directly attached and consumed by the
+three Founder activation methods and CLI documented in web-and-cli.md; strict
+closed request/response fields are also in OpenAPI and the TS mirror.
+
+The instance is org plus caller reference. Initial revision/attempt/assignment
+is1, with the real unchanged MAX-allocated author task inserted in the same
+writer as authorization/binding/context, immutable activation/current pointer,
+actor/org/key operation, intent and admitted event. Admission has no session,
+result or host identity. Historical replay authenticates the original closure
+before mutable eligibility/CAS/cutover gates and preserves root/pins/time; current
+eligibility is separate. New admission notifies only after commit; historical
+replay does not notify. Startup and periodic live discovery may re-notify the same
+authenticated queued/no-launch task after lost notification or author-capacity
+refusal. Periodic eligibility checks use the existing authority fences, with
+queue deduplication after every lease releases. Claim/prelaunch remain final
+arbitration; no new task, assignment generation, attempt or busy retry loop is
+created. Publication
+of another template version grants neither assignment nor retargeting.
+
+The bounded author, including a manager, has document responsibility only.
+Exclusive draft/F5 classification precedes legacy startup/run_step/completion/
+cancel/reaper/portability effects; malformed/dual ownership requires reconciliation.
+Actual existing orchestrator host seams supply session, possible-launch reservation,
+genuine bound RunningHandle, and finalized outcome/receipt evidence. Session alone
+is not observed launch. Callback/result/event commits atomically using the actual
+INTEGER result owner and both full-payload retry seams. Draft completion requires
+that authentic result plus finalized host quiescence; SQL completed-event result_id
+stays NULL with result closure retained in canonical event bytes. Cancellation
+fences before containment; no PID/TTL-based quiescence or blind possible-launch
+retry is permitted. Missing acknowledgment/callback/quiescence stays owned
+uncertain and blocks drain. No host exactly-once claim follows.
+
+S2 source implementation is not acceptance or deployment. Independent full review,
+focused executable QA, exact-head local/hosted CI and selected hosted callback
+remain mandatory. U3 immutable submission/concurrent reviews, U4/U5 revision/
+replacement operations and U6 mounted UI/operator acceptance remain separate,
+including distinct actual Founder Request changes and Sign off observations.

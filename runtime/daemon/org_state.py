@@ -37,6 +37,8 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
+from runtime.workflows.activation import WorkflowActivationStore
+from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,8 @@ class OrgState:
     settings: Settings
     orchestrator: Orchestrator
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
+    workflow_activations: WorkflowActivationStore = field(init=False)
+    workflow_drafts: WorkflowDraftDispatcher = field(init=False)
     memory_collection: CollectionObserver | None = field(init=False, default=None)
     memory_collection_unavailable: str | None = field(init=False, default=None)
     sessions: SessionTracker = field(default_factory=SessionTracker)
@@ -113,6 +117,11 @@ class OrgState:
             root=self.root,
             teams=self.teams,
         )
+        self.workflow_activations = WorkflowActivationStore(self)
+        self.workflow_drafts = WorkflowDraftDispatcher(self)
+        if self.orchestrator is not None:
+            self.orchestrator._workflow_drafts = self.workflow_drafts
+        self.db._workflow_drafts = self.workflow_drafts
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,
         )

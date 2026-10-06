@@ -271,3 +271,95 @@ def test_actual_cutover_cli_f_remedy_and_refusal_use_real_http_service(tmp_path:
     finally:
         org.close()
         client.close()
+
+
+@pytest.mark.parametrize('words', [
+    ['activate', '--from-file', '/tmp/activation.json'],
+    ['activations', 'list'], ['activations', 'show', 'activation:one'],
+])
+def test_activation_cli_parser_requires_org_and_rejects_session_claim(words):
+    with pytest.raises(SystemExit) as missing:
+        build_parser().parse_args(['workflows', *words])
+    assert missing.value.code == 2
+    args = build_parser().parse_args(['workflows', *words, '--org', 'alpha', '--json'])
+    assert args.org == 'alpha' and args.json
+    with pytest.raises(SystemExit) as forged:
+        build_parser().parse_args(['workflows', *words, '--org', 'alpha', '--session-id', 'secret'])
+    assert forged.value.code == 2
+
+
+@pytest.mark.parametrize('bad', ['relative', 'malformed', 'array', 'utf8', 'identity', 'boolean'])
+def test_activation_cli_parser_refusals_precede_transport(tmp_path, capsys, bad):
+    path = tmp_path / 'activation.json'
+    content = {'malformed': b'{', 'array': b'[]', 'utf8': b'\xff',
+               'identity': b'{"task_id":"TASK-001"}',
+               'boolean': b'{"expected_activation_revision":true}'}.get(bad, b'{}')
+    path.write_bytes(content)
+    with patch('cli.commands.workflows.OpcClient.from_env') as client:
+        with pytest.raises(SystemExit) as refused:
+            args = build_parser().parse_args([
+                'workflows', 'activate', '--org', 'alpha', '--from-file',
+                'relative.json' if bad == 'relative' else str(path),
+            ])
+            args.func(args)
+        assert refused.value.code == 2
+        client.assert_not_called()
+    assert 'error' in capsys.readouterr().err
+
+
+def test_activation_cli_real_http_create_replay_list_show_and_pending_exit(activation_org, tmp_path, capsys, monkeypatch):
+    from tests.daemon.test_workflow_activation_routes import BASE, _snapshot
+    client, org, state, body = activation_org
+    path = tmp_path / 'activation.json'
+    path.write_text(json.dumps(body))
+    monkeypatch.setattr('cli.commands.workflows.OpcClient.from_env', lambda: client)
+    words = ['workflows', 'activate', '--org', 'alpha', '--from-file', str(path), '--json']
+    args = build_parser().parse_args(words)
+    args.func(args)  # return means CLI main exits0, including pending execution
+    first = json.loads(capsys.readouterr().out)
+    assert first['pending'] is True and first['execution_started'] is False and first['replayed'] is False
+    before = _snapshot(org)
+    args.func(args)
+    replay = json.loads(capsys.readouterr().out)
+    assert replay['replayed'] is True and replay['root_task_id'] == first['root_task_id']
+    assert _snapshot(org) == before
+    for suffix in (['list'], ['show', first['activation_id']]):
+        read = build_parser().parse_args(['workflows', 'activations', *suffix, '--org', 'alpha', '--json'])
+        read.func(read)
+        output = json.loads(capsys.readouterr().out)
+        receipt = output[0] if isinstance(output, list) else output
+        assert receipt['activation_id'] == first['activation_id'] and receipt['intent_id'] == first['intent_id']
+    assert client.get(BASE + '/' + first['activation_id']).status_code == 200
+    assert _snapshot(org) == before
+    body['scope']['brief'] = 'changed same-key request'
+    path.write_text(json.dumps(body))
+    with pytest.raises(SystemExit) as conflict:
+        args.func(args)
+    assert conflict.value.code == 1
+    assert 'workflow_activation_operation_conflict' in capsys.readouterr().err
+    assert _snapshot(org) == before
+
+
+@pytest.mark.parametrize('form', ['activate', 'list', 'show'])
+def test_activation_cli_transport_errors_are_safe_and_nonzero(activation_org, tmp_path, capsys, form):
+    import httpx
+    _, _, _, body = activation_org
+    path = tmp_path / 'activation.json'
+    path.write_text(json.dumps(body))
+    client = Mock()
+    client.post.side_effect = client.get.side_effect = httpx.ConnectError('private transport details')
+    words = (['activate', '--from-file', str(path)] if form == 'activate' else
+             ['activations', form, *(['activation:one'] if form == 'show' else [])])
+    args = build_parser().parse_args(['workflows', *words, '--org', 'alpha'])
+    with patch('cli.commands.workflows.OpcClient.from_env', return_value=client), patch(
+        'cli.commands.workflows._shared._fetch_available_orgs', return_value=['alpha'],
+    ):
+        with pytest.raises(SystemExit) as refused:
+            args.func(args)
+    assert refused.value.code == 1
+    error = capsys.readouterr().err
+    assert 'workflow activation transport failed' in error and 'private transport details' not in error
+
+
+# Reuse the production-org fixture; no parallel mock authority fixture.
+from tests.daemon.test_workflow_activation_routes import activation_org  # noqa: E402,F401
