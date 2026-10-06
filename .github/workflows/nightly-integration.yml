@@ -10,6 +10,89 @@ permissions:
   contents: read
 
 jobs:
+  local-ci-all:
+    name: Manual local CI all (Python 3.14, Node 24)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: '3.14'
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      - name: Run exact local CI all in a clean test environment
+        run: |
+          uv run python - <<'PY'
+          import hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile
+
+          source = pathlib.Path.cwd()
+          head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          assert head == os.environ['GITHUB_SHA']
+          assert not subprocess.check_output(['git', 'status', '--porcelain'])
+          assert sys.version_info[:2] == (3, 14)
+          evidence = pathlib.Path(os.environ['RUNNER_TEMP']) / 'local-ci-all'
+          evidence.mkdir()
+          receipt = {'event': os.environ['GITHUB_EVENT_NAME'], 'ref': os.environ['GITHUB_REF'],
+                     'github_sha': os.environ['GITHUB_SHA'], 'checkout': head,
+                     'command': 'scripts/local_ci.sh all', 'python': sys.executable,
+                     'python_version': sys.version, 'source_sha256': {
+                         name: hashlib.sha256((source / name).read_bytes()).hexdigest()
+                         for name in ('scripts/local_ci.sh', 'tests/helpers/integration_parent.py',
+                                      'tests/helpers/integration_stub_guard/guard.py', 'cli/main.py')}}
+          with tempfile.TemporaryDirectory(prefix='local-ci-parent-') as directory:
+              root = pathlib.Path(directory)
+              for name in ('home', 'config', 'cache', 'tmp', 'daemon', 'bin'):
+                  (root / name).mkdir(mode=0o700)
+              (root / 'daemon/executors.json').write_text('{}')
+              for tool in ('uv', 'node', 'npm', 'npx'):
+                  resolved = shutil.which(tool)
+                  assert resolved is not None, tool
+                  (root / 'bin' / tool).symlink_to(pathlib.Path(resolved).resolve())
+              env = {'HOME': str(root / 'home'), 'XDG_CONFIG_HOME': str(root / 'config'),
+                     'XDG_CACHE_HOME': str(root / 'cache'), 'TMPDIR': str(root / 'tmp'),
+                     'TMP': str(root / 'tmp'), 'TEMP': str(root / 'tmp'),
+                     'HAPPYRANCH_DAEMON_HOME': str(root / 'daemon'), 'HAPPYRANCH_DAEMON_PORT': '0',
+                     'PATH': os.pathsep.join((str(root / 'bin'), str(source / '.venv/bin'), '/usr/bin', '/bin')),
+                     'UV_PYTHON': sys.executable, 'UV_PYTHON_DOWNLOADS': 'never',
+                     'UV_CACHE_DIR': str(root / 'cache/uv'), 'PYTHONNOUSERSITE': '1',
+                     'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'CI': 'true'}
+              receipt['tools'] = {tool: {'path': str((root / 'bin' / tool).resolve()),
+                                        'version': subprocess.check_output([tool, '--version'], env=env, text=True).strip()}
+                                  for tool in ('uv', 'node', 'npm')}
+              assert receipt['tools']['node']['version'].split('.')[0] == 'v24'
+              receipt_path = evidence / 'provenance.json'
+              receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+              print(json.dumps(receipt, sort_keys=True), flush=True)
+              result = subprocess.run([sys.executable, 'scripts/run_bounded_output.py',
+                                       '--output', str(evidence / 'local-ci-all.log'),
+                                       '--max-bytes', '1048576', '--', 'scripts/local_ci.sh', 'all'], env=env)
+              receipt['exit_code'] = result.returncode
+              receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+              print('scripts/local_ci.sh all exit_code=' + str(result.returncode), flush=True)
+          raise SystemExit(result.returncode)
+          PY
+      - name: Upload manual local CI evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: local-ci-all-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/local-ci-all/
+          if-no-files-found: warn
+          retention-days: 14
+
   integration:
     name: Python integration (3.12)
     runs-on: ubuntu-latest

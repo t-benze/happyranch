@@ -168,6 +168,17 @@ run opens or comments on the single open issue labelled
 that issue. This repository-local issue flow uses only the workflow token and
 does not send email, Feishu, Slack, webhook, or other external notifications.
 
+Manual dispatch of the same workflow also runs the exact `scripts/local_ci.sh all`
+command on its clean immutable checkout with Python 3.14 and Node 24. This
+disposable lane clears inherited environment variables before test imports,
+uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
+tools, and preserves the default unit/Web selections. It uploads the command's
+actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
+a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
+the actual command receipt. Scheduled integration and the PR/main matrix remain
+unchanged. The live Linux daemon host must also avoid `python`/`all` when their
+selection includes real socket or daemon tests; use this disposable manual lane.
+
 ## Git hooks
 
 This project does not install or manage Git hooks for linked worktrees. During
