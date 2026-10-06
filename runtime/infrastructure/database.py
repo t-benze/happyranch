@@ -1992,31 +1992,6 @@ class Database(
 
 
 
-    @_synchronized
-    def update_dream_kb_candidate(
-        self,
-        candidate_id: int,
-        *,
-        status: str,
-        promoted_kb_slug: str | None = None,
-    ) -> None:
-        allowed = {"pending", "promoted", "rejected", "superseded"}
-        if status not in allowed:
-            raise ValueError(f"invalid status: {status!r}, expected one of {sorted(allowed)}")
-        now = _now().isoformat()
-        params: list[object] = [status, now]
-        slug_assign = ""
-        if promoted_kb_slug is not None:
-            slug_assign = ", promoted_kb_slug = ?"
-            params.append(promoted_kb_slug)
-        params.append(candidate_id)
-        cursor = self._conn.execute(
-            f"UPDATE dream_kb_candidates SET status = ?, updated_at = ?{slug_assign} WHERE id = ?",
-            params,
-        )
-        if cursor.rowcount == 0:
-            raise ValueError(f"dream_kb_candidate {candidate_id} not found")
-        self._conn.commit()
 
     # --- Escalation Notifications ---
 
