@@ -142,6 +142,8 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 
 `runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`, `load_terminated_agent`, `list_terminated`, `is_terminated`, and `is_name_unavailable`. Routes and orchestrator code should read through this module against the per-org root.
 
+Founder `PUT /agents/{agent_name}/system-prompt` is a strict prompt-only CAS. It validates through the existing parser/scanners before persistence, uses the same-read canonical SHA256 and short teams/canonical critical section, then refreshes only the existing workspace's selected registered adapter instruction pair. An absent workspace stays absent until explicit init. Reconciliation conditionally restores exact original canonical bytes only while its written revision is current; route-level pair replay also requires owned captured pair state. Detected winners/disappearance are preserved, inner pair compensation is not a global same-UID fence, and incomplete compensation is reported. Audit failure may leave committed bytes; best-effort authority publication may leave readiness fenced. The founder `agent_managed` audit retains scope/actor/source `founder` and `{action:'update',name,source:'founder'}`.
+
 `TeamsRegistry` in `runtime/orchestrator/teams.py` is seeded from `teams.yaml` and auto-persists on `add_worker` and `remove_worker`. There is no `DEFAULT_LAYOUT`; an org without `teams.yaml` is empty.
 
 ## Agent Lifecycle: Enrollment, Approval, and Termination
@@ -154,7 +156,7 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   with 409; after a conflict, the caller must reread and deliberately reapply
   its intended field change. A later roster revision must never bless an
   already-composed stale update.
-- **Freshness and conditional recovery.** Repository changes, founder create,
+- **Freshness and conditional recovery.** Model/repository deltas compose from a fresh definition inside the existing writer gate. Init owns each target lazily through clone/final capture/bootstrap/readiness. Executor preparation, founder create and approval retain one process interval through their final bootstrap and compensation; competing supported saves queue, with stale bases rejected after an unrelated canonical delta. Request cancellation and SSE disconnect retain the gate until every started mutating worker finishes; admitted request writes finish terminal reconciliation before cancellation propagates, even when cancellation repeats. No teams, DB, profile or publication lease spans await/clone/bootstrap/scans. Repository changes, founder create,
   and approval capture the current prompt/provider after their clone work and
   return 404 if that canonical definition disappeared. Executor switching
   rereads after materialization: an executor or model winner returns
