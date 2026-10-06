@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
 import pytest
@@ -13,6 +14,9 @@ from runtime.daemon import paths as paths_mod
 from runtime.daemon import runtimes as runtimes_mod
 from runtime.runtime import RuntimeDir
 from tests.helpers.deterministic_plan import DeterministicPlan
+
+if TYPE_CHECKING:
+    from runtime.orchestrator.agent_def import AgentDef
 
 
 def pytest_configure(config):
@@ -67,7 +71,7 @@ def runtime_container(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def runtime(runtime_container: Path) -> Path:
+def runtime(runtime_container: Path, request: pytest.FixtureRequest) -> Path:
     """Materialize a default org under <container>/orgs/test/.
 
     Returns the ORG ROOT so existing tests that reference
@@ -90,10 +94,44 @@ def runtime(runtime_container: Path) -> Path:
         "    manager: content_manager\n"
         "    workers: [content_writer, content_qa, seo_agent]\n"
     )
+    # Startup initializes manager selectors from the live roster. Supply the
+    # roster before registration, rather than first writing it after startup.
+    # The Codex smoke deliberately exercises supported pending approval instead.
+    teams = yaml.safe_load((org_root / "org" / "teams.yaml").read_text())["teams"]
+    for config in teams.values():
+        for agent in (config["manager"], *config["workers"]):
+            if (agent == "engineering_head"
+                    and request.node.name == "test_register_and_run_completes_via_codex_callback"):
+                continue
+            seed_agent_definition(org_root, agent)
     # NOTE: artifacts/ is intentionally NOT created here.
     # tests/integration/test_artifacts_e2e.py::test_lifespan_creates_artifacts_dir_for_existing_org
     # depends on this absence to exercise the daemon's startup mkdir. Do not add it.
     return org_root
+
+
+def seed_agent_definition(org_root: Path, agent: str, *, executor: str = "claude") -> AgentDef:
+    """Render a roster member for supported startup or example-based attachment."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+
+    teams = yaml.safe_load((org_root / "org" / "teams.yaml").read_text())["teams"]
+    membership = [
+        (team, "manager" if config["manager"] == agent else "worker")
+        for team, config in teams.items()
+        if agent == config["manager"] or agent in config["workers"]
+    ]
+    assert len(membership) == 1, f"test agent {agent!r} must have exactly one team membership"
+    team, role = membership[0]
+    agent_def = AgentDef(
+        name=agent, team=team, role=role, executor=executor,
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None,
+        enrolled_at=None, system_prompt=f"You are {agent}.",
+        description="Integration test agent.", model=None,
+    )
+    agents_dir = org_root / "org" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / f"{agent}.md").write_text(render_agent_text(agent_def))
+    return agent_def
 
 
 def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> Path:
@@ -126,35 +164,9 @@ def seed_workspace(org_root: Path, agent: str, *, executor: str = "claude") -> P
     enrolled agent."""
     from runtime.config import Settings
     from runtime.orchestrator._paths import OrgPaths
-    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
     from runtime.orchestrator.context_builder import ContextBuilder
 
-    teams = yaml.safe_load((org_root / "org" / "teams.yaml").read_text())["teams"]
-    membership = [
-        (team, "manager" if config["manager"] == agent else "worker")
-        for team, config in teams.items()
-        if agent == config["manager"] or agent in config["workers"]
-    ]
-    assert len(membership) == 1, f"test agent {agent!r} must have exactly one team membership"
-    team, role = membership[0]
-
-    agent_def = AgentDef(
-        name=agent,
-        team=team,
-        role=role,
-        executor=executor,
-        allow_rules=(),
-        repos={},
-        enrolled_by=None,
-        enrolled_at_task=None,
-        enrolled_at=None,
-        system_prompt=f"You are {agent}.",
-        description="Integration test agent.",
-        model=None,
-    )
-    agents_dir = org_root / "org" / "agents"
-    agents_dir.mkdir(parents=True, exist_ok=True)
-    (agents_dir / f"{agent}.md").write_text(render_agent_text(agent_def))
+    agent_def = seed_agent_definition(org_root, agent, executor=executor)
 
     ws = org_root / "workspaces" / agent
     ContextBuilder(

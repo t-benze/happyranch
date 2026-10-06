@@ -789,6 +789,11 @@ The test parent is sanitized before pytest/runtime imports, with temporary homes
 configuration, registries and runtime data plus exact source/callback/stub identity.
 Direct integration collection without that parent refuses. Never run integration
 on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
+The disposable default roster exists before startup/registration so the real
+lifecycle initializes eligible manager selectors. Example-based two-org creation
+likewise supplies the declared roster before POST; the Codex bootstrap case uses
+the supported pending-manager approval path. Explicit task plans write bound JSON
+payloads and invoke the tested-source CLI on one line with an absolute `--from-file`.
 `_nested_daemon_env` still copies the sanitized test parent and removes exactly
 its two outer containment markers; it does not sanitize a production environment.
 

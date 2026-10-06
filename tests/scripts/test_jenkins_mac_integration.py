@@ -600,7 +600,10 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *argv])
         "2 0 0:2 / /workspace/artifacts rw - virtiofs artifacts rw\n"
     )
     # The verifier compares mount destinations; only the syscall input path is replaced.
-    payload = job._INNER_SCRIPT.replace('/proc/self/mountinfo', str(mountinfo))
+    # Rewrite original guest literals before inserting paths: pytest's own
+    # basetemp can contain /tmp/happyranch-, too. Never reprocess injected paths.
+    payload = job._INNER_SCRIPT.replace("/tmp/happyranch-", str(tmp_path / "happyranch-"))
+    payload = payload.replace('/proc/self/mountinfo', str(mountinfo))
     # Keep the verifier's expected literal mount names but redirect its artifact write.
     payload = payload.replace('Path("/workspace/artifacts/mount-evidence.txt")',
                               f'Path({str(artifacts / "mount-evidence.txt")!r})')
@@ -608,7 +611,6 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *argv])
     payload = payload[:verifier_end] + payload[verifier_end:].replace(
         "/workspace/src", str(source)
     ).replace("/workspace/artifacts", str(artifacts))
-    payload = payload.replace("/tmp/happyranch-", str(tmp_path / "happyranch-"))
     result = subprocess.run(
         ["sh", "-c", payload], capture_output=True, text=True, timeout=15,
         env={"PATH": f"{bin_dir}:{os.environ['PATH']}", "HOME": str(tmp_path / "home"),
@@ -620,6 +622,7 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *argv])
     return result, artifacts
 
 
+@pytest.mark.parametrize("nested_basetemp", [False, True], ids=["ordinary", "nested-happyranch"])
 @pytest.mark.parametrize("setup_status,pip_status,pip_remaining,workload_status,summary_status,expected", [
     (0, 0, None, 7, 0, 7), (17, 0, None, 0, 0, 17),
     (0, 0, None, 0, 13, 13), (0, 0, None, 7, 13, 7),
@@ -628,7 +631,10 @@ os.execv({sys.executable!r}, [{sys.executable!r}, *argv])
 def test_emitted_guest_captures_before_exit_preserving_primary_status(
     tmp_path: Path, setup_status: int, pip_status: int, pip_remaining: float | None,
     workload_status: int, summary_status: int, expected: int,
+    nested_basetemp: bool,
 ) -> None:
+    if nested_basetemp:
+        tmp_path = tmp_path / "tmp/happyranch-pytest-basetemp.nested"
     result, artifacts = _emitted_guest(tmp_path, setup_status=setup_status, pip_status=pip_status,
                                       pip_remaining=pip_remaining, workload_status=workload_status,
                                       summary_status=summary_status)
@@ -681,6 +687,7 @@ def test_emitted_guest_captures_before_exit_preserving_primary_status(
                             "transitive_added_or_changed": {"libbpf1": "4"}}
 
 
+@pytest.mark.parametrize("nested_basetemp", [False, True], ids=["ordinary", "nested-happyranch"])
 @pytest.mark.parametrize("workload_status,capture_status,cleanup_ok,inspect_ok,source_change,expected", [
     (0, 0, True, True, False, 0), (7, 19, False, False, False, 7),
     (0, 19, False, True, False, 90), (0, 19, True, True, False, 91),
@@ -690,7 +697,11 @@ def test_emitted_guest_captures_before_exit_preserving_primary_status(
 def test_run_job_proves_capture_before_cleanup_and_status_precedence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, workload_status: int, capture_status: int,
     cleanup_ok: bool, inspect_ok: bool, source_change: bool, expected: int,
+    nested_basetemp: bool,
 ) -> None:
+    if nested_basetemp:
+        tmp_path = tmp_path / "tmp/happyranch-pytest-basetemp.nested"
+        tmp_path.mkdir(parents=True)
     calls = []
     class GuestContainer:
         def run(self, arguments: list[str], *, timeout_seconds: int, capture: bool = True) -> job.CommandResult:

@@ -26,7 +26,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tests.integration.conftest import seed_workspace
+from tests.integration.conftest import seed_agent_definition, seed_workspace
+from tests.helpers.completion_plan import completion_prelude
 
 
 pytestmark = pytest.mark.integration
@@ -50,7 +51,7 @@ def _make_example_tree(tmp_path: Path) -> Path:
     """Build a minimal example tree with engineering_head + dev_agent in
     the engineering team. POST /orgs --from_example copies <tree>/org/
     verbatim into <runtime>/orgs/<slug>/org/, so this tree only needs an
-    ``org/`` subdir with ``teams.yaml`` and ``agents/_pending/``."""
+    ``org/`` subdir with ``teams.yaml`` and its active roster before attachment."""
     tree = tmp_path / "example_org"
     org = tree / "org"
     (org / "agents" / "_pending").mkdir(parents=True)
@@ -60,6 +61,8 @@ def _make_example_tree(tmp_path: Path) -> Path:
         "    manager: engineering_head\n"
         "    workers: [dev_agent]\n"
     )
+    for agent in ("engineering_head", "dev_agent"):
+        seed_agent_definition(tree, agent)
     return tree
 
 
@@ -123,13 +126,10 @@ def test_two_orgs_run_tasks_concurrently_under_one_daemon(
     # $org_slug ($4) from PWD-derived extraction in fake_claude.sh, so the
     # same plan body works for alpha and beta.
     fake_plan_env.write_text(
-        '#!/usr/bin/env bash\n'
+        '#!/usr/bin/env bash\n' + completion_prelude() +
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'happyranch report-completion --org "$org_slug" \\\n'
-        '  --task-id "$task_id" --session-id "$session_id" \\\n'
-        '  --agent engineering_head --status completed --confidence 90 \\\n'
-        '  --summary \'{"action":"done","summary":"ok"}\'\n'
+        'report_completion engineering_head \'{"action":"done","summary":"ok"}\'\n'
     )
     fake_plan_env.chmod(0o755)
 

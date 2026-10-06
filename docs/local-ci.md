@@ -93,7 +93,8 @@ across **3.12/3.13/3.14**. GitHub CI is authoritative.
 Pytest normally creates its per-session scratch under a shared
 `pytest-of-<user>/pytest-<n>` tree in `TMPDIR` and can leave large amounts of it
 behind. The `python`, `integration`, and `all` targets avoid that by passing an
-explicit `--basetemp` to their single `uv run pytest` invocation:
+explicit `--basetemp` to their single pytest invocation (integration enters the
+preimport parent first):
 
 - The directory is freshly and uniquely created for that invocation with
   `mktemp -d` beneath the effective `TMPDIR` (normally the runtime-bound
@@ -170,7 +171,8 @@ does not send email, Feishu, Slack, webhook, or other external notifications.
 
 Manual dispatch of the same workflow also runs the exact `scripts/local_ci.sh all`
 command on its clean immutable checkout with Python 3.14 and Node 24. This
-disposable lane clears inherited environment variables before test imports,
+lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
+The disposable lane clears inherited environment variables before test imports,
 uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
 tools, and preserves the default unit/Web selections. It uploads the command's
 actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
