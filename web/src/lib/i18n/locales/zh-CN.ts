@@ -581,7 +581,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.preferences.status.pending': '正在保存语言选择…',
   'settings.preferences.status.durable': '已保存在此浏览器中。',
   'settings.preferences.status.failed': '无法保存在此浏览器中。该语言仅在本次会话中生效。',
-  'settings.preferences.coverageDisclosure': '预览版：部分次要页面尚未翻译，可能仍以英文显示。',
+  'settings.preferences.coverageDisclosure': '支持英语和简体中文。优先使用你保存的语言；未保存时使用浏览器语言。',
   // @w2c-end:preferences
 
   // --- W2c: settings/assistant (anchor; keys go below) ---

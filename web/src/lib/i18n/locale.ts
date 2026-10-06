@@ -14,10 +14,9 @@
  * `happyranch.ui.locale` left by an earlier origin/port cannot override the
  * native preference.
  *
- * Production browsers run in *preview* mode: with no saved choice the locale is
- * English even when the browser language is Chinese. Full-mode system-language
- * resolution is implemented and unit-tested for W5 but is never enabled by the
- * W1 production wiring.
+ * Production browser consumers explicitly select *full* mode (W5), so absent
+ * or invalid saved choices follow supported system languages. The resolver and
+ * bootstrap API retain their preview defaults for explicit foundation fixtures.
  *
  * The resolver is intentionally synchronous and free of React so it can run
  * before the first React text (see `bootstrapDocumentLocale`, called from

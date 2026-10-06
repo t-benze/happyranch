@@ -15,7 +15,7 @@
  * Cases (each recorded in receipt.json; exit code 1 if any required case fails):
  *   A  ordinary dist (W3b-2 contract): the shipped JS contains the
  *      Preferences markers; /settings/preferences renders the panel, both
- *      radios and the sub-nav link; an unset preference stays English;
+ *      radios and the sub-nav link; an unset Chinese environment follows full mode;
  *   B  preview dist with settings API ok | error | loading: real CDP
  *      mouse/keyboard switching en→zh-CN→en and zh-CN→en→zh-CN asserting
  *      heading, <html lang>, retained radio node identity, actual focus,
@@ -482,7 +482,8 @@ async function main() {
       const panel = document.querySelector(${JSON.stringify(PANEL)});
       return [
         tag('panel', panel),
-        tag('heading', panel && panel.closest('div.p-6') && panel.closest('div.p-6').querySelector('h2')),
+        // PreferencesPanel owns the heading; its responsive padding is presentation.
+        tag('heading', panel && panel.parentElement && panel.parentElement.querySelector('h2')),
         tag('radio-en', document.querySelector(${JSON.stringify(radioSel('en'))})),
         tag('radio-zh-CN', document.querySelector(${JSON.stringify(radioSel('zh-CN'))})),
       ].every(Boolean);
@@ -490,7 +491,7 @@ async function main() {
 
     const STATE = `(() => {
       const panel = document.querySelector(${JSON.stringify(PANEL)});
-      const container = panel && panel.closest('div.p-6');
+      const container = panel && panel.parentElement;
       const h2 = container && container.querySelector('h2');
       const status = document.querySelector(${JSON.stringify(STATUS)});
       const checked = document.querySelector(${JSON.stringify(RADIO + ':checked')});
@@ -564,7 +565,7 @@ async function main() {
     const GEOMETRY = `(() => {
       const r = (el) => { const b = el.getBoundingClientRect(); return { w: b.width, h: b.height, left: b.left, right: b.right }; };
       const panel = document.querySelector(${JSON.stringify(PANEL)});
-      const container = panel.closest('div.p-6');
+      const container = panel.parentElement;
       const heading = container.querySelector('h2');
       const labels = [...panel.querySelectorAll('label')];
       const zhSpan = panel.querySelector('span[lang="zh-CN"]');
@@ -586,7 +587,7 @@ async function main() {
       };
     })()`;
     const GLYPHS = `(() => {
-      const heading = document.querySelector(${JSON.stringify(PANEL)}).closest('div.p-6').querySelector('h2');
+      const heading = document.querySelector(${JSON.stringify(PANEL)}).parentElement.querySelector('h2');
       const cs = getComputedStyle(heading);
       const font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
       const ctx = document.createElement('canvas').getContext('2d');
@@ -606,12 +607,13 @@ async function main() {
     }
 
     // ============================================================ A: ordinary dist
-    beginCase('A', 'ordinary dist mounts Preferences (W3b-2); an unset preference stays English');
+    beginCase('A', 'ordinary dist mounts Preferences; unset Chinese environment follows full mode');
     {
       for (const s of GATED_STRINGS) check(`A ordinary JS contains "${s}"`, fpOrdinary.gatedStrings[s], true);
       SYNTH.settingsMode = 'ok';
       const unset = `try { localStorage.removeItem(${JSON.stringify(LOCALE_KEY)}); } catch (e) {}`;
-      const page = await openPage({ url: `${ordinary.url}${PREFS_PATH}`, init: `${unset}\n${seedTheme('light')}` });
+      const chineseNavigator = `Object.defineProperty(Navigator.prototype,'language',{configurable:true,get:()=> 'zh-CN'}); Object.defineProperty(Navigator.prototype,'languages',{configurable:true,get:()=> ['zh-CN','zh']});`;
+      const page = await openPage({ url: `${ordinary.url}${PREFS_PATH}`, init: `${unset}\n${seedTheme('light')}\n${chineseNavigator}` });
       await waitForValue(page, `Boolean(document.querySelector(${JSON.stringify(PANEL)}))`, 'preferences panel').catch(() => null);
       await sleep(800);
       const result = await evaluate(page, `(() => ({
@@ -621,18 +623,20 @@ async function main() {
         prefsLinks: [...document.querySelectorAll('aside a')].filter((a) => a.getAttribute('href') === ${JSON.stringify(PREFS_PATH)}).length,
         subNavLinks: [...document.querySelectorAll('aside a')].map((a) => a.textContent.trim()),
         navLang: navigator.language,
+        navLanguages: [...navigator.languages],
       }))()`);
       const state = await evaluate(page, STATE);
       check('A pathname stays at preferences', result.pathname, PREFS_PATH);
       check('A preferences panel rendered', result.panel, true);
       check('A both language radios', result.radios, 2);
       check('A sub-nav has the Preferences link', result.prefsLinks, 1);
+      check('A unset: actual navigator read-back', [result.navLang,result.navLanguages], ['zh-CN',['zh-CN','zh']]);
       check('A unset: no stored preference', state.stored, null);
-      check('A unset: <html lang> en', state.lang, 'en');
-      check('A unset: English heading', state.heading, COPY.en.heading);
-      check('A unset: English radio checked', state.checked, 'en');
+      check('A unset: <html lang> zh-CN', state.lang, 'zh-CN');
+      check('A unset: Chinese heading', state.heading, COPY['zh-CN'].heading);
+      check('A unset: Chinese radio checked', state.checked, 'zh-CN');
       current.observed = { ...result, ...state };
-      await capture(page, 'ordinary-preferences-unset-1440-light-en', { dist: 'ordinary', viewport: '1440x900', theme: 'light', locale: 'unset', state: 'preferences-unset-english' });
+      await capture(page, 'ordinary-preferences-unset-1440-light-zh', { dist: 'ordinary', viewport: '1440x900', theme: 'light', locale: 'unset', state: 'preferences-unset-Chinese' });
       await closePage(page);
     }
     endCase();
