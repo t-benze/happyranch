@@ -1,3 +1,4 @@
+import { SystemPromptEditor } from './SystemPromptEditor';
 /**
  * AgentDetailDrawer — opens when `:agent_name` is in the URL. Slides in
  * from the right (480px) over the active tab.
@@ -12,10 +13,8 @@
  * workspaces — we render an explanatory hint rather than a hard error so
  * the founder can still inspect tasks for legacy agents.
  */
-import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Link } from 'react-router-dom';
-import { ChevronDown, ChevronRight } from 'lucide-react';
 import {
   Drawer,
   DrawerContent,
@@ -57,7 +56,6 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
 
   const agent = agentsQuery.data?.agents.find((a) => a.name === agentName);
   const onClose = () => navigate(agentsRoutes.inbox());
-  const [showPrompt, setShowPrompt] = useState(false);
 
   const learningsError =
     learningsQuery.isError && learningsQuery.error instanceof ApiError
@@ -101,23 +99,10 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
           )}
         </header>
 
-        {agent?.system_prompt && (
-          <div className="border-border-subtle border-b px-4 py-3">
-            <button
-              type="button"
-              onClick={() => setShowPrompt(!showPrompt)}
-              className="text-fg-muted hover:text-fg flex w-full items-center gap-1 text-xs font-medium tracking-wider uppercase transition-colors"
-            >
-              {showPrompt ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              {t('agents.field.systemPrompt')}
-            </button>
-            {showPrompt && (
-              <pre className="bg-bg-raised border-border mt-2 max-h-48 overflow-auto rounded border p-3 text-xs whitespace-pre-wrap">
-                {agent.system_prompt}
-              </pre>
-            )}
-          </div>
-        )}
+        <SystemPromptEditor key={JSON.stringify([slug, agentName])}
+          slug={slug ?? ''} agentName={agentName} agent={agent}
+          loading={agentsQuery.isLoading} failed={agentsQuery.isError}
+          empty={agentsQuery.data?.agents.length === 0} />
 
         <section className="flex-1 overflow-y-auto p-4">
           <h3 className="text-fg-muted mb-2 text-xs font-medium tracking-wider uppercase">

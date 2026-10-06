@@ -26,6 +26,8 @@
 > persistence (N0/N1) are still open. The W1 sections below are retained as the historical W1 contract
 > and updated per phase.
 
+The THR280 prompt editor reuses the mounted Agents pane at desktop/mobile and the retained drawer component without mounting changes. Prompt-local en/zh-CN actions, initial states, pending/readback/conflict/failure guidance use catalog keys; authored multiline bodies and raw daemon diagnostics stay verbatim. Locale switching must preserve the same draft node, body, focus and selection without a request. Draft bases are frozen, controls remain disabled through PUT plus owned fresh readback, and Saved requires receipt body/revision agreement. Recoverable drafts and local navigation/discard semantics remain; no automatic retry or locale-triggered mutation. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation.
+
 ## 1. Scope
 
 THR-118 implements a first-party, typed English (`en`) / Simplified Chinese

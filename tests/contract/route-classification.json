@@ -97,6 +97,7 @@
     "POST /api/v1/orgs/{slug}/agents/{agent_name}/memory/entries/search",
     "GET /api/v1/orgs/{slug}/agents/{agent_id}/skills/effective",
     "PUT /api/v1/orgs/{slug}/agents/{agent_name}/model",
+    "PUT /api/v1/orgs/{slug}/agents/{agent_name}/system-prompt",
     "GET /api/v1/orgs/{slug}/teams",
     "GET /api/v1/assistant/status",
     "GET /api/v1/assistant/a-mode/status",

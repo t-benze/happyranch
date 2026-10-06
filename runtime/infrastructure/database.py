@@ -2087,19 +2087,6 @@ class Database(
         return cursor.rowcount
 
 
-    @_synchronized
-    def _set_thread_status_archived_uncommitted(
-        self, thread_id: str, *, summary: str | None = None,
-    ) -> None:
-        """Flip one thread to ARCHIVED (summary/archived_at preserved) WITHOUT
-        committing. Callers own the transaction
-        (``set_thread_status``, ``archive_thread_and_reset_sessions``)."""
-        now = _now().isoformat()
-        self._conn.execute(
-            "UPDATE threads SET status = ?, summary = COALESCE(?, summary), "
-            "archived_at = COALESCE(archived_at, ?) WHERE id = ?",
-            (ThreadStatus.ARCHIVED.value, summary, now, thread_id),
-        )
 
 
     @_synchronized
