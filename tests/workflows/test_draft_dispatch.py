@@ -10,12 +10,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from runtime.infrastructure.workflow_schema import validate_workflow_schema
-from tests.daemon.test_workflow_activation_routes import BASE, activation_org, _snapshot
+from tests.daemon.test_workflow_activation_routes import BASE, activation_org, _snapshot, _assert_activation_org_layout
 from tests.workflows.test_activation_store import activation_profile, _select_activation_profile
 
 
 @pytest.fixture
-def draft_host(activation_org, monkeypatch):
+def draft_host(request, activation_org, monkeypatch):
     """A bounded actual subprocess at the existing supervisor backend boundary.
 
     This is a unit causal control, never a hosted/provider acceptance receipt.
@@ -26,6 +26,9 @@ def draft_host(activation_org, monkeypatch):
     from tests.test_host_supervisor_lifecycle import FakeBackend, make_supervisor
 
     client, org, state, body = activation_org
+    expected_layout = getattr(request.node, 'callspec', None)
+    expected_layout = expected_layout.params.get('activation_org', 'G') if expected_layout else 'G'
+    _assert_activation_org_layout(org.db.path, expected_layout, 'before host setup')
     controls = {'callback': True, 'quiescent': True, 'retry': False,
                 'early_callback': False, 'prelaunch_callback': False, 'ack': True,
                 'cancel_order': None, 'rate_limited': False}
@@ -184,6 +187,7 @@ def test_queued_cancel_fences_intent_before_task_terminal_and_replays_read_only(
     assert not org.db.execute("SELECT 1 FROM audit_log WHERE task_id=? AND action='task_cancelled'", (task_id,)).fetchone()
 
 
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_real_dispatch_result_and_quiescence_complete_without_manager_decision(draft_host):
     client, org, state, body, controls, observations, backend = draft_host
     controls['retry'] = True
@@ -228,6 +232,7 @@ def test_real_dispatch_result_and_quiescence_complete_without_manager_decision(d
 
 
 @pytest.mark.parametrize('gap', ['callback', 'quiescent'])
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_possible_launch_or_missing_callback_stays_uncertain_and_never_relaunches(draft_host, gap):
     client, org, state, body, controls, observations, backend = draft_host
     controls[gap] = False
@@ -317,6 +322,7 @@ def test_lost_actual_launch_acknowledgment_survives_cold_reopen_without_second_l
     ('confidence', 82), ('output_summary', 'changed draft'), ('risks_flagged', ['changed risk']),
     ('output_dir', 'output/foreign'), ('verdict', 'foreign verdict'), ('status', 'failed'),
 ], ids=['confidence', 'summary', 'risks', 'directory', 'verdict', 'status'])
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_completion_retry_compares_every_supplied_result_field(draft_host, seam, field, value):
     client, org, state, body, controls, observations, backend = draft_host
     receipt = client.post(BASE, json=body).json()
@@ -884,6 +890,7 @@ def test_actual_prelaunch_work_hour_defers_same_intent_before_external_launch(dr
 
 
 @pytest.mark.parametrize('first_writer', ['callback', 'cancel'])
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_callback_cancel_writer_contenders_commit_one_owned_order(draft_host, monkeypatch, first_writer):
     import sqlite3
     client, org, state, body, controls, observations, backend = draft_host
@@ -1041,6 +1048,7 @@ def test_callback_cancel_writer_contenders_commit_one_owned_order(draft_host, mo
     validate_workflow_schema(org.db._conn, expected_org_slug='alpha')
 
 
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_lost_notification_cold_discovery_and_duplicate_enqueue_keep_original_attempt(draft_host, monkeypatch):
     from runtime.daemon.__main__ import _sweep_on_startup
     from runtime.daemon.org_state import OrgState

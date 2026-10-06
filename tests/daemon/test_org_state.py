@@ -450,3 +450,41 @@ def test_cutover_cold_attachment_preserves_initial_or_recovers_authentic_request
             assert _legacy_snapshot(path) == before
         finally:
             attached.close()
+
+
+@pytest.mark.parametrize('layout', ['F', 'E', 'G'])
+@pytest.mark.parametrize('populated', [False, True], ids=['empty', 'retained-history'])
+def test_g_existing_f_e_and_g_cold_load_preserve_workflow_histories(tmp_path: Path, layout: str, populated: bool) -> None:
+    from runtime.infrastructure import workflow_schema as schema
+    from tests.workflows.test_submission_schema import _legacy_graph
+    runtime = RuntimeDir.init(tmp_path / 'runtime')
+    root = runtime.orgs_dir / 'alpha'
+    _seed_org(root)
+    org = OrgState.load(slug='alpha', root=root, settings=Settings())
+    try:
+        if populated:
+            _legacy_graph(org.db, 'E' if layout in ('E', 'G') else 'F', joined=True)
+        elif layout in ('E', 'G'):
+            with org.db.workflow_schema_transaction() as writer:
+                schema.migrate_draft_schema(writer, expected_org_slug='alpha')
+    finally:
+        org.close()
+    if layout == 'G':
+        with sqlite3.connect(root / 'happyranch.db') as writer:
+            writer.execute('PRAGMA foreign_keys=ON')
+            schema.migrate_submission_schema(writer, expected_org_slug='alpha')
+    def workflow_history():
+        with sqlite3.connect(root / 'happyranch.db') as observer:
+            objects = tuple(observer.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name LIKE 'workflow_%' ORDER BY name"))
+            tables = [r[0] for r in observer.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'workflow_%' ORDER BY name")]
+            return objects, tuple((table, tuple(observer.execute(f'SELECT rowid,* FROM "{table}" ORDER BY rowid'))) for table in tables)
+    before = workflow_history()
+    for _ in range(2):
+        state = DaemonState.from_runtime(runtime, Settings())
+        try:
+            assert 'alpha' in state.orgs and 'alpha' not in state.broken_orgs
+            assert schema.validate_workflow_schema(state.orgs['alpha'].db._conn, expected_org_slug='alpha') == layout
+            assert workflow_history() == before
+        finally:
+            for owner in state.orgs.values(): owner.close()
+        assert workflow_history() == before

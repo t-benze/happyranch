@@ -1,5 +1,34 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel; each organization is loaded from `<runtime>/orgs/<slug>/org/`.
 
 **Current THR-259 workspace-cleanup safety contract.** The shared cleanup procedure accepts only a closed-schema, non-truncated host-job receipt binding the current task/session to the actual job, agent, stored command, interpreter, resolved cwd, timestamps, terminal result, complete output totals, and exact scanner coverage; it has no direct fallback. PR evidence is completely paginated and repeated, and open, closed-unmerged, duplicate, changing, conflicting, or malformed rows refuse. A removable containing worktree must be registered at its owning primary checkout's exact `.claude/worktrees/<TASK>` path on `task/<TASK>`. A cache must be positively Git-ignored, untracked, and absent from status before isolation. Before action and again at the action boundary, the literal candidate is completely walked without following symlinks; nested mounts, cross-device or foreign-owned entries, protected descendants, unreadable/capped/changing evidence, and identity drift refuse. The only external-link exception is a recorded `python`/`python3`/`python3.N` link directly under an owned literal `.venv/bin`, resolving to its configured uv store or `pyvenv.cfg` home outside every protected/workspace/candidate root; deletion unlinks and never follows it. Measurement includes the root inode, and success requires literal absence plus unchanged protected-path identities. Failed restoration after isolation is measured `isolation_anomaly`; failure after deletion starts is measured `removed_with_anomaly`. Both are exit-3 batch halts, never refusals, and account for original, isolated, and isolation-directory residuals without false zeroes. Batch resume accepts only a unique closed-schema terminal row exactly bound to the current manifest and argv; timeout, signal, malformed/mismatched output, unreceipted nonzero exit, runner exception, exit 3, or any unclassifiable outcome halts after journaling and before another candidate.
@@ -64,8 +93,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   unchanged inert version-1 foundation F from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
   membership validation, or orchestrator construction. Deliberate POST /orgs
-  creation proves a fresh skeleton, then initializes complete E (F plus the
-  reviewed three draft tables/six explicit indexes and draft version1) in one
+  creation proves a fresh skeleton, then initializes complete G (F plus the
+  reviewed E draft extension and exact THR139seq395 submission definitions/additions) in one
   transaction before attachment. Existing startup/reopen/enable never installs
   E: use `python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> [--check]`
   only with operator authorization. Check exits0 ready, 3 migration-needed,
@@ -82,7 +111,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
-  canonical F or E reference after full layout/history/data validation, caches
+  canonical F, E or G reference after full layout/history/data validation, caches
   independently by layout, and hashes every non-null sqlite_master SQL object; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
   store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain

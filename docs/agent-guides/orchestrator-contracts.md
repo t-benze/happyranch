@@ -1,5 +1,34 @@
 # Orchestrator Contracts
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Conventions
 
 - Type hints on all function signatures.
@@ -2012,3 +2041,11 @@ fences before opaque containment outside locks; only affirmative no-launch or
 exact finalized quiescence permits terminal settlement. Missing callback, launch
 identity or quiescence stays owned and blocks drain. No ordinary manager decision,
 parent propagation, retry/delegation or F5 submission/review producer is used.
+
+Complete legacy release references also cover independently pinned v0 and
+historical authority-v2 constructor inputs, including the organic additive
+migration order. Each reference runs current generic migrations and the
+requested F/E/G installer on its own disposable database; the comparison
+includes every SQL object. A candidate never supplies a baseline, and any
+required reference failure or unrelated object still refuses. This changes
+no observed-only authority-v2 claim rule.

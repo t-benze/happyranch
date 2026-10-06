@@ -13,6 +13,8 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from runtime.infrastructure import workflow_schema as schema
+from tests.workflows.test_draft_dispatch import draft_host
+from tests.daemon.test_workflow_activation_routes import activation_org
 from runtime.workflows.cutover import WorkflowCutoverStore, WorkflowCutoverError
 
 
@@ -149,23 +151,13 @@ print('pinned-reader-reopened')
         _migrate(db)
         db.close()
     else:
-        from fastapi.testclient import TestClient
-        from runtime.daemon.app import create_app
-        from runtime.daemon.state import DaemonState
+        # The historical 'new-org' E input now uses the original explicit
+        # operator, because actual new POST creates G. Keep the native ID.
         from runtime.runtime import RuntimeDir
-        home = tmp_path / 'daemon-home'
-        home.mkdir()
-        monkeypatch.setenv('HAPPYRANCH_DAEMON_HOME',str(home))
-        from runtime.daemon.paths import ensure_token
-        token = ensure_token()
-        runtime = RuntimeDir.init(tmp_path / 'new-runtime')
-        state = DaemonState.from_runtime(runtime,Settings())
-        client = TestClient(create_app(state),headers={'Authorization':f'Bearer {token}'})
-        response = client.post('/api/v1/orgs',json={'slug':'alpha'})
-        assert response.status_code == 200, response.text
-        root = state.orgs['alpha'].root
-        state.orgs['alpha'].close()
-        client.close()
+        from tests.test_workflow_draft_migration_script import _run
+        runtime = RuntimeDir.init(tmp_path / 'runtime')
+        result = _run(runtime.root)
+        assert result.returncode == 0 and 'layout E' in result.stdout, result.stderr
     before = {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in root.rglob('*') if p.is_file()}
     old = subprocess.run([sys.executable, '-c', driver, str(source), str(root)], text=True, capture_output=True, timeout=15)
     assert old.returncode != 0 and 'workflow_schema_object_set_mismatch' in old.stderr
@@ -718,3 +710,174 @@ def test_sql_seeded_callback_preimage_binds_full_normalized_result_and_dispositi
         assert tuple(db._conn.iterdump()) == before
     finally:
         db.close()
+
+
+_S2_STEM = 'preceding_reader_b0b55e9f_runtime'
+
+def _extract_s2_source(fixture_dir: Path, source: Path) -> Path:
+    def read(suffix: str, expected: str) -> bytes:
+        path = fixture_dir / (_S2_STEM + suffix)
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError as exc:
+            raise ValueError(f'preceding_source_missing: {path.name}') from exc
+        if hashlib.sha256(raw).hexdigest() != expected:
+            raise ValueError(f'preceding_source_hash_mismatch: {path.name}')
+        return raw
+
+    packed = read('.tar.gz', '7812a3b4cc6887c2744805c3622da94fa07b2611202b4a2194ad2745235e185d')
+    manifest = json.loads(read('.manifest.json', '055168a183049ea7b95acd6acfa656744629610760fa9e0664f1e9767336e7c8'))
+    if (manifest['format'], manifest['commit'], manifest['tree'], manifest['runtime_tree'], manifest['subtree']) != (
+        'workflow-preceding-reader-source@1', 'b0b55e9f3302d04c4a5feffee56971db12eac25e',
+        'c8545c48dd63f3d1798cbb4453639b546b9ee473',
+        '470f1194847c05348531bd6bb59faae41f49c278', 'runtime',
+    ):
+        raise ValueError('preceding_source_identity_mismatch')
+    raw = gzip.decompress(packed)
+    if len(raw) != 6461440 or hashlib.sha256(raw).hexdigest() != '4f1f972b009945f93b63d7001c82b24cd43e04ab4152cc2f6793f9d8efa9d6e6':
+        raise ValueError('preceding_source_tar_mismatch')
+    with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+        files = []
+        paths = set()
+        for member in archive.getmembers():
+            path = PurePosixPath(member.name)
+            if (path.is_absolute() or '..' in path.parts or not path.parts
+                or path.parts[0] != 'runtime' or member.name in paths
+                or not (member.isdir() or member.isfile())):
+                raise ValueError('preceding_source_unsafe_member')
+            paths.add(member.name)
+            if member.isfile():
+                files.append(dict(path=member.name, mode=oct(member.mode), size=member.size,
+                                  sha256=hashlib.sha256(archive.extractfile(member).read()).hexdigest()))
+        if files != manifest['files']:
+            raise ValueError('preceding_source_file_manifest_mismatch')
+        if source.exists():
+            raise ValueError('preceding_source_destination_exists')
+        source.mkdir()
+        archive.extractall(source, filter='data')
+        # The safe data filter removes group-write bits. Restore only modes
+        # authenticated in the pinned tar, after path/type validation.
+        for entry in files:
+            (source / entry['path']).chmod(int(entry['mode'], 8))
+    actual = []
+    for entry in files:
+        path = source / entry['path']
+        actual.append(dict(path=entry['path'], mode=oct(path.stat().st_mode & 0o777),
+                           size=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+    if actual != files:
+        raise ValueError('preceding_source_extracted_manifest_mismatch')
+    if hashlib.sha256((source / 'runtime/infrastructure/workflow_schema.py').read_bytes()).hexdigest() != 'aeb4dc21e80f2e4f112d7f76b2d273aa761317e5499fc577401d6581cfcbf835':
+        raise ValueError('preceding_source_schema_mismatch')
+    return source
+
+
+@pytest.mark.parametrize('damage', ['none', 'missing-archive', 'truncated-archive', 'corrupt-archive',
+    'missing-manifest', 'wrong-pin', 'wrong-mode', 'wrong-member-hash', 'existing-destination'])
+def test_g_s2_reader_archive_identity_bytes_modes_and_safe_extraction(tmp_path: Path, damage: str) -> None:
+    fixture_dir = tmp_path / 'fixtures'
+    fixture_dir.mkdir()
+    archive = fixture_dir / (_S2_STEM + '.tar.gz')
+    manifest = fixture_dir / (_S2_STEM + '.manifest.json')
+    archive.write_bytes((_PRECEDING_FIXTURES / archive.name).read_bytes())
+    manifest.write_bytes((_PRECEDING_FIXTURES / manifest.name).read_bytes())
+    source = tmp_path / 'source'
+    if damage == 'missing-archive':
+        archive.unlink()
+    elif damage == 'truncated-archive':
+        archive.write_bytes(archive.read_bytes()[:-1])
+    elif damage == 'corrupt-archive':
+        raw = bytearray(archive.read_bytes()); raw[len(raw) // 2] ^= 1; archive.write_bytes(raw)
+    elif damage == 'missing-manifest':
+        manifest.unlink()
+    elif damage in ('wrong-pin', 'wrong-mode', 'wrong-member-hash'):
+        supplied = json.loads(manifest.read_bytes())
+        if damage == 'wrong-pin':
+            supplied['commit'] = '0' * 40
+        else:
+            supplied['files'][0]['mode' if damage == 'wrong-mode' else 'sha256'] = '0o777' if damage == 'wrong-mode' else '0' * 64
+        manifest.write_text(json.dumps(supplied))
+    elif damage == 'existing-destination':
+        source.mkdir(); (source / 'retained').write_bytes(b'owned preexisting source')
+    if damage != 'none':
+        before = {p.name: p.read_bytes() for p in source.glob('*')} if source.exists() else None
+        with pytest.raises(ValueError, match='preceding_source_(missing|hash_mismatch|destination_exists)'):
+            _extract_s2_source(fixture_dir, source)
+        assert ({p.name: p.read_bytes() for p in source.glob('*')} if source.exists() else None) == before
+        return
+    extracted = _extract_s2_source(fixture_dir, source)
+    entries = json.loads(manifest.read_bytes())['files']
+    assert len(entries) == 265
+    assert {str(p.relative_to(source)) for p in extracted.rglob('*') if p.is_file()} == {e['path'] for e in entries}
+    for entry in entries:
+        path = source / entry['path']
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == entry['sha256']
+        assert path.stat().st_mode & 0o777 == int(entry['mode'], 8)
+
+
+@pytest.mark.parametrize('activation_org', ['E'], indirect=True, ids=['actual-existing-E'])
+@pytest.mark.parametrize('origin', ['migration', 'new-org'])
+def test_g_source_pinned_faf_and_s2_readers_refuse_g_without_writes(tmp_path: Path, draft_host, preceding_source: Path, origin: str) -> None:
+    import subprocess
+    import sys
+    from runtime.config import Settings
+    from runtime.daemon.org_state import OrgState
+    from runtime.daemon.app import create_app
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+    from runtime.daemon import paths
+    from fastapi.testclient import TestClient
+    from tests.daemon.test_workflow_activation_routes import BASE
+    from tests.test_workflow_submission_migration_script import _run as run_submission
+    client, org, state, body, controls, observations, backend = draft_host
+    response = client.post(BASE, json=body)
+    assert response.status_code == 201, response.text
+    org.orchestrator.run_step(response.json()['root_task_id'])
+    assert org.db.execute('SELECT state FROM workflow_draft_dispatch_intents').fetchone()[0] == 'completed'
+    assert backend.calls['launch'] == backend.calls['finish'] == 1
+    root = org.root
+    client.close(); org.close()
+    s2 = _extract_s2_source(_PRECEDING_FIXTURES, tmp_path / 's2-source')
+    driver = _PRECEDING_IMPORT_CHECK + """
+from runtime.daemon.org_state import OrgState
+from runtime.config import Settings
+org=OrgState.load(slug='alpha',root=Path(sys.argv[2]),settings=Settings())
+org.close()
+assert_pinned_imports()
+print('pinned-reader-reopened')
+"""
+    def snapshot():
+        return {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777)
+                for p in root.rglob('*') if p.is_file()}
+    before = snapshot()
+    for _ in range(2):
+        result = subprocess.run([sys.executable, '-c', driver, str(s2), str(root)], capture_output=True, text=True, timeout=15)
+        assert result.returncode == 0 and 'pinned-reader-reopened' in result.stdout, result.stderr
+        assert snapshot() == before
+    if origin == 'migration':
+        import os
+        migrated = run_submission(root.parent.parent, dict(os.environ))
+        assert migrated.returncode == 0 and 'migrated:' in migrated.stdout, migrated.stderr
+    else:
+        runtime = RuntimeDir.init(tmp_path / 'fresh-runtime')
+        fresh_state = DaemonState.from_runtime(runtime, Settings())
+        fresh_client = TestClient(create_app(fresh_state), headers={'Authorization': f'Bearer {paths.ensure_token()}'})
+        try:
+            response = fresh_client.post('/api/v1/orgs', json={'slug': 'alpha'})
+            assert response.status_code == 200, response.text
+            root = fresh_state.orgs['alpha'].root
+        finally:
+            fresh_client.close()
+            for owner in fresh_state.orgs.values(): owner.close()
+    before = snapshot()
+    for source in (preceding_source, s2):
+        for _ in range(2):
+            refused = subprocess.run([sys.executable, '-c', driver, str(source), str(root)], capture_output=True, text=True, timeout=15)
+            assert refused.returncode != 0 and 'workflow_schema_object_set_mismatch' in refused.stderr, refused.stderr
+            assert snapshot() == before
+    for _ in range(2):
+        current = OrgState.load(slug='alpha', root=root, settings=Settings())
+        try:
+            assert schema.validate_workflow_schema(current.db._conn, expected_org_slug='alpha') == 'G'
+        finally:
+            current.close()
+        assert snapshot() == before

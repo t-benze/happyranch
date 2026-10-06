@@ -67,8 +67,9 @@ def main(argv: list[str] | None = None) -> int:
             outcome = 'ready'
         else:
             outcome = migrate_draft_schema(conn, expected_org_slug=args.org)
+            layout = validate_workflow_schema(conn, expected_org_slug=args.org)
             conn.commit()
-        print(f'{outcome}: org {args.org}; layout E; compatible reader required')
+        print(f'{outcome}: org {args.org}; layout {layout}; compatible reader required')
         return 0
     except (OSError, ValueError, yaml.YAMLError, sqlite3.DatabaseError) as exc:
         if conn is not None:

@@ -265,3 +265,35 @@ publication-process requirements.
 - **Clean vs. dirty repo.** The script does not check for uncommitted
   changes. The GitHub CI always runs on a clean checkout of the pushed
   commit.
+
+
+The manual input `all_only` is a boolean and defaults to false. Schedule,
+manual default, and explicit false retain the ordinary integration selection.
+Only explicit true skips general integration (SKIPPED under THR139seq77 and
+THR243seq42). Invoke the candidate ref with `gh workflow run
+nightly-integration.yml --ref <candidate-ref> -f all_only=true`.
+
+The true lane runs the unchanged `scripts/local_ci.sh all` first and preserves
+its exit separately. Successful all is followed by the closed literal 101-node
+collection and five serial fresh isolated and sibling rounds: 505 node processes
+plus 75 complete-file processes. No selector input or timeout increase is
+provided; all commands share the existing 60-minute job cap. Every invocation
+owns a unique absolute basetemp, HOME/config/cache/daemon registry, JUnit,
+command/source/head/tree/runtime/status receipt and 1MiB output tail. Full output
+remains in the hosted step stream. Failed, interrupted and unstarted commands
+are not passes. The seven selected keepers alone pair real existing E with
+fresh POST G; other 64 existing fixture consumers keep their original bodies
+and run fresh G. Collection records complete native parameter IDs. Separate
+causal controls must restore exact source bytes and modes before GREEN; source
+copies never mutate the immutable all checkout. No live-host platform probe or
+job submission substitutes for actual hosted evidence. Required PR checks and
+the selected actual hosted Codex callback remain separate gates.
+
+The fixed source controls run only after successful all and before repetitions,
+in separate archives of the authenticated committed head. Each control records
+its exact source patch, original and restored SHA256 and modes, named-node RED
+JUnit and the identical-command restored GREEN. The 64 unchanged consumers use
+explicitly labeled origin-regression RED at their full-layout observer; setup or
+import errors never count as business RED. Controls refuse absent attribution,
+syntax errors, missing receipts, or failed restoration. Actual source-control
+completion is recorded separately from all and from the 580-process repetitions.

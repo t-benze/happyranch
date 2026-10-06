@@ -206,6 +206,7 @@ def _rewrite_canonical_document(org, receipt, target, field, value):
     ("context", "inputs", [{"private": "private-corrupt-member"}]),
     ("context", "extra", "private-corrupt-member"),
 ], ids=lambda item: str(item)[:60])
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_historical_semantic_corruption_refuses_all_receipt_seams_without_repair(
     activation_org, target, field, value,
 ):

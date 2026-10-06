@@ -48,6 +48,7 @@ def test_draft_root_never_enters_ordinary_manager_run_step(activation_org):
     ('context', 'extra', 'private-corrupt-member'),
 ], ids=['authorization-pin', 'binding-authority', 'context-envelope'])
 @pytest.mark.parametrize('consumer', ['enqueue', 'startup', 'run-step', 'reaper', 'cancel', 'portability'])
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_semantic_corruption_fences_every_owned_consumer_before_effects(
     activation_org, monkeypatch, target, field, value, consumer,
 ):

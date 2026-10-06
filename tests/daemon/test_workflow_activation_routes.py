@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 import copy
+import subprocess
+import sys
+import hashlib
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,17 +22,98 @@ from tests.workflows.test_template_store import VALID_DEFINITION
 BASE = "/api/v1/orgs/alpha/workflows/activations"
 
 
+def _assert_activation_org_layout(db_path: Path, expected_layout: str, phase: str) -> None:
+    """Independent complete desired-fixture oracle and second-connection read."""
+    from runtime.infrastructure.database import Database
+    assert expected_layout in ('F', 'E', 'G')
+    fixtures = Path(__file__).parents[1] / 'fixtures/workflow_u0'
+    foundation = (fixtures / 'proposed_workflow_schema.sql').read_text()
+    draft = (fixtures / 'proposed_workflow_draft_schema.sql').read_text()
+    approved = (fixtures / 'proposed_workflow_submission_schema.sql').read_bytes()
+    assert len(approved) == 2621
+    assert hashlib.sha256(approved).hexdigest() == '194dd81737ba902d9b40f86dd18b29089a07ecc439ddba54e65f83044368eedf'
+    delta = approved.decode()
+    if expected_layout == 'G':
+        for table in ('workflow_submissions', 'workflow_events'):
+            start = foundation.index('CREATE TABLE ' + table + ' (')
+            end = foundation.index(';', start) + 1
+            replacement = delta[delta.index('CREATE TABLE ' + table + ' ('):]
+            foundation = foundation[:start] + replacement[:replacement.index(';') + 1] + foundation[end:]
+
+    def inventory(conn):
+        objects = tuple((kind, name, table, None if sql is None else ' '.join(sql.split()))
+                        for kind, name, table, sql in conn.execute(
+                            "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' "
+                            "ORDER BY type,name,tbl_name"))
+        metadata = []
+        for kind, table, _, _ in objects:
+            if kind != 'table':
+                continue
+            quote = table.replace('"', '""')
+            indexes = []
+            for row in conn.execute(f'PRAGMA index_list("{quote}")'):
+                index = row[1].replace('"', '""')
+                indexes.append((tuple(row), tuple(tuple(v) for v in conn.execute(f'PRAGMA index_xinfo("{index}")'))))
+            metadata.append((table, tuple(tuple(v) for v in conn.execute(f'PRAGMA table_xinfo("{quote}")')),
+                             tuple(tuple(v) for v in conn.execute(f'PRAGMA foreign_key_list("{quote}")')), tuple(indexes)))
+        return objects, tuple(metadata)
+
+    reference = Database(Path(':memory:'))
+    try:
+        reference._conn.executescript(foundation)
+        if expected_layout in ('E', 'G'):
+            reference._conn.executescript(draft)
+        if expected_layout == 'G':
+            reference._conn.executescript(delta[delta.index('-- G-only additive objects.'):])
+        with sqlite3.connect(db_path.resolve().as_uri() + '?mode=ro', uri=True) as observer:
+            assert inventory(observer) == inventory(reference._conn), (phase, expected_layout)
+            assert observer.execute('PRAGMA foreign_key_check').fetchall() == [], phase
+            assert observer.execute('SELECT version FROM workflow_adapter_versions').fetchall() == [(1,)]
+            if expected_layout in ('E', 'G'):
+                assert observer.execute('SELECT version FROM workflow_draft_adapter_versions').fetchall() == [(1,)]
+            if expected_layout == 'G':
+                assert observer.execute('SELECT version FROM workflow_submission_schema_versions').fetchall() == [(1,)]
+    finally:
+        reference.close()
+
+
+def _prepare_existing_f_activation_org(runtime, settings):
+    from runtime.daemon.org_state import OrgState
+    from tests.daemon.test_org_state import _seed_org
+    root = runtime.orgs_dir / 'alpha'
+    _seed_org(root)
+    owner = OrgState.load(slug='alpha', root=root, settings=settings)
+    try:
+        _assert_activation_org_layout(owner.db.path, 'F', 'original existing-org installer')
+    finally:
+        owner.close()
+    checkout = Path(__file__).resolve().parents[2]
+    result = subprocess.run([sys.executable, str(checkout / 'scripts/migrate_workflow_draft_schema.py'),
+                             '--runtime-root', str(runtime.root.resolve()), '--org', 'alpha'],
+                            cwd=checkout, text=True, capture_output=True, timeout=15)
+    assert result.returncode == 0 and 'migrated:' in result.stdout and 'layout E' in result.stdout, (result.stdout, result.stderr)
+    _assert_activation_org_layout(root / 'happyranch.db', 'E', 'actual original operator commit')
+
+
 @pytest.fixture
-def activation_org(tmp_path, monkeypatch):
+def activation_org(request, tmp_path, monkeypatch):
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(tmp_path / "daemon"))
     runtime = RuntimeDir.init(tmp_path / "runtime")
-    state = DaemonState.from_runtime(runtime, Settings())
+    layout = getattr(request, 'param', 'G')
+    assert layout in ('E', 'G'), layout
+    settings = Settings()
+    if layout == 'E':
+        _prepare_existing_f_activation_org(runtime, settings)
+    state = DaemonState.from_runtime(runtime, settings)
     client = TestClient(create_app(state))
-    client.headers.update({"Authorization": f"Bearer {paths.ensure_token()}"})
-    response = client.post("/api/v1/orgs", json={"slug": "alpha"})
-    assert response.status_code == 200, response.text
-    org = state.orgs["alpha"]
     try:
+        client.headers.update({"Authorization": f"Bearer {paths.ensure_token()}"})
+        if layout == 'G':
+            response = client.post("/api/v1/orgs", json={"slug": "alpha"})
+            assert response.status_code == 200, response.text
+        assert 'alpha' in state.orgs and 'alpha' not in state.broken_orgs
+        org = state.orgs["alpha"]
+        _assert_activation_org_layout(org.db.path, layout, 'before canonical admission')
         for name, team, role in (
             ("product_lead", "product", "manager"),
             ("engineering_manager", "engineering", "manager"),
@@ -73,9 +158,12 @@ def activation_org(tmp_path, monkeypatch):
                                 "approve-planning-input", "return-to-author"],
             "inputs": [],
         }
+        _assert_activation_org_layout(org.db.path, layout, 'before fixture yield')
         yield client, org, state, body
     finally:
-        org.close()
+        client.close()
+        for owned in state.orgs.values():
+            owned.close()
 
 
 def test_initial_activation_commits_authentic_root_and_admitted_lane(activation_org):

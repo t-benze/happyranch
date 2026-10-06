@@ -27,7 +27,7 @@ from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import (
-    draft_migration_guidance, install_or_recover, validate_workflow_schema,
+    draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
 )
 from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
@@ -248,6 +248,10 @@ class OrgState:
                 layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
+                    org_slug=slug, runtime_root=str(root.parent.parent),
+                ))
+            if layout in ("F", "E"):
+                logger.warning("org %r: %s", slug, submission_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
                 ))
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()

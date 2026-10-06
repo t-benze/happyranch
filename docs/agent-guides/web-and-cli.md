@@ -1,5 +1,34 @@
 # Web And CLI
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Daemon-managed workspace cleanup
 
 `workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean
@@ -656,10 +685,11 @@ existing500 category `draft_schema_migration_required`; GET's existing blocker
 --runtime-root <absolute-root> --org <slug>`. The operator runs that script
 explicitly; `--check` exits3 when needed, 0 ready, 1 refusal, 2 parser. Existing F
 history remains visible without recovery advancement. New `orgs init`/POST /orgs
-creation initializes complete E directly. Preflight is read-only and permits only
-pristine F initial history with no workflow data; every E needs a compatible
+creation initializes complete G directly. Preflight is read-only and permits only
+pristine F initial history with no workflow data; every E/G needs a compatible
 reader, including empty new/migrated orgs; even empty drained or template-only stores refuse.
-The pinned preceding reader accepts pristine F and refuses E; older binaries
+The faf40744 reader accepts pristine F and refuses E/G; the b0b55e9f
+reader accepts F/E and refuses G; older binaries
 are not claimed to enforce the current cutover decision. Activation, first-draft
 work and cancellation/dispatch remain later units; no live enable or deployment
 is implied by these methods.
