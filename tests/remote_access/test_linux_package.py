@@ -194,13 +194,13 @@ def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_reti
         'printf \'%s\\n\' "$*" >> "$SYSTEMCTL_CALLS"\n'
         'case "$1" in\n'
         '  show) cat "$SYSTEMCTL_SHOW_OUTPUT"; exit "$SYSTEMCTL_SHOW_EXIT" ;;\n'
-        '  daemon-reload) exit 0 ;;\n'
+        '  daemon-reload) exit "$SYSTEMCTL_RELOAD_EXIT" ;;\n'
         '  *) exit 99 ;;\n'
         "esac\n"
     )
     fixture_systemctl.chmod(0o700)
 
-    def invoke_with_service(*arguments: str, query_exit: int = 0) -> subprocess.CompletedProcess[str]:
+    def invoke_with_service(*arguments: str, query_exit: int = 0, reload_exit: int = 0) -> subprocess.CompletedProcess[str]:
         calls.write_bytes(b"")
         env = {
             key: value
@@ -212,6 +212,7 @@ def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_reti
             "SYSTEMCTL_CALLS": str(calls),
             "SYSTEMCTL_SHOW_OUTPUT": str(show_file),
             "SYSTEMCTL_SHOW_EXIT": str(query_exit),
+            "SYSTEMCTL_RELOAD_EXIT": str(reload_exit),
         })
         return subprocess.run(
             [sys.executable, "-I", "-c", launcher, str(installed), str(entry), *arguments],
@@ -222,6 +223,36 @@ def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_reti
             text=True,
             timeout=10,
         )
+
+    retirement = tmp_path / "retirement"
+    retirement.mkdir()
+    retirement_source = retirement / "enrollment.key"
+    retirement_marker = retirement / "credential.consumed"
+    retirement_dropin = retirement / "10-enrollment-credential.conf"
+    for path, data in [(retirement_source, b"one-use\n"), (retirement_marker, b"durable\n"),
+                       (retirement_dropin, b"[Service]\nLoadCredential=enrollment.key:/source\n")]:
+        path.write_bytes(data)
+        path.chmod(0o600)
+    retained = {path: (path.read_bytes(), path.stat().st_mode) for path in [retirement_source, retirement_marker]}
+    for command in ["retire-enrollment-source", "reconcile-enrollment-retirement"]:
+        failed = invoke_with_service(
+            command, "--source", str(retirement_source), "--marker", str(retirement_marker),
+            "--dropin", str(retirement_dropin), reload_exit=7,
+        )
+        assert (failed.returncode, failed.stdout, failed.stderr) == (
+            1, "", "error: enrollment_source_retirement_failed\n",
+        )
+        assert calls.read_text().splitlines() == ["daemon-reload"]
+        assert not retirement_dropin.exists()
+        assert {path: (path.read_bytes(), path.stat().st_mode) for path in retained} == retained
+    recovered = invoke_with_service(
+        "reconcile-enrollment-retirement", "--source", str(retirement_source),
+        "--marker", str(retirement_marker), "--dropin", str(retirement_dropin),
+    )
+    assert (recovered.returncode, recovered.stdout, recovered.stderr) == (0, "", "")
+    assert calls.read_text().splitlines() == ["daemon-reload"]
+    assert not retirement_source.exists() and not retirement_source.with_suffix(".key.retiring").exists()
+    assert (retirement_marker.read_bytes(), retirement_marker.stat().st_mode) == retained[retirement_marker]
 
     fresh = tmp_path / "fresh"
     fresh.mkdir()
@@ -3260,15 +3291,167 @@ def test_retirement_removes_and_reloads_dropin_before_source(tmp_path: Path) -> 
     assert not source.exists() and not dropin.exists()
 
 
-def test_interrupted_retirement_reentry_finishes_source_after_dropin_reload(tmp_path: Path) -> None:
+def test_interrupted_retirement_reentry_finishes_source_after_dropin_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source = tmp_path / "enrollment.key"
     marker = tmp_path / "state" / "credential.consumed"
     dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
     marker.parent.mkdir(); dropin.parent.mkdir()
     source.write_text("one-use\n"); source.chmod(0o600)
     marker.write_text("durable\n"); marker.chmod(0o600)
+    observed: list[tuple[bool, bool]] = []
+    monkeypatch.setattr("runtime.remote_access.cli._reload_systemd", lambda: observed.append((dropin.exists(), source.exists())))
     _reconcile_enrollment_retirement(source, marker, dropin=dropin)
+    assert observed == [(False, True)]
     assert not source.exists()
+
+
+@pytest.mark.parametrize("interruption", ["reload", "unlink-fsync"])
+@pytest.mark.parametrize("reentry", ["direct", "reconcile"])
+def test_retirement_retry_preserves_source_until_successful_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str, reentry: str,
+) -> None:
+    from runtime.remote_access import cli
+
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "credential.consumed"
+    dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
+    dropin.parent.mkdir()
+    for path, data in [(source, b"one-use\n"), (marker, b"durable\n"), (dropin, b"[Service]\n")]:
+        path.write_bytes(data); path.chmod(0o600)
+    before = {path: (path.read_bytes(), path.stat().st_mode) for path in [source, marker]}
+    failed_observations: list[tuple[bool, bool]] = []
+
+    def failed_reload() -> None:
+        failed_observations.append((dropin.exists(), source.exists()))
+        raise subprocess.CalledProcessError(7, ["systemctl", "daemon-reload"])
+
+    real_fsync = cli._fsync_dir
+
+    def interrupted_unlink(path: Path) -> None:
+        if path == dropin.parent:
+            raise OSError("interrupted after unlink")
+        real_fsync(path)
+
+    monkeypatch.setattr(cli, "_reload_systemd", failed_reload)
+    if interruption == "unlink-fsync":
+        monkeypatch.setattr(cli, "_fsync_dir", interrupted_unlink)
+    with pytest.raises(subprocess.CalledProcessError if interruption == "reload" else OSError):
+        _retire_enrollment_source(source, marker, dropin=dropin)
+    monkeypatch.setattr(cli, "_fsync_dir", real_fsync)
+    assert not dropin.exists()
+    assert {path: (path.read_bytes(), path.stat().st_mode) for path in before} == before
+    retry = _retire_enrollment_source if reentry == "direct" else _reconcile_enrollment_retirement
+    # Observe the retained files even when the regression returns without raising.
+    failed = False
+    try:
+        retry(source, marker, dropin=dropin)
+    except subprocess.CalledProcessError:
+        failed = True
+    assert source.exists(), "retry deleted source without successful reload"
+    assert {path: (path.read_bytes(), path.stat().st_mode) for path in before} == before
+    assert failed
+    assert failed_observations == [(False, True)] * (2 if interruption == "reload" else 1)
+    observed: list[tuple[bool, bool]] = []
+    monkeypatch.setattr(cli, "_reload_systemd", lambda: observed.append((dropin.exists(), source.exists())))
+    retry(source, marker, dropin=dropin)
+    assert observed == [(False, True)]
+    assert not source.exists() and not source.with_name("enrollment.key.retiring").exists()
+    assert (marker.read_bytes(), marker.stat().st_mode) == before[marker]
+    retry(source, marker, dropin=dropin)
+    assert observed == [(False, True)]
+
+
+@pytest.mark.parametrize("reentry", ["direct", "reconcile"])
+def test_interrupted_retirement_residue_requires_reload_before_unlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reentry: str,
+) -> None:
+    from runtime.remote_access import cli
+
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "credential.consumed"
+    dropin = tmp_path / "unit.d" / "10-enrollment-credential.conf"
+    dropin.parent.mkdir()
+    for path, data in [(source, b"one-use\n"), (marker, b"durable\n"), (dropin, b"[Service]\n")]:
+        path.write_bytes(data); path.chmod(0o600)
+    retiring = source.with_name("enrollment.key.retiring")
+    before = (source.read_bytes(), source.stat().st_mode)
+    marker_before = (marker.read_bytes(), marker.stat().st_mode)
+    real_fsync = cli._fsync_dir
+    observed: list[tuple[bool, bool, bool]] = []
+    monkeypatch.setattr(cli, "_reload_systemd", lambda: observed.append((dropin.exists(), source.exists(), retiring.exists())))
+
+    def interrupt_after_rename(path: Path) -> None:
+        if path == source.parent and retiring.exists():
+            raise OSError("interrupted after rename")
+        real_fsync(path)
+
+    monkeypatch.setattr(cli, "_fsync_dir", interrupt_after_rename)
+    with pytest.raises(OSError, match="interrupted after rename"):
+        _retire_enrollment_source(source, marker, dropin=dropin)
+    monkeypatch.setattr(cli, "_fsync_dir", real_fsync)
+    assert observed == [(False, True, False)]
+    assert not source.exists() and not dropin.exists()
+    assert (retiring.read_bytes(), retiring.stat().st_mode) == before
+
+    def failed_reload() -> None:
+        raise subprocess.CalledProcessError(7, ["systemctl", "daemon-reload"])
+
+    monkeypatch.setattr(cli, "_reload_systemd", failed_reload)
+    retry = _retire_enrollment_source if reentry == "direct" else _reconcile_enrollment_retirement
+    failed = False
+    try:
+        retry(source, marker, dropin=dropin)
+    except subprocess.CalledProcessError:
+        failed = True
+    assert retiring.exists(), "retry unlinked residue without successful reload"
+    assert (retiring.read_bytes(), retiring.stat().st_mode) == before
+    assert (marker.read_bytes(), marker.stat().st_mode) == marker_before
+    assert failed
+    monkeypatch.setattr(cli, "_reload_systemd", lambda: observed.append((dropin.exists(), source.exists(), retiring.exists())))
+    retry(source, marker, dropin=dropin)
+    assert observed == [(False, True, False), (False, False, True)]
+    assert not source.exists() and not retiring.exists()
+    assert (marker.read_bytes(), marker.stat().st_mode) == marker_before
+
+
+@pytest.mark.parametrize("command", ["retire-enrollment-source", "reconcile-enrollment-retirement"])
+def test_retirement_cli_reload_failure_is_category_only(tmp_path: Path, command: str) -> None:
+    source = tmp_path / "enrollment.key"
+    marker = tmp_path / "credential.consumed"
+    dropin = tmp_path / "10-enrollment-credential.conf"
+    for path, data in [(source, b"one-use\n"), (marker, b"durable\n"), (dropin, b"[Service]\n")]:
+        path.write_bytes(data); path.chmod(0o600)
+    if command == "reconcile-enrollment-retirement":
+        dropin.unlink()  # interrupted unlink is not successful-reload evidence
+    retained = {path: (path.read_bytes(), path.stat().st_mode) for path in [source, marker]}
+    fixture_bin = tmp_path / "bin"
+    fixture_bin.mkdir()
+    calls = tmp_path / "systemctl.calls"
+    fixture = fixture_bin / "systemctl"
+    fixture.write_text('#!/bin/sh\n[ "$*" = daemon-reload ] || exit 99\nprintf "%s\\n" "$*" >> "$SYSTEMCTL_CALLS"\necho RAW_UPSTREAM_SECRET >&2\nexit "$SYSTEMCTL_RELOAD_EXIT"\n')
+    fixture.chmod(0o700)
+
+    def invoke(command: str, reload_exit: int) -> subprocess.CompletedProcess[str]:
+        env = os.environ | {"PATH": str(fixture_bin) + os.pathsep + os.environ["PATH"],
+                           "SYSTEMCTL_CALLS": str(calls), "SYSTEMCTL_RELOAD_EXIT": str(reload_exit)}
+        return subprocess.run(
+            [sys.executable, "-m", "runtime.remote_access.cli", command,
+             "--source", str(source), "--marker", str(marker), "--dropin", str(dropin)],
+            env=env, check=False, capture_output=True, text=True, timeout=10,
+        )
+
+    for attempt_command in [command, "reconcile-enrollment-retirement"]:
+        result = invoke(attempt_command, 7)
+        assert (result.returncode, result.stdout, result.stderr) == (1, "", "error: enrollment_source_retirement_failed\n")
+        assert {path: (path.read_bytes(), path.stat().st_mode) for path in retained} == retained
+        assert not dropin.exists()
+    result = invoke("reconcile-enrollment-retirement", 0)
+    assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+    assert calls.read_text().splitlines() == ["daemon-reload"] * 3
+    assert not source.exists() and not source.with_name("enrollment.key.retiring").exists()
+    assert (marker.read_bytes(), marker.stat().st_mode) == retained[marker]
 
 
 def _sidecar_stopped_proof() -> None:

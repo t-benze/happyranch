@@ -183,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             _retire_enrollment_source(Path(args.source), Path(args.marker), dropin=Path(args.dropin) if args.dropin else None)
             return 0
-        except OSError:
+        except (OSError, subprocess.CalledProcessError):
             print("error: enrollment_source_retirement_failed", file=sys.stderr)
             return 1
     if args.command == "reconcile-enrollment-retirement":
@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 Path(args.source), Path(args.marker), dropin=Path(args.dropin)
             )
             return 0
-        except OSError:
+        except (OSError, subprocess.CalledProcessError):
             print("error: enrollment_source_retirement_failed", file=sys.stderr)
             return 1
     if args.command == "prepare-fresh-enrollment":
@@ -361,17 +361,16 @@ def _retire_enrollment_source(
         raise OSError("invalid retirement path")
     retiring = source.with_name(source.name + ".retiring")
     marker_ok = marker.is_file() and not marker.is_symlink() and marker.stat().st_mode & 0o777 == 0o600
-    if retiring.exists() or retiring.is_symlink():
+    retiring_pending = retiring.exists() or retiring.is_symlink()
+    if retiring_pending:
         if retiring.is_symlink() or not retiring.is_file():
             raise OSError("invalid retirement residue")
-        if marker_ok:
-            retiring.unlink()
-        elif not source.exists():
-            retiring.replace(source)
-        else:
-            raise OSError("incoherent retirement residue")
-        _fsync_dir(source.parent)
         if not marker_ok:
+            if not source.exists():
+                retiring.replace(source)
+            else:
+                raise OSError("incoherent retirement residue")
+            _fsync_dir(source.parent)
             raise OSError("enrollment not durable")
     if not marker_ok:
         raise OSError("enrollment not durable")
@@ -380,16 +379,26 @@ def _retire_enrollment_source(
             dropin.unlink()
             _fsync_dir(dropin.parent)
             (reload_manager or _reload_systemd)()
+        elif retiring_pending and dropin is not None:
+            (reload_manager or _reload_systemd)()
+        if retiring_pending:
+            retiring.unlink()
+            _fsync_dir(source.parent)
         return
     st = source.lstat()
     if source.is_symlink() or not source.is_file() or st.st_mode & 0o777 != 0o600 or st.st_uid != os.geteuid():
         raise OSError("invalid enrollment source")
-    if dropin is not None and dropin.exists():
-        if dropin.is_symlink() or not dropin.is_file():
-            raise OSError("invalid credential dropin")
-        dropin.unlink()
-        _fsync_dir(dropin.parent)
+    if dropin is not None:
+        if dropin.exists():
+            if dropin.is_symlink() or not dropin.is_file():
+                raise OSError("invalid credential dropin")
+            dropin.unlink()
+            _fsync_dir(dropin.parent)
+        # An absent drop-in can be interrupted unlink, not proof of reload.
         (reload_manager or _reload_systemd)()
+    if retiring_pending:
+        retiring.unlink()
+        _fsync_dir(source.parent)
     source.replace(retiring)
     _fsync_dir(source.parent)
     retiring.unlink()
@@ -399,10 +408,11 @@ def _retire_enrollment_source(
 def _reconcile_enrollment_retirement(
     source: Path, marker: Path, *, dropin: Path
 ) -> None:
-    """Finish only the safe post-reload half of an interrupted retirement."""
-    if dropin.exists() or not source.exists():
+    """Re-establish reload before finishing an interrupted retirement."""
+    retiring = source.with_name(source.name + ".retiring")
+    if dropin.exists() or not (source.exists() or retiring.exists() or retiring.is_symlink()):
         return
-    _retire_enrollment_source(source, marker, dropin=None)
+    _retire_enrollment_source(source, marker, dropin=dropin)
 
 
 def _prepare_fresh_enrollment(
