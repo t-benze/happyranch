@@ -261,3 +261,54 @@ synthetic/natural eligibility claim, authority override or epoch start.
 The read-side snapshot/two-sweep contract detects observed drift; it adds no
 writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
 and actual shipping/installed canary cases remain separately gated.
+
+
+## Current G1 admitted authority and AGE correction (THR-091 seq277)
+
+Earlier source-unit OPEN/null/continuing-age and unavailable-report descriptions
+above document those historical unit boundaries. The current G1 behavior in this
+section supersedes those source limitations; actual installed acceptance and
+operational duties remain separate. G1 provides strict opt-in version1 role envelopes in exact
+admitted summaries, with server-derived own IDs, mandatory external result IDs,
+registered independent role/lineage joins, immutable prior finite plan/whole
+brief/command, owned real terminal jobs, complete byte/audit/output identity and
+ROOT/CHILD operation proof. Historical summaries and failures are untouched.
+QA must also differ from every ROOT/CHILD maker named by that prior approved
+finite plan; another registered worker role alone cannot prove independence.
+The original ROOT and CHILD tasks must remain completed and uncancelled with
+the exact maker/team binding. Successful earlier bootstrap operations cannot
+retain positive authority after the probe task itself fails.
+
+The manager candidate is observed after both successful existing result-log
+arms using the actual row ID. Synchronized publication prepares bounded
+file/output/current-identity evidence outside the DB reservation, then takes
+observer→Database locks and BEGIN IMMEDIATE to revalidate records and append
+new epoch/invalidation audit rows. Existing history, schema, creators, admission,
+job custody, permissions and session lifecycle are unchanged.
+
+AGE supersedes ONLY continuing probe-age expiry. Every probe's exact aware
+UTC age must be between0 and48h inclusive at new initial/reset FINAL server
+commit; a delay across the boundary refuses/rolls back. No client/report time
+can backdate admission. After admission, both serving current_epoch_references
+and the shared report reducer authenticate the original evidence against its
+original commit and CURRENT complete source/import/loaded code/boot/cohort/
+profile/path/applicability/census. Equivalent authenticated replay selects that
+same original boundary and preserves its ID/time/projection, including after48h.
+It cannot renew, switch QA, branch or fall back through malformed newer controls.
+
+Current damage, drift, loss or partial/moving acquisition remains unavailable.
+Withdrawal authenticates ownership/predecessor even when proof is stale or
+unhealthy. Reset requires fresh independent QA and exact predecessor, retaining
+old history and excluding old/pre-start tuples without window stitching. Both
+report readers make zero durable writes. Frozen14 complete UTC days AND500
+natural sessions/per-agent30/strict10%-majority/validated25%-role corroboration
+remain unchanged. D08/D09 contradictory shown/search-source mixtures remain
+arithmetic/contradiction negatives rather than source positives.
+
+Implementation, source fixtures and a PR never grant production installed QA,
+canary, official epoch or tuning. AFTER an actual independently accepted
+production epoch, the root still owns the genuine durable independent health
+check within48h, exact epoch/start/deadline/command/runtime/source/output/audit
+receipt and eventual14-day/500 follow-through. Success does not renew acceptance.
+Job-error, incomplete/in-flight or late receipts leave that duty unfulfilled;
+only measured instrumentation failure closes via existing health predicates.

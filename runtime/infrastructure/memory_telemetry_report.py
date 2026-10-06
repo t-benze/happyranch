@@ -342,3 +342,132 @@ def reduce_report(
     report["excluded"] = dict(sorted(excluded.items()))
     report["diagnostic_errors"] = dict(sorted(rejection.items()))
     return report
+
+
+def reduce_collection_report(tables: dict, view: dict, outputs: dict, agent_role_map: dict[str, str] | None = None,
+                             current_time: datetime | None = None) -> dict:
+    """Consume raw acquired facts, revalidate authority, then reduce natural rows."""
+    from runtime.infrastructure.memory_collection import (
+        AcceptanceUnavailable, CONTROL_ACTIONS, _decoded_tables, _strict_json,
+        collection_control_head, collection_logical_key, parse_acceptance,
+        validate_epoch_candidate,
+    )
+    now = aware_utc(current_time if current_time is not None else datetime.now(timezone.utc))
+    rows = tables["audit_log"]
+    def diagnostic() -> dict:
+        return reduce_report(*([row for row in rows if row["action"] == action] for action in ACTIONS[1:]),
+                             agent_role_map, now, session_start_rows=[row for row in rows if row["action"] == "session_start"])
+    if not any(row["action"] in CONTROL_ACTIONS for row in rows):
+        return diagnostic()
+    try:
+        data = _decoded_tables(tables)
+        rows = data["audit_log"]
+        all_controls = [row for row in rows if row["action"] in CONTROL_ACTIONS]
+        controls = [row for row in all_controls if aware_utc(row["timestamp"]) < now]
+        if controls and controls[-1]["id"] != all_controls[-1]["id"]:
+            raise AcceptanceUnavailable("epoch_control_after_cutoff")
+        if not controls:
+            return diagnostic()
+        latest = controls[-1]["payload"]
+        root = latest["operational_root_task_id"]
+        head = collection_control_head(controls, view["org"], root)
+        if head["action"] != "memory_collection_epoch_started" or head["payload"]["boot_id"] != view["boot_id"]:
+            raise AcceptanceUnavailable("epoch_invalidated_or_boot_changed")
+        body = head["payload"]
+        prepared = validate_epoch_candidate(tables, head, view, outputs, current_time=now)
+        roles = {member["agent"]: member["role"] for member in view["installed_identity"]["cohort"]}
+        if agent_role_map is not None and agent_role_map != roles:
+            raise AcceptanceUnavailable("epoch_role_drift")
+        started = aware_utc(head["timestamp"])
+        intents = {row["payload"]["ordinal"]: row for row in rows if row["action"] == "memory_runtime_intent"
+                   and row["payload"].get("boot_id") == view["boot_id"]
+                   and row["payload"]["ordinal"] > body["base_assigned_intents"]
+                   and started <= aware_utc(row["payload"]["entered_at"]) < now
+                   and not row["payload"].get("recovery")
+                   and row["task_id"] not in prepared["synthetic_task_ids"]}
+        keys = {(row["agent"], row["task_id"], row["payload"]["session_id"]) for row in rows
+                if row["action"] == "memory_runtime_identity" and row["payload"].get("boot_id") == view["boot_id"]
+                and row["payload"].get("ordinal") in intents}
+        known_keys = {(row["agent"], row["task_id"], row["payload"].get("session_id")) for row in rows
+                      if row["action"] == "memory_runtime_identity" and row["payload"].get("boot_id") == view["boot_id"]}
+        excluded_keys = {(row["agent"], row["task_id"], row["payload"].get("session_id")) for row in rows
+                         if row["action"] == "session_start" and row["payload"].get("invocation_purpose") not in _TASK_PURPOSES}
+        streams = {action: [] for action in ACTIONS}
+        for row in rows:
+            if row["action"] not in streams:
+                continue
+            payload = row["payload"]
+            task_id = payload.get("task_id") if row["action"] == "memory_read" else row["task_id"]
+            key = (row["agent"], task_id, payload.get("session_id"))
+            if key in keys:
+                streams[row["action"]].append(row)
+            elif started <= aware_utc(row["timestamp"]) < now:
+                if key in excluded_keys or (row["action"] == "memory_read" and not payload.get("session_id") and not task_id) or (
+                        row["action"] == "memory_search" and not payload.get("session_id")
+                        and not payload.get("task_id") and row["task_id"] == f"AGENT-{row['agent']}"):
+                    streams[row["action"]].append(row)
+                elif payload.get("session_id") and task_id and key not in known_keys:
+                    raise AcceptanceUnavailable("epoch_unknown_task_tuple")
+        report = reduce_report(streams["memory_digest_impression"], streams["memory_read"], streams["memory_search"],
+                               roles, now, session_start_rows=streams["session_start"])
+        if report["diagnostic_errors"] or report["aggregate"].get("pointer_opportunities") is None:
+            raise AcceptanceUnavailable("epoch_natural_evidence_unhealthy")
+        report["epoch"] = {"status": "accepted", "id": body["epoch_id"], "collection_started": True,
+                           "started_at": head["timestamp"], "audit_id": head["id"]}
+        obs = report["observation_period"]
+        first = aware_utc(obs["first_impression_at"]) if obs["first_impression_at"] else None
+        anchor = max(started, first) if first is not None else None
+        complete_start = anchor.replace(hour=0, minute=0, second=0, microsecond=0) if anchor else None
+        if anchor is not None and anchor != complete_start:
+            complete_start += timedelta(days=1)
+        days = max(0, (now.replace(hour=0, minute=0, second=0, microsecond=0) - complete_start).days) if complete_start else 0
+        obs.update(days_elapsed=days, days_met=days >= 14, diagnostics_valid_for_collection=True,
+                   thresholds_met=days >= 14 and obs["sessions_met"], reason_code="sample" )
+        health = report["instrumentation_health"]
+        health.update(status="healthy", unknown_exposures=0, intended_task_launches=len(intents),
+                      expected_nonempty_launches=sum(row["payload"].get("state") == "nonempty" for row in rows
+                          if row["action"] == "memory_runtime_expectation" and row["payload"].get("ordinal") in intents
+                          and row["payload"].get("boot_id") == view["boot_id"]),
+                      complete_launch_census="PASS", probe_health="PASS", epoch_health="PASS", reason_code="healthy",
+                      epoch_id=body["epoch_id"], epoch_audit_id=head["id"], qa_ref=body["qa_ref"])
+        eligible = []
+        for agent, values in report["by_agent"].items():
+            values["eligible"] = roles.get(agent) in {"manager", "worker"} and values["correlated_sessions"] >= 30
+            values["activation_vote_eligible"] = values["eligible"] and bool(values["pointer_opportunities"])
+            if values["activation_vote_eligible"]:
+                eligible.append(values)
+        low = sum(values["digest_pull_through"] < .10 for values in eligible)
+        aggregate = report["aggregate"]
+        aggregate.update(eligible_functional_agents=sum(values["eligible"] for values in report["by_agent"].values()),
+                         eligible_pointer_agents=len(eligible), eligible_agents_below_10_percent=low)
+        corroboration = {}
+        for role, values in report["by_role"].items():
+            qualified = {agent for agent, item in report["by_agent"].items() if item["role"] == role and item["eligible"]}
+            qualified_report = reduce_report(*([row for row in streams[action] if row["agent"] in qualified] for action in ACTIONS[1:]),
+                                              roles, now, session_start_rows=[row for row in streams["session_start"] if row["agent"] in qualified])
+            qualified_metrics = qualified_report["aggregate"]
+            values["retrieval_corroboration_eligible"] = qualified_metrics["search_sourced_reads"] >= 30
+            corroboration[role] = qualified_metrics["search_absent_fraction"]
+        if not obs["thresholds_met"] or not eligible:
+            decision = "insufficient_sample"
+            obs["reason_code"] = "sample" if not obs["thresholds_met"] else "functional_population"
+        elif aggregate["digest_pull_through"] is not None and aggregate["digest_pull_through"] < .10 and low * 2 > len(eligible):
+            decision = "activation_loss"
+        elif aggregate["search_absent_fraction"] is not None and aggregate["search_absent_fraction"] > .25 and any(
+                item["retrieval_corroboration_eligible"] and corroboration[role] is not None and corroboration[role] > .25
+                for role, item in report["by_role"].items()):
+            decision = "retrieval_loss"
+        else:
+            decision = "no_demonstrated_problem"
+        report.update(decision=decision, evaluation_candidate=decision in {"activation_loss", "retrieval_loss"},
+                      decision_detail="Evaluation only; no tuning is executed." if decision in {"activation_loss", "retrieval_loss"}
+                      else "Healthy collection; sample or functional evidence is insufficient." if decision == "insufficient_sample"
+                      else "No demonstrated memory problem.")
+        obs["status"] = decision
+        return report
+    except Exception:
+        report = diagnostic()
+        report["instrumentation_health"].update(status="unavailable", reason_code="collection_authority_unavailable")
+        report["observation_period"].update(thresholds_met=False, diagnostics_valid_for_collection=False,
+                                            reason_code="collection_authority_unavailable")
+        return report

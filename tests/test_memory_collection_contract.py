@@ -1251,7 +1251,15 @@ def test_pending_writer_and_preparation_have_no_stable_cutoff(observation_client
 
 @pytest.mark.parametrize("change", ["stale_source", "matching_other_checkout", "interpreter", "file_limit"])
 def test_identity_is_acquired_from_real_disposable_source_process(observation_client, tmp_path, change):
-    """H05/G1-P06: no editing/restarting shared source or serving processes."""
+    """H05/G1-P06: no editing/restarting shared source or serving processes.
+
+    INLINE v24, stale_source/matching_other_checkout/interpreter/file_limit:
+    observes the real isolated process's initial identity, bounded refusal
+    after its own source/origin/interpreter/provider changes, and null epoch.
+    Credible regression: remove loaded-file/origin/interpreter/file bounds.
+    Existing in-process identity tests do not own imported-package isolation.
+    No production test seam: copy the entire declared runtime+CLI closure.
+    """
     import shutil
     import subprocess
     import sys
@@ -1259,6 +1267,10 @@ def test_identity_is_acquired_from_real_disposable_source_process(observation_cl
     org, _ = observation_client
     checkout = tmp_path / "disposable-checkout"
     shutil.copytree(Path(__file__).resolve().parents[1] / "runtime", checkout / "runtime",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    # The declared loaded collection consumers include the canonical CLI.
+    # Copy its actual package so the child cannot borrow it from this checkout.
+    shutil.copytree(Path(__file__).resolve().parents[1] / "cli", checkout / "cli",
                     ignore=shutil.ignore_patterns("__pycache__"))
     isolated_org = tmp_path / "isolated-org"
     shutil.copytree(org.root / "org", isolated_org / "org")
