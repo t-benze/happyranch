@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from runtime.infrastructure.db._shared import _synchronized
+from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
 
 
 class KnowledgeMixin:
@@ -80,6 +80,25 @@ class KnowledgeMixin:
 
     # --- KB views ---
 
+    @_synchronized
+    def record_kb_view(self, slug: str) -> None:
+        """Increment the view counter for a KB entry, stamping last_viewed_at.
+
+        UPSERT: inserts the row at count 1 on first view, otherwise increments
+        the existing count. Caller decides *when* to record (agent-CLI reads
+        only — see kb-view-tracking-caller-signal). This is a metric write, not
+        an audit row; it never routes through audit_log.
+        """
+        now = _now().isoformat()
+        self._conn.execute(
+            """INSERT INTO kb_views (slug, view_count, last_viewed_at)
+               VALUES (?, 1, ?)
+               ON CONFLICT(slug) DO UPDATE SET
+                 view_count = view_count + 1,
+                 last_viewed_at = excluded.last_viewed_at""",
+            (slug, now),
+        )
+        self._conn.commit()
     @_synchronized
     def kb_view_stats(self) -> list[dict]:
         """Return per-slug view tallies, most-viewed first.

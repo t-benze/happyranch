@@ -102,6 +102,13 @@ Capability-owned methods move incrementally into mixins under
 facade from its original module.
 
 
+`db/knowledge.py` owns the unchanged 19-line `record_kb_view` writer
+and the existing `kb_view_stats` reader in `KnowledgeMixin`. The inherited
+`Database.record_kb_view` remains the shipping route and old patch path.
+The existing late facade `_now`, shared `_synchronized`, whole facade `_time`,
+Database-owned connection/RLock/threshold and lock logger retain their owners.
+The KB HTTP caller, KBStore and CLI header/read paths remain in their modules.
+
 `db/threads.py` owns the unchanged 13-line
 `_set_thread_status_archived_uncommitted` archive helper in `ThreadsMixin`.
 Its inherited `Database` attribute remains the patch/dispatch path. The existing
