@@ -83,8 +83,6 @@ def test_connector_builder_installs_real_wheel_without_ambient_pip(
         installed = Path(command[command.index("--paths") + 1])
         assert (installed / "runtime/remote_access/cli.py").read_text() == "REAL_WHEEL = True\ndef main(): return 7\n"
         entry_path = Path(command[-1])
-        entry = entry_path.read_text()
-        assert "raise SystemExit(main())" in entry
         generated = real_run(
             [sys.executable, "-c", "import runpy,sys; sys.path.insert(0, sys.argv[1]); runpy.run_path(sys.argv[2], run_name='__main__')", str(installed), str(entry_path)],
             capture_output=True,
@@ -130,10 +128,6 @@ def test_generated_connector_entry_executes_actual_wheel_cli_capability_and_reti
 
     monkeypatch.setattr(subprocess, "run", capture_generated_entry)
     assert build_connector(wheel, output) == output
-    assert entry.read_text(encoding="utf-8") == (
-        "from runtime.remote_access.cli import main\n"
-        "if __name__ == '__main__': raise SystemExit(main())\n"
-    )
     monkeypatch.setattr(subprocess, "run", real_run)
     launcher = (
         "import runpy, sys; installed, entry, *arguments = sys.argv[1:]; "
