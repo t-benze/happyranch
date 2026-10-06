@@ -51,6 +51,10 @@ proof framework):
 * every case asserts the exact operation/stage/occurrence and real destination
   path it fired on (the randomly suffixed stage directory is matched by its
   exact stage shape), so no whole family is mapped to a representative.
+
+Expected complete NEW uses supplied archive INPUT bytes, closed literal
+filesystem rules and the captured preserved baseline; candidate installations
+are used only for actual fault discovery/execution, never expected NEW values.
 """
 from __future__ import annotations
 
@@ -61,6 +65,7 @@ import json
 import os
 import shutil
 import stat
+import tarfile
 import tempfile
 import zipfile
 from collections import Counter
@@ -469,6 +474,88 @@ def _prior_identities(template: Path, config: _Config) -> dict:
     return {"old_units": old_units, "absent_units": tuple(absent_units), "dropin": dropin}
 
 
+# Expected installed paths and modes are accepted test literals, independent of
+# the installer's mutable UNITS/PAYLOAD_MODES/drop-in and inventory helpers.
+_EXPECTED_UNITS = (
+    "happyranch-connector.service",
+    "happyranch-tsnet-sidecar.service",
+    "happyranch-managed.target",
+)
+_EXPECTED_DATA = (
+    "share/happyranch.whl",
+    "share/dependency-inventory.json",
+    "share/sbom.cdx.json",
+    "share/THIRD_PARTY_NOTICES.md",
+    "manifest.json",
+)
+_EXPECTED_BINARIES = ("bin/happyranch-tsnet-sidecar", "bin/happyranch-connector")
+
+
+def _expected_package_members(package: Path) -> dict[str, bytes]:
+    """Read the supplied INPUT bytes, never an installed candidate output."""
+    members = {}
+    with tarfile.open(package) as archive:
+        for member in archive:
+            assert member.isfile()
+            relative = str(PurePosixPath(member.name).relative_to("happyranch-linux-amd64"))
+            assert relative not in members
+            stream = archive.extractfile(member)
+            assert stream is not None
+            with stream:
+                members[relative] = stream.read()
+    assert set(members) == {
+        *_EXPECTED_BINARIES, *_EXPECTED_DATA,
+        *(f"systemd/{unit}" for unit in _EXPECTED_UNITS),
+    }
+    return members
+
+
+def _expected_node(kind: str, mode: int, raw: bytes = b"") -> tuple:
+    """Created objects belong to this disposable fixture's execution identity."""
+    value = ("dir", mode) if kind == "dir" else ("file", raw, mode)
+    return (value, os.geteuid(), os.getegid())
+
+
+def _expected_new_snapshot(package: Path, baseline: dict, config: _Config) -> dict:
+    """Compose final NEW declaratively before executing the candidate install.
+
+    The complete replacement payload and three units use archive INPUT bytes
+    and literal accepted modes. Existing root/parents, prior unpublished
+    drop-in and unrelated siblings retain their captured pre-install identity.
+    No transaction/recovery algorithm or production expected-value helper runs.
+    """
+    members = _expected_package_members(package)
+    expected = {
+        path: value for path, value in baseline.items()
+        if path != "opt/happyranch" and not path.startswith("opt/happyranch/")
+    }
+    for path in ("opt", "etc", "etc/systemd", "etc/systemd/system"):
+        expected.setdefault(path, _expected_node("dir", 0o755))
+    executable_mode = 0o755 if config.system_service else 0o700
+    for path, mode in (("opt/happyranch", executable_mode),
+                       ("opt/happyranch/bin", executable_mode),
+                       ("opt/happyranch/share", 0o700)):
+        expected[path] = _expected_node("dir", mode)
+    for path in _EXPECTED_BINARIES + _EXPECTED_DATA:
+        mode = executable_mode if path in _EXPECTED_BINARIES else 0o600
+        expected[f"opt/happyranch/{path}"] = _expected_node("file", mode, members[path])
+    for unit in _EXPECTED_UNITS:
+        path = f"etc/systemd/system/{unit}"
+        node = _expected_node("file", 0o600, members[f"systemd/{unit}"])
+        # Publishing an existing regular unit retains its owner/group.
+        expected[path] = (node[0], *baseline[path][1:]) if path in baseline else node
+    if config.system_service and config.enrollment:
+        directory = "etc/systemd/system/happyranch-tsnet-sidecar.service.d"
+        expected.setdefault(directory, _expected_node("dir", 0o755))
+        path = directory + "/10-enrollment-credential.conf"
+        node = _expected_node(
+            "file", 0o600,
+            b"[Service]\nLoadCredential=enrollment.key:/etc/happyranch/enrollment.key\n",
+        )
+        expected[path] = (node[0], *baseline[path][1:]) if path in baseline else node
+    return expected
+
+
 def _config_cache(config: _Config) -> dict:
     if config.name in _CACHE:
         return _CACHE[config.name]
@@ -479,6 +566,7 @@ def _config_cache(config: _Config) -> dict:
     try:
         _build_base(template, config, old)
         old_snapshot = _snapshot(template)
+        new_snapshot = _expected_new_snapshot(new, old_snapshot, config)
         prior = _prior_identities(template, config)
         old_payload = (
             _inventory_tree(template / "opt/happyranch")
@@ -496,10 +584,6 @@ def _config_cache(config: _Config) -> dict:
             index for index, (stage, op, _p) in enumerate(trace)
             if op == "record_replace" and stage == "after"
         )
-        expected = base / "expected"
-        shutil.copytree(template, expected, symlinks=True)
-        install_linux_package(new, expected, system_service=config.system_service)
-        new_snapshot = _snapshot(expected)
     except BaseException:
         raise
     _CACHE[config.name] = {
@@ -571,6 +655,7 @@ def _recovery_cache(config: _Config) -> dict:
     template = base / "template"
     _build_base(template, config, old)
     old_snapshot = _snapshot(template)
+    new_snapshot = _expected_new_snapshot(new, old_snapshot, config)
     old_payload = (
         _inventory_tree(template / "opt/happyranch")
         if (template / "opt/happyranch").is_dir() else None
@@ -584,9 +669,6 @@ def _recovery_cache(config: _Config) -> dict:
     with pytest.raises(_Interrupted):
         install_linux_package(new, interrupted, system_service=config.system_service,
                               guard=_SeamGuard(armed=False, trigger=trigger))
-    expected = base / "expected"
-    shutil.copytree(template, expected, symlinks=True)
-    install_linux_package(new, expected, system_service=config.system_service)
     # The durable record binds its exact root path, so record the real
     # recovery trace on the same in-place interrupted state.
     recording = _SeamGuard()
@@ -596,7 +678,7 @@ def _recovery_cache(config: _Config) -> dict:
         "template": template,
         "root": interrupted,
         "old": old_snapshot,
-        "new": _snapshot(expected),
+        "new": new_snapshot,
         "old_payload": old_payload,
         "trace": recording.trace,
         "ranks": _ranks(recording.trace),
@@ -685,12 +767,17 @@ def _assert_complete_active_new(root: Path, expected: dict) -> None:
     This is the complete immediate committed oracle: it compares the payload
     tree, every published unit, the drop-in (or its preserved prior bytes) and
     every preserved sibling by lstat type, bytes, mode and uid/gid against the
-    independently produced clean NEW snapshot.  ``_payload_is_new`` covers only
+    declarative artifact-input/literal-rule NEW frame frozen before candidate
+    execution. ``_payload_is_new`` covers only
     ``opt/happyranch``, so it can hide a mixed unit/drop-in state.
     """
     state = _snapshot(root)
     diverged = [relative for relative, value in expected.items() if state.get(relative) != value]
-    assert not diverged, f"complete active NEW mismatch at: {diverged}"
+    mismatches = {
+        relative: {"actual": state.get(relative), "expected": expected[relative]}
+        for relative in diverged
+    }
+    assert not diverged, f"complete active NEW mismatch: {mismatches!r}"
 
 
 def _owned_residue_prefixes(root: Path) -> tuple[str, ...]:
@@ -898,10 +985,13 @@ def test_publication_operation_fault_matrix(
     else:
         # After direct committed recovery the complete active NEW state and
         # only it must remain, before any reinstall can mask a mixed state.
+        _assert_complete_active_new(case, cache["new"])
         assert _snapshot(case) == cache["new"]
     install_linux_package(new, case, system_service=config.system_service)
+    _assert_complete_active_new(case, cache["new"])
     assert _snapshot(case) == cache["new"]
     install_linux_package(new, case, system_service=config.system_service)
+    _assert_complete_active_new(case, cache["new"])
     assert _snapshot(case) == cache["new"]
 
 
@@ -954,8 +1044,10 @@ def test_recovery_operation_fault_matrix(
         assert recovery_rule.raises == recovery_rule.seen
         _assert_old_evidence(case, cache)
         install_linux_package(new, case, system_service=config.system_service)
+        _assert_complete_active_new(case, cache["new"])
         assert _snapshot(case) == cache["new"]
         install_linux_package(new, case, system_service=config.system_service)
+        _assert_complete_active_new(case, cache["new"])
         assert _snapshot(case) == cache["new"]
         return
 
@@ -972,8 +1064,10 @@ def test_recovery_operation_fault_matrix(
     _recover_interrupted(case)
     assert _snapshot(case) == cache["old"]
     install_linux_package(new, case, system_service=config.system_service)
+    _assert_complete_active_new(case, cache["new"])
     assert _snapshot(case) == cache["new"]
     install_linux_package(new, case, system_service=config.system_service)
+    _assert_complete_active_new(case, cache["new"])
     assert _snapshot(case) == cache["new"]
 
 
@@ -994,6 +1088,7 @@ def test_install_recovery_call_path(tmp_path: Path, config: _Config) -> None:
     install_linux_package(new, case, system_service=config.system_service, guard=recording)
     operations = {operation for _stage, operation, _path in recording.trace}
     assert any(operation.startswith("rollback_") for operation in operations)
+    _assert_complete_active_new(case, cache["new"])
     assert _snapshot(case) == cache["new"]
 
 
@@ -1123,10 +1218,13 @@ def test_m1_genuine_committed_record_survives_partial_cleanup(tmp_path: Path) ->
     _assert_complete_active_new(root, cache["new"])
     _assert_only_owned_residue(root, cache["new"])
     _recover_interrupted(root)
+    _assert_complete_active_new(root, cache["new"])
     assert _snapshot(root) == cache["new"]
     install_linux_package(new, root)
+    _assert_complete_active_new(root, cache["new"])
     assert _snapshot(root) == cache["new"]
     install_linux_package(new, root)
+    _assert_complete_active_new(root, cache["new"])
     assert _snapshot(root) == cache["new"]
 
 
