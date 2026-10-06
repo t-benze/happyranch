@@ -184,7 +184,7 @@ def test_bounded_output_returns_zero_for_success(tmp_path: Path) -> None:
     ('schedule', None, True), ('workflow_dispatch', None, True),
     ('workflow_dispatch', False, True), ('workflow_dispatch', True, False),
 ], ids=['schedule', 'manual-default', 'manual-false', 'manual-true'])
-def test_nightly_workflow_all_only_selection(event, all_only, expected_integration) -> None:
+def test_nightly_workflow_all_only_selection(event, all_only, expected_integration, tmp_path: Path) -> None:
     import ast
     import yaml
     workflow = WORKFLOW.read_text(encoding='utf-8')
@@ -385,3 +385,88 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     assert "'source-controls-complete.json'" in python
     assert "'red_attribution_failed_after_restored_green'" in python
     assert python.index('source_controls()\n') < python.index('for round_number in (1, 2, 3, 4, 5):')
+
+    # The shipping scheduler must reap started children and retain failures before
+    # admitting another phase. Extract only its actual definition, never all CI.
+    import concurrent.futures
+    import threading
+    import time
+    nested = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    assert 'run_batch' in nested, 'missing bounded child scheduler'
+    namespace = {'concurrent': concurrent, 'json': __import__('json')}
+    exec(compile(ast.Module(body=[nested['run_batch']], type_ignores=[]), '<workflow scheduler>', 'exec'), namespace)
+    lock = threading.Lock()
+    active = peak = 0
+    finished = []
+
+    def child(item):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.01)
+            if item == 2:
+                raise RuntimeError('actual child failure')
+        finally:
+            with lock:
+                active -= 1
+                finished.append(item)
+
+    with pytest.raises(RuntimeError, match='actual child failure'):
+        namespace['run_batch'](tuple(range(9)), child)
+    assert 1 < peak <= 4, ('observed child maximum', peak, 'expected 2..4')
+    assert active == 0 and sorted(finished) == list(range(9)), finished
+    finished.clear()
+    namespace['run_batch']((10, 11), lambda item: finished.append(item))
+    assert sorted(finished) == [10, 11]
+    rounds = next(n for n in ast.walk(tree) if isinstance(n, ast.For)
+                  and isinstance(n.target, ast.Name) and n.target.id == 'round_number')
+    phases = [n.value.args[0].value for n in rounds.body
+              if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+              and isinstance(n.value.func, ast.Name) and n.value.func.id == 'run_phase']
+    assert phases == ['isolated', 'sibling'], phases
+    assert 'run_batch(SOURCE_CONTROLS, source_control)' in python
+    assert "'UV_NO_SYNC': '1'" in python
+    assert "'PYTHONDONTWRITEBYTECODE': '1'" in python
+    assert "'cache_dir=' + str(root / 'cache/pytest')" in python
+    assert "record['import_proof']" in python
+    assert "'full-log.json'" in python and "'raw_sha256'" in python
+    assert "'stored_sha256'" in python and "'complete'" in python
+    assert 'gzip.open(collected /' in python
+
+    # Observe the actual shipping stream capture, including a truncated tail and
+    # a nonzero child. Full byte identity is independent of the runner's tail.
+    import gzip
+    import hashlib
+    import json
+    import os
+    import signal
+    namespace.update(gzip=gzip, hashlib=hashlib, os=os, pathlib=__import__('pathlib'),
+                     signal=signal, subprocess=subprocess, sys=sys, source=ROOT)
+    exec(compile(ast.Module(body=[nested['bounded_run']], type_ignores=[]), '<workflow capture>', 'exec'), namespace)
+    log_root = tmp_path / 'lossless'
+    log_root.mkdir()
+    payload = b'contract-stream\n' * 80000
+    argv = [sys.executable, '-c', "import sys; sys.stdout.buffer.write(b'contract-stream\\n'*80000); sys.exit(7)"]
+    status, metadata = namespace['bounded_run'](argv, cwd=ROOT, env=os.environ.copy(),
+        directory=log_root, tail=log_root / 'tail.log')
+    assert status == 7 and metadata['exit_code'] == 7
+    assert metadata['complete'] is True
+    assert gzip.decompress((log_root / 'full.log.gz').read_bytes()) == payload
+    assert metadata['raw_bytes'] == len(payload)
+    assert metadata['raw_sha256'] == hashlib.sha256(payload).hexdigest()
+    stored = (log_root / 'full.log.gz').read_bytes()
+    assert metadata['stored_bytes'] == len(stored)
+    assert metadata['stored_sha256'] == hashlib.sha256(stored).hexdigest()
+    assert json.loads((log_root / 'full-log.json').read_text()) == metadata
+    assert (log_root / 'tail.log').read_bytes().startswith(b'[nightly log truncated;')
+    required_assignment = next(n for n in ast.walk(nested['fixed_command'])
+        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+        and n.targets[0].id == 'required')
+    coverage = {'FIXED_ISOLATED': expected_isolated, 'phase': 'sibling',
+                'selectors': [expected_siblings[0]]}
+    exec(compile(ast.Module(body=[required_assignment], type_ignores=[]), '<workflow coverage>', 'exec'), coverage)
+    assert coverage['required'] == {node for node in expected_isolated
+                                   if node.split('::')[0] == expected_siblings[0]}
+    assert "receipt['cleanup_exit'] = 0 if directory is not None and not pathlib.Path(directory).exists() else None" in python

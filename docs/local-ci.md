@@ -275,12 +275,19 @@ nightly-integration.yml --ref <candidate-ref> -f all_only=true`.
 
 The true lane runs the unchanged `scripts/local_ci.sh all` first and preserves
 its exit separately. Successful all is followed by the closed literal 101-node
-collection and five serial fresh isolated and sibling rounds: 505 node processes
+collection and five ordered fresh isolated and sibling rounds: 505 node processes
 plus 75 complete-file processes. No selector input or timeout increase is
 provided; all commands share the existing 60-minute job cap. Every invocation
 owns a unique absolute basetemp, HOME/config/cache/daemon registry, JUnit,
-command/source/head/tree/runtime/status receipt and 1MiB output tail. Full output
-remains in the hosted step stream. Failed, interrupted and unstarted commands
+command/source/head/tree/runtime/status receipt and 1MiB output tail. Complete
+lossless gzip streams retain raw and stored byte counts and SHA256 in the same
+artifact; short console receipts identify phase/node/round/exit. At most four
+independent children run concurrently. Each isolated phase completes before its
+sibling phase, and each entire round completes before the next. All started
+children are reaped and failures aggregated before another phase is admitted.
+Follow-on commands prohibit dependency sync and shared bytecode/pytest caches;
+each records actual imports from its intended source, with installed dependencies
+read-only. Failed, interrupted and unstarted commands
 are not passes. The seven selected keepers alone pair real existing E with
 fresh POST G; other 64 existing fixture consumers keep their original bodies
 and run fresh G. Collection records complete native parameter IDs. Separate
@@ -305,7 +312,10 @@ import errors never count as business RED. Controls refuse absent attribution,
 syntax errors, missing receipts, or failed restoration. After exact restoration
 and successful identical-command GREEN, an attribution failure is retained while
 the remaining independent controls run. Any such failure prevents the completion
-receipt and repetitions; a failed restored GREEN still aborts immediately. Actual source-control
+receipt and repetitions; a failed restored GREEN fails its control. Every started control is reaped and
+accounted for before the aggregated failure blocks repetitions. Each control
+owns a separate committed source archive, scratch, environment and logs within
+the same four-child bound. Actual source-control
 completion is recorded separately from all and from the 580-process repetitions.
 
 The G07 keeper distinguishes authentic compatible cold reopens from physical
