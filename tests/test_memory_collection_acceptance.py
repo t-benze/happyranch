@@ -584,6 +584,22 @@ else:
         call = subprocess.run([cli,'memory','get','--org','alpha','--agent',agent,'MEM-001','--json'],
                               capture_output=True,text=True,timeout=10)
         assert call.returncode==0,(call.stdout,call.stderr)
+    # Assigned ordinary work performs canonical search and follow-on reads.
+    # Memories are written only after bootstrap's actual impression, so these
+    # entries are genuinely nonshown rather than favorable attribution flags.
+    for mid in brief.get('search_reads',[]):
+        memory=Path.cwd()/'memory'
+        title=config.get('nonshown_title','Nonshown')
+        # Concurrent ordinary tasks share this agent's input directory. Publish
+        # complete input bytes atomically so search never sees a truncated file.
+        staged=memory/('.'+mid+'-'+sid+'.tmp')
+        staged.write_text('---\nid: '+mid+'\nslug: follow-on-'+mid.lower()+'\ntitle: '+title+'\ntopic: memory\nprovenance: experiential\nscope: agent\nlifecycle: valid\nsalience: 1\n---\nA genuinely nonshown scoped follow-on memory.')
+        staged.replace(memory/(mid+'-follow-on.md'))
+        for verb,value in [('search','scoped'),('get',mid)]:
+            call=subprocess.run([cli,'memory',verb,'--org','alpha','--agent',agent,value,'--json'],capture_output=True,text=True,timeout=10)
+            assert call.returncode==0,(call.stdout,call.stderr)
+            if verb=='search':
+                assert mid in {hit['id'] for hit in json.loads(call.stdout)['hits']},(mid,call.stdout)
     result['decision'] = {'action':'done','summary':'natural source task'}
 file = Path(os.environ['HAPPYRANCH_DAEMON_HOME'])/(sid+'.completion.json')
 file.write_text(json.dumps(result))
@@ -691,6 +707,8 @@ def g1_source_org(test_settings, monkeypatch, tmp_path, request):
     config=tmp_path/'config.json'
     scenario=getattr(request,'param','ordinary')
     mode=scenario if isinstance(scenario,str) else 'ordinary'
+    failed_withdrawal=mode=='invalidate-failed-qa'
+    if failed_withdrawal:mode='invalidate'
     qa_agent='dev_agent' if mode=='self-qa' else 'qa_engineer'
     plan['command']['cwd_resolved']=str(root/'workspaces'/qa_agent)
     if isinstance(scenario,tuple) and scenario[0]=='reset-age':
@@ -711,6 +729,38 @@ def g1_source_org(test_settings, monkeypatch, tmp_path, request):
                 raise RuntimeError('bounded epoch insertion failure')
             return original_insert(*args, **kwargs)
         monkeypatch.setattr(org.db,'insert_audit_log_uncommitted',fault_insert)
+    if mode in ('ownership-admission','operation-admission'):
+        # Private negative fixture at the actual post-result-log final transition.
+        # All role/result/job/probe positives already came from the SOURCE chain.
+        original_append=org.db.append_memory_collection_transition
+        def damage_before_admission(*,result_row_id):
+            raw=org.db.fetch_one_readonly('SELECT output_summary FROM task_results WHERE id=?',(result_row_id,))
+            candidate=parse_acceptance(raw[0])
+            if candidate is None or candidate['kind']!='manager_acceptance':
+                return original_append(result_row_id=result_row_id)
+            kind=request.node.callspec.params['kind']
+            if mode=='ownership-admission':
+                claim=candidate['qa_ref'] if kind=='qa' else candidate['result_ref']
+                with org.db._lock:
+                    org.db._conn.execute("UPDATE tasks SET status='failed' WHERE id=?",(claim['task_id'],))
+                    org.db._conn.commit()
+                assert org.db.get_task(claim['task_id']).status.value=='failed'
+            else:
+                claim=candidate['probe_receipts'][0][kind]
+                operation,field=request.node.callspec.params['fault'].split('-')
+                action={'read':'memory_read','search':'memory_search','impression':'memory_digest_impression'}[operation]
+                row=next(row for row in org.db.get_audit_logs_by_action(action)
+                         if row['payload'].get('session_id')==claim['runtime_session_id'])
+                payload=copy.deepcopy(row['payload']);scope=row['task_id']
+                if field=='scope':scope=claim['task_id'] if operation=='read' else 'AGENT-'+claim['agent']
+                else:payload[{'task':'task_id','session':'session_id','agent':'agent'}[field]]={
+                    'task':'TASK-999999','session':'sess-unrelated','agent':'qa_engineer'}[field]
+                with org.db._lock:
+                    org.db._conn.execute('UPDATE audit_log SET task_id=?,payload=? WHERE id=?',(scope,json.dumps(payload),row['id']))
+                    org.db._conn.commit()
+            request.node._g1_final_refusal={'candidate':candidate,'result_id':result_row_id,'observed_failed_owner':mode=='ownership-admission'}
+            return original_append(result_row_id=result_row_id)
+        monkeypatch.setattr(org.db,'append_memory_collection_transition',damage_before_admission)
     if isinstance(scenario,tuple) and scenario[0] in ('initial-age','reset-age'):
         # Test-side clock wrapping the actual final publication, never positive
         # authority. Tasks/jobs/results have already come from real producers.
@@ -787,6 +837,17 @@ def g1_source_org(test_settings, monkeypatch, tmp_path, request):
             if Path(str(gate)+'.ready').exists() and not held:
                 held=True
                 assert len(org.db.get_audit_logs_by_action('memory_collection_epoch_started'))==1
+                # Genuine current manager launch remains a valid owner; a
+                # completed-root-only rule would break this actual control.
+                assert org.db.get_task(task_id).status.value=='in_progress'
+                original_epoch=org.db.get_audit_logs_by_action('memory_collection_epoch_started')[0]
+                original_roles={member['agent']:member['role'] for member in original_epoch['payload']['projection']['cohort']}
+                assert org.orchestrator._audit.compute_memory_telemetry_report(agent_role_map=original_roles)['instrumentation_health']['status']=='healthy'
+                if failed_withdrawal:
+                    qa_id=original_epoch['payload']['qa_ref']['task_id']
+                    with org.db._lock:
+                        org.db._conn.execute("UPDATE tasks SET status='failed' WHERE id=?",(qa_id,))
+                        org.db._conn.commit()
                 if mode == 'invalidate':
                     org.memory_collection.unavailable('owned source loss')
                 gate.touch()
@@ -795,7 +856,8 @@ def g1_source_org(test_settings, monkeypatch, tmp_path, request):
         # the actual owned queue before read-only stability assertions.
         asyncio.run_coroutine_threadsafe(state.queue._queue.join(),event_loop[0]).result(timeout=5)
         task=org.db.get_task(task_id)
-        assert task.status.value=='completed',(task.note,org.db.get_task_results(task_id))
+        expected_status='failed' if mode=='ownership-admission' and request.node.callspec.params['kind']=='manager' else 'completed'
+        assert task.status.value==expected_status,(task.note,org.db.get_task_results(task_id))
         yield org,client,task_id
     finally:
         gate.touch()
@@ -1010,11 +1072,16 @@ def test_real_atomic_replay_after_terminal_owner(g1_source_org):
     assert org.db.get_audit_logs_by_action('memory_collection_epoch_started')==[original]
 
 
-@pytest.mark.parametrize('g1_source_org',['invalidate','equivalent','conflict','failed-write'],indirect=True)
+@pytest.mark.parametrize('g1_source_org',['invalidate','invalidate-failed-qa','equivalent','conflict','failed-write'],indirect=True)
 def test_real_control_and_failed_write_outcomes(g1_source_org):
     """G1-P03/P06/P08/P09/H03, SELF05/PRE05 real control outcomes.
 
-    INLINE v24: ordinary callbacks retain their completed outcomes, append
+    INLINE v24, invalidate/invalidate-failed-qa/equivalent/conflict/failed-write:
+    Genuine ongoing in_progress manager ownership is healthy before the next
+    control, and failed original QA ownership still permits authenticated
+    withdrawal. Requiring a completed manager or healthy failed QA for withdrawal
+    breaks these cases; original continuing failure never owns withdrawal.
+    Ordinary callbacks retain their completed outcomes, append
     only one start/optional invalidation, preserve original start/time and
     leave conflicted/failed/unhealthy reports closed. Credible regressions:
     require healthy probe for withdrawal, include own-ID in equivalence, let a
@@ -1355,11 +1422,20 @@ def _large_zero_read_expected(epoch,first,cutoff,*,sessions=500):
 
 
 def _expected_full_text(expected):
-    """Complete published text format, built from independent expected values."""
+    """Complete published text format, including structurally malformed refusals.
+
+    INLINE v24 for the agent-tuple cases in
+    test_probe_operation_exact_scope_and_tuple_closes_both_readers: the whole
+    canonical text must preserve the closed decision and display UNKNOWN when
+    malformed evidence cannot establish a launch census. A credible regression
+    defaults that absent census to PASS in the CLI. Scope/task/session negatives
+    retain census fields and do not own this structural-refusal branch. No
+    production seam; this is only an independent expected-text formatter.
+    """
     epoch,obs=expected['epoch'],expected['observation_period']
     epoch_line=(f"Canary-gated collection started: {epoch['id']}; audit {epoch['audit_id']}; at {epoch['started_at']}"
                 if epoch['collection_started'] else 'Canary-gated collection has NOT started; epoch is unversioned and invalid.')
-    census=expected['instrumentation_health']['complete_launch_census']
+    census=expected['instrumentation_health'].get('complete_launch_census','UNKNOWN')
     lines=['=== THR-091 Memory Telemetry Report (observation-only) ===','Status: '+obs['status'],epoch_line,
         f"Data through: {expected['data_through']}; timezone UTC",f"First event: {obs['first_impression_at']}",
         f"Days elapsed: {obs['days_elapsed']} / 14",f"Sessions: {obs['total_correlated_sessions']} / 500",
@@ -1734,6 +1810,9 @@ def test_post_epoch_independent_health_job_truthful_receipts(g1_source_org,tmp_p
     end observation. Dropping these attempt receipts would lose actual failed
     commands; prior whole-report tests run the CLI directly after queue completion
     and do not own observation by an actual running independent job.
+    F3 missing-output also adds ordinary untagged JSON job-ID example/prose to
+    only the later result. Substring output selection must not make it authority;
+    original-output loss and malformed tagged controls remain owned by AGE04/06.
     The late variant pins a test-side subprocess clock to original start+48h+1s
     and keeps the actual wall observation separately. Its real independent
     runner executes the canonical CLI JSON/text at that controlled late cutoff;
@@ -1918,6 +1997,14 @@ def test_post_epoch_independent_health_job_truthful_receipts(g1_source_org,tmp_p
             assert missing['stdout']=='' and missing['total_stdout_bytes']==0
             assert finished['stdout_bytes']>0
             assert missing['total_stdout_bytes']!=finished['stdout_bytes']
+            # F3: ordinary prose/JSON examples are not tagged evidence. Only
+            # this later independent result changes; original authority stays exact.
+            later=org.db.get_task_results(health_task)[-1]
+            untagged=later['output_summary']+'\nExample reference: '+json.dumps({'job_id':job_id},separators=(',',':'))+'\nOrdinary health summary mentions '+job_id
+            assert parse_acceptance(untagged) is None
+            with org.db._lock:
+                org.db._conn.execute('UPDATE task_results SET output_summary=? WHERE id=?',(untagged,later['id']))
+                org.db._conn.commit()
     before=org.db.read_memory_collection_evidence()
     writes=org.db.fetch_one_readonly('SELECT total_changes()')[0]
     now=datetime.now(timezone.utc)
@@ -2003,11 +2090,11 @@ def test_actual_probe_maker_cannot_supply_independent_qa(g1_source_org):
     assert org.db.read_memory_collection_evidence()==before
 
 
-@pytest.mark.parametrize('kind',['root','child'])
+@pytest.mark.parametrize('kind',['root','child','qa','manager'])
 def test_failed_probe_task_closes_original_epoch_in_both_readers(g1_source_org,monkeypatch,capsys,kind):
     """G1-P05/PRE04/AGE04: a failed probe cannot retain positive authority.
 
-    INLINE v24, ROOT and CHILD: damage only the authentic probe's current task
+    INLINE v24, ROOT, CHILD, original QA and manager: damage only the authentic probe's current task
     state in a private negative fixture, retaining its previously successful
     session/operations/job. BOTH persisted-epoch readers must close at day14,
     with complete JSON/text equality and zero reader writes. A credible
@@ -2023,7 +2110,8 @@ def test_failed_probe_task_closes_original_epoch_in_both_readers(g1_source_org,m
     from cli.commands.learning import cmd_memory_report
     org,client,root=g1_source_org
     epoch=org.db.get_audit_logs_by_action('memory_collection_epoch_started')[0]
-    claim=epoch['payload']['projection']['probe_receipts'][0][kind]
+    claim=(epoch['payload']['qa_ref'] if kind=='qa' else epoch['payload']['manager_ref'] if kind=='manager'
+           else epoch['payload']['projection']['probe_receipts'][0][kind])
     assert org.db.get_task(claim['task_id']).status.value=='completed'
     cutoff=datetime.fromisoformat(epoch['timestamp'])+timedelta(days=14)
     class ReaderClock(datetime):
@@ -2053,7 +2141,87 @@ def test_failed_probe_task_closes_original_epoch_in_both_readers(g1_source_org,m
     assert captured.err=='' and captured.out==_expected_full_text(backend)
     assert org.db.read_memory_collection_evidence()==before
     assert org.db.fetch_one_readonly('SELECT total_changes()')[0]==writes
+    with pytest.raises(AcceptanceUnavailable):
+        org.db.append_memory_collection_transition(result_row_id=epoch['payload']['manager_ref']['result_id'])
+    assert org.db.read_memory_collection_evidence()==before
+    assert org.db.fetch_one_readonly('SELECT total_changes()')[0]==writes
     assert org.db.get_audit_logs_by_action('memory_collection_epoch_started')==[epoch]
+
+
+@pytest.mark.parametrize('g1_source_org',['ordinary','operation-admission'],indirect=True)
+@pytest.mark.parametrize('kind',['root','child'])
+@pytest.mark.parametrize('fault',['read-scope','read-task','read-session','read-agent',
+    'search-scope','search-task','search-agent','impression-task','impression-agent'])
+def test_probe_operation_exact_scope_and_tuple_closes_both_readers(g1_source_org,request,monkeypatch,capsys,kind,fault):
+    """F2/AGE04 exact operation scope and redundant binding, at both real readers.
+
+    INLINE v24, every ROOT/CHILD and named operation fault:
+    1. Real SOURCE chain reaches final initial admission or a healthy continuing
+       epoch. Corrupt only one actual
+       operation's canonical scope or redundant task/session/agent field; real
+       Database admission/replay refuses, HTTP serving refs are null, whole CLI
+       JSON/text match the closed backend, original controls stay exact, zero writes.
+    2. Credible regression: OR row/payload task join accepts a task-scoped read,
+       or trusts session alone without redundant agent/task validation.
+    3. Failed task and probe-source owners do not change scope or redundant tuple;
+       normal telemetry negatives exclude canary evidence from their population.
+    4. No production seam or fake positive records. Only a private negative audit
+       mutation; queue/bootstrap/jobs/callbacks supplied all original positives.
+    """
+    import argparse
+    import datetime as datetime_module
+    from datetime import datetime,timedelta
+    from cli.commands.learning import cmd_memory_report
+    org,client,root=g1_source_org
+    epochs=org.db.get_audit_logs_by_action('memory_collection_epoch_started')
+    initial=bool(getattr(request.node,'_g1_final_refusal',None))
+    assert len(epochs)==int(not initial)
+    candidate=request.node._g1_final_refusal['candidate'] if initial else epochs[0]['payload']['projection']
+    claim=candidate['probe_receipts'][0][kind]
+    cutoff=datetime.fromisoformat(org.db.get_task_results(root)[-1]['created_at'])+timedelta(days=14)
+    class ReaderClock(datetime):
+        @classmethod
+        def now(cls,tz=None):return cutoff if tz is not None else cutoff.replace(tzinfo=None)
+    monkeypatch.setattr(datetime_module,'datetime',ReaderClock)
+    monkeypatch.setattr('runtime.infrastructure.memory_collection.datetime',ReaderClock)
+    roles={member['agent']:member['role'] for member in candidate['cohort']}
+    if not initial:
+        healthy=org.orchestrator._audit.compute_memory_telemetry_report(agent_role_map=roles,current_time=cutoff)
+        assert healthy['epoch']['collection_started'] is True
+        operation,field=fault.split('-')
+        action={'read':'memory_read','search':'memory_search','impression':'memory_digest_impression'}[operation]
+        row=next(row for row in org.db.get_audit_logs_by_action(action)
+                 if row['payload'].get('session_id')==claim['runtime_session_id'])
+        payload=copy.deepcopy(row['payload'])
+        scope=row['task_id']
+        if field=='scope':
+            assert scope==('AGENT-'+claim['agent'] if operation=='read' else claim['task_id'])
+            scope=claim['task_id'] if operation=='read' else 'AGENT-'+claim['agent']
+        else:
+            key={'task':'task_id','session':'session_id','agent':'agent'}[field]
+            payload[key]={'task':'TASK-999999','session':'sess-unrelated','agent':'qa_engineer'}[field]
+        with org.db._lock:
+            org.db._conn.execute('UPDATE audit_log SET task_id=?,payload=? WHERE id=?',(scope,json.dumps(payload),row['id']))
+            org.db._conn.commit()
+    before=org.db.read_memory_collection_evidence()
+    writes=org.db.fetch_one_readonly('SELECT total_changes()')[0]
+    backend=org.orchestrator._audit.compute_memory_telemetry_report(agent_role_map=roles,current_time=cutoff)
+    assert backend['epoch']['collection_started'] is False,(kind,fault,backend)
+    assert backend['decision']=='insufficient_instrumentation' and backend['evaluation_candidate'] is False
+    observation=client.get('/api/v1/orgs/alpha/audit',params={'action':'memory_collection_seal','limit':1}).json()['memory_collection_observation']
+    assert observation['epoch_id'] is None and observation['epoch_audit_id'] is None
+    cmd_memory_report(argparse.Namespace(org='alpha',agent='dev_agent',json=True))
+    output=capsys.readouterr()
+    assert output.err=='' and json.loads(output.out)==backend
+    cmd_memory_report(argparse.Namespace(org='alpha',agent='dev_agent',json=False))
+    output=capsys.readouterr()
+    assert output.err=='' and output.out==_expected_full_text(backend)
+    if not initial:
+        with pytest.raises(AcceptanceUnavailable):
+            org.db.append_memory_collection_transition(result_row_id=org.db.get_task_results(root)[-1]['id'])
+    assert org.db.fetch_one_readonly('SELECT total_changes()')[0]==writes
+    assert org.db.read_memory_collection_evidence()==before
+    assert org.db.get_audit_logs_by_action('memory_collection_epoch_started')==epochs
 
 
 def test_current_epoch_evidence_movement_is_acquisition_refusal(g1_source_org,monkeypatch,capsys):
@@ -2701,3 +2869,205 @@ def test_canonical_epoch_acquisition_error_never_flushes_partial_report(g1_sourc
     assert org.db.read_memory_collection_evidence()==before
     assert org.db.fetch_one_readonly('SELECT total_changes()')[0]==writes
     assert org.db.get_audit_logs_by_action('memory_collection_epoch_started')==[epoch]
+
+@pytest.mark.parametrize('g1_source_org',['natural-boundaries'],indirect=True)
+@pytest.mark.parametrize('scenario',['pair-boundary','agent-boundary'])
+def test_real_accepted_epoch_retrieval_role_and_pair_boundaries(g1_source_org,monkeypatch,capsys,scenario):
+    """F4/AGE02: reachable retrieval decision and eligible role corroboration.
+
+    INLINE v24, pair-boundary and agent-boundary:
+    1. Supported ordinary task creation/queue/bootstrap/provider/callback gives
+       471 worker sessions (50 shown reads), plus 29/30 manager sessions with
+       real canonical search/get pairs for genuinely NONshown entries. BOTH
+       backend and canonical HTTP CLI whole JSON/full text preserve accepted
+       epoch at 14 complete UTC days/500+ sessions, with zero reader writes.
+       Pair29 with eligible manager30 refuses corroboration; pair30 accepts.
+       Manager29 with pair30 cannot corroborate an otherwise healthy eligible
+       worker population; manager30 accepts. All row IDs/tuples/source/order,
+       distinct pairs and unchanged authority/results/jobs are asserted below.
+    2. Credible regressions: retrieval decision suppressed, pair>=30 changed to
+       >=29, or functional-agent>=30 changed to >=29. Causal mutation receipts
+       must fail the corresponding whole-report oracle, then restore exact bytes.
+    3. Large zero-read and exact-rate/tied-vote owners contain no search pairs;
+       copied-brief owner has only two. Unversioned arithmetic cannot reach this
+       accepted final seam. Ineligible manager role exclusion here has >=30
+       actual pairs, so it distinguishes gating from absent search evidence.
+    4. No production hook or positive fake row/session/PASS/job. Provider stand-in
+       implements assigned search/get work at the real executable boundary, as
+       probes already do; no natural-intent flags supply attribution. Temporary
+       memory files are work inputs, never acceptance authority. Concurrent
+       providers publish those inputs atomically and assert the actual search
+       returned each requested ID before follow-on get. SOURCE only.
+    """
+    import argparse
+    import asyncio
+    import datetime as datetime_module
+    from datetime import datetime,timedelta
+    from cli.commands.learning import cmd_memory_report
+    org,client,root=g1_source_org
+    epoch=org.db.get_audit_logs_by_action('memory_collection_epoch_started')[0]
+    original=org.db.read_memory_collection_evidence()
+    created=[]
+    manager_pairs={}
+    def create(agent,index,ids):
+        brief={'ordinary_work_item':index,'memory_read':agent=='engineering_head' or index<50,'search_reads':ids}
+        response=client.post('/api/v1/orgs/alpha/tasks',json={'team':'engineering','owner':agent,
+            'brief':json.dumps(brief,sort_keys=True,separators=(',',':'))})
+        assert response.status_code==200,response.text
+        tid=response.json()['task_id']
+        created.append(tid)
+        if ids:manager_pairs[tid]=set(ids)
+        return tid
+    for index in range(471):create('dev_agent',index,[])
+    for index in range(29):
+        create('engineering_head',index,['MEM-999','MEM-998'] if scenario=='agent-boundary' and index==0 else ['MEM-999'])
+    cutoff=None
+    for phase in ('manager29','manager30','pair30') if scenario=='pair-boundary' else ('manager29','manager30'):
+        if phase!='manager29':create('engineering_head',29 if phase=='manager30' else 30,[] if phase=='manager30' else ['MEM-999'])
+        asyncio.run_coroutine_threadsafe(org.orchestrator._queue._queue.join(),org.orchestrator._main_loop).result(timeout=1500)
+        assert len(set(created))==len(created)
+        assert all(org.db.get_task(tid).status.value=='completed' for tid in created)
+        identities={row['task_id']:row for row in org.db.get_audit_logs_by_action('memory_runtime_identity') if row['task_id'] in created}
+        assert set(identities)==set(created)
+        assert all(row['payload']['population']=='root' and row['payload']['parent_known'] is True
+                   and row['payload']['parent_task_id'] is None for row in identities.values())
+        impressions={row['task_id']:row for row in org.db.get_audit_logs_by_action('memory_digest_impression') if row['task_id'] in created}
+        assert set(impressions)==set(created)
+        assert all(row['payload']['pointer_ids']==['MEM-001'] and row['payload']['full_body_ids']==[]
+                   and row['payload']['session_id']==identities[tid]['payload']['session_id'] for tid,row in impressions.items())
+        reads=[row for row in org.db.get_audit_logs_by_action('memory_read') if row['payload'].get('task_id') in created]
+        searches=[row for row in org.db.get_audit_logs_by_action('memory_search') if row['task_id'] in created]
+        absent=[row for row in reads if row['payload']['source']=='search']
+        actual_pairs={(row['payload']['task_id'],row['payload']['id']) for row in absent}
+        intended_pairs={(tid,mid) for tid,ids in manager_pairs.items() for mid in ids}
+        assert actual_pairs==intended_pairs
+        assert len(absent)==len(actual_pairs)==(30 if scenario=='agent-boundary' or phase=='pair30' else 29)
+        for row in absent:
+            payload=row['payload'];tid=payload['task_id'];identity=identities[tid];impression=impressions[tid]
+            assert row['task_id']=='AGENT-engineering_head' and row['agent']=='engineering_head'
+            assert payload['session_id']==identity['payload']['session_id']
+            assert payload['id'] not in impression['payload']['digest_ids']
+            causal=[search for search in searches if search['agent']==row['agent']
+                    and search['payload']['task_id']==tid and search['payload']['session_id']==payload['session_id']
+                    and payload['id'] in search['payload']['memory_ids']
+                    and impression['id']<search['id']<row['id']]
+            assert causal,(tid,payload)
+        first=min(datetime.fromisoformat(row['timestamp']) for row in impressions.values())
+        if cutoff is None:
+            anchor=max(first,datetime.fromisoformat(epoch['timestamp']))
+            cutoff=anchor.replace(hour=0,minute=0,second=0,microsecond=0)
+            if anchor!=cutoff:cutoff+=timedelta(days=1)
+            cutoff+=timedelta(days=14)
+        total=len(created);manager_count=total-471;pair_count=len(intended_pairs)
+        eligible=manager_count>=30
+        corroborates=eligible and pair_count>=30
+        decision='retrieval_loss' if corroborates else 'no_demonstrated_problem'
+        expected=_large_zero_read_expected(epoch,first,cutoff,sessions=total)
+        expected['by_agent']={};expected['by_role']={};expected['read_counts']={}
+        for agent,role,count,shown,nonshown in [('dev_agent','worker',471,50,0),
+                ('engineering_head','manager',manager_count,manager_count,pair_count)]:
+            metrics={'correlated_sessions':count,'pointer_opportunities':count,'full_body_exposures':0,
+                'pointer_pairs_read':shown,'digest_pull_through':shown/count,'search_sourced_reads':nonshown,
+                'search_sourced_absent_from_digest':nonshown,'search_absent_fraction':1.0 if nonshown else None,
+                'distinct_valid_read_pairs':shown+nonshown,'read_operations':shown+nonshown,
+                'pointer_sessions_activated':shown,'pointer_sessions':count,'session_activation':shown/count}
+            expected['by_agent'][agent]={'role':role,'eligible':count>=30,'activation_vote_eligible':count>=30,**metrics}
+            expected['by_role'][role]={**metrics,'retrieval_corroboration_eligible':corroborates if role=='manager' else False,
+                'descriptive_only_for_activation_majority':True}
+            expected['read_counts'][agent]={'MEM-001':{'distinct_pairs':shown,'operations':shown}}
+            if nonshown:
+                extra=1 if scenario=='agent-boundary' else 0
+                expected['read_counts'][agent]['MEM-999']={'distinct_pairs':nonshown-extra,'operations':nonshown-extra}
+                if extra:expected['read_counts'][agent]['MEM-998']={'distinct_pairs':1,'operations':1}
+        shown=50+manager_count
+        expected['aggregate'].update(pointer_pairs_read=shown,digest_pull_through=shown/total,
+            digest_sourced_read_pairs=shown,search_sourced_reads=pair_count,search_sourced_absent_from_digest=pair_count,
+            search_absent_fraction=1.0,distinct_valid_read_pairs=shown+pair_count,read_operations=shown+pair_count,
+            pointer_sessions_activated=shown,session_activation=shown/total,
+            eligible_functional_agents=1+int(eligible),eligible_pointer_agents=1+int(eligible),eligible_agents_below_10_percent=0)
+        expected['instrumentation_health']['validated_read_operations']=shown+pair_count
+        expected['observation_period']['status']=decision
+        expected.update(decision=decision,evaluation_candidate=corroborates,
+            decision_detail='Evaluation only; no tuning is executed.' if corroborates else 'No demonstrated memory problem.')
+        roles={member['agent']:member['role'] for member in epoch['payload']['projection']['cohort']}
+        before=org.db.read_memory_collection_evidence();writes=org.db.fetch_one_readonly('SELECT total_changes()')[0]
+        backend=org.orchestrator._audit.compute_memory_telemetry_report(agent_role_map=roles,current_time=cutoff)
+        assert backend==expected,(scenario,phase,backend,expected)
+        class ReaderClock(datetime):
+            @classmethod
+            def now(cls,tz=None):return cutoff if tz is not None else cutoff.replace(tzinfo=None)
+        with monkeypatch.context() as clock:
+            clock.setattr(datetime_module,'datetime',ReaderClock)
+            clock.setattr('runtime.infrastructure.memory_collection.datetime',ReaderClock)
+            observation=client.get('/api/v1/orgs/alpha/audit',params={'action':'memory_collection_seal','limit':1}).json()['memory_collection_observation']
+            assert observation['epoch_id']==epoch['payload']['epoch_id'] and observation['epoch_audit_id']==epoch['id']
+            cmd_memory_report(argparse.Namespace(org='alpha',agent='dev_agent',json=True))
+            output=capsys.readouterr()
+            assert output.err=='' and json.loads(output.out)==expected
+            json_output=output.out
+            cmd_memory_report(argparse.Namespace(org='alpha',agent='dev_agent',json=False))
+            output=capsys.readouterr()
+            assert output.err=='' and output.out==_expected_full_text(expected)
+        assert org.db.fetch_one_readonly('SELECT total_changes()')[0]==writes
+        assert org.db.read_memory_collection_evidence()==before
+        assert org.db.get_audit_logs_by_action('memory_collection_epoch_started')==[epoch]
+        for table in ('task_results','jobs'):
+            current={row['id']:row for row in before[table]}
+            assert all(current[row['id']]==row for row in original[table])
+        # Keep seam evidence in the command log, outside the next CLI capture.
+        # Counts alone never substitute for the actual joins asserted above.
+        with capsys.disabled():
+            print(json.dumps({'finding':'F4 SOURCE ONLY','scenario':scenario,'phase':phase,'epoch_id':epoch['payload']['epoch_id'],
+                'started_at':epoch['timestamp'],'sessions':total,'manager_sessions':manager_count,'distinct_nonshown_pairs':pair_count,
+                'operation_audit_ids':[row['id'] for row in absent+searches],
+                'decision':decision,'original_epoch_unchanged':True,'reader_writes':0,
+                'cli_json':json.loads(json_output),'cli_text':output.out},sort_keys=True))
+
+
+@pytest.mark.parametrize('g1_source_org',['ownership-admission'],indirect=True)
+@pytest.mark.parametrize('kind',['qa','manager'])
+def test_failed_original_owner_refuses_actual_final_admission(g1_source_org,request,monkeypatch,capsys,kind):
+    """F1: failure at actual post-audit initial transition cannot mint authority.
+
+    INLINE v24, QA and manager:
+    1. Real admitted chain fails only original ownership immediately before
+       final admission. Completed role results remain, zero epoch audit rows,
+       canonical HTTP JSON/text equal closed backend, serving refs null, zero
+       reader writes. Callback/result history is retained.
+    2. Omitting current owner failed-state check admits the epoch, unlike merely
+       inspecting an old completed result. Existing continuing owner cannot
+       prove the actual initial post-result-log writer refuses.
+    3. Continuing failed-owner keeper owns day14/replay; this owner uniquely
+       observes the final initial writer and completed result-log tail.
+    4. No production seam or fake positive rows. Test-side negative mutation
+       wraps the real final transition; actual queue/job/callback gives positives.
+    """
+    import argparse
+    import datetime as datetime_module
+    from datetime import datetime,timezone
+    from cli.commands.learning import cmd_memory_report
+    org,client,root=g1_source_org
+    receipt=request.node._g1_final_refusal
+    assert receipt['observed_failed_owner'] is True
+    assert org.db.get_audit_logs_by_action('memory_collection_epoch_started')==[]
+    result=org.db.get_task_results(root)[-1]
+    assert result['id']==receipt['result_id'] and result['status']=='completed'
+    assert org.db.get_task_results(receipt['candidate']['qa_ref']['task_id'])[-1]['status']=='completed'
+    now=datetime.now(timezone.utc)
+    class ReaderClock(datetime):
+        @classmethod
+        def now(cls,tz=None):return now if tz is not None else now.replace(tzinfo=None)
+    monkeypatch.setattr(datetime_module,'datetime',ReaderClock)
+    monkeypatch.setattr('runtime.infrastructure.memory_collection.datetime',ReaderClock)
+    roles={row['agent']:row['role'] for row in receipt['candidate']['cohort']}
+    before=org.db.read_memory_collection_evidence();writes=org.db.fetch_one_readonly('SELECT total_changes()')[0]
+    backend=org.orchestrator._audit.compute_memory_telemetry_report(agent_role_map=roles,current_time=now)
+    assert backend['epoch']['collection_started'] is False and backend['decision']=='insufficient_instrumentation'
+    observation=client.get('/api/v1/orgs/alpha/audit',params={'action':'memory_collection_seal','limit':1}).json()['memory_collection_observation']
+    assert observation['epoch_id'] is None and observation['epoch_audit_id'] is None
+    for mode in (True,False):
+        cmd_memory_report(argparse.Namespace(org='alpha',agent='dev_agent',json=mode))
+        output=capsys.readouterr()
+        assert output.err==''
+        assert (json.loads(output.out)==backend) if mode else (output.out==_expected_full_text(backend))
+    assert org.db.read_memory_collection_evidence()==before and org.db.fetch_one_readonly('SELECT total_changes()')[0]==writes

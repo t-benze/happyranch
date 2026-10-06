@@ -853,7 +853,7 @@ def loaded_identity(org: Any) -> dict:
                       collection_record_projection, collection_control_head, collection_logical_key, equivalent_collection_control, _decoded_tables,
                       _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job, _resolve_probe_slots,
                       _validate_probe_operations, _census_from_view, validate_acceptance_evidence, _view_projection,
-                      _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
+                      _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
                       _collection_pages, _http_collection_capture, acquire_http_collection_report,
                       current_epoch_references, reduce_report, reduce_collection_report, AuditLogger.compute_memory_telemetry_report,
                       cmd_memory_report, _compute_report, _print_report])
@@ -1172,14 +1172,15 @@ def _decision(row: dict) -> dict:
     return NextStep.model_validate(body).model_dump(exclude_none=True)
 
 
-def _exact_role_result(data: dict, ref: dict, view: dict, *, role: str, root: str) -> tuple[dict, dict]:
+def _exact_role_result(data: dict, ref: dict, view: dict, *, role: str, root: str, withdrawal: bool = False) -> tuple[dict, dict]:
     _reference(ref)
     result = _one([row for row in data["task_results"] if row["id"] == ref["result_id"]], "acceptance_result_missing")
     task = _one([row for row in data["tasks"] if row["id"] == ref["task_id"]], "acceptance_task_missing")
     member = _one([row for row in view["installed_identity"]["cohort"] if row["agent"] == ref["agent"]], "acceptance_role_missing")
     if (result["task_id"] != ref["task_id"] or result["agent"] != ref["agent"] or result["session_id"] != ref["runtime_session_id"]
             or result["status"] != "completed" or task["assigned_agent"] != ref["agent"] or member["role"] != role
-            or task["team"] != member["team"] or task["cancelled_at"] is not None):
+            or task["team"] != member["team"] or task["cancelled_at"] is not None
+            or (task["status"] == "failed" and not withdrawal)):
         raise AcceptanceUnavailable("acceptance_role_binding")
     cursor, seen = task, set()
     while cursor["id"] != root:
@@ -1409,9 +1410,21 @@ def _validate_probe_operations(data: dict, receipt: dict, transcript: dict, view
         if claim["org"] != view["org"]:
             raise AcceptanceUnavailable("acceptance_probe_org")
         key = (claim["task_id"], claim["agent"], claim["runtime_session_id"])
-        own = [row for row in data["audit_log"] if row["agent"] == key[1] and isinstance(row["payload"], dict)
-               and row["payload"].get("session_id") == key[2]
-               and (row["task_id"] == key[0] or row["payload"].get("task_id") == key[0])]
+        own = [row for row in data["audit_log"] if isinstance(row["payload"], dict)
+               and row["payload"].get("session_id") == key[2]]
+        # Scope is operation-specific. Redundant payload fields may never
+        # rescue a wrong row scope or disagree with the admitted task tuple.
+        for row in own:
+            if row["action"] not in {"memory_runtime_identity", "memory_runtime_terminal",
+                                     "memory_digest_impression", "memory_read", "memory_search"}:
+                continue
+            payload = row["payload"]
+            scope = f"AGENT-{key[1]}" if row["action"] == "memory_read" else key[0]
+            if (row["task_id"] != scope or row["agent"] != key[1]
+                    or ("agent" in payload and payload["agent"] != key[1])
+                    or ("task_id" in payload and payload["task_id"] != key[0])
+                    or (row["action"] in {"memory_read", "memory_search"} and payload.get("task_id") != key[0])):
+                raise AcceptanceUnavailable("acceptance_probe_binding")
         identity = _one([row for row in own if row["action"] == "memory_runtime_identity"], "acceptance_probe_identity")
         terminal = _one([row for row in own if row["action"] == "memory_runtime_terminal"], "acceptance_probe_terminal")
         member = _one([row for row in view["installed_identity"]["cohort"] if row["agent"] == key[1]], "acceptance_probe_member")
@@ -1436,7 +1449,12 @@ def _validate_probe_operations(data: dict, receipt: dict, transcript: dict, view
         searched_read = _one([row for row in reads if row["payload"].get("source") == "search"], "acceptance_probe_nonshown")
         if (digest_read["payload"].get("id") not in shown or searched_read["payload"].get("id") in shown
                 or searched_read["payload"].get("id") not in searches[0]["payload"]["memory_ids"]
-                or not impression["id"] < digest_read["id"] < searches[0]["id"] < searched_read["id"] < terminal["id"]):
+                or not identity["id"] < impression["id"] < digest_read["id"] < searches[0]["id"] < searched_read["id"] < terminal["id"]):
+            raise AcceptanceUnavailable("acceptance_probe_source_order")
+        from runtime.infrastructure.memory_telemetry_report import aware_utc
+        ordered = (identity, impression, digest_read, searches[0], searched_read, terminal)
+        if any(aware_utc(before["timestamp"]) > aware_utc(after["timestamp"])
+               for before, after in zip(ordered, ordered[1:])):
             raise AcceptanceUnavailable("acceptance_probe_source_order")
         selected.extend([impression["id"], digest_read["id"], searches[0]["id"], searched_read["id"]])
     claimed_ids = transcript["operation_audit_ids"]
@@ -1487,9 +1505,11 @@ def validate_acceptance_evidence(tables: dict, result_id: int, view: dict, outpu
         view = {**view, "installed_identity": {"cohort": registered_cohort}}
     if not isinstance(view.get("installed_identity"), dict):
         raise AcceptanceUnavailable("acceptance_serving_context")
-    manager_result, manager_task = _exact_role_result(data, candidate["result_ref"], view, role="manager", root=root)
+    manager_result, manager_task = _exact_role_result(data, candidate["result_ref"], view, role="manager", root=root,
+                                                         withdrawal=candidate["action"] == "invalidate")
     _decision(manager_result)
-    qa_result, qa_task = _exact_role_result(data, candidate["qa_ref"], view, role="worker", root=root)
+    qa_result, qa_task = _exact_role_result(data, candidate["qa_ref"], view, role="worker", root=root,
+                                               withdrawal=candidate["action"] == "invalidate")
     verdicts = re.findall(r"(?m)^Verdict:\s*(PASS|FAIL|BLOCK|REVISE|APPROVE|REQUEST_CHANGES)\b", qa_result["output_summary"])
     if qa_result["agent"] == manager_result["agent"] or qa_result["verdict"] != "PASS" or any(value != "PASS" for value in verdicts):
         raise AcceptanceUnavailable("acceptance_independent_qa")
@@ -1588,16 +1608,29 @@ def _view_projection(view: dict) -> str:
     return _hash_metadata({key: value for key, value in view.items() if key not in {"sampled_at", "data_through", "epoch_id", "epoch_audit_id"}})
 
 
+def _referenced_probe_jobs(results: list[dict]) -> set[str]:
+    """Only closed tagged positive carriers select original probe output."""
+    job_ids = set()
+    for result in results:
+        try:
+            candidate = parse_acceptance(result["output_summary"])
+        except AcceptanceUnavailable:
+            continue  # Exact selected malformed controls fail in the validator.
+        if candidate is not None and candidate.get("action") != "invalidate":
+            job_ids.update(receipt["job_id"] for receipt in candidate["probe_receipts"])
+    return job_ids
+
+
 def _local_job_outputs(org: Any, tables: dict) -> dict:
     outputs = {}
     budget = [0, 0]
+    referenced_jobs = _referenced_probe_jobs(tables["task_results"])
     for job in tables["jobs"]:
         if job["status"] != "completed":
             continue
         paths = {stream: org.root / "jobs" / (job["id"] + suffix) for stream, suffix in (("stdout", ".out"), ("stderr", ".err"))}
         # Read only exact owned outputs referenced by tagged acceptance rows.
-        referenced = any(f'"job_id":"{job["id"]}"' in row["output_summary"] for row in tables["task_results"])
-        if not referenced:
+        if job["id"] not in referenced_jobs:
             continue
         output = {}
         for stream, path in paths.items():
@@ -1748,14 +1781,7 @@ def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
         if not isinstance(detail.get("results"), list):
             raise ReportAcquisitionUnavailable()
         results.extend(detail["results"])
-    job_ids = set()
-    for result in results:
-        try:
-            candidate = parse_acceptance(result["output_summary"])
-        except AcceptanceUnavailable:
-            continue  # the validator will reject the exact selected malformed control
-        if candidate is not None:
-            job_ids.update(receipt["job_id"] for receipt in candidate["probe_receipts"])
+    job_ids = _referenced_probe_jobs(results)
     for job_id in sorted(job_ids):
         jobs.append(get(f"jobs/{job_id}"))
         outputs[job_id] = get(f"jobs/{job_id}/output", {"stream": "both", "max_bytes": 10 * 1_048_576})

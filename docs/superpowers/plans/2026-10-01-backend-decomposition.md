@@ -564,6 +564,62 @@ composition/guarded merge remain mandatory. This ownership record asserts no
 review/QA/CI verdict or merge authority. Integration SUITE, including followup
 E2E, remains SKIPPED Founder THR-243 seq42, never PASS.
 
+## S6 pin-helper ownership (TASK-9869)
+
+This unit moves exactly the decorated 18-line
+`Database.set_thread_pinned_uncommitted` into the existing `ThreadsMixin`,
+unchanged: source SHA256
+`917fe4f6ae43a5f230bbc33e2fbe33e89c1717d8b2375a28e39c408b0395c2bc`.
+The only new import is the already-shipped `_shared._late_database_now as
+_now`; pin timestamps still resolve the whole facade clock at call time.
+The shared `_synchronized` decorator still resolves the whole facade `_time`
+and uses the same Database-owned RLock, threshold and lock logger.
+
+The committed setter stays in `database.py`. The real pin HTTP endpoint,
+strict body and guards, `ThreadsMixin.set_thread_pinned_with_audit`, its
+BEGIN IMMEDIATE/commit/rollback ownership, and
+`AuditMixin.insert_audit_log_uncommitted` with its separate datetime clock
+remain unchanged. The inherited old Database class-method patch path and
+old qualified pickle lookups remain usable; natural defining module and
+qualname belong to ThreadsMixin, with no metadata rebinding or new seam.
+
+TASK-9785 explicitly accepted TASK-9867/S6-PIN/P1-P4/revision2, case-design
+SHA256 `308bd851b7680ce1d5378b46921ae7af083d1f3014413be526b89e2d019e8537`,
+and BOTH F1/P4.4 and F2/P1.2 dispositions after independent TASK-9868
+DESIGN-ONLY PASS, before this implementation. The eight accepted finite IDs
+govern `tests/daemon/test_thread_pin_decomposition.py` supplements and
+unchanged keepers. P1.2 keeps the actual narrower HTTP404/422 and repeatedTrue
+HTTP field/audit assertions, plus repeatedFalse DB result/audit assertions;
+P3.1 keeps the real direct-route True/True and True/False overlap checks.
+Complete persisted success/failure/recovery frames, two distinct clocks,
+selected-only mutation/restoration receipts, full source/owner extraction
+proof and complete pristine app/served OpenAPI freeze/replay live in
+`dev_agent/output/TASK-9869`. Existing projected/semantic OpenAPI keepers
+remain separate from complete cross-source byte equality.
+
+At immutable base `61319854238e07da67947549bb452c5f1324477e`, counts are
+database2214/run_step4747/models4711/executors2624/readers97/threads885.
+This move leaves database2196/threads904 (18 definition lines, the existing
+import line adjusted and one separating line); other counts remain
+4747/4711/2624/readers97. All22 landed slices and steps1–4, the R5 exactly
+two-definition/122-line subset, and four terminal readers/78 lines remain
+foundations. Formatter F8's independently executable STOP/RETAIN remains;
+there is no wholeS6/R4/R6/models/executors completion claim.
+
+PR #682's ELEVEN R2 and actual completion/chain/carrier/fanout/followup/R4R6,
+#684's attachment insertion AND enqueue/revisit, and #840's
+result/admission/insert_task_result remain held. Merged997 routing and
+Database/TasksMixin consumers and983 fixture/callback/release,996 route/docs/
+OpenAPI interactions retain their owners. Selected-body equality does not
+clear these callers, shared state or concurrent THR139/228/211/091 work.
+
+Same-final-SHA independent full-diff reviewer APPROVE, executable QA PASS,
+strict terminal task-owned local-CI JOB EXIT0, four exact-head pull_request
+successes and the distinct actual hosted Codex callback smoke remain required.
+Every push renews gates; composition, head-matched guarded squash and
+independent parent/tree/ancestry checks remain manager-owned. Integration
+SUITE, including followup E2E, is SKIPPED Founder THR-243 seq42, never PASS.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target

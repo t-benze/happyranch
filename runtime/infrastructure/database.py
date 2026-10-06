@@ -2124,24 +2124,6 @@ class Database(
         self._conn.commit()
 
 
-    @_synchronized
-    def set_thread_pinned_uncommitted(self, thread_id: str, *, pinned: bool) -> None:
-        """Set/clear thread pin state WITHOUT committing (THR-209).
-
-        Same contract as ``set_thread_subject_uncommitted``: the caller owns
-        the surrounding transaction so the pin transition and its audit row
-        are atomic.
-        """
-        if pinned:
-            self._conn.execute(
-                "UPDATE threads SET pinned_at = ? WHERE id = ?",
-                (_now().isoformat(), thread_id),
-            )
-        else:
-            self._conn.execute(
-                "UPDATE threads SET pinned_at = NULL WHERE id = ?",
-                (thread_id,),
-            )
 
 
 
