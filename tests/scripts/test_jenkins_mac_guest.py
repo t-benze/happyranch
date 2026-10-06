@@ -705,7 +705,7 @@ def test_two_org_prelaunch_installer_authenticates_real_source_and_closed_symbol
         connection.close()
 
 
-@pytest.mark.parametrize('case', ['known', 'foreign_inner', 'foreign_class', 'source_changed', 'copied_code', 'wrapped_code', 'copied_class', 'copied_class_exact', 'builtin_known', 'source_class', 'copied_method_class', 'rebound_closure_class'])
+@pytest.mark.parametrize('case', ['known', 'foreign_inner', 'foreign_class', 'source_changed', 'copied_code', 'wrapped_code', 'copied_class', 'copied_class_exact', 'builtin_known', 'source_class', 'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'])
 def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkeypatch, case):
     """Pure resolver/thrower control: no executor, daemon or provider launch."""
     import threading
@@ -751,14 +751,20 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
         monkeypatch.setattr(policy, 'ActiveAuthorityPolicyError', counterfeit)
     from runtime.orchestrator import workspace_adapters as adapters
     adapters_disk_before = Path(adapters.__file__).read_bytes()
-    if case in {'copied_method_class', 'rebound_closure_class'}:
+    if case in {'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'}:
         original_integrity_class = adapters.WorkspaceIntegrityError
-        counterfeit = type('WorkspaceIntegrityError', (Exception,), {
+        class BuiltinEqualityMeta(type):
+            def __hash__(cls):
+                return hash(ValueError)
+            def __eq__(cls, other):
+                return other is ValueError or other is cls
+        defining_type = BuiltinEqualityMeta if case == 'builtin_metaclass_spoof' else type
+        counterfeit = defining_type('WorkspaceIntegrityError', (Exception,), {
             '__module__': adapters.__name__, '__qualname__': 'WorkspaceIntegrityError',
             '__doc__': original_integrity_class.__doc__,
             '__init__': original_integrity_class.__init__,
         })
-        if case == 'rebound_closure_class':
+        if case in {'rebound_closure_class', 'builtin_metaclass_spoof'}:
             from types import FunctionType
             def cell(value):
                 return (lambda: value).__closure__[0]
@@ -771,6 +777,9 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
             counterfeit.__init__ = FunctionType(original_init.__code__, original_init.__globals__,
                                                original_init.__name__, original_init.__defaults__, closure)
             counterfeit.__str__ = foreign_string
+            if case == 'builtin_metaclass_spoof':
+                assert type(counterfeit) is BuiltinEqualityMeta
+                assert counterfeit is not ValueError
             assert counterfeit is not original_integrity_class
             assert counterfeit.__init__ is not original_init
             assert counterfeit.__init__.__code__ is original_init.__code__
@@ -787,7 +796,7 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
                 raise Foreign('PLANTED_CREDENTIAL /private/path')
             if case == 'foreign_inner':
                 raise policy.ActiveAuthorityPolicyError('PLANTED_CREDENTIAL /private/path')
-            if case in {'source_class', 'copied_method_class', 'rebound_closure_class'}:
+            if case in {'source_class', 'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'}:
                 if case == 'copied_method_class':
                     counterfeit_error = adapters.WorkspaceIntegrityError.__new__(adapters.WorkspaceIntegrityError)
                     BaseException.__init__(counterfeit_error, 'PLANTED_CREDENTIAL /private/path')
@@ -813,7 +822,7 @@ def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkey
     capture._install_capture()
     try:
         with pytest.raises(ValueError if case == 'builtin_known' else adapters.WorkspaceIntegrityError
-                           if case in {'source_class', 'copied_method_class', 'rebound_closure_class'} else policy.ActiveAuthorityPolicyError) as caught:
+                           if case in {'source_class', 'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'} else policy.ActiveAuthorityPolicyError) as caught:
             owner._run_agent('TASK-001', 'engineering_head', 'PLANTED_PROMPT')
         assert caught.value is seen[0]
         assert disk_before == Path(policy.__file__).read_bytes()

@@ -214,8 +214,9 @@ def _install_capture():
     # Static source/code/closure facts cannot authenticate a reconstructed
     # defining type. All custom Python exception types remain unknown;
     # only exact built-in type identities are admitted here.
-    codes, classes = {}, {RuntimeError: "builtins.RuntimeError", ValueError: "builtins.ValueError",
-                          OSError: "builtins.OSError", TimeoutError: "builtins.TimeoutError"}
+    codes = {}
+    classes = ((RuntimeError, "builtins.RuntimeError"), (ValueError, "builtins.ValueError"),
+               (OSError, "builtins.OSError"), (TimeoutError, "builtins.TimeoutError"))
     modules, compiled = {}, {}
     identity_deadline = time.monotonic() + 1
     for module_name, symbols in MODULE_SYMBOLS.items():
@@ -269,9 +270,15 @@ def _install_capture():
             tb = tb.tb_next
         # An unknown innermost frame is UNKNOWN, never a guessed outer owner.
         symbol = codes.get(frames[-1], "unknown") if frames and tb is None else "unknown"
+        exception_name = "unknown"
+        exception_type = type(exc)
+        for builtin_type, name in classes:
+            if exception_type is builtin_type:
+                exception_name = name
+                break
         row = {"version": 1, "source_sha": binding["revision"], "source_digest": binding["digest"],
                "org": org, "task_id": task_id, "category": "prelaunch_exception",
-               "exception": classes.get(type(exc), "unknown"), "symbol": symbol, "code": "unknown"}
+               "exception": exception_name, "symbol": symbol, "code": "unknown"}
         validate_record(row, org=org, revision=binding["revision"], source_digest=binding["digest"])
         if time.monotonic() >= deadline:
             return
