@@ -17,6 +17,53 @@ on the candidate branch instead. The other local commands in this guide remain
 available; Mac integration verification uses the separately authorized
 disposable container-VM path.
 
+The ordinary nightly selection remains `tests/ -m integration`; the launcher
+`uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
+fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.
+It uses only source-hashed deterministic Claude/Codex/OpenCode stubs and an exact
+candidate-Python/tested-source completion CLI. Every plan is explicitly written
+through the test plan fixture and hash-approved; missing/stale/unexpected or
+nonexecutable identities fail visibly before execution. Intentional no-ops require
+explicit plans. Stub argv witnesses retain only fixed flags/counts and digests;
+callback witnesses bind the actual CLI source. No provider PATH fallback or model
+network request is permitted. The unit/Web targets keep their existing selections.
+Registered stubs restore the temporary callback/Python bin directory before the
+unchanged identity gate, including after uv prepends the project environment.
+
+Only the original concurrent alpha/beta two-org case opts into the observational
+`tests/helpers/two_org_prelaunch_capture/sitecustomize.py` helper. It calls the
+original `_run_agent` unchanged, records only escaping pre-session exceptions for
+alpha/beta TASK-001 and rethrows unchanged. Records contain closed class/symbol/code
+identities and authenticated source SHA/digest, never exception text, notes, prompts,
+tokens, paths, locals, argv or environment. Each task has at most one private atomic
+record <=1KiB; unknown identities stay `unknown`, and failed capture stays unavailable.
+The guest collector accepts only owned, complete, unchanged, private records and
+an independently supplied `--source-sha` alongside its existing `--source`; no source
+identity means unavailable. Existing 64KiB diagnostic/8192-byte input limits,
+deadlines and cleanup remain. This adds no Jenkins submission, source overlay or
+pin change. Historical two-org cause is UNKNOWN, and the 28 unavailable systemd
+nodes remain UNTESTED. SSE acceptance retains bounded first-frame admission,
+heartbeat/no-action controls, causal revoke/remove/reopen assertions and owned
+failure-path cleanup; a timeout is never credited as stream closure.
+The two-org observer's static identities include the inspected pre-session active
+policy resolver and authenticated selector readers. Loaded callable code must match
+independently compiled, hash-verified source; copied filename/name or `__wrapped__`
+labels alone cannot admit changed code. Only exact built-in exception type identities
+are classified as known. All custom Python exception types stay unknown, including
+genuine workspace-integrity and docstring-only policy/agent errors: copied constructor
+code and a self-consistent `__class__` closure cannot authenticate the defining type.
+This deliberately reduces test-only observation specificity; it does not verify
+custom-class identity or change the original return/raise behavior. Unlisted inner
+frames remain unknown. Full DIY acceptance records failure-only readiness facts through the
+shipping `remote_access.cli readiness` command (5-second deadline, 8192-byte cap),
+closed gate categories/booleans and owned connector/fake-daemon state. Observation
+failure stays unavailable and preserves the original exception and finalizers;
+raw command output and configuration are never exported by this observation.
+Safe controls execute the unchanged acceptance owner body with external callouts
+doubled, checking primary identity and independent connector/daemon finalization
+attempts, including kill/reap on wait failure. These controls establish invocation
+and error preservation; actual resource absence requires disposable execution.
+
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
@@ -52,7 +99,7 @@ scripts/local_ci.sh help         # List targets and caveats
 | `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
 | `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` |
 | `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `integration` | `nightly-integration` | `uv sync --frozen; uv run pytest tests/ -v -m integration --basetemp <fresh per-run dir>` |
+| `integration` | `nightly-integration` | `uv sync --frozen; uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration --basetemp <fresh per-run dir>` |
 
 Local commands run the same test commands as the corresponding GitHub Actions job
 on your installed Python interpreter (3.12+). They **cannot** select or replace
@@ -66,7 +113,8 @@ across **3.12/3.13/3.14**. GitHub CI is authoritative.
 Pytest normally creates its per-session scratch under a shared
 `pytest-of-<user>/pytest-<n>` tree in `TMPDIR` and can leave large amounts of it
 behind. The `python`, `integration`, and `all` targets avoid that by passing an
-explicit `--basetemp` to their single `uv run pytest` invocation:
+explicit `--basetemp` to their single pytest invocation (integration enters the
+preimport parent first):
 
 - The directory is freshly and uniquely created for that invocation with
   `mktemp -d` beneath the effective `TMPDIR` (normally the runtime-bound
@@ -140,6 +188,20 @@ run opens or comments on the single open issue labelled
 `nightly-integration-failure`; manually dispatched runs do not create or update
 that issue. This repository-local issue flow uses only the workflow token and
 does not send email, Feishu, Slack, webhook, or other external notifications.
+
+Manual dispatch of the same workflow also runs the exact `scripts/local_ci.sh all`
+command on its clean immutable checkout with Python 3.14 and Node 24. This
+lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
+Its closed build-tool PATH includes the standard `/usr/local/bin` directory used
+by the ordinary unit lane; integration keeps its separate restricted PATH.
+The disposable lane clears inherited environment variables before test imports,
+uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
+tools, and preserves the default unit/Web selections. It uploads the command's
+actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
+a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
+the actual command receipt. Scheduled integration and the PR/main matrix remain
+unchanged. The live Linux daemon host must also avoid `python`/`all` when their
+selection includes real socket or daemon tests; use this disposable manual lane.
 
 ## Git hooks
 

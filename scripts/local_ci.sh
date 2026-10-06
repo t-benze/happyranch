@@ -142,7 +142,11 @@ run_pytest_suite() {
   PYTEST_BASETEMP="$basetemp"
   uv sync --frozen || status=$?
   if [ "$status" -eq 0 ]; then
-    uv run pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
+    if [[ " $* " == *" -m integration "* ]]; then
+      uv run python tests/helpers/integration_parent.py -- pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
+    else
+      uv run pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
+    fi
   fi
   if ! cleanup_pytest_basetemp; then
     if [ "$status" -eq 0 ]; then

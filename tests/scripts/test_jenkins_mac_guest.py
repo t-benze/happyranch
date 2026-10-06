@@ -546,3 +546,306 @@ def test_diagnostics_refuse_live_wal_without_ignoring_or_mutating_it(tmp_path: P
         assert _file_facts(base) == before
     finally:
         connection.close()
+
+
+def _prelaunch_record(org="alpha"):
+    return {"version": 1, "source_sha": "a" * 40, "source_digest": "b" * 64,
+            "org": org, "task_id": "TASK-001", "category": "prelaunch_exception",
+            "exception": "builtins.RuntimeError", "symbol": "unknown", "code": "unknown"}
+
+
+def test_two_org_prelaunch_observer_preserves_exception_return_and_write_failure(tmp_path):
+    from tests.helpers.two_org_prelaunch_capture.sitecustomize import transparent, _write_record
+    directory = tmp_path / "capture"
+    directory.mkdir(mode=0o700)
+    private = "PLANTED_NOTE PROMPT_TOKEN /private/path"
+    primary = RuntimeError(private)
+    def throwing():
+        raise primary
+    def capture(exc, args, kwargs):
+        assert exc is primary
+        _write_record(directory, _prelaunch_record())
+    with pytest.raises(RuntimeError) as caught:
+        transparent(throwing, capture)()
+    assert caught.value is primary
+    row = guest._read_two_org_prelaunch_exception(directory, "alpha", deadline=time.monotonic() + 1,
+                                                  revision="a" * 40, source_digest="b" * 64)
+    assert row == _prelaunch_record()
+    assert all(raw not in json.dumps(row) for raw in private.split())
+    # A successful call returns the same object and never invokes capture.
+    returned = object()
+    def must_not_capture(*args):
+        raise AssertionError("successful call was observed as exception")
+    assert transparent(lambda: returned, must_not_capture)() is returned
+    assert list(directory.iterdir()) == [directory / "alpha-TASK-001.json"]
+    def failed_write(*args):
+        raise OSError(private)
+    with pytest.raises(RuntimeError) as caught:
+        transparent(throwing, failed_write)()
+    assert caught.value is primary
+    # At most one record: an attempted overwrite cannot replace the first.
+    with pytest.raises(FileExistsError):
+        _write_record(directory, {**_prelaunch_record(), "exception": "unknown"})
+    assert json.loads((directory / "alpha-TASK-001.json").read_text()) == _prelaunch_record()
+    assert not list(directory.glob(".*pending"))
+
+
+@pytest.mark.parametrize("case", ["extra", "wrong_org", "wrong_task", "wrong_sha", "wrong_digest",
+                                  "unknown_class", "unknown_symbol", "unknown_code", "version_bool",
+                                  "oversized", "truncated", "duplicate", "symlink", "foreign_owner",
+                                  "race", "deadline", "public_file", "public_directory"])
+def test_two_org_prelaunch_capture_refuses_untrusted_or_private_records(tmp_path, monkeypatch, case):
+    directory = tmp_path / "capture"
+    directory.mkdir(mode=0o700)
+    record = _prelaunch_record()
+    changes = {"extra": {"raw": "PLANTED_PRIVATE"}, "wrong_org": {"org": "beta"},
+               "wrong_task": {"task_id": "TASK-002"}, "wrong_sha": {"source_sha": "c" * 40},
+               "wrong_digest": {"source_digest": "c" * 64}, "unknown_class": {"exception": "Private.Class"},
+               "unknown_symbol": {"symbol": "Private.Symbol"}, "unknown_code": {"code": "secret"},
+               "version_bool": {"version": True}}
+    record.update(changes.get(case, {}))
+    data = (json.dumps(record) + "\n").encode()
+    if case == "oversized":
+        data += b" " * 1024
+    elif case == "truncated":
+        data = data[:-5]
+    elif case == "duplicate":
+        data = data.replace(b'{', b'{"version":1,', 1)
+    path = directory / "alpha-TASK-001.json"
+    path.write_bytes(data)
+    path.chmod(0o600)
+    if case == "symlink":
+        path.rename(directory / "target")
+        path.symlink_to(directory / "target")
+    elif case == "foreign_owner":
+        original = guest.os.fstat
+        def foreign(fd):
+            value = original(fd)
+            values = list(value)
+            values[4] = os.getuid() + 1
+            return os.stat_result(values)
+        monkeypatch.setattr(guest.os, "fstat", foreign)
+    elif case == "race":
+        original = guest.os.read
+        def changed(fd, length):
+            raw = original(fd, length)
+            path.write_bytes(data + b"changed")
+            return raw
+        monkeypatch.setattr(guest.os, "read", changed)
+    elif case == "public_file":
+        path.chmod(0o644)
+    elif case == "public_directory":
+        directory.chmod(0o755)
+    result = guest._read_two_org_prelaunch_exception(
+        directory, "alpha", deadline=time.monotonic() + (-1 if case == "deadline" else 1),
+        revision="a" * 40, source_digest="b" * 64)
+    assert result == {"org": "alpha", "prelaunch_capture": "unavailable"}, result
+    assert "PLANTED_PRIVATE" not in json.dumps(result)
+
+
+def test_two_org_prelaunch_capture_requires_independent_source_identity(tmp_path):
+    directory = tmp_path / "capture"
+    directory.mkdir(mode=0o700)
+    from tests.helpers.two_org_prelaunch_capture.sitecustomize import _write_record
+    _write_record(directory, _prelaunch_record())
+    assert guest._read_two_org_prelaunch_exception(directory, "alpha", deadline=time.monotonic() + 1,
+                                                   revision=None, source_digest="b" * 64) == {
+                                                       "org": "alpha", "prelaunch_capture": "unavailable"}
+
+
+@pytest.mark.parametrize("case", ["prelaunch", "session_already_started", "wrong_org", "wrong_task", "changed_source", "other_python_module"])
+def test_two_org_prelaunch_installer_authenticates_real_source_and_closed_symbol(tmp_path, monkeypatch, case):
+    """Offline negative control: missing agent refuses BEFORE executor construction.
+
+    This is not a daemon launch or a diagnosis of historical two-org failures.
+    """
+    import threading
+    from types import SimpleNamespace
+    from tests.helpers.two_org_prelaunch_capture import sitecustomize as capture
+    from runtime.orchestrator.orchestrator import Orchestrator, AgentUnavailableError
+    from runtime.orchestrator._paths import OrgPaths
+    source = Path(__file__).resolve().parents[2]
+    directory = tmp_path / "capture"
+    directory.mkdir(mode=0o700)
+    binding = capture.source_binding(source, "a" * 40, deadline=time.monotonic() + 1)
+    if case == "changed_source":
+        binding["hashes"]["runtime.orchestrator.orchestrator"] = "c" * 64
+    binding_file = directory / "binding.json"
+    binding_file.write_text(json.dumps(binding))
+    binding_file.chmod(0o600)
+    monkeypatch.setenv("HAPPYRANCH_TWO_ORG_CAPTURE", str(binding_file))
+    monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-m", "cli.main" if case == "other_python_module" else "runtime.daemon"])
+    monkeypatch.syspath_prepend(str(source / "tests/helpers/integration_stub_guard"))
+    # Restore the class when this unit ends; no global wrapper escapes the test.
+    monkeypatch.setattr(Orchestrator, "_run_agent", Orchestrator._run_agent)
+    def no_executor(*args, **kwargs):
+        raise AssertionError("offline control must never construct an executor")
+    monkeypatch.setattr(Orchestrator, "_build_executor", no_executor)
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE audit_log(task_id TEXT,action TEXT)")
+    if case == "session_already_started":
+        connection.execute("INSERT INTO audit_log VALUES ('TASK-001','session_start')")
+    owner = Orchestrator.__new__(Orchestrator)
+    owner._slug = "gamma" if case == "wrong_org" else "alpha"
+    owner._paths = OrgPaths(root=tmp_path / "missing-agent-org")
+    owner._db = SimpleNamespace(_conn=connection, _lock=threading.RLock(), get_task=lambda task: None)
+    capture._install_capture()
+    try:
+        with pytest.raises(AgentUnavailableError):
+            owner._run_agent("TASK-002" if case == "wrong_task" else "TASK-001", "absent", "PLANTED_PROMPT_TOKEN")
+        row = guest._read_two_org_prelaunch_exception(directory, "alpha", deadline=time.monotonic() + 1,
+                                                      revision="a" * 40, source_digest=binding["digest"])
+        if case == "prelaunch":
+            assert row["exception"] == "unknown", row  # no source-owned class code
+            assert row["symbol"] == "runtime.orchestrator.orchestrator.Orchestrator._resolve_executor_name", row
+            assert "PLANTED_PROMPT_TOKEN" not in json.dumps(row)
+        else:
+            assert row == {"org": "alpha", "prelaunch_capture": "unavailable"}, row
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize('case', ['known', 'foreign_inner', 'foreign_class', 'source_changed', 'copied_code', 'wrapped_code', 'copied_class', 'copied_class_exact', 'builtin_known', 'source_class', 'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'])
+def test_two_org_policy_exception_observes_exact_inner_identity(tmp_path, monkeypatch, case):
+    """Pure resolver/thrower control: no executor, daemon or provider launch."""
+    import threading
+    from types import SimpleNamespace
+    from tests.helpers.two_org_prelaunch_capture import sitecustomize as capture
+    from runtime.orchestrator import active_authority_policy as policy
+    from runtime.orchestrator.orchestrator import Orchestrator
+    source = Path(__file__).resolve().parents[2]
+    directory = tmp_path / 'capture'
+    directory.mkdir(mode=0o700)
+    binding = capture.source_binding(source, 'a' * 40, deadline=time.monotonic() + 1)
+    if case == 'source_changed':
+        binding['hashes']['runtime.orchestrator.active_authority_policy'] = 'c' * 64
+    binding_file = directory / 'binding.json'
+    binding_file.write_text(json.dumps(binding))
+    binding_file.chmod(0o600)
+    monkeypatch.setenv('HAPPYRANCH_TWO_ORG_CAPTURE', str(binding_file))
+    monkeypatch.setattr(sys, 'orig_argv', [sys.executable, '-m', 'runtime.daemon'])
+    monkeypatch.syspath_prepend(str(source / 'tests/helpers/integration_stub_guard'))
+    monkeypatch.setattr(Orchestrator, '_run_agent', Orchestrator._run_agent)
+    # The resolver itself is real; only roster eligibility and storage are doubles.
+    monkeypatch.setattr(policy, 'resolve_policy_manager_team', lambda **kwargs: 'engineering')
+    seen = []
+    original_class = policy.ActiveAuthorityPolicyError
+    disk_before = Path(policy.__file__).read_bytes()
+    if case in {'copied_code', 'wrapped_code'}:
+        namespace = {'ActiveAuthorityPolicyError': original_class}
+        exec(compile("def resolve_active_team_policy_snapshot(**kwargs):\n    raise ActiveAuthorityPolicyError('PLANTED_CREDENTIAL /private/path')\n",
+                     policy.__file__, 'exec'), namespace)
+        changed = namespace['resolve_active_team_policy_snapshot']
+        changed.__module__ = policy.__name__
+        if case == 'wrapped_code':
+            changed.__wrapped__ = policy.resolve_active_team_policy_snapshot
+        assert changed.__code__ != policy.resolve_active_team_policy_snapshot.__code__
+        assert changed.__code__.co_filename == policy.resolve_active_team_policy_snapshot.__code__.co_filename
+        assert changed.__code__.co_qualname == policy.resolve_active_team_policy_snapshot.__code__.co_qualname
+        monkeypatch.setattr(policy, 'resolve_active_team_policy_snapshot', changed)
+    if case in {'copied_class', 'copied_class_exact'}:
+        counterfeit = type('ActiveAuthorityPolicyError', (RuntimeError,), {
+            '__module__': policy.__name__, '__qualname__': original_class.__qualname__,
+            '__doc__': original_class.__doc__ if case == 'copied_class_exact' else 'counterfeit',
+        })
+        monkeypatch.setattr(policy, 'ActiveAuthorityPolicyError', counterfeit)
+    from runtime.orchestrator import workspace_adapters as adapters
+    adapters_disk_before = Path(adapters.__file__).read_bytes()
+    if case in {'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'}:
+        original_integrity_class = adapters.WorkspaceIntegrityError
+        class BuiltinEqualityMeta(type):
+            def __hash__(cls):
+                return hash(ValueError)
+            def __eq__(cls, other):
+                return other is ValueError or other is cls
+        defining_type = BuiltinEqualityMeta if case == 'builtin_metaclass_spoof' else type
+        counterfeit = defining_type('WorkspaceIntegrityError', (Exception,), {
+            '__module__': adapters.__name__, '__qualname__': 'WorkspaceIntegrityError',
+            '__doc__': original_integrity_class.__doc__,
+            '__init__': original_integrity_class.__init__,
+        })
+        if case in {'rebound_closure_class', 'builtin_metaclass_spoof'}:
+            from types import FunctionType
+            def cell(value):
+                return (lambda: value).__closure__[0]
+            def foreign_string(self):
+                raise AssertionError('exception text must never be inspected')
+            original_init = original_integrity_class.__init__
+            closure = tuple(cell(counterfeit) if name == '__class__' else old
+                            for name, old in zip(original_init.__code__.co_freevars,
+                                                 original_init.__closure__))
+            counterfeit.__init__ = FunctionType(original_init.__code__, original_init.__globals__,
+                                               original_init.__name__, original_init.__defaults__, closure)
+            counterfeit.__str__ = foreign_string
+            if case == 'builtin_metaclass_spoof':
+                assert type(counterfeit) is BuiltinEqualityMeta
+                assert counterfeit is not ValueError
+            assert counterfeit is not original_integrity_class
+            assert counterfeit.__init__ is not original_init
+            assert counterfeit.__init__.__code__ is original_init.__code__
+            cells = dict(zip(counterfeit.__init__.__code__.co_freevars,
+                             counterfeit.__init__.__closure__))
+            assert cells['__class__'].cell_contents is counterfeit
+            assert vars(counterfeit)['__str__'] is foreign_string
+        monkeypatch.setattr(adapters, 'WorkspaceIntegrityError', counterfeit)
+    class Foreign(policy.ActiveAuthorityPolicyError):
+        pass
+    def invocation(*args, **kwargs):
+        try:
+            if case == 'foreign_class':
+                raise Foreign('PLANTED_CREDENTIAL /private/path')
+            if case == 'foreign_inner':
+                raise policy.ActiveAuthorityPolicyError('PLANTED_CREDENTIAL /private/path')
+            if case in {'source_class', 'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'}:
+                if case == 'copied_method_class':
+                    counterfeit_error = adapters.WorkspaceIntegrityError.__new__(adapters.WorkspaceIntegrityError)
+                    BaseException.__init__(counterfeit_error, 'PLANTED_CREDENTIAL /private/path')
+                    raise counterfeit_error
+                raise adapters.WorkspaceIntegrityError('private', 'PLANTED_CREDENTIAL /private/path')
+            if case == 'builtin_known':
+                from runtime.infrastructure.db.authority_policy import AuthorityPolicyMixin
+                AuthorityPolicyMixin._validate_authority_selector_team('')
+            policy.resolve_active_team_policy_snapshot(
+                store=SimpleNamespace(get_authority_selector=lambda team: None),
+                root=tmp_path, teams=None, team='engineering',
+                agent_name='engineering_head', eligible=True,
+            )
+        except BaseException as exc:
+            seen.append(exc)
+            raise
+    monkeypatch.setattr(Orchestrator, '_run_agent_impl', invocation)
+    connection = sqlite3.connect(':memory:')
+    connection.execute('CREATE TABLE audit_log(task_id TEXT,action TEXT)')
+    owner = Orchestrator.__new__(Orchestrator)
+    owner._slug = 'alpha'
+    owner._db = SimpleNamespace(_conn=connection, _lock=threading.RLock())
+    capture._install_capture()
+    try:
+        with pytest.raises(ValueError if case == 'builtin_known' else adapters.WorkspaceIntegrityError
+                           if case in {'source_class', 'copied_method_class', 'rebound_closure_class', 'builtin_metaclass_spoof'} else policy.ActiveAuthorityPolicyError) as caught:
+            owner._run_agent('TASK-001', 'engineering_head', 'PLANTED_PROMPT')
+        assert caught.value is seen[0]
+        assert disk_before == Path(policy.__file__).read_bytes()
+        assert adapters_disk_before == Path(adapters.__file__).read_bytes()
+        row = guest._read_two_org_prelaunch_exception(
+            directory, 'alpha', deadline=time.monotonic() + 1,
+            revision='a' * 40, source_digest=binding['digest'],
+        )
+        if case == 'source_changed':
+            assert row == {'org': 'alpha', 'prelaunch_capture': 'unavailable'}
+        else:
+            if case in {'copied_class', 'copied_class_exact', 'foreign_class'}:
+                assert row['exception'] == 'unknown'
+            elif case == 'source_class':
+                assert row['exception'] == 'unknown'  # custom defining types are not authenticated
+            elif case == 'builtin_known':
+                assert row['exception'] == 'builtins.ValueError'
+            else:
+                assert row['exception'] == 'unknown'  # custom defining types are not authenticated
+            assert row['symbol'] == ('runtime.orchestrator.active_authority_policy.resolve_active_team_policy_snapshot'
+                                     if case in {'known', 'copied_class', 'copied_class_exact'} else
+                                     'runtime.infrastructure.db.authority_policy.AuthorityPolicyMixin._validate_authority_selector_team'
+                                     if case == 'builtin_known' else 'unknown')
+            assert 'PLANTED' not in json.dumps(row) and '/private/path' not in json.dumps(row)
+    finally:
+        connection.close()

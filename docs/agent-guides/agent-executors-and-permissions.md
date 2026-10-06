@@ -494,6 +494,18 @@ schemas, never a hand-constructed copy. Normative prose is the signed
 architecture §2
 (``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
 
+## Deterministic integration executables
+
+All integration selections, including marked daemon/platform/remote-access siblings
+and the hosted Codex callback smoke, enter `tests/helpers/integration_parent.py`
+before importing pytest/runtime. The test-only fence retains production registry
+resolution and checks exact temporary stub paths/hashes, complete registry keys,
+explicit approved plan bytes, and the tested-source callback CLI. Pi/custom providers
+are unavailable until a separately authored deterministic fixture exists. No real
+agent executable, model request, agentic download, production registry/configuration
+or credential inheritance is allowed. This test fence does not modify production
+permissions, resolver policy or `_nested_daemon_env`. See `docs/local-ci.md`.
+
 ## Spawn-Environment Invariant and Worktree Isolation
 
 Every runtime-created child subprocess — agent executor sessions, custom-adapter

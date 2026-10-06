@@ -372,12 +372,20 @@ this report; `session_start` denotes intended invocations. Raw day/session count
 collection, threshold readiness or tuning. See the memory sections in
 `features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
 
+Integration collection and execution use deterministic external CLI stubs through
+`tests/helpers/integration_parent.py` before pytest/runtime imports. Use disposable
+GitHub runners or a separately authorized Mac Linux guest; the live Linux daemon
+host cannot run integration tests, including through jobs. See `docs/local-ci.md`
+for parent isolation, explicit plans, source/callback identity and bounded two-org
+exception observation. General integration remains SKIPPED under THR-243 seq42;
+a focused task authorization does not establish full-suite health.
+
 ## Commands
 
 ```bash
 uv run python -m pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
-uv run python -m pytest tests/ -v -m integration   # integration tests
-uv run python -m pytest tests/ -v -m ""            # unit + integration
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable venue only
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable venue only
 
 scripts/daemon.sh start
 scripts/daemon.sh status

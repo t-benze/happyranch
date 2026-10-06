@@ -666,7 +666,12 @@ def test_python_and_integration_pass_explicit_unique_basetemp(
     assert result.returncode == 0, result.stderr
     log = log_file.read_text()
     assert "uv sync --frozen" in log
-    assert "uv run pytest" in log
+    if target == "integration":
+        assert "uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration" in log
+        assert "uv run pytest" not in log
+    else:
+        assert "uv run pytest tests/ -v -n 4" in log
+        assert "integration_parent.py" not in log
     assert "--basetemp" in log
     # The directory existed while pytest ran and is gone afterwards.
     assert during.read_text().strip() == "exists=yes"

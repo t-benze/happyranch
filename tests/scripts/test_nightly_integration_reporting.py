@@ -91,7 +91,7 @@ def test_summary_surfaces_missing_junit_without_fabricating_counts(tmp_path: Pat
 def test_nightly_workflow_preserves_selection_and_scopes_issue_permission() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "uv run pytest tests/ -v -m integration" in workflow
+    assert "uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration" in workflow
     assert "--junitxml=artifacts/nightly-integration.xml" in workflow
     assert "python3 scripts/run_bounded_output.py" in workflow
     assert "--output artifacts/nightly-integration.log" in workflow

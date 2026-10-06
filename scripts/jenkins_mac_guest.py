@@ -378,7 +378,43 @@ def _read_owned_log(directory: Path, deadline: float) -> dict[str, object]:
     return facts
 
 
-def capture_diagnostics(basetemp: Path, *, deadline: float) -> dict[str, object]:
+def _read_two_org_prelaunch_exception(directory: Path, org: str, *, deadline: float,
+                                     revision: str | None, source_digest: str | None) -> dict:
+    """Consume only a complete private sidecar at the authenticated source."""
+    unavailable = {"org": org if org in {"alpha", "beta"} else "unknown", "prelaunch_capture": "unavailable"}
+    if (org not in {"alpha", "beta"} or not isinstance(revision, str)
+            or not isinstance(source_digest, str) or time.monotonic() >= deadline):
+        return unavailable
+    try:
+        with _owned_directory(directory) as parent:
+            if stat.S_IMODE(os.fstat(parent).st_mode) != 0o700:
+                return unavailable
+        with _owned_file(directory, org + "-TASK-001.json") as (_, fd):
+            info = os.fstat(fd)
+            if stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 1024:
+                return unavailable
+            data = os.read(fd, 1025)
+            if len(data) != info.st_size or not data.endswith(b"\n") or time.monotonic() >= deadline:
+                return unavailable
+            def closed_pairs(items):
+                result = {}
+                for key, value in items:
+                    if key in result:
+                        raise ValueError("duplicate_capture_key")
+                    result[key] = value
+                return result
+            row = json.loads(data.decode("ascii"), object_pairs_hook=closed_pairs)
+            from tests.helpers.two_org_prelaunch_capture.sitecustomize import validate_record
+            validate_record(row, org=org, revision=revision, source_digest=source_digest)
+        if time.monotonic() >= deadline:
+            return unavailable
+        return row
+    except (OSError, ValueError, TypeError, KeyError):
+        return unavailable
+
+
+def capture_diagnostics(basetemp: Path, *, deadline: float,
+                        source: Path | None = None, source_sha: str | None = None) -> dict[str, object]:
     receipt: dict[str, object] = {"nodes": [], "nodes_truncated": False,
                                  "cause": "unknown", "raw_text": "omitted"}
     nodes: list[dict[str, object]] = []
@@ -413,6 +449,19 @@ def capture_diagnostics(basetemp: Path, *, deadline: float) -> dict[str, object]
                                                         else "unsafe_or_unreadable")
                             orgs.append(facts)
                         node["orgs"] = orgs
+                        if kind == "two_orgs":
+                            digest = None
+                            if source is not None and source_sha is not None:
+                                try:
+                                    from tests.helpers.two_org_prelaunch_capture.sitecustomize import source_binding
+                                    digest = source_binding(source, source_sha, deadline=deadline)["digest"]
+                                except (OSError, ValueError):
+                                    pass
+                            directory = basetemp / name / ".happyranch/two-org-prelaunch"
+                            node["prelaunch_exceptions"] = [
+                                _read_two_org_prelaunch_exception(directory, org, deadline=deadline,
+                                                                 revision=source_sha, source_digest=digest)
+                                for org in ("alpha", "beta")]
                         try:
                             node.update(_read_owned_log(basetemp / name / ".happyranch", deadline))
                         except (OSError, ValueError):
@@ -462,6 +511,7 @@ def main() -> int:
     start = commands.add_parser("start")
     for name in ("source", "artifacts", "basetemp"):
         start.add_argument(f"--{name}", type=Path, required=True)
+    start.add_argument("--source-sha", default=None)
     command = commands.add_parser("command")
     command.add_argument("--seconds", type=float, required=True)
     command.add_argument("--reserve", type=float, required=True)
@@ -477,12 +527,16 @@ def main() -> int:
         deadline = time.monotonic() + INNER_SECONDS
         _write(args.state, {"deadline": deadline, "source": str(args.source),
                             "artifacts": str(args.artifacts), "basetemp": str(args.basetemp),
+                            "source_sha": args.source_sha,
                             "source_digest": _source_digest(args.source, deadline - 60)})
         return 0
     state = json.loads(args.state.read_text())
     artifacts = Path(state["artifacts"])
     if args.phase == "command":
         argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+        if argv[:3] == ["uv", "run", "pytest"]:
+            argv = ["uv", "run", "python", str(Path(state["source"]) / "tests/helpers/integration_parent.py"),
+                    "--", "pytest", *argv[3:]]
         status, _, _ = run_workload(argv, deadline=state["deadline"], seconds=args.seconds,
                                     reserve=args.reserve)
         return status
@@ -510,9 +564,11 @@ def main() -> int:
                                             if name not in PACKAGES and before.get(name) != version},
         })
     elif args.phase == "capture":
+        sys.path.insert(0, state["source"])
         _write(artifacts / "guest-diagnostics.json", capture_diagnostics(
             Path(state["basetemp"]), deadline=min(state["deadline"] - SHUTDOWN_SECONDS,
-                                                 time.monotonic() + CAPTURE_SECONDS)))
+                                                 time.monotonic() + CAPTURE_SECONDS),
+            source=Path(state["source"]), source_sha=state.get("source_sha")))
     elif args.phase == "finish":
         after = _source_digest(Path(state["source"]), state["deadline"])
         unchanged = after == state["source_digest"]

@@ -1,3 +1,23 @@
+# The integration invocation MUST enter the stdlib test parent before pytest.
+# This refusal occurs before any runtime imports or module collection here.
+import os
+import sys
+
+expression = "not integration"
+for index, argument in enumerate(sys.argv[1:], 1):
+    if argument in ("-m", "--markexpr"):
+        expression = sys.argv[index + 1]
+    elif argument.startswith("--markexpr="):
+        expression = argument.split("=", 1)[1]
+    elif argument.startswith("-m"):
+        expression = argument[2:].removeprefix("=")
+if expression != "not integration" and "HAPPYRANCH_TEST_PARENT_MANIFEST" not in os.environ:
+    raise RuntimeError("use tests/helpers/integration_parent.py before integration collection")
+
+if "HAPPYRANCH_TEST_PARENT_MANIFEST" in os.environ:
+    from tests.helpers.integration_stub_guard.guard import require_parent_environment
+    require_parent_environment()
+
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -19,6 +39,11 @@ _TEST_AGENT_NAMES = (
     "qa_engineer", "senior_dev", "content_head", "content_agent",
     "alice", "bob",
 )
+
+
+def pytest_configure(config):
+    if config.getoption("markexpr") != "not integration" and "HAPPYRANCH_TEST_PARENT_MANIFEST" not in os.environ:
+        raise pytest.UsageError("integration collection requires tests/helpers/integration_parent.py")
 
 
 def seed_test_agents(paths: OrgPaths, names: tuple[str, ...] | None = None) -> None:
@@ -231,3 +256,38 @@ def _isolate_org_slug():
     yield
     if old is not None:
         os.environ["HAPPYRANCH_ORG_SLUG"] = old
+
+
+@pytest.fixture(autouse=True)
+def _integration_stub_registry(request, tmp_path, monkeypatch, _isolate_canonical_store):
+    if request.node.get_closest_marker("integration") is None:
+        return
+    from tests.helpers.integration_stub_guard.guard import manifest, validate_registry
+    binding = manifest()
+    witness = tmp_path / "stub-witness"
+    witness.mkdir(mode=0o700)
+    monkeypatch.setenv("HAPPYRANCH_TEST_WITNESS_DIR", str(witness))
+    from runtime.orchestrator.executor_binary_registry import save_registry, load_registry
+    save_registry({p: row["path"] for p, row in binding["stubs"].items()})
+    validate_registry(load_registry(), binding)
+
+
+def _stub_path(provider):
+    from tests.helpers.integration_stub_guard.guard import manifest, validate_stub
+    binding = manifest()
+    return Path(validate_stub(provider, binding["stubs"][provider]["path"], binding))
+
+
+@pytest.fixture
+def fake_claude():
+    return _stub_path("claude")
+
+
+@pytest.fixture
+def fake_codex():
+    return _stub_path("codex")
+
+
+@pytest.fixture
+def fake_opencode():
+    return _stub_path("opencode")

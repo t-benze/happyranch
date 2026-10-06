@@ -779,14 +779,33 @@ For where new test files belong, see the forward-only
 
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
-uv run pytest tests/ -v -m integration   # integration tests
-uv run pytest tests/ -v -m ""            # unit + integration
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable only
 ```
 
-Integration tests spawn a real daemon and fake CLIs. They are isolated from `~/.happyranch/` via `HAPPYRANCH_DAEMON_HOME`. Run integration tests locally before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
+Integration tests run real production orchestration with deterministic external
+CLI stubs in disposable GitHub runners or a separately authorized Mac Linux guest.
+The test parent is sanitized before pytest/runtime imports, with temporary homes,
+configuration, registries and runtime data plus exact source/callback/stub identity.
+Direct integration collection without that parent refuses. Never run integration
+on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
+The disposable default roster exists before startup/registration so the real
+lifecycle initializes eligible manager selectors. Example-based two-org creation
+likewise supplies the declared roster, including the default `code_reviewer`,
+before POST so canonical reviewer discovery is coherent; the Codex bootstrap case uses
+the supported pending-manager approval path. Explicit task plans write bound JSON
+payloads and invoke the tested-source CLI on one line with an absolute `--from-file`.
+Registered shell stubs restore their own temporary bin directory before identity
+admission, so uv or daemon PATH normalization cannot shadow that callback.
+`_nested_daemon_env` still copies the sanitized test parent and removes exactly
+its two outer containment markers; it does not sanitize a production environment.
 
-`tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures.
-
+`tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures and write explicit
+`DeterministicPlan` bytes. Missing, changed or unavailable plans refuse before
+execution; an intentional no-op is an explicit plan. The original two-org fixture
+opts into a bounded, source-authenticated pre-session exception observer without
+changing launch, return or exception behavior. Historical two-org cause remains
+UNKNOWN; the offline missing-agent control is not a historical diagnosis.
 
 ### S2 activation attachment and recovery
 

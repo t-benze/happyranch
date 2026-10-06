@@ -950,9 +950,23 @@ def test_v2_lost_cas_never_reclaims(db: Database, monkeypatch):
     assert db.get_task(task_id).status is TaskStatus.IN_PROGRESS
 
 
+@pytest.mark.parametrize("probe_outcome", ["dead", "alive", "permission", "error"])
 def test_zombie_cancel_without_orchestrator_has_no_reclamation(
-    db: Database, monkeypatch,
+    db: Database, monkeypatch, probe_outcome: str,
 ):
+    # An arbitrary host PID is not guaranteed dead. Drive only the OS-probe
+    # boundary; retain the real predicate, sweep and cancellation transaction.
+    probes = []
+    def probe(pid: int, signal: int) -> None:
+        probes.append((pid, signal))
+        assert (pid, signal) == (ZOMBIE_PID, 0)
+        if probe_outcome == "dead":
+            raise ProcessLookupError
+        if probe_outcome == "permission":
+            raise PermissionError
+        if probe_outcome == "error":
+            raise OSError
+    monkeypatch.setattr("runtime.daemon.zombie_reaper.os.kill", probe)
     task_id = "T-NO-ORCH"
     flag_time = _ago(FLAG_TTL_NO_FINGERPRINT_SECONDS + 5)
     db.insert_task(TaskRecord(
@@ -977,8 +991,14 @@ def test_zombie_cancel_without_orchestrator_has_no_reclamation(
     )
 
     t = db.get_task(task_id)
-    assert t.status is TaskStatus.CANCELLED
-    assert t.note == "zombie reaped: session died without completing"
+    assert probes == [(ZOMBIE_PID, 0)]
+    if probe_outcome == "dead":
+        assert t.status is TaskStatus.CANCELLED
+        assert t.note == "zombie reaped: session died without completing"
+    else:
+        assert t.status is TaskStatus.IN_PROGRESS
+        assert t.note is None
+        assert t.zombie_flagged_at is None
 
 
 # ---------------------------------------------------------------------------
