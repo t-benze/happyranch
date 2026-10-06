@@ -620,6 +620,74 @@ Every push renews gates; composition, head-matched guarded squash and
 independent parent/tree/ancestry checks remain manager-owned. Integration
 SUITE, including followup E2E, is SKIPPED Founder THR-243 seq42, never PASS.
 
+## S6 archive-helper ownership (TASK-9912)
+
+This unit moves only `Database._set_thread_status_archived_uncommitted` into
+the existing `ThreadsMixin`: exactly 13 decorated lines, source SHA256
+`83eeb10706baccbf6503738db0037c27035ac5341b0a418fd127818fad727685`.
+No import, helper, body, SQL, default, decorator, annotation or metadata repair
+is added. The already-shipped late `_now` and shared `_synchronized` retain
+whole-facade `_now`/`_time` patches and the same instance RLock and lock logger.
+The helper naturally has the mixin's defining module/qualname; Database class,
+exports, bases/MRO, method signatures and old attribute dispatch stay intact.
+
+`ThreadsMixin.archive_thread_and_reset_sessions` retains BEGIN IMMEDIATE,
+participant reset, action-specific invalidation audit, commit and rollback.
+Its other direct caller `set_thread_status`, the committed archive setters,
+POST archive, preparatory delivery discard/reap, message/audit writers,
+ThreadStore/transcript renderer, all clocks and shared lock owners stay verbatim.
+The separately committed discard boundary is not compensated on later failure.
+Existing archived_at/summary history, including resumed OPEN threads, survives.
+
+Engineering_manager TASK-9785 accepted
+TASK-9909/S6-ARCHIVE/A1-A4/revision2 (47,769 bytes, design SHA256
+`f2b74a51023d718c3e36b125c14fcf373d383e159d17096fdb963174845259c7`)
+and ALL TASK-9904 F1-F3 dispositions after independent TASK-9910 DESIGN-ONLY
+PASS, before implementation. The exact HIGH five-file brief and Founder
+THR-273 seq37/45/80 satisfy current DEV-G03. Design PASS is not executable QA,
+code approval, CI or merge evidence.
+
+All six accepted finite IDs remain: A1.1[first_archive,resumed_history],
+A1.2[reset,audit], A2.1 unchanged keeper reuse,
+A3.1[facade_first,mixin_first], A4.1 source/ownership proof and A4.2 full
+unfiltered app/served OpenAPI. The supplements live in
+`tests/daemon/test_thread_archive_decomposition.py`; literal complete HTTP,
+all-table/all-column/schema/index/trigger/allocator/history/transcript/file-mode/
+temp-residue/transaction/dormant-queue frames, selected-original-only
+RED/restoration/GREEN, repetitions and extraction evidence live in
+`dev_agent/output/TASK-9912`. Existing tests, fixtures and projected/semantic
+OpenAPI keepers remain frozen. Full OpenAPI uses original pristine documents,
+the SAME guarded root and SAME unchanged interpreter through final comparison.
+
+At immutable base `227fde9591baaefbe6a94933f6c872a8ee6c14ee`, counts are
+database2196/threads904/run_step4747/models4711/executors2624/readers97.
+This exact 13-line relocation leaves database2183/threads917; all other counts
+remain unchanged, and direct remaining facade definitions/properties go 48→47.
+ALL23 landed slices, steps1–4, R5 TWO122 moved/TWO288 retained, FOUR terminal
+readers78 and pin18 remain foundations. This leaf's candidate does not claim
+landed completion, wholeS6/R4/R6, models/executors or program completion.
+Formatter remains independently verified F8 STOP/RETAIN. R1 state/cache/lock/
+__file__/whole-clock/helpers, R3 compositor/logger header and facade logger stay
+retained. Other S6 message/participant/invocation closures require separate units.
+
+PR682 ELEVEN R2 and actual R4/R6/completion/chain/carrier/parent/fanout/followup/
+added caller, PR684 attachment insertion AND enqueue/revisit/admission, and
+PR840 result/admission/insert_task_result remain HELD. Merged997 routing/admission/
+Database/TasksMixin and983 callback/PATH/roster/nightly/finalizer ownership,
+current996 route/docs/OpenAPI and1000 coherent-read/RLock/audit/observer owners,
+and concurrent THR139/228/091/280 (plus any current THR118) remain acknowledged.
+Selected-body equality does not clear callers or shared owners. Fresh paginated
+head/base/file sets and full actual changed hunks are required at each boundary.
+
+Independent full-original-base code_reviewer APPROVE then independent executable
+qa_engineer PASS at the SAME FINAL SHA, strict task-owned terminal local-CI JOB
+script/wrapper/final-provenance EXIT0, all FOUR exact-head hosted pull_request
+successes and the distinct actual selected Codex callback smoke remain required.
+Every push renews gates. Moving-main composition, guarded head-matched squash,
+independent parent/tree/ancestry and per-slice reporting remain manager-owned.
+Integration SUITE including followup E2E is SKIPPED Founder THR-243 seq42,
+NEVER PASS. No deployment or feature-completion authority follows.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target
