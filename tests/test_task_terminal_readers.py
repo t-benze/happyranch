@@ -310,31 +310,48 @@ def expect_delta(orch, before, start, *, updates=None, new_task=False,
     """Explicit changes applied to pristine rows; no field is erased."""
     end = datetime.now(timezone.utc)
     actual = snapshot(orch)
+    captured_queue = list(orch._queue._queue._queue)
     expected = copy.deepcopy(before)
+    field_checks = []
+    time_checks = []
     for tid, changes in (updates or {}).items():
         row = next(r for r in expected["tasks"] if r["id"] == tid)
-        observed = next(r for r in actual["tasks"] if r["id"] == tid)
+        observed = next((r for r in actual["tasks"] if r["id"] == tid), {})
         for key, value in changes.items():
             if value != "$TIME":
-                assert observed[key] == value, (tid, key, observed[key], value)
-            row[key] = time_binding(observed[key], start, end) if value == "$TIME" else value
+                field_checks.append((tid, key, observed.get(key), value))
+                row[key] = value
+            else:
+                row[key] = observed.get(key)
+                time_checks.append(row[key])
     if new_task:
-        observed = next(r for r in actual["tasks"] if r["id"] == "TASK-001")
+        observed = next((r for r in actual["tasks"] if r["id"] == "TASK-001"), {})
         row = copy.deepcopy(NEXT_TASK)
         for key in ("created_at", "updated_at"):
-            row[key] = time_binding(observed[key], start, end)
+            # Bind only these explicit coordinates; missing values remain
+            # representable until the complete state/queue comparison.
+            row[key] = observed.get(key, row[key])
+            time_checks.append(row[key])
         expected["tasks"].append(row)
     if audit:
         prior_id = max((r["id"] for r in before["audit_log"]), default=0)
         row = {"id": prior_id + 1, "task_id": audit[0], "agent": audit[1],
                "action": audit[2], "payload": audit[3],
-               "timestamp": time_binding(actual["audit_log"][-1]["timestamp"], start, end)}
+               "timestamp": (actual["audit_log"][-1].get("timestamp")
+                             if actual["audit_log"] else None)}
+        time_checks.append(row["timestamp"])
         expected["audit_log"].append(row)
         seq = next((r for r in expected["sqlite_sequence"] if r["name"] == "audit_log"), None)
         if seq is None:
             expected["sqlite_sequence"].append({"name": "audit_log", "seq": prior_id + 1})
         else:
             seq["seq"] = prior_id + 1
+    expected_queue = [("test-org", tid, None) for tid in queue]
+    assert (actual, captured_queue) == (expected, expected_queue)
+    for tid, key, observed_value, value in field_checks:
+        assert observed_value == value, (tid, key, observed_value, value)
+    for raw in time_checks:
+        time_binding(raw, start, end)
     assert actual == expected
     assert queue_items(orch) == [("test-org", tid, None) for tid in queue]
 
