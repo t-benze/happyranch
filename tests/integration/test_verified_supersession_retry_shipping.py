@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import signal
 import sqlite3
 import subprocess
@@ -325,9 +324,10 @@ def test_installed_verified_supersession_retry(tmp_path: Path, monkeypatch: pyte
     seed_workspace(test_org, "engineering_head", executor="codex")
     seed_workspace(test_org, "dev_agent", executor="codex")
 
-    fake_codex = proof / "fake_codex.sh"
-    shutil.copy2(expected_source / "tests/integration/fake_codex.sh", fake_codex)
-    fake_codex.chmod(0o755)
+    from tests.helpers.integration_stub_guard.guard import manifest
+    # The source-hashed parent stub is already provisioned beside its bound
+    # Python/callback wrappers. Moving just the stub loses that closed route.
+    binding = manifest()
     _write_driver(proof)
     launcher = _write_launcher(proof)
     plan = proof / "plan.sh"
@@ -343,9 +343,6 @@ def test_installed_verified_supersession_retry(tmp_path: Path, monkeypatch: pyte
     approve_plan(plan)
     monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
     monkeypatch.setenv("HAPPYRANCH_DAEMON_PORT", "0")
-    from tests.helpers.integration_stub_guard.guard import manifest
-    binding = manifest()
-    binding["stubs"]["codex"]["path"] = str(fake_codex)
     test_manifest = proof / "stub-manifest.json"
     test_manifest.write_text(json.dumps(binding, sort_keys=True))
     test_manifest.chmod(0o600)
