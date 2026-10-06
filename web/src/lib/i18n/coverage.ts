@@ -25,9 +25,11 @@
  * owned dialogs/panels) and Skills (every `skills*` route token and its owned
  * surfaces); user/daemon values (policy bodies, contract ids, digests, agent
  * names, skill names/slugs/bodies, versions, provenance) stay verbatim. W4d-1 migrates KB and Artifacts including gated Compose and upload/action chrome.
- * W4d-2 translates Usage presentation; the remaining mounted product surfaces stay `english-only` for the later slices
- * (the assistant dock body in later W4/W5 legs) —
- * fallback English is never treated as coverage.
+ * W4d-2 translates Usage presentation; the mounted Assistant dock and
+ * conversation controls are also translated. W5a completes the accepted finite
+ * mounted-state audit; W5b enables full browser locale resolution. The 21
+ * translated/3 not-applicable entries are inventory, not rendering proof.
+ * Fallback English is never treated as coverage.
  * Redirect-only/catch-all
  * tokens are `not-applicable`. The marker is explicit machine-readable data
  * and the accompanying test fails when a newly mounted route token is not
@@ -268,7 +270,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     surfaces: ['HelpDrawerHost', 'CommandPaletteHost'],
   },
   {
-    // Assistant dock BODY copy is W4; only its shell slot is mounted here.
+    // Mounted dock body and conversation controls have their own copy evidence.
     namespace: 'system-assistant',
     routeTokens: [],
     status: 'translated',

@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StrictMode } from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AppShell } from '@/App';
 import { bootstrapDocumentLocale, LOCALE_STORAGE_KEY } from '@/lib/i18n';
 import { server } from '@/test/server';
@@ -27,7 +27,7 @@ describe('production harness wiring (W1 acceptance case 7)', () => {
   it('main.tsx resolves the locale before the first React text', () => {
     const main = read('src/main.tsx');
     expect(main).toContain('bootstrapDocumentLocale');
-    expect(main.indexOf('bootstrapDocumentLocale()')).toBeLessThan(main.indexOf('createRoot'));
+    expect(main.indexOf("bootstrapDocumentLocale({ mode: 'full' })")).toBeLessThan(main.indexOf('createRoot'));
   });
 
   it('the shared test harness renders with the i18n provider', () => {
@@ -74,7 +74,7 @@ describe('production App composition and startup handoff (W1 acceptance cases 4/
 
   it('main.tsx hands its single resolution to App, which forwards it to the shell', () => {
     const main = read('src/main.tsx');
-    expect(main).toContain('const initialLocale = bootstrapDocumentLocale()');
+    expect(main).toContain("const initialLocale = bootstrapDocumentLocale({ mode: 'full' })");
     expect(main).toContain('<App initialLocale={initialLocale}');
     const app = read('src/App.tsx');
     expect(app).toContain('AppShell initialLocale={initialLocale}');
@@ -180,5 +180,118 @@ describe('browser-evidence instrumentation is test-only and gated (W1 acceptance
     // Real focus/identity observations required by R4.
     expect(harness).toContain('document.activeElement');
     expect(harness).toContain('hrIdentity');
+  });
+});
+
+describe('W5 production AppShell storage stage', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    document.documentElement.lang = 'en';
+  });
+
+  function mountChineseShell() {
+    sessionStorage.setItem('happyranch.token', 'tok');
+    vi.spyOn(navigator, 'language', 'get').mockReturnValue('zh-CN');
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN', 'zh']);
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [] })),
+      http.get('/api/v1/health/prereqs', () => HttpResponse.json({ prereqs: [] })),
+    );
+    return render(<MemoryRouter initialEntries={['/']}><AppShell initialLocale={{ locale: 'en', source: 'saved' }} /></MemoryRouter>);
+  }
+
+  it.each([
+    { event: 'delete', key: LOCALE_STORAGE_KEY, value: null },
+    { event: 'clear', key: null, value: null },
+    { event: 'invalid', key: LOCALE_STORAGE_KEY, value: 'invalid' },
+  ])('production AppShell uses full fallback after $event without storage echo', async ({ key, value }) => {
+    localStorage.setItem(LOCALE_STORAGE_KEY, 'en');
+    mountChineseShell();
+    await screen.findByRole('heading', { name: /Connect your agentic CLI/ });
+    const write = vi.spyOn(Storage.prototype, 'setItem');
+    act(() => {
+      fireEvent(window, new StorageEvent('storage', { key, newValue: value, storageArea: localStorage }));
+    });
+    expect(document.documentElement.lang).toBe('zh-CN');
+    expect(await screen.findByRole('heading', { name: /连接你的智能体 CLI/ })).toBeInTheDocument();
+    expect(write).not.toHaveBeenCalledWith(LOCALE_STORAGE_KEY, expect.anything());
+  });
+
+  it('production AppShell falls back to Chinese when locale storage is unavailable', async () => {
+    vi.spyOn(navigator, 'language', 'get').mockReturnValue('zh-CN');
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(['zh-CN']);
+    sessionStorage.setItem('happyranch.token', 'tok');
+    const original = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, key) {
+      if (key === LOCALE_STORAGE_KEY) throw new Error('unavailable');
+      return original.call(this, key);
+    });
+    server.use(
+      http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [] })),
+      http.get('/api/v1/health/prereqs', () => HttpResponse.json({ prereqs: [] })),
+    );
+    render(<MemoryRouter initialEntries={['/']}><AppShell /></MemoryRouter>);
+    expect(document.documentElement.lang).toBe('zh-CN');
+    expect(await screen.findByRole('heading', { name: /连接你的智能体 CLI/ })).toBeInTheDocument();
+  });
+});
+
+// This route-leaf scaffold observes the real main -> App -> AppShell -> provider
+// handoff during render. Shipping connected DOM is owned by the ordinary browser
+// cases; replacing page data here keeps network timing out of the startup oracle.
+describe('W5 ordinary production startup', () => {
+  afterEach(() => {
+    vi.doUnmock('@/routes');
+    vi.restoreAllMocks();
+    document.getElementById('root')?.remove();
+    document.documentElement.lang = 'en';
+  });
+
+  it.each([
+    { label: 'missing Chinese', saved: null, languages: ['zh-CN', 'zh'], expected: 'zh-CN', text: '加载中…' },
+    { label: 'invalid Chinese', saved: 'invalid', languages: ['zh-TW'], expected: 'zh-CN', text: '加载中…' },
+    { label: 'saved English / Chinese', saved: 'en', languages: ['zh-CN'], expected: 'en', text: 'Loading…' },
+    { label: 'saved Chinese / English', saved: 'zh-CN', languages: ['en-US'], expected: 'zh-CN', text: '加载中…' },
+    { label: 'English', saved: null, languages: ['en-US'], expected: 'en', text: 'Loading…' },
+    { label: 'unsupported', saved: null, languages: ['fr-FR'], expected: 'en', text: 'Loading…' },
+    { label: 'ordered Chinese', saved: null, languages: ['fr-FR', 'zh-HK', 'en'], expected: 'zh-CN', text: '加载中…' },
+    { label: 'ordered English', saved: null, languages: ['en-GB', 'zh-CN'], expected: 'en', text: 'Loading…' },
+  ])('ordinary main: $label resolves before its first consumer and reads one snapshot', async ({ saved, languages, expected, text }) => {
+    localStorage.clear();
+    if (saved !== null) localStorage.setItem(LOCALE_STORAGE_KEY, saved);
+    vi.spyOn(navigator, 'language', 'get').mockReturnValue(languages[0]);
+    vi.spyOn(navigator, 'languages', 'get').mockReturnValue(languages);
+    vi.resetModules();
+    const observations: Array<{ locale: string; lang: string; text: string }> = [];
+    vi.doMock('@/routes', async () => {
+      const { useI18n } = await import('@/hooks/i18n');
+      return { AppRoutes: function FirstConsumer() {
+        const { locale, t } = useI18n();
+        const ownedText = t('shell.loading');
+        observations.push({ locale, lang: document.documentElement.lang, text: ownedText });
+        return <p>{ownedText}</p>;
+      } };
+    });
+    const { browserLocalePreferenceAdapter } = await import('@/lib/i18n');
+    const snapshot = vi.spyOn(browserLocalePreferenceAdapter, 'readSnapshot');
+    const write = vi.spyOn(Storage.prototype, 'setItem');
+    const rootElement = document.createElement('div');
+    rootElement.id = 'root';
+    document.body.append(rootElement);
+    const dom = await import('react-dom/client');
+    const createRoot = vi.spyOn(dom.default, 'createRoot');
+    const react = await import('react');
+    try {
+      await react.act(async () => { await import('@/main'); });
+      expect(observations.length).toBeGreaterThan(0);
+      for (const observed of observations) expect(observed).toEqual({ locale: expected, lang: expected, text });
+      expect(rootElement.textContent).toBe(text);
+      expect(snapshot).toHaveBeenCalledTimes(1);
+      expect(write).not.toHaveBeenCalledWith(LOCALE_STORAGE_KEY, expect.anything());
+      expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe(saved);
+    } finally {
+      const root = createRoot.mock.results[0]?.value as { unmount: () => void } | undefined;
+      await react.act(async () => { root?.unmount(); });
+    }
   });
 });

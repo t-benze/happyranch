@@ -2,8 +2,8 @@
  * THR-118 W2c — Settings ▸ Preferences (language) routing/state/error TDD.
  *
  * W3b-2 enables the selector in ordinary production builds: the sub-nav entry
- * and direct URL work without any build flag, an unset preference stays
- * English even on a Chinese browser, and the coverage disclosure is visible.
+ * and direct URL work without any build flag. W5 enables browser-language
+ * fallback in production; explicit preview fixtures below retain their defaults.
  * Also covers API loading/error/no-data independence, both switch
  * directions with DOM identity + focus preservation, honest persistence
  * success/failure, storage-event compatibility, back/forward navigation and a
@@ -149,8 +149,8 @@ function unsetChineseBrowserAdapter(): LocalePreferenceAdapter {
 }
 
 const DISCLOSURE_EN =
-  'Preview: some secondary pages are not translated yet and may still appear in English.';
-const DISCLOSURE_ZH = '预览版：部分次要页面尚未翻译，可能仍以英文显示。';
+  'English and Simplified Chinese are available. Your saved choice comes first; otherwise, we follow your browser language.';
+const DISCLOSURE_ZH = '支持英语和简体中文。优先使用你保存的语言；未保存时使用浏览器语言。';
 
 describe('W3b-2 Preferences — enabled in production (no build flag)', () => {
   beforeEach(() => stubSettings('ok'));
@@ -181,7 +181,7 @@ describe('W3b-2 Preferences — enabled in production (no build flag)', () => {
     );
   });
 
-  test('unset preference on a Chinese browser stays English; the coverage disclosure is visible', async () => {
+  test('explicit preview fixture: unset Chinese stays English; bilingual availability disclosure is visible', async () => {
     mountSettings(`/orgs/${SLUG}/settings/preferences`, unsetChineseBrowserAdapter());
     expect(await screen.findByRole('heading', { name: 'Preferences' })).toBeInTheDocument();
     expect(languageRadio('English')).toBeChecked();
