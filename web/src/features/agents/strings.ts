@@ -54,3 +54,14 @@ function rawDiagnostic(err: unknown): string | null {
 export function renderAgentError(view: AgentErrorView, t: Translate, params?: MessageParams): string {
   return view.kind === 'raw' ? view.text : t(view.key, params);
 }
+
+/** Prompt failures keep neutral state and require a fresh inspection before another PUT. */
+export function classifySystemPromptError(err: unknown): MessageKey {
+  const code = (err as { code?: string } | null)?.code;
+  if (code === 'stale_agent_revision') return 'agents.prompt.conflict';
+  if (code === 'agent_not_found') return 'agents.prompt.disappeared';
+  if (code === 'expected_revision_required') return 'agents.prompt.unavailable';
+  if (code === 'system_prompt_reconciliation_failed') return 'agents.prompt.reconciliationFailed';
+  if (code === 'system_prompt_audit_failed') return 'agents.prompt.auditFailed';
+  return 'agents.prompt.verifyFailed';
+}

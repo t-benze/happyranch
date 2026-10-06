@@ -297,3 +297,17 @@ explicitly labeled origin-regression RED at their full-layout observer; setup or
 import errors never count as business RED. Controls refuse absent attribution,
 syntax errors, missing receipts, or failed restoration. Actual source-control
 completion is recorded separately from all and from the 580-process repetitions.
+
+The G07 keeper distinguishes authentic compatible cold reopens from physical
+no-write validation/refusal boundaries. Successful old E and current G reopens
+compare independently observed complete SQL, all tables, rowids, storage types,
+raw values, file set/modes and non-database bytes after every closed reader.
+Validator-only success and intended schema-mismatch refusal retain entire
+file-byte/mode equality. Fixed causal controls separately corrupt current G
+reopen identity, validator page preservation and refusal page preservation in
+owned source copies; each must reach its named assertion, restore exact source
+bytes AND modes, then pass the same command. The archives remain unchanged,
+and these additional controls do not trim the original 580 repeated processes
+or increase the 60-minute cap. Their control-plan keeper is also mutated and
+restored. Submitted or statically inspected controls are not executed RED/GREEN
+evidence.

@@ -16,6 +16,13 @@ The older draft script still upgrades F to E and reports a validated G as a
 no-write G replay. Legacy authority comparison uses independent complete
 F/E/G whole-database references; authority-v2 remains observed-only.
 
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
+
 An authorized upgrade requires the daemon to be stopped with its configured
 home/registration observable and source owners/hosts reconciled. The command
 reads bounded existing PID/port/registry evidence and reserves one SQLite

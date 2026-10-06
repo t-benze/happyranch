@@ -16,6 +16,13 @@ The older draft script still upgrades F to E and reports a validated G as a
 no-write G replay. Legacy authority comparison uses independent complete
 F/E/G whole-database references; authority-v2 remains observed-only.
 
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
+
 An authorized upgrade requires the daemon to be stopped with its configured
 home/registration observable and source owners/hosts reconciled. The command
 reads bounded existing PID/port/registry evidence and reserves one SQLite
@@ -318,7 +325,10 @@ remains a read and does not fence or advance the generation.
 
 Multi-stage async writers take the process-local coordinator gate before
 `teams_lock` and retain that gate through their terminal success or
-compensation. Startup migration retains the same process gate for its batch.
+compensation. Request cancellation or SSE disconnect drains started mutating
+workers before releasing the gate; admitted request writes also finish their
+terminal reconciliation before propagating cancellation, including repeated
+cancellation. Startup migration retains the same process gate for its batch.
 The shipped durable publication lease is acquired only for each synchronous
 canonical mutation and released before filesystem scanning, awaited workspace
 bootstrap, cloning, network access, host launch, callbacks, snapshot capture,

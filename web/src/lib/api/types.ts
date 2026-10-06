@@ -530,6 +530,25 @@ export interface AgentSummary {
   revision?: string | null;
 }
 
+export interface SystemPromptBody {
+  system_prompt: string;
+  expected_revision: string;
+}
+
+export interface SystemPromptReceipt {
+  agent: string;
+  system_prompt: string;
+  revision: string;
+}
+
+export type SystemPromptCompensation = 'restored' | 'not_owned' | 'failed' | 'not_required';
+export type SystemPromptErrorDetail =
+  | { code: 'expected_revision_required' | 'agent_not_found' }
+  | { code: 'stale_agent_revision'; current_revision: string }
+  | { code: 'system_prompt_reconciliation_failed'; error: string;
+      compensation: { canonical: SystemPromptCompensation; workspace: SystemPromptCompensation } }
+  | { code: 'system_prompt_audit_failed'; commit_state: 'possibly_committed' };
+
 export interface AgentEnrollment {
   name: string;
   team: string;

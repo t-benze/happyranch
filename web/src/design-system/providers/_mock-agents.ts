@@ -15,6 +15,17 @@ import { MOCK_AGENTS, MOCK_ENROLLMENTS } from '@/mocks';
 import type { AgentsApi } from './DataContext';
 
 export const mockAgentsApi: AgentsApi = {
+  useSetAgentSystemPrompt: () => useMutation({
+    mutationFn: async (): Promise<import('@/lib/api/types').SystemPromptReceipt> => {
+      throw new Error('System prompt persistence is unavailable in the prototype.');
+    },
+    retry: false,
+  }),
+  useReadAgentSystemPrompt: () => useMutation({
+    mutationFn: async ({ agentName }: { slug: string; agentName: string }) =>
+      MOCK_AGENTS.find((agent) => agent.name === agentName),
+    retry: false,
+  }),
   useAgentsList: () =>
     useQuery({
       queryKey: ['mock-agents'],

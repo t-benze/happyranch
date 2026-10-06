@@ -366,6 +366,19 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
         for patch in control['patches']:
             assert patch['old'] != patch['new']
             assert not (patch['function'] or '').startswith('test_')
+    # The uploaded fixed control plan must own the corrected successful-reopen
+    # identity contract AND both physical validator boundaries. These are
+    # separate from old-reader refusal, whose immutable archive is never mutated.
+    preservation = {control['id']: control for control in controls
+                    if control['id'] in {'g-reopen-durable-identity',
+                                         'g-validator-physical-no-write',
+                                         'g-refusal-physical-no-write'}}
+    assert set(preservation) == {'g-reopen-durable-identity',
+                                 'g-validator-physical-no-write',
+                                 'g-refusal-physical-no-write'}
+    assert all(control['isolated_ids'] == [34] and control['red_kind'] == 'business'
+               for control in preservation.values())
+    assert all(control['required_assertion'] for control in preservation.values())
     # These fields are the externally retained attribution/restoration contract,
     # independently inspected by the receiving reviewer/QA on the real run.
     assert "receipt['restoration'] == receipt['originals']" in python

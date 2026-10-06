@@ -369,6 +369,7 @@ used for any profile. See
 Supported active roster creation, approval, revision-CAS executor updates,
 dedicated executor updates and termination maintain exact per-agent profile
 requirements inside their canonical fence; pending enrollments do not bind.
+Prompt/model/repo updates preserve the current profile while composing only their intended delta inside the process writer gate. Init and active create/approval retain that gate through final current capture and bootstrap; executor switching retains a single gate through materialization, synchronous bootstrap, final mutation and compensation. Request cancellation and SSE disconnect drain started workers while retaining the gate; admitted request writes finish terminal reconciliation before propagating cancellation, including repeated cancellation. The short teams/canonical sections end before awaited host work.
 Their profile leases release before ordinary publication capture and awaited
 bootstrap, including compensation exits. At daemon state construction, U2B rebuilds exact per-agent custom-profile
 dependencies for every loaded org and reconciles any interrupted coordinated
@@ -401,6 +402,13 @@ POST /orgs creates a fresh skeleton, initializes complete G before attachment,
 and retains its existing cleanup/error ownership. Empty files/missing tables or
 startup discovery are not proof of new creation. Generic Database/runtime-audit
 construction remains workflow-free.
+
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
 
 Explicit existing-org migration (operator authorization required):
 

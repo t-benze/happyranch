@@ -18,6 +18,8 @@ import type {
   CleanupActivity,
   MemoryEntry,
   MemoryEntrySummary,
+  SystemPromptBody,
+  SystemPromptReceipt,
 } from './types';
 
 // Re-export for callers that import from this module by name (the
@@ -31,8 +33,12 @@ export type {
 
 export const listAgents = (
   slug: string,
+  fresh = false,
 ): Promise<{ agents: AgentSummary[] }> =>
-  request(`/orgs/${slug}/agents`);
+  request(`/orgs/${slug}/agents`, fresh ? {
+    headers: { 'Cache-Control': 'no-cache, no-store' },
+    params: { _prompt_readback: crypto.randomUUID() },
+  } : undefined);
 
 export const getCleanupActivity = (slug: string, agentName: string): Promise<{ activities: CleanupActivity[] }> =>
   request(`/orgs/${slug}/agents/${agentName}/cleanup-activity`);
@@ -170,10 +176,10 @@ export const manageAgentRepo = (
     body,
   });
 
-// ---------------------------------------------------------------------------
-// GAP (surfaced per brief): no founder-facing route to update system_prompt
-// or description. The daemon's POST /agents/manage (action=update) requires
-// task_id + session_id (team-manager agent session). A founder-facing PUT
-// /agents/{name} or PUT /orgs/{slug}/agents/{name} would be needed. Until
-// then, system_prompt and description render as read-only in the detail pane.
-// ---------------------------------------------------------------------------
+/** Prompt-only founder CAS. Description and other definition fields are excluded. */
+export const setAgentSystemPrompt = (
+  slug: string,
+  agentName: string,
+  body: SystemPromptBody,
+): Promise<SystemPromptReceipt> =>
+  request(`/orgs/${slug}/agents/${agentName}/system-prompt`, { method: 'PUT', body });

@@ -472,7 +472,12 @@ def test_g_existing_f_e_and_g_cold_load_preserve_workflow_histories(tmp_path: Pa
             enrolled_at_task=None, enrolled_at=None, system_prompt='Bounded cold-reader fixture.',
             description='Canonical source owner', model=None)
         (OrgPaths(root=root).agents_dir / f'{name}.md').write_text(render_agent_text(definition))
-    org = OrgState.load(slug='alpha', root=root, settings=Settings())
+    # Complete the same containing lifecycle used by the two cold reopens.
+    # Standalone OrgState.load leaves the eligible selector uninitialized;
+    # its first DaemonState attachment legitimately publishes that selector.
+    # Freeze history only after this existing setup contract has completed.
+    initial_state = DaemonState.from_runtime(runtime, Settings())
+    org = initial_state.get_org('alpha')
     try:
         org.workflow_authority.verify_admission_ready()
         assert not org.db.execute("SELECT 1 FROM workflow_publication_journals WHERE state NOT IN ('cache_installed','aborted')").fetchone()
@@ -482,7 +487,8 @@ def test_g_existing_f_e_and_g_cold_load_preserve_workflow_histories(tmp_path: Pa
             with org.db.workflow_schema_transaction() as writer:
                 schema.migrate_draft_schema(writer, expected_org_slug='alpha')
     finally:
-        org.close()
+        for owner in initial_state.orgs.values():
+            owner.close()
     if layout == 'G':
         with closing(sqlite3.connect(root / 'happyranch.db')) as writer:
             writer.execute('PRAGMA foreign_keys=ON')

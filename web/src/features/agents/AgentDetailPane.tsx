@@ -1,3 +1,4 @@
+import { SystemPromptEditor } from './SystemPromptEditor';
 /**
  * AgentDetailPane — inline right detail/edit pane (Direction-A Pasture).
  *
@@ -12,7 +13,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, MessageCircle, Plus, X, AlertCircle } from 'lucide-react';
+import { MessageCircle, Plus, X, AlertCircle } from 'lucide-react';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { Button } from '@/design-system/primitives/Button';
@@ -118,7 +119,6 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const [dirty, setDirty] = useState<DirtyState>({});
   const [saveError, setSaveError] = useState<SaveErrorItem[] | null>(null);
   const [saving, setSaving] = useState(false);
-  const [showPrompt, setShowPrompt] = useState(false);
   const [repoAddName, setRepoAddName] = useState('');
   const [repoAddUrl, setRepoAddUrl] = useState('');
   const [showRepoAdd, setShowRepoAdd] = useState(false);
@@ -498,30 +498,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
           </p>
         </section>
 
-        {/* System prompt — READ-ONLY card */}
-        {agent?.system_prompt && (
-          <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border">
-            <button
-              type="button"
-              onClick={() => setShowPrompt(!showPrompt)}
-              className="text-text-secondary hover:text-text-primary flex w-full items-center gap-2 px-4 py-3 text-xs font-medium tracking-wider uppercase transition-colors"
-            >
-              {showPrompt ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              {t('agents.field.systemPrompt')}
-            </button>
-            {showPrompt && (
-              <div className="border-border-default border-t px-4 pb-4">
-                <pre className="bg-surface-sunken border-border-subtle mt-3 max-h-48 overflow-auto rounded-md border p-3 font-mono text-xs whitespace-pre-wrap">
-                  {agent.system_prompt}
-                </pre>
-                <div className="text-text-muted mt-2 flex items-center gap-1.5 text-xs">
-                  <AlertCircle size={12} />
-                  <span>{t('agents.detail.systemPromptReadOnly')}</span>
-                </div>
-              </div>
-            )}
-          </section>
-        )}
+        <SystemPromptEditor key={JSON.stringify([slug, agentName])}
+          slug={slug ?? ''} agentName={agentName} agent={agent}
+          loading={agentsQuery.isLoading} failed={agentsQuery.isError}
+          empty={agentsQuery.data?.agents.length === 0} />
 
         {/* Description — READ-ONLY */}
         {agent?.description && (

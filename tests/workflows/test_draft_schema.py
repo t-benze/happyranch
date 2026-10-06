@@ -814,6 +814,80 @@ def test_g_s2_reader_archive_identity_bytes_modes_and_safe_extraction(tmp_path: 
         assert path.stat().st_mode & 0o777 == int(entry['mode'], 8)
 
 
+def _g_closed_database_identity(root: Path) -> tuple:
+    """Independent full durable observation, without using a workflow reader.
+
+    SQL dump alone loses rowids, storage types and text after embedded NULs.
+    Retain those facts separately for EVERY table, including SQLite's sequence
+    and the publication leases. Physical free-list/page bytes are not durable
+    application identity: ordinary compatible recovery commits a temporary lease.
+    """
+    from contextlib import closing
+    import struct
+
+    def quote(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    with closing(sqlite3.connect(root / 'happyranch.db')) as observer:
+        observer.text_factory = bytes
+        objects = tuple(observer.execute(
+            'SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name'
+        ))
+        tables = []
+        for (raw_name,) in observer.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name"
+        ):
+            name = raw_name.decode('utf-8')
+            columns = tuple(observer.execute('PRAGMA table_xinfo(' + quote(name) + ')'))
+            names = [column[1].decode('utf-8') for column in columns]
+            rowid = next((alias for alias in ('rowid', '_rowid_', 'oid')
+                          if alias not in {column.lower() for column in names}), None)
+            table_flags = next(row for row in observer.execute('PRAGMA table_list')
+                               if row[0] == b'main' and row[1] == raw_name)
+            has_rowid = not table_flags[4]
+            assert not has_rowid or rowid is not None, ('unobservable rowid', name)
+            fields = [quote(rowid)] if has_rowid else []
+            for column in names:
+                # CAST text AS BLOB preserves embedded NUL and original UTF8
+                # bytes. REAL values additionally retain their IEEE value.
+                fields.extend(('typeof(' + quote(column) + ')', quote(column),
+                               'CAST(' + quote(column) + ' AS BLOB)'))
+            rows = []
+            for row in observer.execute('SELECT ' + ','.join(fields) + ' FROM ' + quote(name)):
+                values = tuple(struct.pack('!d', value) if isinstance(value, float) else value
+                               for value in row)
+                rows.append(values)
+            tables.append((raw_name, columns, has_rowid, tuple(sorted(rows, key=repr))))
+        assert observer.execute('SELECT * FROM workflow_publication_leases').fetchall() == []
+        header = tuple((pragma, tuple(observer.execute('PRAGMA ' + pragma)))
+                       for pragma in ('application_id', 'user_version', 'schema_version', 'encoding'))
+        # iterdump expects the normal text factory; the independently typed
+        # observations above retain raw bytes that SQL's quoting cannot express.
+        observer.text_factory = str
+        dump = tuple(observer.iterdump())
+        return objects, tuple(tables), header, dump
+
+
+def _g_closed_compatible_file_identity(root: Path) -> dict:
+    """Full file set/modes/non-DB bytes; forbid residual database sidecars."""
+    import os
+    import stat
+    result = {}
+    for path in (root, *sorted(root.rglob('*'))):
+        info = path.lstat()
+        assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode), path
+        name = str(path.relative_to(root))
+        if stat.S_ISLNK(info.st_mode):
+            result[name] = ('symlink', stat.S_IMODE(info.st_mode), os.fsencode(os.readlink(path)))
+        elif stat.S_ISDIR(info.st_mode):
+            result[name] = ('directory', stat.S_IMODE(info.st_mode))
+        else:
+            assert name not in ('happyranch.db-wal', 'happyranch.db-shm', 'happyranch.db-journal'), name
+            result[name] = ('file', stat.S_IMODE(info.st_mode),
+                            None if name == 'happyranch.db' else path.read_bytes())
+    return result
+
+
 @pytest.mark.parametrize('activation_org', ['E'], indirect=True, ids=['actual-existing-E'])
 @pytest.mark.parametrize('origin', ['migration', 'new-org'])
 def test_g_source_pinned_faf_and_s2_readers_refuse_g_without_writes(tmp_path: Path, draft_host, preceding_source: Path, origin: str) -> None:
@@ -836,7 +910,7 @@ def test_g_source_pinned_faf_and_s2_readers_refuse_g_without_writes(tmp_path: Pa
     assert backend.calls['launch'] == backend.calls['finish'] == 1
     root = org.root
     assert org.sessions.iter_active() == []
-    # Take the physical byte/mode baseline only after the actual committed
+    # Take the baseline only after the actual committed
     # callback is checkpointed and every fixture oracle has released its reader.
     assert org.db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
     client.close(); org.close()
@@ -852,13 +926,36 @@ assert_pinned_imports()
 print('pinned-reader-reopened')
 """
     def snapshot():
-        return {str(p.relative_to(root)): (p.read_bytes(), p.stat().st_mode & 0o777)
-                for p in root.rglob('*') if p.is_file()}
+        files = _g_closed_compatible_file_identity(root)
+        database = root / 'happyranch.db'
+        # Physical validators/refusals retain the ENTIRE database bytes too.
+        files['happyranch.db'] = ('file', database.stat().st_mode & 0o7777,
+                                 database.read_bytes())
+        return files
+    # Validator-only is the physical no-write boundary. Use an ordinary
+    # writable connection and the authentic pinned module, before ANY reopen.
+    # A read-only SQLite connection must not conceal an attempted write.
+    validator_driver = _PRECEDING_IMPORT_CHECK + """
+import sqlite3
+from contextlib import closing
+from runtime.infrastructure.workflow_schema import validate_workflow_schema
+with closing(sqlite3.connect(Path(sys.argv[2]) / 'happyranch.db')) as conn:
+    assert validate_workflow_schema(conn, expected_org_slug='alpha') == 'E'
+assert_pinned_imports()
+print('pinned-validator-only')
+"""
     before = snapshot()
+    for _ in range(2):
+        validated = subprocess.run([sys.executable, '-c', validator_driver, str(s2), str(root)], capture_output=True, text=True, timeout=15)
+        assert validated.returncode == 0 and 'pinned-validator-only' in validated.stdout, validated.stderr
+        assert snapshot() == before
+    e_durable_before = _g_closed_database_identity(root)
+    e_files_before = _g_closed_compatible_file_identity(root)
     for _ in range(2):
         result = subprocess.run([sys.executable, '-c', driver, str(s2), str(root)], capture_output=True, text=True, timeout=15)
         assert result.returncode == 0 and 'pinned-reader-reopened' in result.stdout, result.stderr
-        assert snapshot() == before
+        assert _g_closed_database_identity(root) == e_durable_before
+        assert _g_closed_compatible_file_identity(root) == e_files_before
     if origin == 'migration':
         import os
         migrated = run_submission(root.parent.parent, dict(os.environ))
@@ -880,10 +977,33 @@ print('pinned-reader-reopened')
             refused = subprocess.run([sys.executable, '-c', driver, str(source), str(root)], capture_output=True, text=True, timeout=15)
             assert refused.returncode != 0 and 'workflow_schema_object_set_mismatch' in refused.stderr, refused.stderr
             assert snapshot() == before
+    from contextlib import closing
+    for _ in range(2):
+        with closing(sqlite3.connect(root / 'happyranch.db')) as validator:
+            assert schema.validate_workflow_schema(validator, expected_org_slug='alpha') == 'G'
+        assert snapshot() == before
+    g_durable_before = _g_closed_database_identity(root)
+    g_files_before = _g_closed_compatible_file_identity(root)
     for _ in range(2):
         current = OrgState.load(slug='alpha', root=root, settings=Settings())
         try:
             assert schema.validate_workflow_schema(current.db._conn, expected_org_slug='alpha') == 'G'
         finally:
             current.close()
+        assert _g_closed_database_identity(root) == g_durable_before
+        assert _g_closed_compatible_file_identity(root) == g_files_before
+    # Independent keeper for the SAME full-object mismatch/no-write boundary
+    # used by the pinned readers. A real current validator refuses one extra
+    # object on a separately owned complete-G copy, on a writable connection.
+    # This allows causal write/refusal controls without altering either archive.
+    import shutil
+    root = shutil.copytree(root, tmp_path / 'g-validator-refusal')
+    with closing(sqlite3.connect(root / 'happyranch.db')) as writer:
+        writer.execute('CREATE INDEX g_refusal_probe ON tasks(id)')
+        writer.commit()
+    before = snapshot()
+    for _ in range(2):
+        with closing(sqlite3.connect(root / 'happyranch.db')) as validator:
+            with pytest.raises(ValueError, match='workflow_schema_object_set_mismatch'):
+                schema.validate_workflow_schema(validator, expected_org_slug='alpha')
         assert snapshot() == before
