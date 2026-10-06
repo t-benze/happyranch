@@ -27,6 +27,8 @@ nonexecutable identities fail visibly before execution. Intentional no-ops requi
 explicit plans. Stub argv witnesses retain only fixed flags/counts and digests;
 callback witnesses bind the actual CLI source. No provider PATH fallback or model
 network request is permitted. The unit/Web targets keep their existing selections.
+Registered stubs restore the temporary callback/Python bin directory before the
+unchanged identity gate, including after uv prepends the project environment.
 
 Only the original concurrent alpha/beta two-org case opts into the observational
 `tests/helpers/two_org_prelaunch_capture/sitecustomize.py` helper. It calls the
@@ -172,6 +174,8 @@ does not send email, Feishu, Slack, webhook, or other external notifications.
 Manual dispatch of the same workflow also runs the exact `scripts/local_ci.sh all`
 command on its clean immutable checkout with Python 3.14 and Node 24. This
 lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
+Its closed build-tool PATH includes the standard `/usr/local/bin` directory used
+by the ordinary unit lane; integration keeps its separate restricted PATH.
 The disposable lane clears inherited environment variables before test imports,
 uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
 tools, and preserves the default unit/Web selections. It uploads the command's

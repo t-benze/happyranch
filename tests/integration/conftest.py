@@ -89,7 +89,7 @@ def runtime(runtime_container: Path, request: pytest.FixtureRequest) -> Path:
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
-        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer]\n"
+        "    workers: [product_manager, dev_agent, payment_agent, qa_engineer, code_reviewer]\n"
         "  content:\n"
         "    manager: content_manager\n"
         "    workers: [content_writer, content_qa, seo_agent]\n"

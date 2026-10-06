@@ -67,7 +67,7 @@ jobs:
                      'XDG_CACHE_HOME': str(root / 'cache'), 'TMPDIR': str(root / 'tmp'),
                      'TMP': str(root / 'tmp'), 'TEMP': str(root / 'tmp'),
                      'HAPPYRANCH_DAEMON_HOME': str(root / 'daemon'), 'HAPPYRANCH_DAEMON_PORT': '0',
-                     'PATH': os.pathsep.join((str(root / 'bin'), str(source / '.venv/bin'), '/usr/bin', '/bin')),
+                     'PATH': os.pathsep.join((str(root / 'bin'), str(source / '.venv/bin'), '/usr/local/bin', '/usr/bin', '/bin')),
                      'UV_PYTHON': sys.executable, 'UV_PYTHON_DOWNLOADS': 'never',
                      'UV_CACHE_DIR': str(root / 'cache/uv'), 'PYTHONNOUSERSITE': '1',
                      'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'CI': 'true'}

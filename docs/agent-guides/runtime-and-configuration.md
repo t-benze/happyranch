@@ -791,9 +791,12 @@ Direct integration collection without that parent refuses. Never run integration
 on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
 The disposable default roster exists before startup/registration so the real
 lifecycle initializes eligible manager selectors. Example-based two-org creation
-likewise supplies the declared roster before POST; the Codex bootstrap case uses
+likewise supplies the declared roster, including the default `code_reviewer`,
+before POST so canonical reviewer discovery is coherent; the Codex bootstrap case uses
 the supported pending-manager approval path. Explicit task plans write bound JSON
 payloads and invoke the tested-source CLI on one line with an absolute `--from-file`.
+Registered shell stubs restore their own temporary bin directory before identity
+admission, so uv or daemon PATH normalization cannot shadow that callback.
 `_nested_daemon_env` still copies the sanitized test parent and removes exactly
 its two outer containment markers; it does not sanitize a production environment.
 

@@ -48,8 +48,9 @@ def _global_base(port: str) -> str:
 
 
 def _make_example_tree(tmp_path: Path) -> Path:
-    """Build a minimal example tree with engineering_head + dev_agent in
-    the engineering team. POST /orgs --from_example copies <tree>/org/
+    """Build a minimal engineering roster including the default reviewer.
+
+    POST /orgs --from_example copies <tree>/org/
     verbatim into <runtime>/orgs/<slug>/org/, so this tree only needs an
     ``org/`` subdir with ``teams.yaml`` and its active roster before attachment."""
     tree = tmp_path / "example_org"
@@ -59,9 +60,11 @@ def _make_example_tree(tmp_path: Path) -> Path:
         "teams:\n"
         "  engineering:\n"
         "    manager: engineering_head\n"
-        "    workers: [dev_agent]\n"
+        "    workers: [dev_agent, code_reviewer]\n"
     )
-    for agent in ("engineering_head", "dev_agent"):
+    # Dynamic attachment validates the configured reviewers too; the default
+    # code_reviewer must be active before the real POST /orgs can attach it.
+    for agent in ("engineering_head", "dev_agent", "code_reviewer"):
         seed_agent_definition(tree, agent)
     return tree
 

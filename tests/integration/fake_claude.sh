@@ -8,6 +8,11 @@ if [[ -z "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" || -z "${HAPPYRANCH_TEST_STUB_GU
     exit 86
 fi
 
+# uv and daemon startup may prepend other tool directories. This registered
+# stub lives beside the bound Python/callback wrappers; restore that exact
+# test-only route before the unchanged executable/registry/plan identity gate.
+export PATH="${0%/*}:/usr/bin:/bin"
+
 PROMPT=""
 JSON_OUTPUT=0
 while [[ $# -gt 0 ]]; do
