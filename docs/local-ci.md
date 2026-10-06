@@ -303,7 +303,10 @@ no-write validation/refusal boundaries. Successful old E and current G reopens
 compare independently observed complete SQL, all tables, rowids, storage types,
 raw values, file set/modes and non-database bytes after every closed reader.
 Validator-only success and intended schema-mismatch refusal retain entire
-file-byte/mode equality. Fixed causal controls separately corrupt current G
+file-byte/mode equality. The current-validator refusal keeper adds an unexpected
+workflow index on a workflow table and independently observes that object before
+validation, so it reaches the same workflow object-set mismatch boundary as
+the pinned readers. Fixed causal controls separately corrupt current G
 reopen identity, validator page preservation and refusal page preservation in
 owned source copies; each must reach its named assertion, restore exact source
 bytes AND modes, then pass the same command. The archives remain unchanged,

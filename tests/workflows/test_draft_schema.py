@@ -999,11 +999,14 @@ print('pinned-validator-only')
     import shutil
     root = shutil.copytree(root, tmp_path / 'g-validator-refusal')
     with closing(sqlite3.connect(root / 'happyranch.db')) as writer:
-        writer.execute('CREATE INDEX g_refusal_probe ON tasks(id)')
+        writer.execute('CREATE INDEX workflow_g_refusal_probe ON workflow_submission_operations(operation_key)')
         writer.commit()
     before = snapshot()
     for _ in range(2):
         with closing(sqlite3.connect(root / 'happyranch.db')) as validator:
+            assert validator.execute(
+                "SELECT type,tbl_name FROM sqlite_schema WHERE name='workflow_g_refusal_probe'"
+            ).fetchone() == ('index', 'workflow_submission_operations')
             with pytest.raises(ValueError, match='workflow_schema_object_set_mismatch'):
                 schema.validate_workflow_schema(validator, expected_org_slug='alpha')
         assert snapshot() == before
