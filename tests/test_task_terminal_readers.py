@@ -375,13 +375,15 @@ def test_terminal_reader_verdict_audit_literal(env, verdict, success):
     audit_setup(env)
     result(env, agent="qa_engineer", verdict=verdict)
     before = snapshot(env)
-    assert run_step._verdict_for_delegated(env, "TASK-R", success=success) == verdict
-    assert snapshot(env) == before
+    returned_verdict = run_step._verdict_for_delegated(env, "TASK-R", success=success)
+    after_reader = snapshot(env)
     start = datetime.now(timezone.utc)
     run_step._log_verdict_if_delegated(env, "TASK-R", success=success)
     payload = next(r["expected_payload_raw"] for r in VERDICT_ROWS
                    if r.get("verdict") == verdict and r["success"] == success)
     expect_delta(env, before, start, audit=("TASK-R", "engineering_head", "review_verdict", payload))
+    assert returned_verdict == verdict
+    assert after_reader == before
 
 
 @pytest.mark.parametrize("present,success", [(p, s) for p in [False, True] for s in [True, False]])
@@ -440,8 +442,8 @@ def test_terminal_reader_failed_parent_classification(env, monkeypatch, tmp_path
     result(env, status="blocked", verdict=None)
     before = snapshot(env)
     parent = env._db.get_task("TASK-P")
-    assert run_step._is_carrier(env, parent) is (case == "carrier")
-    assert snapshot(env) == before
+    classified_carrier = run_step._is_carrier(env, parent)
+    after_reader = snapshot(env)
     start = datetime.now(timezone.utc)
     run_step._enqueue_parent_if_waiting(env, "TASK-R")
     if case == "carrier":
@@ -465,6 +467,8 @@ def test_terminal_reader_failed_parent_classification(env, monkeypatch, tmp_path
                 wake(controlled, clean, start)
     else:
         wake(env, before, start)
+    assert classified_carrier is (case == "carrier")
+    assert after_reader == before
 
 
 @pytest.mark.parametrize("parent_type,live", [(p, s) for p in ["task", "subtask"]
@@ -511,13 +515,15 @@ def test_terminal_reader_partial_fingerprint_chain(env, agent, session):
     result(env)
     before = snapshot(env)
     modern = agent == "code_reviewer" and session == "sess-current"
-    assert run_step._child_has_modern_fingerprint(env._db.get_task("TASK-R")) is modern
+    has_modern_fingerprint = run_step._child_has_modern_fingerprint(env._db.get_task("TASK-R"))
     report = run_step._child_landed_terminal_report(env, env._db.get_task("TASK-R"))
-    assert (report is not None) is modern
-    assert snapshot(env) == before
+    after_readers = snapshot(env)
     start = datetime.now(timezone.utc)
     run_step._enqueue_parent_if_waiting(env, "TASK-R")
     advance(env, before, start)
+    assert has_modern_fingerprint is modern
+    assert (report is not None) is modern
+    assert after_readers == before
 
 
 @pytest.mark.parametrize("case", ["wrong-task", "no-row"])
