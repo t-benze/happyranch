@@ -375,7 +375,7 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
     with tarfile.open(package) as archive:
         for member in archive.getmembers():
             path = PurePosixPath(member.name)
-            if not member.isfile() or path.is_absolute() or ".." in path.parts or path.parts[0] != PREFIX:
+            if not member.isfile() or path.is_absolute() or not path.parts or ".." in path.parts or path.parts[0] != PREFIX:
                 raise PackageError("archive_member_invalid")
             relative = str(path.relative_to(PREFIX))
             if relative in files:

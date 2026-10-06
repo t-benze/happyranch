@@ -2835,19 +2835,35 @@ def test_exact_archive_allowlist_rejects_manifested_extra_payload(tmp_path: Path
         install_linux_package(_rewrite_package(package, tmp_path / "bad.tar", mutate), tmp_path / "root")
 
 
-def test_archive_rejects_traversal_and_unmanifested_members_before_write(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name,expected", [
+    pytest.param("happyranch-linux-amd64/../escape", "archive_member_invalid", id="traversal"),
+    pytest.param("happyranch-linux-amd64/unmanifested", "manifest_membership_mismatch", id="unmanifested"),
+    pytest.param(".", "archive_member_invalid", id="dot"),
+    pytest.param("./", "archive_member_invalid", id="dot-slash"),
+])
+def test_archive_rejects_traversal_and_unmanifested_members_before_write(
+    tmp_path: Path, name: str, expected: str,
+) -> None:
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
-    for name, expected in (("happyranch-linux-amd64/../escape", "archive_member_invalid"),
-                           ("happyranch-linux-amd64/unmanifested", "manifest_membership_mismatch")):
-        def mutate(entries, member_name=name) -> None:
-            member = tarfile.TarInfo(member_name)
-            member.mode = 0o600
-            member.uname = member.gname = "root"
-            entries.append((member, b"hostile"))
-        root = tmp_path / expected
-        with pytest.raises(PackageError, match=expected):
-            install_linux_package(_rewrite_package(package, tmp_path / f"{expected}.tar", mutate), root)
+    def mutate(entries) -> None:
+        member = tarfile.TarInfo(name)
+        member.mode = 0o600
+        member.uname = member.gname = "root"
+        entries.append((member, b"hostile"))
+    malformed = _rewrite_package(package, tmp_path / "bad.tar", mutate)
+    with tarfile.open(malformed) as archive:
+        member = archive.getmembers()[-1]
+        assert member.isfile() and member.name == name
+        if name in {".", "./"}:
+            assert not PurePosixPath(member.name).parts
+    root = tmp_path / expected
+    before = _tree_snapshot(tmp_path)
+    try:
+        with pytest.raises(PackageError, match=f"^{expected}$"):
+            install_linux_package(malformed, root)
+    finally:
         assert not root.exists()
+        assert _tree_snapshot(tmp_path) == before
 
 
 @pytest.mark.parametrize("mutation", ["inventory_boolean", "sbom_missing_purl", "notice_wrong_content"])
