@@ -447,6 +447,10 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     if task is None:
         return
 
+    from runtime.workflows.recovery import route_owned_task
+    if route_owned_task(orch, task_id):
+        return
+
     # Cancellation short-circuit. Once /cancel marks a task FAILED + sets
     # cancelled_at, any late queue event (e.g., the parent auto-resume after
     # the SIGTERM'd child's audit arrives) must be a no-op. Checking status
@@ -1453,6 +1457,11 @@ def _consume_completion_report(
     db = orch._db
     task = db.get_task(task_id)
     if task is None:
+        return
+    from runtime.workflows.recovery import classify_task
+    if classify_task(db, task_id, org_slug=getattr(orch, "_slug", None)).kind != "legacy":
+        # A result is transport evidence only. The draft owner joins exact
+        # accepted result and actual host quiescence; no manager decision tail.
         return
     agent = task.assigned_agent or "unknown"
     reclaim_kwargs = (

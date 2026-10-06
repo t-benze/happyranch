@@ -32,6 +32,27 @@ source-pinned initializer/migration tests prove preservation at that boundary,
 not whole-runtime conversion or old-binary gate compliance. S1 supplies draft storage/closure validation only. Activation/first
 draft production, dispatch/recovery routing and operator acceptance remain later work.
 
+### Initial workflow draft lifecycle (S2)
+
+The S2 source consumes the S1 draft lane through `WorkflowActivationStore` and
+`WorkflowDraftDispatcher`, attached by actual OrgState. Founder exact-version
+admission creates one genuine bounded author task/root, authorization, immutable
+binding/context, activation, intent and admitted event in one writer. Template
+publication alone grants no assignment. Historical replay retains original IDs
+and pins with no queue effects; current eligibility is a separate projection.
+
+Draft completion requires the authentic accepted result and finalized contained
+host quiescence. Session publication alone does not prove launch; possible launch
+without exact acknowledgment stays uncertain and is never blindly requeued.
+Cancellation commits a fence before containment. Startup, run_step, callback,
+zombie TTL and portability route owned work before ordinary lifecycle effects;
+malformed or dual closure requires reconciliation. Draft authors, even managers,
+receive no generic decision/delegate/then/fanout/code authority. F5 producers and
+U3 immutable submission/reviews, U4/U5 replacement operations, U6 mounted UI and
+operator acceptance remain separate. Independent review/QA/CI and deployment are
+not implied by source implementation. Earlier prerequisite descriptions above
+refer to S1; S2 does not change its migration/readiness/drain meanings.
+
 ### Implemented boundaries for retained features
 
 KB input validation, duplicate detection, author stamps, and deletion checks live

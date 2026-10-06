@@ -1094,3 +1094,72 @@ export interface WorkflowCutoverDowngradePreflight {
   blockers: WorkflowCutoverBlocker[];
   projection: WorkflowCutoverProjection;
 }
+
+/** Exact-version Founder activation; no caller actor/task/session/result claims. */
+export type WorkflowActivationRole = 'product-lead' | 'founder' | 'implementer' | 'tester';
+export type WorkflowActivationAction = 'draft-document' | 'submit-immutable-document' | 'collect-review' |
+  'approve-planning-input' | 'return-to-author';
+export interface WorkflowActivationRoleBinding {
+  kind: 'agent' | 'human';
+  principal: string;
+  team: string | null;
+}
+export type WorkflowActivationBindings = Record<WorkflowActivationRole, WorkflowActivationRoleBinding>;
+export type WorkflowActivationReplacements = Record<WorkflowActivationRole, WorkflowActivationRoleBinding[]>;
+export interface WorkflowActivationAuthority {
+  namespace: string;
+  generation: number;
+  snapshot_digest: string;
+}
+export interface WorkflowActivationTemplatePin {
+  identity_id: string;
+  version: number;
+  definition_digest: string;
+}
+export type WorkflowActivationInput = {
+  kind: 'task-attachment'; task_id: string; storage_key: string;
+  sha256: string; recipients: WorkflowActivationRole[];
+} | {
+  kind: 'thread-attachment'; thread_id: string; attachment_id: string;
+  sha256: string; recipients: WorkflowActivationRole[];
+};
+export interface WorkflowActivationRequest {
+  operation_key: string;
+  instance_id: string;
+  expected_activation_revision: 0;
+  template: WorkflowActivationTemplatePin;
+  authority: WorkflowActivationAuthority;
+  scope: { brief: string };
+  bindings: WorkflowActivationBindings;
+  eligible_replacements: WorkflowActivationReplacements;
+  allowed_actions: WorkflowActivationAction[];
+  inputs: WorkflowActivationInput[];
+}
+export interface WorkflowActivationReceipt {
+  activation_id: string;
+  instance_id: string;
+  instance_reference: string;
+  activation_revision: number;
+  root_task_id: string;
+  intent_id: string;
+  template: WorkflowActivationTemplatePin & {
+    version_id: string; compiler_pin: string; validator_pin: string; source_pin: string;
+  };
+  authority: WorkflowActivationAuthority;
+  bindings: WorkflowActivationBindings;
+  eligible_replacements: WorkflowActivationReplacements;
+  allowed_actions: WorkflowActivationAction[];
+  scope_digest: string;
+  context_digest: string;
+  activated_by: { principal_kind: 'human'; principal_id: 'founder'; proof_kind: 'founder_bearer' };
+  created_at: string;
+  original_request_digest: string;
+  replayed: boolean;
+  state: 'queued' | 'claimed' | 'running' | 'uncertain' | 'cancelled' | 'failed' | 'completed';
+  execution_started: boolean;
+  pending: boolean;
+  reconciliation_required: boolean;
+  cancellation_requested: boolean;
+  current_eligibility: { eligible: boolean; blockers: string[] };
+  responsible_owner: string;
+}

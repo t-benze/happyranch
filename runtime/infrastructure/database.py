@@ -1118,6 +1118,52 @@ class Database(
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            from runtime.workflows.recovery import classify_task
+            drafts = getattr(self, "_workflow_drafts", None)
+            ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None)
+            if ownership.kind != "legacy":
+                if ownership.kind != "draft" or drafts is None:
+                    self._conn.rollback()
+                    return False
+                if v2_admission is not None and not self._authenticate_v2_attempt_admission_uncommitted(
+                    task_id=task_id, agent=agent, session_id=session_id, admission=v2_admission,
+                ):
+                    self._conn.rollback()
+                    return False
+                payload = dict(output_summary=output_summary, confidence_score=confidence_score, status=status,
+                               risks_flagged=risks_flagged, output_dir=output_dir, decision_json=decision_json,
+                               waiting_on_job_ids=waiting_on_job_ids, verdict=verdict, local_ci_json=local_ci_json)
+                prior = self._conn.execute("SELECT * FROM task_results WHERE task_id=? AND agent=? AND session_id=?",
+                                           (task_id, agent, session_id)).fetchone()
+                if not drafts.callback_uncommitted(task_id=task_id, agent=agent, session_id=session_id, payload=payload):
+                    self._conn.rollback()
+                    return False
+                admitted_attempt = None
+                if prior is not None:
+                    if v2_admission is not None:
+                        admitted = self.get_authority_policy_v2_attempt_for_result(prior["id"])
+                        if admitted is None or any(getattr(admitted, key) != v2_admission[key] for key in (
+                            "assessment_digest", "binding_id", "release_id", "activation_id", "activation_epoch", "selector_id", "contract_digest",
+                        )):
+                            self._conn.rollback()
+                            return False
+                    self._conn.rollback()
+                    return True
+                if v2_admission is not None:
+                    # Event insertion also allocates rowids. Resolve the exact
+                    # accepted INTEGER identity from its owning intent.
+                    result_id = self._conn.execute("SELECT final_result_id FROM workflow_draft_dispatch_intents WHERE id=?",
+                                                   (ownership.intent_id,)).fetchone()[0]
+                    admitted_attempt = self._insert_authority_policy_v2_attempt_uncommitted(
+                        task_id=task_id, agent=agent, session_id=session_id, result_id=result_id,
+                        admission=v2_admission, now=_now().isoformat(),
+                    )
+                from runtime.infrastructure.workflow_schema import validate_workflow_schema
+                validate_workflow_schema(self._conn, expected_org_slug=drafts.org.slug)
+                self._conn.commit()
+                if admitted_attempt is not None:
+                    self._v2_live_attempt_owners[admitted_attempt.attempt_id] = admitted_attempt.owner_attempt_id
+                return True
             task = self._conn.execute(
                 "SELECT status, cancelled_at, assigned_agent, current_session_id "
                 "FROM tasks WHERE id = ?", (task_id,)

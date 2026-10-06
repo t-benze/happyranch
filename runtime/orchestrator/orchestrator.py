@@ -1148,9 +1148,17 @@ class Orchestrator:
                     error="completion recovery ownership lost before publication",
                 ), None
         else:
-            self._db.update_task(
-                task_id, assigned_agent=agent_name, current_session_id=session_id,
-            )
+            drafts = getattr(self, "_workflow_drafts", None)
+            from runtime.workflows.recovery import classify_task
+            ownership = classify_task(self._db, task_id, org_slug=self._slug)
+            if ownership.kind == "draft" and drafts is not None:
+                drafts.bind_session(task_id, agent_name, session_id)
+            elif ownership.kind != "legacy":
+                raise ValueError("workflow_reconciliation_required")
+            else:
+                self._db.update_task(
+                    task_id, assigned_agent=agent_name, current_session_id=session_id,
+                )
         if self._sessions is not None:
             if not recovery:
                 self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
@@ -1321,6 +1329,19 @@ class Orchestrator:
                 recovery=recovery,
             )
         else:
+            from runtime.workflows.recovery import classify_task
+            # The lower host method also serves callers without a task store.
+            # Actual persisted tasks are always classified, even when the
+            # dispatcher or org identity is unavailable (which fences owners).
+            task_db = getattr(self, "_db", None)
+            if ((task_db is not None and classify_task(
+                    task_db, task_id, org_slug=getattr(self, "_slug", None),
+                ).kind != "legacy") or (task_db is None
+                                       and getattr(self, "_workflow_drafts", None) is not None)):
+                # Workflow-owned work cannot silently self-launch without
+                # actual supervisor identity/terminal evidence.
+                return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
+                                      error="workflow_host_unavailable")
             # Legacy uncontained path (tests / idle state): executor
             # self-launches exactly as before.
             try:
@@ -1411,6 +1432,17 @@ class Orchestrator:
         )
         from runtime.platform.session_backend import RunningHandle
 
+        from runtime.workflows.recovery import WorkflowTaskOwnership, classify_task
+        task_db = getattr(self, "_db", None)
+        ownership = (classify_task(task_db, task_id, org_slug=getattr(self, "_slug", None))
+                     if task_db is not None else WorkflowTaskOwnership(
+                         "reconciliation_required" if getattr(self, "_workflow_drafts", None) is not None
+                         else "legacy"))
+        drafts = getattr(self, "_workflow_drafts", None) if ownership.kind == "draft" else None
+        if ownership.kind != "legacy" and drafts is None:
+            return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
+                                  error="workflow_reconciliation_required")
+
         token = CancellationToken()
         # Opaque cancellation/cleanup control registered BEFORE admission so
         # the cancel route can cancel a queued request (nothing launches) or
@@ -1480,7 +1512,22 @@ class Orchestrator:
         def _pre_launch_validator() -> None:
             pre_launch_integrity_validator()
 
+        def _final_prelaunch_validator() -> None:
+            if recovery:
+                recovery_launch_validator()
+            if drafts is not None:
+                drafts.reserve_launch(task_id, agent_name, session_id)
+
+        def _on_terminal(outcome: Any) -> None:
+            try:
+                if drafts is not None:
+                    drafts.terminal(task_id, agent_name, session_id, outcome, expected_request=host_request)
+            finally:
+                _clear_tracker()
+
         def _launch_body(running: RunningHandle) -> LaunchResult:
+            if drafts is not None:
+                drafts.observed_handle(task_id, agent_name, session_id, running)
             # Real backend: the subprocess is already launched into
             # containment — the executor communicates + parses only (no
             # self-Popen, no on_started — the supervisor bound the PID).
@@ -1519,19 +1566,21 @@ class Orchestrator:
                 payload=result,
             )
 
+        host_request = AdmissionRequest(
+            org=self._slug,
+            invocation_kind="task",
+            logical_id=(drafts.host_request_key(task_id, agent_name, session_id)
+                        if drafts is not None else task_id),
+            executor_profile=provider,
+            enqueued_at=time.monotonic(),
+            # The supervisor binds the RunningHandle before this fires;
+            # the passthrough backend has no real PID (root_pid=0) and the
+            # launch body's uncontained branch exposes the real one.
+            on_started=(lambda pid: on_started(pid) if pid > 0 else None),
+            cancellation=token,
+        )
         outcome = self._host_supervisor.run(
-            AdmissionRequest(
-                org=self._slug,
-                invocation_kind="task",
-                logical_id=task_id,
-                executor_profile=provider,
-                enqueued_at=time.monotonic(),
-                # The supervisor binds the RunningHandle before this fires;
-                # the passthrough backend has no real PID (root_pid=0) and the
-                # launch body's uncontained branch exposes the real one.
-                on_started=(lambda pid: on_started(pid) if pid > 0 else None),
-                cancellation=token,
-            ),
+            host_request,
             launch_spec=launch_spec,
             launch_body=_launch_body,
             pre_launch_validator=_pre_launch_validator,
@@ -1539,13 +1588,13 @@ class Orchestrator:
             # prepare. Ordinary task integrity validation keeps its existing
             # single pre-prepare timing/count.
             final_prelaunch_validator=(
-                recovery_launch_validator if recovery else None
+                _final_prelaunch_validator if recovery or drafts is not None else None
             ),
-            on_terminal=lambda _outcome: _clear_tracker(),
+            on_terminal=_on_terminal,
             # The one-shot Codex completion recovery is one provider
             # opportunity: a 429 remains its honest terminal result rather
             # than consuming the ordinary supervisor backoff/re-admission.
-            allow_retries=not recovery,
+            allow_retries=not recovery and drafts is None,
         )
         launch = outcome.payload
         if launch is None:

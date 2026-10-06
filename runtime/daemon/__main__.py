@@ -172,6 +172,9 @@ def _sweep_on_startup(
         t = db.get_task(task_id)
         if t is None:
             continue
+        from runtime.workflows.recovery import recover_owned_task
+        if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):
+            continue
         if v2_discovery_unavailable or task_id in v2_pre_final_roots:
             continue
 

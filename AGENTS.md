@@ -102,8 +102,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   is structural metadata, while draft intents/events are work and their complete
   retained history/result closure is validated. Drain never settles draft work.
   Integrity hashes are cooperative coherence, not hostile same-UID proof.
-  Activation, first draft/dispatch, callbacks, operator UI and full U2C-U6
-  acceptance remain deferred. U1B adds only
+  S2 now connects initial activation, draft dispatch and callback ownership as
+  described below; operator UI and full Phase1 acceptance remain deferred. U1B adds only
   inert, immutable `product-design` template authoring/versioning in
   `runtime/workflows/templates.py`: current active managers publish only in
   their uniquely registered team's org namespace through verified task/session
@@ -112,7 +112,38 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   SHA-256 digest, gap-free version, CAS pointer and replay receipt in the
   existing U1A tables. Publication never activates, creates tasks/instances,
   dispatches, emits outbox/notification effects or changes cutover/authority
-  state. U2A/U2B are shipped, and this cutover prerequisite is implemented; activation, first draft, dispatch, U3-U6 and operator acceptance remain deferred.
+  state. U2A/U2B and the cutover prerequisite are shipped. S2 source adds the
+  Founder-only exact-version initial admission and bounded document lifecycle;
+  independent review/QA/CI and U3-U6/operator acceptance remain separate.
+
+- **Initial workflow activation and draft ownership (THR139 S2).**
+  `WorkflowActivationStore` is attached by `OrgState` and consumed by Founder
+  POST/get/list `/workflows/activations`. Initial admission atomically allocates
+  the actual task through the unchanged MAX allocator and freezes its root,
+  exact template/version, request, authorization, binding/context and intent/event.
+  Historical actor/org/key/request replay authenticates retained closure before
+  mutable new-admission gates, returns the original receipt200 without queue
+  effects, and projects current eligibility separately. New admission returns201
+  only after commit; disabled/fenced admission creates no successful empty receipt.
+  Profile discovery precedes async serialization, sorted selected profile leases,
+  org publication ownership and the synchronized SQLite writer. No host/queue
+  effect occurs under durable ownership. Draft/F5/malformed closures are routed
+  before legacy startup/run_step/completion/cancellation effects. Startup and
+  periodic sweeps rediscover the same authenticated queued intent after lost
+  notifications or author-capacity refusal. Periodic discovery checks current
+  authority/capacity and deduplicates enqueue only after all leases release;
+  claim and prelaunch still arbitrate, without an immediate retry loop. A real session
+  is not launch evidence: possible launch is durably reserved, running needs a
+  genuine bound handle, and completion needs the exact accepted INTEGER result
+  plus finalized host quiescence. Missing acknowledgment/callback/quiescence stays
+  workflow-owned uncertain; PID/TTL absence cannot settle it. Cancellation fences
+  before containment. The author, including a manager, has only bounded document
+  responsibility; no generic manager decision/delegation/fanout is consumed.
+  CLI `workflows activate --org ... --from-file /absolute/request.json` and
+  `workflows activations list/show` use the existing Founder client; parser2,
+  domain/transport1, valid receipt including pending0. This adds no DDL or
+  migration, no reassignment/reactivation API, and no U3 submission/approval.
+  Source is not deployment or Phase1/operator acceptance.
 
 - **Task-scratch reclamation contract (THR-195 B1).** `runtime/daemon/task_scratch_reclamation.py` accepts only immutable finalized ledger rows for valid canonical manifested `TASK-*` roots. Its caller-constructible `*Assertions` values are explicitly untrusted shapes, have no permissive defaults, and reject missing, malformed, stale-boot, truncated, ambiguous, unsupported-platform, recovery/job/live-reference, unavailable, or internally inconsistent values; B1 does not establish their provenance or independently validate lifecycle/liveness/current-boot authority, whose producers are deferred to B2/B3. The private `collect_revalidate_seal_consume_disposable` seam retains the typed values from each existing bounded E/C admission, compares liveness/session/process and complete coverage projections (including bucket classification/accounting and dominance) across E1..E4/C1..C3 while excluding collection timestamps, and binds final C3's canonical workspace/root/manifest/census fields to its successfully sealed stack-local row. It refuses malformed/private-identity/boot-mismatched or exhausted bounded observations before execution, and a partial executor failure claims zero while preserving the remainder for a fresh refusal. The sole production caller is the bounded pre-agent `run_step` hook. It is disabled by default through the strict boolean `workspace_cleanup.reclamation_actions_enabled` (default `false`), and disabling affects later admissions only — it cannot revoke an already admitted consumer call. It acts only on a third-or-later cleanup ordinal whose scheduler-created preclaim owner is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to this invocation's initial successful `0 -> 1` claim (the first two runs stay report-only), applies one shared one-second deadline and at most 23 read/load admissions with no refill or recovery, and makes at most five best-effort calls to the unchanged consumer. Each attempt records the owner `workspace_cleanup_reclamation_attempt` audit before the prompt carries the known facts into the ordinary completion summary; the transported remainder is exactly the returned `after` accounting or `null`; scheduler triggering/order remains unchanged. It adds no writer fence or future-writer/same-UID guarantee. Sealing also re-derives the canonical root and applies the 60-second newest-mtime floor. Execution hard-skips Git/worktree/bare-repository ancestor or descendant evidence and cross-device ambiguity, uses fd-relative no-follow pathname removal with verified parent/root identity, exact allocated-byte/inode accounting, and complete protected manifest/lock/parent/directory-entry/sibling postconditions. Detected pre-action identity mismatches fail the row with zero reclaimed claims. Portable POSIX unlink/rmdir is not inode-bound: the threat contract deliberately excludes a hostile same-UID replacement in the final identity-check-to-pathname-syscall window, and does not promise that replacement survives. The separate report-only coordinator remains report-only after teardown and through the existing daily trigger; deployment, legacy-backlog eligibility, and activation beyond the explicitly enabled hook remain absent. Unmanifested `.happyranch/tmp`, `.tmp`, `.task-cache`, `.t`, shared `/tmp`, and pre-contract roots remain ineligible.
 

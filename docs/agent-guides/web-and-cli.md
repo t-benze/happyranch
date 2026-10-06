@@ -1130,3 +1130,74 @@ Callbacks should use `--from-file <path>` where payloads have multiple fields. *
 The global `AssistantDockHost` and its mounted `ConversationSwitcher` bind en/zh-CN app-owned visible/accessibility copy, including composer/state/key hints, typing/tool activity and conversation actions/rename/delete confirmation. Shared MessageBubble/TypingBubble copy overrides are reused. Errors retain capture-time provenance: app fallback keys resolve at render time; raw daemon detail/message and caught diagnostic values (including empty or catalog-equal values) stay exact. Executor/tool names, titles, authored content and IDs remain data. Viewer-local timestamp and elapsed semantics remain unchanged.
 
 Locale switches preserve mounted nodes, active conversation, transcript/inflight state, drafts, focus and selection without entering connection-effect dependencies or issuing requests/mutations/reconnects. The detailed boundary is [Assistant Web UI §6.12](../superpowers/specs/2026-06-12-system-assistant-web-ui-design.md#612-mounted-dock-locale-presentation-thr-118). Ordinary-build evidence is `web/scripts/w4a-browser-evidence.mjs --slice assistant`: real HTTP/WS seams and request/socket ledger plus 390/1440 screenshots. Coverage inventory includes both consumers and marks only `system-assistant` translated in this slice, supported by component regressions and ordinary-build mounted-copy evidence. Preview stays unset-English/Chinese-opt-in; W5 and native restart acceptance remain separate.
+
+### Founder initial activation and draft receipts (S2)
+
+The existing human bearer boundary proves the bearer performed the action, not
+that separate humans hold separate credentials. No task/session fallback exists.
+Manager template publication alone does not activate or assign work.
+
+```bash
+happyranch workflows activate --org <org> --from-file /absolute/activation.json [--json]
+happyranch workflows activations list --org <org> [--json]
+happyranch workflows activations show <activation-id> --org <org> [--json]
+```
+
+The API has exactly POST and GET `/api/v1/orgs/{slug}/workflows/activations`
+and GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}`. New creation
+returns201; identical actor/org/key/request replay returns200 with the same
+original root/intent/pins/time. List returns an array; show returns one receipt.
+CLI parser/local malformed-file errors exit2, domain/transport errors exit1,
+and valid receipts, including pending execution, exit0. Retry response loss with
+the same immutable request/key. No reactivation, reassignment or retry mutation
+endpoint is supplied by S2. The typed API mirror is `workflowActivations`. The served
+OpenAPI request discriminator maps both task-attachment and thread-attachment
+inputs to their actual inlined variants in the served document; those pointers
+are part of the contract keeper.
+
+Every request object and nested record is closed; unknown fields, booleans in
+integer fields, identity/provenance claims and `latest` aliases refuse. Concrete
+request fields are:
+
+| Field | Contract |
+| --- | --- |
+| `operation_key` | Nonempty bounded operation key; never reminted on retry. |
+| `instance_id` | Caller reference, lower-case slug beginning with a letter; never a task ID. Identity is org plus this reference. |
+| `expected_activation_revision` | Integer0; initial admission only. |
+| `template` | Exact `identity_id`, positive integer `version`, 64 lower-case hex `definition_digest`. |
+| `authority` | Current coherent `namespace`, positive integer `generation`, 64 lower-case hex `snapshot_digest`. |
+| `scope` | Nonempty bounded `brief` describing the document task. |
+| `bindings` | Exactly `product-lead`, `founder`, `implementer`, `tester`. Each has `kind` (agent/human), `principal`, and nullable `team`. Founder is human/founder/null; other roles require active same-org canonical agents/teams and independent principals. |
+| `eligible_replacements` | The same four role keys with explicit arrays of bindings; Founder array is empty. These are inspectable candidates, not permission to replace. |
+| `allowed_actions` | Unique closed values: `draft-document`, `submit-immutable-document`, `collect-review`, `approve-planning-input`, `return-to-author`; draft-document is required. Later actions do not enable deferred producers. |
+| `inputs` | Bounded array of same-org source pins. `task-attachment` has `task_id`, `storage_key`, `sha256`, `recipients`; `thread-attachment` has `thread_id`, `attachment_id`, `sha256`, `recipients`. Recipients are explicit role names. Existing visibility owners govern access; private thread inputs cannot expand participation. No host path/URL or mutable-only source reference. |
+
+Server snapshots inputs and bounds total canonical context to1MiB. Source digest
+mismatch/unavailable source returns422 with actual owner and required_action.
+No private context bytes are returned in receipts or errors. No new input
+entitlement follows from being selected for a role.
+
+Each receipt carries immutable original fields `activation_id`, `instance_id`,
+`instance_reference`, `activation_revision`, `root_task_id`, `intent_id`, exact
+`template` (the request pin plus `version_id`, `compiler_pin`, `validator_pin`,
+`source_pin`), `authority`, `bindings`, `eligible_replacements`, `allowed_actions`,
+`scope_digest`, `context_digest`, `activated_by` (principal_kind human,
+principal_id founder, proof_kind founder_bearer), `created_at` and
+`original_request_digest`. `replayed` distinguishes exact POST replay. The separate
+current projection has `state` (queued/claimed/running/uncertain/cancelled/failed/
+completed), `execution_started`, `pending`, `reconciliation_required`,
+`cancellation_requested`, `current_eligibility` (`eligible`, blocker code array),
+and `responsible_owner`. Session registration does not set execution_started;
+a genuine bound host handle does. Missing callback/ack/quiescence remains pending
+uncertainty; successful transport alone is not draft completion. A completed
+draft is not immutable submission or approval. Template v2 publication/reopen
+cannot retarget original v1 pins. No bearer or opaque host-control token is exposed.
+
+Safe errors retain `workflow_activation_operation_conflict`,
+`workflow_activation_cas_stale`, `workflow_activation_authority_stale` (409),
+`role_binding_not_authorized` (403), bounded invalid/unavailable input (422),
+and `workflow_activation_storage_corrupt` (500, no repair). Existing human_only,
+authority/profile and OrgDep errors remain unchanged. Disabled/busy/fenced
+admission creates no activation/task and is distinct from a persisted queued or
+uncertain instance. Independent review/QA/CI, U3-U6, mounted UI and separate
+Founder Request changes/Sign off/operator observations remain acceptance gates.
