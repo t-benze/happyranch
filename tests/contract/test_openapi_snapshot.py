@@ -43,6 +43,9 @@ def _summarize(schema: dict) -> dict:
                 "params": params,
                 "responses": responses,
             }
+            if path == '/api/v1/orgs/{slug}/workflows/activations' and method.upper() == 'POST':
+                body = op['requestBody']['content']['application/json']['schema']
+                path_summary['POST']['input_discriminator'] = body['properties']['inputs']['items']['discriminator']
         if path_summary:
             paths[path] = path_summary
     return {"paths": paths}
@@ -356,3 +359,45 @@ def test_activation_openapi_pins_closed_request_and_complete_receipt():
     assert post['responses']['200']['content']['application/json']['schema'] == response
     assert full['paths'][base]['get']['responses']['200']['content']['application/json']['schema']['items'] == response
     assert full['paths'][base+'/{activation_id}']['get']['responses']['200']['content']['application/json']['schema'] == response
+
+
+def test_activation_served_openapi_resolves_all_internal_pointers_and_input_variants() -> None:
+    from fastapi.testclient import TestClient
+    app = create_app(DaemonState.idle(Settings()))
+    served = TestClient(app).get('/openapi.json')
+    assert served.status_code == 200
+    document = served.json()
+    assert document == app.openapi()
+
+    def resolve(pointer):
+        value = document
+        for part in pointer[2:].split('/'):
+            key = part.replace('~1', '/').replace('~0', '~')
+            try:
+                value = value[int(key)] if isinstance(value, list) else value[key]
+            except (KeyError, IndexError, ValueError):
+                raise AssertionError(f'dangling served OpenAPI pointer: {pointer}') from None
+        return value
+
+    def check(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                check(item)
+        elif isinstance(value, list):
+            for item in value:
+                check(item)
+        elif isinstance(value, str) and value.startswith('#/'):
+            resolve(value)
+
+    check(document)
+    schema = document['paths']['/api/v1/orgs/{slug}/workflows/activations']['post']['requestBody']['content']['application/json']['schema']
+    inputs = schema['properties']['inputs']['items']
+    assert inputs['discriminator']['propertyName'] == 'kind'
+    assert set(inputs['discriminator']['mapping']) == {'task-attachment', 'thread-attachment'}
+    for kind, pointer in inputs['discriminator']['mapping'].items():
+        variant = resolve(pointer)
+        assert variant in inputs['oneOf']
+        assert variant['properties']['kind']['const'] == kind
+        assert variant['additionalProperties'] is False
+        assert ('task_id' in variant['required']) is (kind == 'task-attachment')
+        assert ('thread_id' in variant['required']) is (kind == 'thread-attachment')

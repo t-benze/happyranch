@@ -29,7 +29,18 @@ def _request_schema() -> dict[str, Any]:
             return [expand(item) for item in value]
         return value
 
-    return expand(schema)
+    expanded = expand(schema)
+    # Definitions are inlined at this served request-body location. Mapping
+    # strings are JSON pointers too: they must identify those same variants,
+    # rather than the removed Pydantic $defs at the document root.
+    items = expanded["properties"]["inputs"]["items"]
+    pointer = ("#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/"
+               "requestBody/content/application~1json/schema/properties/inputs/items/oneOf/")
+    items["discriminator"]["mapping"] = {
+        variant["properties"]["kind"]["const"]: f"{pointer}{index}"
+        for index, variant in enumerate(items["oneOf"])
+    }
+    return expanded
 
 
 def _principal(org: Any) -> WorkflowTemplatePrincipal:
@@ -72,7 +83,7 @@ async def activate_workflow(org: OrgDep, response: Response, http_request: Reque
     if not receipt["replayed"]:
         from runtime.daemon.runner import enqueue_task
         # Durable intent is the work source. A lost notification is discovered
-        # at startup; response-loss replay never launches/enqueues again.
+        # at startup and periodic sweeps; response-loss replay never enqueues.
         try:
             enqueue_task(http_request.app.state.daemon, org.slug, receipt["root_task_id"])
         except Exception:

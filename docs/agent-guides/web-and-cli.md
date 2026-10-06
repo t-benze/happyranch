@@ -1150,7 +1150,10 @@ original root/intent/pins/time. List returns an array; show returns one receipt.
 CLI parser/local malformed-file errors exit2, domain/transport errors exit1,
 and valid receipts, including pending execution, exit0. Retry response loss with
 the same immutable request/key. No reactivation, reassignment or retry mutation
-endpoint is supplied by S2. The typed API mirror is `workflowActivations`.
+endpoint is supplied by S2. The typed API mirror is `workflowActivations`. The served
+OpenAPI request discriminator maps both task-attachment and thread-attachment
+inputs to their actual inlined variants in the served document; those pointers
+are part of the contract keeper.
 
 Every request object and nested record is closed; unknown fields, booleans in
 integer fields, identity/provenance claims and `latest` aliases refuse. Concrete

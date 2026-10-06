@@ -193,6 +193,40 @@ class WorkflowDraftDispatcher:
             # Ineligibility is a durable queued intent, not a fabricated run.
             return
 
+    def notify_queued(self, task_id: str, queue: Any) -> None:
+        """Rediscover eligible durable work on the periodic daemon sweep.
+
+        A notification grants no claim or launch authority. Revalidate the
+        authenticated queued intent and captured authority under the existing
+        admission fences, then deduplicate notification after every lease exits.
+        Ineligible work waits for a later tick, never an immediate retry loop.
+        """
+        from runtime.workflows.activation import WorkflowActivationError
+        from runtime.workflows.authority import WorkflowAuthorityError
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        with self._live_lock:
+            if task_id in self._live:
+                return
+        try:
+            with self.db._lock:
+                if self._intent(self.db._conn, task_id)["state"] != "queued":
+                    return
+            capture = self.org.workflow_authority.capture_admission()
+            active_sessions = tuple(self.org.sessions.iter_active())
+            with self.org.workflow_authority.admission_writer(capture) as conn:
+                intent = self._intent(conn, task_id)
+                if (intent["state"] != "queued" or intent["host_launch_started"]
+                        or intent["session_id"] is not None
+                        or intent["host_execution_id"] is not None
+                        or intent["final_result_id"] is not None):
+                    return
+                self._eligible(conn, intent, capture, active_sessions)
+        except (DraftOwnershipError, WorkflowActivationError,
+                WorkflowAuthorityError, ProfileCoordinatorError):
+            return
+        queue.enqueue_if_absent(self.org.slug, task_id)
+
     def bind_session(self, task_id: str, agent: str, session_id: str) -> None:
         with self._live_lock:
             live = self._live.get(task_id)

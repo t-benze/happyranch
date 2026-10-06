@@ -128,7 +128,11 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   Profile discovery precedes async serialization, sorted selected profile leases,
   org publication ownership and the synchronized SQLite writer. No host/queue
   effect occurs under durable ownership. Draft/F5/malformed closures are routed
-  before legacy startup/run_step/completion/cancellation effects. A real session
+  before legacy startup/run_step/completion/cancellation effects. Startup and
+  periodic sweeps rediscover the same authenticated queued intent after lost
+  notifications or author-capacity refusal. Periodic discovery checks current
+  authority/capacity and deduplicates enqueue only after all leases release;
+  claim and prelaunch still arbitrate, without an immediate retry loop. A real session
   is not launch evidence: possible launch is durably reserved, running needs a
   genuine bound handle, and completion needs the exact accepted INTEGER result
   plus finalized host quiescence. Missing acknowledgment/callback/quiescence stays

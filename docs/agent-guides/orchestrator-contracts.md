@@ -1980,7 +1980,14 @@ task tracker binding. Admission,
 claim and prelaunch refuse a busy author, including another work-hour invocation;
 receipt eligibility reports the same pending blocker separately from immutable
 roles and original pins. The draft's own session does not occupy a second slot.
-No fallback principal or new work-hours scheduling policy follows. Postcommit enqueue is advisory; startup rediscovers the same intent.
+No fallback principal or new work-hours scheduling policy follows. Postcommit enqueue is advisory; startup and the live periodic reaper rediscover
+that same authenticated intent. The periodic workflow owner revalidates queued,
+no-launch work and current authority/capacity under the existing admission fences,
+then uses the real queue deduplicator after profile/org/publication/SQLite release.
+Capacity refusal waits for a later periodic tick. Receipt replay remains read-only
+and does not notify. Final claim/prelaunch rechecks prevent a stale notification
+from granting execution; uncertain, foreign, malformed and dual closure never
+become replay permission.
 If the author becomes busy after claim but before launch reservation, the exact
 unlaunched claim requeues its same task/intent. The supervisor receives the
 original refusal and clears that registered session; no failed draft, replacement

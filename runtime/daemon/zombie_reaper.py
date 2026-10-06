@@ -22,6 +22,7 @@ from runtime.models import TaskStatus
 
 if TYPE_CHECKING:
     from runtime.daemon.state import DaemonState
+    from runtime.daemon.queue import TaskQueue
     from runtime.infrastructure.database import Database
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -111,6 +112,7 @@ def _sweep_org_zombies(
     uptime: float,
     warm_up_seconds: float,
     orchestrator: Orchestrator | None = None,
+    queue: TaskQueue | None = None,
 ) -> None:
     """Sweep one org for zombie tasks.
 
@@ -137,6 +139,8 @@ def _sweep_org_zombies(
             drafts = getattr(orchestrator, "_workflow_drafts", None)
             if ownership.kind == "draft" and drafts is not None:
                 drafts.reconcile(task_id)
+                if queue is not None:
+                    drafts.notify_queued(task_id, queue)
             continue
 
         # ── STATE ALLOWLIST (requirement 3) ──
@@ -347,6 +351,7 @@ async def zombie_reaper_loop(
                     uptime=uptime,
                     warm_up_seconds=warm_up_seconds,
                     orchestrator=org.orchestrator,
+                    queue=state.queue,
                 )
             except Exception:
                 logger.exception(

@@ -77,7 +77,7 @@ def test_semantic_corruption_fences_every_owned_consumer_before_effects(
         org.orchestrator.run_step(task_id)
     elif consumer == 'reaper':
         _sweep_org_zombies(org.db, now=datetime.now(timezone.utc), uptime=3600,
-                           warm_up_seconds=0, orchestrator=org.orchestrator)
+                           warm_up_seconds=0, orchestrator=org.orchestrator, queue=state.queue)
     else:
         transport = TestClient(client.app, raise_server_exceptions=False)
         try:
@@ -146,7 +146,7 @@ def test_incomplete_ownership_fences_all_status_branches_and_consumers(
             org.orchestrator.run_step(task_id)
         elif consumer == 'reaper':
             _sweep_org_zombies(org.db, now=datetime.now(timezone.utc), uptime=3600,
-                               warm_up_seconds=0, orchestrator=org.orchestrator)
+                               warm_up_seconds=0, orchestrator=org.orchestrator, queue=state.queue)
         else:
             response = (client.post(f'/api/v1/orgs/alpha/tasks/{task_id}/cancel', json={})
                         if consumer == 'cancel' else client.post('/api/v1/orgs/alpha/reconcile-portability',

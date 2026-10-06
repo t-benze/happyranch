@@ -11,6 +11,7 @@ import pytest
 
 from runtime.infrastructure.workflow_schema import validate_workflow_schema
 from tests.daemon.test_workflow_activation_routes import BASE, activation_org, _snapshot
+from tests.workflows.test_activation_store import activation_profile, _select_activation_profile
 
 
 @pytest.fixture
@@ -669,7 +670,7 @@ def test_owned_pid_ttl_consumers_cannot_terminalize_uncertain_draft(draft_host, 
     before = _snapshot(org)
     if consumer == 'reaper':
         _sweep_org_zombies(org.db, now=datetime.now(timezone.utc), uptime=3600,
-                           warm_up_seconds=0, orchestrator=org.orchestrator)
+                           warm_up_seconds=0, orchestrator=org.orchestrator, queue=state.queue)
         assert org.db.get_task(task_id).status.value == 'in_progress'
         assert _snapshot(org) == before
     else:
@@ -1138,3 +1139,593 @@ def test_independent_dispatch_claim_observes_busy_then_same_original_cas(activat
             thread.join(5)
             assert not thread.is_alive()
         reopened.close()
+
+
+def _live_periodic_tick(state, monkeypatch):
+    from runtime.daemon import zombie_reaper
+    original_sleep = asyncio.sleep
+    async def end_after_tick(interval):
+        if interval == 97:
+            raise asyncio.CancelledError
+        return await original_sleep(interval)
+    with monkeypatch.context() as patch:
+        patch.setattr(zombie_reaper, 'HEARTBEAT_INTERVAL_SECONDS', 0)
+        patch.setattr(zombie_reaper.asyncio, 'sleep', end_after_tick)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(zombie_reaper.zombie_reaper_loop(state, interval_seconds=97))
+
+
+@pytest.mark.parametrize('notification', ['initial-capacity', 'prelaunch-capacity', 'lost'])
+def test_live_periodic_discovery_recovers_same_eligible_intent_after_notification_loss(
+    draft_host, monkeypatch, notification,
+):
+    from runtime.models import WorkHourRecord, WorkHourMode, WorkHourStatus
+    client, org, state, body, controls, observations, backend = draft_host
+    original_reserve = org.workflow_drafts._reserve_launch
+    original_enqueue = state.queue.enqueue
+    occupied = []
+    def occupy(agent):
+        hour_id = org.db.work_hours.next_id()
+        org.db.work_hours.insert(WorkHourRecord(id=hour_id, agent_name=agent,
+            local_date='2026-10-06', slot='04:30', mode=WorkHourMode.CONTINUOUS,
+            scheduled_for=datetime(2026, 10, 5, 20, 30, tzinfo=timezone.utc)))
+        org.db.work_hours.update(hour_id, status=WorkHourStatus.RUNNING,
+                                started_at=datetime.now(timezone.utc))
+        occupied.append(hour_id)
+    async def busy_prelaunch(task_id, agent, session):
+        occupy(agent)
+        return await original_reserve(task_id, agent, session)
+    def lost(*args, **kwargs):
+        raise RuntimeError('lost internal queue notification')
+    if notification == 'lost':
+        monkeypatch.setattr(state.queue, 'enqueue', lost)
+    receipt = client.post(BASE, json=body).json()
+    task_id = receipt['root_task_id']
+    if notification != 'lost':
+        assert state.queue._queue.get_nowait() == ('alpha', task_id, None)
+        state.queue._queue.task_done()
+        if notification == 'initial-capacity':
+            occupy('product_lead')
+        else:
+            monkeypatch.setattr(org.workflow_drafts, '_reserve_launch', busy_prelaunch)
+        org.orchestrator.run_step(task_id)
+        assert state.queue._queue.qsize() == 0, 'capacity refusal immediately requeued a notification'
+        assert backend.calls['launch'] == 0
+        before = _snapshot(org)
+        _live_periodic_tick(state, monkeypatch)
+        assert _snapshot(org) == before
+        assert state.queue._queue.qsize() == 0, 'ineligible draft was busy-loop requeued'
+        for hour_id in occupied:
+            org.db.work_hours.update(hour_id, status=WorkHourStatus.COMPLETED,
+                                    ended_at=datetime.now(timezone.utc))
+        monkeypatch.setattr(org.workflow_drafts, '_reserve_launch', original_reserve)
+    monkeypatch.setattr(state.queue, 'enqueue', original_enqueue)
+    assert org.sessions.get_active(task_id, 'product_lead') is None
+    before = _snapshot(org)
+    assert client.post(BASE, json=body).status_code == 200
+    assert _snapshot(org) == before and state.queue._queue.qsize() == 0
+    assert client.get(f"{BASE}/{receipt['activation_id']}").json()['current_eligibility']['eligible']
+    original_dedup = state.queue.enqueue_if_absent
+    notified = []
+    lease_violations = []
+    def outside_ownership(slug, tid):
+        if org.db._conn.in_transaction or org.db._lock._is_owned():
+            lease_violations.append('SQLite ownership at notification')
+        if org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone():
+            lease_violations.append('org publication lease at notification')
+        assert not org.db._conn.in_transaction and not org.db._lock._is_owned()
+        assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+        notified.append((slug, tid))
+        return original_dedup(slug, tid)
+    monkeypatch.setattr(state.queue, 'enqueue_if_absent', outside_ownership)
+    _live_periodic_tick(state, monkeypatch)
+    _live_periodic_tick(state, monkeypatch)
+    assert lease_violations == [], 'notification ran under durable ownership'
+    assert state.queue._queue.qsize() == 1, 'live discovery must leave exactly one deduplicated notification'
+    assert notified == [('alpha', task_id), ('alpha', task_id)]
+    assert _snapshot(org) == before, 'discovery changed durable task/intent/generation'
+    assert state.queue._queue.get_nowait() == ('alpha', task_id, None)
+    state.queue._queue.task_done()
+    # Even genuine duplicate deliveries cannot claim this attempt twice.
+    org.orchestrator.run_step(task_id)
+    org.orchestrator.run_step(task_id)
+    intent = dict(org.db.execute('SELECT * FROM workflow_draft_dispatch_intents').fetchone())
+    assert intent['id'] == receipt['intent_id'] and intent['task_id'] == task_id
+    assert intent['attempt_sequence'] == intent['assignment_generation'] == 1
+    assert intent['state'] == 'completed'
+    assert len(org.db.list_tasks()) == 1 and backend.calls['launch'] == 1
+    assert org.sessions.get_active(task_id, 'product_lead') is None
+    validate_workflow_schema(org.db._conn, expected_org_slug='alpha')
+
+
+def _independent_profile_probe(coordinator, name, *, busy):
+    source = """
+import sys
+from pathlib import Path
+from runtime.workflows.profile_coordinator import ProfileCoordinator,ProfileCoordinatorError
+c=ProfileCoordinator(daemon_home=Path(sys.argv[1]),orgs={})
+try:
+    with c.profile_read(sys.argv[2]): print('ACQUIRED')
+except ProfileCoordinatorError as e:
+    print(e.code)
+"""
+    result = subprocess.run([sys.executable, '-c', source, str(coordinator._daemon_home), name],
+                            capture_output=True, text=True, timeout=8)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ('profile_coordinator_busy' if busy else 'ACQUIRED'), result.stdout
+
+
+@pytest.mark.parametrize('writer', ['profile', 'disable'])
+@pytest.mark.parametrize('first_owner', ['writer', 'prelaunch'])
+def test_actual_profile_or_disable_writer_and_prelaunch_reservation_both_winners(
+    draft_host, activation_profile, monkeypatch, writer, first_owner,
+):
+    import sqlite3
+    from contextlib import contextmanager
+    from runtime.workflows.cutover import WorkflowCutoverStore
+    from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+    client, org, state, body, controls, observations, backend = draft_host
+    profile_client, profile_org, profile_state, profile_body, name = activation_profile
+    assert org is profile_org and state is profile_state
+    _select_activation_profile(client, org, body, name)
+    coordinator = state.profile_coordinator
+    store = WorkflowCutoverStore(org.db, org_slug=org.slug)
+    receipt = client.post(BASE, json=body).json()
+    task_id = receipt['root_task_id']
+    capture_ready = threading.Event()
+    capture_release = threading.Event()
+    reserved = threading.Event()
+    reserve_release = threading.Event()
+    writer_entered = threading.Event()
+    writer_release = threading.Event()
+    writer_done = threading.Event()
+    failures, refusals, no_write, order = [], [], [], []
+    original_capture = org.workflow_authority.capture_admission
+    original_reserve = org.workflow_drafts._reserve_launch
+    original_event = org.workflow_drafts._event
+    original_advance = store._advance
+    original_launch = backend.launch
+    prelaunch_capture = []
+    phase = threading.local()
+    lease_order = []
+    original_profile = coordinator.profile_read
+    original_acquire = org.workflow_authority._acquire_lease
+    original_release = org.workflow_authority._release_lease
+    original_transaction = org.workflow_authority._admission_transaction
+
+    @contextmanager
+    def profile_lease(profile):
+        active = getattr(phase, 'prelaunch', False)
+        with original_profile(profile):
+            if active: lease_order.append('profile')
+            try:
+                yield
+            finally:
+                if active: lease_order.append('profile-release')
+
+    def org_lease(owner):
+        if getattr(phase, 'prelaunch', False):
+            assert lease_order[-1] == 'profile', 'org ownership preceded selected profile ownership'
+            assert not org.db._conn.in_transaction
+        original_acquire(owner)
+        if getattr(phase, 'prelaunch', False): lease_order.append('org')
+
+    def org_release(owner):
+        original_release(owner)
+        if getattr(phase, 'prelaunch', False):
+            assert not org.db._conn.in_transaction
+            lease_order.append('org-release')
+
+    @contextmanager
+    def transaction():
+        active = getattr(phase, 'prelaunch', False)
+        try:
+            with original_transaction() as conn:
+                if active:
+                    assert lease_order[-1] == 'org'
+                    assert org.workflow_authority._publisher_lock._is_owned()
+                    assert org.db._lock._is_owned() and conn.in_transaction
+                    assert conn.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+                    lease_order.append('sqlite')
+                yield conn
+        finally:
+            if active: lease_order.append('sqlite-release')
+
+    def capture():
+        value = original_capture()
+        task = org.db.get_task(task_id)
+        if task.current_session_id and first_owner == 'writer':
+            assert not org.db._conn.in_transaction
+            prelaunch_capture.append(value)
+            capture_ready.set()
+            assert capture_release.wait(12), 'prelaunch capture barrier timed out'
+            no_write.append(_snapshot(org))
+        return value
+
+    async def reserve(tid, agent, session):
+        assert org.sessions.get_active(tid, agent) == session
+        phase.prelaunch = True
+        try:
+            return await original_reserve(tid, agent, session)
+        except Exception as exc:
+            refusals.append(getattr(exc, 'code', str(exc)))
+            assert no_write and _snapshot(org) == no_write[-1], 'refused prelaunch wrote durable state'
+            assert not org.db._conn.in_transaction
+            assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+            raise
+        finally:
+            phase.prelaunch = False
+
+    def event(conn, intent, kind, **kwargs):
+        original_event(conn, intent, kind, **kwargs)
+        if kind == 'launch_reserved':
+            order.append('prelaunch')
+            reserved.set()
+            if first_owner == 'prelaunch':
+                assert reserve_release.wait(12), 'reservation commit barrier timed out'
+
+    def advance(conn, marker, events, **kwargs):
+        original_advance(conn, marker, events, **kwargs)
+        if first_owner == 'writer' and marker['generation'] == 4:
+            writer_entered.set()
+            assert writer_release.wait(12), 'disable writer barrier timed out'
+
+    def external_launch(pending, spec):
+        if writer == 'disable' and first_owner == 'prelaunch':
+            assert writer_done.wait(8), 'competing disable did not finish after reservation commit'
+        assert not org.db._conn.in_transaction and not org.db._lock._is_owned()
+        assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+        _independent_profile_probe(coordinator, name, busy=False)
+        with sqlite3.connect(f"file:{org.root / 'happyranch.db'}?mode=ro", uri=True) as reader:
+            assert reader.execute('SELECT host_launch_started,session_id FROM workflow_draft_dispatch_intents').fetchone() == (1, org.db.get_task(task_id).current_session_id)
+        order.append('host')
+        return original_launch(pending, spec)
+
+    def run():
+        try:
+            org.orchestrator.run_step(task_id)
+        except BaseException as exc:
+            failures.append(exc)
+
+    def write():
+        try:
+            if writer == 'profile':
+                with coordinator.operation([name], operation_kind='rebind', publisher='actual-prelaunch-writer'):
+                    writer_entered.set()
+                    if first_owner == 'writer':
+                        assert writer_release.wait(12), 'profile writer barrier timed out'
+                order.append('writer')
+            else:
+                result = store.request(action='disable', operation_key='actual-prelaunch-disable', expected_generation=4)
+                assert result['state'] in {'disable_requested', 'draining', 'drained'}
+                order.append('writer')
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            writer_done.set()
+
+    monkeypatch.setattr(coordinator, 'profile_read', profile_lease)
+    monkeypatch.setattr(org.workflow_authority, '_acquire_lease', org_lease)
+    monkeypatch.setattr(org.workflow_authority, '_release_lease', org_release)
+    monkeypatch.setattr(org.workflow_authority, '_admission_transaction', transaction)
+    monkeypatch.setattr(org.workflow_authority, 'capture_admission', capture)
+    monkeypatch.setattr(org.workflow_drafts, '_reserve_launch', reserve)
+    monkeypatch.setattr(org.workflow_drafts, '_event', event)
+    monkeypatch.setattr(store, '_advance', advance)
+    monkeypatch.setattr(backend, 'launch', external_launch)
+    host_thread = threading.Thread(target=run)
+    writer_thread = threading.Thread(target=write)
+    host_thread.start()
+    try:
+        if first_owner == 'writer':
+            assert capture_ready.wait(8)
+            writer_thread.start()
+            assert writer_entered.wait(8)
+            # The authentic writer owns a real selected flock or SQLite
+            # transaction; a separate process/reader observes exclusion and
+            # the previously committed no-launch claim, never a fake gate.
+            _independent_profile_probe(coordinator, name, busy=(writer == 'profile'))
+            with sqlite3.connect(f"file:{org.root / 'happyranch.db'}?mode=ro", uri=True) as reader:
+                assert reader.execute('SELECT state,host_launch_started FROM workflow_draft_dispatch_intents').fetchone() == ('claimed', 0)
+                assert reader.execute("SELECT COUNT(*) FROM workflow_draft_dispatch_events WHERE event_kind='launch_reserved'").fetchone()[0] == 0
+            writer_release.set()
+            writer_thread.join(8)
+            assert not writer_thread.is_alive() and failures == [], failures
+            capture_release.set()
+        else:
+            assert reserved.wait(8)
+            _independent_profile_probe(coordinator, name, busy=True)
+            with sqlite3.connect(f"file:{org.root / 'happyranch.db'}?mode=ro", uri=True) as reader:
+                assert reader.execute('SELECT state,host_launch_started FROM workflow_draft_dispatch_intents').fetchone() == ('claimed', 0)
+                assert reader.execute("SELECT COUNT(*) FROM workflow_draft_dispatch_events WHERE event_kind='launch_reserved'").fetchone()[0] == 0
+            assert backend.calls['launch'] == 0
+            if writer == 'profile':
+                with pytest.raises(ProfileCoordinatorError, match='profile_coordinator_busy'):
+                    with coordinator.operation([name], operation_kind='rebind', publisher='actual-prelaunch-loser'):
+                        pytest.fail('profile writer entered beneath prelaunch reservation')
+                reserve_release.set()
+                host_thread.join(8)
+                assert not host_thread.is_alive() and failures == [], failures
+                # Fresh supported retry is legal after all selected/org/writer
+                # ownership is released; it does not retroactively cancel.
+                writer_thread.start()
+            else:
+                real_lock = org.db._lock
+                attempted = threading.Event()
+                class ObservedLock:
+                    def acquire(self, *args, **kwargs):
+                        if threading.current_thread() is writer_thread:
+                            attempted.set()
+                        return real_lock.acquire(*args, **kwargs)
+                    def release(self): return real_lock.release()
+                    def __enter__(self): self.acquire(); return self
+                    def __exit__(self, *args): self.release()
+                    def __getattr__(self, key): return getattr(real_lock, key)
+                monkeypatch.setattr(org.db, '_lock', ObservedLock())
+                writer_thread.start()
+                assert attempted.wait(8), 'disable never contended for actual SQLite owner'
+                assert not writer_entered.is_set() and backend.calls['launch'] == 0
+                reserve_release.set()
+        host_thread.join(10)
+        writer_thread.join(10)
+        assert not host_thread.is_alive() and not writer_thread.is_alive()
+        assert failures == [], failures
+    finally:
+        capture_release.set(); writer_release.set(); reserve_release.set()
+        host_thread.join(10)
+        if writer_thread.ident is not None: writer_thread.join(10)
+        assert not host_thread.is_alive() and not writer_thread.is_alive()
+    _independent_profile_probe(coordinator, name, busy=False)
+    assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+    assert org.sessions.get_active(task_id, 'product_lead') is None
+    intent = dict(org.db.execute('SELECT * FROM workflow_draft_dispatch_intents').fetchone())
+    assert intent['id'] == receipt['intent_id'] and intent['attempt_sequence'] == intent['assignment_generation'] == 1
+    if first_owner == 'writer':
+        assert len(prelaunch_capture) == 1 and len(refusals) == 1, refusals
+        assert refusals[0] in {'workflow_activation_authority_stale', 'workflow_new_runs_disabled'}
+        assert not reserved.is_set() and backend.calls['launch'] == 0
+        assert intent['host_launch_started'] == 0 and intent['host_execution_id'] is None
+        assert not org.db.execute("SELECT 1 FROM workflow_draft_dispatch_events WHERE event_kind='launch_reserved'").fetchone()
+    else:
+        assert refusals == [] and backend.calls['launch'] == 1 and order.index('prelaunch') < order.index('host')
+        assert intent['host_launch_started'] == 1 and intent['state'] == 'completed'
+        assert type(intent['final_result_id']) is int
+    assert lease_order == ['profile', 'org', 'sqlite', 'sqlite-release', 'org-release', 'profile-release'], lease_order
+    validate_workflow_schema(org.db._conn, expected_org_slug='alpha')
+
+
+@pytest.mark.parametrize('closure', [
+    'cache', 'pointer-fence', 'journal-state', 'journal-bytes', 'journal-digest',
+    'dependency-generation', 'dependency-state', 'store-generation', 'store-digest',
+    'store-state', 'registry-generation', 'operation', 'captured-global-digest',
+])
+def test_actual_prelaunch_revalidates_entire_captured_profile_authority_closure(
+    draft_host, activation_profile, monkeypatch, closure,
+):
+    client, org, state, body, controls, host_observations, backend = draft_host
+    _, profile_org, _, _, name = activation_profile
+    assert org is profile_org
+    _select_activation_profile(client, org, body, name)
+    with state.profile_coordinator.operation([name], operation_kind='rebind', publisher='prelaunch-closure-baseline'):
+        pass
+    ready = org.workflow_authority.verify_admission_ready()
+    body['authority'] = dict(namespace=ready.namespace, generation=ready.generation, snapshot_digest=ready.snapshot_digest)
+    receipt = client.post(BASE, json=body).json()
+    task_id = receipt['root_task_id']
+    original_capture = org.workflow_authority.capture_admission
+    original_reserve = org.workflow_drafts._reserve_launch
+    observations, originals, saved_cache, refusals = [], [], [], []
+    def corrupt_after_actual_capture():
+        capture = original_capture()
+        if not org.db.get_task(task_id).current_session_id:
+            return capture
+        originals.append(_snapshot(org))
+        saved_cache.append(dict(org.workflow_authority._cache))
+        assert not org.db._conn.in_transaction
+        assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+        conn = org.db._conn
+        journal_id = capture.pointer[1]
+        if closure == 'cache':
+            org.workflow_authority._cache[ready.namespace] = (ready.generation, '0' * 64)
+        elif closure == 'pointer-fence':
+            conn.execute('UPDATE workflow_authority_pointers SET profile_fence=profile_fence+1 WHERE namespace=?', (ready.namespace,))
+        elif closure == 'journal-state':
+            conn.execute("UPDATE workflow_publication_journals SET state='prepared' WHERE id=?", (journal_id,))
+        elif closure == 'journal-bytes':
+            conn.execute('UPDATE workflow_publication_journals SET snapshot_bytes=? WHERE id=?', (b'private-corrupt-snapshot', journal_id))
+        elif closure == 'journal-digest':
+            conn.execute('UPDATE workflow_publication_journals SET snapshot_digest=? WHERE id=?', ('0' * 64, journal_id))
+        elif closure == 'dependency-generation':
+            conn.execute('UPDATE workflow_profile_dependencies SET bound_generation=bound_generation+1 WHERE profile_name=?', (name,))
+        elif closure == 'dependency-state':
+            conn.execute("UPDATE workflow_profile_dependencies SET state='unbound' WHERE profile_name=?", (name,))
+        elif closure == 'store-generation':
+            conn.execute('UPDATE workflow_profile_store SET generation=generation+1 WHERE profile_name=?', (name,))
+        elif closure == 'store-digest':
+            conn.execute('UPDATE workflow_profile_store SET profile_digest=? WHERE profile_name=?', ('0' * 64, name))
+        elif closure == 'store-state':
+            conn.execute("UPDATE workflow_profile_store SET state='removed' WHERE profile_name=?", (name,))
+        elif closure == 'registry-generation':
+            conn.execute('UPDATE workflow_profile_registry SET published_generation=published_generation+1 WHERE profile_name=?', (name,))
+        elif closure == 'operation':
+            conn.execute("UPDATE workflow_profile_operations SET state='captured' WHERE id=(SELECT id FROM workflow_profile_operations WHERE profile_name=? ORDER BY rowid DESC LIMIT 1)", (name,))
+        else:
+            capture = replace(capture, profile_digests=((name, '0' * 64),))
+        conn.commit()
+        observations.append(_snapshot(org))
+        return capture
+
+
+    async def observed_refusal(tid, agent, session):
+        assert org.sessions.get_active(tid, agent) == session
+        try:
+            return await original_reserve(tid, agent, session)
+        except Exception as exc:
+            refusals.append(getattr(exc, 'code', str(exc)))
+            assert len(observations) == 1
+            assert _snapshot(org) == observations[0], 'prelaunch closure refusal changed persisted graph'
+            assert backend.calls['launch'] == 0 and not org.db._conn.in_transaction
+            assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+            _independent_profile_probe(state.profile_coordinator, name, busy=False)
+            raise
+        finally:
+            # Exact fixture restoration follows the no-write refusal oracle.
+            # Only deliberately corrupted prelaunch authority rows are reset;
+            # no real lifecycle event/claim/result is edited or fabricated.
+            if originals:
+                conn = org.db._conn
+                for table in ('workflow_authority_pointers', 'workflow_publication_journals',
+                              'workflow_profile_dependencies', 'workflow_profile_store',
+                              'workflow_profile_registry', 'workflow_profile_operations'):
+                    columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+                    rowids = [row[0] for row in conn.execute(f'SELECT rowid FROM "{table}" ORDER BY rowid')]
+                    assert len(rowids) == len(originals[0][table])
+                    for rowid, row in zip(rowids, originals[0][table]):
+                        assignments = ','.join(f'"{col}"=?' for col in columns)
+                        conn.execute(f'UPDATE "{table}" SET {assignments} WHERE rowid=?', (*row, rowid))
+                conn.commit()
+                org.workflow_authority._cache.clear()
+                org.workflow_authority._cache.update(saved_cache[0])
+                restored = _snapshot(org)
+                authority_tables = ('workflow_authority_pointers', 'workflow_publication_journals',
+                                    'workflow_profile_dependencies', 'workflow_profile_store',
+                                    'workflow_profile_registry', 'workflow_profile_operations')
+                assert all(restored[table] == originals[0][table] for table in authority_tables), 'negative authority fixture was not exactly restored'
+                assert org.workflow_authority._cache == saved_cache[0]
+
+    monkeypatch.setattr(org.workflow_authority, 'capture_admission', corrupt_after_actual_capture)
+    monkeypatch.setattr(org.workflow_drafts, '_reserve_launch', observed_refusal)
+    org.orchestrator.run_step(task_id)
+    expected = ('authority_pointer_not_ready' if closure == 'cache' else
+                'authority_pointer_journal_invalid' if closure in {'journal-bytes', 'journal-digest'} else
+                'profile_operation_in_progress:captured' if closure == 'operation' else
+                'workflow_activation_authority_stale')
+    assert refusals == [expected], refusals
+    assert backend.calls['launch'] == 0 and host_observations == []
+    assert org.sessions.get_active(task_id, 'product_lead') is None
+    assert task_id not in org.workflow_drafts._live
+    assert not org.db.execute("SELECT 1 FROM workflow_draft_dispatch_events WHERE event_kind='launch_reserved'").fetchone()
+    validate_workflow_schema(org.db._conn, expected_org_slug='alpha')
+
+
+@pytest.mark.parametrize('selection', ['empty-to-selected', 'selected-to-empty'])
+def test_actual_prelaunch_refuses_supported_selected_target_change_after_capture(
+    draft_host, activation_profile, monkeypatch, selection,
+):
+    from contextlib import contextmanager
+    client, org, state, body, controls, observations, backend = draft_host
+    _, profile_org, _, _, name = activation_profile
+    assert profile_org is org
+    if selection == 'selected-to-empty':
+        _select_activation_profile(client, org, body, name)
+    receipt = client.post(BASE, json=body).json()
+    task_id = receipt['root_task_id']
+    original_capture = org.workflow_authority.capture_admission
+    original_read = state.profile_coordinator.profile_read
+    original_reserve = org.workflow_drafts._reserve_launch
+    captures, acquired, after_writer, refusals = [], [], [], []
+
+    def changed_capture():
+        capture = original_capture()
+        if not org.db.get_task(task_id).current_session_id:
+            return capture
+        assert not org.db._conn.in_transaction
+        assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+        captures.append(capture)
+        _select_activation_profile(client, org, body, name if selection == 'empty-to-selected' else 'claude')
+        after_writer.append(_snapshot(org))
+        acquired.clear()
+        return capture
+
+    @contextmanager
+    def observed_profile(name):
+        acquired.append(name)
+        with original_read(name):
+            yield
+
+    async def observed_reserve(tid, agent, session):
+        assert org.sessions.get_active(tid, agent) == session
+        try:
+            return await original_reserve(tid, agent, session)
+        except Exception as exc:
+            refusals.append(getattr(exc, 'code', str(exc)))
+            assert _snapshot(org) == after_writer[0], 'selected-target refusal changed durable prelaunch state'
+            assert acquired == list(captures[0].profile_names), 'stale capture leased a newly selected target'
+            assert not org.db.execute('SELECT 1 FROM workflow_publication_leases').fetchone()
+            _independent_profile_probe(state.profile_coordinator, name, busy=False)
+            raise
+
+    monkeypatch.setattr(org.workflow_authority, 'capture_admission', changed_capture)
+    monkeypatch.setattr(state.profile_coordinator, 'profile_read', observed_profile)
+    monkeypatch.setattr(org.workflow_drafts, '_reserve_launch', observed_reserve)
+    org.orchestrator.run_step(task_id)
+    assert refusals == ['workflow_activation_authority_stale'], refusals
+    assert len(captures) == 1 and backend.calls['launch'] == 0
+    assert not org.db.execute("SELECT 1 FROM workflow_draft_dispatch_events WHERE event_kind='launch_reserved'").fetchone()
+    assert task_id not in org.workflow_drafts._live
+    assert org.sessions.get_active(task_id, 'product_lead') is None
+    monkeypatch.setattr(org.workflow_authority, 'capture_admission', original_capture)
+    fresh = original_capture()
+    assert fresh.ready.generation > captures[0].ready.generation
+    assert fresh.profile_names == (() if selection == 'selected-to-empty' else (name,))
+    validate_workflow_schema(org.db._conn, expected_org_slug='alpha')
+
+
+@pytest.mark.parametrize('live_state', ['claimed', 'running', 'uncertain'])
+def test_live_periodic_discovery_never_replays_a_live_or_possible_launch(draft_host, monkeypatch, live_state):
+    client, org, state, body, controls, observations, backend = draft_host
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    if live_state == 'uncertain':
+        controls.update(callback=False, quiescent=False)
+    original_reserve = org.workflow_drafts._reserve_launch
+    original_handle = org.workflow_drafts.observed_handle
+    async def held_claim(tid, agent, session):
+        assert org.sessions.get_active(tid, agent) == session
+        entered.set()
+        assert await asyncio.to_thread(release.wait, 8), 'live claimed barrier timed out'
+        return await original_reserve(tid, agent, session)
+    def held_running(*args):
+        original_handle(*args)
+        entered.set()
+        assert release.wait(8), 'live running barrier timed out'
+    if live_state == 'claimed':
+        monkeypatch.setattr(org.workflow_drafts, '_reserve_launch', held_claim)
+    elif live_state == 'running':
+        monkeypatch.setattr(org.workflow_drafts, 'observed_handle', held_running)
+    receipt = client.post(BASE, json=body).json()
+    task_id = receipt['root_task_id']
+    assert state.queue._queue.get_nowait() == ('alpha', task_id, None)
+    state.queue._queue.task_done()
+    def run():
+        try: org.orchestrator.run_step(task_id)
+        except BaseException as exc: errors.append(exc)
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        if live_state != 'uncertain':
+            assert entered.wait(5)
+        else:
+            worker.join(8)
+            assert not worker.is_alive() and errors == []
+        assert org.db.execute('SELECT state FROM workflow_draft_dispatch_intents').fetchone()[0] == live_state
+        before = _snapshot(org)
+        launches = backend.calls['launch']
+        _live_periodic_tick(state, monkeypatch)
+        _live_periodic_tick(state, monkeypatch)
+        assert state.queue._queue.qsize() == 0, 'live or possible launch was made replayable'
+        assert _snapshot(org) == before and backend.calls['launch'] == launches
+    finally:
+        release.set()
+        worker.join(8)
+        assert not worker.is_alive()
+    assert errors == [], errors
+    assert task_id not in org.workflow_drafts._live
+    assert org.sessions.get_active(task_id, 'product_lead') is None
+    intent = dict(org.db.execute('SELECT * FROM workflow_draft_dispatch_intents').fetchone())
+    assert intent['state'] == ('uncertain' if live_state == 'uncertain' else 'completed')
+    shown = client.get(f"{BASE}/{receipt['activation_id']}").json()
+    assert shown['pending'] is (live_state == 'uncertain')
+    assert shown['reconciliation_required'] is (live_state == 'uncertain')
+    assert backend.calls['launch'] == 1
+    validate_workflow_schema(org.db._conn, expected_org_slug='alpha')

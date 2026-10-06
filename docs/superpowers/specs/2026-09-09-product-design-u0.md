@@ -1665,7 +1665,13 @@ writer as authorization/binding/context, immutable activation/current pointer,
 actor/org/key operation, intent and admitted event. Admission has no session,
 result or host identity. Historical replay authenticates the original closure
 before mutable eligibility/CAS/cutover gates and preserves root/pins/time; current
-eligibility is separate. New admission alone notifies after commit. Publication
+eligibility is separate. New admission notifies only after commit; historical
+replay does not notify. Startup and periodic live discovery may re-notify the same
+authenticated queued/no-launch task after lost notification or author-capacity
+refusal. Periodic eligibility checks use the existing authority fences, with
+queue deduplication after every lease releases. Claim/prelaunch remain final
+arbitration; no new task, assignment generation, attempt or busy retry loop is
+created. Publication
 of another template version grants neither assignment nor retargeting.
 
 The bounded author, including a manager, has document responsibility only.
