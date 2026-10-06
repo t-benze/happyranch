@@ -1,7 +1,7 @@
 /**
  * SettingsPage — full page (not dialog) with sticky left sub-nav + field panel.
  *
- * Sub-nav: Assistant · Organization · Executors.
+ * Sub-nav: Capacity · Assistant · Organization · Executors · Preferences.
  * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
  * the standalone /usage page.)
  * Each sub-nav item routes to /orgs/:slug/settings/:section.
@@ -17,8 +17,8 @@
  * (language) panel is mounted OUTSIDE the settings-API gate so it renders and
  * works while `useSettings` is loading, has failed or has no data. The other
  * panels keep the existing loading/error/data gate unchanged. THR-118 W3b-2
- * enables Preferences in ordinary production builds (opt-in language preview;
- * an unset preference stays English).
+ * enabled Preferences in ordinary production builds; W5 now uses full-mode
+ * browser-language fallback when a saved preference is absent or invalid.
  */
 import {
   Navigate,
@@ -138,17 +138,17 @@ export function SettingsPage(): JSX.Element {
 function SettingsContent({ children }: { children: ReactNode }): JSX.Element {
   return (
     <div
-      className="max-w-content-narrow mx-auto flex w-full flex-1 overflow-hidden"
+      className="max-w-content-narrow mx-auto flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-hidden sm:flex-row"
       data-testid="settings-content"
     >
       <SettingsSubNav />
-      <main className="flex-1 overflow-y-auto">{children}</main>
+      <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">{children}</main>
     </div>
   );
 }
 
 /**
- * SettingsSubNav — sticky left rail of section links.
+ * SettingsSubNav — wrapped links below 640px; left rail at 640px and wider.
  * Each link navigates to /orgs/:slug/settings/:section.
  * Each link carries a leading icon (per design ref `a-settings`).
  * Active link uses Pasture rounded-full pill style.
@@ -159,17 +159,17 @@ function SettingsSubNav(): JSX.Element {
   const sections = [...SECTIONS, PREFERENCES_SECTION];
 
   return (
-    <aside className="border-border-default bg-surface-sunken w-50 shrink-0 overflow-y-auto border-r p-3">
+    <aside className="border-border-default bg-surface-sunken w-full min-w-0 shrink-0 overflow-y-auto border-b p-3 sm:w-50 sm:border-r sm:border-b-0">
       <h3 className="text-overline text-text-secondary mb-2 tracking-wider uppercase">
         {t('settings.nav.heading')}
       </h3>
-      <ul className="space-y-0.5">
+      <ul className="flex flex-wrap gap-0.5 sm:block sm:space-y-0.5">
         {sections.map((s) => (
-          <li key={s.key}>
+          <li key={s.key} className="min-w-0">
             <NavLink
               to={`/orgs/${slug}/settings/${s.key}`}
               className={({ isActive }) =>
-                `flex w-full items-center gap-2 rounded-full px-3 py-1 text-left text-sm transition-colors ${
+                `flex w-full min-w-0 items-center gap-2 rounded-full px-3 py-1 text-left text-sm transition-colors ${
                   isActive
                     ? 'bg-accent-soft text-accent-text'
                     : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
@@ -177,7 +177,7 @@ function SettingsSubNav(): JSX.Element {
               }
             >
               <s.icon size={16} aria-hidden="true" className="shrink-0" />
-              <span>{t(s.labelKey)}</span>
+              <span className="min-w-0 break-words">{t(s.labelKey)}</span>
             </NavLink>
           </li>
         ))}
@@ -243,7 +243,7 @@ function ExecutorsPanel(): JSX.Element {
 function PreferencesPanel(): JSX.Element {
   const { t } = useTranslation();
   return (
-    <div className="max-w-2xl p-6">
+    <div className="max-w-2xl min-w-0 p-4 break-words sm:p-6">
       <h2 className="font-display mb-1 text-lg font-semibold">{t('settings.panel.preferences.title')}</h2>
       <p className="text-text-secondary mb-6 text-sm">
         {t('settings.panel.preferences.description')}

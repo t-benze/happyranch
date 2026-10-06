@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * W3b-2 Jobs + opt-in preview browser-evidence harness (THR-118).
+ * W3b-2 Jobs + current full-mode Preferences browser-evidence harness (THR-118).
  *
  * Same mechanism as `w3b-tasks-browser-evidence.mjs` (no new dependency): ONE
  * isolated headless Chrome driven over the DevTools Protocol against the
  * ORDINARY production SPA bundle (no build flag), served same-origin next to a
  * synthetic `/api/v1` stub whose every request lands in a server-side ledger.
  * Chrome runs with `--lang=zh-CN` plus a Chinese `navigator.languages`
- * override, so an English result for an unset preference proves the preview
- * never auto-detects. Expected copy is read from the shipped typed catalogs.
+ * override, so an unset preference must follow the Chinese environment
+ * in full mode. Historical W3b-2 receipts retain their preview identity. Expected copy is read from the shipped typed catalogs.
  *
  * Cases (receipt.json; exit 1 if any fails):
  *   G  the ordinary bundle now CONTAINS the Preferences selector markers;
@@ -19,8 +19,8 @@
  *      the storage-event path; the SAME dialog and input nodes, the same value
  *      and focus, localized title/label, ZERO /api requests per switch window;
  *   P  Settings > Preferences in the ordinary build, preference UNSET on a
- *      Chinese browser: English, English radio checked, disclosure visible;
- *      a real CDP click on 简体中文 switches in place (same radio/panel nodes,
+ *      Chinese browser: Chinese, Chinese radio checked, bilingual disclosure visible;
+ *      real CDP clicks on English then 简体中文 switch in place (same radio/panel nodes,
  *      focus, zh disclosure, <html lang>) with ZERO /api requests.
  *
  * Build + run (from web/):
@@ -426,7 +426,7 @@ async function main() {
     endCase();
 
     // ============================================================ P
-    beginCase('P', 'Preferences in the ordinary build: unset stays English on a Chinese browser; disclosure; zh-CN switch in place with zero /api');
+    beginCase('P', 'Preferences in the ordinary build: unset follows Chinese browser fallback; disclosure; zh-CN switch in place with zero /api');
     {
       // Earlier cases share this profile's localStorage: remove the saved
       // preference before the app boots so this page starts genuinely UNSET.
@@ -437,11 +437,13 @@ async function main() {
       const radio = (value) => `document.querySelector('input[name="happyranch-ui-language"][value="${value}"]')`;
       check('P unset: stored preference absent', await evaluate(page, `localStorage.getItem(${JSON.stringify(LOCALE_KEY)})`), null);
       check('P unset: navigator is Chinese', await evaluate(page, `navigator.languages.join(',')`), 'zh-CN,zh');
-      check('P unset: <html lang> en', await evaluate(page, langIs('en')), true);
-      check('P unset: English radio checked', await evaluate(page, `${radio('en')}.checked`), true);
+      check('P unset: <html lang> zh-CN', await evaluate(page, langIs('zh-CN')), true);
+      check('P unset: Chinese radio checked', await evaluate(page, `${radio('zh-CN')}.checked`), true);
       check('P unset: route stays /settings/preferences', await evaluate(page, `location.pathname`), `/orgs/${ORG}/settings/preferences`);
-      check('P unset: disclosure (en) visible', await evaluate(page, `(() => { const p = [...document.querySelectorAll('[data-testid="settings-preferences"] p')].find((n) => n.textContent === ${JSON.stringify(tr('en', 'settings.preferences.coverageDisclosure'))}); return Boolean(p && p.getBoundingClientRect().height > 0); })()`), true);
-      await capture(page, 'en-preferences-unset-1440', { viewport: '1440x900', locale: 'en', state: 'unset preference on zh-CN browser' });
+      check('P unset: disclosure (zh-CN) visible', await evaluate(page, `(() => { const p = [...document.querySelectorAll('[data-testid="settings-preferences"] p')].find((n) => n.textContent === ${JSON.stringify(tr('zh-CN', 'settings.preferences.coverageDisclosure'))}); return Boolean(p && p.getBoundingClientRect().height > 0); })()`), true);
+      await capture(page, 'zh-preferences-unset-1440', { viewport: '1440x900', locale: 'zh-CN', state: 'unset preference on zh-CN browser' });
+      await clickSrc(page, radio('en'));
+      check('P explicit English prepares original Chinese switch', await waitTrue(page, `${langIs('en')} && ${radio('en')}.checked`, 'explicit English before Chinese switch'), true);
       await evaluate(page, `(() => { window.__w3bRadio = new WeakRef(${radio('zh-CN')}); window.__w3bPanel = new WeakRef(document.querySelector('[data-testid="settings-preferences"]')); return true; })()`);
       const from = LEDGER.length;
       await clickSrc(page, radio('zh-CN'));
@@ -470,7 +472,7 @@ async function main() {
   const failed = cases.filter((c) => !c.pass);
   const receipt = {
     head, generatedAt: new Date().toISOString(), node: process.version,
-    chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + navigator override: environment never defaults the locale)' },
+    chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + actual navigator override; full-mode fallback)' },
     externalRequestsBlocked: EXTERNAL_BLOCK,
     dist: fingerprint,
     summary: cases.map((c) => ({ id: c.id, title: c.title, pass: c.pass, checks: c.checks.length, failedChecks: c.checks.filter((x) => !x.ok).map((x) => x.name) })),

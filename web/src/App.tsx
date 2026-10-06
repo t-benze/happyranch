@@ -26,7 +26,7 @@ export interface AppProps {
  */
 export function AppShell({ initialLocale }: AppProps = {}): JSX.Element {
   return (
-    <I18nProvider initialResolution={initialLocale}>
+    <I18nProvider mode="full" initialResolution={initialLocale}>
       <AppProvider>
         <AppRoutes />
       </AppProvider>

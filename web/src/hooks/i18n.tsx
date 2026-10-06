@@ -72,7 +72,7 @@ export interface I18nProviderProps {
   children: ReactNode;
   /** Defaults to the browser adapter; tests/W5 inject other implementations. */
   adapter?: LocalePreferenceAdapter;
-  /** Preview (default) never auto-detects the environment. */
+  /** Preview (API default) never auto-detects; production AppShell selects full. */
   mode?: LocaleMode;
   /**
    * The one synchronous startup resolution computed by

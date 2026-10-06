@@ -20,7 +20,7 @@
  * Cases (receipt.json; exit 1 if any fails):
  *   G   gate (W3b-2 contract): ordinary JS contains the Preferences markers and
  *       lacks the evidence markers; /settings/preferences renders the selector;
- *       an unset preference under a Chinese navigator renders English;
+ *       an unset preference under a Chinese navigator renders Simplified Chinese;
  *   D   Dashboard loading / error→Retry / first-run empty / populated in en and
  *       zh-CN; an en→zh-CN→en and zh-CN→en→zh-CN switch keeps tagged nodes,
  *       entity/ID and raw audit event_kind bytes and issues no mutation or
@@ -624,7 +624,7 @@ async function main() {
     const composerSrc = (l) => `document.querySelector('textarea[aria-label=${JSON.stringify(tr(l, 'threads.page.composer.textareaAria'))}]')`;
 
     // ============================================================ G: Preferences mounted (W3b-2)
-    beginCase('G', 'ordinary build mounts Preferences, excludes evidence markers; unset + Chinese navigator stays English');
+    beginCase('G', 'ordinary build mounts Preferences, excludes evidence markers; unset + Chinese navigator follows full-mode Chinese fallback');
     {
       for (const s of GATED_STRINGS) check(`G ordinary JS contains "${s}"`, fpOrdinary.gatedStrings[s], true);
       for (const s of EVIDENCE_MARKERS) check(`G ordinary JS lacks evidence marker "${s}"`, fpOrdinary.evidenceMarkers[s], false);
@@ -633,13 +633,13 @@ async function main() {
       const r = await evaluate(page, `({ path: location.pathname, lang: document.documentElement.lang, navLang: navigator.language, radios: document.querySelectorAll('input[name="happyranch-ui-language"]').length, checked: (document.querySelector('input[name="happyranch-ui-language"]:checked') || {}).value || null, prefsLinks: [...document.querySelectorAll('a')].filter((a) => (a.getAttribute('href') || '').endsWith('/settings/preferences')).length, stored: localStorage.getItem(${JSON.stringify(LOCALE_KEY)}) })`);
       check('G direct /settings/preferences renders (no redirect)', r.path, `/orgs/${ORG}/settings/preferences`);
       check('G navigator is Chinese (precondition)', r.navLang, 'zh-CN');
-      check('G unset preference renders <html lang=en>', r.lang, 'en');
+      check('G unset preference renders <html lang=zh-CN>', r.lang, 'zh-CN');
       check('G selector radios / Preferences link present', [r.radios, r.prefsLinks > 0], [2, true]);
-      check('G unset: English radio checked', r.checked, 'en');
+      check('G unset: Chinese radio checked', r.checked, 'zh-CN');
       check('G no preference written', r.stored, null);
       await closePage(page);
-      const dash = await open(`/orgs/${ORG}/dashboard`, { locale: null, until: PRED.bodyHas(tr('en', 'dashboard.today.title')) });
-      check('G unset + Chinese navigator: dashboard English', await evaluate(dash, `${PRED.lang('en')} && ${PRED.bodyHas(tr('en', 'dashboard.today.title'))} && !${PRED.bodyHas(tr('zh-CN', 'dashboard.today.title'))}`), true);
+      const dash = await open(`/orgs/${ORG}/dashboard`, { locale: null, until: PRED.bodyHas(tr('zh-CN', 'dashboard.today.title')) });
+      check('G unset + Chinese navigator: dashboard Chinese', await evaluate(dash, `${PRED.lang('zh-CN')} && ${PRED.bodyHas(tr('zh-CN', 'dashboard.today.title'))} && !${PRED.bodyHas(tr('en', 'dashboard.today.title'))}`), true);
       await closePage(dash);
     }
     endCase();
