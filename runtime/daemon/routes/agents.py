@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Coroutine, Literal, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, StrictStr, field_validator, model_validator
@@ -550,9 +550,9 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
                             "agent": agent_name, "phase": "repo_cloning",
                             "repo": repo_name,
                         })}
-                        ok = await asyncio.to_thread(
+                        ok = await _finish_consumer_write(asyncio.to_thread(
                             ctx.clone_repo, workspace, repo_name, url,
-                        )
+                        ))
                         yield {"data": _json.dumps({
                             "agent": agent_name,
                             "phase": "repo_ready" if ok else "repo_failed",
@@ -563,20 +563,20 @@ async def init_agents(slug: str, body: InitBody, org: OrgDep):
                         raise RuntimeError(f"active agent {agent_name!r} disappeared")
                     provider = agent_def.executor if agent_def else "claude"
                     sys_prompt = agent_def.system_prompt if agent_def else ""
-                    await asyncio.to_thread(
+                    await _finish_consumer_write(asyncio.to_thread(
                         ctx.ensure_workspace_ready, workspace, agent_name, sys_prompt,
                         provider=provider,
-                    )
-                    await asyncio.to_thread(
+                    ))
+                    await _finish_consumer_write(asyncio.to_thread(
                         ctx.create_agent_dirs, workspace, agent_name,
-                    )
+                    ))
                     # GH-709 Slice C: report done only after the selected executor
                     # profile's exact readiness marker exists as a valid regular
                     # file produced by this bootstrap.
-                    await asyncio.to_thread(
+                    await _finish_consumer_write(asyncio.to_thread(
                         _bootstrap_readiness_marker, org, workspace, agent_name,
                         agent_def, provider,
-                    )
+                    ))
             except Exception as exc:
                 yield {"data": _json.dumps({
                     "agent": agent_name, "phase": "error", "detail": str(exc),
@@ -658,32 +658,35 @@ async def manage_repo(
                         pass
                     raise
 
-        # Clone/remove repo dir as before
-        if body.action == RepoAction.add:
-            await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
-        elif body.action == RepoAction.remove:
-            repo_dir = workspace / "repos" / body.repo_name
-            if repo_dir.exists():
-                shutil.rmtree(repo_dir)
-        elif body.action == RepoAction.update:
-            repo_dir = workspace / "repos" / body.repo_name
-            if repo_dir.exists():
-                shutil.rmtree(repo_dir)
-            await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
+        async def finish_write() -> dict:
+            # Clone/remove repo dir as before
+            if body.action == RepoAction.add:
+                await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
+            elif body.action == RepoAction.remove:
+                repo_dir = workspace / "repos" / body.repo_name
+                if repo_dir.exists():
+                    shutil.rmtree(repo_dir)
+            elif body.action == RepoAction.update:
+                repo_dir = workspace / "repos" / body.repo_name
+                if repo_dir.exists():
+                    shutil.rmtree(repo_dir)
+                await asyncio.to_thread(ctx.clone_repo, workspace, body.repo_name, body.url)
 
-        # clone_repo can yield to the event loop.  Bootstrap from a fresh
-        # canonical snapshot afterwards so an accepted whole-definition update
-        # is not overwritten in workspace inputs (and a removed agent is not
-        # resurrected).  This capture does not serialize workspace generation
-        # against arbitrary later writes or external same-UID/multiprocess edits.
-        fresh = prompt_loader.load_agent(paths, agent_name)
-        if fresh is None:
-            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
-        await asyncio.to_thread(
-            ctx.ensure_workspace_ready, workspace, agent_name, fresh.system_prompt,
-            provider=fresh.executor,
-        )
-        return {"ok": True}
+            # clone_repo can yield to the event loop.  Bootstrap from a fresh
+            # canonical snapshot afterwards so an accepted whole-definition update
+            # is not overwritten in workspace inputs (and a removed agent is not
+            # resurrected).  This capture does not serialize workspace generation
+            # against arbitrary later writes or external same-UID/multiprocess edits.
+            fresh = prompt_loader.load_agent(paths, agent_name)
+            if fresh is None:
+                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+            await asyncio.to_thread(
+                ctx.ensure_workspace_ready, workspace, agent_name, fresh.system_prompt,
+                provider=fresh.executor,
+            )
+            return {"ok": True}
+
+        return await _finish_consumer_write(finish_write())
 
 @router.post("/agents/manage")
 async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
@@ -1348,42 +1351,45 @@ async def founder_create_agent(
                     else:
                         org.teams.remove_team(team_name)
                     raise
-        # ---- workspace bootstrap (THR-095: no agent.yaml writes) ----
-        workspace = paths.workspaces_dir / body.name
-        workspace.mkdir(parents=True, exist_ok=True)
+        async def finish_write() -> dict:
+            # ---- workspace bootstrap (THR-095: no agent.yaml writes) ----
+            workspace = paths.workspaces_dir / body.name
+            workspace.mkdir(parents=True, exist_ok=True)
 
-        # THR-095: agent.yaml is no longer the source for executor/repos.
-        # The .md frontmatter (AgentDef) is the single source of truth.
-        repos = agent_def.repos or {}
-        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-        for repo_name, url in repos.items():
-            await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+            # THR-095: agent.yaml is no longer the source for executor/repos.
+            # The .md frontmatter (AgentDef) is the single source of truth.
+            repos = agent_def.repos or {}
+            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+            for repo_name, url in repos.items():
+                await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
 
-        # Cloning yields to the event loop.  Bootstrap from the current active
-        # definition so an accepted update is not fed stale prompt/provider
-        # inputs, and never recreate a definition removed while cloning.  This
-        # fresh capture does not serialize workspace generation against arbitrary
-        # later writes.
-        fresh = prompt_loader.load_agent(paths, body.name)
-        if fresh is None:
-            raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
-        await asyncio.to_thread(
-            ctx.ensure_workspace_ready,
-            workspace,
-            body.name,
-            fresh.system_prompt,
-            provider=fresh.executor,
-        )
-        await asyncio.to_thread(ctx.create_agent_dirs, workspace, body.name)
+            # Cloning yields to the event loop.  Bootstrap from the current active
+            # definition so an accepted update is not fed stale prompt/provider
+            # inputs, and never recreate a definition removed while cloning.  This
+            # fresh capture does not serialize workspace generation against arbitrary
+            # later writes.
+            fresh = prompt_loader.load_agent(paths, body.name)
+            if fresh is None:
+                raise HTTPException(status_code=404, detail=f"agent {body.name!r} not found")
+            await asyncio.to_thread(
+                ctx.ensure_workspace_ready,
+                workspace,
+                body.name,
+                fresh.system_prompt,
+                provider=fresh.executor,
+            )
+            await asyncio.to_thread(ctx.create_agent_dirs, workspace, body.name)
 
-        AuditLogger(org.db).log_agent_managed(
-            scope_id="founder",
-            action="enroll",
-            name=body.name,
-            source="founder",
-            actor="founder",
-        )
-        return {"name": body.name, "team": team_name, "role": body.role}
+            AuditLogger(org.db).log_agent_managed(
+                scope_id="founder",
+                action="enroll",
+                name=body.name,
+                source="founder",
+                actor="founder",
+            )
+            return {"name": body.name, "team": team_name, "role": body.role}
+
+        return await _finish_consumer_write(finish_write())
 
 # ---------------------------------------------------------------------------
 # Founder surface: switch an existing agent's executor end-to-end.
@@ -1912,6 +1918,44 @@ def _validate_executor(executor: str) -> None:
         )
 
 
+_ConsumerResult = TypeVar("_ConsumerResult")
+
+
+async def _finish_consumer_write(
+    work: Coroutine[Any, Any, _ConsumerResult],
+) -> _ConsumerResult:
+    """Drain admitted work before its caller can release the writer interval.
+
+    Request cancellation cannot stop a running thread. Keep a separate task
+    alive through its physical writes AND the route's terminal reconciliation;
+    repeated cancellation only delays propagation until that task terminates.
+    The caller already owns the process gate; this takes no additional lease.
+    """
+    operation = asyncio.create_task(work)
+    cancellation = None
+    while not operation.done():
+        try:
+            await asyncio.shield(operation)
+        except asyncio.CancelledError as exc:
+            if operation.cancelled():
+                raise
+            cancellation = exc
+        except Exception:
+            # Retrieve the terminal error below, including during cancellation.
+            break
+    if cancellation is not None:
+        try:
+            operation.result()
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Cancelled consumer write finished with an error",
+                exc_info=True,
+            )
+            raise cancellation from exc
+        raise cancellation
+    return operation.result()
+
+
 @asynccontextmanager
 async def _consumer_writer_interval(org, *, publisher, consumer, executor=None, preserve=False):
     coordinator = getattr(org, "_profile_coordinator", None)
@@ -2079,84 +2123,87 @@ async def set_agent_system_prompt(
             with interval.canonical_change():
                 _prompt_replace_bytes(active_path, candidate)
 
-        pair_written = None
-        try:
-            if pair_before is not None:
-                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-                profile = get_registry().get_profile(updated.executor)
-                assert profile is not None  # validated before the canonical mutation
-                # Pi shares Codex's text-only renderer. No settings, permission,
-                # skills, enrollment or workspace initialization on this route.
-                adapter_id = profile.workspace_adapter_id
-                writer = (
-                    ctx.write_claude_md if adapter_id == "claude"
-                    else ctx.write_agents_md if adapter_id in {"codex", "pi"}
-                    else ctx._adapter(updated.executor).write_agents_md
-                )
-                await asyncio.to_thread(writer, workspace, agent_name, updated.system_prompt)
-                pair_written = _prompt_pair_snapshot(workspace)
-            receipt_snapshot = prompt_loader.load_agent_snapshot(paths, agent_name)
-            if receipt_snapshot is None or receipt_snapshot[1] != written_revision:
-                raise RuntimeError("canonical prompt changed during reconciliation")
-            receipt = SystemPromptReceipt(
-                agent=agent_name, system_prompt=receipt_snapshot[0].system_prompt,
-                revision=receipt_snapshot[1],
-            )
-        except Exception as exc:
-            logger = logging.getLogger(__name__)
-            logger.exception("Prompt reconciliation failed for %s", agent_name)
-            if isinstance(exc, InstructionPairConflict):
-                logger.error("Prompt pair diagnostic for %s: %s", agent_name, exc.raw_diagnostic())
-            canonical = "not_owned"
-            pair_status = "not_required" if pair_before is None else "not_owned"
+        async def finish_write() -> SystemPromptReceipt:
+            pair_written = None
             try:
-                async with org.teams_lock:
-                    current = prompt_loader.load_agent_snapshot(paths, agent_name)
-                    if current is not None and current[1] == written_revision:
-                        with interval.canonical_change():
-                            _prompt_replace_bytes(active_path, original)
-                        canonical = "restored"
-                        if pair_before is not None:
-                            restored = prompt_loader.load_agent_snapshot(paths, agent_name)
-                            current_pair = _prompt_pair_snapshot(workspace)
-                            if restored is None or restored[1] != hashlib.sha256(original).hexdigest():
-                                pair_status = "not_owned"
-                            elif current_pair == pair_before:
-                                pair_status = "restored"
-                            elif pair_written is not None and current_pair == pair_written:
-                                failures = _restore_instruction_pair(
-                                    workspace / "AGENTS.md", pair_before[0],
-                                    workspace / "CLAUDE.md", pair_before[1],
-                                )
-                                pair_status = "failed" if failures else "restored"
-                                if failures:
-                                    logger.error("Prompt pair compensation failed: %s", failures)
-                            elif pair_written is None:
-                                # Inner pair compensation owns partial writes;
-                                # unknown residue is never replayed over a winner.
-                                pair_status = "failed"
+                if pair_before is not None:
+                    ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                    profile = get_registry().get_profile(updated.executor)
+                    assert profile is not None  # validated before the canonical mutation
+                    # Pi shares Codex's text-only renderer. No settings, permission,
+                    # skills, enrollment or workspace initialization on this route.
+                    adapter_id = profile.workspace_adapter_id
+                    writer = (
+                        ctx.write_claude_md if adapter_id == "claude"
+                        else ctx.write_agents_md if adapter_id in {"codex", "pi"}
+                        else ctx._adapter(updated.executor).write_agents_md
+                    )
+                    await asyncio.to_thread(writer, workspace, agent_name, updated.system_prompt)
+                    pair_written = _prompt_pair_snapshot(workspace)
+                receipt_snapshot = prompt_loader.load_agent_snapshot(paths, agent_name)
+                if receipt_snapshot is None or receipt_snapshot[1] != written_revision:
+                    raise RuntimeError("canonical prompt changed during reconciliation")
+                receipt = SystemPromptReceipt(
+                    agent=agent_name, system_prompt=receipt_snapshot[0].system_prompt,
+                    revision=receipt_snapshot[1],
+                )
+            except Exception as exc:
+                logger = logging.getLogger(__name__)
+                logger.exception("Prompt reconciliation failed for %s", agent_name)
+                if isinstance(exc, InstructionPairConflict):
+                    logger.error("Prompt pair diagnostic for %s: %s", agent_name, exc.raw_diagnostic())
+                canonical = "not_owned"
+                pair_status = "not_required" if pair_before is None else "not_owned"
+                try:
+                    async with org.teams_lock:
+                        current = prompt_loader.load_agent_snapshot(paths, agent_name)
+                        if current is not None and current[1] == written_revision:
+                            with interval.canonical_change():
+                                _prompt_replace_bytes(active_path, original)
+                            canonical = "restored"
+                            if pair_before is not None:
+                                restored = prompt_loader.load_agent_snapshot(paths, agent_name)
+                                current_pair = _prompt_pair_snapshot(workspace)
+                                if restored is None or restored[1] != hashlib.sha256(original).hexdigest():
+                                    pair_status = "not_owned"
+                                elif current_pair == pair_before:
+                                    pair_status = "restored"
+                                elif pair_written is not None and current_pair == pair_written:
+                                    failures = _restore_instruction_pair(
+                                        workspace / "AGENTS.md", pair_before[0],
+                                        workspace / "CLAUDE.md", pair_before[1],
+                                    )
+                                    pair_status = "failed" if failures else "restored"
+                                    if failures:
+                                        logger.error("Prompt pair compensation failed: %s", failures)
+                                elif pair_written is None:
+                                    # Inner pair compensation owns partial writes;
+                                    # unknown residue is never replayed over a winner.
+                                    pair_status = "failed"
+                except Exception:
+                    logger.exception("Prompt compensation failed for %s", agent_name)
+                    if canonical != "restored":
+                        canonical = "failed"
+                    else:
+                        pair_status = "failed"
+                diagnostic = exc.caller_diagnostic() if isinstance(exc, InstructionPairConflict) else str(exc)[:1000]
+                raise HTTPException(status_code=400, detail={
+                    "code": "system_prompt_reconciliation_failed", "error": diagnostic,
+                    "compensation": {"canonical": canonical, "workspace": pair_status},
+                }) from None
+            try:
+                AuditLogger(org.db).log_agent_managed(
+                    scope_id="founder", action="update", name=agent_name,
+                    source="founder", actor="founder",
+                )
             except Exception:
-                logger.exception("Prompt compensation failed for %s", agent_name)
-                if canonical != "restored":
-                    canonical = "failed"
-                else:
-                    pair_status = "failed"
-            diagnostic = exc.caller_diagnostic() if isinstance(exc, InstructionPairConflict) else str(exc)[:1000]
-            raise HTTPException(status_code=400, detail={
-                "code": "system_prompt_reconciliation_failed", "error": diagnostic,
-                "compensation": {"canonical": canonical, "workspace": pair_status},
-            }) from None
-        try:
-            AuditLogger(org.db).log_agent_managed(
-                scope_id="founder", action="update", name=agent_name,
-                source="founder", actor="founder",
-            )
-        except Exception:
-            logging.getLogger(__name__).exception("Prompt audit failed for %s", agent_name)
-            raise HTTPException(status_code=500, detail={
-                "code": "system_prompt_audit_failed", "commit_state": "possibly_committed",
-            }) from None
-        return receipt
+                logging.getLogger(__name__).exception("Prompt audit failed for %s", agent_name)
+                raise HTTPException(status_code=500, detail={
+                    "code": "system_prompt_audit_failed", "commit_state": "possibly_committed",
+                }) from None
+            return receipt
+
+        return await _finish_consumer_write(finish_write())
 
 
 @router.put("/agents/{agent_name}/executor")
@@ -2333,215 +2380,218 @@ async def set_agent_executor(
                     },
                 )
 
-        # ── Step 1: Materialize the six-context canonical union FIRST ──
-        # This MUST complete successfully before any frontmatter is persisted.
-        # On failure, the previous executor is preserved and a named HTTP
-        # error is returned — no partial state mutation.
-        materialization_errors: list[str] = []
-        if has_workspace:
-            materialization_errors = await asyncio.to_thread(
-                _executor_switch_materialize,
-                workspace, org, agent_name, body.executor,
-            )
-            if materialization_errors:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "executor_materialization_failed",
-                        "errors": materialization_errors,
-                        "message": (
-                            "Canonical skill materialization for the new executor "
-                            "failed. The previous executor has been preserved. "
-                            "Resolve the materialization errors before retrying."
-                        ),
-                    },
+        async def finish_write(existing: AgentDef) -> dict:
+            # ── Step 1: Materialize the six-context canonical union FIRST ──
+            # This MUST complete successfully before any frontmatter is persisted.
+            # On failure, the previous executor is preserved and a named HTTP
+            # error is returned — no partial state mutation.
+            materialization_errors: list[str] = []
+            if has_workspace:
+                materialization_errors = await asyncio.to_thread(
+                    _executor_switch_materialize,
+                    workspace, org, agent_name, body.executor,
                 )
+                if materialization_errors:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "executor_materialization_failed",
+                            "errors": materialization_errors,
+                            "message": (
+                                "Canonical skill materialization for the new executor "
+                                "failed. The previous executor has been preserved. "
+                                "Resolve the materialization errors before retrying."
+                            ),
+                        },
+                    )
 
-        # The materialization await above permits another accepted route writer.
-        # Refresh before bootstrap so it receives the latest prompt, and reject a
-        # competing executor/model change instead of silently clobbering it.
-        fresh = prompt_loader.load_agent(paths, agent_name)
-        if fresh is None:
-            raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
-        if fresh.executor != existing.executor or fresh.model != existing.model:
-            raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
-        existing = fresh
+            # The materialization await above permits another accepted route writer.
+            # Refresh before bootstrap so it receives the latest prompt, and reject a
+            # competing executor/model change instead of silently clobbering it.
+            fresh = prompt_loader.load_agent(paths, agent_name)
+            if fresh is None:
+                raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
+            if fresh.executor != existing.executor or fresh.model != existing.model:
+                raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
+            existing = fresh
 
-        # ── Step 2: Bootstrap persistent workspace files ──
-        # Run AFTER successful union but BEFORE frontmatter/audit persistence.
-        # A bootstrap failure must clean up any partial files and refuse the
-        # switch — no config change, no audit row. Only if this succeeds does
-        # the switch become durable.
-        if has_workspace:
-            # ── Bounded declared-write rollback journal (THR-190) ──
-            # The journal was captured losslessly in Step 0 (before the first
-            # mutation). restore() compensates exactly the declared
-            # bootstrap-owned write surface; never traverse or read repos/ or
-            # other broad workspace content. The legacy learnings/ -> memory/
-            # migration is rejected up front (Step 0), so no full-workspace
-            # snapshot is ever taken on this path.
-            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-            try:
-                ctx.ensure_workspace_ready(
-                    workspace,
-                    agent_name,
-                    existing.system_prompt,
-                    provider=body.executor,
-                )
-            except Exception as e:
-                _logger = logging.getLogger(__name__)
-                logged_error = (
-                    e.raw_diagnostic()
-                    if isinstance(e, InstructionPairConflict)
-                    else str(e)
-                )
-                _logger.error(
-                    "Executor switch: bootstrap failed after successful "
-                    "union for provider=%s agent=%s: %s",
-                    body.executor, agent_name, logged_error,
-                )
-                # ── Bounded rollback compensation ──
-                # 1. Remove ONLY declared bootstrap-owned artifacts newly created
-                #    by this bootstrap attempt.
-                # 2. Restore any pre-existing declared bootstrap-owned files
-                #    whose contents (or absence/presence/type) changed.
-                # Canonical skill links and all non-owned workspace content are
-                # preserved exactly. Errors during cleanup are surfaced, not
-                # suppressed.
-                errors = rollback_journal.restore(workspace)
-                if errors:
+            # ── Step 2: Bootstrap persistent workspace files ──
+            # Run AFTER successful union but BEFORE frontmatter/audit persistence.
+            # A bootstrap failure must clean up any partial files and refuse the
+            # switch — no config change, no audit row. Only if this succeeds does
+            # the switch become durable.
+            if has_workspace:
+                # ── Bounded declared-write rollback journal (THR-190) ──
+                # The journal was captured losslessly in Step 0 (before the first
+                # mutation). restore() compensates exactly the declared
+                # bootstrap-owned write surface; never traverse or read repos/ or
+                # other broad workspace content. The legacy learnings/ -> memory/
+                # migration is rejected up front (Step 0), so no full-workspace
+                # snapshot is ever taken on this path.
+                ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+                try:
+                    ctx.ensure_workspace_ready(
+                        workspace,
+                        agent_name,
+                        existing.system_prompt,
+                        provider=body.executor,
+                    )
+                except Exception as e:
+                    _logger = logging.getLogger(__name__)
+                    logged_error = (
+                        e.raw_diagnostic()
+                        if isinstance(e, InstructionPairConflict)
+                        else str(e)
+                    )
                     _logger.error(
-                        "Executor switch bootstrap cleanup errors: %s",
-                        "; ".join(error.raw_diagnostic() for error in errors),
+                        "Executor switch: bootstrap failed after successful "
+                        "union for provider=%s agent=%s: %s",
+                        body.executor, agent_name, logged_error,
                     )
-                response_error = (
-                    e.caller_diagnostic(
-                        max_compensation_failures=_BOOTSTRAP_COMPENSATION_MAX_ERRORS,
-                    )
-                    if isinstance(e, InstructionPairConflict)
-                    else str(e)
-                )
-                message = (
-                    "Executor workspace bootstrap failed after successful skill "
-                    "materialization. The previous executor has been preserved. "
-                    "Any partial bootstrap files have been cleaned up. Resolve "
-                    "the bootstrap error before retrying."
-                )
-                if errors:
-                    diagnostics = _bounded_bootstrap_compensation_diagnostics(errors)
+                    # ── Bounded rollback compensation ──
+                    # 1. Remove ONLY declared bootstrap-owned artifacts newly created
+                    #    by this bootstrap attempt.
+                    # 2. Restore any pre-existing declared bootstrap-owned files
+                    #    whose contents (or absence/presence/type) changed.
+                    # Canonical skill links and all non-owned workspace content are
+                    # preserved exactly. Errors during cleanup are surfaced, not
+                    # suppressed.
+                    errors = rollback_journal.restore(workspace)
+                    if errors:
+                        _logger.error(
+                            "Executor switch bootstrap cleanup errors: %s",
+                            "; ".join(error.raw_diagnostic() for error in errors),
+                        )
                     response_error = (
-                        f"{response_error}; rollback compensation incomplete: "
-                        f"{diagnostics}"
+                        e.caller_diagnostic(
+                            max_compensation_failures=_BOOTSTRAP_COMPENSATION_MAX_ERRORS,
+                        )
+                        if isinstance(e, InstructionPairConflict)
+                        else str(e)
                     )
                     message = (
                         "Executor workspace bootstrap failed after successful skill "
                         "materialization. The previous executor has been preserved. "
-                        "Cleanup/restore was incomplete: "
-                        f"{diagnostics}. Resolve the bootstrap error before retrying."
+                        "Any partial bootstrap files have been cleaned up. Resolve "
+                        "the bootstrap error before retrying."
                     )
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "code": "executor_bootstrap_failed",
-                        "error": response_error,
-                        "message": message,
-                    },
+                    if errors:
+                        diagnostics = _bounded_bootstrap_compensation_diagnostics(errors)
+                        response_error = (
+                            f"{response_error}; rollback compensation incomplete: "
+                            f"{diagnostics}"
+                        )
+                        message = (
+                            "Executor workspace bootstrap failed after successful skill "
+                            "materialization. The previous executor has been preserved. "
+                            "Cleanup/restore was incomplete: "
+                            f"{diagnostics}. Resolve the bootstrap error before retrying."
+                        )
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "code": "executor_bootstrap_failed",
+                            "error": response_error,
+                            "message": message,
+                        },
+                    )
+
+            # ── Step 3: Persist the new executor frontmatter ──
+            # Only reached if union materialization AND bootstrap both succeeded
+            # (or no workspace exists).
+            # Final supported-route compare/mutate boundary: no await occurs while
+            # teams_lock is held. Atomic replace provides durable bytes, while this
+            # fresh read prevents a stale whole-definition write among ASGI writers.
+            async with org.teams_lock:
+                latest = prompt_loader.load_agent(paths, agent_name)
+                if latest is None:
+                    raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
+                if latest.executor != existing.executor or latest.model != existing.model:
+                    raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
+                updated = AgentDef(
+                    name=latest.name, team=latest.team, role=latest.role,
+                    executor=body.executor, allow_rules=latest.allow_rules,
+                    repos=latest.repos, enrolled_by=latest.enrolled_by,
+                    enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
+                    system_prompt=latest.system_prompt, description=latest.description,
+                    model=None if body.executor != latest.executor else latest.model,
                 )
-
-        # ── Step 3: Persist the new executor frontmatter ──
-        # Only reached if union materialization AND bootstrap both succeeded
-        # (or no workspace exists).
-        # Final supported-route compare/mutate boundary: no await occurs while
-        # teams_lock is held. Atomic replace provides durable bytes, while this
-        # fresh read prevents a stale whole-definition write among ASGI writers.
-        async with org.teams_lock:
-            latest = prompt_loader.load_agent(paths, agent_name)
-            if latest is None:
-                raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
-            if latest.executor != existing.executor or latest.model != existing.model:
-                raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
-            updated = AgentDef(
-                name=latest.name, team=latest.team, role=latest.role,
-                executor=body.executor, allow_rules=latest.allow_rules,
-                repos=latest.repos, enrolled_by=latest.enrolled_by,
-                enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
-                system_prompt=latest.system_prompt, description=latest.description,
-                model=None if body.executor != latest.executor else latest.model,
-            )
-            from runtime.orchestrator.agent_def import render_agent_text
-            active_path = paths.agents_dir / f"{agent_name}.md"
-            original_bytes = active_path.read_bytes()
-            fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
-            try:
-                with authority_change.canonical_change():
-                    with os.fdopen(fd, "w") as fh:
-                        fh.write(render_agent_text(updated))
-                    os.replace(tmp, active_path)
-            except Exception:
+                from runtime.orchestrator.agent_def import render_agent_text
+                active_path = paths.agents_dir / f"{agent_name}.md"
+                original_bytes = active_path.read_bytes()
+                fd, tmp = tempfile.mkstemp(prefix=f".{agent_name}.", suffix=".md", dir=str(paths.agents_dir))
                 try:
-                    os.unlink(tmp)
-                except FileNotFoundError:
-                    pass
-                raise
+                    with authority_change.canonical_change():
+                        with os.fdopen(fd, "w") as fh:
+                            fh.write(render_agent_text(updated))
+                        os.replace(tmp, active_path)
+                except Exception:
+                    try:
+                        os.unlink(tmp)
+                    except FileNotFoundError:
+                        pass
+                    raise
 
-        after_ws = before_ws
-        stale_files: list[str] = []
-        removed: list[str] = []
-        cleaned = False
-
-        if has_workspace:
-            # THR-095: agent.yaml is no longer the source — skip the
-            # agent.yaml reconcile.  The .md frontmatter is the single
-            # source of truth.
             after_ws = before_ws
+            stale_files: list[str] = []
+            removed: list[str] = []
+            cleaned = False
 
-            # 4. stale Claude-only files when switching AWAY from a Claude
-            #    adapter. Check the profile's canonical workspace_adapter_id (D6),
-            #    not the name — a custom profile might use the pi adapter but not
-            #    be named "pi".
-            from runtime.orchestrator.executor_registry import get_registry as _gr
-            profile = _gr().get_profile(body.executor)
-            if profile is not None and profile.workspace_adapter_id != "claude":
-                stale_files = [
-                    name for name in _CLAUDE_ONLY_WORKSPACE_FILES
-                    if (workspace / name).exists()
-                ]
-                if stale_files and body.clean:
-                    for name in stale_files:
-                        target = workspace / name
-                        if target.is_dir():
-                            shutil.rmtree(target)
-                        else:
-                            target.unlink()
-                        removed.append(name)
-                    cleaned = True
-                    # THR-262 Slice B: the shared canonical instruction pair and
-                    # ``.claude/skills`` are preserved. Remove ``.claude`` only
-                    # when cleaning genuinely emptied it.
-                    claude_dir = workspace / ".claude"
-                    if claude_dir.is_dir() and not claude_dir.is_symlink():
-                        try:
-                            if not any(claude_dir.iterdir()):
-                                claude_dir.rmdir()
-                        except OSError:
-                            pass
+            if has_workspace:
+                # THR-095: agent.yaml is no longer the source — skip the
+                # agent.yaml reconcile.  The .md frontmatter is the single
+                # source of truth.
+                after_ws = before_ws
 
-        AuditLogger(org.db).log_agent_managed(
-            scope_id="founder",
-            action="update",
-            name=agent_name,
-            source="founder",
-            actor="founder",
-        )
+                # 4. stale Claude-only files when switching AWAY from a Claude
+                #    adapter. Check the profile's canonical workspace_adapter_id (D6),
+                #    not the name — a custom profile might use the pi adapter but not
+                #    be named "pi".
+                from runtime.orchestrator.executor_registry import get_registry as _gr
+                profile = _gr().get_profile(body.executor)
+                if profile is not None and profile.workspace_adapter_id != "claude":
+                    stale_files = [
+                        name for name in _CLAUDE_ONLY_WORKSPACE_FILES
+                        if (workspace / name).exists()
+                    ]
+                    if stale_files and body.clean:
+                        for name in stale_files:
+                            target = workspace / name
+                            if target.is_dir():
+                                shutil.rmtree(target)
+                            else:
+                                target.unlink()
+                            removed.append(name)
+                        cleaned = True
+                        # THR-262 Slice B: the shared canonical instruction pair and
+                        # ``.claude/skills`` are preserved. Remove ``.claude`` only
+                        # when cleaning genuinely emptied it.
+                        claude_dir = workspace / ".claude"
+                        if claude_dir.is_dir() and not claude_dir.is_symlink():
+                            try:
+                                if not any(claude_dir.iterdir()):
+                                    claude_dir.rmdir()
+                            except OSError:
+                                pass
 
-        return {
-            "agent": agent_name,
-            "before": {"org_executor": before_org, "workspace_executor": before_ws},
-            "after": {"org_executor": body.executor, "workspace_executor": after_ws},
-            "stale_files": stale_files,
-            "cleaned": cleaned,
-            "removed": removed,
-        }
+            AuditLogger(org.db).log_agent_managed(
+                scope_id="founder",
+                action="update",
+                name=agent_name,
+                source="founder",
+                actor="founder",
+            )
+
+            return {
+                "agent": agent_name,
+                "before": {"org_executor": before_org, "workspace_executor": before_ws},
+                "after": {"org_executor": body.executor, "workspace_executor": after_ws},
+                "stale_files": stale_files,
+                "cleaned": cleaned,
+                "removed": removed,
+            }
+
+        return await _finish_consumer_write(finish_write(existing))
 
 # ---------------------------------------------------------------------------
 # Founder surface: set an existing agent's model end-to-end.
@@ -2776,35 +2826,38 @@ async def approve_agent(slug: str, agent_name: str, org: OrgDep) -> dict:
                             os.replace(active_path, pending_path)
                     raise
 
-        workspace = paths.workspaces_dir / agent_name
-        workspace.mkdir(parents=True, exist_ok=True)
+        async def finish_write() -> dict:
+            workspace = paths.workspaces_dir / agent_name
+            workspace.mkdir(parents=True, exist_ok=True)
 
-        # THR-095: agent.yaml is no longer the source for executor/repos.
-        # The .md frontmatter (AgentDef) is the single source of truth.
-        # Repos from AgentDef.repos; executor from AgentDef.executor.
-        repos = agent_def.repos or {}
+            # THR-095: agent.yaml is no longer the source for executor/repos.
+            # The .md frontmatter (AgentDef) is the single source of truth.
+            # Repos from AgentDef.repos; executor from AgentDef.executor.
+            repos = agent_def.repos or {}
 
-        ctx = ContextBuilder(org.settings, paths, slug=org.slug)
-        for repo_name, url in repos.items():
-            await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
+            ctx = ContextBuilder(org.settings, paths, slug=org.slug)
+            for repo_name, url in repos.items():
+                await asyncio.to_thread(ctx.clone_repo, workspace, repo_name, url)
 
-        # Promotion is synchronous before the first await, but cloning is not.
-        # Use a fresh active snapshot for bootstrap; it does not serialize later
-        # workspace generation against arbitrary canonical writers.
-        fresh = prompt_loader.load_agent(paths, agent_name)
-        if fresh is None:
-            raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
+            # Promotion is synchronous before the first await, but cloning is not.
+            # Use a fresh active snapshot for bootstrap; it does not serialize later
+            # workspace generation against arbitrary canonical writers.
+            fresh = prompt_loader.load_agent(paths, agent_name)
+            if fresh is None:
+                raise HTTPException(status_code=404, detail=f"agent {agent_name!r} not found")
 
-        await asyncio.to_thread(
-            ctx.ensure_workspace_ready,
-            workspace,
-            agent_name,
-            fresh.system_prompt,
-            provider=fresh.executor,
-        )
-        await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
+            await asyncio.to_thread(
+                ctx.ensure_workspace_ready,
+                workspace,
+                agent_name,
+                fresh.system_prompt,
+                provider=fresh.executor,
+            )
+            await asyncio.to_thread(ctx.create_agent_dirs, workspace, agent_name)
 
-        return {"ok": True}
+            return {"ok": True}
+
+        return await _finish_consumer_write(finish_write())
 
 @router.post("/agents/{agent_name}/reject")
 async def reject_agent(slug: str, agent_name: str, org: OrgDep) -> dict:

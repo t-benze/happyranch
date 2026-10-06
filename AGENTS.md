@@ -258,7 +258,10 @@ remains a read and does not fence or advance the generation.
 
 Multi-stage async writers take the process-local coordinator gate before
 `teams_lock` and retain that gate through their terminal success or
-compensation. Startup migration retains the same process gate for its batch.
+compensation. Request cancellation or SSE disconnect drains started mutating
+workers before releasing the gate; admitted request writes also finish their
+terminal reconciliation before propagating cancellation, including repeated
+cancellation. Startup migration retains the same process gate for its batch.
 The shipped durable publication lease is acquired only for each synchronous
 canonical mutation and released before filesystem scanning, awaited workspace
 bootstrap, cloning, network access, host launch, callbacks, snapshot capture,

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import asyncio
 import os
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 
@@ -25,6 +26,291 @@ from tests.daemon.test_routes_agents import (
 
 URL = "/api/v1/orgs/alpha/agents/dev_agent/system-prompt"
 MARKDOWN = "# 指令 🐎\n\n正文  \n\n    code\n\n```text\n例子\n```\n\n## Details\n保留内容\n"
+
+
+async def _acknowledge_cancel(operation: asyncio.Task) -> None:
+    operation.cancel()
+    acknowledged = asyncio.Event()
+    asyncio.get_running_loop().call_soon(acknowledged.set)
+    await asyncio.wait_for(acknowledged.wait(), 10)
+
+
+@pytest.mark.parametrize("route,phase,cancel_count,worker_fails", [
+    ("init", "bootstrap", 1, False),
+    ("init", "bootstrap", 2, False),
+    ("init", "bootstrap", 2, True),
+    ("init", "clone", 1, False),
+    ("init", "create_dirs", 1, False),
+    ("init", "readiness", 1, False),
+    ("repo", "clone", 2, False),
+    ("repo", "bootstrap", 1, False),
+    ("create", "clone", 1, False),
+    ("create", "bootstrap", 2, False),
+    ("create", "create_dirs", 1, False),
+    ("approve", "clone", 1, False),
+    ("approve", "bootstrap", 2, False),
+    ("approve", "create_dirs", 1, False),
+    ("executor", "materialize", 2, False),
+])
+def test_cancelled_writer_drains_before_queued_prompt(
+    org_state, monkeypatch, route: str, phase: str, cancel_count: int, worker_fails: bool,
+) -> None:
+    """K1/K3: cancellation cannot let an OLD worker outlive its writer gate."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as routes
+
+    existing, _, _ = _seed(org_state)
+    target = f"cancel_{route}" if route in {"create", "approve"} else "dev_agent"
+    if phase == "create_dirs":
+        target = "product_manager"  # shipping create_agent_dirs actually writes specs/
+        if route == "init":
+            (_paths(org_state).agents_dir / f"{target}.md").write_text(render_agent_text(replace(existing, name=target)))
+            org_state.teams.add_worker("engineering", target)
+        else:
+            org_state.teams.remove_worker("engineering", target)
+            # _seed's coherent-authority fixture already created this standard
+            # identity; creation/promotion needs it absent from the active roster.
+            (_paths(org_state).agents_dir / f"{target}.md").unlink()
+    _authority_generation(org_state)
+    if route == "approve":
+        prompt_loader.write_pending_agent(_paths(org_state), replace(existing, name=target))
+        org_state.teams.add_worker("engineering", target)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    # Only the external clone is stubbed. Bootstrap, dirs, materialization,
+    # readiness and final pair rendering remain their shipping implementations.
+    monkeypatch.setattr(ContextBuilder, "clone_repo", lambda *args: True)
+    owner, attribute = {
+        "clone": (ContextBuilder, "clone_repo"),
+        "bootstrap": (ContextBuilder, "ensure_workspace_ready"),
+        "create_dirs": (ContextBuilder, "create_agent_dirs"),
+        "readiness": (routes, "_bootstrap_readiness_marker"),
+        "materialize": (routes, "_executor_switch_materialize"),
+    }[phase]
+    real = getattr(owner, attribute)
+
+    def blocked(*args, **kwargs):
+        entered.set()
+        try:
+            assert release.wait(10), "owned worker release timeout"
+            result = real(*args, **kwargs)
+            if worker_fails:
+                raise OSError("bootstrap failed after physical write")
+            return result
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(owner, attribute, blocked)
+    real_interval = routes._consumer_writer_interval
+
+    async def exercise():
+        attempted = asyncio.Event()
+
+        @asynccontextmanager
+        async def observe_interval(org, **kwargs):
+            if kwargs["publisher"] == "set_agent_system_prompt":
+                attempted.set()
+            async with real_interval(org, **kwargs) as interval:
+                yield interval
+
+        monkeypatch.setattr(routes, "_consumer_writer_interval", observe_interval)
+
+        async def initialize():
+            response = await routes.init_agents("alpha", routes.InitBody(agent=target), org_state)
+            return [event async for event in response.body_iterator]
+
+        if route == "init":
+            operation = initialize()
+        elif route == "repo":
+            operation = routes.manage_repo("alpha", target, routes.ManageRepoBody(
+                action="add", repo_name="extra", url="https://example.test/extra.git",
+            ), org_state)
+        elif route == "create":
+            operation = routes.founder_create_agent("alpha", routes.FounderCreateAgentBody(
+                name=target, role="worker", team="engineering", system_prompt="OLD\n",
+                description="created", repos=dict(existing.repos),
+            ), org_state)
+        elif route == "approve":
+            operation = routes.approve_agent("alpha", target, org_state)
+        else:
+            operation = routes.set_agent_executor("alpha", target, routes.SetExecutorBody(executor="pi"), org_state)
+        writer = asyncio.create_task(operation)
+        winner = None
+        try:
+            assert await asyncio.to_thread(entered.wait, 10), "worker did not start"
+            before = prompt_loader.load_agent_snapshot(_paths(org_state), target)
+            assert before is not None
+            for _ in range(cancel_count):
+                await _acknowledge_cancel(writer)
+            winner = asyncio.create_task(routes.set_agent_system_prompt("alpha", target, routes.SystemPromptBody(
+                system_prompt="WINNER\n", expected_revision=before[1],
+            ), org_state))
+            await asyncio.wait_for(attempted.wait(), 10)
+            assert org_state.workflow_authority._async_writer_lock.locked(), "cancelled writer released gate before physical work finished"
+            assert not writer.done(), "cancelled owner terminated before draining its worker"
+            assert not winner.done(), "WINNER returned while OLD worker still owned writes"
+            assert prompt_loader.load_agent_snapshot(_paths(org_state), target)[2] == before[2]
+            assert not org_state.teams_lock.locked()
+        finally:
+            # Release and drain BEFORE awaiting cancellation: the correct owner
+            # cannot terminate while its physical worker is intentionally held.
+            release.set()
+            tasks = [writer] + ([winner] if winner is not None else [])
+            results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
+            assert await asyncio.to_thread(finished.wait, 10)
+        assert isinstance(results[0], asyncio.CancelledError)
+        if route == "executor":
+            assert isinstance(results[1], HTTPException) and results[1].status_code == 409
+            inspected = prompt_loader.load_agent_snapshot(_paths(org_state), target)
+            receipt = await routes.set_agent_system_prompt("alpha", target, routes.SystemPromptBody(
+                system_prompt="WINNER\n", expected_revision=inspected[1],
+            ), org_state)
+        else:
+            receipt = results[1]
+        final, revision, raw = prompt_loader.load_agent_snapshot(_paths(org_state), target)
+        assert receipt.system_prompt == final.system_prompt == "WINNER\n"
+        assert receipt.revision == revision == hashlib.sha256(raw).hexdigest()
+        assert final.repos == ({**existing.repos, "extra": "https://example.test/extra.git"} if route == "repo" else existing.repos)
+        assert final.description == ("created" if route == "create" else existing.description)
+        assert final.executor == ("pi" if route == "executor" else existing.executor)
+        if route not in {"create", "executor"}:
+            assert final.model == existing.model and final.allow_rules == existing.allow_rules
+        workspace = _paths(org_state).workspaces_dir / target
+        assert "WINNER" in (workspace / "AGENTS.md").read_text()
+        assert "OLD" not in (workspace / "AGENTS.md").read_text()
+        assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+        if phase == "create_dirs":
+            assert (workspace / "specs").is_dir()
+        assert not org_state.workflow_authority._async_writer_lock.locked()
+
+    asyncio.run(exercise())
+    # Independently observe the next real launch preparation and input delivery.
+    _record_next_task_delivery(org_state, monkeypatch, target, "WINNER\n")
+
+
+@pytest.mark.parametrize("renderer_fails,cancel_count", [(False, 1), (False, 2), (True, 2), (True, 3)])
+def test_cancelled_prompt_finishes_reconciliation(
+    org_state, monkeypatch, renderer_fails: bool, cancel_count: int,
+) -> None:
+    """K2: candidate write, physical pair write, compensation/audit then release."""
+    from fastapi import HTTPException
+    from runtime.daemon.routes import agents as routes
+
+    existing, initial_revision, original = _seed(org_state)
+    _authority_generation(org_state)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real = ContextBuilder.write_claude_md
+
+    def blocked(self, workspace, name, prompt):
+        if prompt != "CANDIDATE\n":
+            return real(self, workspace, name, prompt)
+        entered.set()
+        try:
+            assert release.wait(10), "prompt worker release timeout"
+            result = real(self, workspace, name, prompt)
+            if renderer_fails:
+                raise OSError("renderer failed after pair write")
+            return result
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(ContextBuilder, "write_claude_md", blocked)
+    real_interval = routes._consumer_writer_interval
+    terminal_errors = []
+
+    async def exercise():
+        attempted = asyncio.Event()
+        compensation_attempted = asyncio.Event()
+
+        class ObservedTeamsLock(asyncio.Lock):
+            async def acquire(self):
+                if finished.is_set():
+                    compensation_attempted.set()
+                return await super().acquire()
+
+        org_state.teams_lock = ObservedTeamsLock()
+
+        @asynccontextmanager
+        async def observe_interval(org, **kwargs):
+            if kwargs["publisher"] == "set_agent_system_prompt" and entered.is_set():
+                attempted.set()
+            async with real_interval(org, **kwargs) as interval:
+                yield interval
+
+        monkeypatch.setattr(routes, "_consumer_writer_interval", observe_interval)
+        async def save_candidate():
+            try:
+                return await routes.set_agent_system_prompt("alpha", "dev_agent", routes.SystemPromptBody(
+                    system_prompt="CANDIDATE\n", expected_revision=initial_revision,
+                ), org_state)
+            except asyncio.CancelledError as exc:
+                terminal_errors.append(exc.__cause__)
+                raise
+
+        operation = asyncio.create_task(save_candidate())
+        winner = None
+        held_teams = False
+        try:
+            assert await asyncio.to_thread(entered.wait, 10)
+            candidate = prompt_loader.load_agent_snapshot(_paths(org_state), "dev_agent")
+            assert candidate[0].system_prompt == "CANDIDATE\n"
+            for _ in range(min(cancel_count, 2)):
+                await _acknowledge_cancel(operation)
+            winner = asyncio.create_task(routes.set_agent_system_prompt("alpha", "dev_agent", routes.SystemPromptBody(
+                system_prompt="WINNER\n", expected_revision=candidate[1],
+            ), org_state))
+            await asyncio.wait_for(attempted.wait(), 10)
+            assert org_state.workflow_authority._async_writer_lock.locked(), "cancelled prompt released gate during pair write"
+            assert not operation.done() and not winner.done()
+            assert prompt_loader.load_agent_snapshot(_paths(org_state), "dev_agent")[2] == candidate[2]
+            assert not org_state.teams_lock.locked()
+            if cancel_count == 3:
+                # Hold the real short teams lock only from the test. The route
+                # must drain through its subsequent compensation acquisition.
+                await org_state.teams_lock.acquire()
+                held_teams = True
+                release.set()
+                assert await asyncio.to_thread(finished.wait, 10)
+                await asyncio.wait_for(compensation_attempted.wait(), 10)
+                await _acknowledge_cancel(operation)
+                assert not operation.done() and not winner.done()
+                assert org_state.workflow_authority._async_writer_lock.locked()
+        finally:
+            release.set()
+            if held_teams:
+                org_state.teams_lock.release()
+            tasks = [operation] + ([winner] if winner is not None else [])
+            results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
+            assert await asyncio.to_thread(finished.wait, 10)
+        assert isinstance(results[0], asyncio.CancelledError)
+        audits = [row for row in org_state.db.get_audit_logs("founder") if row["action"] == "agent_managed"]
+        if renderer_fails:
+            assert isinstance(terminal_errors[0], HTTPException)
+            assert terminal_errors[0].status_code == 400
+            assert terminal_errors[0].detail["compensation"] == {"canonical": "restored", "workspace": "failed"}
+            # The existing conservative route contract cannot claim ownership
+            # of an unknown post-error pair. Canonical restore remains exact.
+            assert prompt_loader.load_agent_snapshot(_paths(org_state), "dev_agent")[2] == original
+            assert not audits
+            assert isinstance(results[1], HTTPException) and results[1].status_code == 409
+            inspected = prompt_loader.load_agent_snapshot(_paths(org_state), "dev_agent")
+            receipt = await routes.set_agent_system_prompt("alpha", "dev_agent", routes.SystemPromptBody(
+                system_prompt="WINNER\n", expected_revision=inspected[1],
+            ), org_state)
+        else:
+            assert len(audits) == 2  # admitted candidate and subsequent winner
+            receipt = results[1]
+        final, revision, raw = prompt_loader.load_agent_snapshot(_paths(org_state), "dev_agent")
+        assert final.system_prompt == receipt.system_prompt == "WINNER\n"
+        assert revision == receipt.revision == hashlib.sha256(raw).hexdigest()
+        assert replace(final, system_prompt=existing.system_prompt) == existing
+        workspace = _paths(org_state).workspaces_dir / "dev_agent"
+        assert "WINNER" in (workspace / "AGENTS.md").read_text()
+        assert "CANDIDATE" not in (workspace / "AGENTS.md").read_text()
+        assert "OLD" not in (workspace / "AGENTS.md").read_text()
+        assert os.readlink(workspace / "CLAUDE.md") == "AGENTS.md"
+
+    asyncio.run(exercise())
+    _record_next_task_delivery(org_state, monkeypatch, "dev_agent", "WINNER\n")
 
 
 @pytest.fixture(params=["claude", "codex", "pi", "opencode", "prompt_codex"])
