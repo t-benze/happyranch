@@ -1,13 +1,14 @@
 /** THR280 C01/C03/C04/C06/C09/C10/C17: real pane, providers and HTTP seam. */
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, expect, test } from 'vitest';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
+import type { AgentSummary } from '@/lib/api/types';
 
 const root = '/api/v1/orgs/prompt-test';
 const base = { name: 'writer', team: 'engineering', role: 'worker', executor: 'claude',
@@ -16,15 +17,18 @@ const authored = '# 指令 🐎\n\n正文  \n\n    code\n\n```text\n例子\n```\
 
 beforeEach(() => { sessionStorage.setItem('happyranch.token', 'tok'); });
 
-function FixtureControls(): JSX.Element {
+function FixtureControls({ observe }: { observe: (client: QueryClient) => void }): JSX.Element {
   const client = useQueryClient();
+  observe(client);
   const navigate = useNavigate();
   return <><button onClick={() => void client.invalidateQueries({ queryKey: ['agents', 'prompt-test'] })}>poll fixture</button>
     <button onClick={() => navigate('/orgs/prompt-test/agents/other')}>select other fixture</button>
+    <button onClick={() => navigate('/orgs/prompt-test/agents/writer')}>select writer fixture</button>
     <button onClick={() => navigate('/orgs/prompt-beta/agents/writer')}>select beta fixture</button></>;
 }
 
-function setup(read: () => Response | Promise<Response>, put: Parameters<typeof http.put>[1], surface = 'pane') {
+function setup(read: Parameters<typeof http.get>[1], put: Parameters<typeof http.put>[1], surface = 'pane') {
+  let client!: QueryClient;
   server.use(
     http.get('/api/v1/auth/bootstrap', () => HttpResponse.json({ token: 'tok' })),
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: 'prompt-test', root: '/fixture' }] })),
@@ -39,11 +43,12 @@ function setup(read: () => Response | Promise<Response>, put: Parameters<typeof 
     http.get(`${root}/agents/:name/memory/entries/`, () => HttpResponse.json({ entries: [] })),
     http.all('/api/v1/*', () => HttpResponse.json({})),
   );
-  return renderWithProviders(<>{surface === 'pane' ? <AppRoutes /> :
+  const rendered = renderWithProviders(<>{surface === 'pane' ? <AppRoutes /> :
     <Routes><Route path="/orgs/:slug/agents/:agentName" element={<AgentDetailDrawer agentName="writer" />} /></Routes>}
-    <FixtureControls /><LocaleTestSwitch to="zh-CN" /><LocaleTestSwitch to="en" /></>, {
+    <FixtureControls observe={(value) => { client = value; }} /><LocaleTestSwitch to="zh-CN" /><LocaleTestSwitch to="en" /></>, {
     route: '/orgs/prompt-test/agents/writer', i18n: { adapter: savedLocaleAdapter('en') },
   });
+  return { ...rendered, client };
 }
 
 test.each(['pane', 'drawer'])('%s preserves authored text and waits for matching fresh body AND revision before Saved', async (surface) => {
@@ -95,12 +100,13 @@ test('cancel and locale switch retain the same draft node, focus and selection w
   expect(screen.queryByRole('textbox', { name: '系统提示词' })).not.toBeInTheDocument();
 });
 
-test.each(['body', 'revision', 'missing', 'read-error'] as const)('readback %s mismatch retains recoverable draft', async (mismatch) => {
+test.each(['body', 'revision', 'missing', 'read-error', 'invalid-body', 'invalid-revision'] as const)('readback %s mismatch retains recoverable draft', async (mismatch) => {
   let wrote = false; let puts = 0;
-  setup(() => {
+  const { client } = setup(() => {
     if (wrote && mismatch === 'read-error') return HttpResponse.json({ detail: 'unavailable' }, { status: 500 });
-    const current = !wrote ? base : { ...base, system_prompt: mismatch === 'body' ? 'OTHER\n' : authored,
-      revision: mismatch === 'revision' ? base.revision : 'b'.repeat(64) };
+    const current = !wrote ? base : { ...base,
+      system_prompt: mismatch === 'invalid-body' ? null : mismatch === 'body' ? 'OTHER\n' : authored,
+      revision: mismatch === 'invalid-revision' ? 'B'.repeat(64) : mismatch === 'revision' ? base.revision : 'b'.repeat(64) };
     return HttpResponse.json({ agents: wrote && mismatch === 'missing' ? [] : [current] });
   }, () => {
     wrote = true; puts += 1;
@@ -118,6 +124,8 @@ test.each(['body', 'revision', 'missing', 'read-error'] as const)('readback %s m
   expect(screen.queryByText('Saved')).not.toBeInTheDocument();
   expect(puts).toBe(1);
   expect(screen.getByRole('button', { name: 'Save system prompt' })).toBeDisabled();
+  if (mismatch.startsWith('invalid')) expect(client.getQueryData<{ agents: AgentSummary[] }>(['agents', 'prompt-test']))
+    .toEqual({ agents: [base] });
 });
 
 test.each(['ctrlKey', 'metaKey'] as const)('%s plus repeated click sends one frozen PUT', async (modifier) => {
@@ -297,3 +305,164 @@ test.each(['put-success', 'put-error', 'get-success', 'get-error'] as const)(
     expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(puts).toBe(1);
   },
 );
+
+test('verified prompt survives navigation away and return', async () => {
+  let current = { ...base }; let reads = 0; const writes: unknown[] = [];
+  const requests: Array<{ fresh: boolean; cache: string | null }> = [];
+  const { client } = setup(({ request }) => {
+    requests.push({ fresh: new URL(request.url).searchParams.has('_prompt_readback'), cache: request.headers.get('Cache-Control') });
+    reads += 1; return HttpResponse.json({ agents: [
+    reads === 1 ? current : { ...current, description: 'stale unrelated field' },
+    { ...base, name: 'other', system_prompt: reads === 1 ? 'OTHER\n' : 'stale other' },
+  ] }); }, async ({ request }) => {
+    writes.push(await request.json());
+    current = { ...base, system_prompt: authored, revision: 'b'.repeat(64) };
+    return HttpResponse.json({ agent: 'writer', system_prompt: authored, revision: current.revision });
+  });
+  const edit = await screen.findByRole('button', { name: 'Edit system prompt' });
+  await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+  fireEvent.change(screen.getByRole('textbox', { name: 'System prompt' }), { target: { value: authored.slice(0, -1) } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+  expect(await screen.findByText('Saved')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
+  await screen.findByText('other', { selector: 'h2' });
+  fireEvent.click(screen.getByRole('button', { name: 'Edit system prompt' }));
+  expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue('OTHER\n');
+  fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
+  const returnedEdit = await screen.findByRole('button', { name: 'Edit system prompt' });
+  fireEvent.click(returnedEdit);
+  expect(reads).toBe(2);
+  expect(requests).toEqual([{ fresh: false, cache: null }, { fresh: true, cache: 'no-cache, no-store' }]);
+  expect(client.getQueryData<{ agents: AgentSummary[] }>(['agents', 'prompt-test'])?.agents)
+    .toEqual([{ ...base, system_prompt: authored, revision: 'b'.repeat(64) },
+      { ...base, name: 'other', system_prompt: 'OTHER\n' }]);
+  expect(writes).toEqual([{ system_prompt: authored.slice(0, -1), expected_revision: base.revision }]);
+  expect(screen.queryByText('stale unrelated field')).not.toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue(authored);
+});
+
+test('returned editor uses verified revision for the next save', async () => {
+  let current = { ...base }; const writes: Array<{system_prompt: string; expected_revision: string}> = [];
+  const observations: Array<{ system_prompt: string; revision: string }> = [];
+  const { client } = setup(({ request }) => {
+    if (new URL(request.url).searchParams.has('_prompt_readback')) observations.push({ system_prompt: current.system_prompt, revision: current.revision });
+    return HttpResponse.json({ agents: [current, { ...base, name: 'other' }] });
+  }, async ({request}) => {
+    const body = await request.json() as {system_prompt: string; expected_revision: string}; writes.push(body);
+    if (body.expected_revision !== current.revision) return HttpResponse.json({ detail: {code: 'stale_agent_revision', current_revision: current.revision} }, {status: 409});
+    current = { ...base, system_prompt: writes.length === 1 ? authored : 'FOLLOWUP\n', revision: writes.length === 1 ? 'b'.repeat(64) : 'c'.repeat(64) };
+    return HttpResponse.json({ agent: 'writer', system_prompt: current.system_prompt, revision: current.revision });
+  });
+  const edit = await screen.findByRole('button', { name: 'Edit system prompt' });
+  await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+  fireEvent.change(screen.getByRole('textbox', { name: 'System prompt' }), { target: { value: authored.slice(0, -1) } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+  expect(await screen.findByText('Saved')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
+  await screen.findByText('other', { selector: 'h2' });
+  fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit system prompt' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'System prompt' }), { target: { value: 'FOLLOWUP\n' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+  await waitFor(() => expect(writes).toHaveLength(2));
+  expect(writes).toEqual([{ system_prompt: authored.slice(0, -1), expected_revision: 'a'.repeat(64) },
+    { system_prompt: 'FOLLOWUP\n', expected_revision: 'b'.repeat(64) }]);
+  expect(await screen.findByText('Saved')).toBeInTheDocument();
+  expect(screen.getByText('FOLLOWUP').textContent).toBe('FOLLOWUP\n');
+  expect(observations).toEqual([{ system_prompt: authored, revision: 'b'.repeat(64) },
+    { system_prompt: 'FOLLOWUP\n', revision: 'c'.repeat(64) }]);
+  expect(client.getQueryData<{ agents: AgentSummary[] }>(['agents', 'prompt-test'])?.agents[0])
+    .toMatchObject({ system_prompt: 'FOLLOWUP\n', revision: 'c'.repeat(64) });
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Edit system prompt' }));
+  expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue('FOLLOWUP\n');
+});
+
+test.each(['winner', 'aba'] as const)('a newer observed prompt %s wins over a held readback without blessing the dirty draft', async (sequence) => {
+  let current = { ...base }; let reads = 0; let waiting = false; let settled = false;
+  let release!: () => void; const pending = new Promise<void>((resolve) => { release = resolve; });
+  const writes: Array<{ system_prompt: string; expected_revision: string }> = [];
+  const { client } = setup(async () => {
+    reads += 1; const observed = { ...current };
+    if (reads === 2) { waiting = true; await pending; settled = true; }
+    return HttpResponse.json({ agents: [observed, { ...base, name: 'other' }] });
+  }, async ({ request }) => {
+    const body = await request.json() as { system_prompt: string; expected_revision: string }; writes.push(body);
+    if (body.expected_revision !== current.revision) return HttpResponse.json({
+      detail: { code: 'stale_agent_revision', current_revision: current.revision },
+    }, { status: 409 });
+    current = { ...base, system_prompt: body.system_prompt, revision: writes.length === 1 ? 'b'.repeat(64) : 'd'.repeat(64) };
+    return HttpResponse.json({ agent: 'writer', system_prompt: current.system_prompt, revision: current.revision });
+  });
+  const edit = await screen.findByRole('button', { name: 'Edit system prompt' });
+  await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+  const textarea = screen.getByRole('textbox', { name: 'System prompt' });
+  fireEvent.change(textarea, { target: { value: authored } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+  await waitFor(() => expect(waiting).toBe(true));
+  const winner = sequence === 'aba' ? { ...base } : { ...base, system_prompt: 'WINNER\n', revision: 'c'.repeat(64) };
+  current = winner;
+  const observation = client.getQueryState(['agents', 'prompt-test'])?.dataUpdateCount;
+  fireEvent.click(screen.getByRole('button', { name: 'poll fixture' }));
+  await waitFor(() => expect(client.getQueryState(['agents', 'prompt-test'])?.dataUpdateCount).toBe((observation ?? 0) + 1));
+  release(); await waitFor(() => expect(settled).toBe(true));
+  expect(await screen.findByRole('alert')).toHaveTextContent('Your draft is kept');
+  expect(textarea).toHaveValue(authored);
+  expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Save system prompt' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
+  await screen.findByText('other', { selector: 'h2' });
+  fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit system prompt' }));
+  expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue(winner.system_prompt);
+  fireEvent.change(screen.getByRole('textbox', { name: 'System prompt' }), { target: { value: 'FOLLOWUP\n' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+  expect(await screen.findByText('Saved')).toBeInTheDocument();
+  expect(writes).toEqual([{ system_prompt: authored, expected_revision: base.revision },
+    { system_prompt: 'FOLLOWUP\n', expected_revision: winner.revision }]);
+  expect(screen.getByText('FOLLOWUP').textContent).toBe('FOLLOWUP\n');
+});
+
+test('an older ordinary read cannot overwrite the verified return snapshot', async () => {
+  let reads = 0; let current = { ...base }; let readbackWaiting = false; let pollWaiting = false; let pollSettled = false;
+  let releaseRead!: () => void; let releasePoll!: () => void;
+  const readback = new Promise<void>((resolve) => { releaseRead = resolve; });
+  const poll = new Promise<void>((resolve) => { releasePoll = resolve; });
+  const { client } = setup(async () => {
+    const readNumber = ++reads;
+    if (readNumber === 2) { readbackWaiting = true; await readback; }
+    if (readNumber === 3) { pollWaiting = true; await poll; pollSettled = true; return HttpResponse.json({ agents: [base, { ...base, name: 'other' }] }); }
+    return HttpResponse.json({ agents: [current, { ...base, name: 'other' }] });
+  }, () => {
+    current = { ...base, system_prompt: authored, revision: 'b'.repeat(64) };
+    return HttpResponse.json({ agent: 'writer', system_prompt: authored, revision: current.revision });
+  });
+  const edit = await screen.findByRole('button', { name: 'Edit system prompt' });
+  await waitFor(() => expect(edit).toBeEnabled()); fireEvent.click(edit);
+  fireEvent.change(screen.getByRole('textbox', { name: 'System prompt' }), { target: { value: authored } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save system prompt' }));
+  await waitFor(() => expect(readbackWaiting).toBe(true));
+  fireEvent.click(screen.getByRole('button', { name: 'poll fixture' }));
+  await waitFor(() => expect(pollWaiting).toBe(true));
+  releaseRead(); expect(await screen.findByText('Saved')).toBeInTheDocument();
+  const pollDelivered = new Promise<void>((resolve) => {
+    server.events.on('response:mocked', function acknowledgePoll({ request }) {
+      const url = new URL(request.url);
+      if (url.pathname === `${root}/agents` && !url.searchParams.has('_prompt_readback') && pollSettled) {
+        server.events.removeListener('response:mocked', acknowledgePoll);
+        resolve();
+      }
+    });
+  });
+  await act(async () => { releasePoll(); await pollDelivered; });
+  await waitFor(() => expect(pollSettled).toBe(true));
+  expect(client.getQueryData<{ agents: AgentSummary[] }>(['agents', 'prompt-test'])?.agents[0])
+    .toMatchObject({ system_prompt: authored, revision: 'b'.repeat(64) });
+  fireEvent.click(screen.getByRole('button', { name: 'select other fixture' }));
+  await screen.findByText('other', { selector: 'h2' });
+  fireEvent.click(screen.getByRole('button', { name: 'select writer fixture' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit system prompt' }));
+  expect(screen.getByRole('textbox', { name: 'System prompt' })).toHaveValue(authored);
+  expect(reads).toBe(3);
+});

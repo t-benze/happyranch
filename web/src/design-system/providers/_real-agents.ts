@@ -11,7 +11,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { agents as agentsApi, tasks as tasksApi } from '@/lib/api';
-import type { TaskRecord } from '@/lib/api/types';
+import type { AgentSummary, TaskRecord } from '@/lib/api/types';
 import type {
   AgentsApi,
   ApproveAgentArgs,
@@ -34,13 +34,38 @@ export const realAgentsApi: AgentsApi = {
     retry: false,
   }),
 
-  useReadAgentSystemPrompt: () => useMutation({
-    mutationFn: async ({ slug, agentName }: { slug: string; agentName: string }) => {
-      const roster = await agentsApi.listAgents(slug, true);
-      return roster.agents.find((agent) => agent.name === agentName);
-    },
-    retry: false,
-  }),
+  useReadAgentSystemPrompt: () => {
+    const qc = useQueryClient();
+    return useMutation({
+      mutationFn: async ({ slug, agentName }: { slug: string; agentName: string }) => {
+        const queryKey = ['agents', slug];
+        // Old ordinary reads must not land after the explicit observation.
+        await qc.cancelQueries({ queryKey, exact: true }, { revert: false });
+        const observation = qc.getQueryState(queryKey)?.dataUpdateCount;
+        const roster = await agentsApi.listAgents(slug, true);
+        const fresh = roster.agents.find((agent) => agent.name === agentName);
+        if (!fresh || typeof fresh.system_prompt !== 'string'
+            || typeof fresh.revision !== 'string' || !/^[0-9a-f]{64}$/.test(fresh.revision)) return undefined;
+        await qc.cancelQueries({ queryKey, exact: true }, { revert: false });
+        const current = qc.getQueryData<{ agents: AgentSummary[] }>(queryKey)
+          ?.agents.find((agent) => agent.name === agentName);
+        if (qc.getQueryState(queryKey)?.dataUpdateCount !== observation
+            && (current?.revision !== fresh.revision || current?.system_prompt !== fresh.system_prompt)) {
+          // A different prompt was observed while this GET was outstanding.
+          // Neither the cache nor the editor may adopt its older result,
+          // even when canonical bytes (and their revision) have recurred.
+          throw new Error('Agent changed during prompt readback');
+        }
+        qc.setQueryData<{ agents: AgentSummary[] }>(queryKey, (cached) => cached && ({
+          ...cached,
+          agents: cached.agents.map((agent) => agent.name === agentName
+            ? { ...agent, system_prompt: fresh.system_prompt, revision: fresh.revision } : agent),
+        }));
+        return fresh;
+      },
+      retry: false,
+    });
+  },
 
   useAgentsList: () => {
     const slug = useRealOrgSlug();
