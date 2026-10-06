@@ -688,6 +688,79 @@ independent parent/tree/ancestry and per-slice reporting remain manager-owned.
 Integration SUITE including followup E2E is SKIPPED Founder THR-243 seq42,
 NEVER PASS. No deployment or feature-completion authority follows.
 
+## S2 KB-view writer ownership (TASK-9937, OPEN)
+
+This candidate relocates only the unchanged 19-line `Database.record_kb_view`
+definition into the existing `KnowledgeMixin`, immediately before
+`kb_view_stats`. Decorated source SHA256 is
+`7987b2829a015e7681ab7e1f94f5e52a4de2c50c61f21f4f884abd57f1bc434a`.
+The only import delta extends the existing shared import with the shipped
+`_late_database_now as _now`. SQL, annotations, defaults, decorator and body
+stay verbatim. No helper, copied state, wrapper or natural metadata repair is
+introduced. Database exports, method signatures, bases/MRO and old attribute
+patch/dispatch stay intact; the method naturally has its mixin's qualname.
+
+The direct shipping `get_kb` caller retains entry-read-first ordering, the
+exact descriptive `cli` header condition, original nonfatal warning/200
+boundary and response. The stats reader, KBStore, actual CLI header/read paths,
+audit/schema, real single connection/RLock/threshold, whole facade `_time`,
+late facade `_now` and shared lock logger retain their owners.
+
+Engineering_manager TASK-9785 step25 accepted
+TASK-9930/S2-KBVIEW/K1-K4/revision1 (44,032 bytes, SHA256
+`42e37a5f693db272da419c19746a0fa49e2db6b8ec3e3a80032500c9e2c453e9`),
+ALL six finite groups and EMPTY consolidated findings after independent
+TASK-9934 DESIGN-ONLY PASS. The exact HIGH five-file brief and Founder
+THR-273 seq37/45/80 satisfy current DEV-G03; design PASS proves no executable
+QA, code approval, CI or merge gate.
+
+The finite set is K1.1[first_view,repeat_view], K1.2 unchanged existing
+no-surface/tracking-failure/404 keepers, K2.1[facade_clock_error,
+sqlite_insert_denied], K3.1[facade_first,knowledge_first], K4.1 complete
+source/inverse proof and K4.2 full unfiltered app/served OpenAPI.
+Forward-only supplements live in `tests/daemon/test_kb_view_decomposition.py`;
+pristine complete HTTP/raw-all-table/column/schema/index/trigger/allocator/
+audit/transaction/readonly/reopen/dormant-queue/session/KB-file-mode frames,
+original warning/error residue and task-owned controls live in
+`dev_agent/output/TASK-9937`. Existing tests/fixtures/OpenAPI snapshots remain
+unchanged. Full documents use the SAME guarded root and SAME interpreter,
+with exclusive pristine expectations frozen before relocation or controls.
+
+At immutable base `6d6b9be55fdb36be0ef69101708c68d6fa136067`, counts are
+database2183/knowledge202/threads917/run_step4747/models4711/executors2624/
+readers97; this exact relocation leaves database2164/knowledge221 and 46
+direct facade definitions/properties. Other counts remain unchanged.
+ALL24 LANDED foundations and steps1–4, R5 TWO122 moved/TWO288 retained,
+FOUR terminal readers78, pin18 and archive13 remain foundations. This
+KBVIEW unit is OPEN candidate work, not another landed foundation or whole
+S2/S6/R4R6/models/executors/program completion. Formatter F8 remains
+independently verified STOP/RETAIN, not full17-case PASS. R1 state/cache/lock/
+__file__/whole-clock/helper owners, R3 compositor/logger header and Database
+logger-dependent keepers remain retained; other closures need separate units.
+
+PR682 ELEVEN R2 plus actual R4/R6/completion/chain/carrier/parent/fanout/
+followup/added caller, PR684 attachment insertion AND enqueue/revisit, and
+PR840 result/admission/insert_task_result remain HELD. Merged997 routing/
+admission/Database/TasksMixin,983 callback/PATH/roster/nightly/finalizer and
+996 agent writer/audit/drain/publication retain their owners. OPEN1000
+coherent-read/RLock/audit/observer and1002 OrgState/reference guidance retain
+their owners. PR1004 is merged at `45d0cc0a39a989b8e1cf586b79daf2c9905178ff`;
+its22-file web/doc delta leaves every Python/CLI/test/fixture/dependency and
+selected closure unchanged. Current THR139/228/091 roots and completed
+THR118/TASK9920 web-only ownership stay acknowledged.
+Selected equality never clears caller/shared-owner overlap. Fresh complete
+head/base/file sets and actual intervening changed hunks remain required.
+M/E remains deferred while a useful leaf exists; retained is not infeasible.
+
+Independent FULL-original-base code_reviewer APPROVE then independent
+EXECUTABLE qa_engineer PASS at SAME FINAL SHA, clean final task-owned durable
+local-CI script/wrapper/provenance EXIT0, FOUR exact-head completedSUCCESS
+pull_request checks and distinct actual selected hosted Codex callback remain
+required. Every push renews gates. Composition, head-matched guarded squash,
+independent parent/tree/ancestry and per-slice reporting remain manager-owned.
+Integration SUITE INCLUDING followup E2E is SKIPPED Founder THR-243 seq42,
+NEVER PASS. No deployment or feature-completion authority follows.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target
