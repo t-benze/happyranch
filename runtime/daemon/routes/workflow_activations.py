@@ -7,17 +7,26 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
 from runtime.daemon.auth import _require_human
 from runtime.daemon.routes._org_dep import OrgDep
-from runtime.workflows.activation import ActivationReceipt, ActivationRequest, WorkflowActivationError
+from runtime.workflows.activation import (
+    ActivationReceipt, ActivationRequest, DocumentActivationReceipt, DocumentActivationRequest,
+    WorkflowActivationError,
+)
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.templates import WorkflowTemplateError, WorkflowTemplatePrincipal
 
 
 router = APIRouter(dependencies=[Depends(_require_human)])
+Receipt = ActivationReceipt | DocumentActivationReceipt
 
 
 def _request_schema() -> dict[str, Any]:
-    schema = ActivationRequest.model_json_schema(by_alias=True)
+    return {"anyOf": [_expand_request_schema(model, index)
+                      for index, model in enumerate((ActivationRequest, DocumentActivationRequest))]}
+
+
+def _expand_request_schema(model: type[ActivationRequest], branch: int) -> dict[str, Any]:
+    schema = model.model_json_schema(by_alias=True)
     definitions = schema.pop("$defs", {})
 
     def expand(value: Any) -> Any:
@@ -35,7 +44,7 @@ def _request_schema() -> dict[str, Any]:
     # rather than the removed Pydantic $defs at the document root.
     items = expanded["properties"]["inputs"]["items"]
     pointer = ("#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/"
-               "requestBody/content/application~1json/schema/properties/inputs/items/oneOf/")
+               f"requestBody/content/application~1json/schema/anyOf/{branch}/properties/inputs/items/oneOf/")
     items["discriminator"]["mapping"] = {
         variant["properties"]["kind"]["const"]: f"{pointer}{index}"
         for index, variant in enumerate(items["oneOf"])
@@ -62,8 +71,8 @@ def _raise(exc: WorkflowActivationError | WorkflowAuthorityError | WorkflowTempl
     raise HTTPException(status_code=status, detail=detail) from exc
 
 
-@router.post("/workflows/activations", status_code=201, response_model=ActivationReceipt,
-             responses={200: {"model": ActivationReceipt, "description": "Exact original actor/org/key/request replay"},
+@router.post("/workflows/activations", status_code=201, response_model=Receipt,
+             responses={200: {"model": Receipt, "description": "Exact original actor/org/key/request replay"},
                         403: {"description": "Founder or role binding authority refused"},
                         409: {"description": "Operation conflict, stale CAS/authority, or fenced admission"},
                         422: {"description": "Malformed request or unavailable/bounded input with owner/remedy"},
@@ -92,7 +101,7 @@ async def activate_workflow(org: OrgDep, response: Response, http_request: Reque
     return receipt
 
 
-@router.get("/workflows/activations", response_model=list[ActivationReceipt],
+@router.get("/workflows/activations", response_model=list[Receipt],
             responses={403: {"description": "Founder authority refused"},
                        500: {"description": "Stored activation closure corrupt"}})
 async def list_workflow_activations(org: OrgDep) -> list[dict]:
@@ -102,7 +111,7 @@ async def list_workflow_activations(org: OrgDep) -> list[dict]:
         _raise(exc)
 
 
-@router.get("/workflows/activations/{activation_id}", response_model=ActivationReceipt,
+@router.get("/workflows/activations/{activation_id}", response_model=Receipt,
             responses={403: {"description": "Founder authority refused"},
                        404: {"description": "No authenticated same-org activation receipt"},
                        500: {"description": "Stored activation closure corrupt"}})

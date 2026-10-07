@@ -821,6 +821,18 @@ UNKNOWN; the offline missing-agent control is not a historical diagnosis.
 
 ### S2 activation attachment and recovery
 
+Compatible readers dispatch schema1/@1 and document-review schema2/@2 by exact
+immutable definition plus compiler/validator/source pins across every draft and
+version, including noncurrent rows. Publication version numbers do not denote
+format. Earlier readers refuse any @2 template data; retained @1 history is never
+rewritten to upgrade it. No old-reader downgrade compatibility is promised for
+mixed/new data. These formats use existing immutable JSON/BLOB storage meanings
+and leave F/E DDL/layout/reference, foundation markers, fresh-org initialization
+and explicit-only existing-org migration unchanged. Startup/reopen/enable installs
+no extension or format conversion. Recovery continues through its shipping owner
+with pinned template-driven role checks; possible launch remains uncertain.
+
+
 Actual OrgState attachment installs the consumed activation/draft services before
 workers; the generic Database constructor and runtime-audit remain workflow-free.
 The S1 explicit migration/new-org contract remains unchanged: existing F startup,

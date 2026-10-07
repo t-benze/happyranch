@@ -339,3 +339,277 @@ def test_revalidation_runs_inside_transaction_and_refusal_rolls_back(tmp_path: P
     assert exc.value.code == "manager_authority_lost"
     assert observed == [True]
     assert _counts(org) == {table: 0 for table in _counts(org)}
+
+
+# Literal accepted B02/F1 vectors; expected contracts are independent of the compiler.
+GENERIC_VECTORS = (('product',
+  {'approval': {'mode': 'all',
+                'required_roles': ['founder', 'implementer', 'tester'],
+                'revision': 'current'},
+   'author': {'kind': 'agent', 'role': 'product-lead'},
+   'description': 'Prepare and independently review a product requirements document.',
+   'kind': 'document-review',
+   'outcomes': ['approved', 'changes_requested'],
+   'output': {'description': 'Product requirements document',
+              'primitive': 'immutable-document-revision'},
+   'request_changes': {'action': 'return-to-author',
+                       'invalidate': 'all-prior-receipts',
+                       'revision': 'new'},
+   'reviewers': [{'kind': 'human', 'role': 'founder'},
+                 {'kind': 'agent', 'role': 'implementer'},
+                 {'kind': 'agent', 'role': 'tester'}],
+   'schema_version': 2,
+   'submission': {'timing': 'while-active-or-completed'}},
+  {'approval': {'mode': 'all',
+                'required_roles': ['founder', 'implementer', 'tester'],
+                'revision': 'current'},
+   'author_role': 'product-lead',
+   'format': 'workflow-document-contract@2',
+   'outcomes': ['approved', 'changes_requested'],
+   'output': {'description': 'Product requirements document',
+              'primitive': 'immutable-document-revision'},
+   'request_changes': {'action': 'return-to-author',
+                       'invalidate': 'all-prior-receipts',
+                       'revision': 'new'},
+   'reviewer_roles': ['founder', 'implementer', 'tester'],
+   'role_kinds': {'founder': 'human',
+                  'implementer': 'agent',
+                  'product-lead': 'agent',
+                  'tester': 'agent'},
+   'submission': {'timing': 'while-active-or-completed'}},
+  'd89f905c2d943b83390894f5e6729c60264a3db2ba8df24b88b808a17722be0b',
+  '8bd2766225e2fa21ff0f1bfcbf3aa962deb2fab3b9f4ea9b54141e7de94add09'),
+ ('proposal',
+  {'approval': {'mode': 'all', 'required_roles': ['sponsor'], 'revision': 'current'},
+   'author': {'kind': 'agent', 'role': 'proposal-writer'},
+   'description': 'Prepare a bounded written proposal for one human review.',
+   'kind': 'document-review',
+   'outcomes': ['approved', 'changes_requested'],
+   'output': {'description': 'Written proposal', 'primitive': 'immutable-document-revision'},
+   'request_changes': {'action': 'return-to-author',
+                       'invalidate': 'all-prior-receipts',
+                       'revision': 'new'},
+   'reviewers': [{'kind': 'human', 'role': 'sponsor'}],
+   'schema_version': 2,
+   'submission': {'timing': 'on-completion'}},
+  {'approval': {'mode': 'all', 'required_roles': ['sponsor'], 'revision': 'current'},
+   'author_role': 'proposal-writer',
+   'format': 'workflow-document-contract@2',
+   'outcomes': ['approved', 'changes_requested'],
+   'output': {'description': 'Written proposal', 'primitive': 'immutable-document-revision'},
+   'request_changes': {'action': 'return-to-author',
+                       'invalidate': 'all-prior-receipts',
+                       'revision': 'new'},
+   'reviewer_roles': ['sponsor'],
+   'role_kinds': {'proposal-writer': 'agent', 'sponsor': 'human'},
+   'submission': {'timing': 'on-completion'}},
+  '39b50119bce6e2b1197c405db6a1b8a41c77278f704e2059d907b0dee62663cf',
+  '2cf9ecc23d90d353a93c90df84057b78cc0a0dd24e8bb4b96ce9be2a9b8077ee'),
+ ('A',
+  {'approval': {'mode': 'all', 'required_roles': ['sponsor'], 'revision': 'current'},
+   'author': {'kind': 'agent', 'role': 'proposal-writer'},
+   'description': 'Prepare a bounded written proposal for one human review.',
+   'kind': 'document-review',
+   'outcomes': ['approved'],
+   'output': {'description': 'Written proposal', 'primitive': 'immutable-document-revision'},
+   'request_changes': None,
+   'reviewers': [{'kind': 'human', 'role': 'sponsor'}],
+   'schema_version': 2,
+   'submission': {'timing': 'on-completion'}},
+  {'approval': {'mode': 'all', 'required_roles': ['sponsor'], 'revision': 'current'},
+   'author_role': 'proposal-writer',
+   'format': 'workflow-document-contract@2',
+   'outcomes': ['approved'],
+   'output': {'description': 'Written proposal', 'primitive': 'immutable-document-revision'},
+   'request_changes': None,
+   'reviewer_roles': ['sponsor'],
+   'role_kinds': {'proposal-writer': 'agent', 'sponsor': 'human'},
+   'submission': {'timing': 'on-completion'}},
+  'c9e84dc59d2d7a933c9cc389b0c79b90f00afe2e4f219bbef9bc03a3591985b1',
+  '08139df31135b67e39ce8ab51ddbfb559050788ea171610ccf68e99d23f73e19'),
+ ('Z',
+  {'approval': {'mode': 'all', 'required_roles': ['sponsor'], 'revision': 'current'},
+   'author': {'kind': 'agent', 'role': 'proposal-writer'},
+   'description': 'Prepare a bounded written proposal for one agent review.',
+   'kind': 'document-review',
+   'outcomes': ['approved', 'changes_requested'],
+   'output': {'description': 'Written proposal', 'primitive': 'immutable-document-revision'},
+   'request_changes': {'action': 'return-to-author',
+                       'invalidate': 'all-prior-receipts',
+                       'revision': 'new'},
+   'reviewers': [{'kind': 'agent', 'role': 'sponsor'}],
+   'schema_version': 2,
+   'submission': {'timing': 'on-completion'}},
+  {'approval': {'mode': 'all', 'required_roles': ['sponsor'], 'revision': 'current'},
+   'author_role': 'proposal-writer',
+   'format': 'workflow-document-contract@2',
+   'outcomes': ['approved', 'changes_requested'],
+   'output': {'description': 'Written proposal', 'primitive': 'immutable-document-revision'},
+   'request_changes': {'action': 'return-to-author',
+                       'invalidate': 'all-prior-receipts',
+                       'revision': 'new'},
+   'reviewer_roles': ['sponsor'],
+   'role_kinds': {'proposal-writer': 'agent', 'sponsor': 'agent'},
+   'submission': {'timing': 'on-completion'}},
+  '6e525c69be0fdd20a12ea20f875ebc0c1f8e2bf02bcff26c595f864cef03c770',
+  '09ea1a7abb939909ea860e99e96fbe5f48ddeb6c44a307b9525382758c0f764d'))
+
+
+@pytest.fixture
+def offline_template_db(tmp_path: Path):
+    """Real fresh org SQLite storage only; no daemon, roster or platform probe."""
+    from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+    db = Database(tmp_path / "offline-org.db")
+    initialize_complete_org_schema(db, expected_org_slug="alpha")
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("name,definition,contract,raw_sha,contract_sha", GENERIC_VECTORS,
+                         ids=["product", "proposal", "A", "Z"])
+def test_generic_publication_pins_and_canonical_rows(
+    offline_template_db: Database, name: str, definition: dict, contract: dict,
+    raw_sha: str, contract_sha: str,
+) -> None:
+    import hashlib
+    import json
+    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+
+    db = offline_template_db
+    store = WorkflowTemplateStore(db)
+    protected = ("tasks", "workflow_instances", "workflow_activations", "workflow_draft_dispatch_intents")
+    before = {table: tuple(map(tuple, db._conn.execute(f"SELECT * FROM {table}"))) for table in protected}
+    try:
+        result = _publish(store, definition=definition)
+    except WorkflowTemplateError as exc:
+        pytest.fail(f"real publication expected immutable version, observed {exc.code}")
+    expected_bytes = json.dumps(definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    assert result.definition_bytes == expected_bytes
+    assert result.definition_digest == raw_sha == hashlib.sha256(expected_bytes).hexdigest()
+    assert (result.compiler_pin, result.validator_pin, result.source_pin) == (
+        "workflow-compiler@2", "workflow-validator@2", "operator-input@2",
+    )
+    for table in ("workflow_template_drafts", "workflow_template_versions"):
+        rows = db._conn.execute(f"SELECT definition_bytes,definition_digest,compiler_pin,validator_pin,source_pin FROM {table}").fetchall()
+        assert [tuple(row) for row in rows] == [(expected_bytes, raw_sha, "workflow-compiler@2", "workflow-validator@2", "operator-input@2")]
+    assert store.get(org_slug="alpha", namespace=result.namespace, template_name=result.template_name, version=result.version) == result
+    assert store.list(org_slug="alpha", namespace=result.namespace) == (result,)
+    assert _publish(store, definition=definition) == result
+    assert validate_workflow_schema(db._conn, expected_org_slug="alpha") == "E"
+    assert {table: tuple(map(tuple, db._conn.execute(f"SELECT * FROM {table}"))) for table in protected} == before
+
+
+@pytest.mark.parametrize("mutation", [
+    "unknown-root", "principal", "author-human", "empty-reviewers", "too-many-reviewers",
+    "duplicate-author", "duplicate-reviewer", "two-humans", "bad-role", "long-role",
+    "bad-reviewer-kind", "missing-required", "extra-required", "duplicate-required",
+    "bad-approval-mode", "bad-approval-revision", "empty-description", "long-description",
+    "empty-output-description", "long-output-description", "code-output", "output-identity",
+    "unknown-outcome", "no-approval", "duplicate-outcome", "empty-outcomes", "null-dual-return",
+    "nonnull-approval-only-return", "bad-return-action", "bad-return-revision", "bad-invalidation",
+    "unknown-timing", "extra-submission", "schema-bool", "schema-float", "schema-string", "bad-kind",
+])
+def test_generic_closed_definition_refusal_has_no_rows(offline_template_db: Database, mutation: str) -> None:
+    definition = copy.deepcopy(GENERIC_VECTORS[1][1])
+    if mutation == "unknown-root":
+        definition["command"] = "ship code"
+    elif mutation == "principal":
+        definition["author"]["principal"] = "dev_agent"
+    elif mutation == "author-human":
+        definition["author"]["kind"] = "human"
+    elif mutation == "empty-reviewers":
+        definition["reviewers"] = []
+    elif mutation == "too-many-reviewers":
+        definition["reviewers"] = [{"role": f"reviewer-{i}", "kind": "agent"} for i in range(4)]
+    elif mutation == "duplicate-author":
+        definition["reviewers"][0]["role"] = "proposal-writer"
+    elif mutation == "duplicate-reviewer":
+        definition["reviewers"] *= 2
+    elif mutation == "two-humans":
+        definition["reviewers"].append({"role": "second-human", "kind": "human"})
+        definition["approval"]["required_roles"].append("second-human")
+    elif mutation in {"bad-role", "long-role"}:
+        definition["author"]["role"] = "../author" if mutation == "bad-role" else "a" * 64
+    elif mutation == "bad-reviewer-kind":
+        definition["reviewers"][0]["kind"] = "service"
+    elif mutation in {"missing-required", "extra-required", "duplicate-required"}:
+        definition["approval"]["required_roles"] = {"missing-required": [], "extra-required": ["sponsor", "phantom"], "duplicate-required": ["sponsor", "sponsor"]}[mutation]
+    elif mutation in {"bad-approval-mode", "bad-approval-revision"}:
+        definition["approval"]["mode" if mutation.endswith("mode") else "revision"] = "any"
+    elif mutation in {"empty-description", "long-description"}:
+        definition["description"] = " " if mutation.startswith("empty") else "a" * 2001
+    elif mutation in {"empty-output-description", "long-output-description"}:
+        definition["output"]["description"] = " " if mutation.startswith("empty") else "a" * 2001
+    elif mutation == "code-output":
+        definition["output"]["primitive"] = "code-delivery"
+    elif mutation == "output-identity":
+        definition["output"]["task_id"] = "TASK-1"
+    elif mutation in {"unknown-outcome", "no-approval", "duplicate-outcome", "empty-outcomes"}:
+        definition["outcomes"] = {"unknown-outcome": ["approved", "timeout"], "no-approval": ["changes_requested"], "duplicate-outcome": ["approved", "approved"], "empty-outcomes": []}[mutation]
+    elif mutation == "null-dual-return":
+        definition["request_changes"] = None
+    elif mutation == "nonnull-approval-only-return":
+        definition["outcomes"] = ["approved"]
+    elif mutation.startswith("bad-return") or mutation == "bad-invalidation":
+        key = {"bad-return-action": "action", "bad-return-revision": "revision", "bad-invalidation": "invalidate"}[mutation]
+        definition["request_changes"][key] = "continue"
+    elif mutation == "unknown-timing":
+        definition["submission"]["timing"] = "always-active"
+    elif mutation == "extra-submission":
+        definition["submission"]["executor"] = "codex"
+    elif mutation.startswith("schema-"):
+        definition["schema_version"] = {"schema-bool": True, "schema-float": 2.0, "schema-string": "2"}[mutation]
+    elif mutation == "bad-kind":
+        definition["kind"] = "coding"
+    db = offline_template_db
+    tables = (*_TEMPLATE_TABLES, "tasks", "workflow_instances", "workflow_draft_dispatch_intents")
+    before = {table: tuple(map(tuple, db._conn.execute(f"SELECT * FROM {table}"))) for table in tables}
+    with pytest.raises(WorkflowTemplateError) as exc:
+        _publish(WorkflowTemplateStore(db), definition=definition)
+    assert exc.value.code == "invalid_template_definition"
+    assert {table: tuple(map(tuple, db._conn.execute(f"SELECT * FROM {table}"))) for table in tables} == before
+
+
+def test_generic_retained_versions_dispatch_without_current_pointer(offline_template_db: Database) -> None:
+    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+    db = offline_template_db
+    store = WorkflowTemplateStore(db)
+    published = []
+    for version, row in enumerate(GENERIC_VECTORS[1:], 1):
+        published.append(_publish(store, definition=row[1], name="written-proposal",
+                                  key=f"policy-{version}", expected=version - 1))
+    legacy = _publish(store, definition=VALID_DEFINITION, name="written-proposal", key="legacy-four", expected=3)
+    assert [item.version for item in published] == [1, 2, 3]
+    assert legacy.version == 4 and legacy.compiler_pin == "workflow-compiler@1"
+    assert db._conn.execute("SELECT current_version FROM workflow_template_identities").fetchone()[0] == 4
+    assert store.get(org_slug="alpha", namespace=legacy.namespace, template_name="written-proposal", version=2) == published[1]
+    assert store.list(org_slug="alpha", namespace=legacy.namespace) == (*published, legacy)
+    assert validate_workflow_schema(db._conn, expected_org_slug="alpha") == "E"
+
+
+@pytest.mark.parametrize("table", ["workflow_template_drafts", "workflow_template_versions", "both"])
+@pytest.mark.parametrize("pin", ["compiler_pin", "validator_pin", "source_pin"])
+@pytest.mark.parametrize("replacement", ["unknown@9", "legacy-family"])
+def test_generic_all_history_pin_corruption_refuses(
+    offline_template_db: Database, table: str, pin: str, replacement: str,
+) -> None:
+    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+    db = offline_template_db
+    store = WorkflowTemplateStore(db)
+    old = _publish(store, definition=GENERIC_VECTORS[2][1], name="written-proposal")
+    _publish(store, definition=GENERIC_VECTORS[3][1], name="written-proposal", key="next", expected=1)
+    before = tuple(map(tuple, db._conn.execute("SELECT * FROM workflow_template_publish_operations")))
+    affected = ("workflow_template_drafts", "workflow_template_versions") if table == "both" else (table,)
+    value = replacement if replacement != "legacy-family" else {"compiler_pin": "workflow-compiler@1", "validator_pin": "workflow-validator@1", "source_pin": "operator-input@1"}[pin]
+    for target in affected:
+        db._conn.execute(f"UPDATE {target} SET {pin}=? WHERE definition_digest=?", (value, old.definition_digest))
+    db._conn.commit()
+    with pytest.raises(ValueError):
+        validate_workflow_schema(db._conn, expected_org_slug="alpha")
+    if table != "workflow_template_drafts":
+        with pytest.raises(WorkflowTemplateError) as exc:
+            store.get(org_slug="alpha", namespace=old.namespace, template_name="written-proposal", version=old.version)
+        assert exc.value.code == "template_storage_corrupt"
+    assert tuple(map(tuple, db._conn.execute("SELECT * FROM workflow_template_publish_operations"))) == before
