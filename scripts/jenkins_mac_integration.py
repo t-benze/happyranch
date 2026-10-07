@@ -316,11 +316,16 @@ if [ "$workload_status" -eq 0 ]; then
   workload_status=$?
 fi
 if [ "$workload_status" -eq 0 ]; then
-  bounded 300 60 apt-get update && bounded 300 60 apt-get install -y --no-install-recommends bash curl iproute2
+  bounded 300 60 apt-get update && bounded 300 60 apt-get install -y --no-install-recommends bash curl iproute2 git
   workload_status=$?
 fi
 if [ "$workload_status" -eq 0 ]; then
-  bounded 15 60 dpkg-query -W -f='os_tool=${{Package}} ${{Version}}\\n' bash curl iproute2 \\
+  observed_git="$(bounded 15 60 git --version)" && \\
+    printf 'git_version=%s\\n' "$observed_git" >> /workspace/artifacts/identity.txt
+  workload_status=$?
+fi
+if [ "$workload_status" -eq 0 ]; then
+  bounded 15 60 dpkg-query -W -f='os_tool=${{Package}} ${{Version}}\\n' bash curl iproute2 git \\
     >> /workspace/artifacts/identity.txt
   bounded 15 60 dpkg-query -W -f='${{Package}} ${{Version}}\\n' > /tmp/happyranch-packages-after.txt
   bounded 15 60 python "$helper" --state "$state" packages
@@ -364,7 +369,7 @@ if [ "$workload_status" -eq 0 ]; then
   bounded 2300 60 python scripts/run_bounded_output.py \\
     --output /workspace/artifacts/integration.log \\
     --max-bytes 1048576 \\
-    -- uv run pytest tests/ -v -m integration \\
+    -- uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration \\
       --basetemp=/tmp/happyranch-pytest \\
       -p no:cacheprovider \\
       --junitxml=/workspace/artifacts/integration.xml
