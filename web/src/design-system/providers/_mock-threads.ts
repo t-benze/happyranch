@@ -10,9 +10,10 @@
  * `queryClient.invalidateQueries()` so query consumers re-read. Refresh
  * intentionally resets — fixtures are the canonical state.
  */
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import type { ThreadDetailResponse, ThreadMessage, ThreadMessagesPage, ThreadRecord } from '@/lib/api/types';
+import { useQuery, useQueryClient, useMutation, type InfiniteData } from '@tanstack/react-query';
+import { useCallback, useEffect, useState } from 'react';
+import type { ThreadDetailResponse, ThreadMessage, ThreadMessagesPage, ThreadRecord, ThreadListPage } from '@/lib/api/types';
+import { useCommittedThreadPages, reorderOpenThreads } from './_real-threads';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
 import { MOCK_MESSAGES, MOCK_PARTICIPANTS, MOCK_REPLY_DELIVERY, MOCK_THREADS } from '@/mocks';
 import type {
@@ -122,6 +123,37 @@ function useThreadsList(
     isError: q.isError,
     error: q.error,
   };
+}
+
+function useThreadsInfiniteList(status?: 'open' | 'archived') {
+  const flashing = useLoadingFlash(`thread-pages:${status ?? 'all'}`);
+  const load = useCallback(async (cursor: string | null, signal: AbortSignal): Promise<ThreadListPage> => {
+    await sleep(0);
+    signal.throwIfAborted();
+    const binaryDescending = (a: string, b: string) => a === b ? 0 : a > b ? -1 : 1;
+    const tuple = (t: ThreadRecord): (number | string)[] => status === 'open'
+      ? [t.pinned ? 0 : 1, t.pinned ? -(Number.parseInt(t.thread_id.slice(4), 10) || 0) : 0, t.started_at, t.thread_id]
+      : [status === 'archived' ? t.archived_at ?? t.started_at : t.started_at, t.thread_id];
+    const compare = (a: (number | string)[], b: (number | string)[]) => {
+      for (let i = 0; i < a.length; i++) {
+        const delta = typeof a[i] === 'number' ? Number(a[i]) - Number(b[i]) : binaryDescending(String(a[i]), String(b[i]));
+        if (delta) return delta;
+      }
+      return 0;
+    };
+    const rows = store.threads.filter((t) => !status || t.status === status).sort((a, b) => compare(tuple(a), tuple(b)));
+    const anchor = cursor === null ? null : JSON.parse(cursor) as (number | string)[];
+    const after = anchor ? rows.filter((t) => compare(tuple(t), anchor) > 0) : rows;
+    const threads = after.slice(0, 50).map((t) => ({ ...t, participants: [...(store.participants[t.thread_id] ?? [])] }));
+    const has_more = after.length > 50;
+    const open = store.threads.filter((t) => t.status === 'open').length;
+    const archived = store.threads.filter((t) => t.status === 'archived').length;
+    return { threads, has_more, next_cursor: has_more ? JSON.stringify(tuple(after[49])) : null,
+      totals: { open, archived, all: open + archived, dream_origin: store.threads.filter((t) => t.composed_from_dream_id != null).length },
+      sampled_at: new Date().toISOString() };
+  }, [status]);
+  const q = useCommittedThreadPages('demo-org', ['mock-threads', status ?? 'all', { page_size: 50 }], load, ['mock-thread-list-pin']);
+  return { ...q, data: flashing ? undefined : q.data, isLoading: flashing || q.isLoading };
 }
 
 function useThread(threadId: string | undefined): QueryLike<ThreadDetailResponse> {
@@ -368,6 +400,7 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
       qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
     },
   });
@@ -401,6 +434,7 @@ function useRemoveParticipant(
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
+      qc.invalidateQueries({ queryKey: ['mock-threads'] });
       qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
     },
   });
@@ -519,9 +553,43 @@ function useSetThreadPinned(threadId: string): MutationLike<SetThreadPinArgs, Se
       }
       return { thread_id: threadId, pinned: body.pinned };
     },
-    onSuccess: () => {
+    onMutate: async (body) => {
+      qc.setQueryData<number>(['mock-thread-list-pin'], (n) => (n ?? 0) + 1);
+      const writes = qc.getQueriesData<{ threads: ThreadRecord[] } | InfiniteData<ThreadListPage>>({ queryKey: ['mock-threads'] }).map(([key, before]) => {
+        if (!before) return { key, before, after: before };
+        const flip = (t: ThreadRecord) => t.thread_id === threadId ? { ...t, pinned: body.pinned, pinned_at: body.pinned ? t.pinned_at ?? new Date().toISOString() : null } : t;
+        let after: typeof before;
+        if ('pages' in before) {
+          const loaded = before.pages.flatMap((p) => p.threads).map(flip);
+          const ordered = key[1] === 'open' ? reorderOpenThreads(loaded) : loaded;
+          let offset = 0;
+          after = { ...before, pages: before.pages.map((page) => {
+            const threads = ordered.slice(offset, offset + page.threads.length);
+            offset += page.threads.length;
+            return { ...page, threads };
+          }) };
+        } else {
+          const rows = before.threads.map(flip);
+          after = { ...before, threads: key[1] === 'open' ? reorderOpenThreads(rows) : rows };
+        }
+        const applied = qc.setQueryData(key, after);
+        return { key, before, after: applied };
+      });
+      const detailKey = ['mock-thread', threadId];
+      const beforeDetail = qc.getQueryData<ThreadDetailResponse>(detailKey);
+      const afterDetail = beforeDetail ? { ...beforeDetail, pinned: body.pinned, pinned_at: body.pinned ? beforeDetail.pinned_at ?? new Date().toISOString() : null } : undefined;
+      const appliedDetail = afterDetail ? qc.setQueryData(detailKey, afterDetail) : undefined;
+      return { writes, detailKey, beforeDetail, afterDetail: appliedDetail };
+    },
+    onError: (_error, _body, ctx) => {
+      if (!ctx) return;
+      for (const { key, before, after } of ctx.writes) if (qc.getQueryData(key) === after) qc.setQueryData(key, before);
+      if (ctx.beforeDetail && qc.getQueryData(ctx.detailKey) === ctx.afterDetail) qc.setQueryData(ctx.detailKey, ctx.beforeDetail);
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
       qc.invalidateQueries({ queryKey: ['mock-threads'] });
+      qc.setQueryData<number>(['mock-thread-list-pin'], (n) => Math.max(0, (n ?? 1) - 1));
     },
   });
 }
@@ -531,6 +599,7 @@ function useSetThreadPinned(threadId: string): MutationLike<SetThreadPinArgs, Se
 // ---------------------------------------------------------------------------
 
 export const mockThreadsApi: ThreadsApi = {
+  useThreadsInfiniteList,
   useThreadsList,
   useThread,
   useThreadMessages,

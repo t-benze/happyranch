@@ -9,8 +9,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { renderHook, waitFor, act, render } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
-import { setupServer } from 'msw/node';
+import { server } from '@/test/server';
 import React, { useEffect } from 'react';
+import { transferableAbortController } from 'node:util';
 
 // Use a real-ish slug for the router mock.
 const SLUG = 'test-org';
@@ -56,16 +57,14 @@ function wrapper(qc: QueryClient) {
 // MSW server — simulates the daemon's /messages endpoint with keyset paging
 // ---------------------------------------------------------------------------
 
-const server = setupServer();
-
 beforeEach(() => {
+  // Node fetch requires a Node signal; jsdom's controller is a different realm.
+  vi.stubGlobal('AbortController', function () { return transferableAbortController(); });
   server.resetHandlers();
   vi.clearAllMocks();
 });
 
-afterAll(() => {
-  server.close();
-});
+afterEach(() => vi.unstubAllGlobals());
 
 function stubMessagesPages(
   pages: { messages: ReturnType<typeof makeMessage>[]; has_more: boolean }[],
@@ -94,7 +93,148 @@ function stubMessagesPages(
   return { getCallCount: () => callCount };
 }
 
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
+it('commits thread page totals and serializes duplicate next-page demand', async () => {
+  seedToken();
+  const requests: string[] = [];
+  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('cursor') ?? 'first';
+    requests.push(cursor);
+    return HttpResponse.json({ threads: [{ thread_id: cursor }], totals: { open: 2, archived: 0, all: 2, dream_origin: 0 },
+      has_more: cursor === 'first', next_cursor: cursor === 'first' ? 'next' : null, sampled_at: '2026-10-07T00:00:00Z' });
+  }));
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
+  await waitFor(() => expect({ requests, cache: qc.getQueriesData({ queryKey: ['threads'] }), totals: result.current.data?.pages[0]?.totals, error: result.current.error }).toMatchObject({ requests: ['first'], totals: { open: 2, archived: 0, all: 2, dream_origin: 0 }, error: null }));
+  await act(async () => { await Promise.all([result.current.fetchNextPage(), result.current.fetchNextPage()]); });
+  expect(result.current.data?.pages.map((p) => p.threads[0].thread_id)).toEqual(['first', 'next']);
+  expect(requests).toEqual(['first', 'next']);
+  await act(async () => { await result.current.fetchNextPage(); });
+  expect(requests).toEqual(['first', 'next']);
+});
+
+function threadPage(id: string, next: string | null = null, total = 2) {
+  return { threads: [{ thread_id: id }], totals: { open: total, archived: 0, all: total, dream_origin: 0 },
+    has_more: next !== null, next_cursor: next, sampled_at: '2026-10-07T00:00:00Z' };
+}
+
+it('shares one request latch across mounted consumers of the same list key', async () => {
+  seedToken();
+  const requests: string[] = [];
+  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('cursor') ?? 'first';
+    requests.push(cursor);
+    return HttpResponse.json(threadPage(cursor, cursor === 'first' ? 'next' : null));
+  }));
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { result } = renderHook(() => ({ a: realThreadsApi.useThreadsInfiniteList('open'), b: realThreadsApi.useThreadsInfiniteList('open') }), { wrapper: wrapper(qc) });
+  await waitFor(() => expect(result.current.a.data?.pages[0].threads[0].thread_id).toBe('first'));
+  await act(async () => { await Promise.all([result.current.a.fetchNextPage(), result.current.b.fetchNextPage()]); });
+  expect(requests).toEqual(['first', 'next']);
+  expect(result.current.a.data).toEqual(result.current.b.data);
+});
+
+it('retains committed rows on continuation failure and repeated cursors until explicit retry', async () => {
+  seedToken();
+  let outcome: 'fail' | 'repeat' | 'ok' = 'fail';
+  const requests: string[] = [];
+  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('cursor');
+    requests.push(cursor ?? 'first');
+    if (!cursor) return HttpResponse.json(threadPage('first', 'next'));
+    if (outcome === 'fail') return HttpResponse.json({ detail: 'later page failed' }, { status: 503 });
+    return HttpResponse.json(threadPage('second', outcome === 'repeat' ? 'next' : null));
+  }));
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
+  await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
+  const committed = result.current.data;
+  await act(async () => { await result.current.fetchNextPage(); });
+  expect(result.current.isError).toBe(true);
+  expect(result.current.data).toBe(committed);
+  for (let i = 0; i < 3; i++) await act(async () => { await result.current.fetchNextPage(); });
+  expect(requests).toEqual(['first', 'next']);
+  outcome = 'repeat';
+  await act(async () => { await result.current.retry(); });
+  expect(result.current.error?.message).toBe('invalid_thread_page');
+  expect(result.current.data).toBe(committed);
+  outcome = 'ok';
+  await act(async () => { await result.current.retry(); });
+  expect(result.current.data?.pages.flatMap((p) => p.threads.map((r) => r.thread_id))).toEqual(['first', 'second']);
+  expect(result.current.hasNextPage).toBe(false);
+  expect(result.current.isError).toBe(false);
+  expect(requests).toEqual(['first', 'next', 'next', 'next']);
+});
+
+it('stages a full replacement prefix and exposes no partial refresh in committed cache', async () => {
+  seedToken();
+  let phase: 'old' | 'new' | 'fail' = 'old';
+  let releaseFirst!: () => void;
+  let releaseSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  const requests: string[] = [];
+  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('cursor');
+    requests.push(`${phase}:${cursor ?? 'first'}`);
+    if (phase === 'fail') return HttpResponse.json({ detail: 'refresh failed' }, { status: 503 });
+    if (phase === 'new') await (cursor === null ? firstGate : secondGate);
+    return HttpResponse.json(threadPage(`${phase}-${cursor ?? 'first'}`, cursor === null ? `${phase}-next` : null, phase === 'new' ? 3 : 2));
+  }));
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
+  await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
+  await act(async () => { await result.current.fetchNextPage(); });
+  const committed = result.current.data;
+  phase = 'new';
+  let refresh!: Promise<unknown>;
+  act(() => { refresh = result.current.refresh(); });
+  await waitFor(() => expect(requests).toContain('new:first'));
+  expect(result.current.isRefreshing).toBe(true);
+  expect(result.current.data).toBe(committed);
+  releaseFirst();
+  await waitFor(() => expect(requests).toContain('new:new-next'));
+  expect(qc.getQueryData(['threads', SLUG, { status: 'open', page_size: 50 }])).toBe(committed);
+  expect(result.current.data?.pages.at(-1)?.totals.all).toBe(2);
+  releaseSecond();
+  await act(async () => { await refresh; });
+  expect(result.current.data?.pages.flatMap((p) => p.threads.map((r) => r.thread_id))).toEqual(['new-first', 'new-new-next']);
+  expect(result.current.data?.pages.at(-1)?.totals.all).toBe(3);
+  phase = 'fail';
+  const accepted = result.current.data;
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.data).toBe(accepted);
+  expect(result.current.isStale).toBe(true);
+});
+
+it('rejects a late continuation after refresh starts a fresh generation', async () => {
+  seedToken();
+  let initialReads = 0;
+  let releaseOld!: () => void;
+  const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+  const requests: string[] = [];
+  server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+    const cursor = new URL(request.url).searchParams.get('cursor');
+    requests.push(cursor ?? 'first');
+    if (cursor === 'old-next') {
+      await oldGate;
+      return HttpResponse.json(threadPage('obsolete', null, 99));
+    }
+    initialReads++;
+    return HttpResponse.json(initialReads === 1 ? threadPage('old', 'old-next') : threadPage('fresh', null, 1));
+  }));
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const { result } = renderHook(() => realThreadsApi.useThreadsInfiniteList('open'), { wrapper: wrapper(qc) });
+  await waitFor(() => expect(result.current.data?.pages.length).toBe(1));
+  let old!: Promise<unknown>;
+  act(() => { old = result.current.fetchNextPage(); });
+  await waitFor(() => expect(requests).toContain('old-next'));
+  await act(async () => { await result.current.refresh(); });
+  releaseOld();
+  await act(async () => { await old; });
+  expect(result.current.data?.pages.flatMap((p) => p.threads.map((r) => r.thread_id))).toEqual(['fresh']);
+  expect(result.current.data?.pages[0].totals.all).toBe(1);
+  expect(requests).toEqual(['first', 'old-next', 'first']);
+});
 
 // ---------------------------------------------------------------------------
 // Tests

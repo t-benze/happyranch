@@ -49,7 +49,7 @@ import {
   useThreadTailSSE,
   useThreadTasks,
   useThreadsInboxSSE,
-  useThreadsList,
+  useThreadsInfiniteList,
 } from '@/hooks/threads';
 import { ArchiveDialog } from './ArchiveDialog';
 import { InviteDialog } from './InviteDialog';
@@ -340,10 +340,11 @@ export function ThreadsPage(): JSX.Element {
   const { t, locale } = useTranslation();
   const routes = useThreadRoutes();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { slug, thread_id: threadId } = useParams<{ slug: string; thread_id: string }>();
   const composerFocusRef = useRef<(() => void) | null>(null);
   const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const listSentinelRef = useRef<HTMLDivElement | null>(null);
+  const refreshAnchorRef = useRef<{ scope: string; href: string; offset: number } | null>(null);
   const listScrollByScopeRef = useRef(new Map<string, number>());
   const restoredListScopeRef = useRef<string | null>(null);
   const rowNavigationSavedScopeRef = useRef<string | null>(null);
@@ -355,11 +356,13 @@ export function ThreadsPage(): JSX.Element {
     listScrollRef.current = node;
   }, []);
   const rememberListScroll = (owner = listScrollRef.current) => {
+    if (restoredListScopeRef.current !== scrollKey) return;
     // Route-local, keyed state avoids leaking a position across orgs, buckets,
     // or search terms while leaving router ownership untouched. The route
     const scrollTop = owner ? owner.scrollTop : (listScrollByScopeRef.current.get(scrollKey) ?? 0);
     listScrollByScopeRef.current.set(scrollKey, scrollTop);
     sessionStorage.setItem(scrollKey, String(scrollTop));
+    sessionStorage.setItem(`${scrollKey}:depth`, String(listQuery.data?.pages.length ?? 1));
   };
   const rememberListScrollSnapshot = () => {
     // Scope cleanup can run after the descendant has rendered a new scope and
@@ -375,6 +378,7 @@ export function ThreadsPage(): JSX.Element {
     sessionStorage.setItem(scrollKey, String(scrollTop));
   };
   const observeListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    if (restoredListScopeRef.current !== scrollKey) return;
     const scrollTop = event.currentTarget.scrollTop;
     listScrollByScopeRef.current.set(scrollKey, scrollTop);
     // Record real user movement while this scope owns the node. A later scope
@@ -382,11 +386,12 @@ export function ThreadsPage(): JSX.Element {
     // scope's last position.
     sessionStorage.setItem(scrollKey, String(scrollTop));
   };
-  const rememberRowNavigationScroll = () => {
+  const rememberRowNavigationScroll = (id: string) => {
     // A row activation observes the attached owner before navigation. Its
     // subsequent route cleanup must not reread a detached/clamped node and
     // overwrite this authoritative snapshot.
     rememberListScroll();
+    sessionStorage.setItem(`${scrollKey}:anchor`, id);
     rowNavigationSavedScopeRef.current = scrollKey;
   };
   useEffect(() => {
@@ -416,54 +421,19 @@ export function ThreadsPage(): JSX.Element {
   useThreadsInboxSSE();
   const agentsQuery = useAgentsList();
   const agents = useMemo(() => agentsQuery.data?.agents ?? [], [agentsQuery.data]);
-  // Two real per-status fetches back BOTH the per-bucket counts and the list.
-  // 'all' merges them client-side — no extra fetch, no new data field.
-  const openQuery = useThreadsList({ status: 'open' });
-  const archivedQuery = useThreadsList({ status: 'archived' });
-  const openCount = openQuery.data?.threads?.length ?? 0;
-  const archivedCount = archivedQuery.data?.threads?.length ?? 0;
-  const counts: Record<InboxBucket, number> = {
-    all: openCount + archivedCount,
-    open: openCount,
-    done: archivedCount,
-  };
-  // Org-wide dream-opened count for the header eyebrow (THREADS-04) — derived
-  // across BOTH buckets from composed_from_dream_id, independent of the active
-  // filter, so the count reflects the org rather than the current view.
-  const dreamOpenedCount = useMemo(() => {
-    const openThreads = openQuery.data?.threads ?? [];
-    const archivedThreads = archivedQuery.data?.threads ?? [];
-    return [...openThreads, ...archivedThreads].filter(
-      (t) => t.composed_from_dream_id !== null,
-    ).length;
-  }, [openQuery.data, archivedQuery.data]);
-  const bucketLoading =
-    bucket === 'open'
-      ? openQuery.isLoading
-      : bucket === 'done'
-        ? archivedQuery.isLoading
-        : openQuery.isLoading || archivedQuery.isLoading;
-  const bucketError =
-    bucket === 'open'
-      ? openQuery.isError
-      : bucket === 'done'
-        ? archivedQuery.isError
-        : openQuery.isError || archivedQuery.isError;
+  const listQuery = useThreadsInfiniteList(bucket === 'done' ? 'archived' : bucket === 'open' ? 'open' : undefined);
+  const totals = listQuery.data?.pages.at(-1)?.totals;
+  const counts = { all: totals?.all, open: totals?.open, done: totals?.archived };
+  const dreamOpenedCount = totals?.dream_origin;
+  const bucketLoading = listQuery.isLoading;
+  const bucketError = listQuery.isError;
   const threads = useMemo(() => {
-    const openThreads = openQuery.data?.threads ?? [];
-    const archivedThreads = archivedQuery.data?.threads ?? [];
-    const base =
-      bucket === 'open'
-        ? openThreads
-        : bucket === 'done'
-          ? archivedThreads
-          : // THR-209 msg 9 (TASK-5976): the 'all' bucket merges open AND
-            // archived threads, so it is NOT the open-thread list and carries
-            // NO pin presentation — the exact pre-THR-209 ordinary merge
-            // (started_at DESC), so archived pin state can never leak here.
-            [...openThreads, ...archivedThreads].sort((a, b) =>
-              b.started_at.localeCompare(a.started_at),
-            );
+    const seen = new Set<string>();
+    const base = (listQuery.data?.pages.flatMap((p) => p.threads) ?? []).filter((row) => {
+      if (seen.has(row.thread_id)) return false;
+      seen.add(row.thread_id);
+      return true;
+    });
     if (!filter.trim()) return base;
     const needle = filter.toLowerCase();
     return base.filter(
@@ -471,7 +441,59 @@ export function ThreadsPage(): JSX.Element {
         t.subject.toLowerCase().includes(needle) ||
         t.thread_id.toLowerCase().includes(needle),
     );
-  }, [bucket, openQuery.data, archivedQuery.data, filter]);
+  }, [listQuery.data, filter]);
+  useLayoutEffect(() => {
+    const owner = listScrollRef.current;
+    if (!owner || threadId) return;
+    if (refreshAnchorRef.current?.scope !== scrollKey) refreshAnchorRef.current = null;
+    if (listQuery.isRefreshing && !refreshAnchorRef.current) {
+      const top = owner.getBoundingClientRect().top;
+      const row = [...owner.querySelectorAll<HTMLAnchorElement>('a[href]')].find((link) => link.getBoundingClientRect().bottom > top);
+      if (row) refreshAnchorRef.current = { scope: scrollKey, href: row.getAttribute('href')!, offset: row.getBoundingClientRect().top - top };
+    } else if (!listQuery.isRefreshing && refreshAnchorRef.current) {
+      const snapshot = refreshAnchorRef.current;
+      refreshAnchorRef.current = null;
+      const row = [...owner.querySelectorAll<HTMLAnchorElement>('a[href]')].find((link) => link.getAttribute('href') === snapshot.href);
+      if (row && !listQuery.isError) owner.scrollTop += row.getBoundingClientRect().top - owner.getBoundingClientRect().top - snapshot.offset;
+    }
+  }, [threadId, scrollKey, listQuery.isRefreshing, listQuery.isError, listQuery.data]);
+  useEffect(() => {
+    const owner = listScrollRef.current;
+    if (!owner || threadId) return;
+    const cancel = (event: Event) => {
+      if (event instanceof KeyboardEvent && !['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) return;
+      refreshAnchorRef.current = null;
+      if (restoredListScopeRef.current === scrollKey) return;
+      restoredListScopeRef.current = scrollKey;
+      listScrollByScopeRef.current.set(scrollKey, owner.scrollTop);
+      sessionStorage.setItem(scrollKey, String(owner.scrollTop));
+      sessionStorage.removeItem(`${scrollKey}:anchor`);
+      sessionStorage.setItem(`${scrollKey}:depth`, String(listQuery.data?.pages.length ?? 1));
+    };
+    owner.addEventListener('wheel', cancel, { passive: true });
+    owner.addEventListener('touchstart', cancel, { passive: true });
+    owner.addEventListener('keydown', cancel);
+    return () => {
+      owner.removeEventListener('wheel', cancel);
+      owner.removeEventListener('touchstart', cancel);
+      owner.removeEventListener('keydown', cancel);
+    };
+  }, [threadId, scrollKey, listQuery.data]);
+  // Literal client search exhausts the active stream even when early matches
+  // already fill the viewport. Each render advances at most one owned request.
+  useEffect(() => {
+    if (!threadId && filter.trim() && listQuery.hasNextPage && !bucketError && !listQuery.isFetchingNextPage && !listQuery.isRefreshing) {
+      void listQuery.fetchNextPage();
+    }
+  }, [threadId, filter, bucketError, listQuery]);
+  useEffect(() => {
+    if (threadId || bucketLoading || bucketError || !listQuery.hasNextPage || listQuery.isRefreshing || !listSentinelRef.current || !listScrollRef.current) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) void listQuery.fetchNextPage();
+    }, { root: listScrollRef.current });
+    observer.observe(listSentinelRef.current);
+    return () => observer.disconnect();
+  }, [threadId, bucketLoading, bucketError, listQuery]);
   useLayoutEffect(() => {
     // A detail transition ends this list entry. Returning to the list must
     // restore its saved offset, while ordinary query updates inside the entry
@@ -485,12 +507,22 @@ export function ThreadsPage(): JSX.Element {
     // waits for the active bucket's list data. This keeps an initial delayed
     // response from losing its route-local saved position and makes refetches
     // (which do not create a new list entry) harmless.
-    if (bucketLoading || restoredListScopeRef.current === scrollKey) return;
+    if (bucketLoading || bucketError || restoredListScopeRef.current === scrollKey) return;
     const stored = sessionStorage.getItem(scrollKey);
     // A missing key must reset the reused scroll owner. A stored zero is a
     // valid saved position, so neither case may be treated as "leave it be".
     const saved = stored === null ? 0 : Number(stored);
     const target = Number.isFinite(saved) && saved >= 0 ? saved : 0;
+    const depth = Number(sessionStorage.getItem(`${scrollKey}:depth`) ?? 1);
+    const owner = listScrollRef.current;
+    const anchor = sessionStorage.getItem(`${scrollKey}:anchor`);
+    const enoughDepth = (listQuery.data?.pages.length ?? 0) >= depth;
+    const enoughHeight = !owner || owner.clientHeight === 0 || owner.scrollHeight - owner.clientHeight >= target;
+    const enoughAnchor = !anchor || threads.some((t) => t.thread_id === anchor);
+    if (listQuery.hasNextPage && (!enoughDepth || !enoughHeight || !enoughAnchor)) {
+      if (!listQuery.isFetchingNextPage && !listQuery.isRefreshing) void listQuery.fetchNextPage();
+      return;
+    }
     // This must happen in the layout commit, rather than an animation frame:
     // a returned list has a newly mounted owner and an unavailable frame must
     // not turn a durable position into a no-op.
@@ -499,7 +531,7 @@ export function ThreadsPage(): JSX.Element {
       listScrollByScopeRef.current.set(scrollKey, target);
       restoredListScopeRef.current = scrollKey;
     }
-  }, [threadId, scrollKey, bucketLoading]);
+  }, [threadId, scrollKey, bucketLoading, bucketError, listQuery, threads]);
   useLayoutEffect(() => {
     // The list ContentWrap is conditional on the detail route. Persist from
     // its cleanup too, so browser history and the detail's ordinary Back link
@@ -851,11 +883,11 @@ export function ThreadsPage(): JSX.Element {
                 Direction-A reference and the KB/Audit surfaces. */}
             <div className="min-w-0 flex-1">
               <p className="text-text-muted text-xs font-medium tracking-wide uppercase">
-                {t('threads.page.eyebrow', {
-                  count: counts.all,
-                  total: formatCountFor(locale, counts.all),
-                  dream: formatCountFor(locale, dreamOpenedCount),
-                })}
+                {totals ? t('threads.page.eyebrow', {
+                  count: totals.all,
+                  total: formatCountFor(locale, totals.all),
+                  dream: formatCountFor(locale, dreamOpenedCount ?? 0),
+                }) : t('threads.page.list.unknown')}
               </p>
               <h1 className="font-display text-display text-text-primary mt-1 font-medium">
                 {t('threads.page.title')}
@@ -884,17 +916,11 @@ export function ThreadsPage(): JSX.Element {
             >
               <TabsList variant="segmented" aria-label={t('threads.page.statusFilterAria')}>
                 {INBOX_BUCKETS.map((b) => {
-                  const loading =
-                    b === 'all'
-                      ? openQuery.isLoading || archivedQuery.isLoading
-                      : b === 'done'
-                        ? archivedQuery.isLoading
-                        : openQuery.isLoading;
                   return (
                     <TabsTrigger key={b} variant="segmented" value={b}>
                       {t(BUCKET_LABEL_KEY[b])}
                       <span className="ml-1 text-xs tabular-nums opacity-60">
-                        {loading ? '…' : formatCountFor(locale, counts[b])}
+                        {counts[b] === undefined ? '…' : formatCountFor(locale, counts[b]!)}
                       </span>
                     </TabsTrigger>
                   );
@@ -911,6 +937,11 @@ export function ThreadsPage(): JSX.Element {
               aria-label={t('threads.page.filterAria')}
             />
           </div>
+          {(listQuery.isRefreshing || listQuery.isStale) && (
+            <p role="status" className="text-text-muted mt-2 text-xs">
+              {t(listQuery.isStale ? 'threads.page.list.stale' : 'threads.page.list.updating')}
+            </p>
+          )}
           </ContentWrap>
         </header>
           {/* THR-209: visible pin-failure banner (optimistic rollback). */}
@@ -932,11 +963,7 @@ export function ThreadsPage(): JSX.Element {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() =>
-                  queryClient.invalidateQueries({
-                    queryKey: ['threads', slug],
-                  })
-                }
+                onClick={() => { void listQuery.retry(); }}
               >
                 {t('threads.page.retry')}
               </Button>
@@ -944,7 +971,7 @@ export function ThreadsPage(): JSX.Element {
           )}
 
           {/* Empty — calm §2.5.5 */}
-          {!bucketLoading && !bucketError && threads.length === 0 && (
+          {!bucketLoading && !bucketError && threads.length === 0 && !(filter.trim() && listQuery.hasNextPage) && (
             <EmptyState
               title={t('threads.page.list.emptyTitle')}
               body={
@@ -961,7 +988,7 @@ export function ThreadsPage(): JSX.Element {
               and All buckets render one flat ordinary list — pin has zero
               presentation effect there — and the active query/filter still
               governs inclusion. Pin controls are detail-only. */}
-          {!bucketLoading && !bucketError && threads.length > 0 && (
+          {!bucketLoading && threads.length > 0 && (
             <div className="overflow-hidden rounded-sm border border-border-default divide-y divide-border-default">
               {pinnedThreads.length > 0 && (
                 <h2 className="text-text-muted px-1 pt-2 pb-1 text-xs font-semibold tracking-wider uppercase">
@@ -988,7 +1015,7 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
+                    onSelect={() => { rememberRowNavigationScroll(t.thread_id); navigate(path); }}
                     participants={t.participants}
                     labels={rowLabels(t.status)}
                   />
@@ -1019,12 +1046,21 @@ export function ThreadsPage(): JSX.Element {
                       </span>
                     }
                     href={path}
-                    onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
+                    onSelect={() => { rememberRowNavigationScroll(t.thread_id); navigate(path); }}
                     participants={t.participants}
                     labels={rowLabels(t.status)}
                   />
                 );
               })}
+            </div>
+          )}
+          {!bucketLoading && listQuery.hasNextPage && (
+            <div ref={listSentinelRef} className="p-4 text-center">
+              {filter.trim() && !bucketError && <p role="status" className="text-text-muted text-xs">{t('threads.page.list.searching')}</p>}
+              <Button size="sm" variant="outline" disabled={bucketError || listQuery.isFetchingNextPage || listQuery.isRefreshing}
+                onClick={() => { void listQuery.fetchNextPage(); }}>
+                {t(listQuery.isFetchingNextPage ? 'threads.page.list.loadingMore' : 'threads.page.list.loadMore')}
+              </Button>
             </div>
           )}
           </ContentWrap>

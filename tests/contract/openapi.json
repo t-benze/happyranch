@@ -3242,7 +3242,15 @@
             "header"
           ],
           [
+            "cursor",
+            "query"
+          ],
+          [
             "limit",
+            "query"
+          ],
+          [
+            "page_size",
             "query"
           ],
           [
@@ -3256,6 +3264,7 @@
         ],
         "responses": [
           "200",
+          "400",
           "422"
         ]
       },

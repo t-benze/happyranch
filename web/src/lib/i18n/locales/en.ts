@@ -1098,6 +1098,12 @@ export const en = {
   'threads.page.list.errorTitle': "Couldn't load threads",
   'threads.page.list.errorBody': 'A backend error prevented loading threads.',
   'threads.page.retry': 'Retry',
+  'threads.page.list.unknown': 'Thread counts not yet known',
+  'threads.page.list.updating': 'Updating threads and counts…',
+  'threads.page.list.stale': 'Showing the last recorded threads and counts',
+  'threads.page.list.searching': 'Searching remaining threads…',
+  'threads.page.list.loadingMore': 'Loading more threads…',
+  'threads.page.list.loadMore': 'Load more threads',
   'threads.page.list.emptyTitle': 'No threads yet',
   'threads.page.list.emptyBody':
     'Compose a thread to start a broadcast conversation with your agents.',

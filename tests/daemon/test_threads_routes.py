@@ -130,6 +130,43 @@ def test_compose_accepts_attachment_only_message(client, auth_headers, org_state
 # ---------------------------------------------------------------------------
 
 
+def test_thread_pages_report_true_totals_and_reach_beyond_legacy_cap(
+    tmp_home, app, org_state, auth_headers,
+):
+    from datetime import datetime, timezone
+    from runtime.models import ThreadRecord
+
+    client = TestClient(app)
+    for number in range(551):
+        org_state.db.insert_thread(ThreadRecord(
+            id=f"THR-{number:04d}", subject=f"row {number}",
+            started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            composed_from_dream_id="DREAM-1" if number < 9 else None,
+        ))
+    cursor = None
+    ids = []
+    for _ in range(12):
+        params = {"page_size": 50}
+        if cursor is not None:
+            params["cursor"] = cursor
+        response = client.get("/api/v1/orgs/alpha/threads", params=params, headers=auth_headers)
+        assert response.status_code == 200
+        body = response.json()
+        assert body.get("totals") == {"open": 551, "archived": 0, "all": 551, "dream_origin": 9}
+        ids.extend(row["thread_id"] for row in body["threads"])
+        assert len(body["threads"]) <= 50
+        assert body["sampled_at"]
+        cursor = body["next_cursor"]
+        assert body["has_more"] is (cursor is not None)
+        if not body["has_more"]:
+            break
+    assert ids == [f"THR-{number:04d}" for number in reversed(range(551))]
+    assert len(ids) == len(set(ids)) == 551
+    legacy = client.get("/api/v1/orgs/alpha/threads", headers=auth_headers).json()
+    assert set(legacy) == {"threads"}
+    assert len(legacy["threads"]) == 50
+
+
 def test_list_threads_returns_recent(tmp_home, app, org_state, auth_headers):
     client = TestClient(app)
     _seed_agent(org_state, "dev_agent")
@@ -149,6 +186,38 @@ def test_list_threads_returns_recent(tmp_home, app, org_state, auth_headers):
     assert len(data["threads"]) == 2
     assert data["threads"][0]["subject"] in {"a", "b"}
     assert data["threads"][0]["participants"] == ["dev_agent"]
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("page_size=0", 422), ("page_size=101", 422), ("page_size=no", 422),
+    ("page_size=1&limit=50", 422), ("cursor=x", 422),
+    ("page_size=1&status=unknown", 422),
+    ("page_size=1&cursor=", 400), ("page_size=1&cursor=bad", 400),
+    ("page_size=1&cursor=" + "x" * 4097, 400),
+])
+def test_thread_page_query_validation(tmp_home, app, auth_headers, query, expected):
+    response = TestClient(app).get(f"/api/v1/orgs/alpha/threads?{query}", headers=auth_headers)
+    assert response.status_code == expected
+    if expected == 400:
+        assert response.json()["detail"]["code"] == "invalid_thread_cursor"
+
+
+def test_thread_page_cursor_scope_and_payload_validation(tmp_home, app, org_state, auth_headers):
+    import base64
+    import json
+    from runtime.models import ThreadRecord
+    org_state.db.insert_thread(ThreadRecord(id="THR-1", subject="x"))
+    org_state.db.insert_thread(ThreadRecord(id="THR-2", subject="y"))
+    client = TestClient(app)
+    first = client.get("/api/v1/orgs/alpha/threads?page_size=1", headers=auth_headers).json()
+    cursor = first["next_cursor"]
+    value = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
+    changes = [{"org": "beta"}, {"v": 2}, {"v": True}, {"size": 2}, {"extra": 1}, {"key": [1, 2]}, {"bucket": "open"}]
+    for change in changes:
+        invalid = base64.urlsafe_b64encode(json.dumps({**value, **change}).encode()).decode().rstrip("=")
+        response = client.get("/api/v1/orgs/alpha/threads", params={"page_size": 1, "cursor": invalid}, headers=auth_headers)
+        assert response.status_code == 400, change
+        assert response.json()["detail"]["code"] == "invalid_thread_cursor"
 
 
 def test_list_threads_participants_are_bounded_to_returned_rows(tmp_home, app, org_state, auth_headers):

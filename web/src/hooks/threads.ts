@@ -30,6 +30,10 @@ export const useThreadsList: ReturnType<typeof useData>['threads']['useThreadsLi
   params,
 ) => useData().threads.useThreadsList(params);
 
+export const useThreadsInfiniteList: ReturnType<typeof useData>['threads']['useThreadsInfiniteList'] = (
+  status,
+) => useData().threads.useThreadsInfiniteList(status);
+
 export const useThread: ReturnType<typeof useData>['threads']['useThread'] = (
   threadId,
 ) => useData().threads.useThread(threadId);

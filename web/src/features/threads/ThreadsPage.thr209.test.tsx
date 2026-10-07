@@ -16,11 +16,32 @@ import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
+
+/** Complete fixed server page for the existing small-list UI fixtures.
+ * The full store supplies totals independently of the selected bucket. */
+function threadListResponse(
+  body: { threads: ReturnType<typeof mkThread>[] },
+  source = body.threads,
+) {
+  return HttpResponse.json({
+    ...body,
+    totals: {
+      open: source.filter((row) => row.status === 'open').length,
+      archived: source.filter((row) => row.status === 'archived').length,
+      all: source.length,
+      dream_origin: source.filter((row) => row.composed_from_dream_id != null).length,
+    },
+    has_more: false,
+    next_cursor: null,
+    sampled_at: '2026-10-07T00:00:00Z',
+  });
+}
 
 let mountedQueryClient: QueryClient | null = null;
 
@@ -48,9 +69,10 @@ function openListCache() {
     queryKey: ['threads', SLUG],
   }).find(({ queryKey }) => (queryKey[2] as { status?: string } | undefined)?.status === 'open');
   expect(query).toBeDefined();
-  return mountedQueryClient!.getQueryData<{ threads: ReturnType<typeof mkThread>[] }>(
-    query!.queryKey,
-  );
+  const data = mountedQueryClient!.getQueryData<{
+    pages: Array<{ threads: ReturnType<typeof mkThread>[] }>;
+  }>(query!.queryKey);
+  return data && { threads: data.pages.flatMap((page) => page.threads) };
 }
 
 function mkThread(
@@ -109,7 +131,7 @@ function stubList(threads: ReturnType<typeof mkThread>[]) {
       const filtered = status
         ? threads.filter((t) => t.status === status)
         : [...threads];
-      return HttpResponse.json({ threads: filtered });
+      return threadListResponse({ threads: filtered }, threads);
     }),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -172,7 +194,7 @@ function stubServerOrderedList(threads: ReturnType<typeof mkThread>[]) {
           return b.started_at.localeCompare(a.started_at);
         });
       }
-      return HttpResponse.json({ threads: filtered });
+      return threadListResponse({ threads: filtered }, threads);
     }),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -189,10 +211,17 @@ function rowSubjects(): string[] {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('AbortController', function () { return transferableAbortController(); });
+  vi.stubGlobal('IntersectionObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   sessionStorage.setItem('happyranch.token', 'tok');
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   sessionStorage.removeItem('happyranch.token');
   mountedQueryClient = null;
   vi.restoreAllMocks();
