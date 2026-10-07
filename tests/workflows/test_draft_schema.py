@@ -633,6 +633,13 @@ assert_pinned_imports()
         finally:
             conn.close()
     before = snapshot()
+    audit_index = (
+        'index', 'idx_audit_log_task_id', 'audit_log',
+        'CREATE INDEX idx_audit_log_task_id ON audit_log(task_id)',
+    )
+    assert all(row[1] != audit_index[1] for row in before[0])
+    # SQLite stores CREATE INDEX without the IF NOT EXISTS clause.
+    expected_schema = tuple(sorted((*before[0], audit_index), key=lambda row: row[1]))
     for _ in range(2):
         org = OrgState.load(slug='alpha',root=root,settings=Settings())
         try:
@@ -642,7 +649,10 @@ assert_pinned_imports()
             assert schema.validate_workflow_schema(org.db._conn,expected_org_slug='alpha') == 'F'
         finally:
             org.close()
-        assert snapshot() == before
+        after_schema, after_data = snapshot()
+        assert after_schema == expected_schema
+        assert len(after_schema) == len(before[0]) + 1
+        assert after_data == before[1]
     migrated = _run(runtime.root)
     assert migrated.returncode == 0 and 'migrated:' in migrated.stdout, migrated.stderr
     org = OrgState.load(slug='alpha',root=root,settings=Settings())
