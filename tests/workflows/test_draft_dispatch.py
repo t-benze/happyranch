@@ -1739,17 +1739,25 @@ def generic_draft_host(generic_activation_org, monkeypatch):
     from tests.test_host_supervisor_lifecycle import FakeBackend, make_supervisor
 
     client, org, state, cases = generic_activation_org
-    control = {"receipt": None, "callback": True, "quiescent": True, "ack": True}
+    control = {"receipt": None, "callback": True, "quiescent": True, "ack": True,
+               "prelaunch": []}
     observations, processes = [], []
 
-    def owned(session):
+    def owned(session, *, reserved=True):
         receipt = control["receipt"]
         assert receipt is not None
         task = org.db.get_task(receipt["root_task_id"])
         intent = dict(org.db.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?",
                                      (receipt["intent_id"],)).fetchone())
         assert intent["task_id"] == task.id and intent["assigned_principal"] == task.assigned_agent
-        assert intent["session_id"] == session
+        assert task.current_session_id == session
+        if reserved:
+            assert intent["session_id"] == session
+        else:
+            # bind_session publishes only the task/tracker generation. The
+            # intent records it when reserve_launch commits, after spec build.
+            assert intent["state"] == "claimed" and intent["host_launch_started"] == 0
+            assert intent["session_id"] is None and intent["host_execution_id"] is None
         assert org.sessions.get_active(task.id, task.assigned_agent) == session
         return task, intent
 
@@ -1793,7 +1801,9 @@ def generic_draft_host(generic_activation_org, monkeypatch):
 
     class Executor:
         def build_launch_spec(self, **kwargs):
-            owned(kwargs["session_id"])
+            task, intent = owned(kwargs["session_id"], reserved=False)
+            control["prelaunch"].append((task.id, kwargs["session_id"], intent["id"],
+                                         intent["activation_revision"], intent["state"]))
             return LaunchSpec(argv=(sys.executable, "-c", "pass"))
 
         def run(self, **kwargs):
@@ -1805,7 +1815,37 @@ def generic_draft_host(generic_activation_org, monkeypatch):
             return ExecutorResult(success=True, duration_seconds=0, session_id=kwargs["session_id"])
 
     backend = Backend(name="controlled-unit-subprocess")
-    supervisor, _ = make_supervisor(backend=backend, max_retry_attempts=1, backoff_seconds=(0.0,))
+    supervisor, publisher = make_supervisor(backend=backend, max_retry_attempts=1, backoff_seconds=(0.0,))
+
+    def evidence():
+        """Bounded lossless fixture evidence, attributed to the actual receipt."""
+        import base64
+        from dataclasses import asdict
+        receipt = control["receipt"]
+        task_id, intent_id = receipt["root_task_id"], receipt["intent_id"]
+        queries = {
+            "task": ("SELECT * FROM tasks WHERE id=?", (task_id,)),
+            "intent": ("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent_id,)),
+            "events": ("SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq", (intent_id,)),
+            "results": ("SELECT * FROM task_results WHERE task_id=? ORDER BY id", (task_id,)),
+            "audit": ("SELECT * FROM audit_log WHERE task_id=? ORDER BY id", (task_id,)),
+        }
+        with org.db._lock:
+            records = {name: [dict(row) for row in org.db.execute(sql, args)]
+                       for name, (sql, args) in queries.items()}
+        records.update(receipt=receipt, prelaunch=control["prelaunch"],
+                       sessions=list(org.sessions.iter_active()), backend_calls=backend.calls,
+                       host_receipts=[asdict(row) for row in publisher.receipts])
+        def encode_bytes(value):
+            if not isinstance(value, bytes):
+                raise TypeError(f"unsupported fixture evidence type: {type(value).__name__}")
+            return {"encoding": "base64", "bytes": len(value),
+                    "data": base64.b64encode(value).decode("ascii")}
+        encoded = json.dumps(records, sort_keys=True, default=encode_bytes, allow_nan=False)
+        assert len(encoded.encode("utf8")) <= 131072, "fixture evidence exceeds lossless diagnostic bound"
+        return encoded
+
+    control["evidence"] = evidence
     org.orchestrator.attach_host_supervisor(supervisor)
     monkeypatch.setattr(org.orchestrator, "_build_executor", lambda provider: Executor())
     loop = asyncio.new_event_loop()
@@ -1852,8 +1892,11 @@ def test_generic_serial_drafts_use_receipt_bound_host_and_real_results(generic_d
         assert task.assigned_agent == author and task.orchestration_step_count == 0
         assert classify_task(org.db, task_id, org_slug="alpha").kind == "draft"
         org.orchestrator.run_step(task_id)
+        print("generic-draft-producer-evidence=" + control["evidence"]())
         intent = dict(org.db.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent_id,)).fetchone())
-        assert intent["state"] == "completed" and intent["task_id"] == task_id
+        assert intent["state"] == "completed" and intent["task_id"] == task_id, control["evidence"]()
+        assert control["prelaunch"][-1] == (task_id, intent["session_id"], intent_id,
+                                           intent["activation_revision"], "claimed")
         assert type(intent["final_result_id"]) is int
         result = org.db.execute("SELECT * FROM task_results WHERE id=?", (intent["final_result_id"],)).fetchone()
         assert result["task_id"] == task_id and result["agent"] == author
@@ -1903,8 +1946,11 @@ def test_generic_missing_host_evidence_preserves_uncertainty(generic_draft_host,
     receipt = response.json()
     control["receipt"] = receipt
     org.orchestrator.run_step(receipt["root_task_id"])
+    print("generic-draft-producer-evidence=" + control["evidence"]())
     intent = dict(org.db.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (receipt["intent_id"],)).fetchone())
-    assert intent["state"] == "uncertain" and intent["host_launch_started"] == 1
+    assert intent["state"] == "uncertain" and intent["host_launch_started"] == 1, control["evidence"]()
+    assert control["prelaunch"] == [(receipt["root_task_id"], intent["session_id"], receipt["intent_id"],
+                                      intent["activation_revision"], "claimed")]
     assert bool(intent["host_execution_id"]) == (gap != "ack")
     assert (intent["final_result_id"] is None) == (gap == "callback")
     assert org.db.get_task(receipt["root_task_id"]).status.value == "in_progress"

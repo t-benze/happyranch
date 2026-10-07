@@ -39,6 +39,15 @@ def _expand_request_schema(model: type[ActivationRequest], branch: int) -> dict[
         return value
 
     expanded = expand(schema)
+    if model is DocumentActivationRequest:
+        # Pydantic emits key regexes as patternProperties, which alone allows
+        # unmatched keys. Keep the key bounds and explicitly constrain every
+        # key, with the same closed value schemas as runtime validation.
+        for name in ("bindings", "eligible_replacements"):
+            role_map = expanded["properties"][name]
+            pattern, value_schema = next(iter(role_map.pop("patternProperties").items()))
+            role_map["propertyNames"]["pattern"] = pattern
+            role_map["additionalProperties"] = value_schema
     # Definitions are inlined at this served request-body location. Mapping
     # strings are JSON pointers too: they must identify those same variants,
     # rather than the removed Pydantic $defs at the document root.

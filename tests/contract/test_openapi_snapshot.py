@@ -360,8 +360,17 @@ def test_activation_openapi_pins_closed_request_and_complete_receipt():
     assert document_request['additionalProperties'] is False
     assert document_request['properties']['format']['const'] == 'workflow-activation-request@2'
     assert set(document_request['required']) == set(request['required']) | {'format'}
-    assert document_request['properties']['bindings']['propertyNames']['pattern'] == '^[a-z][a-z0-9-]*$'
+    for name in ('bindings', 'eligible_replacements'):
+        role_map = document_request['properties'][name]
+        assert role_map['propertyNames'] == {
+            'minLength': 1, 'maxLength': 63, 'pattern': '^[a-z][a-z0-9-]*$',
+        }
+        assert role_map['minProperties'] == 2 and role_map['maxProperties'] == 4
+        assert 'patternProperties' not in role_map
     assert document_request['properties']['bindings']['additionalProperties']['additionalProperties'] is False
+    replacements = document_request['properties']['eligible_replacements']['additionalProperties']
+    assert replacements['type'] == 'array' and replacements['maxItems'] == 16
+    assert replacements['items']['additionalProperties'] is False
     assert request['additionalProperties'] is False
     assert set(request['required']) == {
         'operation_key', 'instance_id', 'expected_activation_revision', 'template',
