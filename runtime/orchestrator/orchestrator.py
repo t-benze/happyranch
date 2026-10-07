@@ -1698,8 +1698,20 @@ class Orchestrator:
                 action="completion_report",
                 payload={**report.model_dump(), **attribution},
             )
+            try:
+                observer = getattr(self, "_memory_collection", None)
+                if observer is not None and type(result_row_id) is int and result_row_id > 0:
+                    observer.reconcile_acceptance(result_row_id)
+            except Exception:
+                logger.debug("memory collection reconciliation unavailable")
             return
         self._audit.log_completion_report(report=report)
+        try:
+            observer = getattr(self, "_memory_collection", None)
+            if observer is not None and type(result_row_id) is int and result_row_id > 0:
+                observer.reconcile_acceptance(result_row_id)
+        except Exception:
+            logger.debug("memory collection reconciliation unavailable")
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

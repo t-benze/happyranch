@@ -1073,13 +1073,21 @@ class AuditLogger:
             ACTIONS, ReportAcquisitionUnavailable, reduce_report,
         )
         cutoff = current_time if current_time is not None else datetime.now(timezone.utc)
+        from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, acquire_collection_report
         try:
             rows = [dict(row) for row in self._db.fetch_all_readonly(
                 "SELECT id, timestamp, agent, task_id, action, payload FROM audit_log"
-                " WHERE action IN (?, ?, ?, ?) ORDER BY id", ACTIONS,
+                " WHERE action IN (?, ?, ?, ?, ?, ?) ORDER BY id", (*ACTIONS, *sorted(CONTROL_ACTIONS)),
             )]
         except Exception as exc:
             raise ReportAcquisitionUnavailable() from exc
+        if any(row["action"] in CONTROL_ACTIONS for row in rows):
+            context = getattr(self._db, "_memory_collection_context", None)
+            if context is None:
+                raise ReportAcquisitionUnavailable()
+            from runtime.infrastructure.memory_telemetry_report import reduce_collection_report
+            tables, view, outputs, cutoff = acquire_collection_report(context, current_time=cutoff)
+            return reduce_collection_report(tables, view, outputs, agent_role_map, cutoff)
         streams = {action: [row for row in rows if row["action"] == action] for action in ACTIONS}
         return reduce_report(
             streams["memory_digest_impression"], streams["memory_read"], streams["memory_search"],

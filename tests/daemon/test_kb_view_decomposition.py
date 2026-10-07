@@ -156,7 +156,13 @@ class Logs(logging.Handler):
 
 
 
+<<<<<<< HEAD
 _PRISTINE_FACADE_SHAPE_SHA256 = "8cdb8fed67823086a9b758a84521bd1d0597a1d2cd3516af6324f22a28f257c1"
+=======
+# Complete facade map includes the approved read_memory_collection_evidence and
+# append_memory_collection_transition APIs; all prior signatures, MRO and exports remain.
+_PRISTINE_FACADE_SHAPE_SHA256 = "21f6c874dab043f064c3214a1ed1e8c409d060fdacd9164c2bc1f2d846451014"
+>>>>>>> origin/main
 
 
 def _prepare(org, case: str):

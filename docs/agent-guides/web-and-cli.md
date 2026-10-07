@@ -779,17 +779,29 @@ the actual serving OrgState. Other action responses remain unchanged. The
 closed source view and loaded identity are defined in the corrective memory
 spec; absent/busy/moving/failed components are explicit unknown/unavailable.
 GET performs no durable writes, resealing, provider launch or backend probe.
-Both epoch refs remain null; the CLI gains no collection authority.
+Epoch references are non-null only after G1 revalidates the original accepted
+boundary and current full health. Missing, damaged, drifting or moving evidence
+withholds those references; reads never append or repair collection state.
 Stored seals checkpoint counters only: `census_integrity` explicitly reports
 `census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
-G1 independent canary/epoch acceptance and current-serving census acceptance
-remain OPEN.
-Read-side G4 acquisition is implemented below; full eligibility reporting and installed health remain OPEN.
+G1 authority additionally reads exact admitted roles/results, original finite
+plan/tasks, owned jobs/full outputs and operation history at stable bookends.
+Its server admission, locked commit and serving checks use the existing
+recorded-retry verifier; matching briefs or paired public audits cannot replace
+raw supersession and invocation records. Synthetic closure includes every
+verified retry and supporting root and must match the complete job-returned
+set. Failed original probes still cannot supply successful canary evidence.
+The seal view checks those bookends before validating the captured census;
+measured movement returns `observation_moving` with null epoch references.
+Independent installed/provider acceptance and operational health remain
+separate from source implementation and source fixtures.
 
 `happyranch memory report` paginates the existing audit read surface but is
-currently fail-closed: JSON and text both return `insufficient_instrumentation`.
+fail-closed without valid G1 authority: JSON and text return
+`insufficient_instrumentation`. Valid authority exposes the original epoch,
+current health and eligible natural report; short samples remain insufficient.
 There is no CLI flag or input that can override the invalid current/unversioned
 epoch. Executor-owned task children receive their runtime session in the private
 `HAPPYRANCH_RUNTIME_SESSION_ID` environment hint, so `memory get`/`search`
@@ -829,16 +841,18 @@ sessions and per-agent/role/memory operation counts remain descriptive. Search
 ratios use distinct persisted, causally corroborated search-sourced read pairs.
 Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
 complete UTC days exclude partial first/current days. Raw day/session sample
-flags may be true; thresholds, diagnostics_valid_for_collection and
-evaluation_candidate remain false, decision `insufficient_instrumentation`.
+flags may be true; without authenticated G1 authority, thresholds,
+diagnostics_valid_for_collection and evaluation_candidate remain false,
+decision `insufficient_instrumentation`. Probe freshness is initial/reset final-
+commit admission only; reports authenticate that original boundary and current
+full health. Equivalent replay never starts another day or renews proof.
 `session_start` records audited intended invocations, never a complete process
-launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
-current-serving census authority. Trusted canary/epoch, census and probe
-health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
-synthetic/natural eligibility claim, authority override or epoch start.
+launch/expectation census. G1 separately revalidates the full G3 census and
+independent accepted probe/epoch evidence before natural eligibility. Report
+reads never start epochs, perform tuning or ranking writes, or override authority.
 The read-side snapshot/two-sweep contract detects observed drift; it adds no
-writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
-and actual shipping/installed canary cases remain separately gated.
+writer fence or hostile same-UID guarantee. Actual installed canary acceptance
+and operational H-v1 duties remain separately gated.
 
 ### PR CI wait / guarded merge entrypoints
 

@@ -31,7 +31,13 @@ from runtime.models import ThreadMessageKind, ThreadRecord
 PIN_TIME = "2026-10-06T05:00:00+00:00"
 AUDIT_TIME = "2026-10-06T05:00:01+00:00"
 OLD_PIN = "2026-01-02T00:00:00+00:00"
+<<<<<<< HEAD
 METHOD_SIGNATURE_SHA256 = "f5b6955282df0923c81197e33a719df4f67c1cc7a94e543c4ab3c22fb85e6e5c"
+=======
+# Complete 563-method inventory: all 561 prior signatures are unchanged;
+# approved memory collection evidence/transition APIs add two signatures.
+METHOD_SIGNATURE_SHA256 = "5de3142410bf4b59c4398d5efd9ddd547b2b0a601dec5e594b5d52833961f329"
+>>>>>>> origin/main
 # Actual protocol4 bytes frozen on pristine61319854 before relocation.
 PRISTINE_PICKLES = (
     "gASVMAAAAAAAAACMH3J1bnRpbWUuaW5mcmFzdHJ1Y3R1cmUuZGF0YWJhc2WUjAhEYXRhYmFzZZSTlC4=",

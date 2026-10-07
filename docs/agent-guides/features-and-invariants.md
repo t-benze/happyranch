@@ -310,7 +310,7 @@ Task bootstrap retains text and item IDs from one actual `MemoryStore.render_mem
 
 After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
 
-The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. This producer does not remove either report guard: backend and CLI stay fail-closed. G1 independent canary/epoch authority and current-serving G3 census acceptance remain OPEN. The observation-only reporting core below supplies read-side G4 acquisition; full eligibility reporting, current-serving census acceptance and installed health remain OPEN. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. Exposure metadata alone leaves both report consumers fail-closed. G1's independent role/job/probe and current-serving census validation is described below; actual installed canary acceptance remains a separate operational gate. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
 
 The source-side G3 observer is attached by real `OrgState` construction before
 workers. One actual `_run_agent` entry reserves an independent boot-local ordinal
@@ -354,42 +354,51 @@ failure preserves ordinary org startup with explicit unavailable observation.
 The seal-action audit GET now supplies an optional closed current-serving
 observation from the actual OrgState, with explicit unavailable/unknown fields,
 paired live counters and bounded loaded/disk/interpreter/registry identities.
-It does not write rows, reseal, reconcile full history or produce an epoch.
+It does not write rows, reseal or produce an epoch. G1 validates complete
+acceptance evidence and current census before projecting existing epoch references.
 Other audit response shapes remain unchanged. The exact response and nested
 identity are specified in the corrective memory spec; a stable empty N0 view
 is descriptive and unaccepted.
 
-This census and its seals are not collection health, installed acceptance or
-epoch authority. The seal-action serving source view is described here. G1
-durable acceptance/B1, both health consumers,
-installed canary/deferred executor/population coverage and full reporting remain
-unimplemented here. Existing backend and canonical CLI guards remain
-`insufficient_instrumentation` with `thresholds_met=false`; no collection/epoch
-transition, deployment, tuning or 48-hour clock starts from this source unit.
+This census and its seals are not independent installed acceptance. G1's
+opt-in `MemoryCollectionV1:` summary protocol authenticates exact admitted
+manager/QA rows, registered roles, prior finite original delegation/command,
+owned terminal job/audits/complete outputs and real ROOT/CHILD operations.
+Only final post-log reconciliation may append an epoch or invalidation; both
+successful result-log arms use their exact persisted result ID. Parseable
+summaries, fixtures, versions or flags cannot establish health.
+The assigned QA must differ from the makers in every preapproved ROOT/CHILD
+slot as well as from the manager; registered worker status alone is insufficient.
+Each original probe task must also remain completed, uncancelled and bound to
+its recorded maker/team. A successful earlier session on a subsequently failed
+probe task cannot provide positive health evidence.
 
-`AuditLogger.compute_memory_telemetry_report` and `happyranch memory report`
-currently report `insufficient_instrumentation`. Current audit rows have no
-production-canary-accepted epoch or complete independently accepted health and
-launch/expectation census. Bounded disposable transport proofs do not establish
-installed acceptance. Counts, elapsed time, manually attributed reads, and
-diagnostic ratios remain observation-only and must never select tuning. The
-earlier guard-only unit did not change get/search, audit rows or ranking; the
-render-observed producer above extends only existing impression JSON and its
-accurate item IDs. Collection has not started. The frozen next-phase measurement definitions are in
-`docs/superpowers/specs/2026-09-11-memory-telemetry-corrective-guard.md`.
-Fail-closed output explicitly marks thresholds as not met and collection as not
-started; malformed diagnostic rows also remain ineligible rather than being
-credited or crashing the report.
-The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
-They acquire `session_start`, impressions, reads and searches before any empty or
-short return. Backend acquisition uses one synchronized SELECT statement snapshot;
-CLI exhausts real `/audit` pages at limit5000 in two complete sweeps and compares
-relevant audit identities/content and `/agents` roles at one aware UTC cutoff.
-Events at or after that cutoff are excluded. Backdated/content/role drift,
-cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
-`acquisition_unavailable`; CLI writes only that category to stderr and exits1,
-with no partial JSON. Unavailable `/agents` stays explicitly unknown and allows
-safe descriptive counts; it never supplies functional cohort authority.
+New initial/reset admission requires each probe age in [0,48h] at the FINAL
+server commit. Reports and equivalent replay authenticate that original age
+against the immutable original commit, while rechecking original evidence and
+CURRENT complete source/import/loaded-code/boot/cohort/profile/path/census.
+Elapsed age alone does not expire an accepted epoch. Replay neither renews nor
+replaces QA; fresh reset requires exact predecessor and fresh independent QA.
+Withdrawal remains possible after stale or unhealthy proof. Damaged, lost,
+ambiguous, partial or moving evidence closes collection with no latest fallback.
+Readers never write, reseal, repair, invalidate or start epochs.
+
+Backend and canonical CLI JSON/text share the report core. G1 acquisition
+exhausts original tasks/results/jobs/audit evidence with stable bookends and
+complete owned outputs; legacy diagnostics still acquire all four memory
+streams and roles before empty/short returns. HTTP/decoder/timeout, cursor or
+SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
+Natural population excludes designated probes/retries, recovery and all
+pre-start invocations, including their late events. D1 remains the later of
+original epoch start and first qualifying natural impression, counting complete
+UTC days only. Valid short samples remain `insufficient_sample`.
+
+Source tests and source publication do not accept a production canary, start
+an official epoch, or fulfill the independently owned durable health check
+within48h AFTER a future accepted production epoch. Missing/late/in-flight/job-
+error receipts leave that duty unfulfilled; only measured health failure closes
+through health predicates. Installed/provider/deferred venues, deployment and
+14-day/500 production follow-through remain separately owned operational gates.
 
 Structural returned-data corruption produces the full empty-metrics error object
 (null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
@@ -408,16 +417,24 @@ sessions and per-agent/role/memory operation counts remain descriptive. Search
 ratios use distinct persisted, causally corroborated search-sourced read pairs.
 Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
 complete UTC days exclude partial first/current days. Raw day/session sample
-flags may be true; thresholds, diagnostics_valid_for_collection and
-evaluation_candidate remain false, decision `insufficient_instrumentation`.
+flags may be true; without valid G1 authority, thresholds,
+diagnostics_valid_for_collection and evaluation_candidate remain false,
+decision `insufficient_instrumentation`. With valid authority, retain14 complete
+UTC days AND500 qualifying sessions, per-agent30, aggregate<10% AND strict
+eligible-agent majority, and >25% distinct validated search-read pairs with
+eligible-role>=30-pair corroboration. Zero-pointer agents do not vote. Repeated
+gets retain operation counts while distinct tuple/item pairs own rates.
+Full-body-only natural launches supply zero pointer opportunities; disabled
+launches remain in the intended census. Manual reads and searches retain their
+excluded diagnostics in both consumers after acceptance.
 `session_start` records audited intended invocations, never a complete process
-launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
-current-serving census authority. Trusted canary/epoch, census and probe
-health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
-synthetic/natural eligibility claim, authority override or epoch start.
+launch/expectation census. G1 separately validates the complete G3 census and
+independent original probe/epoch evidence before granting natural eligibility.
+Without that authority, collection health remains unavailable. Report reads
+never start epochs, perform tuning or ranking writes, or override authority.
 The read-side snapshot/two-sweep contract detects observed drift; it adds no
-writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
-and actual shipping/installed canary cases remain separately gated.
+writer fence or hostile same-UID guarantee. Actual installed canary acceptance
+and operational H-v1 duties remain separately gated.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
 Runtime-owned task children automatically forward their actual invocation

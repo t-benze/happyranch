@@ -368,6 +368,7 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
     """Observe a stable full four-stream acquisition at one aware UTC cutoff."""
     from datetime import datetime, timezone
     from runtime.infrastructure.memory_telemetry_report import ACTIONS, ReportAcquisitionUnavailable
+    from runtime.infrastructure.memory_collection import CONTROL_ACTIONS, acquire_http_collection_report
 
     cutoff = datetime.now(timezone.utc)
     try:
@@ -383,6 +384,7 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
         for _ in range(2):
             sweeps.append({action: _paginate(client, org, action) for action in ACTIONS})
             role_maps.append(_fetch_agent_roles(client, org))
+            sweeps[-1].update({action: _paginate(client, org, action) for action in sorted(CONTROL_ACTIONS)})
         if (_report_projection(sweeps[0], cutoff) != _report_projection(sweeps[1], cutoff)
                 or role_maps[0] != role_maps[1]):
             raise ReportAcquisitionUnavailable()
@@ -391,6 +393,10 @@ def cmd_memory_report(args: argparse.Namespace) -> None:
             streams["memory_digest_impression"], streams["memory_read"], streams["memory_search"],
             role_maps[1], cutoff, session_start_rows=streams["session_start"],
         )
+        if any(streams[action] for action in CONTROL_ACTIONS):
+            from runtime.infrastructure.memory_telemetry_report import reduce_collection_report
+            tables, view, outputs, _ = acquire_http_collection_report(client, org, current_time=cutoff)
+            report = reduce_collection_report(tables, view, outputs, role_maps[1], cutoff)
         rendered = json.dumps(report, indent=2, sort_keys=True, allow_nan=False) if args.json else None
     except Exception as exc:
         # Never leak a partial report or provider/decoder exception text.
@@ -418,13 +424,17 @@ def _print_report(report: dict) -> None:
     obs = report.get("observation_period", {})
     print("=== THR-091 Memory Telemetry Report (observation-only) ===")
     print(f"Status: {obs.get('status', 'unknown')}")
-    print("Canary-gated collection has NOT started; epoch is unversioned and invalid.")
+    epoch = report.get("epoch", {})
+    if epoch.get("collection_started"):
+        print(f"Canary-gated collection started: {epoch.get('id')}; audit {epoch.get('audit_id')}; at {epoch.get('started_at')}")
+    else:
+        print("Canary-gated collection has NOT started; epoch is unversioned and invalid.")
     print(f"Data through: {report.get('data_through')}; timezone UTC")
     print(f"First event: {obs.get('first_impression_at')}")
     print(f"Days elapsed: {obs.get('days_elapsed', 0)} / {obs.get('required_days', 14)}")
     print(f"Sessions: {obs.get('total_correlated_sessions', 0)} / {obs.get('required_sessions', 500)}")
-    print("Thresholds:    NOT MET")
-    print("Population: audited intended task-session invocations; complete launch census UNKNOWN")
+    print("Thresholds:    " + ("MET" if obs.get("thresholds_met") else "NOT MET"))
+    print("Population: audited intended task-session invocations; complete launch census " + str(report.get("instrumentation_health", {}).get("complete_launch_census", "UNKNOWN")))
     for label, rows in (("AGGREGATE", {"all": report.get("aggregate", {})}),
                         ("BY AGENT", report.get("by_agent", {})), ("BY ROLE", report.get("by_role", {}))):
         print(label)

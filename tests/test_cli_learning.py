@@ -478,7 +478,13 @@ def _report_clock(monkeypatch):
 
 
 def test_memory_report_single_page_four_stream_acquisition_and_guarded_status(monkeypatch, capsys, tmp_path):
-    """Acquire one page per stream in two sweeps; render guarded status/counts."""
+    """Acquire telemetry and both authority controls twice; stay closed without controls.
+
+    INLINE v24: observes canonical request coverage and guarded text. Omitting
+    either control stream could conceal an invalidation or epoch. Nearest
+    populated parity test checks metrics, not exact authority acquisition.
+    No production test seam; Database queries implement the HTTP test client.
+    """
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
     now = _report_clock(monkeypatch)
@@ -502,7 +508,8 @@ def test_memory_report_single_page_four_stream_acquisition_and_guarded_status(mo
     monkeypatch.setattr("cli.commands.learning.OpcClient.from_env", lambda: Client())
     cmd_memory_report(Namespace(org="o", json=False))
     assert calls == [(action, 5000, None) for _ in range(2) for action in
-                     ("session_start", "memory_digest_impression", "memory_read", "memory_search")]
+                     ("session_start", "memory_digest_impression", "memory_read", "memory_search",
+                      "memory_collection_epoch_started", "memory_collection_invalidated")]
     rendered = capsys.readouterr().out
     assert "DECISION: insufficient_instrumentation" in rendered
     assert "unversioned and invalid" in rendered
@@ -695,7 +702,14 @@ def test_memory_report_real_database_empty_and_short_populations_stay_guarded(
 def test_memory_report_single_page_returned_corruption_backend_cli_parity(
     monkeypatch, capsys, tmp_path, action, payload, timestamp,
 ):
-    """Returned corruption in501 rows fits one page; both consumers clear metrics."""
+    """Returned corruption in501 rows fits one page; both consumers clear metrics.
+
+    INLINE v24, all four variants: observes full JSON equality, guarded text
+    and complete telemetry/control acquisition. Omitting invalidation reads
+    or reducing corrupt rows to partial metrics is a credible regression.
+    The single-page acquisition owner does not own corrupted501-row parity.
+    No production test seam; real persisted audit rows serve every request.
+    """
     _report_clock(monkeypatch)
     from argparse import Namespace
     from cli.commands.learning import cmd_memory_report
@@ -761,7 +775,8 @@ def test_memory_report_single_page_returned_corruption_backend_cli_parity(
     assert calls == [
         (event, cursor)
         for _ in range(4)
-        for event in ("session_start", "memory_digest_impression", "memory_read", "memory_search")
+        for event in ("session_start", "memory_digest_impression", "memory_read", "memory_search",
+                      "memory_collection_epoch_started", "memory_collection_invalidated")
         for cursor in (None,)
     ]
 
