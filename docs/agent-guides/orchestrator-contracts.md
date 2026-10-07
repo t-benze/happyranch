@@ -639,6 +639,22 @@ in `tests/authority_v2_historical_schema.py` remain real migration-path test
 support; organic `ADD COLUMN` histories, including `agent_enrollments`, require
 no special acceptance list.
 
+THR-278 adds the nonunique, nonpartial `idx_audit_log_task_id` in the generic
+fresh/upgrade initializer. The legacy v1 independently constructed complete
+schema references include that index; missing or unapproved objects still
+produce full-schema drift. V2 records the index in actual coherent raw and
+inventory digests/count on K/P and remains observed-only. The audit reader
+still uses exact `task_id = ?`, ascending audit ID and the original JSON
+decoder, preserving literal task/config/thread/artifact scope identities.
+Failed-claim/no-candidate attempts remain discoverable with authenticated
+housekeeping obligations. A present malformed canonical attempt still fails
+whole discovery closed, exact-target/startup returns remain unavailable, and
+the accepted-recovery, PID-failure and ordinary Pending sweep branches stay
+fenced; workflow-owned recovery retains its earlier independent ordering.
+Offline scan timings do not establish live readiness or attribute the separately
+unassigned post-discovery interval. Runtime installation/health verification
+and compatible-code rollback are documented in the runtime guide.
+
 Checkpoint C3b lands the durable v2 candidate/pin claim and the SEPARATE
 claim-audit stages. The Database owns synchronization and the transaction
 boundary and adds exactly three additive tables: `authority_policy_v2_candidates`

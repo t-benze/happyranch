@@ -48,6 +48,16 @@ HappyRanch is an org-agnostic runtime for operating a multi-agent organization s
 
 Keep this file short. It is loaded at the start of every Claude Code session. Detailed reference lives in `docs/agent-guides/`; read only the guide that matches the files you are touching.
 
+**Task-scoped audit lookup (THR-278).** Generic `Database` initialization installs
+the nonunique, nonpartial `idx_audit_log_task_id` on `audit_log(task_id)` for fresh
+and existing databases. Literal task/config/thread/artifact scope values, audit
+IDs, payload decoding and ascending-ID results remain unchanged. The index is
+included in independent complete legacy v1 schema references and actual
+observed-only v2 schema diagnostics. Failed-claim residue and malformed-attempt
+startup fences retain their existing behavior. Source delivery, installed
+schema, live startup timing and reviewer settings are separate evidence;
+installation and compatible-code rollback guidance is in the runtime guide.
+
 ## Read When Touching
 
 | Surface | Read |

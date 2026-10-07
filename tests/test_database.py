@@ -1405,6 +1405,36 @@ def test_insert_audit_log(db):
     assert logs[0]["action"] == "session_start"
 
 
+def test_task_audit_reader_preserves_literal_scopes_full_rows_and_id_order(db):
+    scopes = ["TASK-9", "TASK-90", "TASK-9-extra", "config:working_hours",
+              "THR-9", "thread:THR-9", "artifact:asset-9", "TASK-9"]
+    payloads = [None, "", "null", "{}", "[1,true]", "7", '"text"', '{ "n" : 9 }']
+    decoded = [None, "", None, {}, [1, True], 7, "text", {"n": 9}]
+    expected = []
+    raw = []
+    for n, (scope, payload, value) in enumerate(zip(scopes, payloads, decoded), 1):
+        timestamp = f"2026-01-{20-n:02}T00:00:00Z"
+        row = (n, scope, "dev_agent", "same", payload, timestamp)
+        raw.append(row)
+        db._conn.execute("INSERT INTO audit_log(id,task_id,agent,action,payload,timestamp) VALUES (?,?,?,?,?,?)", row)
+        expected.append({"id": n, "task_id": scope, "agent": "dev_agent", "action": "same",
+                         "payload": value, "timestamp": timestamp})
+    db.commit()
+    for scope in dict.fromkeys([*scopes, "missing"]):
+        assert db.get_audit_logs(scope) == [r for r in expected if r["task_id"] == scope]
+    assert [tuple(r) for r in db._conn.execute("SELECT * FROM audit_log ORDER BY id")] == raw
+
+
+def test_task_audit_reader_raises_on_malformed_nonempty_payload(db):
+    import json
+    db._conn.execute("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES (?,?,?,?,?)",
+                     ("TASK-bad", "dev_agent", "other", "{broken", "2026-01-01T00:00:00Z"))
+    db.commit()
+    with pytest.raises(json.JSONDecodeError):
+        db.get_audit_logs("TASK-bad")
+    assert db._conn.execute("SELECT payload FROM audit_log WHERE task_id='TASK-bad'").fetchone()[0] == "{broken"
+
+
 def test_insert_task_result(db):
     db.insert_task_result(
         task_id="TASK-001",
