@@ -31,6 +31,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+tmp_path_retention_policy = "failed"
 addopts = "-m 'not integration'"
 markers = [
     "integration: end-to-end tests that spawn a real daemon",
