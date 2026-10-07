@@ -503,9 +503,15 @@ def _compatibility(order: str, owned: Path) -> tuple[dict, dict]:
         "shape_sha256": hashlib.sha256(_json(shape)).hexdigest(), "owners": owners, "identities": identities,
         "loaded_from_root": all((root / path).is_file() for path in loaded.values()),
     }
+    from tests.daemon.test_thread_decline_decomposition import _expected_facade, _PRISTINE_FACADE
+
+    pristine_shape = {name: _PRISTINE_FACADE[name] for name in ("members", "mro", "types")}
+    assert hashlib.sha256(_json(pristine_shape)).hexdigest() == _PRISTINE_SHAPE_SHA256
+    expected_facade = _expected_facade()
+    expected_shape = {name: expected_facade[name] for name in ("members", "mro", "types")}
     expected_owner = "DreamsMixin" if "update_dream_kb_candidate" in vars(dreams.DreamsMixin) else "Database"
     expected["compatibility"] = {
-        "shape_sha256": _PRISTINE_SHAPE_SHA256, "owners": [expected_owner],
+        "shape_sha256": hashlib.sha256(_json(expected_shape)).hexdigest(), "owners": [expected_owner],
         "identities": {"Database": True, "DreamsMixin": True, "_synchronized": True,
                        "models": {name: True for name in identities["models"]}}, "loaded_from_root": True,
     }
