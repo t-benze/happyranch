@@ -784,6 +784,17 @@ uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integra
 uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable only
 ```
 
+Direct pytest uses `tmp_path_retention_policy = "failed"`: passing `tmp_path`
+and `tmpdir` fixture directories are removed best effort; ordinary failed-call
+diagnostics are retained. This does not cover arbitrary tempfile writes or
+guarantee retention after setup/teardown errors or interrupts. Use the frozen
+uv environment (currently pytest 9.0.3); the option requires pytest 7.3+, while
+the declared `pytest>=7.0` range also admits unsupported 7.0–7.2. See
+[pytest scratch scope and limits](../local-ci.md#per-run-pytest-scratch-lifecycle)
+for factory directories, explicit basetemp, version compatibility and cleanup
+limits. Full unit selections containing real daemon/socket tests also belong
+in the documented disposable CI venue.
+
 Integration tests run real production orchestration with deterministic external
 CLI stubs in disposable GitHub runners or a separately authorized Mac Linux guest.
 The test parent is sanitized before pytest/runtime imports, with temporary homes,
