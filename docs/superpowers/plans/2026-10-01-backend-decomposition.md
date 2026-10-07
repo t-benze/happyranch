@@ -803,6 +803,50 @@ gates; composition, guarded merge and six main checks remain manager-owned.
 Integration including followup E2E is SKIPPED Founder THR-243 seq42, never PASS.
 No whole S2/program/feature completion, deployment or live activation follows.
 
+## S6 legacy invocation decline ownership (TASK-9981, OPEN)
+
+Under TASK-9785 and Founder THR-273 seq37/45/80, move only
+`Database.mark_invocation_declined` into existing `ThreadsMixin`, immediately
+before `get_pending_invocation`: original decorated lines1817–1832 at
+`e2780012fcba9bb0e995772f11cf1a86316485f6`, 16 lines/642 bytes, SHA256
+`a62af1f05067050487e1db00bda94598ca629a59f640464c42c0b5a5dd6032de`.
+SQL, commit, rowcount, defaults, annotations, decorator and retained bytes stay
+unchanged; no production import is added. Existing `_now` resolves the late
+facade clock, and shared `_synchronized` retains the same instance connection,
+native RLock, whole facade `_time`, logger and finally behavior. Natural
+method metadata follows the move without repair; old Database patches remain.
+
+TASK-9785 step32 accepted TASK-9977/S6-DECLINE/C1–C4/revision2 after independent
+TASK-9979 DESIGN-ONLY PASS. The forward-only test adds fifteen finite shipping
+parameters: six legacy/bootstrap/followup text/null declines with second-request
+outer refusal; whitespace; genuine inner CAS miss; facade-clock and real SQLite
+UPDATE faults; old-class patch/late clock, causal held native lock, whole-clock
+warning; and both fresh import orders. The inner CAS case uses unchanged public
+`fail_invocation` on the same token, with separate pending-predicate and zero-row
+false-success controls. Held-lock observation witnesses the actual selected
+acquire attempt or same-connection commit/return before the held durable read.
+Complete original-source HTTP/readers/persistence/audit/SSE/queue/files/cleanup
+frames and facade/OpenAPI proofs preserve NULL versus empty reason and failed
+evidence. Design PASS supplies no executable QA or release gate.
+
+Database2139→2123 and threads917→934; all26 landed foundations and steps1–4,
+R5 TWO122 moved/TWO288 retained, FOUR readers78, pin18/archive13/KBview19/
+updater25 remain. Retained `fail_invocation`, other invocation families, route
+validation/modern settlement, CLI/browser and shared owners are not extracted.
+The CLI `resp['seq']` mismatch remains an unchanged static risk. R1/R3/logger,
+PR682 ELEVEN R2/R4R6/completion-chain-carrier-parent-fanout-followup, PR684
+attachment insertion AND enqueue/revisit/admission, PR840 result admission and
+PR541 skill validation stay HELD/owned. Formatter F8 remains STOP/RETAIN, not
+full17 PASS. Shared owners require fresh manager composition; selected-source
+equality never clears caller overlap, and M/E replan remains deferred.
+
+This unit remains OPEN. Independent full-original-base code review APPROVE,
+then executable QA PASS, clean final-head durable local CI, four exact-head
+hosted pull_request successes and distinct actual hosted Codex callback remain
+required. Every push renews gates; guarded merge and six main checks belong to
+the manager. Integration including followup E2E is SKIPPED under Founder
+THR-243 seq42, never PASS. No whole S6/program/feature completion or deployment.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target
