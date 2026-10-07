@@ -364,7 +364,7 @@ if [ "$workload_status" -eq 0 ]; then
   bounded 2300 60 python scripts/run_bounded_output.py \\
     --output /workspace/artifacts/integration.log \\
     --max-bytes 1048576 \\
-    -- uv run pytest tests/ -v -m integration \\
+    -- uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration \\
       --basetemp=/tmp/happyranch-pytest \\
       -p no:cacheprovider \\
       --junitxml=/workspace/artifacts/integration.xml

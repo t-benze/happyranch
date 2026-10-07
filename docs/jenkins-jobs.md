@@ -197,8 +197,17 @@ tree digests (excluding Git metadata and bytecode caches) must match.
 Inside the VM the command mirrors the hosted nightly seam:
 
 ~~~text
-python scripts/run_bounded_output.py --output /workspace/artifacts/integration.log --max-bytes 1048576 -- uv run pytest tests/ -v -m integration --basetemp=/tmp/happyranch-pytest -p no:cacheprovider --junitxml=/workspace/artifacts/integration.xml
+python scripts/run_bounded_output.py --output /workspace/artifacts/integration.log --max-bytes 1048576 -- uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration --basetemp=/tmp/happyranch-pytest -p no:cacheprovider --junitxml=/workspace/artifacts/integration.xml
 ~~~
+
+The definition-owned runner explicitly names the committed source parent inside
+the bounded-output wrapper. The guest's direct `uv run pytest` prefix handling
+does not inspect nested child argv. The parent requires a clean committed source
+and creates the closed temporary environment and authenticated deterministic
+stubs before pytest/conftest collection. A missing parent fails visibly; direct
+integration collection without the parent retains the conftest refusal. The
+wrapper preserves pytest's selection, arguments, status and 1 MiB log tail;
+the guest retains the shared 2,300-second ceiling and 60-second reserve below.
 
 After frozen sync, a bounded `ip -4 -o addr show` probe uses the unchanged
 shipping address validator and a real ephemeral bind. Its receipt distinguishes
@@ -286,16 +295,26 @@ it is never extra allowance after setup. macOS has no GNU
 `timeout`; all host-side bounds are Python subprocess deadlines and do not leave
 watchdog children holding Jenkins pipes open.
 
-Safe shipping-boundary unit verification is
+Focused shipping-boundary verification in an authorized disposable runner is
 `uv run python -m pytest tests/scripts/test_jenkins_mac_integration.py tests/scripts/test_jenkins_mac_guest.py -v -m 'not integration'`.
-These use synthetic owned self-expiring children and private SQLite fixtures,
-never integration collection or a HappyRanch daemon. Clean committed-head
-`scripts/local_ci.sh all` runs through a finite durable task-owned job under
-Python 3.14/Node 24 before publication. Actual old-pin IPv4/full-suite results
-remain NOT RUN until the parent-owned post-merge disposable run at
-`ebaf6139ef14e67efae841ab2048b91f69b20096` under THR-211 seq342. Systemd/dbus,
-user-manager setup, backend probes and the 28 systemd skips remain HELD/UNTESTED
-for the next capability unit. This first PR is not overall TASK-9558 completion.
+These include actual emitted wrapper/committed-parent invocation, harmless real
+pytest/conftest success and refusal cases, exit/log limits, owned self-expiring
+children and private SQLite fixtures. The stub-only launch control establishes
+argv/environment/exit composition; it is distinct from real pytest execution.
+The complete focused command includes socket cases and integration collection
+in child processes, so it must never run on the live Linux daemon host, even
+through a job. On-host checks are restricted to demonstrably pure offline units.
+Clean committed-head `scripts/local_ci.sh all` runs in the existing manually
+dispatched `.github/workflows/nightly-integration.yml` Python 3.14/Node 24 lane.
+Use finite durable task-owned observation and authenticate the workflow head,
+job, command exit and artifacts; required PR CI remains independent. The nightly
+integration lane's natural failure or skips are separate adverse evidence.
+
+Historical first-PR capability observation: IPv4/full-suite results at old pin
+`ebaf6139ef14e67efae841ab2048b91f69b20096` were NOT RUN pending the
+parent-owned post-merge disposable run under THR-211 seq342; that PR did not
+complete TASK-9558. Systemd/dbus, user-manager setup, backend probes and the
+28 systemd gaps remain HELD/UNTESTED for the separately authorized capability unit.
 
 ### Create and run after merge
 
