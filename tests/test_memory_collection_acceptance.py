@@ -393,9 +393,91 @@ from pathlib import Path
 from cli.client.client import OpcClient
 from runtime.infrastructure.memory_collection import COLLECTION_TAG, HEALTH_DEFINITION_SHA256, _hash_metadata, parse_acceptance
 config = json.loads(Path(os.environ['G1_SOURCE_CONFIG']).read_text())
+if config['mode'] == 'natural-boundaries':
+    # SOURCE diagnostics only. Preserve the actual commands, streams, exits and
+    # launch intervals without changing subprocess arguments or outcomes.
+    import atexit, traceback
+    diagnostic_base = Path(os.environ['G1_SOURCE_CONFIG'] + '.' + os.environ['HAPPYRANCH_RUNTIME_SESSION_ID'])
+    diagnostic = {'session_id':os.environ['HAPPYRANCH_RUNTIME_SESSION_ID'],
+        'argv':sys.argv,'cwd':str(Path.cwd()),'python':sys.executable,
+        'version':sys.version,'started_ns':time.monotonic_ns(),'commands':[]}
+    diagnostic_stderr = sys.stderr
+    def recorder_error(exc):
+        message='SOURCE recorder failure: '+repr(exc)+'\n'
+        try:
+            diagnostic_stderr.write(message)
+            diagnostic_stderr.flush()
+        except Exception:
+            pass
+        # Retain the recorder's own error without recursing through SourceTee.
+        try:
+            stream_file=getattr(sys.stderr,'file',None)
+            if stream_file is not None:
+                stream_file.write(message)
+                stream_file.flush()
+            with Path(str(diagnostic_base)+'.recorder-error').open('a') as errors:
+                errors.write(message)
+        except Exception:
+            pass  # The real stderr above still reports this diagnostic loss.
+    class SourceTee:
+        def __init__(self, stream, suffix):
+            self.stream = stream
+            self.file = None
+            try:
+                self.file = Path(str(diagnostic_base) + suffix).open('w')
+            except Exception as exc:
+                recorder_error(exc)
+        def write(self, text):
+            try:
+                if self.file is not None:
+                    self.file.write(text)
+                    self.file.flush()
+            except Exception as exc:
+                recorder_error(exc)
+            return self.stream.write(text)
+        def flush(self):
+            try:
+                if self.file is not None:
+                    self.file.flush()
+            except Exception as exc:
+                recorder_error(exc)
+            self.stream.flush()
+    sys.stdout = SourceTee(sys.stdout, '.stdout')
+    sys.stderr = SourceTee(sys.stderr, '.stderr')
+    def save_diagnostic():
+        try:
+            Path(str(diagnostic_base) + '.provider.json').write_text(json.dumps(diagnostic,sort_keys=True,default=str))
+        except Exception as exc:
+            recorder_error(exc)
+    original_run = subprocess.run
+    def source_run(*args, **kwargs):
+        command = {'argv':args[0] if args else kwargs['args'], 'started_ns':time.monotonic_ns(),
+                   'cwd':str(kwargs.get('cwd',Path.cwd())), 'timeout':kwargs.get('timeout')}
+        diagnostic['commands'].append(command)
+        save_diagnostic()
+        try:
+            completed = original_run(*args, **kwargs)
+        except BaseException as exc:
+            command.update(ended_ns=time.monotonic_ns(),exception=traceback.format_exc(),
+                           stdout=getattr(exc,'stdout',None),stderr=getattr(exc,'stderr',None))
+            save_diagnostic()
+            raise
+        command.update(ended_ns=time.monotonic_ns(),exit=completed.returncode,
+                       stdout=completed.stdout,stderr=completed.stderr)
+        save_diagnostic()
+        return completed
+    subprocess.run = source_run
+    def finish_diagnostic():
+        diagnostic['ended_ns'] = time.monotonic_ns()
+        save_diagnostic()
+    atexit.register(finish_diagnostic)
+    save_diagnostic()
 prompt = sys.stdin.read()
 task_id = re.search(r'task_id: (TASK-[0-9]+)', prompt).group(1)
 sid = os.environ['HAPPYRANCH_RUNTIME_SESSION_ID']
+if config['mode'] == 'natural-boundaries':
+    diagnostic['task_id'] = task_id
+    save_diagnostic()
 client = OpcClient.from_env()
 base = '/api/v1/orgs/alpha/'
 def get(path, **params):
@@ -611,9 +693,109 @@ print('source provider completed')
 '''
 
 
+def _g1_source_failure_receipts(org, created, scenario, phase):
+    """Retain SOURCE receipts; emit only failed tasks, without stream caps.
+
+    v24: the two natural-boundary owners and two diagnostic owners observe
+    complete attributable failure logs. Dropping emission loses hosted evidence;
+    existing completion predicates and ephemeral files do not own that contract.
+    No production hook or positive outcome is supplied.
+    """
+    import os
+    from pathlib import Path
+
+    config_path=Path(os.environ['G1_SOURCE_CONFIG'])
+    def read(path, *, structured=False):
+        try:
+            raw=path.read_text()
+        except FileNotFoundError:
+            return {'state':'missing','path':str(path)}
+        except Exception as exc:
+            return {'state':'unavailable','path':str(path),'exception':repr(exc)}
+        if not structured:
+            return {'state':'recorded','text':raw}
+        try:
+            value=json.loads(raw)
+            if not isinstance(value,dict):
+                raise ValueError('receipt is not an object')
+            return {'state':'recorded','value':value}
+        except Exception as exc:
+            return {'state':'malformed','path':str(path),'raw':raw,'exception':repr(exc)}
+    def attributed(record, tid, sid):
+        if record['state']=='recorded' and (
+                record['value'].get('task_id')!=tid or record['value'].get('session_id')!=sid):
+            return {'state':'identity_mismatch','observed_task_id':record['value'].get('task_id'),
+                    'observed_session_id':record['value'].get('session_id')}
+        return record
+
+    receipts=[]
+    for tid in created:
+        try:
+            task=org.db.get_task(tid)
+            row=task.model_dump(mode='json') if task is not None else None
+            sid=task.current_session_id if task is not None else None
+            results=org.db.get_task_results(tid)
+            base=Path(str(config_path)+'.'+str(sid))
+            provider=attributed(read(Path(str(base)+'.provider.json'),structured=True),tid,sid)
+            executor=attributed(read(config_path.parent/((sid or tid)+'.executor.json'),structured=True),tid,sid)
+            commands=provider.get('value',{}).get('commands')
+            callback_commands=[c for c in (commands or []) if isinstance(c,dict)
+                and isinstance(c.get('argv'),list) and 'report-completion' in c['argv']]
+            callback_command=callback_commands[-1] if callback_commands else None
+            # Only this real session's persisted results can demonstrate admission.
+            callback_results=[r for r in results if sid is not None and r.get('session_id')==sid
+                              and r.get('agent')==(row or {}).get('assigned_agent')]
+            callback_payload=read(config_path.parent/'daemon'/((sid or tid)+'.completion.json'),structured=True)
+            if callback_payload['state']=='recorded':
+                callback_payload=attributed(callback_payload,tid,sid)
+            receipt={'finding':'SOURCE task/provider failure receipts','scenario':scenario,'phase':phase,
+                'task_id':tid,'session_id':sid,'task':row,'results':results,
+                'results_state':'recorded' if results else 'missing',
+                'executor':executor,'provider':provider,
+                'commands_state':'recorded' if isinstance(commands,list) and commands else 'missing',
+                'commands':commands,'provider_stdout':read(Path(str(base)+'.stdout')),
+                'provider_stderr':read(Path(str(base)+'.stderr')),
+                'provider_error':read(Path(str(base)+'.error')),
+                'provider_recorder_error':read(Path(str(base)+'.recorder-error')),
+                'provider_missing_fields':[key for key in ('argv','started_ns','ended_ns','commands')
+                    if key not in provider.get('value',{})],
+                'executor_outcome':('raised' if executor.get('value',{}).get('exception') else
+                    'returned' if isinstance(executor.get('value',{}).get('result'),dict) else 'missing'),
+                'parsed_report':executor.get('value',{}).get('report'),
+                'actual_callback':{'state':'persisted' if callback_results else 'missing',
+                    'results':callback_results,'command':callback_command,'payload':callback_payload}}
+        except Exception as exc:
+            receipt={'finding':'SOURCE recorder failure','task_id':tid,
+                     'exception':repr(exc),'task':None}
+        receipts.append(receipt)
+        if receipt.get('task') is None or receipt['task']['status']!='completed':
+            print(json.dumps(receipt,sort_keys=True,default=str))
+    try:
+        (config_path.parent/(scenario+'-'+phase+'.source-diagnostics.json')).write_text(
+            json.dumps({'scenario':scenario,'phase':phase,'receipts':receipts},sort_keys=True,default=str))
+    except Exception as exc:
+        print(json.dumps({'finding':'SOURCE recorder failure','scenario':scenario,
+                          'phase':phase,'exception':repr(exc)}))
+    return receipts
+
+
 @pytest.fixture
 def g1_source_org(test_settings, monkeypatch, tmp_path, request):
-    """Disposable actual queue/callback/job source chain; no live authority."""
+    """Disposable actual queue/callback/job source chain; no live authority.
+
+    INLINE v24 diagnostic fixture consumers:
+    test_real_accepted_epoch_retrieval_role_and_pair_boundaries (both cases) and
+    test_real_natural_sample_agent_and_majority_boundaries (all scenarios).
+    1. Observe actual ExecutorResult and parsed callback alongside the existing
+       task/result/session/whole-report assertions, retaining provider failure.
+    2. A failed provider or absent callback still fails each existing owner;
+       the recorder calls the real producer and returns its unchanged answer.
+    3. Existing provider .error files capture exceptions, but not actual
+       ExecutorResult returncode/failure category or the admitted callback.
+    4. No production seam; only a scoped test-side reporting wrapper for the
+       natural-boundaries fixture parameter. No positive result is supplied.
+       Failed-command and missing-callback owners exercise this recorder.
+    """
     import asyncio
     import os
     import shlex
@@ -682,12 +864,51 @@ def g1_source_org(test_settings, monkeypatch, tmp_path, request):
     (root/'org'/'config.yaml').write_text(f'memory_digest_budget: {budget}\n')
     provider=tmp_path/'claude'
     import textwrap
-    provider.write_text('#!'+sys.executable+'\nimport os, traceback\nfrom pathlib import Path\ntry:\n'+textwrap.indent(_G1_PROVIDER,'    ')+'\nexcept BaseException:\n    Path(os.environ["G1_SOURCE_CONFIG"]+"."+os.environ.get("HAPPYRANCH_RUNTIME_SESSION_ID", "unknown")+".error").write_text(traceback.format_exc())\n    raise\n')
+    provider.write_text('#!'+sys.executable+'\nimport os, traceback\nfrom pathlib import Path\ntry:\n'+textwrap.indent(_G1_PROVIDER,'    ')+'\nexcept BaseException:\n    original_exception=traceback.format_exc()\n    try:\n        Path(os.environ["G1_SOURCE_CONFIG"]+"."+os.environ.get("HAPPYRANCH_RUNTIME_SESSION_ID", "unknown")+".error").write_text(original_exception)\n    except Exception as recorder_exc:\n        import sys\n        print("SOURCE recorder failure: "+repr(recorder_exc),file=sys.stderr)\n    raise\n')
     provider.chmod(0o755)
     set_binary('claude',str(provider))
     if multipath:set_binary('codex',str(provider))
     state=DaemonState.from_runtime(runtime,test_settings)
     org=state.orgs['alpha']
+    if getattr(request,'param',None)=='natural-boundaries':
+        # Reporting only: observe the real returned provider result/callback,
+        # without supplying or changing either half of the producer outcome.
+        import dataclasses
+        import traceback
+        original_run_agent=org.orchestrator._run_agent
+        def recorded_run_agent(*args, **kwargs):
+            tid=args[0] if args else kwargs['task_id']
+            def record(sid, payload):
+                try:
+                    (tmp_path/(sid+'.executor.json')).write_text(json.dumps(
+                        {'task_id':tid,'session_id':sid,**payload},sort_keys=True,default=str))
+                except Exception as exc:
+                    # Recorder loss cannot replace the actual return/exception.
+                    import sys
+                    print(json.dumps({'finding':'SOURCE recorder failure','task_id':tid,
+                        'session_id':sid,'exception':repr(exc)}),file=sys.stderr)
+            try:
+                answer=original_run_agent(*args, **kwargs)
+            except BaseException:
+                exception=traceback.format_exc()
+                try:
+                    task=org.db.get_task(tid)
+                    sid=task.current_session_id if task is not None else None
+                    record(sid or tid, {'session_id':sid,'exception':exception,
+                                       'result':None,'report':None})
+                except Exception as recorder_exc:
+                    import sys
+                    print('SOURCE recorder failure: '+repr(recorder_exc),file=sys.stderr)
+                raise
+            try:
+                result,report=answer
+                record(result.session_id, {'result':dataclasses.asdict(result),
+                    'report':report.model_dump(mode='json') if report is not None else None})
+            except Exception as recorder_exc:
+                import sys
+                print('SOURCE recorder failure: '+repr(recorder_exc),file=sys.stderr)
+            return answer
+        monkeypatch.setattr(org.orchestrator,'_run_agent',recorded_run_agent)
     # Use the documented legacy path, whose actual executor/Popen remains real.
     org.orchestrator.attach_host_supervisor(None)
     slot={'path':'claude:legacy:none','root':{'agent':'dev_agent','team':'engineering','brief':json.dumps({'probe':'root'},sort_keys=True,separators=(',',':'))},
@@ -1709,6 +1930,7 @@ def test_real_natural_sample_agent_and_majority_boundaries(g1_source_org,monkeyp
             created.append(response.json()['task_id'])
         asyncio.run_coroutine_threadsafe(org.orchestrator._queue._queue.join(),org.orchestrator._main_loop).result(timeout=1500)
         assert len(set(created))==population
+        _g1_source_failure_receipts(org,created,scenario,str(population))
         assert all(org.db.get_task(tid).status.value=='completed' for tid in created)
         impressions=[row for row in org.db.get_audit_logs_by_action('memory_digest_impression') if row['task_id'] in created]
         assert len(impressions)==population
@@ -2871,6 +3093,213 @@ def test_canonical_epoch_acquisition_error_never_flushes_partial_report(g1_sourc
     assert org.db.get_audit_logs_by_action('memory_collection_epoch_started')==[epoch]
 
 @pytest.mark.parametrize('g1_source_org',['natural-boundaries'],indirect=True)
+@pytest.mark.parametrize('fault',['command-failure','command-exception'])
+def test_natural_source_failed_command_receipts(g1_source_org,tmp_path,capsys,fault):
+    """v24, both cases: observe full pytest failure stdout for a real failed
+    natural-source task/session/result and command. Removing emission loses
+    those receipts while completion stays failed. Natural500 owners only assert
+    completion and cannot retain a known negative's complete hosted log. No
+    production hook: faults change only this disposable external provider/CLI.
+    """
+    import asyncio
+    import os
+    import sys
+    from pathlib import Path
+
+    org,client,_=g1_source_org
+    provider=tmp_path/'claude'
+    original=provider.read_bytes()
+    config_path=Path(os.environ['G1_SOURCE_CONFIG'])
+    real_cli=str(Path(sys.executable).parent/'happyranch')
+    negative_cli=tmp_path/'negative-cli'
+    actual=tmp_path/'actual-subprocess.json'
+    if fault=='command-failure':
+        # A real canonical missing-memory failure, with long distinct streams
+        # that would be lost by an ExecutorResult tail or an abbreviated log.
+        negative_cli.write_text('#!'+sys.executable+'\n'+
+            'import json, subprocess, sys\nfrom pathlib import Path\n'+
+            'argv='+repr([real_cli])+"+sys.argv[1:]\nargv[-2]='MEM-404'\n"+
+            'answer=subprocess.run(argv,capture_output=True,text=True,timeout=10)\n'+
+            "out='DIAGNOSTIC-STDOUT-BEGIN\\n'+'o'*12000+'\\n'+answer.stdout\n"+
+            "err='DIAGNOSTIC-STDERR-BEGIN\\n'+'e'*12000+'\\n'+answer.stderr\n"+
+            'Path('+repr(str(actual))+').write_text(json.dumps({"argv":argv,"stdout":out,"stderr":err,"exit":answer.returncode}))\n'+
+            'sys.stdout.write(out)\nsys.stderr.write(err)\nraise SystemExit(answer.returncode)\n')
+        negative_cli.chmod(0o755)
+    # command-exception deliberately names an absent executable, producing an
+    # actual FileNotFoundError rather than a synthesized ExecutorResult.
+    provider.write_text(original.decode().replace(
+        "cli = str(Path(sys.executable).parent / 'happyranch')",
+        'cli = '+repr(str(negative_cli))))
+    try:
+        response=client.post('/api/v1/orgs/alpha/tasks',json={'team':'engineering','owner':'dev_agent',
+            'brief':json.dumps({'ordinary_work_item':'diagnostic-negative','memory_read':1})})
+        assert response.status_code==200,response.text
+        tid=response.json()['task_id']
+        asyncio.run_coroutine_threadsafe(org.orchestrator._queue._queue.join(),org.orchestrator._main_loop).result(timeout=30)
+    finally:
+        provider.write_bytes(original)
+    task=org.db.get_task(tid)
+    assert task.status.value=='failed'
+    with pytest.raises(AssertionError):
+        assert all(org.db.get_task(t).status.value=='completed' for t in [tid])
+    capsys.readouterr()
+    _g1_source_failure_receipts(org,[tid],fault,'negative')
+    output=capsys.readouterr().out
+    assert 'SOURCE task/provider failure receipts' in output,('missing attributable failure log',output)
+    receipt=json.loads(output)
+    assert receipt['task_id']==tid and receipt['session_id']==task.current_session_id
+    assert receipt['task']['status']=='failed' and receipt['task']['note']==task.note
+    assert receipt['results']==org.db.get_task_results(tid)
+    assert receipt['executor']['value']['result']['success'] is False
+    assert receipt['executor']['value']['result']['session_id']==task.current_session_id
+    assert receipt['actual_callback']['state']=='missing' and receipt['parsed_report'] is None
+    command=receipt['commands'][-1]
+    assert command['argv']==[str(negative_cli),'memory','get','--org','alpha','--agent','dev_agent','MEM-001','--json']
+    if fault=='command-failure':
+        actual_receipt=json.loads(actual.read_text())
+        assert actual_receipt['exit']!=0
+        assert command['exit']==actual_receipt['exit']
+        assert command['stdout']==actual_receipt['stdout'] and command['stderr']==actual_receipt['stderr']
+        assert 'DIAGNOSTIC-STDOUT-BEGIN' in receipt['provider_error']['text']
+        assert 'DIAGNOSTIC-STDERR-BEGIN' in receipt['provider_stderr']['text']
+    else:
+        assert 'FileNotFoundError' in command['exception']
+        assert command['stdout'] is None and command['stderr'] is None and 'exit' not in command
+        assert 'FileNotFoundError' in receipt['provider_error']['text']
+    assert provider.read_bytes()==original
+
+    # Observe a real successful return/callback through the same recording path;
+    # it produces supporting files and no false failure transcript.
+    response=client.post('/api/v1/orgs/alpha/tasks',json={'team':'engineering','owner':'dev_agent',
+        'brief':'{"ordinary_work_item":"diagnostic-success","memory_read":1}'})
+    assert response.status_code==200,response.text
+    success_id=response.json()['task_id']
+    asyncio.run_coroutine_threadsafe(org.orchestrator._queue._queue.join(),org.orchestrator._main_loop).result(timeout=30)
+    assert org.db.get_task(success_id).status.value=='completed'
+    capsys.readouterr()
+    success=_g1_source_failure_receipts(org,[success_id],fault,'success')[0]
+    assert capsys.readouterr().out==''
+    assert success['executor']['value']['result']['success'] is True
+    assert success['executor']['value']['result']['returncode']==0
+    assert success['parsed_report']['task_id']==success_id
+    assert success['actual_callback']['state']=='persisted'
+    assert success['actual_callback']['payload']['value']['session_id']==success['session_id']
+    assert all(c['exit']==0 for c in success['commands'])
+    assert config_path.is_file()
+
+
+@pytest.mark.parametrize('g1_source_org',['natural-boundaries'],indirect=True)
+@pytest.mark.parametrize('fault',['missing-callback','executor-exception','recorder-error'])
+def test_natural_source_missing_callback_and_exception_receipts(g1_source_org,tmp_path,monkeypatch,capsys,fault):
+    """v24, all cases: full failed task/session evidence distinguishes clean
+    return without callback, actual producer exception, and recorder loss.
+    Removing emission loses that distinction without changing failed tasks.
+    The failed-command owner cannot cover clean exit0 or a pre-Popen exception;
+    natural500 owners have no deliberate missing/partial/foreign receipt case.
+    No production hook: only disposable provider bytes and test-side negatives
+    at the existing launch/receipt-write boundary; no positive is fabricated.
+    """
+    import asyncio
+    import os
+    from pathlib import Path
+
+    org,client,_=g1_source_org
+    provider=tmp_path/'claude'
+    original=provider.read_bytes()
+    provider.write_text(original.decode().replace(
+        "file = Path(os.environ['HAPPYRANCH_DAEMON_HOME'])/(sid+'.completion.json')",
+        "if brief.get('ordinary_work_item')=='diagnostic-negative':\n        raise SystemExit(0)\n    file = Path(os.environ['HAPPYRANCH_DAEMON_HOME'])/(sid+'.completion.json')"))
+    original_launch=org.orchestrator._launch_agent_with_scratch
+    producer_error=RuntimeError('distinct actual producer launch exception')
+    observed=[]
+    if fault=='executor-exception':
+        def failed_launch(**kwargs):
+            observed.append((kwargs['task_id'],kwargs['session_id']))
+            raise producer_error
+        monkeypatch.setattr(org.orchestrator,'_launch_agent_with_scratch',failed_launch)
+        original_recorded=org.orchestrator._run_agent
+        def observe_exception(*args,**kwargs):
+            try:
+                return original_recorded(*args,**kwargs)
+            except BaseException as exc:
+                assert exc is producer_error
+                observed.append(exc)
+                raise
+        monkeypatch.setattr(org.orchestrator,'_run_agent',observe_exception)
+    if fault=='recorder-error':
+        original_write=Path.write_text
+        def lost_executor_record(path,*args,**kwargs):
+            if path.name.endswith('.executor.json'):
+                raise OSError('distinct executor recorder loss')
+            return original_write(path,*args,**kwargs)
+        monkeypatch.setattr(Path,'write_text',lost_executor_record)
+        def lost_provider_record(**kwargs):
+            Path(os.environ['G1_SOURCE_CONFIG']+'.'+kwargs['session_id']+'.provider.json').mkdir()
+            return original_launch(**kwargs)
+        monkeypatch.setattr(org.orchestrator,'_launch_agent_with_scratch',lost_provider_record)
+    try:
+        response=client.post('/api/v1/orgs/alpha/tasks',json={'team':'engineering','owner':'dev_agent',
+            'brief':'{"ordinary_work_item":"diagnostic-negative","memory_read":1}'})
+        assert response.status_code==200,response.text
+        tid=response.json()['task_id']
+        asyncio.run_coroutine_threadsafe(org.orchestrator._queue._queue.join(),org.orchestrator._main_loop).result(timeout=30)
+    finally:
+        provider.write_bytes(original)
+    task=org.db.get_task(tid)
+    assert task.status.value=='failed'
+    with pytest.raises(AssertionError):
+        assert all(org.db.get_task(t).status.value=='completed' for t in [tid])
+    recorder_output=capsys.readouterr()
+    _g1_source_failure_receipts(org,[tid],fault,'negative')
+    output=capsys.readouterr().out
+    assert 'SOURCE task/provider failure receipts' in output,('missing attributable failure log',output)
+    receipt=json.loads(output)
+    assert receipt['task_id']==tid and receipt['session_id']==task.current_session_id
+    assert receipt['actual_callback']['state']=='missing'
+    assert receipt['actual_callback']['command'] is None
+    assert receipt['actual_callback']['payload']['state']=='missing'
+    assert receipt['parsed_report'] is None and receipt['results_state']=='missing'
+    if fault=='executor-exception':
+        assert observed==[(tid,task.current_session_id),producer_error]
+        assert 'distinct actual producer launch exception' in receipt['executor']['value']['exception']
+        assert receipt['executor']['value']['result'] is None
+        assert receipt['provider']['state']=='missing' and receipt['commands_state']=='missing'
+    elif fault=='recorder-error':
+        assert receipt['executor']['state']=='missing' and receipt['provider']['state']=='unavailable'
+        assert 'distinct executor recorder loss' in recorder_output.err
+        assert tid in recorder_output.err and task.current_session_id in recorder_output.err
+        assert 'SOURCE recorder failure' in receipt['provider_stderr']['text']
+    else:
+        assert receipt['executor']['value']['result']['success'] is True
+        assert receipt['executor']['value']['result']['returncode']==0
+        assert all(c['exit']==0 for c in receipt['commands'])
+        # Retained files can be lost, partial or foreign: each condition must
+        # stay explicit and cannot lend another session's successful receipt.
+        config_path=Path(os.environ['G1_SOURCE_CONFIG'])
+        provider_record=Path(str(config_path)+'.'+task.current_session_id+'.provider.json')
+        executor_record=tmp_path/(task.current_session_id+'.executor.json')
+        saved_provider=provider_record.read_bytes();saved_executor=executor_record.read_bytes()
+        try:
+            provider_record.unlink()
+            executor_record.write_text('{"partial":')
+            _g1_source_failure_receipts(org,[tid],fault,'lost')
+            lost=json.loads(capsys.readouterr().out)
+            assert lost['provider']['state']=='missing' and lost['commands_state']=='missing'
+            assert lost['executor']['state']=='malformed' and lost['executor']['raw']=='{"partial":'
+            provider_record.write_text(json.dumps({'task_id':tid,'session_id':task.current_session_id}))
+            executor_record.write_text(json.dumps({'task_id':'TASK-999999','session_id':'sess-foreign','result':{'success':True}}))
+            _g1_source_failure_receipts(org,[tid],fault,'partial')
+            partial=json.loads(capsys.readouterr().out)
+            assert partial['commands_state']=='missing'
+            assert partial['executor']['state']=='identity_mismatch' and 'value' not in partial['executor']
+        finally:
+            provider_record.write_bytes(saved_provider);executor_record.write_bytes(saved_executor)
+        assert provider_record.read_bytes()==saved_provider and executor_record.read_bytes()==saved_executor
+    assert provider.read_bytes()==original
+    assert org.db.get_task(tid).status.value=='failed'
+
+
+@pytest.mark.parametrize('g1_source_org',['natural-boundaries'],indirect=True)
 @pytest.mark.parametrize('scenario',['pair-boundary','agent-boundary'])
 def test_real_accepted_epoch_retrieval_role_and_pair_boundaries(g1_source_org,monkeypatch,capsys,scenario):
     """F4/AGE02: reachable retrieval decision and eligible role corroboration.
@@ -2898,6 +3327,19 @@ def test_real_accepted_epoch_retrieval_role_and_pair_boundaries(g1_source_org,mo
        memory files are work inputs, never acceptance authority. Concurrent
        providers publish those inputs atomically and assert the actual search
        returned each requested ID before follow-on get. SOURCE only.
+
+    Diagnostic-only extension for both scenarios, INLINE v24:
+    1. Retain actual failed task/status/note/results and provider argv/full
+       streams/exits/session/launch intervals before the unchanged completion
+       assertion; all natural population and whole-report oracles remain.
+    2. A failing canonical command or missing callback must still fail that
+       completion assertion. Capturing evidence never converts failure to PASS.
+    3. Existing sparse/agent-majority owners do not retain command receipts for
+       this exact 471-worker/29-manager search-pair population.
+    4. No production seam. Diagnostics wrap the external stand-in's real
+       subprocess.run, returning its actual result or reraising its exception.
+       Failed-command and missing-callback owners verify diagnostic loss only;
+       the original hosted completion failure remains UNCONFIRMED.
     """
     import argparse
     import asyncio
@@ -2926,6 +3368,7 @@ def test_real_accepted_epoch_retrieval_role_and_pair_boundaries(g1_source_org,mo
         if phase!='manager29':create('engineering_head',29 if phase=='manager30' else 30,[] if phase=='manager30' else ['MEM-999'])
         asyncio.run_coroutine_threadsafe(org.orchestrator._queue._queue.join(),org.orchestrator._main_loop).result(timeout=1500)
         assert len(set(created))==len(created)
+        _g1_source_failure_receipts(org,created,scenario,phase)
         assert all(org.db.get_task(tid).status.value=='completed' for tid in created)
         identities={row['task_id']:row for row in org.db.get_audit_logs_by_action('memory_runtime_identity') if row['task_id'] in created}
         assert set(identities)==set(created)
