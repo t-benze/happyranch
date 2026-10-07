@@ -761,6 +761,48 @@ independent parent/tree/ancestry and per-slice reporting remain manager-owned.
 Integration SUITE INCLUDING followup E2E is SKIPPED Founder THR-243 seq42,
 NEVER PASS. No deployment or feature-completion authority follows.
 
+## S2 dream candidate updater ownership (TASK-9961, OPEN)
+
+This candidate moves only the unchanged decorated 25-line/964-byte
+`Database.update_dream_kb_candidate` into the existing `DreamsMixin`, after
+`list_dream_kb_candidates`. Source SHA256 is
+`46746730eecdaa0467debb38efc4c9f578d4ac9b79dac1840c92ffc479ed3b89`.
+The sole production import delta extends the existing shared import with the
+shipped `_late_database_now as _now`. Status validation, SQL, errors, commit,
+defaults, annotations, decorator, body and every retained byte stay unchanged,
+including the historical double decorator. Natural defining metadata changes
+are not repaired; old facade/instance dispatch, exports and MRO remain intact.
+
+The real accept route writes KB before updating the candidate; later failure
+retains that residue. Dismiss preserves an omitted promoted slug. Both shipping
+routes, list/model readers, KBStore, browser consumers, original missing-row
+transaction, facade clocks, actual RLock and shared logger retain their owners.
+Manager TASK-9785 step29 accepted TASK-9959/D1-D4/revision2 after independent
+DESIGN-ONLY TASK-9960 PASS under Founder THR-273 seq37/45/80 and DEV-G03.
+The finite14 cases, four answers, pristine full frames, selected-only controls,
+source replay and verification receipts live in `dev_agent/output/TASK-9961`;
+supplements are in `tests/daemon/test_dream_candidate_decomposition.py`.
+Existing tests, fixtures and snapshots remain unchanged. Complete app/served
+OpenAPI uses the exclusive pristine freeze, same root and unchanged interpreter.
+
+At base `cb7f227207833e09885804236a02560572e65ab6`, this move takes
+database2164→2139 and dreams243→269. ALL25 landed slices, steps1–4,
+R5 TWO122 moved/TWO288 retained, FOUR readers78, pin18, archive13 and KBview19
+remain foundations. Formatter TASK-9825 F8 stays STOP/RETAIN, not full17 PASS.
+R1 state/cache/lock/file/clock/helper, R3 compositor/logger and Database logger
+stay retained. PR682 ELEVEN R2/R4R6/completion/chain/carrier/parent/fanout/
+followup/addedcaller, PR684 insertion AND enqueue/revisit/admission, and PR840
+result/admission/insert_task_result stay HELD. Shared PR1000 coherent-read/RLock/
+audit/observer and PR1002 OrgState/reference owners require fresh composition;
+selected equality never clears caller overlap. M/E replan remains deferred.
+
+This unit is OPEN, with independent full-original-base reviewer APPROVE,
+executable QA PASS, clean final-head durable local CI, four hosted PR checks
+and distinct actual hosted Codex callback still required. Every push renews
+gates; composition, guarded merge and six main checks remain manager-owned.
+Integration including followup E2E is SKIPPED Founder THR-243 seq42, never PASS.
+No whole S2/program/feature completion, deployment or live activation follows.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target
