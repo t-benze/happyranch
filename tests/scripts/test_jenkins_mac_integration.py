@@ -43,7 +43,7 @@ def observe():
     assert Path(binding["source"]) == Path(__file__).resolve().parents[2]
     assert binding["python"] == sys.executable
     assert "ANTHROPIC_API_KEY" not in os.environ
-    print("launcher-contract=" + json.dumps({"revision": binding["revision"],
+    print("\\nlauncher-contract=" + json.dumps({"revision": binding["revision"],
           "home": os.environ["HOME"], "argv": sys.argv[1:]}), flush=True)
 
 def test_success():
@@ -107,7 +107,8 @@ def test_overflow():
     end = lines.index("  workload_status=$?", start)
     fragment = "\n".join(lines[start:end])
     fragment = fragment.replace("/workspace/artifacts", str(artifacts))
-    fragment = fragment.replace("/tmp/happyranch-pytest", str(tmp_path / "basetemp"))
+    fragment = fragment.replace("--basetemp=/tmp/happyranch-pytest",
+                                f"--basetemp={tmp_path / 'basetemp'}")
     if real_pytest:
         fragment = fragment.replace("pytest tests/ -v -m integration",
                                     "pytest tests/helpers/launcher_workload.py -v -m integration")
