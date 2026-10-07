@@ -23,6 +23,60 @@ def test_manual_integration_opt_out_preserves_default_and_scheduled_execution() 
     assert set(inputs) == {"run_integration"}
     assert inputs["run_integration"]["type"] == "boolean"
     assert inputs["run_integration"]["default"] == "true"
+    jobs = workflow["jobs"]
+    assert set(jobs) == {"local-ci-all", "integration", "report-scheduled-failure"}
+    manual = jobs["local-ci-all"]
+    # Observed Python units took 99 minutes before the full Web lane. Keep
+    # headroom for the complete selection, within the approved finite cap.
+    manual_cap = int(manual["timeout-minutes"])
+    assert 120 <= manual_cap <= 150, f"manual cap {manual_cap} must be 120..150 minutes"
+    assert jobs["integration"]["timeout-minutes"] == "30"
+    assert workflow["on"]["schedule"] == [{"cron": "0 7 * * *"}]
+    assert manual["runs-on"] == "ubuntu-latest"
+    assert "strategy" not in manual
+    manual_steps = {step["name"]: step for step in manual["steps"]}
+    assert manual_steps["Install uv"]["with"]["python-version"] == "3.14"
+    assert manual_steps["Set up Node"]["with"]["node-version"] == "24"
+    assert manual_steps["Sync dependencies (frozen)"]["run"] == "uv sync --frozen"
+    local_all = manual_steps["Run exact local CI all in a clean test environment"]["run"]
+    for required in (
+        "assert head == os.environ['GITHUB_SHA']",
+        "assert not subprocess.check_output(['git', 'status', '--porcelain'])",
+        "'command': 'scripts/local_ci.sh all'",
+        "'source_sha256':",
+        "'tests/helpers/integration_parent.py'",
+        "'tests/helpers/integration_stub_guard/guard.py'",
+        "'cli/main.py'",
+        "'--max-bytes', '1048576', '--', 'scripts/local_ci.sh', 'all'",
+        "receipt['exit_code'] = result.returncode",
+        "raise SystemExit(result.returncode)",
+    ):
+        assert required in local_all
+    upload = manual_steps["Upload manual local CI evidence"]
+    assert upload["if"] == "${{ always() }}"
+    assert upload["with"]["path"] == "${{ runner.temp }}/local-ci-all/"
+    assert upload["with"]["name"] == "local-ci-all-${{ github.run_id }}-${{ github.run_attempt }}"
+
+    ci = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    ci_jobs = ci["jobs"]
+    assert set(ci_jobs) == {"python-unit", "web", "linux-canonical-validation", "macos-canonical-validation"}
+    assert ci_jobs["python-unit"]["strategy"]["matrix"]["python-version"] == (
+        "${{ github.event_name == 'pull_request' && fromJSON('[\"3.14\"]') "
+        "|| fromJSON('[\"3.12\", \"3.13\", \"3.14\"]') }}"
+    )
+    python_steps = {step["name"]: step for step in ci_jobs["python-unit"]["steps"]}
+    assert python_steps["Run unit tests"]["run"] == "uv run pytest tests/ -v -n 4"
+    assert ci_jobs["linux-canonical-validation"]["runs-on"] == "ubuntu-latest"
+    assert ci_jobs["macos-canonical-validation"]["runs-on"] == "macos-15"
+    linux_steps = {step["name"]: step for step in ci_jobs["linux-canonical-validation"]["steps"]}
+    assert linux_steps["Run real daemon + executor smoke test"]["run"] == (
+        "uv run python tests/helpers/integration_parent.py -- pytest -m integration "
+        "tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback -v --tb=short"
+    )
+    assert [step["run"] for step in ci_jobs["web"]["steps"] if "run" in step] == [
+        "npm ci", "bash scripts/verify-design-system-colour-gate.sh", "npm run lint",
+        "npm run typecheck", "npm run build", "npm run build-storybook", "npx vitest run",
+    ]
     predicate = workflow["jobs"]["integration"]["if"]
     assert predicate == "${{ github.event_name != 'workflow_dispatch' || inputs.run_integration }}"
     assert workflow["jobs"]["local-ci-all"]["if"] == "${{ github.event_name == 'workflow_dispatch' }}"

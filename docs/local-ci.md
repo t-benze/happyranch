@@ -17,6 +17,9 @@ on the exact candidate ref instead. For an authorized integration-skipped
 verification, dispatch with `run_integration=false`: the existing manual
 `local-ci-all` job still runs the exact `scripts/local_ci.sh all` command on
 Python 3.14/Node 24, while the separate general integration job is SKIPPED.
+The manual lane has a finite 150-minute cap: the Python unit step alone took
+99 minutes in hosted run 37650992085, exceeding the former 60-minute cap.
+The separate nightly integration job retains its 30-minute cap.
 Record its actual checkout SHA, source/tool provenance and command exit from
 the uploaded receipt; submission or publication alone is not a pass. Schedule
 and ordinary manual/default-true dispatch retain the existing integration
