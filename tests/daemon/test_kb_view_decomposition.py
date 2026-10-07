@@ -156,7 +156,7 @@ class Logs(logging.Handler):
 
 
 
-_PRISTINE_FACADE_SHAPE_SHA256 = "1d1142de063716c2bf969085a79324cc8bac233f1335b667b805bffc8092bf6d"
+_PRISTINE_FACADE_SHAPE_SHA256 = "8cdb8fed67823086a9b758a84521bd1d0597a1d2cd3516af6324f22a28f257c1"
 
 
 def _prepare(org, case: str):

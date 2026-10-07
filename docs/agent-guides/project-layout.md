@@ -117,6 +117,13 @@ and use the same Database-owned RLock and lock logger. The committed setter,
 archive transaction, participant reset, audit, HTTP route and transcript owners
 remain in their existing modules; this leaf does not move those boundaries.
 
+`db/threads.py` also owns the unchanged 16-line `mark_invocation_declined`
+method in `ThreadsMixin`, immediately before `get_pending_invocation`.
+The inherited `Database` attribute remains the shipping and old patch path;
+the existing late facade clock and shared decorator retain the same connection,
+RLock, whole-clock and logger ownership. HTTP validation, modern settlement,
+`fail_invocation`, audit, SSE, queue and transcript consumers retain their owners.
+
 `db/tasks.py` owns `TasksMixin`: task core CRUD, query filtering/pagination,
 subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`
 and `LineageTooDeep`, plus verified retry lineage, atomic single/fanout child

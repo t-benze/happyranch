@@ -600,6 +600,23 @@ class ThreadsMixin:
         )
 
     @_synchronized
+    def mark_invocation_declined(
+        self, token: str, *, decline_reason: str | None = None
+    ) -> bool:
+        """Set invocation status to 'declined' with an optional reason.
+
+        Returns True if the row was updated (was pending), False otherwise.
+        """
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = 'declined', "
+            "consumed_at = ?, decline_reason = ? "
+            "WHERE invocation_token = ? AND status = 'pending'",
+            (_now().isoformat(), decline_reason, token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
     def get_pending_invocation(self, token: str) -> ThreadInvocation | None:
         cursor = self._conn.execute(
             "SELECT * FROM thread_invocations "
