@@ -83,7 +83,10 @@ export function buildSections(
     'thread_id',
     (data) => {
       const cache = data as { threads?: ThreadRecord[]; pages?: { threads: ThreadRecord[] }[] } | undefined;
-      return cache?.pages ? cache.pages.flatMap((page) => page.threads) : cache?.threads;
+      return cache?.pages
+        ? [...new Map(cache.pages.flatMap((page) => page.threads)
+          .map((row) => [row.thread_id, row] as const)).values()]
+        : cache?.threads;
     },
   );
   if (threads.length) {

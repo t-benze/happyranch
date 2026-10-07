@@ -68,7 +68,7 @@ import {
   renderThreadError,
   type ThreadErrorView,
 } from '@/lib/threadErrors';
-
+import { reorderOpenThreads } from '@/design-system/providers/_real-threads';
 /* ------------------------------------------------------------------ */
 /*  helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -428,11 +428,17 @@ export function ThreadsPage(): JSX.Element {
   const bucketLoading = listQuery.isLoading;
   const bucketError = listQuery.isError;
   const threads = useMemo(() => {
-    const seen = new Set<string>();
-    const base = (listQuery.data?.pages.flatMap((p) => p.threads) ?? []).filter((row) => {
-      if (seen.has(row.thread_id)) return false;
-      seen.add(row.thread_id);
-      return true;
+    // A live cursor can encounter the same ID after an external rename/pin.
+    // Later accepted pages own its projection; page metadata stays untouched.
+    const latest = new Map(
+      (listQuery.data?.pages.flatMap((page) => page.threads) ?? []).map((row) => [row.thread_id, row] as const),
+    );
+    const rows = [...latest.values()];
+    const base = bucket === 'open' ? reorderOpenThreads(rows) : rows.sort((a, b) => {
+      const aStamp = bucket === 'done' ? a.archived_at ?? a.started_at : a.started_at;
+      const bStamp = bucket === 'done' ? b.archived_at ?? b.started_at : b.started_at;
+      if (aStamp !== bStamp) return aStamp > bStamp ? -1 : 1;
+      return a.thread_id === b.thread_id ? 0 : a.thread_id > b.thread_id ? -1 : 1;
     });
     if (!filter.trim()) return base;
     const needle = filter.toLowerCase();
@@ -441,7 +447,7 @@ export function ThreadsPage(): JSX.Element {
         t.subject.toLowerCase().includes(needle) ||
         t.thread_id.toLowerCase().includes(needle),
     );
-  }, [listQuery.data, filter]);
+  }, [listQuery.data, filter, bucket]);
   useLayoutEffect(() => {
     const owner = listScrollRef.current;
     if (!owner || threadId) return;

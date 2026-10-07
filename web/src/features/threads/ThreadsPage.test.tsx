@@ -105,6 +105,7 @@ function mkThread(
     started_at: string;
     archived_at: string | null;
     pinned: boolean;
+    pinned_at: string | null;
     last_activity_at: string | null;
   }>,
 ) {
@@ -147,6 +148,70 @@ function mkMessage(
     responder_status: [],
   };
 }
+
+test.each(['open', 'all', 'archived'] as const)('adopts the latest repeated projection and active bucket order before filtering (%s)', async (bucket) => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const old = mkThread('THR-10', 'Old pinned subject', {
+    pinned: true, pinned_at: '2026-01-01T00:00:00Z', started_at: '2026-01-01T00:00:00Z',
+    status: bucket === 'archived' ? 'archived' : 'open', archived_at: null,
+  });
+  const fresh = { ...old, subject: 'New unpinned subject', pinned: false, pinned_at: null };
+  const anchor = mkThread('THR-20', 'Ordinary anchor', {
+    started_at: '2026-01-03T00:00:00Z', status: old.status, archived_at: null,
+  });
+  const tie = mkThread('THR-30', 'Ordinary tie', {
+    started_at: anchor.started_at, status: old.status,
+    archived_at: bucket === 'archived' ? anchor.started_at : null,
+  });
+  let quiescent = false;
+  const requests: string[] = [];
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+      const url = new URL(request.url);
+      const cursor = url.searchParams.get('cursor');
+      const status = url.searchParams.get('status') ?? 'all';
+      requests.push(`${status}:${quiescent ? 'refresh' : cursor ?? 'first'}`);
+      return HttpResponse.json({
+        threads: quiescent ? [tie, anchor, { ...fresh, subject: 'Quiescent renamed subject' }] : cursor ? [fresh, tie] : [old, anchor],
+        totals: { open: bucket === 'archived' ? 0 : 3, archived: bucket === 'archived' ? 3 : 0, all: 3, dream_origin: 0 },
+        has_more: !quiescent && !cursor, next_cursor: !quiescent && !cursor ? 'after-anchor' : null,
+        sampled_at: '2026-10-07T00:00:00Z',
+      });
+    }),
+    http.get(`/api/v1/orgs/${SLUG}/threads/events`, () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  mountAt(`/orgs/${SLUG}/threads`);
+  await screen.findByRole('link', { name: /Old pinned subject/ });
+  if (bucket !== 'open') {
+    await userEvent.setup().click(screen.getByRole('tab', { name: bucket === 'all' ? /^All/ : /^Archived/ }));
+    await waitFor(() => expect(requests).toContain(`${bucket}:first`));
+    await screen.findByRole('link', { name: /Old pinned subject/ });
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Load more threads' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more threads' })).not.toBeInTheDocument());
+  expect(screen.getByRole('link', { name: /New unpinned subject/ })).toBeVisible();
+  expect(screen.queryByRole('link', { name: /Old pinned subject/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Pinned' })).not.toBeInTheDocument();
+  const hrefs = () => screen.queryAllByRole('link').map((link) => link.getAttribute('href')).filter((href) => /\/threads\/THR-/.test(href ?? ''));
+  const expected = ['THR-30', 'THR-20', 'THR-10'].map((id) => `/orgs/${SLUG}/threads/${id}`);
+  expect(hrefs()).toEqual(expected);
+  const filter = screen.getByRole('textbox', { name: /filter threads/i });
+  fireEvent.change(filter, { target: { value: 'Old pinned subject' } });
+  expect(hrefs()).toEqual([]);
+  fireEvent.change(filter, { target: { value: 'New unpinned' } });
+  expect(hrefs()).toEqual([expected[2]]);
+  fireEvent.change(filter, { target: { value: 'THR-10' } });
+  expect(screen.getByRole('link', { name: /New unpinned subject/ })).toBeVisible();
+  expect(hrefs()).toEqual([expected[2]]);
+  fireEvent.change(filter, { target: { value: '' } });
+  quiescent = true;
+  fireEvent.focus(window);
+  await waitFor(() => expect(requests).toContain(`${bucket}:refresh`));
+  await screen.findByRole('link', { name: /Quiescent renamed subject/ });
+  expect(screen.queryByRole('link', { name: /New unpinned subject/ })).not.toBeInTheDocument();
+  expect(hrefs()).toEqual(expected);
+  expect(requests.filter((request) => request === `${bucket}:after-anchor`)).toHaveLength(1);
+});
 
 test.each(['counts', 'reachability'] as const)('reports authoritative counts before traversal and finds an older subject beyond the first page (%s)', async (mode) => {
   sessionStorage.setItem('happyranch.token', 'tok');
@@ -200,7 +265,7 @@ test.each(['subject-only', 'ID-only', 'populated-early'] as const)('exhausts lit
   expect(requests.filter((offset) => offset > 0)).toEqual([50, 100]);
   expect(screen.getByRole('tab', { name: /open/i })).toHaveTextContent('121');
   const ids = screen.getAllByRole('link').map((link) => link.getAttribute('href')).filter((href) => /\/threads\/THR-/.test(href ?? ''));
-  const expected = mode === 'populated-early' ? [...Array.from({ length: 50 }, (_, i) => `/orgs/alpha/threads/THR-${String(i + 1).padStart(3, '0')}`), '/orgs/alpha/threads/THR-121'] : ['/orgs/alpha/threads/THR-121'];
+  const expected = mode === 'populated-early' ? ['/orgs/alpha/threads/THR-121', ...Array.from({ length: 50 }, (_, i) => `/orgs/alpha/threads/THR-${String(50 - i).padStart(3, '0')}`)] : ['/orgs/alpha/threads/THR-121'];
   expect(ids).toEqual(expected);
   expect(screen.queryByText('Searching remaining threads…')).not.toBeInTheDocument();
 });
@@ -281,7 +346,7 @@ test('retains literal surrounding spaces and disables whitespace-only filtering'
   const hrefs = () => screen.getAllByRole('link').map((link) => link.getAttribute('href')).filter((href) => /\/threads\/THR-/.test(href ?? ''));
   expect(hrefs()).toEqual(['/orgs/alpha/threads/THR-SPACE-1']);
   fireEvent.change(input, { target: { value: '   ' } });
-  expect(hrefs()).toEqual(['/orgs/alpha/threads/THR-SPACE-1', '/orgs/alpha/threads/THR-SPACE-2']);
+  expect(hrefs()).toEqual(['/orgs/alpha/threads/THR-SPACE-2', '/orgs/alpha/threads/THR-SPACE-1']);
   expect(screen.getByRole('tab', { name: /archived/i })).toHaveTextContent('2');
 });
 

@@ -433,14 +433,14 @@ describe('THR-209 — Pinned section', () => {
     await waitFor(() => expect(screen.getByText(/Archived pinned/i)).toBeInTheDocument());
     expect(screen.getByText(/Archived ordinary/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument();
-    // Ordinary archived server order preserved (pinned row NOT ranked first
-    // just because it is pinned).
+    // Equal archive/start timestamps use thread_id DESC, independent of pin
+    // state and fixture insertion order (THR-E above THR-D).
     const rows = screen.getAllByRole('link').filter((el) =>
       /Archived/.test(el.textContent ?? ''),
     );
     expect(rows.map((r) => r.textContent)).toEqual([
-      expect.stringContaining('Archived pinned'),
       expect.stringContaining('Archived ordinary'),
+      expect.stringContaining('Archived pinned'),
     ]);
   });
 
@@ -469,13 +469,14 @@ describe('THR-209 — Pinned section', () => {
     expect(screen.getByText(/Open pinned/i)).toBeInTheDocument();
     expect(screen.getByText(/Archived pinned/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /Pinned/i })).not.toBeInTheDocument();
-    // Ordinary started_at DESC merge: newest started_at first.
+    // Ordinary started_at DESC merge, with thread_id DESC for the tied Open
+    // timestamps; pinned state does not rank THR-1 above THR-2.
     const rows = screen.getAllByRole('link').filter((el) =>
       /Open|Archived/.test(el.textContent ?? ''),
     );
     expect(rows.map((r) => r.textContent)).toEqual([
-      expect.stringContaining('Open pinned'),
       expect.stringContaining('Open ordinary'),
+      expect.stringContaining('Open pinned'),
       expect.stringContaining('Archived pinned'),
       expect.stringContaining('Archived ordinary'),
     ]);

@@ -609,8 +609,8 @@ export function numericThreadId(threadId: string): number {
 }
 
 /**
- * Client mirror of the server's OPEN-list ordering rule — used ONLY for the
- * optimistic open-list cache reorder in useSetThreadPinned so the UI never
+ * Client mirror of the server's OPEN-list ordering rule — used for loaded
+ * list projection and optimistic cache reorder in useSetThreadPinned so the UI never
  * diverges from the server contract between click and refetch:
  *
  *   1. pinned threads first;
