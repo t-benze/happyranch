@@ -3,9 +3,11 @@ a task one subprocess call at a time under the new async execution model."""
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 import importlib.util
 import json
 import os
+import selectors
 import subprocess
 import sys
 import time
@@ -2358,6 +2360,211 @@ def test_terminal_worktree_real_scanner_preserves_non_exempt_risks(
     ).stdout
 
 
+@contextmanager
+def _isolate_real_proc_enumeration(monkeypatch, scanner, generation: dict):
+    """Scope only native /proc population; retain all real member/ancestor reads."""
+    real_os = scanner.os
+    passes = []
+
+    class HolderEntries:
+        def __init__(self, native):
+            self.native = native
+            self.seen = []
+            self.closed = False
+
+        def __enter__(self):
+            self.native.__enter__()
+            return self
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            while True:
+                entry = next(self.native)
+                if entry.name == str(generation["pid"]):
+                    self.seen.append(entry.name)
+                    return entry
+
+        def close(self):
+            self.native.close()
+            self.closed = True
+
+        def __exit__(self, *args):
+            try:
+                return self.native.__exit__(*args)
+            finally:
+                self.closed = True
+
+    class NativeOS:
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+        def scandir(self, path):
+            native = real_os.scandir(path)
+            if os.fspath(path) != "/proc":
+                return native
+            scoped = HolderEntries(native)
+            passes.append(scoped)
+            return scoped
+
+    with monkeypatch.context() as local:
+        local.setattr(scanner, "os", NativeOS())
+        try:
+            yield passes
+        finally:
+            print("scoped-owned-holder enumeration:", json.dumps([
+                {"seen": item.seen, "closed": item.closed} for item in passes
+            ]))
+            assert all(item.closed for item in passes)
+
+
+def _read_owned_holder_ready(
+    holder: subprocess.Popen, deadline: float, reference: Path, kind: str,
+) -> dict:
+    """Bound readiness and bracket the direct child's actual native reference."""
+    assert holder.stdout is not None
+    fd = holder.stdout.fileno()
+    os.set_blocking(fd, False)
+    data = b""
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while b"\n" not in data:
+            assert holder.poll() is None, "holder exited before readiness"
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "holder readiness deadline"
+            assert selector.select(remaining), "holder readiness timeout"
+            chunk = os.read(fd, 64 - len(data))
+            assert chunk, "holder readiness EOF"
+            data += chunk
+            assert len(data) < 64, "oversized holder readiness"
+    assert data == b"ready\n", data
+
+    def identity() -> dict:
+        proc = Path("/proc") / str(holder.pid)
+        before = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+        uid = proc.stat(follow_symlinks=False).st_uid
+        after = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+        assert before[19] == after[19], "holder generation changed"
+        assert before[1:3] == after[1:3], "holder owner/group changed"
+        assert after[0] not in ("Z", "X"), "holder is not live"
+        return {"pid": holder.pid, "starttime": int(after[19]),
+                "ppid": int(after[1]), "pgid": int(after[2]), "uid": uid}
+
+    generation = identity()
+    assert generation["ppid"] == os.getpid()
+    assert generation["pgid"] == os.getpgrp()
+    assert generation["uid"] == os.getuid()
+    proc = Path("/proc") / str(holder.pid)
+    expected = reference.stat()
+    if kind == "cwd":
+        link = proc / "cwd"
+        assert Path(os.readlink(link)) == reference.resolve()
+        actual = link.stat()
+        assert (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino)
+    else:
+        hits = []
+        with os.scandir(proc / "fd") as entries:
+            for entry in entries:
+                try:
+                    if os.readlink(entry.path) == str(reference.resolve()):
+                        actual = os.stat(entry.path)
+                        hits.append((actual.st_dev, actual.st_ino))
+                except FileNotFoundError:
+                    continue
+        assert (expected.st_dev, expected.st_ino) in hits
+    assert identity() == generation, "reference bracket changed"
+    assert time.monotonic() <= deadline, "late holder readiness bracket"
+    print("owned holder ready:", json.dumps(generation))
+    return generation
+
+
+def _finish_owned_holder(holder: subprocess.Popen) -> dict:
+    """Always settle only this Popen; emergency settlement remains a failure."""
+    record = {"pid": holder.pid, "errors": [], "emergency": False,
+              "natural_status": None, "natural_wait_completed_at": None}
+    deadline = time.monotonic() + 5.0
+    try:
+        for stream in (holder.stdin, holder.stdout, holder.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except BaseException as exc:
+                record["errors"].append(f"close:{type(exc).__name__}")
+        record["natural_status"] = holder.wait(timeout=max(0, deadline - time.monotonic()))
+        record["natural_wait_completed_at"] = time.monotonic()
+        if record["natural_wait_completed_at"] > deadline:
+            record["errors"].append("late natural wait")
+    except BaseException as exc:
+        record["errors"].append(f"natural wait:{type(exc).__name__}")
+    finally:
+        try:
+            if holder.poll() is None:
+                record["emergency"] = True
+                emergency_end = time.monotonic() + 5.0
+                holder.kill()
+                holder.wait(timeout=max(0, emergency_end - time.monotonic()))
+                if time.monotonic() > emergency_end:
+                    record["errors"].append("late emergency wait")
+        except BaseException as exc:
+            record["errors"].append(f"unsettled:{type(exc).__name__}")
+        finally:
+            for stream in (holder.stdin, holder.stdout, holder.stderr):
+                try:
+                    if stream is not None and not stream.closed:
+                        stream.close()
+                except BaseException as exc:
+                    record["errors"].append(f"final close:{type(exc).__name__}")
+    record["returncode"] = holder.returncode
+    record["streams_closed"] = all(
+        stream is None or stream.closed for stream in
+        (holder.stdin, holder.stdout, holder.stderr)
+    )
+    print("owned holder finalization:", json.dumps(record))
+    return record
+
+
+def _observe_post_exit_continuation(orch, task_id: str, candidate: Path, holder, record: dict) -> None:
+    """Authenticate natural exit, then synchronously drain the disposable retry."""
+    rendezvous = orch._test_owned_exit_rendezvous
+    deadline = record["natural_wait_completed_at"] + 5.0
+    assert record["natural_status"] == 0 and holder.returncode == 0
+    assert not record["errors"] and not record["emergency"]
+    binding = rendezvous["binding"]
+    generation = rendezvous["generation"]
+    assert binding == (id(orch), task_id, candidate.resolve(),
+                       generation["pid"], generation["starttime"],
+                       generation["ppid"], generation["pgid"], generation["uid"])
+    assert holder.pid == generation["pid"]
+    proc = Path("/proc") / str(holder.pid)
+    try:
+        fields = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+    except FileNotFoundError:
+        assert not proc.exists(), "conflicting post-exit identity"
+        rendezvous["post_exit"] = "absent"
+    else:
+        assert int(fields[19]) != generation["starttime"], "same generation remains"
+        rendezvous["post_exit"] = "different-generation"
+    assert rendezvous["phase"] == "live" and rendezvous["acknowledgments"] == 0
+    assert time.monotonic() <= deadline
+    rendezvous["phase"] = "exited"
+    rendezvous["acknowledgments"] += 1
+    callback = rendezvous["pending"]
+    if callback is not None:
+        assert rendezvous["registrations"] == 1 and rendezvous["consumptions"] == 0
+        rendezvous["pending"] = None
+        rendezvous["consumptions"] += 1
+        rendezvous["dispatch_at"] = time.monotonic()
+        assert rendezvous["dispatch_at"] <= deadline
+        result = callback()
+        rendezvous["completed_at"] = time.monotonic()
+        rendezvous["actual_result"] = (result.kind, result.reason)
+    assert rendezvous["pending"] is None
+    assert rendezvous["mutation_threads"] == 0
+    assert time.monotonic() <= deadline, "post-exit observation overrun"
+    print("owned post-exit checkpoint:", repr(rendezvous))
+
+
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="Linux /proc is absent")
 @pytest.mark.parametrize("holder_cwd", [False, True], ids=["clear", "cwd-reference"])
 def test_terminal_worktree_real_proc_end_to_end(
@@ -2388,25 +2595,30 @@ def test_terminal_worktree_real_proc_end_to_end(
 
     monkeypatch.setattr(scanner, "scan", observe_scan)
     holder = None
+    finalization = None
     if holder_cwd:
         holder = subprocess.Popen(
-            [sys.executable, "-c", "print('ready', flush=True); input()"],
-            cwd=candidate,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+            [sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.readline()"],
+            cwd=candidate, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
         )
-        assert holder.stdout is not None
-        assert holder.stdout.readline().strip() == "ready"
-    try:
+        try:
+            setup_end = time.monotonic() + 5.0
+            with ExitStack() as patches:
+                generation = _read_owned_holder_ready(holder, setup_end, candidate, "cwd")
+                patches.enter_context(_isolate_real_proc_enumeration(monkeypatch, scanner, generation))
+                try:
+                    _fail(orch, task_id, note="failed")
+                finally:
+                    finalization = _finish_owned_holder(holder)
+        finally:
+            if finalization is None:
+                finalization = _finish_owned_holder(holder)
+        assert not finalization["errors"] and not finalization["emergency"]
+        assert finalization["streams_closed"]
+    else:
+        # This row deliberately retains unfiltered whole-host enumeration.
         _fail(orch, task_id, note="failed")
-    finally:
-        if holder is not None and holder.poll() is None:
-            assert holder.stdin is not None
-            holder.stdin.write("\n")
-            holder.stdin.flush()
-            holder.wait(timeout=5)
 
     assert len(scan_classifications) == 1
     classification = scan_classifications[0]
@@ -2447,6 +2659,7 @@ def test_terminal_worktree_real_proc_reference_preserves_without_exit_retry(
         "print('ready', flush=True); sys.stdin.readline()"
     )
     held_path = str(candidate / "tracked.txt") if reference_kind == "fd" else ""
+    finalization = None
     holder = subprocess.Popen(
         [sys.executable, "-c", script, held_path],
         cwd=candidate if reference_kind == "cwd" else primary,
@@ -2456,45 +2669,52 @@ def test_terminal_worktree_real_proc_reference_preserves_without_exit_retry(
         text=True,
     )
     try:
-        assert holder.stdout is not None
-        assert holder.stdout.readline().strip() == "ready"
+        setup_end = time.monotonic() + 5.0
+        with ExitStack() as patches:
+            from runtime.orchestrator.run_step import _load_terminal_worktree_scanner
 
-        holder_proc = Path("/proc") / str(holder.pid)
-        assert holder_proc.stat(follow_symlinks=False).st_uid == os.getuid()
-        real_iterdir = Path.iterdir
+            scanner = _load_terminal_worktree_scanner()
+            generation = _read_owned_holder_ready(
+                holder, setup_end,
+                candidate if reference_kind == "cwd" else candidate / "tracked.txt",
+                reference_kind,
+            )
+            patches.enter_context(_isolate_real_proc_enumeration(monkeypatch, scanner, generation))
+            binding = (id(orch), task_id, candidate.resolve(), holder.pid,
+                       generation["starttime"], generation["ppid"],
+                       generation["pgid"], generation["uid"])
+            rendezvous = {"binding": binding, "generation": generation,
+                          "pending": None, "phase": "live", "registrations": 0,
+                          "acknowledgments": 0, "consumptions": 0,
+                          "mutation_threads": 0}
+            orch._test_owned_exit_rendezvous = rendezvous
+            try:
+                try:
+                    _fail(orch, task_id, note="failed")
 
-        def only_holder_pid(path):
-            if path == Path("/proc"):
-                return iter((holder_proc,))
-            return real_iterdir(path)
+                    assert db.get_task(task_id).status is TaskStatus.FAILED
+                    assert outcomes == [("preserved", "live-process-reference")]
+                    assert candidate.exists()
+                    assert str(candidate) in _git(
+                        primary, "worktree", "list", "--porcelain",
+                    ).stdout
+                finally:
+                    finalization = _finish_owned_holder(holder)
+                assert not finalization["errors"] and not finalization["emergency"]
+                assert finalization["streams_closed"]
+                _observe_post_exit_continuation(orch, task_id, candidate, holder, finalization)
 
-        # Exercise the production scanner and the holder's real /proc cwd/fd,
-        # while excluding unrelated same-UID host processes whose deliberately
-        # fail-closed probe uncertainty is not part of this hermetic witness.
-        monkeypatch.setattr(Path, "iterdir", only_holder_pid)
-
-        _fail(orch, task_id, note="failed")
-
-        assert db.get_task(task_id).status is TaskStatus.FAILED
-        assert outcomes == [("preserved", "live-process-reference")]
-        assert candidate.exists()
-        assert str(candidate) in _git(
-            primary, "worktree", "list", "--porcelain",
-        ).stdout
+                # Process exit does not manufacture a second cleanup attempt.
+                assert holder.returncode == 0
+                assert outcomes == [("preserved", "live-process-reference")]
+                assert candidate.exists()
+            finally:
+                rendezvous["pending"] = None
+                rendezvous["phase"] = "closed"
+                del orch._test_owned_exit_rendezvous
     finally:
-        if holder.poll() is None:
-            assert holder.stdin is not None
-            holder.stdin.write("\n")
-            holder.stdin.flush()
-            holder.wait(timeout=5)
-        if holder.poll() is None:
-            holder.kill()
-            holder.wait(timeout=5)
-
-    # Process exit does not manufacture a second cleanup attempt.
-    assert holder.returncode == 0
-    assert outcomes == [("preserved", "live-process-reference")]
-    assert candidate.exists()
+        if finalization is None:
+            _finish_owned_holder(holder)
 
 
 def test_terminal_worktree_deadline_expiry_is_contained_and_not_retried(

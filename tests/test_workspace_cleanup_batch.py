@@ -420,24 +420,222 @@ def test_anomaly_is_journaled_then_halts(tmp_path):
     assert json.loads(result.stdout)["stop_reason"] == "removed_with_anomaly"
 
 
-def test_timeout_kills_process_group_before_journaling_and_halts(tmp_path):
-    late_effect = tmp_path / "late-effect"
-    next_effect = tmp_path / "next-effect"
+def _write_wait_owned_timeout_runner(tmp_path: Path) -> tuple[Path, Path]:
+    """Exec the same-group direct wait owner; it never signals its leaf."""
+    script = tmp_path / "timeout-owner.py"
+    script.write_text(r"""import json
+import os
+import select
+import signal
+import sys
+import time
+from pathlib import Path
+
+entry = time.monotonic()
+ready_end = entry + 0.1
+term_received = None
+leaf_pid = None
+raw_status = None
+rd = wr = None
+facts = {"entry": entry, "failures": [], "ready": False, "raw_status": None}
+status_path = Path(__file__).with_suffix(".status.json")
+ready_path = Path(__file__).with_suffix(".ready.json")
+late_path = Path(__file__).parent / "late-effect"
+
+
+def identity(pid):
+    proc = Path("/proc") / str(pid)
+    before = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+    uid = proc.stat(follow_symlinks=False).st_uid
+    after = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+    if before[19] != after[19] or before[1:3] != after[1:3]:
+        raise RuntimeError("generation bracket changed")
+    return {"pid": pid, "starttime": int(after[19]), "ppid": int(after[1]),
+            "pgid": int(after[2]), "uid": uid, "state": after[0]}
+
+
+def term_handler(signum, frame):
+    global term_received
+    if term_received is None:
+        term_received = time.monotonic()
+
+
+def close_fd(name):
+    fd = globals()[name]
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError as exc:
+            facts["failures"].append("close:" + str(exc.errno))
+        finally:
+            globals()[name] = None
+
+
+signal.signal(signal.SIGTERM, term_handler)
+old_mask = None
+try:
+    facts["runner"] = identity(os.getpid())
+    facts["driver"] = identity(os.getppid())
+    rd, wr = os.pipe()
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    if term_received is not None or signal.SIGTERM in signal.sigpending():
+        facts["failures"].append("TERM before fork")
+    else:
+        facts["fork_at"] = time.monotonic()
+        leaf_pid = os.fork()
+        if leaf_pid == 0:
+            os.close(rd)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+            os.close(1)
+            os.close(2)
+            action_start = time.monotonic()
+            try:
+                payload = json.dumps({"identity": identity(os.getpid()),
+                                      "action_start": action_start}).encode() + b"\n"
+                if len(payload) > 4096 or os.write(wr, payload) != len(payload):
+                    os._exit(4)
+            finally:
+                os.close(wr)
+            while time.monotonic() < action_start + 0.4:
+                time.sleep(max(0, action_start + 0.4 - time.monotonic()))
+            late_path.touch()
+            os._exit(0)
+        # From here this parent is the sole exact-leaf wait owner.
+        facts["leaf_pid"] = leaf_pid
+        close_fd("wr")
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        old_mask = None
+        os.set_blocking(rd, False)
+        data = b""
+        while b"\n" not in data and time.monotonic() < ready_end:
+            got, status = os.waitpid(leaf_pid, os.WNOHANG)
+            if got == leaf_pid:
+                raw_status = status
+                facts["wait_done"] = time.monotonic()
+                facts["failures"].append("leaf exited before readiness")
+                break
+            if got != 0:
+                raise RuntimeError("unexpected readiness wait pid")
+            remaining = ready_end - time.monotonic()
+            if remaining <= 0:
+                break
+            if not select.select([rd], [], [], remaining)[0]:
+                break
+            chunk = os.read(rd, 4096 - len(data))
+            if not chunk:
+                break
+            data += chunk
+            if len(data) >= 4096:
+                raise RuntimeError("oversized readiness")
+        if raw_status is None and data.endswith(b"\n"):
+            ready = json.loads(data)
+            facts["leaf_ready"] = ready
+            actual = identity(leaf_pid)
+            facts["leaf_observed"] = actual
+            expected = ready["identity"]
+            keys = ("pid", "starttime", "ppid", "pgid", "uid")
+            facts["ready"] = (
+                all(actual[key] == expected[key] for key in keys)
+                and actual["ppid"] == os.getpid()
+                and actual["pgid"] == os.getpid()
+                and actual["uid"] == os.getuid()
+                and actual["state"] not in ("Z", "X")
+                and facts["runner"]["pgid"] == os.getpid()
+                and facts["runner"]["ppid"] == facts["driver"]["pid"]
+                and term_received is None
+                and time.monotonic() <= ready_end
+            )
+            facts["ready_at"] = time.monotonic()
+        if not facts["ready"]:
+            facts["failures"].append("incomplete/late/nonlive readiness")
+        with ready_path.open("w") as stream:
+            json.dump(facts, stream)
+except BaseException as exc:
+    facts["failures"].append("setup:" + type(exc).__name__)
+finally:
+    close_fd("rd")
+    close_fd("wr")
+    if old_mask is not None:
+        try:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        except BaseException as exc:
+            facts["failures"].append("mask:" + type(exc).__name__)
+    if leaf_pid is not None and leaf_pid > 0:
+        facts["wait_enter"] = time.monotonic()
+        action_start = facts.get("leaf_ready", {}).get("action_start", facts["fork_at"])
+        wait_end = action_start + 0.4 + 2.0
+        while raw_status is None and time.monotonic() < wait_end:
+            try:
+                got, status = os.waitpid(leaf_pid, os.WNOHANG)
+            except InterruptedError:
+                continue
+            except OSError as exc:
+                facts["failures"].append("wait:" + str(exc.errno))
+                break
+            if got == leaf_pid:
+                raw_status = status
+                facts["wait_done"] = time.monotonic()
+            elif got != 0:
+                facts["failures"].append("unexpected wait pid")
+                break
+            else:
+                time.sleep(min(0.001, max(0, wait_end - time.monotonic())))
+        if raw_status is None:
+            facts["failures"].append("unsettled leaf")
+    facts["raw_status"] = raw_status
+    facts["term_received"] = term_received
+    facts["readiness_fds_closed"] = rd is None and wr is None
+    facts["status_written_at"] = time.monotonic()
+    try:
+        with status_path.open("w") as stream:
+            json.dump(facts, stream)
+    except BaseException:
+        os._exit(5)
+
+if term_received is not None or signal.SIGTERM in signal.sigpending():
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+    os.kill(os.getpid(), signal.SIGTERM)
+os._exit(4 if facts["failures"] else 0)
+""")
     runner = tmp_path / "timeout-runner.sh"
     runner.write_text(
         "#!/bin/bash\n"
         "case \"$1\" in\n"
-        f"  *timeout*) (sleep 0.4; touch {late_effect}) & wait;;\n"
-        f"  *) touch {next_effect}; echo '{{\"decision\":\"refused\",\"reason\":\"fixture\"}}'; exit 2;;\n"
+        f'  *timeout*) exec "{sys.executable}" "{script}" "$@";;\n'
+        f'  *) touch "{tmp_path / "next-effect"}"; '
+        "echo '{\"decision\":\"refused\",\"reason\":\"fixture\"}'; exit 2;;\n"
         "esac\n"
     )
     runner.chmod(0o755)
+    return runner, script
+
+
+def test_timeout_kills_process_group_before_journaling_and_halts(tmp_path):
+    late_effect = tmp_path / "late-effect"
+    next_effect = tmp_path / "next-effect"
+    runner, script = _write_wait_owned_timeout_runner(tmp_path)
     result, records, _, _ = _invoke(
         tmp_path,
         [_row("timeout", "worktree", 4), _row("next", "cache", 2)],
         "--candidate-timeout-seconds", "0.1", runner=runner,
     )
     time.sleep(0.6)
+    # Capture actual qualification facts before the first maintained assertion.
+    facts = {}
+    reads = {}
+    for suffix in (".ready.json", ".status.json"):
+        path = script.with_suffix(suffix)
+        try:
+            reads[suffix] = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            reads[suffix] = {"missing_or_invalid": type(exc).__name__}
+    facts.update({"observations": reads, "driver_returncode": result.returncode,
+                  "records": records, "stdout": result.stdout, "stderr": result.stderr,
+                  "late_effect": late_effect.exists(), "next_effect": next_effect.exists()})
+    (tmp_path / "timeout-qualification.json").write_text(json.dumps(facts, indent=2))
+    print("timeout owned qualification:", json.dumps(facts))
     assert result.returncode == 3
     assert len(records) == 1
     assert records[0]["error"] == "timeout_group_terminated"
@@ -445,3 +643,17 @@ def test_timeout_kills_process_group_before_journaling_and_halts(tmp_path):
     assert not late_effect.exists()
     assert not next_effect.exists()
     assert json.loads(result.stdout)["stop_reason"] == "timeout_group_terminated"
+
+    status = reads[".status.json"]
+    assert status["ready"] and not status["failures"]
+    assert status["readiness_fds_closed"]
+    assert status["runner"]["ppid"] == status["driver"]["pid"]
+    assert status["leaf_observed"]["ppid"] == status["runner"]["pid"]
+    assert status["leaf_observed"]["pgid"] == status["runner"]["pid"]
+    assert status["leaf_observed"]["uid"] == status["runner"]["uid"] == os.getuid()
+    assert os.WIFSIGNALED(status["raw_status"])
+    assert os.WTERMSIG(status["raw_status"]) == 15
+    assert records[0]["exit_code"] == -15
+    assert status["ready_at"] < status["term_received"] <= status["wait_done"]
+    assert status["wait_done"] - status["term_received"] < 0.1
+    assert status["wait_done"] <= status["status_written_at"]
