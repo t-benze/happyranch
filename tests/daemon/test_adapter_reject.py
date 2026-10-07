@@ -123,14 +123,9 @@ def clean_adapter_store(tmp_home):
 
 ADAPTER_ID = "test-reject-adapter"
 
-FIXTURE_SCRIPT = None  # cached per-module by _get_script
-
 
 def _get_script_path(tmp_path: Path) -> Path:
-    global FIXTURE_SCRIPT
-    if FIXTURE_SCRIPT is None:
-        FIXTURE_SCRIPT = _make_conformant_adapter_script(tmp_path, ADAPTER_ID)
-    return FIXTURE_SCRIPT
+    return _make_conformant_adapter_script(tmp_path, ADAPTER_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +163,8 @@ class TestRejectExactPendingTarget:
     ):
         """A PENDING adapter with intended_profile_name is rejectable."""
         script = _get_script_path(tmp_path)
+        assert script.parent == tmp_path, f"adapter script owner: {script.parent}, expected: {tmp_path}"
+        assert script.is_file() and os.access(script, os.X_OK), f"adapter script unavailable: {script}"
         entry = _build_pending_adapter(script, ADAPTER_ID, intended_profile_name="test-cli")
         save_adapter(entry)
 

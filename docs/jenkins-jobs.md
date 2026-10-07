@@ -158,10 +158,13 @@ The runtime pins are:
   output must be exactly `uv 0.12.21`, optionally followed by uv's
   ` (<target triple>)` suffix. It is used for `uv sync --frozen`. The venv and uv
   caches live under container-local `/tmp`, never the host-mounted source.
-- The exact direct guest apt bundle is `bash curl iproute2`, installed with
+- The exact direct guest apt bundle is `bash curl iproute2 git`, installed with
   `--no-install-recommends`. `guest-packages.json` records their resolved versions
   and packages added or changed transitively; `identity.txt` also records the
-  direct tool versions and effective Python. This repairs a setup omission;
+  direct tool versions and effective Python. Bounded `git --version` validates
+  the committed parent's Git prerequisite before the workload and records
+  `git_version` in `identity.txt`. This guest tool bundle is separate from
+  top-level repository dependencies. This repairs a setup omission;
   build #6 did not capture actual `ip` presence or an interface address, so it
   does not prove that omission caused its failure. No repository dependency changes.
 
@@ -301,6 +304,11 @@ These include actual emitted wrapper/committed-parent invocation, harmless real
 pytest/conftest success and refusal cases, exit/log limits, owned self-expiring
 children and private SQLite fixtures. The stub-only launch control establishes
 argv/environment/exit composition; it is distinct from real pytest execution.
+The emitted-setup control exposes a selected real Git executable only when
+its external apt stand-in receives the Git install request, then invokes the
+unchanged committed parent. It proves setup/argv composition and refusal on
+omission, not apt installation in the pinned arm64 image. Actual resolved Git
+and transitive versions remain unavailable until the authorized guest run.
 The complete focused command includes socket cases and integration collection
 in child processes, so it must never run on the live Linux daemon host, even
 through a job. On-host checks are restricted to demonstrably pure offline units.
