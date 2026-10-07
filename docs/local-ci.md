@@ -110,9 +110,41 @@ across **3.12/3.13/3.14**. GitHub CI is authoritative.
 
 ## Per-run pytest scratch lifecycle
 
-Pytest normally creates its per-session scratch under a shared
-`pytest-of-<user>/pytest-<n>` tree in `TMPDIR` and can leave large amounts of it
-behind. The `python`, `integration`, and `all` targets avoid that by passing an
+Direct pytest loads `tmp_path_retention_policy = "failed"` from `pyproject.toml`.
+With the frozen pytest 9.0.3, completed passing `tmp_path` and `tmpdir` fixture
+directories are removed best effort, and ordinary failed-call directories keep
+their diagnostic content. Without explicit `--basetemp`, an all-pass exit 0
+also removes the allocated session base, including factory-created directories.
+The enclosing `pytest-of-<user>` parent may remain.
+
+Direct `tmp_path_factory.mktemp` and `tmpdir_factory.mktemp` directories have
+no per-test outcome ownership: they remain in a failed session even when their
+creating test passed. Arbitrary `tempfile` writes outside the allocated pytest
+base survive an all-pass run. This setting provides no all-scratch cleanup.
+The ordinary default retention count remains 3 sessions; diagnostics are not
+retained indefinitely. Permission failures or leaked resources can prevent
+best-effort cleanup. A hard kill bypasses finalizers and session cleanup.
+
+Pytest 9.0.3 bases fixture cleanup on the call report, defaulting to passed
+when the call report is absent. A teardown error, setup error or KeyboardInterrupt
+can therefore remove a fixture directory despite a nonzero session exit; the
+session base and factory directories can remain. Do not assume every error's
+scratch survives or every interruption is cleaned. Explicit `--basetemp` is
+cleared at startup, so dedicate a disposable directory to it. Passing fixtures
+still receive cleanup, but successful session completion does not automatically
+remove that explicit base or its factory content; ordinary failed-call
+diagnostics remain there in direct pytest.
+
+The option was [introduced in pytest 7.3.0](https://docs.pytest.org/en/stable/changelog.html#pytest-7-3-0-2023-04-08).
+Use `uv sync --frozen` / `uv run --frozen pytest` with the supported locked
+pytest (currently 9.0.3). The declared `pytest>=7.0` range still admits 7.0–7.2,
+which lack this option: unknown-key validation warns with `PytestConfigWarning`,
+or fails with `UsageError` under `--strict-config`, without providing retention.
+Those versions are not verified or supported for this feature.
+
+Pytest normally allocates its session base under
+`pytest-of-<user>/pytest-<n>` in `TMPDIR`. The existing `python`, `integration`,
+and `all` wrapper targets manage their own scratch by passing an
 explicit `--basetemp` to their single pytest invocation (integration enters the
 preimport parent first):
 
