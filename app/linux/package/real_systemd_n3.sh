@@ -51,15 +51,7 @@ unit_absent() {
   systemctl_absent_value "$unit" LoadState not-found || return 1
   systemctl_absent_value "$unit" ActiveState inactive || return 1
   systemctl_absent_value "$unit" SubState dead || return 1
-  local main_pid status restore_errexit=0
-  case "$-" in *e*) restore_errexit=1 ;; esac
-  set +e
-  main_pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)"
-  status=$?
-  (( restore_errexit )) && set -e || set +e
-  [[ -z "$main_pid" || "$main_pid" == 0 ]] || return 1
-  (( status == 0 || status == 1 || status == 4 )) || return 1
-  (( status == 0 )) || [[ "$main_pid" == 0 ]] || return 1
+  systemctl_absent_value "$unit" MainPID 0 || return 1
   [[ ! -e "$unit_root/etc/systemd/system/$unit" && ! -e "$unit_root/run/systemd/system/$unit" ]] || return 1
   [[ ! -e "$unit_root/etc/systemd/system/$unit.d" && ! -e "$unit_root/run/systemd/system/$unit.d" ]] || return 1
 }
@@ -469,7 +461,7 @@ start_managed_target() {
   return "$start_status"
 }
 cleanup() {
-  local original_status="${1:-$?}" cleanup_failed=0 raw_file
+  local original_status="${1:-$?}" cleanup_failed=0 raw_file unit_list stage_paths
   # EXIT, INT and TERM share exactly ONE teardown. The first invocation owns it
   # and saves the initiating status; a signal arriving while teardown is running
   # must not start a second pass or replace that saved status.
@@ -516,15 +508,23 @@ cleanup() {
   sudo update-ca-certificates >/dev/null 2>&1
   printf 'fixtures_reaped=%s\n' "$(( cleanup_failed == 0 ))" >"$diagnostics/cleanup-status.txt"
   sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
-  if systemctl list-unit-files happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service --no-legend 2>/dev/null | grep -q .; then cleanup_failed=1; fi
+  # Empty output proves absence only when its producer completed successfully.
+  if unit_list="$(systemctl list-unit-files happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service --no-legend 2>/dev/null)"; then
+    [[ -z "$unit_list" ]] || cleanup_failed=1
+  else
+    cleanup_failed=1
+  fi
   for path in /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar /.happyranch-install-transaction.json /.happyranch-backup /.happyranch-units-backup; do
     sudo test ! -e "$path" || cleanup_failed=1
   done
-  [[ -z "$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || cleanup_failed=1
+  if stage_paths="$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit 2>/dev/null)"; then
+    [[ -z "$stage_paths" ]] || cleanup_failed=1
+  else
+    cleanup_failed=1
+  fi
   for port in 18443 18765 18080 19090 15043 13478; do ! port_open "$port" || cleanup_failed=1; done
   for unit in happyranch-connector.service happyranch-tsnet-sidecar.service; do
-    main_pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)"
-    [[ -z "$main_pid" || "$main_pid" == 0 ]] || cleanup_failed=1
+    systemctl_absent_value "$unit" MainPID 0 || cleanup_failed=1
   done
   (( cleanup_failed != 0 )) || evidence cleanup all_residue_absent || cleanup_failed=1
   for raw_file in "${capture_raw_files[@]}"; do rm -f "$raw_file"; done
@@ -700,7 +700,7 @@ PY
   python "$evidence_driver" validate-denial-matrix "$diagnostics/$arm_id-denial-matrix.json" --expected-arm "$arm_id"
 }
 shipping_cleanup() {
-  local cleanup_complete=0 residue_root="${N3_RESIDUE_ROOT:-}"
+  local cleanup_complete=0 residue_root="${N3_RESIDUE_ROOT:-}" unit_list stage_paths process_status
   # These requests are deliberately idempotent: the pre-arm reset also runs
   # after a prior cleanup has removed the units.  The explicit process, port,
   # fixture, credential, transaction, and path checks below decide success.
@@ -718,15 +718,28 @@ shipping_cleanup() {
   for unit in happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service; do
     unit_absent "$unit" || cleanup_complete=1
   done
-  ! systemctl list-unit-files happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service --no-legend 2>/dev/null | grep -q . || cleanup_complete=1
+  if unit_list="$(systemctl list-unit-files happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service --no-legend 2>/dev/null)"; then
+    [[ -z "$unit_list" ]] || cleanup_complete=1
+  else
+    cleanup_complete=1
+  fi
   ! port_open 18443 || cleanup_complete=1
   ! tsnet_open || cleanup_complete=1
   [[ ! -e "$residue_root/etc/happyranch/enrollment.key" && ! -e "$residue_root/etc/systemd/system/happyranch-tsnet-sidecar.service.d" ]] || cleanup_complete=1
   [[ ! -e "$residue_root/.happyranch-install-transaction.json" && ! -e "$residue_root/.happyranch-backup" && ! -e "$residue_root/.happyranch-units-backup" ]] || cleanup_complete=1
   [[ ! -e "$residue_root/opt/happyranch" && ! -e "$residue_root/etc/happyranch" && ! -e "$residue_root/var/lib/happyranch-connector" && ! -e "$residue_root/var/lib/happyranch-tsnet-sidecar" ]] || cleanup_complete=1
   [[ ! -e "$residue_root/run/happyranch-connector" && ! -e "$residue_root/run/happyranch-tsnet-sidecar" && ! -e "$residue_root/var/log/happyranch-connector" && ! -e "$residue_root/var/log/happyranch-tsnet-sidecar" ]] || cleanup_complete=1
-  ! pgrep -f '(^|/)(happyranch-connector|happyranch-tsnet-sidecar)( |$)' >/dev/null || cleanup_complete=1
-  [[ -z "$(sudo find "${residue_root:-/}" -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit)" ]] || cleanup_complete=1
+  if pgrep -f '(^|/)(happyranch-connector|happyranch-tsnet-sidecar)( |$)' >/dev/null 2>&1; then
+    cleanup_complete=1
+  else
+    process_status=$?
+    (( process_status == 1 )) || cleanup_complete=1
+  fi
+  if stage_paths="$(sudo find "${residue_root:-/}" -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit 2>/dev/null)"; then
+    [[ -z "$stage_paths" ]] || cleanup_complete=1
+  else
+    cleanup_complete=1
+  fi
   (( cleanup_complete == 0 ))
 }
 reset_shipping_unit() {

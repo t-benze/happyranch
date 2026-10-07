@@ -1341,19 +1341,31 @@ cleanup 0
     assert start_release < teardown and stop_release < teardown
 
 
+def _shipping_barrier_cleanup(harness: str) -> tuple[str, str]:
+    """Select the shipping phase block independently of its removal command."""
+    phase = harness.split("# semantic evidence: concurrency_reentry.", 1)[1].split(
+        "# semantic evidence: readiness_loss.", 1,
+    )[0]
+    cleanup = phase.rsplit('wait "$stop_job"; wait "$start_job"\n', 1)[1]
+    # The marker names are the external service/controller filesystem contract;
+    # the shell variable spelling is private and may change independently.
+    marker = re.search(r'\$([A-Za-z_]\w*)/start-entered', cleanup)
+    assert marker is not None
+    return cleanup, marker.group(1)
+
+
 def test_real_systemd_barrier_bodies_remove_only_owned_markers_before_rmdir(tmp_path: Path) -> None:
     """Execute the source-defined barrier bodies and its controller cleanup."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     start_body = re.search(r"ExecStartPre=/bin/sh -c '([^']+)'", harness)
     stop_body = re.search(r"ExecStopPost=/bin/sh -c '([^']+)'", harness)
-    cleanup_body = re.search(
-        r'(sudo rm -f "\$barrier_dir/start-entered"[^\n]+\n'
-        r'\s*sudo rmdir "\$barrier_dir" \|\| fail "barrier residue")', harness,
-    )
-    assert start_body and stop_body and cleanup_body
+    cleanup_body, cleanup_variable = _shipping_barrier_cleanup(harness)
+    assert start_body and stop_body
     barrier_dir = tmp_path / "state" / ".n3-barrier-test"
     barrier_dir.parent.mkdir(mode=0o700)
     durable = barrier_dir.parent / "credential.consumed"; durable.write_text("durable")
+    durable.chmod(0o600)
+    durable_before = (durable.read_bytes(), durable.stat().st_mode)
     barrier_dir.mkdir(mode=0o700)
     assert barrier_dir.stat().st_mode & 0o777 == 0o700
     for body, entered, release in (
@@ -1375,38 +1387,50 @@ def test_real_systemd_barrier_bodies_remove_only_owned_markers_before_rmdir(tmp_
 
     result = subprocess.run(
         ["bash", "-c", f'''set -euo pipefail
-sudo() {{ "$@"; }}
+sudo() {{
+  [[ $1 == systemctl ]] && return 0
+  [[ $1 == rm && $3 == /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf ]] && return 0
+  "$@"
+}}
 fail() {{ return 1; }}
 barrier_dir="{barrier_dir}"
-{cleanup_body.group(1)}
+{cleanup_variable}="{barrier_dir}"
+{cleanup_body}
 '''], capture_output=True, text=True, check=False,
     )
     assert result.returncode == 0, result.stderr
     assert not barrier_dir.exists()
     assert durable.read_text() == "durable"
+    assert (durable.read_bytes(), durable.stat().st_mode) == durable_before
+    assert barrier_dir.parent.stat().st_mode & 0o777 == 0o700
 
 
 def test_real_systemd_barrier_cleanup_refuses_unknown_child_residue(tmp_path: Path) -> None:
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
-    cleanup_body = re.search(
-        r'(sudo rm -f "\$barrier_dir/start-entered"[^\n]+\n'
-        r'\s*sudo rmdir "\$barrier_dir" \|\| fail "barrier residue")', harness,
-    )
-    assert cleanup_body
+    cleanup_body, cleanup_variable = _shipping_barrier_cleanup(harness)
     barrier_dir = tmp_path / ".n3-barrier-test"; barrier_dir.mkdir(mode=0o700)
     for marker in ("start-entered", "start-release", "stop-entered", "stop-release"):
         (barrier_dir / marker).touch()
-    (barrier_dir / "unexpected").write_text("must-refuse")
+    unexpected = barrier_dir / "unexpected"
+    unexpected.write_text("must-refuse")
+    unexpected.chmod(0o640)
+    before = (unexpected.read_bytes(), unexpected.stat().st_mode, barrier_dir.stat().st_mode)
     result = subprocess.run(
         ["bash", "-c", f'''set -euo pipefail
-sudo() {{ "$@"; }}
+sudo() {{
+  [[ $1 == systemctl ]] && return 0
+  [[ $1 == rm && $3 == /etc/systemd/system/happyranch-tsnet-sidecar.service.d/90-ci-barrier.conf ]] && return 0
+  "$@"
+}}
 fail() {{ return 1; }}
 barrier_dir="{barrier_dir}"
-{cleanup_body.group(1)}
+{cleanup_variable}="{barrier_dir}"
+{cleanup_body}
 '''], capture_output=True, text=True, check=False,
     )
     assert result.returncode != 0
     assert (barrier_dir / "unexpected").read_text() == "must-refuse"
+    assert (unexpected.read_bytes(), unexpected.stat().st_mode, barrier_dir.stat().st_mode) == before
 
 
 def _seed_n3_evidence(artifact: Path, *, run_id: str, include_cleanup: bool) -> Path:
@@ -1444,19 +1468,35 @@ def _seed_n3_evidence(artifact: Path, *, run_id: str, include_cleanup: bool) -> 
 
 def _run_source_cleanup_acceptance(
     tmp_path: Path, *, artifact_run: str, cleanup_run: str, include_cleanup: bool,
-    listener_residue: bool = False,
+    listener_residue: bool = False, observation: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
     """Run source cleanup against isolated strict dependencies and real evidence code."""
     harness = Path("app/linux/package/real_systemd_n3.sh").read_text()
     evidence = harness.split("evidence() {", 1)[1].split("\n}\ndiagnostic()", 1)[0]
     cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
+    unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
     artifact = tmp_path / "execution-evidence.json"
     driver = _seed_n3_evidence(artifact, run_id=artifact_run, include_cleanup=include_cleanup)
     fake_bin = tmp_path / "bin"; fake_bin.mkdir()
     events = tmp_path / "events.log"
     (fake_bin / "python").write_text("#!/bin/bash\nprintf 'evidence:%s\\n' \"$2\" >>\"$EVENT_LOG\"\nexec \"$REAL_PYTHON\" \"$@\"\n")
-    (fake_bin / "systemctl").write_text("#!/bin/bash\ncase \"$1\" in show) echo 0;; list-unit-files|stop|disable|reset-failed|daemon-reload) ;; *) exit 91;; esac\n")
-    (fake_bin / "sudo").write_text("#!/bin/bash\ncase \"$1\" in systemctl) shift; exec systemctl \"$@\";; test|rm|kill|find|update-ca-certificates) exit 0;; *) exit 92;; esac\n")
+    (fake_bin / "systemctl").write_text('''#!/bin/bash
+case "$1" in
+  show) printf '%s\\n' "${MAIN_PID-0}"; exit "${PID_RC:-0}";;
+  list-unit-files) printf '%s' "${UNIT_LIST_OUTPUT-}"; exit "${UNIT_LIST_RC:-0}";;
+  stop|disable|reset-failed|daemon-reload) exit 0;;
+  *) exit 91;;
+esac
+''')
+    (fake_bin / "sudo").write_text('''#!/bin/bash
+printf 'sudo:%s\\n' "$1" >>"$EVENT_LOG"
+case "$1" in
+  systemctl) shift; exec systemctl "$@";;
+  find) printf '%s' "${FIND_OUTPUT-}"; exit "${FIND_RC:-0}";;
+  test|rm|kill|update-ca-certificates) exit 0;;
+  *) exit 92;;
+esac
+''')
     (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
     for executable in fake_bin.iterdir():
         executable.chmod(0o700)
@@ -1468,6 +1508,7 @@ PROOF_SUBJECT_SHA={'a' * 40}
 peer_pid={"123" if listener_residue else '""'}; daemon_pid=""; headscale_pid=""; sidecar_ip={"visible" if listener_residue else '""'}; run_id={cleanup_run}
 port_open() {{ return 1; }}
 tsnet_open() {{ return {0 if listener_residue else 1}; }}
+{unit_helpers}
 evidence() {{
 {evidence}
 }}
@@ -1479,7 +1520,7 @@ cleanup 0
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False,
                             env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(events),
                                               "REAL_PYTHON": sys.executable, "N3_RESIDUE_ROOT": str(tmp_path),
-                                              "N3_UNIT_ROOT": str(tmp_path)})
+                                              "N3_UNIT_ROOT": str(tmp_path)} | (observation or {}))
     return result, events.read_text().splitlines() if events.exists() else []
 
 
@@ -1492,12 +1533,29 @@ def test_real_systemd_cleanup_finalizes_and_validates_actual_evidence_once(tmp_p
     assert events.count("evidence:validate") == 1
 
 
-def test_real_systemd_cleanup_residue_never_finalizes_actual_evidence(tmp_path: Path) -> None:
+@pytest.mark.parametrize("observation", [
+    None,
+    {"UNIT_LIST_RC": "2"}, {"UNIT_LIST_RC": "2", "UNIT_LIST_OUTPUT": "loaded"},
+    {"UNIT_LIST_OUTPUT": "loaded"},
+    {"FIND_RC": "1"}, {"FIND_RC": "1", "FIND_OUTPUT": "/.happyranch-stage-leftover"},
+    {"FIND_OUTPUT": "/.happyranch-stage-leftover"},
+    {"MAIN_PID": "", "PID_RC": "0"}, {"MAIN_PID": "", "PID_RC": "4"},
+    {"MAIN_PID": "unknown"}, {"MAIN_PID": "00"}, {"MAIN_PID": "42"},
+    {"MAIN_PID": "0", "PID_RC": "2"},
+])
+def test_real_systemd_cleanup_residue_never_finalizes_actual_evidence(
+    tmp_path: Path, observation: dict[str, str] | None,
+) -> None:
     result, events = _run_source_cleanup_acceptance(
-        tmp_path, artifact_run="run", cleanup_run="run", include_cleanup=True, listener_residue=True,
+        tmp_path, artifact_run="run", cleanup_run="run", include_cleanup=True,
+        listener_residue=observation is None, observation=observation,
     )
     assert result.returncode != 0
     assert "evidence:finalize" not in events and "evidence:validate" not in events
+    ledger = json.loads((tmp_path / "execution-evidence.json").read_text())
+    assert not any(event["observation"] == "all_residue_absent" for event in ledger["records"])
+    assert "sudo:rm" in events
+    assert not (tmp_path / "work").exists()
 
 
 @pytest.mark.parametrize(("artifact_run", "expected_final", "expected_validate"), [
@@ -2276,18 +2334,20 @@ headscale_pid=""; peer_pid=""; daemon_pid=""; sidecar_ip=""; barrier_dir=""
 printf 'systemctl:%s\\n' "$1" >>"$EVENT_LOG"
 case "$1" in
   start) exit 37 ;;
-  show) case "$4" in InvocationID) echo unknown;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) echo 0;; *) echo unknown;; esac ;;
+  show) case "$4" in InvocationID) echo unknown;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) [[ "{fault}" != observation-pid ]] || exit 2; echo 0;; *) echo unknown;; esac ;;
   stop|disable|reset-failed) [[ "$1" != "{fault}" ]] || exit 55; exit 0 ;;
-  daemon-reload|list-jobs|list-unit-files) exit 0 ;;
+  list-unit-files) [[ "{fault}" != observation-list ]] || exit 2; exit 0 ;;
+  daemon-reload|list-jobs) exit 0 ;;
   *) printf 'unknown-systemctl:%s\\n' "$1" >>"$EVENT_LOG"; exit 97 ;;
 esac
 ''')
-    (fake_bin / "sudo").write_text('''#!/bin/bash
+    (fake_bin / "sudo").write_text(f'''#!/bin/bash
 printf 'sudo:%s\\n' "$1" >>"$EVENT_LOG"
 case "$1" in
   systemctl) shift; exec systemctl "$@";;
-  test) [[ "${2:-}" == '!' ]] && exit 0; exit 1;;
-  kill) if [[ ${REAL_FIXTURE_KILL:-0} == 1 ]]; then shift; exec /bin/kill "$@"; fi; exit 0;;
+  test) [[ "${{2:-}}" == '!' ]] && exit 0; exit 1;;
+  kill) if [[ ${{REAL_FIXTURE_KILL:-0}} == 1 ]]; then shift; exec /bin/kill "$@"; fi; exit 0;;
+  find) [[ "{fault}" != observation-find ]] || exit 1; exit 0;;
   rm|find|kill|update-ca-certificates) exit 0;;
   *) exit 98;;
 esac
@@ -2359,7 +2419,7 @@ failure_capture_driver={capture_driver}
 peer_pid=""; daemon_pid=""; headscale_pid=""; sidecar_ip=""; run_id=test
 port_open() {{ return 1; }}
 tsnet_open() {{ return 1; }}
-evidence() {{ return 0; }}
+evidence() {{ printf 'evidence:%s:%s\\n' "$1" "$2" >>"$EVENT_LOG"; }}
 {snapshot}
 {unit_helpers}
 cleanup() {{
@@ -2414,7 +2474,7 @@ def test_real_systemd_headscale_capture_precedes_teardown_and_reaps_fixture_once
     _assert_secret_free_diagnostics(result, diagnostics)
 
 
-@pytest.mark.parametrize("fault", ["none", "stop", "disable", "reset-failed"])
+@pytest.mark.parametrize("fault", ["none", "stop", "disable", "reset-failed", "observation-list", "observation-find", "observation-pid"])
 def test_real_systemd_cleanup_command_faults_preserve_exit_37_and_finish_teardown(tmp_path: Path, fault: str) -> None:
     """An independently failing stop/disable/reset cannot abort the EXIT teardown."""
     result, events, work = _run_positive_start_cleanup_scenario(tmp_path, fault=fault)
@@ -2426,10 +2486,14 @@ def test_real_systemd_cleanup_command_faults_preserve_exit_37_and_finish_teardow
     assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
     assert not work.exists()
     assert not any(event.startswith(("evidence:finalize", "evidence:validate", "unknown-")) for event in events)
+    if fault.startswith("observation-"):
+        assert "evidence:cleanup:all_residue_absent" not in events
 
 
 @pytest.mark.parametrize(("signal", "expected", "fault"), [
     ("INT", 130, "stop"), ("TERM", 143, "reset-failed"),
+    *[(signal, expected, fault) for signal, expected in (("INT", 130), ("TERM", 143))
+      for fault in ("observation-list", "observation-find", "observation-pid")],
 ])
 def test_real_systemd_signal_cleanup_command_faults_preserve_signal_status_once(
     tmp_path: Path, signal: str, expected: int, fault: str,
@@ -2444,6 +2508,8 @@ def test_real_systemd_signal_cleanup_command_faults_preserve_signal_status_once(
     assert (tmp_path / "cleanup-events.log").read_text().splitlines() == ["cleanup"]
     assert not work.exists()
     assert not any(event.startswith(("evidence:finalize", "evidence:validate", "unknown-")) for event in events)
+    if fault.startswith("observation-"):
+        assert "evidence:cleanup:all_residue_absent" not in events
 
 
 def test_real_systemd_signal_during_cleanup_runs_teardown_once(tmp_path: Path) -> None:
@@ -2536,14 +2602,18 @@ def _run_real_systemd_shipping_cleanup(tmp_path: Path, **env: str) -> subprocess
     fake_bin = tmp_path / "bin"; fake_bin.mkdir()
     (fake_bin / "systemctl").write_text("""#!/bin/bash
 if [[ $1 == show ]]; then p=$4; case $p in LoadState) v=${LOAD_STATE-not-found}; s=${LOAD_RC:-4};; ActiveState) v=${ACTIVE_STATE-inactive}; s=${ACTIVE_RC:-4};; SubState) v=${SUB_STATE-dead}; s=${SUB_RC:-4};; MainPID) v=${MAIN_PID-0}; s=${PID_RC:-4};; esac; printf '%s\\n' "$v"; exit "$s"; fi
-[[ $1 == list-unit-files && ${UNIT_LIST_RESIDUE:-0} == 1 ]] && echo loaded
+if [[ $1 == list-unit-files ]]; then
+  [[ ${UNIT_LIST_RESIDUE:-0} != 1 ]] || echo loaded
+  exit "${UNIT_LIST_RC:-0}"
+fi
 exit 0
 """)
     (fake_bin / "sudo").write_text("""#!/bin/bash
 [[ $1 == rm ]] && exit 0
+if [[ $1 == find && -n ${FIND_RC:-} ]]; then printf '%s' "${FIND_OUTPUT-}"; exit "$FIND_RC"; fi
 exec "$@"
 """)
-    (fake_bin / "pgrep").write_text("#!/bin/bash\n[[ ${PROCESS_RESIDUE:-0} == 1 ]]\n")
+    (fake_bin / "pgrep").write_text("#!/bin/bash\n[[ -z ${PGREP_RC:-} ]] || exit \"$PGREP_RC\"\n[[ ${PROCESS_RESIDUE:-0} == 1 ]]\n")
     for executable in fake_bin.iterdir(): executable.chmod(0o700)
     work = tmp_path / "work"; (work / "hs").mkdir(parents=True)
     (work / "headscale").write_text("#!/bin/bash\n[[ ${FIXTURE_RESIDUE:-0} == 1 ]] && echo '[{\"id\":1,\"name\":\"home-sidecar-ci\"}]' || echo '[]'\n")
@@ -2557,7 +2627,8 @@ work={work!s}; diagnostics={tmp_path!s}
 shipping_cleanup() {{
 {cleanup}
 }}
-shipping_cleanup
+shipping_cleanup || exit 1
+printf 'reset-continuation\\n'
 """
     run_env = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)} | env
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=run_env, check=False)
@@ -2567,6 +2638,7 @@ shipping_cleanup
 def test_real_systemd_shipping_cleanup_accepts_recognized_absent_exit_orderings(tmp_path: Path, exit_codes: tuple[int, int, int, int]) -> None:
     result = _run_real_systemd_shipping_cleanup(tmp_path, **dict(zip(("LOAD_RC", "ACTIVE_RC", "SUB_RC", "PID_RC"), map(str, exit_codes), strict=True)))
     assert result.returncode == 0, result.stderr
+    assert result.stdout == "reset-continuation\n", result.stderr
 
 
 @pytest.mark.parametrize("env", [
@@ -2575,9 +2647,16 @@ def test_real_systemd_shipping_cleanup_accepts_recognized_absent_exit_orderings(
     {"ACTIVE_STATE": "active", "ACTIVE_RC": "0"}, {"MAIN_PID": "42", "PID_RC": "0"},
     {"UNIT_LIST_RESIDUE": "1"}, {"PROCESS_RESIDUE": "1"}, {"PORT_RESIDUE": "1"},
     {"LISTENER_RESIDUE": "1"}, {"FIXTURE_RESIDUE": "1"},
+    {"UNIT_LIST_RC": "2"}, {"UNIT_LIST_RC": "2", "UNIT_LIST_RESIDUE": "1"},
+    {"FIND_RC": "1"}, {"FIND_RC": "1", "FIND_OUTPUT": "/.happyranch-stage-leftover"},
+    {"PGREP_RC": "0"}, {"PGREP_RC": "2"}, {"PGREP_RC": "3"}, {"PGREP_RC": "7"},
+    {"MAIN_PID": "", "PID_RC": "0"}, {"MAIN_PID": "", "PID_RC": "4"},
+    {"MAIN_PID": "prose"}, {"MAIN_PID": "00"}, {"MAIN_PID": "0", "PID_RC": "2"},
 ])
 def test_real_systemd_shipping_cleanup_rejects_query_and_probe_residue(tmp_path: Path, env: dict[str, str]) -> None:
-    assert _run_real_systemd_shipping_cleanup(tmp_path, **env).returncode != 0
+    result = _run_real_systemd_shipping_cleanup(tmp_path, **env)
+    assert result.returncode != 0
+    assert "reset-continuation" not in result.stdout
 
 
 @pytest.mark.parametrize("residue", [
