@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
 import { describe, expect, it } from 'vitest';
@@ -74,6 +74,57 @@ describe('C1-C5 real-config owned-copy gate', () => {
     for (const file of ['src/fixture.test.tsx', 'src/Example.stories.tsx', 'src/test/example.tsx', 'src/lib/i18n/locales/example.ts']) {
       expect(await messages('export const Probe = () => <h1>Example copy</h1>', file)).toEqual([]);
     }
+  });
+
+  it('E02 real disk additional JSX-constant root is owned while translated/raw controls and import-only stay allowed', async () => {
+    const root = mkdtempSync(join(webRoot, '.i18n-source-fixture-'));
+    const put = (file: string, body: string): void => {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), body);
+    };
+    try {
+      for (const file of ['index.html', 'tsconfig.json', 'vite.config.ts', 'eslint.config.js', 'package.json', 'scripts/i18n-source-inventory.mjs']) {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        copyFileSync(join(webRoot, file), join(root, file));
+      }
+      put('src/App.tsx', 'export function App() { return <p>{label}</p>; }');
+      put('src/Unused.tsx', 'export const ImportOnlyDialog = () => <section role="dialog">Unused declaration</section>;');
+      const original = "import { App } from './App'; import { ImportOnlyDialog } from './Unused'; import ReactDOM, { createRoot } from 'react-dom/client'; createRoot(document.getElementById('root')!).render(<App />); function uncalled() { const dormant = <h1>Unused root declaration</h1>; createRoot(document.createElement('div')).render(dormant); }";
+      put('src/main.tsx', `${original} const extra = <h1>Untranslated owned root heading</h1>; createRoot(document.body.appendChild(document.createElement('div'))).render(extra);`);
+      const { inventorySource } = await import(resolve(webRoot, 'scripts/i18n-source-inventory.mjs'));
+      const inventory = inventorySource(root);
+      expect(inventory.mountedSymbols).toContain('src/App.tsx#App');
+      expect(inventory.mountedSymbols).toContain('src/main.tsx#extra');
+      expect(inventory.dialogs).toEqual([]);
+      expect(inventory.mountedSymbols).not.toContain('src/main.tsx#uncalled');
+      expect(inventory.copies).toContainEqual(expect.objectContaining({ path: 'src/main.tsx', symbol: 'extra', literal: 'Untranslated owned root heading' }));
+      const isolation = { languageOptions: { parserOptions: { tsconfigRootDir: root } } };
+      const eslint = new ESLint({ cwd: root, overrideConfig: isolation, allowInlineConfig: false });
+      const [result] = await eslint.lintFiles(['src/main.tsx']);
+      expect(result.fatalErrorCount).toBe(0);
+      expect(result.messages.filter(message => message.ruleId === rule)).toEqual([
+        expect.objectContaining({ message: expect.stringContaining('Untranslated owned root heading') }),
+      ]);
+      // Each root uses a fresh config module/inventory cache after disk changes.
+      put('src/main.tsx', `${original} const extra = <><h1>{t('common.save')}</h1><pre>{rawDiagnostic}</pre><input value="machine-id" /></>; const alias = extra; const attached = ReactDOM.createRoot(document.body.appendChild(document.createElement('div'))); const mounted = attached.render(alias);`);
+      copyFileSync(join(root, 'scripts/i18n-source-inventory.mjs'), join(root, 'scripts/positive-inventory.mjs'));
+      put('positive.config.js', readFileSync(join(root, 'eslint.config.js'), 'utf8').replace('./scripts/i18n-source-inventory.mjs', './scripts/positive-inventory.mjs'));
+      const positive = new ESLint({ cwd: root, overrideConfigFile: join(root, 'positive.config.js'), overrideConfig: isolation, allowInlineConfig: false });
+      expect(inventorySource(root).mountedSymbols).toContain('src/main.tsx#extra');
+      const [allowed] = await positive.lintFiles(['src/main.tsx']);
+      expect(allowed.fatalErrorCount).toBe(0);
+      expect(allowed.messages.filter(message => message.ruleId === rule)).toEqual([]);
+      put('src/main.tsx', `${original} const extra = makeUnknownTree(); createRoot(document.body.appendChild(document.createElement('div'))).render(extra);`);
+      expect(() => inventorySource(root)).toThrow(/unsupported render root src\/main.tsx.*extra/);
+      copyFileSync(join(root, 'scripts/i18n-source-inventory.mjs'), join(root, 'scripts/refusal-inventory.mjs'));
+      put('refusal.config.js', readFileSync(join(root, 'eslint.config.js'), 'utf8').replace('./scripts/i18n-source-inventory.mjs', './scripts/refusal-inventory.mjs'));
+      const refusal = new ESLint({ cwd: root, overrideConfigFile: join(root, 'refusal.config.js'), overrideConfig: isolation, allowInlineConfig: false });
+      const [refused] = await refusal.lintFiles(['src/main.tsx']);
+      expect(refused.fatalErrorCount).toBe(0);
+      expect(refused.messages.filter(message => message.ruleId === rule)).toEqual([
+        expect.objectContaining({ message: expect.stringMatching(/unsupported render root src\/main.tsx.*extra/) }),
+      ]);
+    } finally { rmSync(root, { recursive: true }); }
   });
 
   it('C1-C5 authoritative real disk scan has no owned omissions, stale exceptions or inline waiver', async () => {

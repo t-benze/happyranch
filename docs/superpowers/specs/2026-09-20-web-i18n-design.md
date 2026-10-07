@@ -76,7 +76,11 @@ Raw/default exceptions require exact path, declaration, slot, literal and reason
 stale/overbroad exceptions fail the authoritative real-config test with inline
 configuration disabled. The Node-only inventory reads shipping HTML and static
 Vite/TS aliases, resolves supported relative/reexport/literal-lazy owners and
-finds JSX/render-return route/dialog sites rather than counting imports. Changes
+finds JSX/render-return route/dialog sites rather than counting imports. Router
+named/namespace imports and reexports retain route identity and parent paths.
+Additional createRoot renders discover direct JSX or statically bound JSX
+constants (including aliases and bound root handles), or refuse unhandled
+arguments with their source; uncalled declarations remain unmounted. Changes
 outside those supported static shapes and fixture/prototype promotion refuse.
 New source owners require qualified classification; the outer Settings wildcard
 is translated loading/error chrome and its nested wildcard is the existing

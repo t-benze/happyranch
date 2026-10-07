@@ -308,6 +308,38 @@ describe('C5-C7 actual disk source discovery and full-release boundary', () => {
     expect(() => inventorySource(root)).toThrow(/unsupported computed route path/);
   }));
 
+  it('E01 namespace and reexported route mounts keep parent paths and qualified index/wildcard ownership', () => diskFixture((root, put) => {
+    for (const [imports, wrapper, parent, child] of [
+      ["import { Routes, Route as R } from 'react-router-dom';", 'Routes', 'R', 'R'],
+      ["import * as Router from 'react-router-dom';", 'Router.Routes', 'Router.Route', 'Router.Route'],
+      ["import { Routes, Route as R } from 'react-router-dom'; import * as Router from 'react-router-dom';", 'Routes', 'R', 'Router.Route'],
+      ["import * as Router from './router';", 'Router.Routes', 'Router.Route', 'Router.Route'],
+      ["import { Routes, R as Alias } from './router';", 'Routes', 'Alias', 'Alias'],
+      ["import { Nested as Router } from './router';", 'Router.Routes', 'Router.Route', 'Router.Route'],
+    ]) {
+      put('src/router.ts', "export { Routes, Route, Route as R } from 'react-router-dom'; export * as Nested from 'react-router-dom';");
+      put('src/App.tsx', `${imports} export function App() { return <${wrapper}><${parent} path="parent"><${child} path="new-unclassified" element={<p>{label}</p>} /><${child} index element={<p>{label}</p>} /><${child} path="*" element={<p>{label}</p>} /></${parent}></${wrapper}>; }`);
+      const actual = inventorySource(root);
+      expect(actual.routes, imports).toEqual([
+        expect.objectContaining({ path: 'src/App.tsx', token: 'parent', parents: [] }),
+        expect.objectContaining({ path: 'src/App.tsx', token: 'new-unclassified', parents: ['parent'] }),
+        expect.objectContaining({ path: 'src/App.tsx', token: 'index', parents: ['parent'] }),
+        expect.objectContaining({ path: 'src/App.tsx', token: '*', parents: ['parent'] }),
+      ]);
+      expect(fullReleaseIssues(actual, [])).toEqual([
+        'unclassified source route src/App.tsx:parent',
+        'unclassified source route src/App.tsx:new-unclassified',
+        'unclassified source route src/App.tsx:index',
+        'unclassified source route src/App.tsx:*',
+      ]);
+      const entry: NamespaceCoverage = { namespace: 'new', routeTokens: [], qualifiedRouteTokens: ['src/App.tsx:parent', 'src/App.tsx:new-unclassified', 'src/App.tsx:index', 'src/App.tsx:*'], surfaces: [], status: 'translated' };
+      expect(fullReleaseIssues(actual, [entry])).toEqual([]);
+      expect(fullReleaseIssues(actual, [{ ...entry, status: 'english-only' }])).toContain('full release refuses english-only namespace new');
+    }
+    put('src/App.tsx', "import * as Router from 'react-router-dom'; export function App() { return <Router.Route path={computed} />; }");
+    expect(() => inventorySource(root)).toThrow(/unsupported computed route path src\/App.tsx#App/);
+  }));
+
   it('C7 import-only/declaration is not mounting, alias and static render-return call are; invented and undefined owners refuse', () => diskFixture((root, put) => {
     put('src/shared/Owner.tsx', 'export function ActualDialog() { return <p>{label}</p>; }');
     put('src/App.tsx', "import { ActualDialog as AliasedDialog } from './shared/Owner'; export function App() { return <p>{label}</p>; }");

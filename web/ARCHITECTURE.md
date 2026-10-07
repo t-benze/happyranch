@@ -83,8 +83,12 @@ stale or overbroad exceptions while ordinary lint preserves other rules.
 `scripts/i18n-source-inventory.mjs` reads shipping HTML and static configuration
 without executing Vite's daemon reader. It supports the current single main
 entry and aligned @/relative imports, reexports, literal lazy imports and static
-JSX/render-return mounts. Entry/root/alias changes, computed route/lazy inputs
-and promoted test/story/catalog/prototype owners require explicit resolution.
+JSX/render-return mounts. Route identity follows named and namespace imports and
+reexports from `react-router-dom`, including parent paths across aliases. Root
+`createRoot(...).render(...)` calls accept direct JSX or statically bound JSX
+constants (including aliases and bound root handles); other arguments refuse
+with their source before release. Uncalled declarations remain unmounted.
+Entry/root/alias changes, computed route/lazy inputs and promoted test/story/catalog/prototype owners require explicit resolution.
 Imports alone never qualify a dialog. `coverage.test.ts` feeds these actual
 source sites into the pure full-release guard: new owners need exact qualified
 identities, including index/wildcard collisions; every english-only namespace

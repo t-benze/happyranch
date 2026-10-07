@@ -213,17 +213,21 @@ export function inventorySource(webRoot = process.cwd()) {
       }
       if (ts.isImportDeclaration(statement) && !statement.importClause?.isTypeOnly) {
         const target = localPath(file, statement.moduleSpecifier.text), clause = statement.importClause;
-        if (target && clause) {
-          if (clause.name) m.imports.set(clause.name.text, { target, name: 'default' });
-          if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) for (const i of clause.namedBindings.elements) if (!i.isTypeOnly) m.imports.set(i.name.text, { target, name: i.propertyName?.text ?? i.name.text });
-          if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) m.imports.set(clause.namedBindings.name.text, { target, name: '*' });
+        if (clause) {
+          const origin = target ? { target } : { external: statement.moduleSpecifier.text };
+          if (clause.name) m.imports.set(clause.name.text, { ...origin, name: 'default' });
+          if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) for (const i of clause.namedBindings.elements) if (!i.isTypeOnly) m.imports.set(i.name.text, { ...origin, name: i.propertyName?.text ?? i.name.text });
+          if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) m.imports.set(clause.namedBindings.name.text, { ...origin, name: '*' });
         }
       }
       if (ts.isExportDeclaration(statement) && !statement.isTypeOnly) {
         const target = statement.moduleSpecifier && localPath(file, statement.moduleSpecifier.text);
+        const origin = target ? { target } : statement.moduleSpecifier ? { external: statement.moduleSpecifier.text } : undefined;
         if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
-          for (const i of statement.exportClause.elements) if (!i.isTypeOnly) m.exports.set(i.name.text, target ? { target, name: i.propertyName?.text ?? i.name.text } : { local: i.propertyName?.text ?? i.name.text });
-        } else if (target) m.stars.push(target);
+          for (const i of statement.exportClause.elements) if (!i.isTypeOnly) m.exports.set(i.name.text, origin ? { ...origin, name: i.propertyName?.text ?? i.name.text } : { local: i.propertyName?.text ?? i.name.text });
+        } else if (statement.exportClause && ts.isNamespaceExport(statement.exportClause) && origin) {
+          m.exports.set(statement.exportClause.name.text, { ...origin, name: '*' });
+        } else if (origin) m.stars.push(origin);
       }
       if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) m.exports.set('default', { local: statement.expression.text });
     }
@@ -235,18 +239,29 @@ export function inventorySource(webRoot = process.cwd()) {
     resolving.add(id);
     try {
       const m = module(file), e = m.exports.get(name);
-      if (e) return e.local ? binding(m, e.local) : exported(e.target, e.name);
-      const results = m.stars.map(target => exported(target, name)).filter(Boolean);
+      if (e) return e.local ? binding(m, e.local) : importedBinding(e);
+      const results = m.stars.map(origin => importedBinding({ ...origin, name })).filter(Boolean);
       if (results.length > 1) throw new Error(`i18n inventory: ambiguous reexport ${m.path}#${name}`);
       return results[0];
     } finally { resolving.delete(id); }
   }
+  function importedBinding(imported) {
+    if (imported.external || imported.name === '*') return imported;
+    return exported(imported.target, imported.name);
+  }
   function binding(m, name) {
     const imported = m.imports.get(name);
-    if (imported) return exported(imported.target, imported.name);
+    if (imported) return importedBinding(imported);
     if (m.definitions.has(name)) {
       const n = unwrap(m.definitions.get(name));
       if (n && ts.isIdentifier(n) && n.text !== name) return binding(m, n.text);
+      if (n && ts.isPropertyAccessExpression(n)) {
+        const target = tagBinding(m, n);
+        // Retain local owners for ordinary property-valued declarations. Only
+        // these imported factories/tags need external provenance at consumers.
+        if (target?.m || target?.external === 'react-router-dom' && target.name === 'Route'
+          || target?.external === 'react-dom/client' && target.name === 'createRoot') return target;
+      }
       // Literal lazy imports, including the named-export .then wrapper.
       if (n && ts.isCallExpression(n) && /(?:^|\.)lazy$/.test(n.expression.getText(m.ast))) {
         let target, exportName = 'default';
@@ -267,11 +282,35 @@ export function inventorySource(webRoot = process.cwd()) {
   }
   function tagBinding(m, tag) {
     if (ts.isIdentifier(tag)) return binding(m, tag.text);
-    if (ts.isPropertyAccessExpression(tag) && ts.isIdentifier(tag.expression)) {
-      const imported = m.imports.get(tag.expression.text);
-      if (imported?.name === '*') return exported(imported.target, tag.name.text);
+    if (ts.isPropertyAccessExpression(tag)) {
+      const imported = tagBinding(m, tag.expression);
+      if (imported?.name === '*' || imported?.external === 'react-dom/client' && imported.name === 'default') return importedBinding({ ...imported, name: tag.name.text });
     }
     return undefined;
+  }
+  const isRoute = target => target?.external === 'react-router-dom' && target.name === 'Route';
+  function rootRender(m, call) {
+    if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== 'render') return false;
+    let receiver = unwrap(call.expression.expression);
+    if (receiver && ts.isIdentifier(receiver)) receiver = unwrap(binding(m, receiver.text)?.node);
+    if (!receiver || !ts.isCallExpression(receiver)) return false;
+    const factory = tagBinding(m, receiver.expression);
+    return factory?.external === 'react-dom/client' && factory.name === 'createRoot';
+  }
+  function visitRenderRoot(m, call) {
+    const argument = unwrap(call.arguments[0]);
+    if (argument?.kind === ts.SyntaxKind.NullKeyword) return;
+    if (argument && [ts.SyntaxKind.JsxElement, ts.SyntaxKind.JsxSelfClosingElement, ts.SyntaxKind.JsxFragment].includes(argument.kind)) {
+      visitOwner(m, sourceSymbol(argument, m.ast), argument);
+      return;
+    }
+    const target = argument && ts.isIdentifier(argument) && binding(m, argument.text);
+    const value = unwrap(target?.node);
+    if (value && [ts.SyntaxKind.JsxElement, ts.SyntaxKind.JsxSelfClosingElement, ts.SyntaxKind.JsxFragment].includes(value.kind)) {
+      visitOwner(target.m, target.name, target.node);
+      return;
+    }
+    throw new Error(`i18n inventory: unsupported render root ${m.path} -> ${argument?.getText(m.ast)}; use direct JSX or a static JSX constant before release`);
   }
   function copyFreeElement(node, m, seen = new Set()) {
     if (!node) return false;
@@ -281,7 +320,8 @@ export function inventorySource(webRoot = process.cwd()) {
       if (ts.isJsxExpression(n) && (ts.isJsxElement(n.parent) || ts.isJsxFragment(n.parent)) && n.expression && n.expression.getText(m.ast) !== 'children') free = false;
       if (ts.isJsxAttribute(n) && proseAttributes.has(n.name.getText(m.ast))) free = false;
       if (ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) {
-        const tag = n.tagName.getText(m.ast), target = tagBinding(m, n.tagName);
+        const tag = n.tagName.getText(m.ast), resolved = tagBinding(m, n.tagName);
+        const target = resolved?.m ? resolved : undefined;
         if (target) {
           const id = `${target.m.path}#${target.name}`;
           if (!seen.has(id)) { seen.add(id); if (!copyFreeElement(target.node, target.m, seen)) free = false; }
@@ -306,22 +346,23 @@ export function inventorySource(webRoot = process.cwd()) {
         if (flag?.m.path !== 'src/prototypes/index.tsx' || flag.node?.getText(flag.m.ast).replace(/\s+/g, '') !== 'import.meta.env.PROD&&!import.meta.env.VITE_ENABLE_PROTOTYPES') throw new Error(`i18n inventory: unsupported prototype gate ${m.path}; review production promotion`);
         return;
       }
+      if (ts.isCallExpression(n) && rootRender(m, n)) visitRenderRoot(m, n);
       if (ts.isCallExpression(n) && n.expression.kind === ts.SyntaxKind.ImportKeyword && staticText(n.arguments[0]) === undefined) throw new Error(`i18n inventory: unsupported dynamic import in ${id}`);
       if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
         const called = binding(m, n.expression.text);
-        if (called && /Dialog$/.test(called.name) && hasReturnedJSX(called.node) && !called.m.path.startsWith('src/design-system/primitives/')) dialogs.push({ path: called.m.path, symbol: called.name, consumerPath: m.path, consumerSymbol: name, site: 'render-call' });
+        if (called?.node && /Dialog$/.test(called.name) && hasReturnedJSX(called.node) && !called.m.path.startsWith('src/design-system/primitives/')) dialogs.push({ path: called.m.path, symbol: called.name, consumerPath: m.path, consumerSymbol: name, site: 'render-call' });
       }
       if (ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) {
-        const tag = n.tagName.getText(m.ast), target = tagBinding(m, n.tagName);
-        const imported = ts.isIdentifier(n.tagName) && m.imports.get(n.tagName.text);
-        if (imported && !target || !target && /Dialog$/.test(tag) && !m.ast.statements.some(s => ts.isImportDeclaration(s) && s.importClause?.namedBindings && ts.isNamedImports(s.importClause.namedBindings) && s.importClause.namedBindings.elements.some(e => e.name.text === tag))) throw new Error(`i18n inventory: undefined component ${id} -> ${tag}`);
+        const tag = n.tagName.getText(m.ast), resolved = tagBinding(m, n.tagName);
+        const target = resolved?.m ? resolved : undefined;
+        const imported = ts.isIdentifier(n.tagName) && m.imports.get(n.tagName.text)?.target;
+        if (imported && !target && !resolved?.external || !target && /Dialog$/.test(tag) && !m.ast.statements.some(s => ts.isImportDeclaration(s) && s.importClause?.namedBindings && ts.isNamedImports(s.importClause.namedBindings) && s.importClause.namedBindings.elements.some(e => e.name.text === tag))) throw new Error(`i18n inventory: undefined component ${id} -> ${tag}`);
         const attrs = new Map(n.attributes.properties.filter(ts.isJsxAttribute).map(a => [a.name.getText(m.ast), a.initializer && ts.isJsxExpression(a.initializer) ? a.initializer.expression : a.initializer]));
-        const routerAlias = ts.isIdentifier(n.tagName) && [...m.ast.statements].some(s => ts.isImportDeclaration(s) && s.moduleSpecifier.text === 'react-router-dom' && s.importClause?.namedBindings && ts.isNamedImports(s.importClause.namedBindings) && s.importClause.namedBindings.elements.some(e => e.name.text === tag && (e.propertyName?.text ?? e.name.text) === 'Route'));
-        if (routerAlias) {
+        if (isRoute(resolved)) {
           const token = attrs.has('index') ? 'index' : staticText(attrs.get('path'));
           if (attrs.has('path') && token === undefined) throw new Error(`i18n inventory: unsupported computed route path ${id}`);
           const parents = [];
-          for (let p = n.parent; p; p = p.parent) if (ts.isJsxElement(p) && p.openingElement !== n && p.openingElement.tagName.getText(m.ast) === tag) {
+          for (let p = n.parent; p; p = p.parent) if (ts.isJsxElement(p) && p.openingElement !== n && isRoute(tagBinding(m, p.openingElement.tagName))) {
             const parentPath = p.openingElement.attributes.properties.find(a => ts.isJsxAttribute(a) && a.name.getText(m.ast) === 'path');
             const value = parentPath?.initializer && ts.isJsxExpression(parentPath.initializer) ? parentPath.initializer.expression : parentPath?.initializer;
             const parentToken = staticText(value);
@@ -360,6 +401,14 @@ export function inventorySource(webRoot = process.cwd()) {
   }
   const main = module(resolve(root, 'src/main.tsx'));
   visitOwner(main, '<module>', main.ast);
+  // A module-level render can live inside a variable initializer. Discover its
+  // static argument without treating every declaration/import as a mount.
+  function visitModuleRoots(n) {
+    if (ts.isFunctionLike(n) || ts.isClassDeclaration(n)) return;
+    if (ts.isCallExpression(n) && rootRender(main, n)) visitRenderRoot(main, n);
+    ts.forEachChild(n, visitModuleRoots);
+  }
+  visitModuleRoots(main.ast);
   const seen = new Set();
   const unique = rows => rows.filter(row => { const key = JSON.stringify(row); if (seen.has(key)) return false; seen.add(key); return true; });
   const copies = [...modules.values()].flatMap(m => copySites(m.path, m.source).filter(site => mounted.has(`${site.path}#${site.symbol}`)));
