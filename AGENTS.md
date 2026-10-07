@@ -56,9 +56,13 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   Internal census validity is never collection health or epoch authority.
   Seal-action `/audit` adds the closed optional serving-observation/loaded-identity
   view described in the corrective memory spec; it performs zero durable writes.
-  G1 durable acceptance/B1, both health consumers, installed acceptance,
-  canary/deferred venues and full reporting remain open; backend/CLI guards stay
-  `insufficient_instrumentation`. See the memory section in the feature guide.
+  G1 validates exact admitted manager/independent-QA results, prior finite
+  delegation/command, real owned jobs/outputs and ROOT/CHILD operation evidence.
+  Final acceptance appends an epoch; equivalent replay preserves its original
+  boundary. Probe age <=48h applies at initial/reset final commit. Reports
+  authenticate original admission and current full health without age-expiring
+  that epoch. Installed acceptance and operational venues remain separate gates.
+  See the memory section in the feature guide.
 
 - **Workflow schema U1A foundation (THR-139).** U1A installs the
   unchanged inert version-1 foundation F from `OrgState.load`, after
@@ -369,10 +373,13 @@ admission, activation, or dispatch consumer; those remain later units.
 reducer, validate all four audit streams and consume only persisted version1
 exposure metadata. Backend uses one synchronized SELECT; CLI exhausts two sweeps
 of `/audit` at limit5000 and checks roles/content at a fixed UTC cutoff. Acquisition
-failures refuse as `acquisition_unavailable`, with no partial CLI stdout. G1 trusted
-epoch/canary and current-serving G3 census acceptance remain unavailable in
-this report; `session_start` denotes intended invocations. Raw day/session counts cannot enable
-collection, threshold readiness or tuning. See the memory sections in
+failures refuse as `acquisition_unavailable`, with no partial CLI stdout. Tagged
+G1 authority is revalidated through the shared reducer and serving audit view;
+unversioned or damaged evidence remains `insufficient_instrumentation`.
+`session_start` denotes intended invocations. Valid reports exclude synthetic,
+recovery and pre-start tuples; raw sample counts alone cannot enable collection.
+An operational accepted epoch and its independent within48h health duty are
+separate from source tests, review, CI and deployment. See the memory sections in
 `features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
 
 Integration collection and execution use deterministic external CLI stubs through
