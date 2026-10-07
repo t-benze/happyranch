@@ -96,6 +96,23 @@ def test_full_historical_fixture_reconstructs_and_migrates(tmp_path):
     historical = tmp_path / "historical.db"
     reconstruct_historical_database(historical)
 
+    # Historical overloaded scope values and raw JSON are original persisted
+    # inputs; the shipping installer must not reinterpret them.
+    with sqlite3.connect(historical) as conn:
+        conn.executemany(
+            "INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES (?,?,?,?,?)",
+            [
+                ("TASK-history", "dev_agent", "retained", '{ "n" : 1 }', "2026-01-03T00:00:00Z"),
+                ("config:working_hours", "founder", "retained", None, "2026-01-02T00:00:00Z"),
+                ("thread:THR-history", "dev_agent", "retained", "[]", "2026-01-01T00:00:00Z"),
+                ("artifact:asset-history", "founder", "retained", "null", "2026-01-04T00:00:00Z"),
+            ],
+        )
+        historical_rows = {}
+        for (table,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'"):
+            quoted = '"' + table.replace('"', '""') + '"'
+            historical_rows[table] = [tuple(r) for r in conn.execute(f"SELECT * FROM {quoted}")]
+
     raw = sqlite3.connect(str(historical))
     try:
         inventory = authority._v2_capture_inventory(raw)
@@ -125,6 +142,26 @@ def test_full_historical_fixture_reconstructs_and_migrates(tmp_path):
 
     migrated_db = Database(historical)
     try:
+        from tests.infrastructure.test_audit_task_index import _assert_index
+        _assert_index(migrated_db._conn)
+        for table, values in historical_rows.items():
+            if table in {
+                "talk_messages", "talk_turns", "talks",
+                "skill_lifecycle_materializations", "skill_lifecycle_assignments",
+                "skill_lifecycle_events", "skill_lifecycle_packages",
+            }:
+                continue  # exact maintained retirement migrations, not index repair
+            quoted = '"' + table.replace('"', '""') + '"'
+            actual = [tuple(r) for r in migrated_db._conn.execute(f"SELECT * FROM {quoted}")]
+            if table == "sqlite_sequence":
+                assert all(r in actual for r in values)
+            else:
+                # Existing additive migration columns may append values.
+                if values:
+                    assert [r[:len(values[0])] for r in actual] == values
+                else:
+                    assert actual == []
+        before_reopen = [tuple(r) for r in migrated_db._conn.execute('SELECT * FROM audit_log ORDER BY id')]
         observation = authority.capture_authority_policy_v2_schema_observation(
             migrated_db
         )
@@ -132,6 +169,13 @@ def test_full_historical_fixture_reconstructs_and_migrates(tmp_path):
         assert observation.object_count > fixture["object_count"]
     finally:
         migrated_db._conn.close()
+    for _ in range(2):
+        reopened = Database(historical)
+        try:
+            _assert_index(reopened._conn)
+            assert [tuple(r) for r in reopened._conn.execute('SELECT * FROM audit_log ORDER BY id')] == before_reopen
+        finally:
+            reopened.close()
 
 
 def _admit_historical(tmp_path, *, carrier=None, admission=None):
@@ -340,6 +384,8 @@ def test_complete_e_real_v2_claim_continues_and_keeps_observation_diagnostic(tmp
             migrate_draft_schema(conn,expected_org_slug='test-org')
         observed = authority.capture_authority_policy_v2_schema_observation(db)
         assert observed is not None
+        from tests.infrastructure.test_audit_task_index import _assert_index
+        _assert_index(db._conn)
         db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
         _log_ordinary_completion(db,row['id'])
         def forbidden_reference(*args, **kwargs):
@@ -370,6 +416,11 @@ def test_complete_e_real_v2_claim_continues_and_keeps_observation_diagnostic(tmp
         assert persisted.schema_raw_digest == observed.raw_digest
         assert persisted.schema_inventory_digest == observed.inventory_digest
         assert persisted.schema_object_count == observed.object_count
+        pin = store.get_v2_pin(persisted.candidate_id)
+        assert pin is not None
+        assert pin.schema_raw_digest == observed.raw_digest
+        assert pin.schema_inventory_digest == observed.inventory_digest
+        assert pin.schema_object_count == observed.object_count
         final = db.get_authority_policy_v2_attempt_for_result(row['id'])
         assert final.stage == 'consumed_audited' and final.finalization_state == 'continued'
         assert db.get_task(TASK_ID).status is TaskStatus.PENDING

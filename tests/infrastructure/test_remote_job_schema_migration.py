@@ -636,6 +636,8 @@ def test_authentic_historical_script_request_families_converge_and_preserve_valu
     Database(path).close()
 
     with sqlite3.connect(path) as conn:
+        from tests.infrastructure.test_audit_task_index import _assert_index
+        _assert_index(conn)
         assert conn.execute(
             "SELECT id,task_id,agent_name,title,rationale,script_text,interpreter,"
             "cwd_hint,status,exit_code,stdout_head,stderr_head,stdout_path,stderr_path,"
@@ -746,6 +748,7 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
                 # unique index. The exact allowed DDL delta is asserted below.
                 "thread_invocations",
                 "idx_thread_invocations_reply_message",
+                "idx_audit_log_task_id",
             }
             and row[2] not in {
                 "remote_runners",
@@ -758,6 +761,8 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         if table not in {"remote_runners", "remote_runner_schema_migrations"}:
             assert after_rows[table] == rows
     with sqlite3.connect(path) as conn:
+        from tests.infrastructure.test_audit_task_index import _assert_index
+        _assert_index(conn)
         after_thread_columns = conn.execute(
             "PRAGMA table_info(thread_invocations)"
         ).fetchall()

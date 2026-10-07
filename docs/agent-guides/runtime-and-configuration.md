@@ -773,6 +773,35 @@ fallback to the fresh `daemon.port` file.
 
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
+### Task-scoped audit index installation (THR-278)
+
+`Database` uses its existing connection and initialization path to install one
+nonunique, nonpartial `idx_audit_log_task_id ON audit_log(task_id)` after the
+audit table exists. It applies to fresh and existing databases and is idempotent
+on reopen. It preserves historical rows, raw scopes, payload bytes, IDs and
+writer transaction boundaries; it adds no `task_results` index.
+
+For a separately authorized operator, install the reviewed source using the
+deployment procedure for that runtime, with its locked dependencies and
+compatible binaries. Before the ordinary restart, drain active consumers and
+take the normal consistent database backup. Use `scripts/daemon.sh start` and
+`scripts/daemon.sh status` under that operational authorization; the existing
+startup initializer installs the index. No standalone live SQL repair is needed.
+Verify the installed source revision, normal health/readiness and each org's
+ready/fenced receipt separately. With a read-only SQLite inspection, verify the
+exact index SQL, `PRAGMA index_list('audit_log')` nonunique/nonpartial flags and
+`PRAGMA index_info('idx_audit_log_task_id')` single `task_id` key; the unchanged
+task-scoped query should report `SEARCH audit_log USING INDEX
+idx_audit_log_task_id` without a temporary ORDER BY tree. Read back retained
+audit IDs/raw scopes and actual decoded results. Measure live startup after
+installation before claiming readiness within the default 30 seconds.
+
+Rollback uses a reviewed compatible release that understands the complete
+indexed schema and preserves the index/history. A preceding reader whose v1
+reference lacks the index can refuse full-schema comparison; do not claim it
+is downgrade compatible, drop the index live, or rewrite failed attempt residue.
+Merged source alone proves neither installed schema nor live settings repair.
+
 ## Running Tests
 
 For where new test files belong, see the forward-only
