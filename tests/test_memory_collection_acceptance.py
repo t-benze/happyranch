@@ -699,6 +699,8 @@ def _g1_source_failure_receipts(org, created, scenario, phase):
     v24: the two natural-boundary owners and two diagnostic owners observe
     complete attributable failure logs. Dropping emission loses hosted evidence;
     existing completion predicates and ephemeral files do not own that contract.
+    Each independent read preserves earlier evidence; damaged nested commands
+    retain their raw value without supplying a successful command or callback.
     No production hook or positive outcome is supplied.
     """
     import os
@@ -730,43 +732,78 @@ def _g1_source_failure_receipts(org, created, scenario, phase):
 
     receipts=[]
     for tid in created:
+        # Acquire each field independently: a later read cannot replace the
+        # authentic task/session, executor outcome, streams or other receipts.
+        receipt={'finding':'SOURCE task/provider failure receipts','scenario':scenario,'phase':phase,
+                 'task_id':tid,'session_id':None,'task':None,'task_state':'missing',
+                 'results':None,'results_state':'unavailable','evidence_errors':[]}
         try:
             task=org.db.get_task(tid)
-            row=task.model_dump(mode='json') if task is not None else None
-            sid=task.current_session_id if task is not None else None
-            results=org.db.get_task_results(tid)
-            base=Path(str(config_path)+'.'+str(sid))
-            provider=attributed(read(Path(str(base)+'.provider.json'),structured=True),tid,sid)
-            executor=attributed(read(config_path.parent/((sid or tid)+'.executor.json'),structured=True),tid,sid)
-            commands=provider.get('value',{}).get('commands')
-            callback_commands=[c for c in (commands or []) if isinstance(c,dict)
-                and isinstance(c.get('argv'),list) and 'report-completion' in c['argv']]
-            callback_command=callback_commands[-1] if callback_commands else None
-            # Only this real session's persisted results can demonstrate admission.
-            callback_results=[r for r in results if sid is not None and r.get('session_id')==sid
-                              and r.get('agent')==(row or {}).get('assigned_agent')]
-            callback_payload=read(config_path.parent/'daemon'/((sid or tid)+'.completion.json'),structured=True)
-            if callback_payload['state']=='recorded':
-                callback_payload=attributed(callback_payload,tid,sid)
-            receipt={'finding':'SOURCE task/provider failure receipts','scenario':scenario,'phase':phase,
-                'task_id':tid,'session_id':sid,'task':row,'results':results,
-                'results_state':'recorded' if results else 'missing',
-                'executor':executor,'provider':provider,
-                'commands_state':'recorded' if isinstance(commands,list) and commands else 'missing',
-                'commands':commands,'provider_stdout':read(Path(str(base)+'.stdout')),
-                'provider_stderr':read(Path(str(base)+'.stderr')),
-                'provider_error':read(Path(str(base)+'.error')),
-                'provider_recorder_error':read(Path(str(base)+'.recorder-error')),
-                'provider_missing_fields':[key for key in ('argv','started_ns','ended_ns','commands')
-                    if key not in provider.get('value',{})],
-                'executor_outcome':('raised' if executor.get('value',{}).get('exception') else
-                    'returned' if isinstance(executor.get('value',{}).get('result'),dict) else 'missing'),
-                'parsed_report':executor.get('value',{}).get('report'),
-                'actual_callback':{'state':'persisted' if callback_results else 'missing',
-                    'results':callback_results,'command':callback_command,'payload':callback_payload}}
+            if task is not None:
+                receipt['session_id']=task.current_session_id
+                receipt['task']=task.model_dump(mode='json')
+                receipt['task_state']='recorded'
         except Exception as exc:
-            receipt={'finding':'SOURCE recorder failure','task_id':tid,
-                     'exception':repr(exc),'task':None}
+            receipt['task_state']='unavailable'
+            receipt['evidence_errors'].append({'field':'task','exception':repr(exc)})
+        sid=receipt['session_id']
+        row=receipt['task']
+        try:
+            results=org.db.get_task_results(tid)
+            receipt['results']=results
+            receipt['results_state']=('recorded' if results else 'missing') if (
+                isinstance(results,list) and all(isinstance(r,dict) for r in results)) else 'malformed'
+        except Exception as exc:
+            receipt['evidence_errors'].append({'field':'results','exception':repr(exc)})
+        results=receipt['results'] if receipt['results_state'] in ('recorded','missing') else []
+        base=Path(str(config_path)+'.'+str(sid))
+        provider=attributed(read(Path(str(base)+'.provider.json'),structured=True),tid,sid)
+        executor=attributed(read(config_path.parent/((sid or tid)+'.executor.json'),structured=True),tid,sid)
+        commands=provider.get('value',{}).get('commands')
+        command_evidence=[]
+        if provider['state']!='recorded':
+            commands_state=provider['state']
+        elif commands is None or commands==[]:
+            commands_state='missing'
+        elif not isinstance(commands,list):
+            commands_state='malformed'
+            command_evidence=[{'state':'malformed','raw':commands}]
+        else:
+            for command in commands:
+                if (isinstance(command,dict) and isinstance(command.get('argv'),list)
+                        and command['argv'] and all(isinstance(arg,str) for arg in command['argv'])):
+                    command_evidence.append({'state':'recorded','value':command})
+                else:
+                    command_evidence.append({'state':'malformed','raw':command})
+            commands_state='partial' if any(c['state']=='malformed' for c in command_evidence) else 'recorded'
+        callback_commands=[c['value'] for c in command_evidence if c['state']=='recorded'
+                           and 'report-completion' in c['value']['argv']]
+        callback_command=callback_commands[-1] if callback_commands else None
+        # Only this real session's persisted results can demonstrate admission.
+        callback_results=[r for r in results if sid is not None and r.get('session_id')==sid
+                          and r.get('agent')==(row or {}).get('assigned_agent')]
+        callback_state=('persisted' if callback_results else 'missing') if (
+            receipt['results_state'] in ('recorded','missing') and receipt['task_state']=='recorded') else 'unavailable'
+        callback_payload=attributed(read(config_path.parent/'daemon'/((sid or tid)+'.completion.json'),
+                                         structured=True),tid,sid)
+        executor_value=executor.get('value',{})
+        parsed_report=executor_value.get('report')
+        receipt.update({'executor':executor,'provider':provider,
+            'commands_state':commands_state,'commands':commands,'command_evidence':command_evidence,
+            'provider_stdout':read(Path(str(base)+'.stdout')),
+            'provider_stderr':read(Path(str(base)+'.stderr')),
+            'provider_error':read(Path(str(base)+'.error')),
+            'provider_recorder_error':read(Path(str(base)+'.recorder-error')),
+            'provider_missing_fields':[key for key in ('argv','started_ns','ended_ns','commands')
+                if key not in provider.get('value',{})],
+            'executor_outcome':('raised' if executor_value.get('exception') else
+                'returned' if isinstance(executor_value.get('result'),dict) else
+                'malformed' if executor_value.get('result') is not None else 'missing'),
+            'parsed_report':parsed_report,
+            'parsed_report_state':('recorded' if isinstance(parsed_report,dict) else
+                'missing' if parsed_report is None else 'malformed'),
+            'actual_callback':{'state':callback_state,'results':callback_results,
+                'command':callback_command,'payload':callback_payload}})
         receipts.append(receipt)
         if receipt.get('task') is None or receipt['task']['status']!='completed':
             print(json.dumps(receipt,sort_keys=True,default=str))
@@ -3189,7 +3226,8 @@ def test_natural_source_failed_command_receipts(g1_source_org,tmp_path,capsys,fa
 
 
 @pytest.mark.parametrize('g1_source_org',['natural-boundaries'],indirect=True)
-@pytest.mark.parametrize('fault',['missing-callback','executor-exception','recorder-error'])
+@pytest.mark.parametrize('fault',['missing-callback','executor-exception','recorder-error',
+                                  'nested-commands','evidence-read-error'])
 def test_natural_source_missing_callback_and_exception_receipts(g1_source_org,tmp_path,monkeypatch,capsys,fault):
     """v24, all cases: full failed task/session evidence distinguishes clean
     return without callback, actual producer exception, and recorder loss.
@@ -3198,6 +3236,21 @@ def test_natural_source_missing_callback_and_exception_receipts(g1_source_org,tm
     natural500 owners have no deliberate missing/partial/foreign receipt case.
     No production hook: only disposable provider bytes and test-side negatives
     at the existing launch/receipt-write boundary; no positive is fabricated.
+
+    D1013-01 v24, nested-commands and evidence-read-error:
+    1. The full emitted JSON retains the real failed task/status/note/results,
+       exact session, clean ExecutorResult exit0, parsed report, provider record
+       and complete stdout/stderr, with missing callback. Damaged commands and
+       independent result/stream read failures stay explicitly unavailable.
+    2. The published helper's commands:1 iteration or all-or-nothing reader
+       fallback discards the acquired session; RED observes that lost identity.
+       Restoring the corrected helper byte-exactly gives GREEN on the same seam.
+    3. The existing missing-callback case owns lost/partial/foreign files, but
+       not attributable malformed nested data or a later DB/stream-reader error.
+       The failed-command owner observes subprocess failures, not recorder loss.
+    4. No production seam. Actual queue/provider/session/result writers run;
+       only disposable recorded data and independent readers are damaged, with
+       finally restoration. No successful task/result/callback is manufactured.
     """
     import asyncio
     import os
@@ -3295,6 +3348,133 @@ def test_natural_source_missing_callback_and_exception_receipts(g1_source_org,tm
         finally:
             provider_record.write_bytes(saved_provider);executor_record.write_bytes(saved_executor)
         assert provider_record.read_bytes()==saved_provider and executor_record.read_bytes()==saved_executor
+        if fault in ('nested-commands','evidence-read-error'):
+            actual_provider=json.loads(saved_provider)
+            actual_executor=json.loads(saved_executor)
+            actual_results=org.db.get_task_results(tid)
+            actual_stdout=Path(str(config_path)+'.'+task.current_session_id+'.stdout').read_text()
+            actual_stderr=Path(str(config_path)+'.'+task.current_session_id+'.stderr').read_text()
+            assert task.note=='agent session failed (rc=0; no completion callback)'
+            assert actual_results==[] and actual_executor['report'] is None
+            assert actual_executor['result']['returncode']==0 and actual_executor['result']['success'] is True
+
+            def assert_emitted(phase, *, results_available=True, stderr_available=True):
+                returned=_g1_source_failure_receipts(org,[tid],fault,phase)
+                emitted=capsys.readouterr().out
+                decoded=json.loads(emitted)
+                assert returned==[decoded],('full emitted JSON differs',returned,emitted)
+                assert decoded.get('task_id')==tid and decoded.get('session_id')==task.current_session_id, (
+                    'available session was discarded',decoded,task.current_session_id)
+                assert decoded['task']==task.model_dump(mode='json')
+                assert decoded['task']['status']=='failed' and decoded['task']['note']==task.note
+                assert decoded['executor']=={'state':'recorded','value':actual_executor}
+                assert decoded['executor_outcome']=='returned' and decoded['parsed_report'] is None
+                assert decoded['provider_stdout']=={'state':'recorded','text':actual_stdout}
+                if stderr_available:
+                    assert decoded['provider_stderr']=={'state':'recorded','text':actual_stderr}
+                assert decoded['actual_callback']['command'] is None
+                assert decoded['actual_callback']['payload']['state']=='missing'
+                assert decoded['actual_callback']['results']==[]
+                if results_available:
+                    assert decoded['results']==actual_results and decoded['results_state']=='missing'
+                    assert decoded['actual_callback']['state']=='missing'
+                else:
+                    assert decoded['results'] is None and decoded['results_state']=='unavailable'
+                    assert decoded['actual_callback']['state']=='unavailable'
+                return decoded
+
+            if fault=='nested-commands':
+                # All commands retained below originate in this actual provider;
+                # malformed members supply no invented successful outcome.
+                partial=[actual_provider['commands'][0],1,{}, {'argv':1},
+                         {'argv':['report-completion',None]}]
+                variants=[('integer',1,'malformed'),('string','damaged','malformed'),
+                          ('object',{'damaged':True},'malformed'),
+                          ('null',None,'missing'),('empty',[],'missing'),
+                          ('partial',partial,'partial')]
+                try:
+                    for label,commands,state in variants:
+                        damaged={**actual_provider,'commands':commands}
+                        provider_record.write_text(json.dumps(damaged))
+                        decoded=assert_emitted(label)
+                        assert decoded['provider']=={'state':'recorded','value':damaged}
+                        assert decoded['commands']==commands and decoded['commands_state']==state
+                        if state=='malformed':
+                            assert decoded['command_evidence']==[{'state':'malformed','raw':commands}]
+                        elif state=='partial':
+                            assert decoded['command_evidence'][0]=={'state':'recorded','value':partial[0]}
+                            assert decoded['command_evidence'][1:]==[
+                                {'state':'malformed','raw':member} for member in partial[1:]]
+                        else:
+                            assert decoded['command_evidence']==[]
+                    absent={key:value for key,value in actual_provider.items() if key!='commands'}
+                    provider_record.write_text(json.dumps(absent))
+                    decoded=assert_emitted('absent')
+                    assert decoded['provider']=={'state':'recorded','value':absent}
+                    assert decoded['commands'] is None and decoded['commands_state']=='missing'
+                    # Use an independently produced completed fixture task's
+                    # actual callback command/payload, never a synthetic success.
+                    foreign_path=next(path for path in config_path.parent.glob(config_path.name+'.*.provider.json')
+                        if path!=provider_record and any('report-completion' in command['argv']
+                            for command in json.loads(path.read_text())['commands']))
+                    foreign=json.loads(foreign_path.read_text())
+                    assert foreign['task_id']!=tid and foreign['session_id']!=task.current_session_id
+                    foreign_task=org.db.get_task(foreign['task_id'])
+                    assert foreign_task.status.value=='completed'
+                    foreign_payload=(config_path.parent/'daemon'/(foreign['session_id']+'.completion.json')).read_bytes()
+                    payload_path=config_path.parent/'daemon'/(task.current_session_id+'.completion.json')
+                    assert not payload_path.exists()
+                    try:
+                        provider_record.write_bytes(foreign_path.read_bytes())
+                        executor_record.write_text(json.dumps({**actual_executor,
+                            'task_id':foreign['task_id'],'session_id':foreign['session_id']}))
+                        payload_path.write_bytes(foreign_payload)
+                        _g1_source_failure_receipts(org,[tid],fault,'foreign')
+                        decoded=json.loads(capsys.readouterr().out)
+                        assert decoded['task']==task.model_dump(mode='json') and decoded['session_id']==task.current_session_id
+                        assert decoded['provider']['state']=='identity_mismatch' and 'value' not in decoded['provider']
+                        assert decoded['executor']['state']=='identity_mismatch' and 'value' not in decoded['executor']
+                        assert decoded['commands_state']=='identity_mismatch' and decoded['commands'] is None
+                        assert decoded['command_evidence']==[] and decoded['parsed_report'] is None
+                        assert decoded['actual_callback']['state']=='missing' and decoded['actual_callback']['results']==[]
+                        assert decoded['actual_callback']['command'] is None
+                        assert decoded['actual_callback']['payload']['state']=='identity_mismatch'
+                    finally:
+                        payload_path.unlink()
+                finally:
+                    provider_record.write_bytes(saved_provider);executor_record.write_bytes(saved_executor)
+            else:
+                original_results=org.db.get_task_results
+                original_read=Path.read_text
+                def failed_results(task_id):
+                    if task_id==tid:
+                        raise OSError('distinct result reader failure after task identity')
+                    return original_results(task_id)
+                try:
+                    monkeypatch.setattr(org.db,'get_task_results',failed_results)
+                    decoded=assert_emitted('results-read-error',results_available=False)
+                    assert decoded['provider']=={'state':'recorded','value':actual_provider}
+                    assert decoded['commands']==actual_provider['commands'] and decoded['commands_state']=='recorded'
+                    assert decoded['evidence_errors']==[{'field':'results',
+                        'exception':"OSError('distinct result reader failure after task identity')"}]
+                finally:
+                    monkeypatch.setattr(org.db,'get_task_results',original_results)
+                stderr_path=Path(str(config_path)+'.'+task.current_session_id+'.stderr')
+                def failed_stderr(path,*args,**kwargs):
+                    if path==stderr_path:
+                        raise OSError('distinct stderr reader failure after task identity')
+                    return original_read(path,*args,**kwargs)
+                try:
+                    monkeypatch.setattr(Path,'read_text',failed_stderr)
+                    decoded=assert_emitted('stderr-read-error',stderr_available=False)
+                    assert decoded['provider']=={'state':'recorded','value':actual_provider}
+                    assert decoded['provider_stderr']=={'state':'unavailable','path':str(stderr_path),
+                        'exception':"OSError('distinct stderr reader failure after task identity')"}
+                    assert decoded['commands']==actual_provider['commands'] and decoded['commands_state']=='recorded'
+                finally:
+                    monkeypatch.setattr(Path,'read_text',original_read)
+                assert org.db.get_task_results(tid)==actual_results and stderr_path.read_text()==actual_stderr
+            assert provider_record.read_bytes()==saved_provider and executor_record.read_bytes()==saved_executor
     assert provider.read_bytes()==original
     assert org.db.get_task(tid).status.value=='failed'
 
