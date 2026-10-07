@@ -415,6 +415,8 @@ def _read_verified(package: Path) -> tuple[dict[str, bytes], dict[str, object]]:
         if manifest["sidecar_dependency_count"] != len(inventory["modules"]):
             raise PackageError("manifest_count_invalid")
         sbom = json.loads(files["share/sbom.cdx.json"])
+        if not isinstance(sbom, dict):
+            raise PackageError("sbom_invalid")
         if (type(sbom.get("version")) is not int or sbom.get("bomFormat") != "CycloneDX"
                 or sbom.get("specVersion") != "1.5" or not isinstance(sbom.get("components"), list)):
             raise PackageError("sbom_invalid")

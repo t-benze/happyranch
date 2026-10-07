@@ -2866,15 +2866,19 @@ def test_archive_rejects_traversal_and_unmanifested_members_before_write(
         assert _tree_snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize("mutation", ["inventory_boolean", "sbom_missing_purl", "notice_wrong_content"])
+@pytest.mark.parametrize("mutation", [
+    "inventory_boolean", "sbom_missing_purl", "notice_wrong_content",
+    "sbom_array", "sbom_null", "sbom_boolean", "sbom_string", "sbom_integer",
+])
 def test_complete_evidence_structure_fails_closed_before_write(tmp_path: Path, mutation: str) -> None:
     package = build_linux_package(tmp_path / "pkg.tar", *_inputs(tmp_path), version="1")
     def mutate(entries) -> None:
         manifest_i = next(i for i, (m, _) in enumerate(entries) if m.name.endswith("manifest.json"))
         manifest_member, manifest_raw = entries[manifest_i]
         manifest = json.loads(manifest_raw)
-        suffix = {"inventory_boolean": "dependency-inventory.json", "sbom_missing_purl": "sbom.cdx.json",
-                  "notice_wrong_content": "THIRD_PARTY_NOTICES.md"}[mutation]
+        suffix = ("sbom.cdx.json" if mutation.startswith("sbom_") else
+                  {"inventory_boolean": "dependency-inventory.json",
+                   "notice_wrong_content": "THIRD_PARTY_NOTICES.md"}[mutation])
         evidence_i = next(i for i, (m, _) in enumerate(entries) if m.name.endswith(suffix))
         evidence_member, evidence_raw = entries[evidence_i]
         if mutation == "inventory_boolean":
@@ -2883,6 +2887,11 @@ def test_complete_evidence_structure_fails_closed_before_write(tmp_path: Path, m
         elif mutation == "sbom_missing_purl":
             evidence = json.loads(evidence_raw); evidence["components"][0].pop("purl")
             evidence_raw = json.dumps(evidence).encode()
+        elif mutation.startswith("sbom_"):
+            evidence_raw = json.dumps({
+                "sbom_array": [], "sbom_null": None, "sbom_boolean": True,
+                "sbom_string": "non-object", "sbom_integer": 7,
+            }[mutation]).encode()
         else:
             evidence_raw = evidence_raw.replace(b"fixture license", b"tampered license")
         entries[evidence_i] = evidence_member, evidence_raw
@@ -2890,9 +2899,17 @@ def test_complete_evidence_structure_fails_closed_before_write(tmp_path: Path, m
         next(item for item in manifest["files"] if item["path"] == relative)["sha256"] = hashlib.sha256(evidence_raw).hexdigest()
         entries[manifest_i] = manifest_member, json.dumps(manifest).encode()
     root = tmp_path / "root"
-    with pytest.raises(PackageError):
-        install_linux_package(_rewrite_package(package, tmp_path / "bad.tar", mutate), root)
-    assert not root.exists()
+    malformed = _rewrite_package(package, tmp_path / "bad.tar", mutate)
+    before = _tree_snapshot(tmp_path)
+    expected = "^sbom_invalid$" if mutation in {
+        "sbom_array", "sbom_null", "sbom_boolean", "sbom_string", "sbom_integer",
+    } else None
+    try:
+        with pytest.raises(PackageError, match=expected):
+            install_linux_package(malformed, root)
+    finally:
+        assert not root.exists()
+        assert _tree_snapshot(tmp_path) == before
 
 
 def _installer_snapshot(root: Path) -> dict[str, tuple]:
