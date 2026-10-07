@@ -389,6 +389,10 @@ host cannot run integration tests, including through jobs. See `docs/local-ci.md
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
+For authorized integration-skipped clean-head `scripts/local_ci.sh all`, use
+the existing manual nightly workflow with `run_integration=false` on the exact
+candidate ref. Authenticate the local-ci-all receipt and actual separate
+integration SKIPPED result. Schedule/default-true behavior remains unchanged.
 
 ## Commands
 
@@ -431,6 +435,13 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
   re-dispatch an edit-forbidden CI-only brief unchanged after mainline drift.
   The `jobs` skill defines the full gate and the existing external-job terminal
   verdict still controls completion.
+- **Bilingual Web delivery:** Include English and Simplified Chinese for every
+  new or changed app-owned string in the same PR. Provide affected-state evidence
+  in both locales at 390×844 and 1440×900, including draft, focus, selection and
+  original-action preservation with no locale-triggered requests or mutations.
+  Untranslated owned copy or unreadable/unreachable Chinese layout requires
+  `REQUEST_CHANGES`. Automation checks structure and completeness; reviewers
+  assess meaning and usability. Use the PR template and Web guide checklist.
 - **Frontend handoff:** Before review/QA, supply acceptance/spec mapping;
   loading, empty, error, and populated-state coverage; auth/permission
   coverage when applicable; screenshot or deterministic-test evidence; and
@@ -452,6 +463,16 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
 ## Web Contract
 
 Every browser-callable daemon route maps to one TS function in `web/src/lib/api/`.
+
+All new or changed app-owned headings, actions, dialogs, tooltips, accessible
+labels, validation, loading, empty/error states and generated narratives must
+ship English (`en`) and Simplified Chinese (`zh-CN`) together in the same PR.
+Use typed catalogs, named parameters, explicit plurals and locale-aware helpers.
+Pure shared UI receives localized props from its callers. Authored content,
+machine identifiers and raw diagnostics remain verbatim. Preserve drafts, focus,
+selection, navigation and original actions across locale changes; a locale
+change must not trigger a request, mutation or transport restart. See
+`docs/agent-guides/web-and-cli.md` for the affected-state review checklist.
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.

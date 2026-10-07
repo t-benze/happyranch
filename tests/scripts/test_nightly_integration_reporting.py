@@ -4,11 +4,36 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "nightly_integration_summary.py"
 RUNNER = ROOT / "scripts" / "run_bounded_output.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "nightly-integration.yml"
+
+
+def test_manual_integration_opt_out_preserves_default_and_scheduled_execution() -> None:
+    # GitHub consumes these exact YAML keys and expression bytes. BaseLoader
+    # preserves the workflow's `on` key instead of YAML 1.1 boolean coercion.
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    assert isinstance(dispatch, dict), "workflow_dispatch must declare the manual boolean input"
+    inputs = dispatch["inputs"]
+    assert set(inputs) == {"run_integration"}
+    assert inputs["run_integration"]["type"] == "boolean"
+    assert inputs["run_integration"]["default"] == "true"
+    predicate = workflow["jobs"]["integration"]["if"]
+    assert predicate == "${{ github.event_name != 'workflow_dispatch' || inputs.run_integration }}"
+    assert workflow["jobs"]["local-ci-all"]["if"] == "${{ github.event_name == 'workflow_dispatch' }}"
+    for event, requested, expected in [
+        ("schedule", False, True), ("schedule", True, True),
+        ("workflow_dispatch", True, True), ("workflow_dispatch", False, False),
+    ]:
+        expression = predicate[3:-2].strip().replace("||", "or")
+        expression = expression.replace("github.event_name", repr(event))
+        expression = expression.replace("inputs.run_integration", repr(requested))
+        assert eval(expression, {"__builtins__": {}}, {}) is expected
 
 
 def test_summary_reports_counts_and_failed_test_ids(tmp_path: Path) -> None:

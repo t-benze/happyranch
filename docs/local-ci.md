@@ -13,7 +13,16 @@ The HappyRanch Linux daemon host is a special operational boundary: founder
 THR-211 seq270/271 prohibits every integration-marked test there, including
 direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
 Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
-on the exact candidate ref instead. Commands whose unit selection includes real
+on the exact candidate ref instead. For an authorized integration-skipped
+verification, dispatch with `run_integration=false`: the existing manual
+`local-ci-all` job still runs the exact `scripts/local_ci.sh all` command on
+Python 3.14/Node 24, while the separate general integration job is SKIPPED.
+Record its actual checkout SHA, source/tool provenance and command exit from
+the uploaded receipt; submission or publication alone is not a pass. Schedule
+and ordinary manual/default-true dispatch retain the existing integration
+selection. General integration remains SKIPPED under THR-243 seq42 for tasks
+governed by that exception; do not dispatch default true for those tasks.
+Commands whose unit selection includes real
 socket/daemon cases, including `scripts/local_ci.sh all`, also require that
 disposable venue. On-host verification is limited to demonstrably pure offline
 units; Mac integration verification uses the separately authorized disposable

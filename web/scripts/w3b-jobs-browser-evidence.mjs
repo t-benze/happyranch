@@ -59,6 +59,7 @@ const dist = arg('dist') && resolve(arg('dist'));
 const outDir = resolve(arg('out', '.w3b-jobs-evidence'));
 const head = arg('head', 'unknown');
 const chromeBin = arg('chrome', process.env.CHROME_BIN || 'google-chrome');
+const focusedCascade = arg('slice', 'all') === 'cascade';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
@@ -164,6 +165,7 @@ const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
+const CASCADE_TASK = { task_id: 'TASK-CASE-J', brief: 'Raw cascade task / 原文', status: 'in_progress', block_kind: 'blocked_on_job' };
 
 function job(id, extra = {}) {
   return {
@@ -203,6 +205,13 @@ function startServer(root) {
         const p = url.pathname;
         if (p.startsWith('/api/')) {
           LEDGER.push({ method: request.method, path: p, search: url.search, t: Date.now() });
+          if (focusedCascade && p === `/api/v1/orgs/${ORG}/tasks`) {
+            const ref = new URL(request.headers.referer || 'http://127.0.0.1');
+            const state = ref.searchParams.get('cascadeFixture') || 'populated';
+            if (state === 'loading') { HUNG.push(response); return; }
+            response.writeHead(state === 'error' ? 500 : 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+            response.end(JSON.stringify(state === 'error' ? { detail: 'Raw diagnostic' } : { tasks: state === 'empty' ? [] : [CASCADE_TASK], next_cursor: null })); return;
+          }
           if (p.endsWith('/events') || p.includes('/stream') || p.endsWith('/tail')) {
             response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             HUNG.push(response);
@@ -273,7 +282,7 @@ async function main() {
       '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-extensions', '--disable-background-networking', '--hide-scrollbars', '--disable-crash-reporter',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, HOME: userDataDir, TMPDIR: userDataDir } });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: userDataDir } });
     const devtools = await waitForDevTools(userDataDir);
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
@@ -334,6 +343,49 @@ async function main() {
       await sleep(600); // quiescence: any switch-caused request lands in the ledger
     }
 
+    if (focusedCascade) {
+      beginCase('C9-Jobs', 'C9 Jobs cascade populated/loading/empty/error en/zh-CN 390/1440');
+      for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[390, 844], [1440, 900]]) for (const state of ['populated', 'loading', 'empty', 'error']) {
+        const from = LEDGER.length;
+        const page = await openPage(`${base}/orgs/${ORG}/jobs/JOB-901?cascadeFixture=${state}`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width, height });
+        const text = state === 'populated' ? 'Raw cascade task / 原文' : tr(locale, `jobs.cascade.${state === 'error' ? 'loadError' : state}`);
+        check(`C9 Jobs ${locale} ${width} ${state} copy`, await waitTrue(page, bodyHas(text), 'actual cascade state'), true);
+        check(`C9 Jobs ${locale} ${width} ${state} html lang`, await evaluate(page, langIs(locale)), true);
+        check(`C9 Jobs ${locale} ${width} ${state} original query filter`, LEDGER.slice(from).some(row => row.path.endsWith('/tasks') && new URLSearchParams(row.search).get('blocked_on_job_id') === 'JOB-901'), true);
+        check(`C9 Jobs ${locale} ${width} ${state} document bounds`, await evaluate(page, noOverflow), true);
+        const card = `[...document.querySelectorAll('section')].find(s => s.textContent.includes(${JSON.stringify(text)}))`;
+        check(`C9 Jobs ${locale} ${width} ${state} card text/control clipping and readability`, await evaluate(page, `(() => {
+          const card = ${card}; if (!card) return { found: false };
+          card.scrollIntoView({ block: 'center' });
+          const errors = [];
+          for (const el of card.querySelectorAll('h3,p,li > span:not([aria-hidden]),a')) {
+            const r = el.getBoundingClientRect(), css = getComputedStyle(el);
+            if (!r.width || !r.height || r.left < 0 || r.right > innerWidth + 1 || Number.parseFloat(css.fontSize) < 10 || css.visibility !== 'visible' || css.opacity === '0') errors.push(el.tagName + ':bounds/readability');
+            if (!el.classList.contains('truncate')) {
+              const text = document.createRange(); text.selectNodeContents(el);
+              if ([...text.getClientRects()].some(b => b.left < r.left - 1 || b.right > r.right + 1 || b.left < 0 || b.right > innerWidth + 1)) errors.push(el.tagName + ':text bounds');
+            }
+            for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+              const a = ancestor.getBoundingClientRect(), style = getComputedStyle(ancestor);
+              if (/(hidden|clip|auto|scroll)/.test(style.overflowX) && (r.left < a.left - 1 || r.right > a.right + 1)) errors.push(el.tagName + ':clipping ancestor');
+            }
+            if (el.matches('a')) { const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (hit !== el && !el.contains(hit)) errors.push('link:unreachable'); }
+          }
+          return { found: true, errors };
+        })()`), { found: true, errors: [] });
+        if (state === 'populated') {
+          check(`C9 Jobs ${locale} ${width} owned waiting qualifier`, await evaluate(page, bodyHas(tr(locale, 'tasks.waiting.jobs'))), true);
+          check(`C9 Jobs ${locale} ${width} raw status/brief`, await evaluate(page, `${bodyHas('in_progress')} && ${bodyHas('Raw cascade task / 原文')}`), true);
+          const link = `document.querySelector('a[href="/orgs/${ORG}/tasks/TASK-CASE-J"]')`;
+          check(`C9 Jobs ${locale} ${width} original task destination`, await evaluate(page, `Boolean(${link}) && ${link}.textContent === 'TASK-CASE-J'`), true);
+          await capture(page, `c9-jobs-${locale}-${state}-${width}`, { locale, state, viewport: `${width}x${height}` });
+          await clickSrc(page, link);
+          check(`C9 Jobs ${locale} ${width} original navigation action`, await waitTrue(page, `location.pathname === '/orgs/${ORG}/tasks/TASK-CASE-J'`, 'task navigation'), true);
+        } else await capture(page, `c9-jobs-${locale}-${state}-${width}`, { locale, state, viewport: `${width}x${height}` });
+        await closePage(page);
+      }
+      endCase();
+    } else {
     // ============================================================ G
     beginCase('G', 'ordinary bundle contains the Preferences selector (preview enabled, no build flag)');
     for (const s of PREFERENCE_MARKERS) check(`G ordinary JS contains "${s}"`, fingerprint.preferenceMarkers[s], true);
@@ -460,6 +512,7 @@ async function main() {
       await closePage(page);
     }
     endCase();
+    }
   } finally {
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();

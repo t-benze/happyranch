@@ -75,6 +75,10 @@ export interface NamespaceCoverage {
    * mounted page name that declares the token.
    */
   qualifiedRouteTokens?: readonly string[];
+  /** Exact consumer -> owner identities for new source-owned overlay sites. */
+  qualifiedSurfaces?: readonly string[];
+  /** Historical names remain readable, but cannot classify a different owner. */
+  surfaceOwners?: Readonly<Record<string, string>>;
 }
 
 export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
@@ -115,6 +119,12 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'threads',
+    surfaceOwners: {
+      NewThreadDialog: 'src/shared/threads/NewThreadDialog.tsx',
+      InviteDialog: 'src/features/threads/InviteDialog.tsx',
+      ArchiveDialog: 'src/features/threads/ArchiveDialog.tsx',
+      RemoveParticipantDialog: 'src/features/threads/RemoveParticipantDialog.tsx',
+    },
     routeTokens: ['threads', 'threads/:thread_id'],
     // W3a: list/detail panes, composer, strips and the directly owned dialogs
     // (incl. the shared NewThreadDialog it mounts).
@@ -129,6 +139,11 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'tasks',
+    surfaceOwners: {
+      CancelTaskDialog: 'src/features/tasks/CancelTaskDialog.tsx',
+      RevisitTaskDialog: 'src/features/tasks/RevisitTaskDialog.tsx',
+      ResolveEscalationDialog: 'src/features/tasks/ResolveEscalationDialog.tsx',
+    },
     routeTokens: ['tasks', 'tasks/:task_id'],
     // W3b-1: list/detail panes, filters, status/fan-out presentation, states
     // and the directly owned dialogs. Jobs stays english-only until W3b-2.
@@ -143,12 +158,17 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'todos',
+    surfaceOwners: {
+      ConfirmDialog: 'src/features/todos/components/ConfirmDialog.tsx',
+      EditDialog: 'src/features/todos/components/EditDialog.tsx',
+    },
     routeTokens: ['todos', 'todos/:scheduleId'],
     status: 'translated',
     surfaces: ['TodosPage', 'TodoDetailPage', 'ConfirmDialog', 'EditDialog'],
   },
   {
     namespace: 'kb',
+    surfaceOwners: { ComposeKbEntryDialog: 'src/features/kb/ComposeKbEntryDialog.tsx' },
     routeTokens: ['kb', 'kb/:entrySlug/*'],
     status: 'translated',
     surfaces: ['KbPage', 'ComposeKbEntryDialog'],
@@ -161,6 +181,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'skills',
+    surfaceOwners: { CustomSkillDetailPage: 'src/features/skills/CustomSkillDetailPage.tsx' },
     routeTokens: [
       'skills',
       'skills/validation',
@@ -181,12 +202,20 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'agents',
+    surfaceOwners: {
+      AddAgentDialog: 'src/features/agents/AddAgentDialog.tsx',
+      NewThreadDialog: 'src/shared/threads/NewThreadDialog.tsx',
+    },
     routeTokens: ['agents', 'agents/:agent_name', 'agents/:agent_name/team-escalation-policy'],
     status: 'translated',
     surfaces: ['AgentsPage', 'TeamEscalationPolicyPage', 'AddAgentDialog', 'NewThreadDialog'],
   },
   {
     namespace: 'jobs',
+    surfaceOwners: {
+      RunJobDialog: 'src/features/jobs/RunJobDialog.tsx',
+      RejectJobDialog: 'src/features/jobs/RejectJobDialog.tsx',
+    },
     routeTokens: ['jobs', 'jobs/:job_id'],
     status: 'translated',
     surfaces: ['JobsPage', 'JobDetailPage', 'RunJobDialog', 'RejectJobDialog'],
@@ -211,6 +240,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'work-hours',
+    surfaceOwners: { TierEditorDialog: 'src/features/work-hours-config/TierEditorDialog.tsx' },
     routeTokens: ['work-hours', 'work-hours/:agent'],
     status: 'translated',
     surfaces: ['WorkHoursOverviewPage', 'WorkHoursWakesView', 'WorkHoursAgentDetailPage', 'TierEditorDialog'],
@@ -223,6 +253,13 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'settings',
+    surfaceOwners: {
+      ReconfigureDialog: 'src/features/settings/sections/AssistantSection.tsx',
+      EligibilityEditorDialog: 'src/shared/work-hours/EligibilityEditorDialog.tsx',
+    },
+    // The outer wildcard owns loading/error chrome; the nested wildcard is
+    // the historical copy-free redirect. Actual AST ancestry distinguishes it.
+    qualifiedRouteTokens: ['src/features/settings/SettingsPage.tsx#root:*'],
     // `preferences` (W2c) is mounted in ordinary production builds since W3b-2.
     routeTokens: [
       'settings/*',
@@ -259,6 +296,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   },
   {
     namespace: 'app-shell',
+    surfaceOwners: { AddOrgDialog: 'src/features/orgs/AddOrgDialog.tsx' },
     routeTokens: [],
     status: 'translated',
     surfaces: ['AppShell', 'AppBar', 'Sidebar', 'ErrorBoundary', 'AddOrgDialog'],
@@ -272,6 +310,7 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     // Mounted dock body and conversation controls have their own copy evidence.
     namespace: 'system-assistant',
+    surfaceOwners: { AssistantDockHost: 'src/features/system-assistant/AssistantDockHost.tsx' },
     routeTokens: [],
     status: 'translated',
     surfaces: ['AssistantDockHost', 'ConversationSwitcher'],
@@ -360,6 +399,68 @@ export function coverageSummary(): CoverageSummary {
     else summary.notApplicable += 1;
   }
   return summary;
+}
+
+/** Static-source release boundary. Keep Node/fs in scripts, outside this barrel. */
+export interface SourceInventory {
+  modules: string[];
+  mountedSymbols: string[];
+  routes: { path: string; symbol: string; token: string; parents?: string[]; copyFree?: boolean }[];
+  dialogs: { path: string; symbol: string; consumerPath: string; consumerSymbol: string; site: string }[];
+}
+
+/** New modules cannot borrow the historical bare index/wildcard classification. */
+export function classifySourceRoute(path: string, token: string, manifest: readonly NamespaceCoverage[] = COVERAGE_MANIFEST): NamespaceCoverage | undefined {
+  const exact = manifest.find(entry => entry.qualifiedRouteTokens?.includes(`${path}:${token}`));
+  if (exact) return exact;
+  const legacyScope = path === 'src/routes.tsx' ? 'routes.tsx' : path === 'src/features/settings/SettingsPage.tsx' ? 'SettingsPage.tsx' : undefined;
+  if (!legacyScope) return undefined;
+  return manifest.find(entry => entry.qualifiedRouteTokens?.includes(`${legacyScope}:${token}`))
+    ?? manifest.find(entry => entry.routeTokens.includes(token));
+}
+
+function consumerNamespace(path: string, symbol: string): string | undefined {
+  const domain = /^src\/features\/([^/]+)\//.exec(path)?.[1];
+  if (domain) return domain === 'work-hours-config' ? 'work-hours' : domain;
+  if (path.startsWith('src/design-system/layouts/AppShell/') || path === 'src/routes.tsx' && symbol === 'AppShell') return 'app-shell';
+  if (path.startsWith('src/host/')) return 'help-and-palette';
+  return undefined;
+}
+
+export function sourceSurfaceIdentity(site: SourceInventory['dialogs'][number]): string {
+  return `${site.consumerPath}#${site.consumerSymbol}->${site.path}#${site.symbol}:${site.site}`;
+}
+
+/** Full-release source classification, not a rendering or quality assertion. */
+export function fullReleaseIssues(inventory: SourceInventory, manifest: readonly NamespaceCoverage[] = COVERAGE_MANIFEST): string[] {
+  const issues: string[] = [];
+  for (const entry of manifest) {
+    if (entry.status === 'english-only') issues.push(`full release refuses english-only namespace ${entry.namespace}`);
+    for (const identity of entry.qualifiedSurfaces ?? []) {
+      if (!inventory.dialogs.some(site => sourceSurfaceIdentity(site) === identity)) issues.push(`declared but not mounted surface ${identity}`);
+    }
+  }
+  for (const route of inventory.routes) {
+    const ancestry = `${route.path}#${route.parents?.join('/') || 'root'}:${route.token}`;
+    const entry = manifest.find(candidate => candidate.qualifiedRouteTokens?.includes(ancestry))
+      ?? classifySourceRoute(route.path, route.token, manifest);
+    if (!entry) issues.push(`unclassified source route ${route.path}:${route.token}`);
+    else if (entry.status === 'not-applicable' && route.copyFree !== true) issues.push(`not-applicable route has unproved copy-free element ${route.path}:${route.token}`);
+  }
+  const names = new Set(inventory.dialogs.map(site => site.symbol));
+  for (const entry of manifest) for (const surface of entry.surfaces) {
+    if (/^[A-Za-z0-9]+Dialog$/.test(surface) && !names.has(surface)) issues.push(`declared but not mounted dialog ${entry.namespace}:${surface}`);
+  }
+  for (const site of inventory.dialogs) {
+    const identity = sourceSurfaceIdentity(site);
+    const namespace = consumerNamespace(site.consumerPath, site.consumerSymbol);
+    const classified = manifest.some(entry => entry.qualifiedSurfaces?.includes(identity)
+      || entry.namespace === namespace && entry.surfaces.includes(site.symbol)
+        && entry.surfaceOwners?.[site.symbol] === site.path
+        && ['component', 'role:dialog'].includes(site.site));
+    if (!classified) issues.push(`unclassified mounted surface ${identity} (consumer namespace ${namespace ?? 'requires exact identity'})`);
+  }
+  return issues;
 }
 
 /** The visible English marker for a surface that is not translated yet. */
