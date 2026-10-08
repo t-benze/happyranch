@@ -328,9 +328,10 @@ def test_quiescent_concurrent_org_read_swap_shutdown_reopen(shipping,runtime_con
     assert cli('init',str(runtime_container)).returncode==0
     b=runtime_container.parent/'runtime-b'
     assert request(shipping,'POST','/runtime',{'path':str(b)}).status_code==200
+    b_orgs=request(shipping,'GET','/orgs').json()
+    assert b_orgs=={'orgs':[],'broken':[]},b_orgs
     assert request(shipping,'POST','/runtime/use',{'path':str(runtime_container)}).status_code==200
     a_orgs=request(shipping,'GET','/orgs').json()
-    b_orgs={'orgs':[]}
     with ThreadPoolExecutor(max_workers=2) as pool:
         for target in (b,runtime_container,b,runtime_container):
             reads=pool.submit(lambda:[request(shipping,'GET','/orgs') for _ in range(8)])

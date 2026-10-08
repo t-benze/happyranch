@@ -666,3 +666,13 @@ or CLI code. Native
 admission is a prerequisite, not source, wheel, frozen or browser readiness;
 source characterization failures remain failures. Whole-repo collection
 remains held for the complete import-side-effect audit and zero-body admission.
+
+The concurrent org-read case captures both complete served A/B inventories
+before interleaving reads and swaps, including the existing `broken` field.
+Hosted run37849177163 completed all31 candidate and two baseline cases per
+venue: all23 legacy variants and the ordinary refusal/retry tails passed;
+the concurrent case exposed its incomplete empty-response expectation, while
+both independent same-root characterizations failed on candidate and baseline.
+Keep those genuine callback failures and their durable/native receipts. A
+test expectation repair, native admission or artifact provisioning does not
+establish complete retirement or behavioral QA acceptance.
