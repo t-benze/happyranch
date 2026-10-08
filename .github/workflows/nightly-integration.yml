@@ -88,50 +88,57 @@ jobs:
                       'test_cleanup_incomplete_is_hard_failure_and_outer_owner_reaps')]
               candidate_python = source / '.venv/bin/python'
               assert candidate_python.samefile(sys.executable)
+              unit_pause_reason = 'Founder THR-291 seq5/16: Python units SUSPENDED until a new verdict'
+              receipt['python_unit_status'] = 'suspended'
+              receipt['python_unit_reason'] = unit_pause_reason
               receipt['focused'] = [
                   {'command': [str(candidate_python), '-m', 'pytest', *focused_nodes, '-v', '-n', str(workers)],
-                   'timeout_seconds': 300, 'status': 'not_run'} for workers in (0, 4)]
+                   'timeout_seconds': 300, 'status': 'suspended',
+                   'reason': unit_pause_reason} for workers in (0, 4)]
               receipt['all_status'] = 'not_run'
               receipt_path = evidence / 'provenance.json'
               receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
               print(json.dumps(receipt, sort_keys=True), flush=True)
-              for index, focused in enumerate(receipt['focused']):
-                  label = 'focused-serial' if index == 0 else 'focused-parallel'
-                  stdout_path = evidence / (label + '.stdout.log')
-                  stderr_path = evidence / (label + '.stderr.log')
-                  started = time.monotonic()
-                  focused['status'] = 'running'
-                  receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
-                  print(json.dumps(focused, sort_keys=True), flush=True)
-                  with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr:
-                      process = subprocess.Popen(focused['command'], env=env, stdout=stdout,
-                                                 stderr=stderr, start_new_session=True)
-                      try:
-                          exit_code = process.wait(timeout=focused['timeout_seconds'])
-                          focused['timed_out'] = False
-                      except subprocess.TimeoutExpired:
-                          os.killpg(process.pid, signal.SIGKILL)
-                          process.wait()
-                          exit_code = 124
-                          focused['timed_out'] = True
-                  focused.update(status='success' if exit_code == 0 else 'failure',
-                                 exit_code=exit_code, elapsed_seconds=time.monotonic() - started)
-                  full_log = evidence / (label + '.log')
-                  with full_log.open('wb') as combined:
-                      for path, stream in ((stdout_path, sys.stdout.buffer), (stderr_path, sys.stderr.buffer)):
-                          with path.open('rb') as output:
-                              shutil.copyfileobj(output, combined)
-                          with path.open('rb') as output:
-                              shutil.copyfileobj(output, stream)
-                          stream.flush()
-                  focused['logs'] = {path.name: {'size_bytes': path.stat().st_size,
-                                               'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
-                                     for path in (stdout_path, stderr_path, full_log)}
-                  receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
-                  print(json.dumps(focused, sort_keys=True), flush=True)
-                  if exit_code != 0:
-                      print('focused prerequisite failed; scripts/local_ci.sh all NOT RUN', flush=True)
-                      raise SystemExit(exit_code)
+              print('SKIPPED: focused Python prerequisites SUSPENDED; no unit tests executed', flush=True)
+              # Fixed pause; restore this block and provenance only after founder release and review.
+              if False:
+                  for index, focused in enumerate(receipt['focused']):
+                      label = 'focused-serial' if index == 0 else 'focused-parallel'
+                      stdout_path = evidence / (label + '.stdout.log')
+                      stderr_path = evidence / (label + '.stderr.log')
+                      started = time.monotonic()
+                      focused['status'] = 'running'
+                      receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+                      print(json.dumps(focused, sort_keys=True), flush=True)
+                      with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr:
+                          process = subprocess.Popen(focused['command'], env=env, stdout=stdout,
+                                                     stderr=stderr, start_new_session=True)
+                          try:
+                              exit_code = process.wait(timeout=focused['timeout_seconds'])
+                              focused['timed_out'] = False
+                          except subprocess.TimeoutExpired:
+                              os.killpg(process.pid, signal.SIGKILL)
+                              process.wait()
+                              exit_code = 124
+                              focused['timed_out'] = True
+                      focused.update(status='success' if exit_code == 0 else 'failure',
+                                     exit_code=exit_code, elapsed_seconds=time.monotonic() - started)
+                      full_log = evidence / (label + '.log')
+                      with full_log.open('wb') as combined:
+                          for path, stream in ((stdout_path, sys.stdout.buffer), (stderr_path, sys.stderr.buffer)):
+                              with path.open('rb') as output:
+                                  shutil.copyfileobj(output, combined)
+                              with path.open('rb') as output:
+                                  shutil.copyfileobj(output, stream)
+                              stream.flush()
+                      focused['logs'] = {path.name: {'size_bytes': path.stat().st_size,
+                                                   'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                                         for path in (stdout_path, stderr_path, full_log)}
+                      receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+                      print(json.dumps(focused, sort_keys=True), flush=True)
+                      if exit_code != 0:
+                          print('focused prerequisite failed; scripts/local_ci.sh all NOT RUN', flush=True)
+                          raise SystemExit(exit_code)
               receipt['all_status'] = 'running'
               receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
               result = subprocess.run([sys.executable, 'scripts/run_bounded_output.py',

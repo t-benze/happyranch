@@ -15,11 +15,15 @@ direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
 Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
 on the exact candidate ref instead. Commands whose unit selection includes real
 socket/daemon cases, including `scripts/local_ci.sh all`, also require that
-disposable venue. On-host verification is limited to demonstrably pure offline
-units; Mac integration verification uses the separately authorized disposable
+disposable venue. During the founder stop below, no Python units may run even
+if pure or offline.
+The adopted paused `all` wrapper executes only Web and may run on this host;
+once Python execution is restored, the disposable-venue rule applies again.
+Otherwise on-host verification is limited to demonstrably pure offline units;
+Mac integration verification uses the separately authorized disposable
 container-VM path.
 
-The disposable manual `local-ci-all` job first runs a fixed dashboard cleanup
+The disposable manual `local-ci-all` job retains a fixed dashboard cleanup
 prerequisite in its existing fresh HOME/config/cache/tmp/daemon environment,
 using the candidate `.venv` Python 3.14 and frozen dependencies. The six nodes in
 `tests/daemon/test_routes_dashboard.py` are
@@ -29,16 +33,25 @@ using the candidate `.venv` Python 3.14 and frozen dependencies. The six nodes i
 `test_lifespan_async_warm_serves_503_and_clean_shutdown`,
 `test_forced_watchdog_regression_cleanup_ownership`, and
 `test_cleanup_incomplete_is_hard_failure_and_outer_owner_reaps`.
-They run serially (`-n 0`) and then with unit concurrency (`-n 4`), each with a
-300-second bound. A failed prerequisite stops immediately with its actual
-nonzero status (124 on timeout); `scripts/local_ci.sh all` is explicitly NOT RUN.
-Both prerequisites must succeed before the unchanged exact `scripts/local_ci.sh all`
-command runs its complete Python and Web selections in that same environment.
-The uploaded provenance records source/lock/interpreter/tool identities, argv,
-status, timeout and full focused stdout/stderr/log sizes and SHA256 digests.
-Focused logs are complete; the all log artifact remains a bounded 1 MiB tail,
-so recover the full hosted stream when it is truncated. Separate nightly
-integration and scheduled failure reporting retain their existing behavior.
+While founder THR-291 seq5/16 suspends Python units, both declared commands
+(`-n 0` and `-n 4`, each bounded to 300 seconds) are behind a fixed false branch
+and do not execute. Provenance records each prerequisite and Python coverage as
+**SUSPENDED**, with the founder reason and no invented exit, timing or test logs.
+The exact `scripts/local_ci.sh all` command then invokes the adopted paused
+wrapper: Python remains SUSPENDED and only the complete Web selection executes.
+Its command status/exit is recorded separately; exit0 establishes complete Web,
+never Python+Web/full-all PASS. No new manual dispatch is authorized by this pause.
+
+After a new founder verdict releases the stop and reviewed source restoration,
+the retained prerequisite loop runs serially and then with four workers. A failed
+prerequisite stops immediately with its actual nonzero status (124 on timeout);
+`scripts/local_ci.sh all` is explicitly NOT RUN. Both prerequisites must succeed
+before restored complete Python and Web selections run in that same environment.
+The uploaded provenance retains source/lock/interpreter/tool identities, argv,
+bounds and actual statuses; executed focused logs retain full stdout/stderr sizes
+and SHA256 digests. The all log artifact remains a bounded 1 MiB tail, so recover
+the full hosted stream when it is truncated. Separate nightly integration and
+scheduled failure reporting retain their existing behavior.
 
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
@@ -112,8 +125,11 @@ canonical validation and integration jobs retain their own existing contracts;
 no hook bypass is authorized. Existing historical workflow reruns and old
 checkouts do not acquire this pause automatically and must not be used to
 launch the unit suite. Restore execution only after founder release of the
-stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
+stop instruction, through normal reviewed source restoration. Reverting the
+TASK-10169 pause commit (`22af7c72`) alone does not restore the added focused
+prerequisites: their fixed false branch and suspended provenance must also be
+restored in a reviewed change after the new verdict. The ordinary commands below
+describe the restored behavior.
 
 ## Prerequisites
 
@@ -284,7 +300,9 @@ actual exit status, checkout/ref/SHA, source digests and tool paths/versions wit
 a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
 the actual command receipt. Scheduled integration and the PR/main matrix remain
 unchanged. The live Linux daemon host must also avoid `python`/`all` when their
-selection includes real socket or daemon tests; use this disposable manual lane.
+selection includes real socket or daemon tests; use this disposable manual lane
+only when authorized. During the pause, the adopted wrapper runs Web only; the
+focused Python prerequisites remain suspended even in the disposable venue.
 
 ## Git hooks
 
