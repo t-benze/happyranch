@@ -599,6 +599,15 @@ the selected preinstalled macOS Xcode compiler/SDK may be root- or original
 runner-owned, must share the same absolute Xcode bundle, and still require
 actual image/version/path/hash receipts. Root ownership alone is not tool
 provenance. No compiler/SDK privilege or host setting is changed. The
+cheap preflight records ordinary bootstrap launcher and native executable
+origins separately. Linux requires exact path equality; macOS permits only
+the exact versioned Python.framework launcher and its fixed same-framework
+Python.app executable, with both hashes and linkage to the same hashed
+framework library. Native parent PID/start/cwd and ordinary UID remain
+required. Runner bootstrap Python is distinct from provisioned CPython3.14.4;
+this origin mapping does not admit another executable or privileged Python.
+See [CPython's macOS launcher source](https://github.com/python/cpython/blob/v3.14.4/Mac/Tools/pythonw.c).
+The
 source test parent passes its descriptor only to pytest; the two executable
 stub census snippets bind it explicitly. Artifact stubs use their existing
 test binding file. The elevated observer never imports this Python driver.
