@@ -1,6 +1,6 @@
 name: TASK-10279 hosted native observer admission
 
-# Never merge. Native readiness only, no source/product proof or CI waiver.
+# Never merge. Finite native admission and accepted source evidence; no CI waiver.
 on:
   push:
     branches: [task/TASK-10279]
@@ -21,7 +21,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 8
+    timeout-minutes: 75
     steps:
       - name: Checkout evidence source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -31,7 +31,7 @@ jobs:
       - name: Checkout immutable candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: e234b34d607821e70a6723bde6d0b42619f525f0
+          ref: bf2799d8a3458fba0a46c8a444986e64f560fef5
           persist-credentials: false
           path: candidate
       - name: Checkout immutable baseline
@@ -42,6 +42,8 @@ jobs:
           path: baseline
       - name: Compile fixed observer and run cheap native admission
         run: python3 -I evidence/tests/evidence/task_10279/preflight.py
+      - name: Run finite accepted source and baseline characterization
+        run: python3 -I evidence/tests/evidence/task_10272/runner.py
       - name: Seal bounded receipts including failure
         id: seal
         if: always()

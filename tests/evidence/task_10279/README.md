@@ -2,18 +2,20 @@
 
 This continues TASK-10272 evidence recovery for the same draft PR1017. The
 previous workflow and its actual failures are retained; this new exact-branch
-push workflow performs only the newly admitted cheap native preflight on fresh
-GitHub-hosted Ubuntu/native macOS15 runners. It does not provision Python/tools
-or execute product imports, tests, builds, installs or browsers. No PASS beyond
-native readiness is possible. Both native results must be inspected before the
-existing finite coordinator resumes costly work on newly admitted fresh venues.
+push workflow first performs the newly admitted cheap native preflight on fresh
+GitHub-hosted Ubuntu/native macOS15 runners, then runs the existing finite
+ordinary-UID provisioning and accepted source coordinator only after successful
+admission on that runner. Each matrix job has a finite 75-minute deadline.
+Source results retain actual candidate/baseline exits and failure receipts;
+submission or native readiness alone establishes no source behavior. It runs
+no wheel/frozen build, browser, whole collection or suspended unit/proof body.
 
-Candidate e234b34d607821e70a6723bde6d0b42619f525f0 and original baseline
+Candidate bf2799d8a3458fba0a46c8a444986e64f560fef5 and original baseline
 8378064e9933d5b3af4247eca55750ac427a564f remain immutable product source pins.
 The new C source is independent test evidence, copied byte-for-byte from the
-pending same-PR helper change, and authenticated by its literal SHA256 before
-compilation. It is not yet a pushed PR1017 helper origin. The complete evidence
-workflow/preflight/C/support source hashes bind the actual evidence commit.
+published same-PR helper change, and authenticated by its literal SHA256 before
+compilation. PR1017 publication and GitHub read-back confirmed the candidate
+pin. The complete evidence workflow/preflight/C/support source hashes bind the actual evidence commit.
 
 Only the native executable receives existing passwordless sudo, only on these
 disposable venues. Its only argument is original runner UID. Linux links
@@ -82,10 +84,10 @@ equal the candidate before the overlay. Preserve original baseline project
 metadata; requirements/backend/groups agree and the only wheel inventory
 difference is the accepted eight Assistant knowledge force-include removals.
 
-This extension is prepared, not executed: the workflow remains native-only
-until the authorized same-PR candidate is published and observed, its immutable
-candidate/hash pins renewed, and the source stage explicitly added. Its
-ordinary focused shipping results must then be inspected. BOTH artifacts,
+The same-PR candidate is now published and observed at the immutable pin above;
+the renewed workflow runs the fixed source stage after fresh native admission.
+Ordinary focused shipping results remain unexecuted until a new actual hosted
+run supplies receipts, and those receipts must be inspected. BOTH artifacts,
 real isolated-daemon browser observations and side-effect-audited discovery
 remain maker work; suspended proofs remain UNFULFILLED. No overall PASS,
 independent review/QA, merge waiver or completed retirement follows.

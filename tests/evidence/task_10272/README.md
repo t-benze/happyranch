@@ -1,11 +1,11 @@
 # TASK-10272 finite hosted source evidence
 
 Historical TASK-10272 runs and source remain preserved at their immutable
-evidence refs. In this TASK-10279 recovery branch, `runner.py` is prepared for
-the exact TASK-10279 hosted push after fresh fixed-native admission. The current
-workflow is still native-only; source execution awaits published-candidate pin
-renewal and an explicit finite source step. See `../task_10279/README.md` for
-the current descriptor, separate logs/results and four-file baseline overlay.
+evidence refs. In this TASK-10279 recovery branch, `runner.py` is bound to
+published candidate bf2799d8a3458fba0a46c8a444986e64f560fef5 for the exact
+TASK-10279 hosted push after fresh fixed-native admission. The renewed workflow
+includes the fixed source step; actual new source receipts remain required.
+See `../task_10279/README.md` for the current descriptor, separate logs/results and four-file baseline overlay.
 Only that fixed C observer may use hosted sudo; provisioning, source imports,
 tests, builds, browser and product execution remain ordinary UID. The older
 unprivileged diagnostic below is historical and is no longer invoked by the
@@ -40,8 +40,8 @@ it records their origins without installing or changing them. A real compiler
 link/execution precedes configure. The bounded config.log is retained even on
 configure failure, and native dependencies of all installed extensions are
 observed after the unchanged indispensable-module assertions succeed.
-No sudo, host installer, package upgrade, editable project install or downloaded
-interpreter fallback is used. Exact uv0.12.5 and the accepted Hatchling1.32.4
+No sudo provisioning, host installer, package upgrade, editable project install
+or downloaded interpreter fallback is used. Exact uv0.12.5 and the accepted Hatchling1.32.4
 closure are hash-installed from official wheels into distinct owned environments.
 The locked PyInstaller6.21.0 closure is provisioned into a third environment.
 Official wheel hashes, metadata and installed RECORD members must agree before
