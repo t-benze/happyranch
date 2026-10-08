@@ -48,3 +48,15 @@ mandatory; no extra elevated command or file-permission change is admitted.
 Actual run37839436634 had native exit0/complete411 macOS rows before failing
 on ordinary receipt hashing of sudo; this repair does not assert final
 admission or product readiness until new authentic receipts are inspected.
+
+The ordinary bootstrap parent's native executable is authenticated separately
+from `sys.executable`. CPython's macOS framework launcher executes the fixed
+same-framework `Resources/Python.app/Contents/MacOS/Python` binary. Require
+the exact versioned framework launcher and app paths, both byte hashes,
+unchanged ordinary UID/native PID/start/cwd, and both binaries' linkage to the
+same hashed framework library. Record these origins in `parent-origin.json`;
+Linux retains exact launcher/native path equality. Installed runner bootstrap
+Python is not the separately required provisioned CPython3.14.4 workload.
+This changes no native observation or privileged operation. The official
+launcher implementation is
+https://github.com/python/cpython/blob/v3.14.4/Mac/Tools/pythonw.c .

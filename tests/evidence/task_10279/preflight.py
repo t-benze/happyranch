@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import time
 
 HERE = Path(__file__).resolve().parent
@@ -54,6 +55,48 @@ def sudo_transport_identity() -> dict:
                         'ctime_ns': info.st_ctime_ns})
     return {'path': '/usr/bin/sudo', 'authentication': 'darwin-fixed-system-stat-v1',
             'entries': entries}
+
+
+def authenticate_parent(parent, commands, root, env):
+    """Bind the ordinary launcher and actual native executable separately."""
+    launcher = Path(sys.executable).resolve(strict=True)
+    executable = Path(os.fsdecode(parent['exe'].encode('latin1')))
+    origin = {'status': 'incomplete',
+              'scope': 'runner bootstrap only; not provisioned CPython workload',
+              'pid': os.getpid(), 'native_row': parent,
+              'sys_executable': sys.executable, 'version': sys.version,
+              'sys_base_prefix': sys.base_prefix,
+              'launcher': receipt(launcher), 'executable': receipt(executable),
+              'framework': None}
+    SUPPORT['save']('parent-origin.json', origin)
+    if executable != launcher:
+        assert sys.platform == 'darwin', f'unexpected native executable: {executable}; launcher: {launcher}'
+        framework = Path(sys.base_prefix).resolve(strict=True)
+        version = f'{sys.version_info.major}.{sys.version_info.minor}'
+        assert framework.name == version and framework.parent.name == 'Versions'
+        assert framework.parent.parent.name == 'Python.framework'
+        assert sysconfig.get_config_var('PYTHONFRAMEWORK') == 'Python'
+        assert launcher == framework / 'bin' / ('python' + version), f'unexpected framework launcher: {launcher}'
+        expected = framework / 'Resources/Python.app/Contents/MacOS/Python'
+        assert executable == expected.resolve(strict=True), f'unexpected framework executable: {executable}'
+        library = (framework / 'Python').resolve(strict=True)
+        assert library.stat().st_uid in {0, os.getuid()}
+        origin['framework'] = {'root': str(framework), 'library': receipt(library),
+                               'launcher_dependencies': None, 'executable_dependencies': None}
+        SUPPORT['save']('parent-origin.json', origin)
+        for name, binary in (('launcher', launcher), ('executable', executable)):
+            linked, _ = commands.run('parent-' + name + '-dependencies',
+                                     ['/usr/bin/otool', '-L', str(binary)], root, env)
+            dependencies = [line.strip().split(' (', 1)[0] for line in linked.splitlines()[1:]]
+            assert any(Path(value).is_absolute() and Path(value).resolve() == library
+                       for value in dependencies), f'{name} does not link the same framework: {dependencies}'
+            origin['framework'][name + '_dependencies'] = receipt(
+                SUPPORT['RECEIPTS'] / ('parent-' + name + '-dependencies.log'))
+    for binary in (launcher, executable):
+        assert binary.stat().st_uid in {0, os.getuid()}
+        assert stat.S_ISREG(binary.stat().st_mode) and not binary.stat().st_mode & 0o022
+    origin['status'] = 'authenticated'
+    return SUPPORT['save']('parent-origin.json', origin)
 
 
 def main():
@@ -193,7 +236,8 @@ def main():
         parent = next(row for row in snapshot['rows'] if row['pid'] == os.getpid())
         assert parent['uid'] == parent['ruid'] == parent['svuid'] == os.getuid()
         assert parent['cwd'].encode('latin1') == os.fsencode(Path.cwd())
-        assert parent['exe'].encode('latin1') == os.fsencode(Path(sys.executable).resolve())
+        parent_origin = authenticate_parent(parent, commands, root, env)
+        result['parent_origin'] = receipt(parent_origin)
         if sys.platform == 'darwin':
             assert snapshot['abi']['bsd_size'] == 136
             assert snapshot['abi']['bsd_uid_offset'] == 20 and snapshot['abi']['bsd_start_offset'] == 120
@@ -212,7 +256,9 @@ def main():
         result['admission'] = receipt(admission)
         return 0
     except BaseException as error:
-        result['error'] = {'type': type(error).__name__, 'message': str(error)}
+        import traceback  # ordinary stdlib diagnostics only; never elevated
+        result['error'] = {'type': type(error).__name__, 'message': str(error),
+                           'traceback': traceback.format_exc(limit=8)}
         raise
     finally:
         save('result.json', result)
