@@ -306,6 +306,18 @@ const W4C_POLICY_HISTORY = { items: [], next_cursor: null };
 // the W4b EligibilityEditor S row derives its expected live count from this list.
 const ROSTER = [WH_AGENT('dev_agent', '## Routine Tasks\n- Review open PRs\n- Triage bugs'), WH_AGENT('support_bot', 'No routine section here.'), W4C_LEAD];
 
+// Focused shipping Pane fixture. A valid revision is required for actual editing.
+const PROMPT_DRAFT = '# 指令 🐎\n\n正文  \n\n    code\n\n```text\n例子\n```\n';
+const SAFEGUARD_ROSTER = ROSTER.map(agent => ({ ...agent, revision: 'a'.repeat(64) }));
+let safeguardPrompt = { system_prompt: W4C_LEAD.system_prompt, revision: 'a'.repeat(64) };
+let safeguardReadback = null;
+const SAFEGUARD_TASKS = ['delegated', 'blocked_on_job'].map((block_kind, index) => ({
+  task_id: `TASK-CASE-${index ? 'B' : 'A'}`, assigned_agent: 'lead', team: 'eng',
+  brief: 'Raw task brief / 原文', status: 'in_progress', block_kind,
+  created_at: iso(3600e3), updated_at: iso(5 * 60e3),
+  revisit_of_task_id: 'TASK-CASE-P', direct_revisits: ['TASK-CASE-R'],
+}));
+
 /** pathname -> payload (or (search) => payload). Later W4 slices add rows here. */
 const W4D_KB = { slug: 'raw-knowledge', title: 'Authored «raw» Knowledge', type: 'RAW_Type', topic: 'Raw_Topic', tags: ['Raw_Tag'], body: 'Authored «raw» KB body.', authored_by: 'Raw_Agent', source_task: 'TASK-0042', related_entries: [], updated_at: iso(3600e3) };
 const W4D_ARTIFACTS = [
@@ -412,6 +424,40 @@ function startServer(root) {
           // Usage-only scenario fixtures, selected by the evidence page URL.
           // These exercise ordinary shipping fetches; no app/bundle seam is added.
           const ref = new URL(request.headers.referer || 'http://127.0.0.1');
+          if (selectedSlice === 'agents-safeguard') {
+            const state = ref.searchParams.get('agentsFixture') || 'populated';
+            if (p === `/api/v1/orgs/${ORG}/agents/lead/system-prompt` && request.method === 'PUT') {
+              const row = LEDGER.at(-1);
+              let body = '';
+              request.on('data', chunk => { body += chunk; });
+              request.on('end', () => {
+                row.body = JSON.parse(body);
+                safeguardPrompt = { system_prompt: row.body.system_prompt, revision: 'b'.repeat(64) };
+                response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+                response.end(JSON.stringify({ agent: 'lead', ...safeguardPrompt }));
+              });
+              return;
+            }
+            if (p === `/api/v1/orgs/${ORG}/agents`) {
+              const payload = { agents: SAFEGUARD_ROSTER.map(agent => agent.name === 'lead' ? { ...agent, ...safeguardPrompt } : agent) };
+              if (url.searchParams.has('_prompt_readback')) {
+                LEDGER.at(-1).cacheControl = request.headers['cache-control'];
+                safeguardReadback = () => {
+                  response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+                  response.end(JSON.stringify(payload));
+                  safeguardReadback = null;
+                };
+                HUNG.push(response); return;
+              }
+              response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+              response.end(JSON.stringify(payload)); return;
+            }
+            if (p === `/api/v1/orgs/${ORG}/tasks`) {
+              if (state === 'loading') { HUNG.push(response); return; }
+              response.writeHead(state === 'error' ? 500 : 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+              response.end(JSON.stringify(state === 'error' ? { detail: 'Raw diagnostic' } : { tasks: state === 'empty' ? [] : SAFEGUARD_TASKS, next_cursor: null })); return;
+            }
+          }
           if (selectedSlice === 'locale-activation' && p === '/api/v1/orgs' && ref.searchParams.has('localeStartup')) { HUNG.push(response); return; }
           if (selectedSlice === 'work-hours-reachability') {
             const fixture = workHoursFixture(p, ref, { org: ORG, settings: WH_SETTINGS, roster: ROSTER });
@@ -977,7 +1023,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability', 'locale-activation'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability', 'locale-activation', 'agents-safeguard'].includes(selectedSlice)) throw new Error('unknown --slice');
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -1039,7 +1085,7 @@ async function main() {
       '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-extensions', '--disable-background-networking', '--hide-scrollbars', '--disable-crash-reporter',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, HOME: userDataDir, TMPDIR: userDataDir } });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: userDataDir } });
     const devtools = await waitForDevTools(userDataDir);
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
@@ -1102,7 +1148,235 @@ async function main() {
     }
     const h = { clickSrc, waitTrue, evaluate };
 
-    if (selectedSlice === 'locale-activation') {
+    if (selectedSlice === 'agents-safeguard') {
+      // Observe all HTTP methods and transport activity, including sockets whose
+      // messages would not appear in the synthetic HTTP ledger.
+      const transport = [];
+      for (const name of ['webSocketCreated', 'webSocketClosed', 'webSocketFrameSent', 'webSocketFrameReceived', 'eventSourceMessageReceived']) {
+        cdp.handlers.set(`Network.${name}`, [message => transport.push({ name, sessionId: message.sessionId, params: message.params })]);
+      }
+      const HTTP = [];
+      cdp.handlers.set('Network.requestWillBeSent', [message => HTTP.push({ sessionId: message.sessionId, method: message.params.request.method, url: message.params.request.url, type: message.params.type })]);
+      const EDIT = locale => `[...document.querySelectorAll('main button')].find(b => b.textContent.trim() === ${JSON.stringify(tr(locale, 'agents.prompt.edit'))})`;
+      const TEXTAREA = `document.querySelector('main textarea')`;
+      // Actual element/text bounds, clipping ancestors and hit testing after
+      // scrolling the original control into view; screenshots remain human evidence.
+      const reachable = expression => `(() => {
+        const el = (${expression}); if (!el) return { found: false };
+        el.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const r = el.getBoundingClientRect(), css = getComputedStyle(el);
+        const clips = [];
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          const s = getComputedStyle(p), b = p.getBoundingClientRect();
+          if (/(hidden|clip|auto|scroll)/.test(s.overflowX) && (r.left < b.left - 1 || r.right > b.right + 1)) clips.push(p.tagName + ':x');
+          if (/(hidden|clip|auto|scroll)/.test(s.overflowY) && (r.top < b.top - 1 || r.bottom > b.bottom + 1)) clips.push(p.tagName + ':y');
+        }
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        const text = document.createRange(); text.selectNodeContents(el);
+        const textBounds = el.matches('button') || (el.matches('a') && !el.querySelector('div,p'))
+          ? [...text.getClientRects()].every(b => b.left >= r.left - 1 && b.right <= r.right + 1 && b.left >= 0 && b.right <= innerWidth + 1) : true;
+        return { found: true, bounds: r.width > 0 && r.height > 0 && r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight + 1,
+          clips, textBounds, readable: Number.parseFloat(css.fontSize) >= 10 && css.visibility === 'visible' && css.opacity !== '0' && css.color !== 'rgba(0, 0, 0, 0)',
+          reachable: hit === el || el.contains(hit) };
+      })()`;
+      const reachExpected = { found: true, bounds: true, clips: [], textBounds: true, readable: true, reachable: true };
+      // Human evidence for the recent-task labels/state messages themselves:
+      // every occurrence of each target text (its innermost element in <main>)
+      // is scrolled into view and captured, never the Edit control. Sequential
+      // shots continue until every occurrence has been visible in one; the set
+      // measured immediately before AND after each shot (no scroll between)
+      // is recorded with the page target id, so DOM and image agree.
+      const targetVisibility = texts => `(() => {
+        const main = document.querySelector('main'), out = [];
+        ${JSON.stringify(texts)}.forEach((t, ti) => [...main.querySelectorAll('*')]
+          .filter(e => e.textContent.includes(t) && ![...e.children].some(c => c.textContent.includes(t)))
+          .forEach((e, oi) => {
+            const r = e.getBoundingClientRect(), css = getComputedStyle(e);
+            let visible = r.width > 0 && r.height > 0 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1
+              && css.visibility === 'visible' && css.opacity !== '0';
+            for (let p = e.parentElement; visible && p; p = p.parentElement) {
+              const s = getComputedStyle(p), b = p.getBoundingClientRect();
+              if (/(hidden|clip|auto|scroll)/.test(s.overflowX) && (r.left < b.left - 1 || r.right > b.right + 1)) visible = false;
+              if (/(hidden|clip|auto|scroll)/.test(s.overflowY) && (r.top < b.top - 1 || r.bottom > b.bottom + 1)) visible = false;
+            }
+            const hit = visible && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            out.push({ key: ti + ':' + oi, text: t, visible: Boolean(hit) && (hit === e || e.contains(hit)) });
+          }));
+        return out;
+      })()`;
+      async function captureTargets(page, name, texts, meta) {
+        const all = await evaluate(page, targetVisibility(texts));
+        const pending = new Set(all.map(row => row.key));
+        const missing = texts.filter((t, ti) => !all.some(row => row.key.startsWith(ti + ':')));
+        const shots = [];
+        while (pending.size && shots.length < all.length) {
+          const [ti, oi] = [...pending][0].split(':').map(Number);
+          await evaluate(page, `(() => { const t = ${JSON.stringify(texts)}[${ti}]; const e = [...document.querySelectorAll('main *')]
+            .filter(e => e.textContent.includes(t) && ![...e.children].some(c => c.textContent.includes(t)))[${oi}]; e.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
+          await sleep(150);
+          const before = (await evaluate(page, targetVisibility(texts))).filter(row => row.visible).map(row => row.key);
+          if (!before.some(key => pending.has(key))) break;
+          const file = shots.length ? `${name}-${shots.length + 1}` : name;
+          await capture(page, file, { ...meta, pageTarget: page.targetId, visibleTargets: before });
+          const after = (await evaluate(page, targetVisibility(texts))).filter(row => row.visible).map(row => row.key);
+          shots.push({ file, before, after });
+          for (const key of before) pending.delete(key);
+        }
+        return { missing, uncaptured: [...pending], shotsStable: shots.every(s => JSON.stringify(s.before) === JSON.stringify(s.after)), shots: shots.length };
+      }
+      // Recent-task card header (shared TaskCard): the owned ID, status pill,
+      // waiting qualifier and age must each read as ONE line (not a phrase
+      // stacked glyph by glyph), and every header text line box must stay inside
+      // its element, the card, the viewport and clipping ancestors on both axes.
+      const headerLines = (id, owned) => `(() => {
+        const owned = ${JSON.stringify(owned)};
+        const link = document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-${id}"]');
+        const header = link && link.firstElementChild, card = link && link.parentElement;
+        if (!header) return { found: false, errors: [] };
+        header.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const c = card.getBoundingClientRect(), errors = [], seen = [];
+        const lineCount = el => { const range = document.createRange(); range.selectNodeContents(el);
+          const boxes = [...range.getClientRects()].filter(b => b.width > 0).sort((x, y) => x.top - y.top);
+          let lines = 0, bottom = -Infinity;
+          for (const b of boxes) { if (b.top >= bottom - 1) { lines += 1; bottom = b.bottom; } else bottom = Math.max(bottom, b.bottom); }
+          return { boxes, lines }; };
+        for (const el of header.querySelectorAll('span:not([aria-hidden])')) {
+          const r = el.getBoundingClientRect(), { boxes, lines } = lineCount(el), name = JSON.stringify(el.textContent);
+          const out = b => b.left < c.left - 1 || b.right > c.right + 1 || b.top < c.top - 1 || b.bottom > c.bottom + 1 || b.left < 0 || b.top < 0 || b.right > innerWidth + 1 || b.bottom > innerHeight + 1;
+          if (!r.width || !r.height || out(r)) errors.push(name + ' element outside card/viewport');
+          if (boxes.some(b => out(b) || b.left < r.left - 1 || b.right > r.right + 1 || b.top < r.top - 1 || b.bottom > r.bottom + 1)) errors.push(name + ' text line box outside element/card/viewport');
+          for (let p = el.parentElement; p; p = p.parentElement) {
+            const s = getComputedStyle(p), b = p.getBoundingClientRect();
+            if (/(hidden|clip|auto|scroll)/.test(s.overflowX) && (r.left < b.left - 1 || r.right > b.right + 1)) errors.push(name + ' x-clipped by ' + p.tagName);
+            if (/(hidden|clip|auto|scroll)/.test(s.overflowY) && (r.top < b.top - 1 || r.bottom > b.bottom + 1)) errors.push(name + ' y-clipped by ' + p.tagName);
+          }
+          const label = owned.find(t => el.textContent.trim() === t);
+          const pill = owned.some(t => t.startsWith('· ') && [...el.children].some(k => k.textContent.trim() === t));
+          if (label || pill) { seen.push(label || 'status pill'); if (lines !== 1) errors.push(name + ' split across ' + lines + ' lines'); }
+        }
+        return { found: true, owned: new Set(seen).size, errors };
+      })()`;
+      const headerOwned = (locale, id) => [`TASK-CASE-${id}`, `· ${tr(locale, id === 'A' ? 'tasks.waiting.subtasks' : 'tasks.waiting.jobs')}`, tr(locale, 'tasks.age.minutes', { count: 5 })];
+      const headerExpected = { found: true, owned: 4, errors: [] };
+      if (arg('agents-case', 'all') !== 'switch') {
+      beginCase('C9-V', 'C9 focused Agents populated/loading/empty/error en/zh-CN at 390/1440');
+      for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[390, 844], [1440, 900]]) {
+        let comfortablePad = null;
+        for (const state of ['populated', 'loading', 'empty', 'error']) {
+          const page = await openPage(`${base}/orgs/${ORG}/agents/lead?agentsFixture=${state}`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}\nDate.now = () => ${now};`, width, height });
+          if (!await waitTrue(page, `Boolean(${EDIT(locale)}) && !${EDIT(locale)}.disabled`, 'valid enabled Pane editor')) throw new Error('C9 fixture prerequisite: enabled editor absent');
+          const stateCopy = state === 'populated' ? 'Raw task brief / 原文' : tr(locale, state === 'loading' ? 'agents.detail.loadingTasks' : 'agents.detail.noTasks');
+          check(`C9 Agents ${state} ${locale} ${width} task state copy`, await waitTrue(page, bodyHas(stateCopy), 'recent task state'), true);
+          check(`C9 Agents ${state} ${locale} ${width} html lang`, await evaluate(page, langIs(locale)), true);
+          check(`C9 Agents ${state} ${locale} ${width} document bounds`, await evaluate(page, noOverflow), true);
+          if (state === 'populated') {
+            for (const text of [tr(locale, 'tasks.waiting.subtasks'), tr(locale, 'tasks.waiting.jobs'), tr(locale, 'tasks.age.minutes', { count: 5 }), tr(locale, 'tasks.row.supersedes', { id: 'TASK-CASE-P' }), tr(locale, 'tasks.row.supersededBy', { id: 'TASK-CASE-R' })]) {
+              check(`C9 Agents ${locale} ${width} ${text}`, await evaluate(page, bodyHas(text)), true);
+            }
+            for (const id of ['A', 'B', 'P', 'R']) {
+              const link = `document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-${id}"]')`;
+              check(`C9 Agents ${locale} ${width} raw ${id} original link/control bounds`, await evaluate(page, reachable(link)), reachExpected);
+              check(`C9 Agents ${locale} ${width} ${id} sibling lineage`, await evaluate(page, `Boolean(${link}) && !${link}.parentElement.closest('a')`), true);
+            }
+            comfortablePad = await evaluate(page, `Number.parseFloat(getComputedStyle(document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-A"]').parentElement).paddingLeft)`);
+            for (const id of ['A', 'B']) check(`C9 Agents ${locale} ${width} ${id} recent-task header labels one line, inside card/viewport`, await evaluate(page, headerLines(id, headerOwned(locale, id))), headerExpected);
+          }
+          const targets = state === 'populated'
+            ? [tr(locale, 'tasks.waiting.subtasks'), tr(locale, 'tasks.waiting.jobs'), tr(locale, 'tasks.age.minutes', { count: 5 }), tr(locale, 'tasks.row.supersedes', { id: 'TASK-CASE-P' }), tr(locale, 'tasks.row.supersededBy', { id: 'TASK-CASE-R' })]
+            : [stateCopy];
+          const captured = await captureTargets(page, `c9-${locale}-${state}-${width}`, targets, { locale, state, viewport: `${width}x${height}` });
+          check(`C9 Agents ${state} ${locale} ${width} recent-task targets visibly captured`, { missing: captured.missing, uncaptured: captured.uncaptured, stable: captured.shotsStable, shot: captured.shots > 0 }, { missing: [], uncaptured: [], stable: true, shot: true });
+          check(`C9 Agents ${state} ${locale} ${width} Edit readable/reachable`, await evaluate(page, reachable(EDIT(locale))), reachExpected);
+          if (state === 'populated') {
+            await clickSrc(page, `document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-A"]')`);
+            check(`C9 Agents ${locale} ${width} original task navigation action`, await waitTrue(page, `location.pathname === '/orgs/${ORG}/tasks/TASK-CASE-A'`, 'original task navigation'), true);
+          }
+          await closePage(page);
+        }
+        // The same header at the user's compact density (narrower card padding).
+        const compact = await openPage(`${base}/orgs/${ORG}/agents/lead?agentsFixture=populated`, { init: `${seedLocale(locale)}\ntry { localStorage.setItem('happyranch.density', 'compact'); } catch (e) {}\n${CHINESE_NAVIGATOR}\nDate.now = () => ${now};`, width, height });
+        check(`C9 Agents compact ${locale} ${width} populated rows`, await waitTrue(compact, `Boolean(document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-B"]'))`, 'compact recent tasks'), true);
+        const compactPad = await evaluate(compact, `Number.parseFloat(getComputedStyle(document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-A"]').parentElement).paddingLeft)`);
+        check(`C9 Agents compact ${locale} ${width} compact card padding rendered`, { compactPad, narrower: compactPad < comfortablePad }, { compactPad, narrower: true });
+        for (const id of ['A', 'B']) check(`C9 Agents compact ${locale} ${width} ${id} recent-task header labels one line, inside card/viewport`, await evaluate(compact, headerLines(id, headerOwned(locale, id))), headerExpected);
+        const compactShots = await captureTargets(compact, `c9-${locale}-populated-compact-${width}`, headerOwned(locale, 'A').concat(headerOwned(locale, 'B').slice(0, 2)), { locale, state: 'populated', density: 'compact', viewport: `${width}x${height}` });
+        check(`C9 Agents compact ${locale} ${width} header targets visibly captured`, { missing: compactShots.missing, uncaptured: compactShots.uncaptured, stable: compactShots.shotsStable, shot: compactShots.shots > 0 }, { missing: [], uncaptured: [], stable: true, shot: true });
+        // Density persists per origin: restore the default before later comfortable pages.
+        check(`C9 Agents compact ${locale} ${width} density preference restored`, await evaluate(compact, `(() => { localStorage.removeItem('happyranch.density'); return localStorage.getItem('happyranch.density'); })()`), null);
+        await closePage(compact);
+      }
+      endCase();
+      }
+      beginCase('C9', 'C9 Agents SystemPromptEditor locale preservation');
+      for (const [width, height] of [[390, 844], [1440, 900]]) {
+        safeguardPrompt = { system_prompt: W4C_LEAD.system_prompt, revision: 'a'.repeat(64) };
+        const page = await openPage(`${base}/orgs/${ORG}/agents/lead`, { init: `${seedLocale('en')}\n${CHINESE_NAVIGATOR}\nDate.now = () => ${now};`, width, height });
+        if (!await waitTrue(page, `Boolean(${EDIT('en')}) && !${EDIT('en')}.disabled`, 'valid enabled pre-switch editor')) throw new Error('C9 fixture prerequisite: enabled editor absent');
+        await clickSrc(page, EDIT('en'));
+        if (!await waitTrue(page, `Boolean(${TEXTAREA}) && !${TEXTAREA}.disabled`, 'actual prompt editor')) throw new Error('C9 fixture prerequisite: editable prompt absent');
+        await evaluate(page, `(() => { const el = ${TEXTAREA}; el.focus(); el.select(); return true; })()`);
+        await cdp.send('Input.insertText', { text: PROMPT_DRAFT }, page.sessionId);
+        await sleep(200);
+        await evaluate(page, `(() => { const el = ${TEXTAREA}; el.setSelectionRange(3, 8); window.__c9Editor = el; window.__c9Section = el.closest('section'); return true; })()`);
+        check(`C9 ${width} valid focused pre-switch draft/selection`, await evaluate(page, `(() => { const el = window.__c9Editor; return [el.value, el.disabled, document.activeElement === el, el.selectionStart, el.selectionEnd]; })()`), [PROMPT_DRAFT, false, true, 3, 8]);
+        await sleep(600);
+        for (const locale of ['zh-CN', 'en']) {
+          const from = LEDGER.length, networkFrom = HTTP.length, transportFrom = transport.length;
+          await crossTabSwitch(page, locale);
+          // FIRST read is the retained DOM node; never look up/refocus/reopen it
+          // before the causal remount assertion has observed its connectedness.
+          const retained = await evaluate(page, `window.__c9Editor.isConnected && window.__c9Section.isConnected && window.__c9Section.contains(window.__c9Editor)`);
+          check(`C9 ${width} -> ${locale} retained-DOM same-node/connected`, retained, true);
+          if (!retained) break;
+          check(`C9 ${width} -> ${locale} same actual editor node`, await evaluate(page, `window.__c9Editor === ${TEXTAREA}`), true);
+          check(`C9 ${width} -> ${locale} draft/focus/selection`, await evaluate(page, `(() => { const el = window.__c9Editor; return [el.value, document.activeElement === el, el.selectionStart, el.selectionEnd]; })()`), [PROMPT_DRAFT, true, 3, 8]);
+          check(`C9 ${width} -> ${locale} zero HTTP any method`, LEDGER.slice(from), []);
+          check(`C9 ${width} -> ${locale} zero page HTTP any method`, HTTP.slice(networkFrom).filter(row => row.sessionId === page.sessionId), []);
+          check(`C9 ${width} -> ${locale} zero WS/SSE restart/messages`, transport.slice(transportFrom).filter(row => row.sessionId === page.sessionId), []);
+          check(`C9 ${width} -> ${locale} accessible prompt label`, await evaluate(page, `window.__c9Editor.getAttribute('aria-label')`), tr(locale, 'agents.field.systemPrompt'));
+          for (const key of ['common.cancel', 'agents.prompt.save']) {
+            const button = `[...window.__c9Section.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(tr(locale, key))})`;
+            check(`C9 ${width} -> ${locale} ${key} readable/reachable`, await evaluate(page, reachable(button)), reachExpected);
+          }
+          check(`C9 ${width} -> ${locale} editor readable/reachable`, await evaluate(page, reachable('window.__c9Editor')), reachExpected);
+          await capture(page, `c9-draft-${locale}-${width}`, { locale, viewport: `${width}x${height}`, state: 'authored multiline, selection 3:8' });
+        }
+        if (await evaluate(page, `window.__c9Editor.isConnected`).catch(() => false)) {
+          for (const key of ['common.cancel', 'agents.prompt.save']) {
+            await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, page.sessionId);
+            await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 }, page.sessionId);
+            check(`C9 ${width} original ${key} keyboard reachable`, await evaluate(page, `document.activeElement.textContent.trim()`), tr('en', key));
+          }
+          const before = LEDGER.length;
+          await clickSrc(page, `[...window.__c9Section.querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(tr('en', 'common.cancel'))})`);
+          check(`C9 ${width} original Agents Cancel closes editor`, await waitTrue(page, `!${TEXTAREA}`, 'Cancel closes editor'), true);
+          check(`C9 ${width} original Agents Cancel no PUT`, LEDGER.slice(before).filter(row => row.method === 'PUT'), []);
+          // Original Agents action, distinct from an unrelated Usage GET.
+          // Reuse the prompt owner's payload/readback contract; no mismatch matrix.
+          await clickSrc(page, EDIT('en'));
+          if (!await waitTrue(page, `Boolean(${TEXTAREA}) && !${TEXTAREA}.disabled`, 'fresh actual editor after Cancel')) throw new Error('C9 fresh editor prerequisite absent');
+          await evaluate(page, `(() => { const el = ${TEXTAREA}; el.focus(); el.select(); return true; })()`);
+          await cdp.send('Input.insertText', { text: PROMPT_DRAFT }, page.sessionId);
+          await sleep(200);
+          const actionFrom = LEDGER.length;
+          await clickSrc(page, `[...${TEXTAREA}.closest('section').querySelectorAll('button')].find(b => b.textContent.trim() === ${JSON.stringify(tr('en', 'agents.prompt.save'))})`);
+          if (!await waitTrue(page, bodyHas(tr('en', 'agents.prompt.saving')), 'original Save enters pending')) throw new Error('C9 original Save did not enter pending');
+          const deadline = Date.now() + 5000;
+          while (!safeguardReadback && Date.now() < deadline) await sleep(50);
+          if (!safeguardReadback) throw new Error('C9 actual owned fresh GET not reached');
+          check(`C9 ${width} original Save prompt-only PUT/frozen base`, LEDGER.slice(actionFrom).filter(row => row.method === 'PUT').map(row => ({ path: row.path, body: row.body })),
+            [{ path: `/api/v1/orgs/${ORG}/agents/lead/system-prompt`, body: { system_prompt: PROMPT_DRAFT, expected_revision: 'a'.repeat(64) } }]);
+          check(`C9 ${width} original Save fresh readback GET`, LEDGER.slice(actionFrom).filter(row => row.path === `/api/v1/orgs/${ORG}/agents` && row.method === 'GET').map(row => [new URLSearchParams(row.search).has('_prompt_readback'), row.cacheControl]), [[true, 'no-cache, no-store']]);
+          check(`C9 ${width} Saved absent while matching GET held`, await evaluate(page, `!${bodyHas(tr('en', 'agents.prompt.saved'))}`), true);
+          check(`C9 ${width} editor disabled through readback`, await evaluate(page, `${TEXTAREA}.disabled`), true);
+          safeguardReadback();
+          check(`C9 ${width} original Save completes after matching body/revision`, await waitTrue(page, bodyHas(tr('en', 'agents.prompt.saved')), 'matching GET releases Saved'), true);
+          check(`C9 ${width} authored body after Save`, await evaluate(page, `[...document.querySelectorAll('main pre')].some(el => el.textContent === ${JSON.stringify(PROMPT_DRAFT)})`), true);
+        }
+        await closePage(page);
+      }
+      endCase();
+    } else if (selectedSlice === 'locale-activation') {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
     } else if (selectedSlice === 'assistant') {
       await runAssistantCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, switchOnly: arg('assistant-case', 'all') === 'switch' }, ASSISTANT_FIXTURE);

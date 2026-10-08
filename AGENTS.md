@@ -425,6 +425,18 @@ host cannot run integration tests, including through jobs. See `docs/local-ci.md
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
+For authorized integration-skipped clean-head `scripts/local_ci.sh all`, dispatch
+the existing manual nightly workflow on the exact candidate ref when execution is
+authorized. Its sole input is `all_only` (boolean, default false), with no
+`run_integration` toggle. The receipt-producing extracted runner is
+`uv run python scripts/nightly_local_ci_all.py`; authenticate its actual
+local-ci-all checkout/source/tool provenance, command exit and separate
+integration SKIPPED result. The manual job retains the approved 150-minute cap;
+schedule-only integration retains 30 minutes. While the THR-291 pause applies,
+`all` reports Python SUSPENDED and verifies only the remaining Web checks. The
+extracted runner's fixed guard also suspends G collection, source controls and
+repetitions for every input value. Dormant keeper/proof edits remain unexecuted;
+no manual dispatch or rerun is required for the current merge-forward repair.
 
 ### Finite document-review templates and initial drafts (THR-139 seq410)
 
@@ -511,6 +523,13 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
   re-dispatch an edit-forbidden CI-only brief unchanged after mainline drift.
   The `jobs` skill defines the full gate and the existing external-job terminal
   verdict still controls completion.
+- **Bilingual Web delivery:** Include English and Simplified Chinese for every
+  new or changed app-owned string in the same PR. Provide affected-state evidence
+  in both locales at 390×844 and 1440×900, including draft, focus, selection and
+  original-action preservation with no locale-triggered requests or mutations.
+  Untranslated owned copy or unreadable/unreachable Chinese layout requires
+  `REQUEST_CHANGES`. Automation checks structure and completeness; reviewers
+  assess meaning and usability. Use the PR template and Web guide checklist.
 - **Frontend handoff:** Before review/QA, supply acceptance/spec mapping;
   loading, empty, error, and populated-state coverage; auth/permission
   coverage when applicable; screenshot or deterministic-test evidence; and
@@ -532,6 +551,16 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
 ## Web Contract
 
 Every browser-callable daemon route maps to one TS function in `web/src/lib/api/`.
+
+All new or changed app-owned headings, actions, dialogs, tooltips, accessible
+labels, validation, loading, empty/error states and generated narratives must
+ship English (`en`) and Simplified Chinese (`zh-CN`) together in the same PR.
+Use typed catalogs, named parameters, explicit plurals and locale-aware helpers.
+Pure shared UI receives localized props from its callers. Authored content,
+machine identifiers and raw diagnostics remain verbatim. Preserve drafts, focus,
+selection, navigation and original actions across locale changes; a locale
+change must not trigger a request, mutation or transport restart. See
+`docs/agent-guides/web-and-cli.md` for the affected-state review checklist.
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.

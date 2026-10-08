@@ -16,7 +16,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { AppProvider } from '@/design-system/providers/AppProvider';
 import { I18nProvider } from '@/hooks/i18n';
@@ -146,6 +146,45 @@ afterEach(() => {
 });
 
 describe('Agents roster + detail i18n', () => {
+  test.each(['en', 'zh-CN'] as const)('C8 %s mounted recent tasks preserve localized age, waiting and lineage', async (locale) => {
+    stub();
+    const now = new Date('2026-10-07T14:00:00Z').getTime();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    const ages = [
+      [29000, 'just now', '刚刚'], [30000, '1m', '1 分钟'],
+      [3569000, '59m', '59 分钟'], [3570000, '1h', '1 小时'],
+      [84569000, '23h', '23 小时'], [84570000, '1d', '1 天'],
+    ] as const;
+    server.use(http.get(`${API}/orgs/${SLUG}/tasks`, () => HttpResponse.json({
+      tasks: ages.map(([elapsed], index) => ({
+        task_id: `TASK-CASE-${index}`, status: 'in_progress', team: 'engineering',
+        assigned_agent: 'engineering_manager', brief: `Raw task / 原文 ${index}`,
+        block_kind: index === 0 ? 'delegated' : 'blocked_on_job',
+        updated_at: new Date(now - elapsed).toISOString(),
+        revisit_of_task_id: index === 0 ? 'TASK-CASE-P' : null,
+        direct_revisits: index === 0 ? ['TASK-CASE-R'] : [],
+      })),
+    })));
+    try {
+      mount(locale, `/orgs/${SLUG}/agents/engineering_manager`);
+      for (const [index, [, english, chinese]] of ages.entries()) {
+        const link = await screen.findByRole('link', { name: new RegExp(`TASK-CASE-${index}`) });
+        expect(link).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CASE-${index}`);
+        expect(link).toHaveTextContent(locale === 'en' ? english : chinese);
+        expect(link).toHaveTextContent(index === 0
+          ? locale === 'en' ? 'waiting on subtasks' : '等待子任务'
+          : locale === 'en' ? 'waiting on jobs' : '等待作业');
+        expect(link).toHaveTextContent('in_progress');
+        expect(link).toHaveTextContent(`Raw task / 原文 ${index}`);
+      }
+      const previous = screen.getByRole('link', { name: locale === 'en' ? 'supersedes TASK-CASE-P' : '取代 TASK-CASE-P' });
+      const revisit = screen.getByRole('link', { name: locale === 'en' ? 'superseded by TASK-CASE-R' : '已被 TASK-CASE-R 取代' });
+      expect(previous).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CASE-P`);
+      expect(revisit).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CASE-R`);
+      expect(previous.closest('a a')).toBeNull();
+    } finally { clock.mockRestore(); }
+  });
+
   test('zh-CN chrome on the roster and detail pane, daemon values verbatim', async () => {
     stub();
     mount('zh-CN', `/orgs/${SLUG}/agents/engineering_manager`);

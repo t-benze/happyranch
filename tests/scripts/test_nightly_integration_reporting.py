@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +13,96 @@ SCRIPT = ROOT / "scripts" / "nightly_integration_summary.py"
 RUNNER = ROOT / "scripts" / "run_bounded_output.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "nightly-integration.yml"
 ALL_RUNNER = ROOT / "scripts" / "nightly_local_ci_all.py"
+
+
+def test_manual_local_ci_preserves_schedule_only_integration() -> None:
+    # GitHub consumes these exact YAML keys and expression bytes. BaseLoader
+    # preserves the workflow's `on` key instead of YAML 1.1 boolean coercion.
+    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    dispatch = workflow["on"]["workflow_dispatch"]
+    # The parametrized all-only keeper below owns type/default and all four
+    # schedule/manual cases; the manual receipt lane admits no integration toggle.
+    assert set(dispatch["inputs"]) == {"all_only"}
+    assert "run_integration" not in dispatch["inputs"]
+    jobs = workflow["jobs"]
+    assert set(jobs) == {"local-ci-all", "integration", "report-scheduled-failure"}
+    manual = jobs["local-ci-all"]
+    # Observed Python units took 99 minutes before the full Web lane. Keep
+    # headroom for the complete selection, within the approved finite cap.
+    manual_cap = int(manual["timeout-minutes"])
+    assert manual_cap == 150, f"manual cap {manual_cap} must be the approved 150 minutes"
+    assert jobs["integration"]["timeout-minutes"] == "30"
+    assert workflow["on"]["schedule"] == [{"cron": "0 7 * * *"}]
+    assert manual["runs-on"] == "ubuntu-latest"
+    assert "strategy" not in manual
+    manual_steps = {step["name"]: step for step in manual["steps"]}
+    assert manual_steps["Install uv"]["with"]["python-version"] == "3.14"
+    assert manual_steps["Set up Node"]["with"]["node-version"] == "24"
+    assert manual_steps["Sync dependencies (frozen)"]["run"] == "uv sync --frozen"
+    local_all = manual_steps["Run exact local CI all in a clean test environment"]
+    assert local_all["run"] == "uv run python scripts/nightly_local_ci_all.py\n"
+    assert local_all["env"]["ALL_ONLY"] == "${{ inputs.all_only }}"
+    # Receipt production moved out of the workflow scalar. Inspect its actual
+    # owner without importing/executing it; Python keeper proof stays suspended.
+    runner_source = ALL_RUNNER.read_text(encoding="utf-8")
+    for required in (
+        "assert head == os.environ['GITHUB_SHA']",
+        "assert not subprocess.check_output(['git', 'status', '--porcelain'])",
+        "'command': 'scripts/local_ci.sh all'",
+        "'source_sha256':",
+        "'tests/helpers/integration_parent.py'",
+        "'tests/helpers/integration_stub_guard/guard.py'",
+        "'cli/main.py'",
+        "'--max-bytes', '1048576', '--', *argv",
+        "all_exit, receipt['full_log'] = bounded_run(['scripts/local_ci.sh', 'all'],",
+        "cwd=source, env=env, directory=evidence, tail=evidence / 'local-ci-all.log')",
+        "metadata.update(exit_code=process.wait(), complete=True)",
+        "return metadata['exit_code']",
+        "assert sys.version_info[:2] == (3, 14)",
+        "assert receipt['tools']['node']['version'].split('.')[0] == 'v24'",
+        "with tempfile.TemporaryDirectory(prefix='local-ci-parent-') as directory:",
+        "for name in ('home', 'config', 'cache', 'tmp', 'daemon', 'bin'):",
+        "'HOME': str(root / 'home'), 'XDG_CONFIG_HOME': str(root / 'config')",
+        "'HAPPYRANCH_DAEMON_HOME': str(root / 'daemon'), 'HAPPYRANCH_DAEMON_PORT': '0'",
+        "'UV_PYTHON': sys.executable, 'UV_PYTHON_DOWNLOADS': 'never'",
+        "receipt['exit_code'] = result.returncode",
+        "raise SystemExit(result.returncode)",
+    ):
+        assert required in runner_source
+    upload = manual_steps["Upload manual local CI evidence"]
+    assert upload["if"] == "${{ always() }}"
+    assert upload["with"]["path"] == "${{ runner.temp }}/local-ci-all/"
+    assert upload["with"]["name"] == "local-ci-all-${{ github.run_id }}-${{ github.run_attempt }}"
+
+    ci = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    ci_jobs = ci["jobs"]
+    assert set(ci_jobs) == {"python-unit", "web", "linux-canonical-validation", "macos-canonical-validation"}
+    assert ci_jobs["python-unit"]["strategy"]["matrix"]["python-version"] == (
+        "${{ github.event_name == 'pull_request' && fromJSON('[\"3.14\"]') "
+        "|| fromJSON('[\"3.12\", \"3.13\", \"3.14\"]') }}"
+    )
+    python_steps = {step["name"]: step for step in ci_jobs["python-unit"]["steps"]}
+    assert python_steps["Run unit tests"]["run"] == "uv run pytest tests/ -v -n 4"
+    assert ci_jobs["linux-canonical-validation"]["runs-on"] == "ubuntu-latest"
+    assert ci_jobs["macos-canonical-validation"]["runs-on"] == "macos-15"
+    linux_steps = {step["name"]: step for step in ci_jobs["linux-canonical-validation"]["steps"]}
+    assert linux_steps["Run real daemon + executor smoke test"]["run"] == (
+        "uv run python tests/helpers/integration_parent.py -- pytest -m integration "
+        "tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback -v --tb=short"
+    )
+    assert [step["run"] for step in ci_jobs["web"]["steps"] if "run" in step] == [
+        "npm ci", "bash scripts/verify-design-system-colour-gate.sh", "npm run lint",
+        "npm run typecheck", "npm run build", "npm run build-storybook", "npx vitest run",
+    ]
+    predicate = workflow["jobs"]["integration"]["if"]
+    assert predicate == "${{ github.event_name == 'schedule' }}"
+    assert workflow["jobs"]["local-ci-all"]["if"] == "${{ github.event_name == 'workflow_dispatch' }}"
+    for event, expected in [
+        ("schedule", True), ("workflow_dispatch", False),
+    ]:
+        expression = predicate[3:-2].strip()
+        expression = expression.replace("github.event_name", repr(event))
+        assert eval(expression, {"__builtins__": {}}, {}) is expected
 
 
 def test_summary_reports_counts_and_failed_test_ids(tmp_path: Path) -> None:
@@ -219,7 +310,7 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
         raise AssertionError('unknown externally consumed workflow predicate syntax')
 
     assert observed_condition(parsed_condition.body) == expected_integration
-    assert document['jobs']['local-ci-all']['timeout-minutes'] == '60'
+    assert document['jobs']['local-ci-all']['timeout-minutes'] == '150'
     step = next(step for step in document['jobs']['local-ci-all']['steps'] if step.get('name') == 'Run exact local CI all in a clean test environment')
     assert step['env']['ALL_ONLY'] == '${{ inputs.all_only }}'
     assert document['jobs']['local-ci-all']['if'] == "${{ github.event_name == 'workflow_dispatch' }}"

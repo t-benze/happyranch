@@ -116,6 +116,70 @@ surface. The daemon defaults to loopback; remote access uses the connector.
 
 ### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills)
 
+**Ongoing bilingual delivery rule (THR-118 seq81/82):** every new or changed
+app-owned heading, action, dialog, tooltip, accessible label, validation,
+loading/empty/error state and generated narrative ships en and zh-CN in the
+same PR. Use typed catalogs, named parameters, explicit plurals and locale-aware
+helpers. Pure shared UI takes localized presentation props. Authored content,
+machine identifiers and raw diagnostics stay verbatim.
+
+The focused synthetic browser selections are
+`web/scripts/w4a-browser-evidence.mjs --slice agents-safeguard` and
+`web/scripts/w3b-jobs-browser-evidence.mjs --slice cascade`, against the ordinary
+build with private profiles and ephemeral fixture/CDP ports. They observe
+populated/loading/empty/error states in both locales at 390/1440, original task
+navigation, control/text bounds and clipping ancestors. The Jobs case measures
+every cascade-row descendant's text line boxes on both axes and rejects a row
+label (waiting qualifier, task ID) split across lines. The Agents case scrolls
+each recent-task label and state message into view and captures it, in
+sequential shots when one viewport cannot hold them all, recording the targets
+measured visible just before and after each shot. It also requires each
+recent-task card header's task ID, status pill, waiting qualifier and age to
+read as one line, with every header line box inside the card and viewport on
+both axes, at comfortable and compact density. The Agents case uses a
+valid prompt revision and checks the retained editor before any new lookup,
+authored multiline draft, selection 3:8, focus and request/transport silence in
+both switch directions. The unchanged prompt owner tests retain Save/readback
+and Cancel contracts; actual browser receipts and human usability review remain
+required evidence.
+
+Use this checklist in the existing case record and PR template:
+
+- Exercise both locales and applicable populated/loading/empty/error states at
+  390×844 and 1440×900. Check actual affected text/control bounds against clipping
+  ancestors, readable whole Chinese text after permitted scrolling, and pointer
+  and keyboard reachability; document width alone is insufficient.
+- Switch in both directions while retaining the actual mounted nodes, authored
+  draft, focus and selection. Observe retained DOM references before fresh lookup
+  or refocus, and require zero switch-window HTTP of any method, mutations and
+  transport restarts/messages.
+- Execute the original actions and navigation with unchanged payloads, raw
+  bytes, filters and destinations. Keep existing qualified behavioral tests;
+  screenshots and unrelated requests do not prove an action.
+- Record source/runtime/command/exit evidence and the test-authoring gate's four
+  answers, named tests/producers, attributable RED, byte-exact restoration/GREEN
+  and keeper disposition for changed tests. Preserve historical receipts.
+- Human review checks meaning and usability. Untranslated owned copy or broken
+  Chinese layout requires `REQUEST_CHANGES`; automation establishes only its
+  supported structural/completeness boundaries.
+
+Run ordinary Web lint plus the real-config `lint-owned-copy.test.ts` and actual
+source `coverage.test.ts` guards. The Node-only source inventory validates the
+shipping HTML entry/static aliases and distinguishes declarations/imports from
+supported JSX/render-return mounts. Named/namespace router imports and reexports
+retain route and parent identity. Additional createRoot renders in reachable
+static runtime imports/reexports, including side-effect imports and transitive/
+cyclic module graphs, discover direct JSX or statically bound JSX constants.
+Unhandled arguments refuse with their source. Type-only edges are excluded;
+evaluating an imported module does not mount its unused JSX declarations or
+enter uncalled functions/classes. New mounted owners require
+source-qualified route/dialog classification; index/wildcard cannot borrow another owner's
+status, and full release rejects every english-only namespace. Unsupported
+entry/config/computed shapes and fixture promotion refuse with the source to
+review. Exact path/declaration/slot/literal/reason exceptions preserve reviewed
+raw values and shared defaults; they never exempt neighboring owned copy.
+See `web/ARCHITECTURE.md` for the scanner's finite supported shapes and limits.
+
 Current W5b browser contract: English and Simplified Chinese are available. The
 entry selects full mode synchronously before the first React text and hands its
 one resolution through App/AppShell. AppShell also selects full mode for later
@@ -1286,3 +1350,19 @@ authority/profile and OrgDep errors remain unchanged. Disabled/busy/fenced
 admission creates no activation/task and is distinct from a persisted queued or
 uncertain instance. Independent review/QA/CI, U3-U6, mounted UI and separate
 Founder Request changes/Sign off/operator observations remain acceptance gates.
+
+### Manual local-CI receipt contract
+
+The nightly workflow's sole manual input is `all_only` (boolean, default false);
+there is no `run_integration` toggle. It invokes the extracted receipt-producing
+`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root,
+which records actual checkout/source/tool provenance and the
+`scripts/local_ci.sh all` command exit. The manual cap is the approved 150
+minutes; general integration retains its 30-minute cap and exact schedule-only
+predicate, so all three manual input cases skip it. Under THR291, Python units
+and the runner's G collection/source-control/repetition follow-on remain
+SUSPENDED and unexecuted, including when `all_only` is true. A successful paused
+wrapper verifies only remaining Web checks; dormant keeper/proof edits are not
+behavioral PASS or RED/GREEN evidence. The current merge-forward repair requires
+no manual dispatch or rerun. General integration remains SKIPPED under
+THR243 seq42, never PASS. See `docs/local-ci.md` for the maintained CI contract.

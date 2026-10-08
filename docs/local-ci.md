@@ -13,7 +13,27 @@ The HappyRanch Linux daemon host is a special operational boundary: founder
 THR-211 seq270/271 prohibits every integration-marked test there, including
 direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
 Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
-on the exact candidate ref instead. Commands whose unit selection includes real
+on the exact candidate ref when execution is authorized. Manual dispatch exposes
+only `all_only` (boolean, default false), with no `run_integration` toggle. The
+existing manual `local-ci-all` job invokes the receipt-producing extracted
+`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root.
+It runs the exact `scripts/local_ci.sh all` command on
+Python 3.14/Node 24, while the separate general integration job is SKIPPED.
+The manual lane has a finite 150-minute cap: the Python unit step alone took
+99 minutes in hosted run 37650992085, exceeding the former 60-minute cap.
+The separate nightly integration job retains its 30-minute cap.
+Record its actual checkout SHA, source/tool provenance and command exit from
+the uploaded receipt; submission or publication alone is not a pass. General
+integration runs only on scheduled events; manual dispatch skips it and the
+scheduled failure reporter. General integration remains SKIPPED under THR-243
+seq42 for tasks governed by that exception, never PASS. While the THR-291 pause
+applies, the manual `all` command reports Python SUSPENDED and runs only the
+remaining Web checks; an exit0 does not establish a Python unit PASS. The
+extracted runner's fixed suspension guard also prevents G collection, source
+controls and repetitions for every `all_only` value; their dormant definitions
+remain retained and unexecuted. No manual dispatch or rerun is required for the
+current merge-forward repair.
+Commands whose unit selection includes real
 socket/daemon cases, including `scripts/local_ci.sh all`, also require that
 disposable venue. On-host verification is limited to demonstrably pure offline
 units; Mac integration verification uses the separately authorized disposable
@@ -258,7 +278,10 @@ Its closed build-tool PATH includes the standard `/usr/local/bin` directory used
 by the ordinary unit lane; integration keeps its separate restricted PATH.
 The disposable lane clears inherited environment variables before test imports,
 uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
-tools, and preserves the default unit/Web selections. It uploads the command's
+tools, and preserves the default unit/Web selection definitions. During the
+THR-291 pause, units are SUSPENDED and only the remaining Web checks execute.
+The manual lane retains its finite 150-minute cap; scheduled integration retains
+its separate 30-minute cap. It uploads the command's
 actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
 a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
 the actual command receipt. The integration job runs only on `schedule` events;
@@ -363,7 +386,8 @@ The true lane runs the unchanged `scripts/local_ci.sh all` first and preserves
 its exit separately. Successful all is followed by the closed literal 101-node
 collection and five ordered fresh isolated and sibling rounds: 505 node processes
 plus 75 complete-file processes. No selector input or timeout increase is
-provided; all commands share the existing 60-minute job cap. Every invocation
+provided; all commands share the approved 150-minute manual job cap. The
+retained dormant phase and per-child bounds are unchanged. Every invocation
 owns a unique absolute basetemp, HOME/config/cache/daemon registry, JUnit,
 command/source/head/tree/runtime/status receipt and 1MiB output tail. Complete
 lossless gzip streams retain raw and stored byte counts and SHA256 in the same
@@ -424,9 +448,9 @@ reopen identity, validator page preservation and refusal page preservation in
 owned source copies; each must reach its named assertion, restore exact source
 bytes AND modes, then pass the same command. The archives remain unchanged,
 and these additional controls do not trim the original 580 repeated processes
-or increase the 60-minute cap. Their control-plan keeper is also mutated and
-restored. Submitted or statically inspected controls are not executed RED/GREEN
-evidence.
+or increase the approved 150-minute manual job cap. Their control-plan keeper is
+also mutated and restored. Submitted or statically inspected controls are not
+executed RED/GREEN evidence.
 
 The lost-notification control mutates only the first queued-draft
 `recover_owned_task` enqueue in a disposable source copy. Its retained cold
