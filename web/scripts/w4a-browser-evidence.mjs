@@ -28,7 +28,6 @@
  */
 import { runLocaleActivationCases } from './w5-locale-browser-cases.mjs';
 import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
-import { assistantFixture, runAssistantCases } from './assistant-dock-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -159,7 +158,6 @@ const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
-const ASSISTANT_FIXTURE = assistantFixture(LEDGER, HUNG);
 
 // Daemon bytes that must survive every locale unchanged.
 const HEALTH_SNAPSHOT = {
@@ -415,7 +413,6 @@ function startServer(root) {
         const p = url.pathname;
         if (p.startsWith('/api/')) {
           LEDGER.push({ method: request.method, path: p, search: url.search, t: Date.now() });
-          if (selectedSlice === 'assistant' && ASSISTANT_FIXTURE.handle(request, response, p)) return;
           if (p.endsWith('/events') || p.includes('/stream') || p.endsWith('/tail')) {
             response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             HUNG.push(response);
@@ -491,7 +488,6 @@ function startServer(root) {
         response.end(String(error));
       }
     });
-    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.attach(server);
     server.on('error', fail);
     server.listen(0, '127.0.0.1', () => ok({ server, url: `http://127.0.0.1:${server.address().port}` }));
   });
@@ -617,7 +613,7 @@ const VIEW_ROUTES = [
     id: 'kb-detail', route: 'kb detail', path: `/orgs/${ORG}/kb/raw-knowledge`, ready: () => bodyHas(W4D_KB.body),
     keys: ['kb.pageTitle', 'kb.sourceTaskLabel', ['kb.authoredBy', { agent: 'Raw_Agent' }]],
     verbatim: [W4D_KB.title, W4D_KB.body, 'Raw_Agent', 'TASK-0042'],
-    // The closed Assistant dock also stays mounted with role=dialog. Bind the
+    // Bind the
     // bounds oracle to this open drawer and its verbatim authored title.
     checks: () => [['drawer fits viewport', `(() => { const el = [...document.querySelectorAll('[role="dialog"][data-state="open"]')].find(d => d.querySelector('h2')?.textContent === ${JSON.stringify(W4D_KB.title)}); if (!el) return false; const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`, true]],
   },
@@ -1023,7 +1019,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability', 'locale-activation', 'agents-safeguard'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard'].includes(selectedSlice)) throw new Error('unknown --slice');
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -1040,8 +1036,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['assistant', 'work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = ['assistant', 'work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1378,8 +1374,6 @@ async function main() {
       endCase();
     } else if (selectedSlice === 'locale-activation') {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
-    } else if (selectedSlice === 'assistant') {
-      await runAssistantCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, switchOnly: arg('assistant-case', 'all') === 'switch' }, ASSISTANT_FIXTURE);
     } else if (selectedSlice === 'work-hours-reachability') {
       await runWorkHoursCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, geometryOnly: arg('work-hours-case', 'all') === 'geometry', entryOnly: arg('work-hours-case', 'all') === 'entry', longOnly: arg('work-hours-case', 'all') === 'long-cell', editorOnly: ['editor', 'editor-keyboard'].includes(arg('work-hours-case', 'all')), editorRed: arg('work-hours-case', 'all') === 'editor-red', editorKeyboard: arg('work-hours-case', 'all') === 'editor-keyboard' });
     } else {
@@ -1463,7 +1457,6 @@ async function main() {
     endCase();
     }
   } finally {
-    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.cleanup();
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();
     if (chrome && chrome.exitCode === null && chrome.signalCode === null) {

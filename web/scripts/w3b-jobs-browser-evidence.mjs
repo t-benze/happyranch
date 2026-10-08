@@ -454,7 +454,6 @@ async function main() {
       await evaluate(page, `(() => { ${FIELD}.focus(); return true; })()`);
       await cdp.send('Input.insertText', { text: DRAFT }, page.sessionId);
       await sleep(200);
-      // The always-mounted assistant dock is also role="dialog": anchor on the
       // dialog that owns the draft input.
       const DIALOG = `(${FIELD} || { closest: () => null }).closest('[role="dialog"]')`;
       await evaluate(page, `(() => { window.__w3bDialog = new WeakRef(${DIALOG}); window.__w3bField = new WeakRef(${FIELD}); return true; })()`);

@@ -1,10 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { http, HttpResponse } from 'msw';
+import { http, HttpResponse, delay } from 'msw';
 import { describe, expect, test, beforeEach } from 'vitest';
 import { useLocation, useNavigationType } from 'react-router-dom';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
 import { renderGuarded } from './sections/capacityTestMount';
 import { server } from '@/test/server';
 import { translate } from '@/lib/i18n';
@@ -86,9 +85,6 @@ function stubBaseHandlers() {
     http.get(`/api/v1/orgs/${SLUG}/agents`, () =>
       HttpResponse.json(AGENTS_PAYLOAD),
     ),
-    http.get('/api/v1/assistant/status', () =>
-      HttpResponse.json({ state: 'uninitialized', selected_executor: null, workspace_path: null, detail: null }),
-    ),
     http.get(`/api/v1/orgs/${SLUG}/tokens`, () =>
       HttpResponse.json(TOKENS_PAYLOAD),
     ),
@@ -120,7 +116,7 @@ function stubBaseHandlers() {
 
 function mountAt(route: string) {
   sessionStorage.setItem('happyranch.token', 'tok');
-  return renderWithProviders(<AppRoutes />, { route });
+  return renderGuarded(<AppRoutes />, { entries: [route] });
 }
 
 function RouteEvidence(): JSX.Element {
@@ -131,7 +127,7 @@ function RouteEvidence(): JSX.Element {
 
 function mountAtWithRouteEvidence(route: string) {
   sessionStorage.setItem('happyranch.token', 'tok');
-  return renderWithProviders(<><AppRoutes /><RouteEvidence /></>, { route });
+  return renderGuarded(<><AppRoutes /><RouteEvidence /></>, { entries: [route] });
 }
 
 describe('SettingsPage — sub-nav and routing', () => {
@@ -141,17 +137,45 @@ describe('SettingsPage — sub-nav and routing', () => {
 
   test.each([
     `/orgs/${SLUG}/settings`,
+    `/orgs/${SLUG}/settings/`,
+    `/orgs/${SLUG}/settings/assistant`,
+    `/orgs/${SLUG}/settings/assistant/`,
     `/orgs/${SLUG}/settings/system`,
+    `/orgs/${SLUG}/settings/system/`,
     `/orgs/${SLUG}/settings/agents`,
+    `/orgs/${SLUG}/settings/agents/`,
     `/orgs/${SLUG}/settings/unknown`,
-  ])('%s resolves to canonical Assistant with replace semantics', async (route) => {
+    `/orgs/${SLUG}/settings/unknown/`,
+  ])('%s resolves to canonical Capacity with replace semantics', async (route) => {
     mountAtWithRouteEvidence(route);
 
-    await waitFor(() => expect(screen.getByText('System Assistant')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Capacity' })).toBeInTheDocument());
     expect(screen.getByTestId('route-evidence')).toHaveTextContent(
-      `REPLACE:/orgs/${SLUG}/settings/assistant`,
+      `REPLACE:/orgs/${SLUG}/settings/daemon-capacity`,
     );
   });
+
+  test.each(['loading', 'error', 'empty'] as const)(
+    'legacy redirects resolve outside the %s settings gate', async (mode) => {
+      server.use(http.get(`/api/v1/orgs/${SLUG}/settings`, async () => {
+        if (mode === 'loading') await delay('infinite');
+        if (mode === 'error') return HttpResponse.json({ detail: 'fixture error' }, { status: 500 });
+        return HttpResponse.json(null);
+      }));
+      const seen: string[] = [];
+      server.events.on('request:start', ({ request }) => { seen.push(new URL(request.url).pathname); });
+      try {
+        mountAtWithRouteEvidence(`/orgs/${SLUG}/settings/assistant/`);
+        await waitFor(() => expect(screen.getByTestId('route-evidence')).toHaveTextContent(
+          `REPLACE:/orgs/${SLUG}/settings/daemon-capacity`,
+        ));
+        expect(seen.some((path) => path.includes('/assistant'))).toBe(false);
+        if (mode === 'loading') expect(screen.getByText('Loading settings…')).toBeInTheDocument();
+        if (mode === 'error') await screen.findByText(/Could not load settings/);
+        expect(screen.queryByRole('heading', { name: 'Assistant' })).not.toBeInTheDocument();
+      } finally { server.events.removeAllListeners('request:start'); }
+    },
+  );
 
   test('sub-nav renders the dedicated capacity section in canonical order', async () => {
     mountAt(`/orgs/${SLUG}/settings/assistant`);
@@ -164,11 +188,11 @@ describe('SettingsPage — sub-nav and routing', () => {
     const subnav = within(content).getByRole('complementary');
     expect(within(subnav).getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Capacity',
-      'Assistant',
       'Organization',
       'Executors',
       'Preferences',
     ]);
+    expect(within(subnav).queryByText('Assistant')).not.toBeInTheDocument();
     expect(within(subnav).queryByText('System')).not.toBeInTheDocument();
     expect(within(subnav).queryByText('Agents')).not.toBeInTheDocument();
   });
@@ -185,7 +209,6 @@ describe('SettingsPage — sub-nav and routing', () => {
 
     for (const label of [
       'Capacity',
-      'Assistant',
       'Organization',
       'Executors',
     ]) {
@@ -196,11 +219,7 @@ describe('SettingsPage — sub-nav and routing', () => {
   });
 
   test('daemon capacity distinguishes running, not-set YAML, next start and no-live-apply copy', async () => {
-    // The capacity panel mounts `useBlocker`, which REQUIRES a data router and
-    // throws under the shared `renderWithProviders` MemoryRouter — even when the
-    // blocker argument is false. This one case therefore mounts through the
-    // capacity-local data-router helper; every other case in this file is
-    // unaffected and keeps `renderWithProviders`.
+    // Capacity and its redirects use the existing data-router helper.
     renderGuarded(<AppRoutes />, { entries: [`/orgs/${SLUG}/settings/daemon-capacity`] });
     await screen.findByRole('heading', { name: 'Capacity' }, { timeout: 5000 });
 
@@ -221,11 +240,9 @@ describe('SettingsPage — sub-nav and routing', () => {
     mountAt(`/orgs/${SLUG}/settings/assistant`);
 
     await waitFor(() =>
-      expect(screen.getByText('System Assistant')).toBeInTheDocument(),
+      expect(screen.getByRole('heading', { name: 'Capacity' })).toBeInTheDocument(),
     );
 
-    // The AssistantDockHost (global ⌘K dock) is now mounted in AppShell;
-    // wait for any async side-effects to settle before finding sub-nav.
     const user = userEvent.setup();
     const content = await screen.findByTestId('settings-content');
     await user.click(within(content).getByText('Organization'));

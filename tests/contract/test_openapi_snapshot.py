@@ -3,7 +3,7 @@
 When a daemon route changes (added/removed/renamed/method change), this test
 fails. To accept the new schema, regenerate the snapshot:
 
-    HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py
+    uv run python scripts/generate_openapi_snapshot.py --write
 
 The snapshot is the single source of truth that the TS contract coverage test
 (``web/src/test/openapi-coverage.test.ts``) reads.
@@ -21,34 +21,7 @@ from runtime.daemon.state import DaemonState
 SNAPSHOT_PATH = Path(__file__).parent / "openapi.json"
 
 
-def _summarize(schema: dict) -> dict:
-    """Reduce the schema to only the surface area we want to pin.
-
-    Full schemas include FastAPI-generated component refs that churn on every
-    Pydantic upgrade — too noisy. We pin paths + methods + parameter names +
-    response codes. That's the contract the TS client cares about.
-    """
-    paths: dict = {}
-    for path, methods in sorted(schema.get("paths", {}).items()):
-        path_summary: dict = {}
-        for method, op in sorted(methods.items()):
-            if method.upper() not in {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}:
-                continue
-            params = sorted(
-                [p["name"], p.get("in")]
-                for p in op.get("parameters", [])
-            )
-            responses = sorted(op.get("responses", {}).keys())
-            path_summary[method.upper()] = {
-                "params": params,
-                "responses": responses,
-            }
-            if path == '/api/v1/orgs/{slug}/workflows/activations' and method.upper() == 'POST':
-                body = op['requestBody']['content']['application/json']['schema']
-                path_summary['POST']['input_discriminators'] = [branch['properties']['inputs']['items']['discriminator'] for branch in body['anyOf']]
-        if path_summary:
-            paths[path] = path_summary
-    return {"paths": paths}
+from scripts.generate_openapi_snapshot import _summarize
 
 
 def test_openapi_snapshot_matches() -> None:
@@ -62,7 +35,7 @@ def test_openapi_snapshot_matches() -> None:
     if not SNAPSHOT_PATH.exists():
         raise AssertionError(
             f"Snapshot file missing: {SNAPSHOT_PATH}. "
-            f"Run: HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest {__file__}"
+            f"Run: uv run python scripts/generate_openapi_snapshot.py --write"
         )
 
     stored = json.loads(SNAPSHOT_PATH.read_text())
@@ -79,7 +52,7 @@ def test_openapi_snapshot_matches() -> None:
             msg_lines.append(f"  - removed paths: {removed}")
         msg_lines.append(
             "Regenerate after reviewing: "
-            f"HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest {__file__}"
+            f"uv run python scripts/generate_openapi_snapshot.py --write"
         )
         raise AssertionError("\n".join(msg_lines))
 

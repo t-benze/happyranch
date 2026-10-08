@@ -144,7 +144,6 @@ async function countRequests(fn: () => Promise<void>): Promise<string[]> {
   return seen;
 }
 
-/** The job dialog owns the named control (the assistant dock is also a dialog). */
 function dialogOwning(control: HTMLElement): HTMLElement {
   const dialog = control.closest('[role="dialog"]');
   if (!(dialog instanceof HTMLElement)) throw new Error('control is not inside a dialog');

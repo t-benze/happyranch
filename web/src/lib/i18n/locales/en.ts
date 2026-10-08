@@ -301,7 +301,6 @@ export const en = {
   'shell.title.settings': 'Settings',
   'shell.title.jobs': 'Jobs',
   'shell.title.runtimeHealth': 'Runtime Health',
-  'shell.title.assistant': 'Assistant',
   'shell.title.getStarted': 'Get started',
 
   'shell.nav.home': 'Home',
@@ -331,7 +330,6 @@ export const en = {
   'shell.account.you': 'You',
   'shell.account.founder': 'Founder',
 
-  'shell.openAssistant': 'Open assistant',
   'shell.switchToLight': 'Switch to light theme',
   'shell.switchToDark': 'Switch to dark theme',
 
@@ -373,7 +371,6 @@ export const en = {
   'help.tab.kb': 'KB',
   'help.tab.agents': 'Agents',
   'help.tab.audit': 'Audit',
-  'help.shortcut.openAssistant': 'Open assistant dock',
   'help.shortcut.showHelp': 'Show this help',
   'help.shortcut.closeAny': 'Close any dialog, drawer, or palette',
   'help.shortcut.jumpDashboard': 'Jump to Dashboard',
@@ -611,11 +608,9 @@ export const en = {
   'settings.page.loadError': 'Could not load settings.',
   'settings.nav.heading': 'Configuration',
   'settings.nav.daemonCapacity': 'Capacity',
-  'settings.nav.assistant': 'Assistant',
   'settings.nav.organization': 'Organization',
   'settings.nav.executors': 'Executors',
   'settings.nav.preferences': 'Preferences',
-  'settings.panel.assistant.title': 'System Assistant',
   'settings.panel.organization.title': 'Organization',
   'settings.panel.organization.description':
     'Org-level settings. Changes apply live — the daemon hot-reloads them automatically.',
@@ -638,56 +633,6 @@ export const en = {
     'English and Simplified Chinese are available. Your saved choice comes first; otherwise, we follow your browser language.',
   // @w2c-end:preferences
 
-  // --- W2c: settings/assistant (anchor; keys go below) ---
-  'settings.assistant.state.uninitialized': 'Uninitialized',
-  'settings.assistant.state.configured': 'Configured',
-  'settings.assistant.state.staleOrBroken': 'Stale or broken',
-  'settings.assistant.loading': 'Loading…',
-  'settings.assistant.loadError': 'Could not load assistant status.',
-  'settings.assistant.status.aria': 'Assistant status',
-  'settings.assistant.status.state': 'State',
-  'settings.assistant.executor': 'Executor',
-  'settings.assistant.status.workspace': 'Workspace',
-  'settings.assistant.setup.aria': 'Setup actions',
-  'settings.assistant.setup.title': 'Setup',
-  'settings.assistant.setup.uninitializedBody':
-    'Prepare the registration workspace, then either register an executor below or launch your CLI in the workspace and let it self-register.',
-  'settings.assistant.setup.initializing': 'Initializing…',
-  'settings.assistant.setup.initialize': 'Initialize workspace',
-  'settings.assistant.setup.selfRegistration.title': 'Self-registration',
-  'settings.assistant.setup.selfRegistration.step1':
-    'Open your agentic CLI (claude, codex, opencode, pi, …) in the workspace shown above.',
-  'settings.assistant.setup.selfRegistration.step2': 'Ask it to register itself; it runs {command}.',
-  'settings.assistant.setup.staleBody':
-    'The workspace drifted from the saved config. Repair rebuilds it from the recorded executor without clearing your registration.',
-  'settings.assistant.setup.repairing': 'Repairing…',
-  'settings.assistant.setup.repair': 'Repair',
-  'settings.assistant.setup.configuredBody':
-    'Reconfiguring closes any open sessions and clears the saved config so you can register a different executor from scratch.',
-  'settings.assistant.setup.reconfigure': 'Reconfigure…',
-  'settings.assistant.reconfigure.title': 'Reconfigure the assistant?',
-  'settings.assistant.reconfigure.body':
-    'This closes all open assistant sessions and clears the saved configuration. You will need to register an executor again.',
-  'settings.assistant.reconfigure.confirming': 'Reconfiguring…',
-  'settings.assistant.reconfigure.confirm': 'Reconfigure',
-  'settings.assistant.register.title': 'Register executor',
-  'settings.assistant.register.switchTitle': 'Switch executor',
-  'settings.assistant.register.preserveNote':
-    'Re-registering preserves the workspace — the server derives it from the runtime root, not from any input here — and only one executor is active at a time, so registering replaces the current one.',
-  'settings.assistant.register.noRestart':
-    'Registration applies immediately; no daemon restart is required.',
-  'settings.assistant.register.other': 'Other…',
-  'settings.assistant.register.executorName': 'Executor name',
-  'settings.assistant.register.command': 'Command',
-  'settings.assistant.register.argv': 'Argv (optional — defaults to the command)',
-  'settings.assistant.register.argvHint':
-    'Space-separated. Leave blank to launch the command with no extra args.',
-  'settings.assistant.register.errorNoExecutor': 'Choose or name an executor.',
-  'settings.assistant.register.errorNoCommand': 'Enter the command to launch.',
-  'settings.assistant.register.errorHttp': 'Registration failed (HTTP {status}).',
-  'settings.assistant.register.registering': 'Registering…',
-  'settings.assistant.register.submit': 'Register',
-  // @w2c-end:assistant
 
   // --- W2c: settings/organization (anchor; keys go below) ---
   'settings.organization.saveFailed': 'Save failed: {detail}',
@@ -887,7 +832,7 @@ export const en = {
   'settings.capacity.workersHelp':
     'Maximum task sessions HappyRanch can run at once across all organizations. Other HappyRanch or service-provider limits may reduce the number that actually run.',
   'settings.capacity.capHelp':
-    'Maximum combined sessions from task, thread, dream, wake, and schedule work. It does not limit every process on the machine and does not include background Assistant or job processes.',
+    'Maximum combined sessions from task, thread, dream, wake, and schedule work. It does not limit every process on the machine and does not include job processes.',
   'settings.capacity.draft.changes': 'Your edits differ from the saved values',
   'settings.capacity.draft.matches': 'Your entries match the saved values',
   'settings.capacity.draft.capLabel': 'Overall session limit',
@@ -1539,7 +1484,7 @@ export const en = {
   'jobs.gated.chip': 'flagged for review',
   'jobs.gated.title': 'This action is gated — use “Approve & run” above.',
   'jobs.gated.body':
-    'One confirm shows the exact command before it runs — no risk tiers. The assistant can propose this; only you approve it.',
+    'One confirm shows the exact command before it runs — no risk tiers. Only you approve it.',
   'jobs.rail.requestedBy': 'Requested by',
   'jobs.rail.reviewedBy': 'Reviewed by',
   'jobs.rail.task': 'Task',
@@ -2743,46 +2688,6 @@ export const en = {
   'skills.validation.reason.next_session_materialization': 'Takes effect next session.',
   // @w4c-end:skills
 
-  // Mounted System Assistant dock and conversation controls (THR-118).
-  'assistantDock.title': "Ranch Assistant",
-  'assistantDock.conversations': "Conversations",
-  'assistantDock.close': "Close assistant",
-  'assistantDock.conversationError': "Could not load conversations.",
-  'assistantDock.loading': "Loading…",
-  'assistantDock.loadingLabel': "Loading",
-  'assistantDock.notReady': "Assistant is not ready. Set it up from Settings → Assistant.",
-  'assistantDock.statusError': "Could not load assistant status.",
-  'assistantDock.empty': "Ask the assistant anything — or type / to run a command.",
-  'assistantDock.placeholder': "Ask the assistant, or type / to run a command…",
-  'assistantDock.composer': "Assistant composer",
-  'assistantDock.send': "Send",
-  'assistantDock.sendHint': "to send",
-  'assistantDock.newlineHint': "for new line",
-  'assistantDock.speaker': "assistant",
-  'assistantDock.you': "you",
-  'assistantDock.toolActivity': "Tool activity",
-  'assistantDock.genericTool': "tool",
-  'assistantDock.replyingCaption': "replying… {elapsed}",
-  'assistantDock.replyingLabel': "{speaker} is replying",
-  'assistantDock.notConfigured': "Assistant not configured. Set it up in Settings.",
-  'assistantDock.assistantError': "Assistant error.",
-  'assistantDock.unknownError': "Unknown error",
-  'assistantDock.socketError': "WebSocket connection failed.",
-  'assistantDock.connectionError': "Connection failed: {detail}",
-  'assistantDock.disconnected': "Not connected. Reopen the dock to reconnect.",
-  'assistantDock.closeConversations': "Close conversations",
-  'assistantDock.newConversation': "New conversation",
-  'assistantDock.loadingConversations': "Loading conversations…",
-  'assistantDock.noConversations': "No conversations yet.",
-  'assistantDock.conversationList': "Conversation list",
-  'assistantDock.conversationTitle': "Conversation title",
-  'assistantDock.saveTitle': "Save title",
-  'assistantDock.cancelRename': "Cancel rename",
-  'assistantDock.deleteConfirm': "Delete “{title}”?",
-  'assistantDock.delete': "Delete",
-  'assistantDock.cancel': "Cancel",
-  'assistantDock.renameTitle': "Rename {title}",
-  'assistantDock.deleteTitle': "Delete {title}",
 } as const satisfies Catalog;
 
 export default en;

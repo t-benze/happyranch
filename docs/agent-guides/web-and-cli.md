@@ -211,7 +211,7 @@ delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
 
-**W5a copy repair:** the mounted Jobs Run/Reject, Settings Assistant/Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads and both Assistant turn variants supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+**W5a copy repair:** the mounted Jobs Run/Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
 **W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
 
 
@@ -247,7 +247,7 @@ stay byte-for-byte verbatim; mapped categories re-translate on a locale switch
 with no resubmission.
 
 **W2c** translated the Settings surface (`/orgs/:slug/settings/*`): the page
-header, sub-nav, API loading/error copy and panel headings, plus the Assistant,
+header, sub-nav, API loading/error copy and panel headings, plus the
 Organization, Executors (registered list, custom profiles, binary paths) and
 Capacity section bodies. Raw daemon errors, identifiers, executor and
 agent names, config keys, paths, commands and every capacity number stay
@@ -312,20 +312,20 @@ stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
 in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. W5b supersedes the historical preview default with full browser resolution
+`artifacts` coverage is translated; `usage` is translated by W4d-2. W5b supersedes the historical preview default with full browser resolution
 and bilingual availability disclosure; native N0/N1 remain deferred.
 Browser evidence adds representative KB list/detail/candidates and artifact
 list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
 upload filename/selected File/focus/control-preservation switch in both directions
 with zero requests. Final-head evidence is recorded in the task handoff.
 
-The mounted Assistant dock and conversation controls are translated in en/zh-CN.
+System Assistant mounted copy is retired under THR-294.
 W5a finite mounted coverage is accepted with PR993. W5b replaces the historical
 preview default/disclosure with bilingual availability and full browser-language
 resolution. Native preference persistence remains deferred to N0/N1.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2/Assistant-migrated namespaces
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
-`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`, `system-assistant`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
@@ -375,7 +375,7 @@ Layer rules, boundary rules, and agent-callback omissions live in `web/ARCHITECT
 
 Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. Two paired tests enforce this:
 
-- Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run pytest tests/contract/test_openapi_snapshot.py`.
+- Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `uv run python scripts/generate_openapi_snapshot.py --write`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
 ### Tasks list
@@ -498,7 +498,7 @@ fidelity.
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with five existing sub-nav links, in this order: Capacity · Assistant · Organization · Executors · Preferences. Below640px these links wrap above the panel; at640px and wider the existing left rail remains. Preferences keeps full readable copy and a locally bounded panel. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with four sub-nav links, in this order: Capacity · Organization · Executors · Preferences. Below640px these links wrap above the panel; at640px and wider the existing left rail remains. Preferences keeps full readable copy and a locally bounded panel. The Settings root, retired `assistant`, `system` and `agents` subroutes, and unknown subroutes resolve to Capacity with replace navigation outside the settings data gate. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
 
 - **Capacity** — stages the paired daemon-wide `queue_workers` and
   `host_global_session_cap` values for a future operator-controlled restart.
@@ -619,7 +619,6 @@ The Settings surface ships as a full page (`web/src/features/settings/SettingsPa
   hash, not by unchanged values), then a failed read whose retained values must
   still carry the identical response's OWN receipt, and finally a usable
   recovery that advances it.
-- **Assistant** — assistant status, setup/recovery, and assistant executor binding.
 - **Org** (editable, Phase 2) — org-level settings: session timeout override, dreaming schedule (enabled, schedule time/timezone, catch-up-on-startup, agent mode, include/exclude agent names), browser-managed threads config (enabled and invocation timeout), and **working_hours** (THR-035: the Work-Hours Config UI — feature on/off switch, org-level eligibility selector, and the raw per-tier schedule blocks `default` / `teams` / `overrides`).
 - **Executors** — effective machine executor registry, custom CLI lifecycle, and recovery.
 
@@ -792,17 +791,13 @@ is implied by these methods.
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 
-System assistant commands are container-level:
-
-```bash
-happyranch assistant init [--repair|--reconfigure]
-happyranch assistant status
-happyranch assistant
-```
-
-`happyranch assistant` shows the system assistant configuration status;
-`happyranch assistant init` and `happyranch assistant register` manage the
-assistant. It does not take `--org`.
+System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
+settings, dock and Cmd/Ctrl-K binding are removed. Existing assistant config,
+conversations, workspace files and skill links remain inert and are not cleaned
+or migrated. Provider conversation roles and ordinary org-agent capabilities
+remain supported. The reserved `system_assistant` workspace name stays excluded
+from the org-agent YAML migration, preventing legacy YAML reads or sentinel
+writes. Historical database, audit and token records remain readable.
 
 ### Task work-status summary (TASK-5522)
 
@@ -832,12 +827,8 @@ Work status: Stale-but-alive — no substantive update recorded
 
 The full audit log (including inline `progress` messages) is unchanged.
 
-The founder-facing web surface is the **A-mode Cmd-K dock** (structured chat
-docked in the AppShell, toggled via the AppBar / Cmd-K shortcut). Assistant
-configuration (status / init / register / repair) is served over four HTTP routes
-(in `INCLUDED_PATHS` with TS mirrors in `web/src/lib/api/assistant.ts`).
-There is no standalone `/assistant` web page, no xterm terminal, and no
-"Open full session" escape hatch — the dock is the sole assistant surface.
+The former A-mode dock is retired (THR-294); no assistant HTTP or WebSocket
+operation remains mounted.
 
 ### Org portability (Slice A)
 
@@ -1136,8 +1127,7 @@ parts already describe org-local wall-clock time and never shift with viewer
 TZ; UTC instants use the response timezone and explicit locale. Invalid-format
 fallbacks keep their original behavior. Compare/cohort/default/manual selection
 and all query/refetch/server metric semantics are unchanged; locale changes
-preserve nodes, focus and selection without new API calls. Usage is translated; the mounted Assistant dock and conversation controls are
-also translated. W5b enables full browser-language defaults; native N0/N1 remain deferred. Browser evidence:
+preserve nodes, focus and selection without new API calls. Usage is translated. W5b enables full browser-language defaults; native N0/N1 remain deferred. Browser evidence:
 `web/scripts/w4a-browser-evidence.mjs --slice usage` (ordinary bundle).
 
 The web Usage page (`/orgs/<slug>/usage`, `web/src/features/usage/`) is the
@@ -1264,11 +1254,15 @@ These are invoked by skills inside agent sessions. Do not invoke them by hand; d
 
 Callbacks should use `--from-file <path>` where payloads have multiple fields. **The path MUST be absolute** (e.g. `/tmp/completion.json`). A relative path silently resolves against the agent's cwd and can litter stray files under the runtime orgs root. The CLI rejects relative paths with a clear error in the callback family (`report-completion`, `threads reply/decline/dispatch/compose`). See `docs/agent-guides/agent-executors-and-permissions.md`.
 
-### System Assistant mounted copy (THR-118)
+### Retired System Assistant
 
-The global `AssistantDockHost` and its mounted `ConversationSwitcher` bind en/zh-CN app-owned visible/accessibility copy, including composer/state/key hints, typing/tool activity and conversation actions/rename/delete confirmation. Shared MessageBubble/TypingBubble copy overrides are reused. Errors retain capture-time provenance: app fallback keys resolve at render time; raw daemon detail/message and caught diagnostic values (including empty or catalog-equal values) stay exact. Executor/tool names, titles, authored content and IDs remain data. Viewer-local timestamp and elapsed semantics remain unchanged.
-
-Locale switches preserve mounted nodes, active conversation, transcript/inflight state, drafts, focus and selection without entering connection-effect dependencies or issuing requests/mutations/reconnects. The detailed boundary is [Assistant Web UI §6.12](../superpowers/specs/2026-06-12-system-assistant-web-ui-design.md#612-mounted-dock-locale-presentation-thr-118). Ordinary-build evidence is `web/scripts/w4a-browser-evidence.mjs --slice assistant`: real HTTP/WS seams and request/socket ledger plus 390/1440 screenshots. Coverage inventory includes both consumers and marks only `system-assistant` translated in this slice, supported by component regressions and ordinary-build mounted-copy evidence. W5b enables full browser-language defaults; native restart acceptance remains deferred.
+System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
+settings, dock and Cmd/Ctrl-K binding are removed. Existing assistant config,
+conversations, workspace files and skill links remain inert and are not cleaned
+or migrated. Provider conversation roles and ordinary org-agent capabilities
+remain supported. The reserved `system_assistant` workspace name stays excluded
+from the org-agent YAML migration, preventing legacy YAML reads or sentinel
+writes. Historical database, audit and token records remain readable.
 
 ### Founder initial activation and draft receipts (S2)
 
@@ -1366,3 +1360,12 @@ wrapper verifies only remaining Web checks; dormant keeper/proof edits are not
 behavioral PASS or RED/GREEN evidence. The current merge-forward repair requires
 no manual dispatch or rerun. General integration remains SKIPPED under
 THR243 seq42, never PASS. See `docs/local-ci.md` for the maintained CI contract.
+
+### OpenAPI snapshot operator
+
+`uv run python scripts/generate_openapi_snapshot.py --check` (also the default)
+compares exact summary bytes without writing or starting a daemon lifespan.
+After review, `uv run python scripts/generate_openapi_snapshot.py --write`
+atomically replaces `tests/contract/openapi.json`. The pure summarizer is shared
+with the retained contract test and preserves workflow input discriminators.
+Python unit execution remains suspended under THR-291; this operator does not run tests.

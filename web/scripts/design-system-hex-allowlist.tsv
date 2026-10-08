@@ -39,7 +39,6 @@ features/skills/SkillDetailPage.tsx	63	56	bg-transparent	legacy default Tailwind
 features/skills/SkillStatusBadge.tsx	17	56	bg-transparent	legacy default Tailwind special colour utility
 features/skills/SkillValidationPage.tsx	60	56	bg-transparent	legacy default Tailwind special colour utility
 features/skills/SkillsPage.tsx	100	56	border-transparent	legacy default Tailwind special colour utility
-features/system-assistant/ConversationSwitcher.tsx	161	57	bg-transparent	legacy default Tailwind special colour utility
 features/tasks/TaskListRow.tsx	118	62	bg-current	legacy default Tailwind special colour utility
 features/tasks/TasksPage.tsx	110	64	bg-current	legacy default Tailwind special colour utility
 features/threads/ThreadsPage.tsx	1490	91	bg-current	legacy default Tailwind special colour utility

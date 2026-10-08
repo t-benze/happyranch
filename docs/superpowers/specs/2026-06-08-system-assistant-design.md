@@ -1,5 +1,7 @@
 # System Assistant — Design Spec
 
+> RETIRED by THR-294. This document is preserved design history. The runtime-global System Assistant is no longer supported; see the maintained runtime/configuration guide for inert legacy compatibility.
+
 **Date:** 2026-06-08
 **Status:** Draft, pending implementation.
 **Origin:** Founder request for a runtime-level `system assistant` that knows the HappyRanch protocol and helps users operate the system. The initialization flow should also prove the user's environment is ready by finding at least one runnable interactive agentic CLI.

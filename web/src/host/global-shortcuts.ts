@@ -10,7 +10,6 @@
 import type { ShortcutEntry } from '@/design-system/patterns/HelpSheet';
 
 export const GLOBAL_SHORTCUTS: ShortcutEntry[] = [
-  { keys: ['Cmd', 'K'], description: 'help.shortcut.openAssistant' },
   { keys: ['?'], description: 'help.shortcut.showHelp' },
   { keys: ['Esc'], description: 'help.shortcut.closeAny' },
   { keys: ['g', 'd'], description: 'help.shortcut.jumpDashboard' },

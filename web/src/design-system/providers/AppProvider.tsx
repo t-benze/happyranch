@@ -23,7 +23,6 @@ import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
 import { realAgentsApi } from './_real-agents';
 import { realAuthorityPolicyApi } from './_real-authority-policy';
-import { realAssistantApi } from './_real-assistant';
 import { realAuditApi } from './_real-audit';
 import { realDashboardApi } from './_real-dashboard';
 import { realSettingsApi } from './_real-settings';
@@ -84,7 +83,6 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
           skills: realSkillsApi,
           teams: realTeamsApi,
           health: realHealthApi,
-          assistant: realAssistantApi,
           jobs: realJobsApi,
           workHours: realWorkHoursApi,
           useThreadRoutes: useRealThreadRoutes,

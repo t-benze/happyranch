@@ -464,3 +464,109 @@ mutates the actual schedule comparison, retaining all four event/input cases.
 Prior over-bound artifacts, exit120 and four error objects remain failed
 evidence. The Jenkins inner-identity timing cause remains UNKNOWN; neither its
 keeper nor capture/production deadline is changed by this source correction.
+
+## System Assistant retirement artifact verification (THR-294)
+
+Run the accepted focused source shipping selection only in an authorized
+**disposable hosted** venue, never on the live Linux daemon host:
+
+```bash
+uv run python tests/helpers/integration_parent.py -- pytest -m integration tests/integration/test_assistant_retirement.py -v --tb=short
+```
+
+R4.1 and the same-root R4.5 row are baseline/candidate characterization in
+separate fixtures. A reproduced callback failure remains a failure. The other
+refusal rows and terminal result/quiescence tails still require authentic success.
+Do not change shared session/auth code or fabricate callbacks to make them pass.
+The general integration suite remains SKIPPED THR-243 seq42; Python unit/proof
+execution remains SUSPENDED THR-291 seq5/16. These selections do not release
+those lanes. Whole-repo collect-only discovery requires a complete import/global/
+decorator/conftest/plugin/hook side-effect audit and an isolated parent with
+observed zero test-body execution/real launches before this exact command:
+
+```bash
+uv run python tests/helpers/integration_parent.py -- pytest tests/ --collect-only -q -m ""
+```
+
+For wheel and frozen verification, use the existing Hatchling/PyInstaller/uv
+closure, with independently provisioned official CPython **3.14.4** and
+uv **0.12.5** distribution checksums, executable identities and RECORD receipts
+before dependent runs. A version selector or metadata listing is insufficient.
+Keep separate closed wheel-build, wheel-verify, freeze and frozen-verify roots,
+including HOME/XDG/cache/temp/daemon paths. Pass those variables through child
+environment mappings; never repurpose the operator's HOME. Exclude PYTHONPATH,
+PYTHONHOME, user-site, source callback shims, editable installs and ambient
+credentials. Record immutable source/lock equality and digests before/after each
+operation. Set VIRTUAL_ENV only in the appropriate build/freeze child mapping.
+
+`BUILD_CONSTRAINTS` is a task-owned hash-only requirements file for the accepted
+Hatchling 1.32.4 closure: packaging 26.0, pathspec 1.1.1, pluggy 1.6.0,
+tomlkit 0.15.1 and trove-classifiers 2026.9.21.13. Verify each official wheel
+hash and metadata attribution. Hash-mode refusal of an additional requirement
+is a blocker; do not resolve it unconstrained. The source dependency/build
+backend declarations and lock stay unchanged. The locked freeze group remains
+PyInstaller 6.21.0/hooks 2026.6/altgraph 0.17.5/setuptools 82.0.1/packaging 26.0
+and macOS macholib 1.16.4. No new tooling dependency is admitted.
+
+The paths below are absolute, task-owned, recorded values. Tool executable
+and distribution origins must already be verified. Each command runs in its
+stage's closed child environment; the source cwd is the immutable candidate.
+
+```bash
+"$UV_BIN" export --frozen --no-dev --no-emit-project --format requirements.txt --output-file "$RUNTIME_REQS" --no-python-downloads --no-config
+"$UV_BIN" venv --python "$CANDIDATE_PY" --no-python-downloads --no-config "$WHEEL_BUILD_ENV"
+# VIRTUAL_ENV=WHEEL_BUILD_ENV in the controlled child environment:
+"$UV_BIN" sync --active --frozen --no-dev --no-install-project --no-install-local --no-build --python "$CANDIDATE_PY" --no-python-downloads --no-config
+"$UV_BIN" build "$CANDIDATE_SOURCE" --wheel --out-dir "$WHEEL_OUT" --python "$CANDIDATE_PY" --no-python-downloads --build-constraints "$BUILD_CONSTRAINTS" --require-hashes --no-config
+"$UV_BIN" venv --python "$CANDIDATE_PY" --no-python-downloads --no-config "$VERIFY_ENV"
+"$UV_BIN" pip install --python "$VERIFY_ENV/bin/python" --require-hashes --no-build --no-python-downloads --no-config -r "$RUNTIME_REQS"
+# Unique wheel digest/member/RECORD inspection precedes this installation:
+"$UV_BIN" pip install --python "$VERIFY_ENV/bin/python" --no-deps --no-build --no-python-downloads --no-config "$WHEEL_FILE"
+"$UV_BIN" venv --python "$CANDIDATE_PY" --no-python-downloads --no-config "$FREEZE_ENV"
+# VIRTUAL_ENV=FREEZE_ENV in the separate controlled child environment:
+"$UV_BIN" sync --active --group build --frozen --no-dev --no-install-project --no-install-local --no-build --python "$CANDIDATE_PY" --no-python-downloads --no-config
+"$UV_BIN" run --active --no-sync --frozen --python "$FREEZE_ENV/bin/python" --no-python-downloads --no-config "$FREEZE_ENV/bin/pyinstaller" packaging/daemon.spec --clean --noconfirm
+"$FREEZE_ENV/bin/pyi-archive_viewer" --list --recursive --brief "$FROZEN_DIR/happyranch-daemon"
+"$FREEZE_ENV/bin/pyi-archive_viewer" --list --recursive --brief "$FROZEN_DIR/happyranch"
+```
+
+No shared editable reinstall. Do not use the unqualified build_daemon.sh
+recipe as constrained proof. Both executable origins need independent parser,
+lifecycle, ordinary stub callback, legacy preservation and process cleanup
+receipts outside checkout. Two Analysis objects or one daemon PYZ listing do
+not prove CLI delivery: inspect both recursive executable archives, build TOCs,
+final bundle bytes/modes/links, Python/native dependencies and ordinary skill
+member hashes. Native macOS15 origin and libproc observations are separate from
+Linux evidence. Installed-wheel RECORD/console/shebang and narrow `-I` module
+origin checks must point into that wheel-owned venv; source PYTHONPATH never
+establishes installed/frozen callbacks.
+
+Copy the stdlib-only driver into the verification root and hash it. Its origin
+manifest binds schema_version 1, origin, venue platform/arch, candidate_sha,
+source/lock/constraints digests, official Python/uv distribution and tool RECORD
+receipts, artifact/bundle inventory, observer executable/digest, absolute
+cli_argv/daemon_argv, closed PATH and skills_root. Wheel also needs site_packages
+and RECORD, an exact console receipt and interpreter mapping; frozen also
+needs both archive listings, TOCs, executable hashes, bundle_root and native
+OS/process receipts. `source_manifest` and `constraints` are path/SHA256
+receipts: the source record has candidate_sha, uv_lock_sha256 and a files map
+of tracked relative path to SHA256. Every path/SHA256 receipt is a regular,
+non-symlink, non-group/world-writable file. Unknown manifest keys refuse.
+The tool record binds official distribution hashes and exact Python/uv versions;
+frozen also binds PyInstaller6.21.0. Bundle records bind candidate_sha and
+no-follow entries; frozen TOC records include daemon_analysis, cli_analysis,
+shared_pyz, native_dependencies, python_stdlib and source_sha256. These records
+must come from actual commands and inspected artifacts, never invented values.
+Missing facts fail closed before launch.
+
+```bash
+"$OBSERVER_PY" -I "$ARTIFACT_DRIVER" run --origin wheel --origin-manifest "$MANIFEST" --run-root "$CLOSED_ROOT" --cases lifecycle,parser,ordinary-callback,nonrunning-swap --deadline-seconds 240 --receipt-json "$RECEIPT"
+# Repeat with --origin frozen and its independent native origin manifest/root.
+```
+
+The driver calls the actual artifact CLI for completion with authentic launched
+IDs, and owns bounded identity-scoped teardown. Static driver syntax, metadata,
+archive listings or a submitted job are never behavioral readiness/PASS. Keep
+exact commands/exits and residual failures; independent review and QA bind the
+final pushed PR head and renew after every push. Parent TASK-10245 owns guarded
+merge/post-main and deployment disposition.

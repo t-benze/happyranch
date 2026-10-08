@@ -47,7 +47,7 @@ function Fixture({ state, children }: { state: State; children: ReactNode }) {
 const meta = {
   title: 'Design System/Tasks/List', component: TasksPage,
   decorators: [(Story, context) => <PrototypeProvider key={context.parameters.taskState ?? 'populated'}><Fixture state={(context.parameters.taskState ?? 'populated') as State}>
-    <div className="flex h-screen flex-col"><AppBar presentation="tasks" showAssistantControl={false} /><Story /></div>
+    <div className="flex h-screen flex-col"><AppBar presentation="tasks" /><Story /></div>
   </Fixture></PrototypeProvider>],
 } satisfies Meta<typeof TasksPage>;
 export default meta;

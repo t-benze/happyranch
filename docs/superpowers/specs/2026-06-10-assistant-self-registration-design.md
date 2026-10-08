@@ -1,5 +1,7 @@
 # System Assistant: Self-Registration Replaces Executor Probing
 
+> RETIRED by THR-294. This document is preserved design history. The runtime-global System Assistant is no longer supported; see the maintained runtime/configuration guide for inert legacy compatibility.
+
 > Status: implemented
 > Current Source: docs/agent-guides/features-and-invariants.md (system assistant entry)
 > Supersedes: docs/superpowers/specs/2026-06-08-system-assistant-design.md (executor probing / `assistant probes` / `assistant configure` onboarding only; runtime attach, workspace, KB/learnings unchanged)
