@@ -81,7 +81,7 @@ class Commands:
         log = RECEIPTS / (name + '.log')
         started = time.monotonic()
         row = {'name': name, 'argv': list(map(str, argv)), 'cwd': str(cwd),
-               'env': env, 'timeout_seconds': seconds, 'status': 'in-flight'}
+               'env': dict(env), 'timeout_seconds': seconds, 'status': 'in-flight'}
         self.rows.append(row)
         save('commands.json', self.rows)
         process = None
@@ -257,6 +257,120 @@ def distribution_receipt(commands, name, python, items, env, root):
     return json.loads(output.read_text())
 
 
+def native_prerequisites(commands, root, env):
+    """Finite native inputs; never install into or update the runner host."""
+    if sys.platform == 'darwin':
+        developer, _ = commands.run('native-developer-path', ['xcode-select', '-p'], root, env)
+        env['DEVELOPER_DIR'] = developer.strip()
+        sdk, _ = commands.run('native-sdk-path', ['xcrun', '--show-sdk-path'], root, env)
+        sdk = Path(sdk.strip()).resolve(strict=True)
+        assert sdk.is_dir() and (sdk / 'usr/lib/libSystem.tbd').is_file()
+        env['SDKROOT'] = str(sdk)
+        env['CFLAGS'] = '-isysroot ' + str(sdk)
+        env['LDFLAGS'] += ' -isysroot ' + str(sdk)
+        env['CPPFLAGS'] = '-isysroot ' + str(sdk)
+        roots = {}
+        for name in ('openssl@3', 'xz', 'readline', 'libffi', 'sqlite'):
+            library = next((p for p in (Path('/opt/homebrew/opt') / name,
+                                        Path('/usr/local/opt') / name) if p.is_dir()), None)
+            assert library, f'existing native {name} prerequisite unavailable; no fallback'
+            library = library.resolve(strict=True)
+            roots[name] = str(library)
+            env['CPPFLAGS'] += ' -I' + str(library / 'include')
+            env['LDFLAGS'] += ' -L' + str(library / 'lib') + ' -Wl,-rpath,' + str(library / 'lib')
+            save('native-library-' + name.replace('@', '-') + '.json', {
+                'root': str(library), 'files': {str(p.relative_to(library)): identity(p)
+                for p in sorted(library.rglob('*')) if p.is_file() and not p.is_symlink()},
+                'links': {str(p.relative_to(library)): os.readlink(p)
+                for p in sorted(library.rglob('*')) if p.is_symlink()}})
+        save('native-sdk.json', {'sdk': str(sdk), 'developer': env['DEVELOPER_DIR'],
+                                'system_stub': identity(sdk / 'usr/lib/libSystem.tbd'),
+                                'existing_library_roots': roots})
+        return ['--with-openssl=' + roots['openssl@3'], '--with-openssl-rpath=auto']
+
+    assert platform.machine() == 'x86_64'
+    assert 'VERSION_ID="24.04"' in Path('/etc/os-release').read_text()
+    destination = root / 'native-prefix'
+    downloads = root / 'native-downloads'
+    destination.mkdir(mode=0o700)
+    downloads.mkdir(mode=0o700)
+    # Each development archive MUST match its actual installed runtime version.
+    # No apt update/install/upgrade, unconstrained resolver or newer fallback.
+    families = (
+        ('liblzma5', ('liblzma5', 'liblzma-dev')),
+        ('libbz2-1.0', ('libbz2-1.0', 'libbz2-dev')),
+        ('libreadline8t64', ('libreadline8t64', 'libreadline-dev')),
+        ('libtinfo6', ('libtinfo6', 'libncurses6', 'libncursesw6', 'libncurses-dev')),
+    )
+    rows = []
+    save('native-apt-inputs.json', {
+        'trust': 'existing runner authenticated apt indexes; unauthenticated downloads forbidden',
+        'indexes': {str(p): identity(p) for p in sorted(Path('/var/lib/apt/lists').glob('*'))
+                    if p.is_file() and not p.is_symlink()},
+        'sources': {str(p): identity(p) for p in sorted(Path('/etc/apt/sources.list.d').glob('*'))
+                    if p.is_file() and not p.is_symlink()},
+        'ubuntu_archive_keyring': identity('/usr/share/keyrings/ubuntu-archive-keyring.gpg')})
+    for runtime, packages in families:
+        installed, _ = commands.run('native-installed-' + runtime,
+            ['dpkg-query', '-W', '-f=${Status}\n${Version}\n', runtime], root, env)
+        status, version = installed.strip().splitlines()
+        assert status == 'install ok installed' and version and not any(c.isspace() for c in version)
+        for package in packages:
+            metadata, _ = commands.run('native-index-' + package,
+                ['apt-cache', 'show', package + '=' + version], root, env)
+            entries = []
+            for block in metadata.strip().split('\n\n'):
+                fields = dict(line.split(': ', 1) for line in block.splitlines()
+                              if line and not line[0].isspace() and ': ' in line)
+                if (fields.get('Package') == package and fields.get('Version') == version
+                        and {'SHA256', 'Filename', 'Size'} <= fields.keys()):
+                    entries.append(fields)
+            assert entries and len({(x['SHA256'], x['Filename'], x['Size']) for x in entries}) == 1, (
+                f'{package}={version} exact authenticated archive metadata unavailable or ambiguous')
+            fields = entries[0]
+            assert fields['Architecture'] == 'amd64' and fields['Filename'].startswith('pool/')
+            assert len(fields['SHA256']) == 64 and int(fields['Size']) <= 8 * 1024 * 1024
+            uris, _ = commands.run('native-uri-' + package,
+                ['apt-get', '-o', 'APT::Get::AllowUnauthenticated=false', '--print-uris',
+                 'download', package + '=' + version], downloads, env)
+            import shlex
+            uri = next(shlex.split(line)[0] for line in uris.splitlines() if line.startswith("'"))
+            from urllib.parse import urlparse
+            parsed = urlparse(uri)
+            assert parsed.scheme in ('https', 'http') and parsed.hostname in (
+                'archive.ubuntu.com', 'security.ubuntu.com', 'azure.archive.ubuntu.com')
+            before = set(downloads.glob('*.deb'))
+            commands.run('native-download-' + package,
+                ['apt-get', '-o', 'APT::Get::AllowUnauthenticated=false',
+                 'download', package + '=' + version], downloads, env)
+            added = set(downloads.glob('*.deb')) - before
+            assert len(added) == 1
+            archive = added.pop()
+            assert sha(archive) == fields['SHA256'] and archive.stat().st_size == int(fields['Size'])
+            control, _ = commands.run('native-control-' + package,
+                ['dpkg-deb', '--field', archive, 'Package', 'Version', 'Architecture'], root, env)
+            assert f'Package: {package}' in control and f'Version: {version}' in control
+            assert 'Architecture: amd64' in control
+            commands.run('native-extract-' + package, ['dpkg-deb', '--extract', archive, destination], root, env)
+            rows.append({'package': package, 'version': version, 'installed_runtime': runtime,
+                         'metadata': fields, 'url': uri, 'archive': identity(archive)})
+            save('native-archives.json', rows)
+    library = destination / 'usr/lib/x86_64-linux-gnu'
+    include = destination / 'usr/include'
+    env['CPPFLAGS'] = '-I' + str(include) + ' -I' + str(include / 'x86_64-linux-gnu')
+    env['LDFLAGS'] += ' -L' + str(library) + ' -Wl,-rpath,' + str(library)
+    for variable, value in (('LIBLZMA_LIBS', '-llzma'), ('BZIP2_LIBS', '-lbz2'),
+                            ('LIBREADLINE_LIBS', '-lreadline -ltinfo')):
+        env[variable] = '-L' + str(library) + ' ' + value
+        env[variable.replace('_LIBS', '_CFLAGS')] = env['CPPFLAGS']
+    save('native-prefix.json', {'root': str(destination), 'files': {
+        str(p.relative_to(destination)): identity(p) for p in sorted(destination.rglob('*'))
+        if p.is_file() and not p.is_symlink()}, 'links': {
+        str(p.relative_to(destination)): os.readlink(p) for p in sorted(destination.rglob('*'))
+        if p.is_symlink()}})
+    return []
+
+
 def main():
     assert os.environ.get('GITHUB_ACTIONS') == 'true', 'hosted runner only'
     assert os.environ.get('GITHUB_REPOSITORY') == 't-benze/happyranch'
@@ -320,15 +434,20 @@ def main():
         env['LDFLAGS'] = '-Wl,-rpath,' + str(prefix / 'lib')
         configure = [build / 'configure', '--prefix=' + str(prefix),
                      '--enable-shared', '--with-ensurepip=install']
-        if sys.platform == 'darwin':
-            openssl = next((p for p in (Path('/opt/homebrew/opt/openssl@3'),
-                                        Path('/usr/local/opt/openssl@3')) if p.is_dir()), None)
-            assert openssl, 'existing native OpenSSL prerequisite unavailable; no fallback install'
-            configure += ['--with-openssl=' + str(openssl.resolve()), '--with-openssl-rpath=auto']
-            save('native-openssl.json', {'root': str(openssl.resolve()), 'files': {
-                str(p): sha(p) for p in sorted(openssl.resolve().rglob('*'))
-                if p.is_file() and not p.is_symlink()}})
-        commands.run('cpython-configure', configure, build, env, 180)
+        configure += native_prerequisites(commands, root, env)
+        smoke = root / 'compiler-smoke.c'
+        smoke.write_text('#include <stdio.h>\nint main(void) { return puts("native compiler ready") < 0; }\n')
+        import shlex
+        commands.run('native-compiler-link', [compiler, *shlex.split(env.get('CFLAGS', '')),
+                     smoke, '-o', root / 'compiler-smoke', *shlex.split(env['LDFLAGS'])], root, env)
+        commands.run('native-compiler-execute', [root / 'compiler-smoke'], root, env)
+        try:
+            commands.run('cpython-configure', configure, build, env, 180)
+        finally:
+            config_log = build / 'config.log'
+            if config_log.is_file():
+                assert config_log.stat().st_size <= LOG_CAP
+                shutil.copyfile(config_log, RECEIPTS / 'cpython-config.log')
         commands.run('cpython-make', ['make', '-j4'], build, env, 1800)
         commands.run('cpython-install', ['make', 'install'], build, env, 480)
         python = prefix / 'bin/python3.14'
@@ -337,6 +456,11 @@ def main():
                      ['otool', '-L', python] if sys.platform == 'darwin' else ['ldd', python], root, env)
         commands.run('cpython-executable-stdlib', [python, '-I', '-c', PY_OBSERVER,
                                                  RECEIPTS / 'python-runtime.json'], root, env)
+        native_extensions = sorted((prefix / 'lib/python3.14/lib-dynload').glob('*.so'))
+        assert native_extensions
+        commands.run('cpython-extension-native-dependencies',
+                     ['otool', '-L', *native_extensions] if sys.platform == 'darwin'
+                     else ['ldd', *native_extensions], root, env)
         wheels = root / 'wheels'
         wheels.mkdir()
         items = {}

@@ -11,7 +11,17 @@ dependency declarations, lock, backend and production modules are unchanged.
 The runner has no general command interface. It builds official CPython3.14.4
 from its hash-pinned python.org source in an owned user prefix on disposable
 Ubuntu/native macOS15. It records actual OS/image/compiler/native origins,
-installed executable and stdlib hashes, and refuses missing native prerequisites.
+installed executable and stdlib hashes, and refuses unavailable native inputs.
+Ubuntu development and runtime archives are extracted only into an owned
+prefix, using each observed installed runtime's exact version and authenticated
+APT index SHA256/size. There is no update/install/upgrade, unconstrained version
+selection or fallback. Download URIs, package control fields, original index
+identities, extracted files and links are retained. macOS uses the existing
+selected Xcode SDK and Homebrew library roots, explicitly passed to the compiler;
+it records their origins without installing or changing them. A real compiler
+link/execution precedes configure. The bounded config.log is retained even on
+configure failure, and native dependencies of all installed extensions are
+observed after the unchanged indispensable-module assertions succeed.
 No sudo, host installer, package upgrade, editable project install or downloaded
 interpreter fallback is used. Exact uv0.12.5 and the accepted Hatchling1.32.4
 closure are hash-installed from official wheels into distinct owned environments.
