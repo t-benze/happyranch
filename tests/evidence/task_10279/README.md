@@ -6,9 +6,10 @@ push workflow first performs the newly admitted cheap native preflight on fresh
 GitHub-hosted Ubuntu/native macOS15 runners, then runs the existing finite
 ordinary-UID provisioning and accepted artifact coordinator only after successful
 admission on that runner. Each matrix job has a finite 75-minute deadline.
-Source results retain actual candidate/baseline exits and failure receipts;
-submission or native readiness alone establishes no source behavior. The
-artifact recovery below requires new actual wheel/frozen receipts;
+Historical source results retain their original candidate/baseline exits,
+head identities and failure receipts; the current coordinator executes no source
+selection. Submission or native readiness alone establishes no source behavior.
+The artifact recovery below requires new actual wheel/frozen receipts;
 it runs no browser, whole collection or suspended unit/proof body.
 
 Candidate b2a9e565c940249703cb52aee3258317416ea477 and original baseline

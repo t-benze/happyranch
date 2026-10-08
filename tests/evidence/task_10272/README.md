@@ -3,9 +3,11 @@
 Historical TASK-10272 runs and source remain preserved at their immutable
 evidence refs. In this TASK-10279 recovery branch, `runner.py` is bound to
 published candidate b2a9e565c940249703cb52aee3258317416ea477 for the exact
-TASK-10279 hosted push after fresh fixed-native admission. The renewed workflow
-includes the fixed source step; actual new source receipts remain required.
-See `../task_10279/README.md` for the current descriptor, separate logs/results and four-file baseline overlay.
+TASK-10279 hosted push after fresh fixed-native admission. The current coordinator
+executes artifact recovery only; source execution is explicitly not performed.
+Historical source receipts retain their original head and failures. See
+`../task_10279/README.md` for the descriptor, separate logs/results and historical
+four-file baseline source overlay.
 Only that fixed C observer may use hosted sudo; provisioning, source imports,
 tests, builds, browser and product execution remain ordinary UID. The older
 unprivileged diagnostic below is historical and is no longer invoked by the
