@@ -329,3 +329,114 @@ publication-process requirements.
 - **Clean vs. dirty repo.** The script does not check for uncommitted
   changes. The GitHub CI always runs on a clean checkout of the pushed
   commit.
+
+
+The manual input `all_only` remains a boolean with default false. Founder
+THR139 seq420 limits `jobs.integration` to `github.event_name == 'schedule'`:
+schedule selects integration; manual default, explicit false and explicit true
+all skip it. The four event/input cases stay retained. Historical manual-default
+integration expectations and the old all-only predicate are superseded.
+General integration SUITE remains SKIPPED under THR139seq77/THR243seq42, never PASS.
+No manual dispatch or rerun is part of the current G source-delivery unit.
+
+Python units remain SUSPENDED under THR291 seq5/16. In addition to the inherited
+`scripts/local_ci.sh all` pause, the G follow-on block in
+`scripts/nightly_local_ci_all.py` has a fixed local
+`PYTHON_UNIT_SUSPENDED = True` guard, with no operator override or input. It emits
+SUSPENDED / SKIPPED, NOT RUN and zero-child metadata before any G follow-on launch.
+The 101 selectors, 15 sibling files, 40 source controls and 580 repetition
+definitions remain source data; collection, proof and repetition invocations
+cannot fall through a successful Web-only all wrapper. Restore execution only
+after a new Founder release through ordinary review. For TASK10062 descendants,
+new test execution is also SKIPPED / FOUNDER-WAIVED THR139seq429. Inspection does
+not verify behavior. The following describes the retained dormant plan.
+
+The manual lane invokes exactly `uv run python scripts/nightly_local_ci_all.py`
+from the checkout root, keeping the workflow run scalar below GitHub's observed
+21,000-character limit. The source manifest authenticates both the workflow YAML
+and this fixed script. Source-copy controls mutate and restore each declared path
+in their own archived checkout; the selection and preservation-plan controls
+reference the script, while input and integration-predicate controls reference YAML.
+The copied keeper reads that same checkout's script.
+
+The true lane runs the unchanged `scripts/local_ci.sh all` first and preserves
+its exit separately. Successful all is followed by the closed literal 101-node
+collection and five ordered fresh isolated and sibling rounds: 505 node processes
+plus 75 complete-file processes. No selector input or timeout increase is
+provided; all commands share the existing 60-minute job cap. Every invocation
+owns a unique absolute basetemp, HOME/config/cache/daemon registry, JUnit,
+command/source/head/tree/runtime/status receipt and 1MiB output tail. Complete
+lossless gzip streams retain raw and stored byte counts and SHA256 in the same
+artifact, split into ordered 8MiB raw segments when needed. The merged child
+stdout/stderr on runner stdout is labeled honestly; runner stderr is captured
+separately. JUnit is captured losslessly before checking the command exit; its
+raw duplicate stays in owned temporary scratch. Compact per-case receipts name
+the authenticated JUnit manifest, ordinal and diagnostic byte/hash identity
+rather than copying entire tracebacks. Bounded errors reference retained evidence
+once. The unchanged acquisition limits are 128MiB per member and 512MiB expanded
+archive; bound refusals retain partial capture with complete=false and never PASS; short console receipts identify phase/node/round/exit. At most four
+independent children run concurrently. Each isolated phase completes before its
+sibling phase, and each entire round completes before the next. All started
+children are reaped and failures aggregated before another phase is admitted.
+Follow-on commands prohibit dependency sync and shared bytecode/pytest caches;
+each records actual imports from its intended source, with installed dependencies
+read-only. Failed, interrupted and unstarted commands
+are not passes. The seven selected keepers alone pair real existing E with
+fresh POST G; other 64 existing fixture consumers keep their original bodies
+and run fresh G. Collection records complete native parameter IDs. Separate
+causal controls must restore exact source bytes and modes before GREEN; source
+copies never mutate the immutable all checkout. No live-host platform probe or
+job submission substitutes for actual hosted evidence. Required PR checks and
+the selected actual hosted Codex callback remain separate gates.
+
+The fixed source controls run only after successful all and before repetitions,
+in separate archives of the authenticated committed head. The complete-object
+control accepts a differing layout before attempting row validation, so missing
+objects reach the unchanged refusal assertion (`DID NOT RAISE`) rather than an
+unrelated missing-table exception. The intact-layout path still validates rows.
+Fixed pytest commands use short tracebacks and assertion verbosity zero to avoid
+repeating entire nested layout diffs for every origin error. They retain the
+named assertion, observed/expected difference, JUnit cases and actual exits;
+all selectors and parameter dimensions remain unchanged. Each control records
+its exact source patch, original and restored SHA256 and modes, named-node RED
+JUnit and the identical-command restored GREEN. The 64 unchanged consumers use
+explicitly labeled origin-regression RED at their full-layout observer; setup or
+import errors never count as business RED. Controls refuse absent attribution,
+syntax errors, missing receipts, or failed restoration. After exact restoration
+and successful identical-command GREEN, an attribution failure is retained while
+the remaining independent controls run. Any such failure prevents the completion
+receipt and repetitions; a failed restored GREEN fails its control. Every started control is reaped and
+accounted for before the aggregated failure blocks repetitions. Each control
+owns a separate committed source archive, scratch, environment and logs within
+the same four-child bound. Actual source-control
+completion is recorded separately from all and from the 580-process repetitions.
+
+The G07 keeper distinguishes authentic compatible cold reopens from physical
+no-write validation/refusal boundaries. Successful old E and current G reopens
+compare independently observed complete SQL, all tables, rowids, storage types,
+raw values, file set/modes and non-database bytes after every closed reader.
+Validator-only success and intended schema-mismatch refusal retain entire
+file-byte/mode equality. The current-validator refusal keeper adds an unexpected
+workflow index on a workflow table and independently observes that object before
+validation, so it reaches the same workflow object-set mismatch boundary as
+the pinned readers. Fixed causal controls separately corrupt current G
+reopen identity, validator page preservation and refusal page preservation in
+owned source copies; each must reach its named assertion, restore exact source
+bytes AND modes, then pass the same command. The archives remain unchanged,
+and these additional controls do not trim the original 580 repeated processes
+or increase the 60-minute cap. Their control-plan keeper is also mutated and
+restored. Submitted or statically inspected controls are not executed RED/GREEN
+evidence.
+
+The lost-notification control mutates only the first queued-draft
+`recover_owned_task` enqueue in a disposable source copy. Its retained cold
+`_sweep_on_startup` keeper requires queue size one and attributes observed zero
+to that exact business assertion, across both E/G origins. Published recovery
+and daemon sources stay unchanged. The event-revision control binds the exact
+collected keeper/source assertion and observed `{9}` versus expected `{4}`;
+pytest's rendered assertion does not need a literal `AssertionError`, while
+setup/import/unrelated failures remain refused. The manual-predicate control
+mutates the actual schedule comparison, retaining all four event/input cases.
+Prior over-bound artifacts, exit120 and four error objects remain failed
+evidence. The Jenkins inner-identity timing cause remains UNKNOWN; neither its
+keeper nor capture/production deadline is changed by this source correction.

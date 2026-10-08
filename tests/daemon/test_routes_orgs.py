@@ -517,7 +517,7 @@ async def test_init_org_loaded_org_still_409_org_exists(
 
 
 @pytest.mark.parametrize('from_example', [False, True], ids=['default', 'example'])
-def test_deliberate_creation_is_complete_e_before_attachment_and_reopens_twice(tmp_path: Path, auth, from_example: bool) -> None:
+def test_deliberate_creation_is_complete_e_before_attachment_and_reopens_twice(tmp_path: Path, auth, from_example: bool, monkeypatch) -> None:
     from runtime.infrastructure.workflow_schema import validate_workflow_schema
     runtime = RuntimeDir.init(tmp_path / 'runtime')
     state = DaemonState.from_runtime(runtime, Settings())
@@ -528,18 +528,71 @@ def test_deliberate_creation_is_complete_e_before_attachment_and_reopens_twice(t
         (example / 'org/agents').mkdir(parents=True)
         (example / 'org/teams.yaml').write_text('teams: {}\n')
         body['from_example'] = str(example)
+    from tests.daemon.test_workflow_activation_routes import _assert_activation_org_layout
+    original_add = state.add_org
+    observed = []
+    async def before_attach(slug):
+        _assert_activation_org_layout(runtime.orgs_dir / slug / 'happyranch.db', 'G', 'before actual attachment')
+        observed.append(slug)
+        return await original_add(slug)
+    monkeypatch.setattr(state, 'add_org', before_attach)
     result = client.post('/api/v1/orgs', json=body, headers=auth)
     assert result.status_code == 200, result.text
+    assert observed == ['alpha']
     org = state.orgs['alpha']
-    assert validate_workflow_schema(org.db._conn, expected_org_slug='alpha') == 'E'
+    assert validate_workflow_schema(org.db._conn, expected_org_slug='alpha') == 'G'
     initial_events = [tuple(row) for row in org.db.execute('SELECT * FROM workflow_cutover_events')]
     assert len(initial_events) == 1
+    client.close()
     org.close()
     for _ in range(2):
         reopened = DaemonState.from_runtime(runtime, Settings())
         try:
             org = reopened.orgs['alpha']
-            assert validate_workflow_schema(org.db._conn, expected_org_slug='alpha') == 'E'
+            assert validate_workflow_schema(org.db._conn, expected_org_slug='alpha') == 'G'
             assert [tuple(row) for row in org.db.execute('SELECT * FROM workflow_cutover_events')] == initial_events
         finally:
             org.close()
+
+
+@pytest.mark.parametrize('failure', ['initialization', 'attachment'])
+def test_g_creation_failure_preserves_existing_org_and_cleans_only_owned_skeleton(tmp_path: Path, auth, monkeypatch, failure: str) -> None:
+    from runtime.daemon.routes import orgs as routes
+    runtime = RuntimeDir.init(tmp_path / 'runtime')
+    _seed_org(runtime.orgs_dir / 'beta')
+    (runtime.orgs_dir / 'beta/retained').write_bytes(b'unchanged existing beta')
+    state = DaemonState.from_runtime(runtime, Settings())
+    client = TestClient(create_app(state), raise_server_exceptions=False)
+    beta = runtime.orgs_dir / 'beta'
+    before = {str(p.relative_to(beta)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in beta.rglob('*') if p.is_file()}
+    original_init = routes.initialize_complete_org_schema
+    original_add = state.add_org
+    def interrupted_init(db, **kwargs):
+        # Fail inside the real creation transaction, not before its entry.
+        original = db.workflow_schema_transaction
+        from contextlib import contextmanager
+        @contextmanager
+        def interrupted():
+            with original() as conn:
+                yield conn
+                raise RuntimeError('owned creation interrupted before commit')
+        monkeypatch.setattr(db, 'workflow_schema_transaction', interrupted)
+        return original_init(db, **kwargs)
+    async def interrupted_add(slug):
+        from tests.daemon.test_workflow_activation_routes import _assert_activation_org_layout
+        _assert_activation_org_layout(runtime.orgs_dir / slug / 'happyranch.db', 'G', 'attachment failure source')
+        raise RuntimeError('owned attachment refusal')
+    if failure == 'initialization': monkeypatch.setattr(routes, 'initialize_complete_org_schema', interrupted_init)
+    else: monkeypatch.setattr(state, 'add_org', interrupted_add)
+    try:
+        response = client.post('/api/v1/orgs', json={'slug': 'alpha'}, headers=auth)
+        assert response.status_code == 500
+        assert not (runtime.orgs_dir / 'alpha').exists()
+        assert {str(p.relative_to(beta)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in beta.rglob('*') if p.is_file()} == before
+        assert set(state.orgs) == {'beta'}
+        response = client.post('/api/v1/orgs', json={'slug': 'beta'}, headers=auth)
+        assert response.status_code == 409
+        assert {str(p.relative_to(beta)): (p.read_bytes(), p.stat().st_mode & 0o777) for p in beta.rglob('*') if p.is_file()} == before
+    finally:
+        client.close()
+        for org in state.orgs.values(): org.close()
