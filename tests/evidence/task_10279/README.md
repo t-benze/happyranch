@@ -11,7 +11,7 @@ submission or native readiness alone establishes no source behavior. The
 artifact recovery below requires new actual wheel/frozen receipts;
 it runs no browser, whole collection or suspended unit/proof body.
 
-Candidate b1f13ca65382a6fe169246648dd5dcea78780fde and original baseline
+Candidate b2a9e565c940249703cb52aee3258317416ea477 and original baseline
 8378064e9933d5b3af4247eca55750ac427a564f remain immutable product source pins.
 The new C source is independent test evidence, copied byte-for-byte from the
 published same-PR helper change, and authenticated by its literal SHA256 before
@@ -188,3 +188,32 @@ the unknownHTTP500 cause. No production fix or fixture weakening is justified
 until the actual traceback is inspected. Candidate/pins/nativeC/workflow/actions/
 tools/permission/timeouts/caps are unchanged. No paused proof, browser or whole
 collection is executed. Remaining maker work and independent gates stay open.
+
+# Published reviewer fixture recovery at b2a9e565c
+
+Actual37857635882/evidence921e26fbf retained dual native admission and completed
+wheel/frozen builds, authenticated origins and candidate parser/lifecycle/legacy
+checks. Artifact callback scenarios failed at org-init500 before stub launch.
+The bounded authentic tracebacks identify an incomplete test skeleton missing
+the default code_reviewer roster member; they do not establish a product defect.
+SAME PR1017 now includes that static worker and engineering membership before
+supported CLI org initialization. No default reviewer policy, auth, profile,
+schema, executor admission or production behavior changes.
+
+JOB3975 exact-head active local Web/manual renewal completed exit0. Normal push
+and actual PR1017/remote read-back confirmed published candidate
+b2a9e565c940249703cb52aee3258317416ea477 before this immutable pin renewal.
+Fresh dual-runner native admission must precede ordinary official provisioning
+and new wheel/frozen callback/nonrunning/refusal/terminal cleanup cases.
+Historical37853314823 source results remain explicitly bound to
+b1f13ca65382a6fe169246648dd5dcea78780fde and the original baseline and original
+manifest hashes; they are not new-head source execution. The historical reference
+records current_candidate separately and current_head_source_evidence=false.
+Old500/same-root failures and the frozen caught memory-inspection warning remain
+authentic. Real daemon browser, audited discovery, independent review/QA and
+suspended UNFULFILLED keepers remain open. No retirement or merge waiver.
+
+Only the existing fixed five evidence files change pins/reference/docs. Native C
+source hash and tool recipe, exact branch push, contents:read, pinned actions,
+no persisted credentials/secrets/OIDC/self-hosted/main/schedule/ref inputs,
+finite75min/concurrency/caps/retention and NEVERMERGE status are unchanged.

@@ -22,7 +22,7 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-CANDIDATE = 'b1f13ca65382a6fe169246648dd5dcea78780fde'
+CANDIDATE = 'b2a9e565c940249703cb52aee3258317416ea477'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
 OBSERVED_MAIN = '970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c'
 HATCH = ('hatchling', 'packaging', 'pathspec', 'pluggy', 'tomlkit', 'trove-classifiers')
@@ -917,14 +917,16 @@ def main():
             assert any(w['hash'] == 'sha256:' + items[name]['sha256'] for w in package['wheels'])
         commands.run('native-process-census-before', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        # The unchanged source selections already completed at this exact head.
+        # The source selections completed at the explicitly recorded historical head.
         # Retain their real failed characterizations as historical evidence;
         # this run diagnoses artifact setup and never claims fresh source PASS.
         save('historical-source-reference.json', {
             'run_id': '37853314823',
             'evidence_sha': '092496db791efabede6160add2bdd60606642dd5',
-            'candidate': CANDIDATE, 'baseline': BASELINE,
+            'candidate': 'b1f13ca65382a6fe169246648dd5dcea78780fde', 'baseline': BASELINE,
+            'current_candidate': CANDIDATE,
             'execution_this_run': 'not-executed',
+            'current_head_source_evidence': False,
             'scope': 'candidate29passed/2same-rootfailed; baseline0passed/2same-rootfailed per venue',
             'manifest_sha256': {
                 'macos-15': '5b46e63e1ce30811bcc860ad05a64b3fb36107477c1293753e76dc7bf97e9b48',
