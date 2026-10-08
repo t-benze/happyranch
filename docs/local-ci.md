@@ -542,7 +542,8 @@ origin checks must point into that wheel-owned venv; source PYTHONPATH never
 establishes installed/frozen callbacks.
 
 Copy the stdlib-only driver into the verification root and hash it. Its origin
-manifest binds schema_version 1, origin, venue platform/arch, candidate_sha,
+manifest binds schema_version 1, source_role (`candidate` or `baseline`),
+origin, venue platform/arch, candidate_sha,
 source/lock/constraints digests, official Python/uv distribution and tool RECORD
 receipts, artifact/bundle inventory, observer executable/digest, absolute
 cli_argv/daemon_argv, closed PATH and skills_root. Wheel also needs site_packages
@@ -570,3 +571,13 @@ archive listings or a submitted job are never behavioral readiness/PASS. Keep
 exact commands/exits and residual failures; independent review and QA bind the
 final pushed PR head and renew after every push. Parent TASK-10245 owns guarded
 merge/post-main and deployment disposition.
+
+The baseline role permits only `ordinary-callback` and `nonrunning-swap`,
+restricted internally to separate same-root characterization fixtures. It
+never invokes a baseline Assistant operation or treats old route/module
+presence as a retirement failure. Compare actual callback exits, durable
+results/task/audit states and cleanup against the candidate receipts; an
+unchanged failure remains a failure. Source baseline characterization uses
+an isolated immutable baseline checkout plus the same hash-recorded test-side
+files, with any test-only commit/head distinguished from the product source
+pin. No shipping code overlay, session forgery or shared auth repair is allowed.

@@ -361,11 +361,13 @@ class Driver:
         document_request=urllib.request.Request(self.base.removesuffix('/api/v1')+'/openapi.json')
         with urllib.request.urlopen(document_request,timeout=self.remaining(5)) as response: full=json.load(response)
         resolve_refs(full)
-        assert not any(path.startswith('/api/v1/assistant') for path in full['paths'])
+        if self.manifest['source_role']=='candidate':
+            assert not any(path.startswith('/api/v1/assistant') for path in full['paths'])
         for path in ('/health','/orgs','/metrics'):
             assert self.request('GET',path)[0] == 200
-        for method,path in RETIRED:
-            assert self.request(method,path,{} if method != 'GET' else None)[0] in (404,405)
+        if self.manifest['source_role']=='candidate':
+            for method,path in RETIRED:
+                assert self.request(method,path,{} if method != 'GET' else None)[0] in (404,405)
         assert self.request('GET','/runtime',token=False)[0] in (401,403)
         self.stop(); assert not (self.runtime / 'system').exists()
         self.start(); assert self.request('GET','/runtime')[1]['runtime'] == str(self.runtime)
@@ -563,7 +565,7 @@ def verify_receipt(info: dict) -> Path:
 
 
 def validate_origin(manifest: dict, origin: str) -> None:
-    common={'schema_version','origin','candidate_sha','platform','arch','source_digest',
+    common={'schema_version','source_role','origin','candidate_sha','platform','arch','source_digest',
             'lock_digest','constraints_digest','official_python_distribution','uv_distribution',
             'artifact','tool_record','bundle_manifest','observer_python','observer_sha256',
             'daemon_argv','cli_argv','path','skills_root','source_manifest','constraints'}
@@ -571,6 +573,7 @@ def validate_origin(manifest: dict, origin: str) -> None:
            {'native_os_receipt','daemon_archive','cli_archive','build_tocs','executables','bundle_root'})
     assert set(manifest)==common|extra, 'unknown or missing origin-manifest fields'
     assert manifest['schema_version']==1 and manifest['origin']==origin
+    assert manifest['source_role'] in ('baseline','candidate')
     assert re.fullmatch('[0-9a-f]{40}',manifest['candidate_sha'])
     assert sys.platform == manifest['platform'] and os.uname().machine == manifest['arch']
     assert sys.version_info[:3] == (3,14,4), 'official CPython3.14.4 observer required'
@@ -612,14 +615,16 @@ def validate_origin(manifest: dict, origin: str) -> None:
             assert base64.urlsafe_b64encode(hashlib.sha256(member.read_bytes()).digest()).rstrip(b'=').decode()==value
         with zipfile.ZipFile(receipts['artifact']) as archive:
             names=archive.namelist()
-            assert not any(any(name==old or name.startswith(old+'/') for old in retired) for name in names)
+            if manifest['source_role']=='candidate':
+                assert not any(any(name==old or name.startswith(old+'/') for old in retired) for name in names)
             for name,sha in files.items():
                 if name.startswith(('runtime/','cli/')) and name in names:
                     assert hashlib.sha256(archive.read(name)).hexdigest()==sha
                     assert digest(site/name)==sha
         for name in ('cli/main.py','runtime/daemon/app.py'):
             assert (site/name).is_file() and digest(site/name)==files[name]
-        for name in retired:assert not (site/name).exists()
+        if manifest['source_role']=='candidate':
+            for name in retired:assert not (site/name).exists()
         console=verify_receipt(manifest['console']);interpreter=manifest['interpreter']
         resolved_python=Path(manifest['daemon_argv'][0]).resolve()
         assert resolved_python==Path(interpreter['path']).resolve()
@@ -642,7 +647,8 @@ def validate_origin(manifest: dict, origin: str) -> None:
             assert text.strip()
             for name in retired:
                 module=name.removesuffix('.py').replace('/','.')
-                assert name not in text and module not in text, 'retired frozen member'
+                if manifest['source_role']=='candidate':
+                    assert name not in text and module not in text, 'retired frozen member'
             if field.endswith('archive'):
                 assert 'runtime.daemon.app' in text and 'cli.main' in text
         toc=json.loads(Path(manifest['build_tocs']['path']).read_text())
@@ -677,12 +683,15 @@ def main(argv=None) -> int:
     args=parser.parse_args(argv);manifest=json.loads(args.origin_manifest.read_text())
     cases=args.cases.split(',');assert set(cases)<=CASES and len(cases)==len(set(cases))
     validate_origin(manifest,args.origin)
+    if manifest['source_role']=='baseline':
+        assert set(cases)<={'ordinary-callback','nonrunning-swap'}, 'baseline permits same-root characterization only'
     receipt={'origin':args.origin,'candidate_sha':manifest['candidate_sha'],'cases':{},'status':'failed'}
     try:
         failed=False
         for case in cases:
             scenarios=({'ordinary-callback':['normal','held-refusals','same-root-characterization'],
                         'nonrunning-swap':['refusals','same-root-characterization']}.get(case,['default']))
+            if manifest['source_role']=='baseline':scenarios=['same-root-characterization']
             for scenario in scenarios:
                 driver=Driver(manifest,args.run_root/case/scenario,args.deadline_seconds)
                 row={'status':'failed','events':driver.events}
