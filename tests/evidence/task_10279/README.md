@@ -4,11 +4,12 @@ This continues TASK-10272 evidence recovery for the same draft PR1017. The
 previous workflow and its actual failures are retained; this new exact-branch
 push workflow first performs the newly admitted cheap native preflight on fresh
 GitHub-hosted Ubuntu/native macOS15 runners, then runs the existing finite
-ordinary-UID provisioning and accepted source coordinator only after successful
+ordinary-UID provisioning and accepted source/artifact coordinator only after successful
 admission on that runner. Each matrix job has a finite 75-minute deadline.
 Source results retain actual candidate/baseline exits and failure receipts;
-submission or native readiness alone establishes no source behavior. It runs
-no wheel/frozen build, browser, whole collection or suspended unit/proof body.
+submission or native readiness alone establishes no source behavior. The
+prepared artifact extension below requires new actual wheel/frozen receipts;
+it runs no browser, whole collection or suspended unit/proof body.
 
 Candidate 3d41d128da9994f43aad0f02de9261b3416bcfa0 and original baseline
 8378064e9933d5b3af4247eca55750ac427a564f remain immutable product source pins.
@@ -125,3 +126,30 @@ JOB3969 exact-head active local Web/manual renewal exited0. This evidence push
 renews that pin only; successful source behavior still requires new actual
 receipts. Both fresh runners repeat cheap native admission before provisioning.
 No source/R4/artifact/browser/discovery/independent QA PASS is implied.
+
+Prepared artifact extension after run37849177163: both venues completed all31
+candidate and two baseline cases. Candidate28passed/3failed; baseline0passed/2failed.
+All23legacy variants, ordinary fresh lifecycle/route/parser and genuine held/retry
+refusal tails passed; concurrent empty-org expectation was defective (missing
+existing broken:[]) and is repaired in SAME PR. Both same-root callback failures
+remain failures with actual CLI/task/result/audit/native cleanup observations.
+
+The fixed artifacts.py coordinator now builds wheel and frozen daemon+CLI from
+each distinct immutable candidate/baseline source, then drives the existing
+origin-bound parser/lifecycle/ordinary-callback/nonrunning-swap cases outside
+checkout. Baseline only drives its separate same-root characterizations.
+Hash-constrained wheel build and hash-locked runtime installation use the
+accepted official user-prefix tools. Frozen uses the locked freeze environment
+and an attributed no-follow tracked-source copy, with preserved file modes;
+only its own copy may receive the accepted spec-generated hook. Both recursive
+archives, literal TOCs, native dependencies, final bundle bytes/modes/links,
+ordinary skills and installed wheel RECORD/console/interpreter are retained.
+Actual native before/after attribution and each driver cleanup/callback receipt
+remain mandatory. Build/validation/behavior failures are retained independently;
+opaque census/residue stops further execution. Case command bounds are1000s,
+with existing240s driver scenario bounds; builds/installations remain finite,
+within unchanged75min hosted bound and64MiB receipts. These are prepared maker
+helpers, not executed artifact evidence or a PASS. Costly provisioning still
+requires fresh cheap native admission. Candidate publication/readback must
+precede immutable pin renewal and new evidence publication. Real browser and
+audited discovery remain pending; suspension/exclusions/gates stay unchanged.

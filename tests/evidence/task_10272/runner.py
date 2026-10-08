@@ -1,4 +1,4 @@
-"""TASK-10272 finite hosted provisioning/source receipt coordinator; stdlib only.
+"""TASK-10272 finite hosted source/artifact receipt coordinator; stdlib only.
 
 No arbitrary command/ref interface. Never execute on a live runtime host.
 """
@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import runpy
 import selectors
 import shutil
 import signal
@@ -800,7 +801,8 @@ def main():
                 HERE.parent / 'task_10279/preflight.py',
                 HERE.parent / 'task_10279/native_observer.c',
                 HERE.parent / 'task_10279/README.md',
-                EVIDENCE / '.github/workflows/task-10279-native-preflight.yml')}})
+                EVIDENCE / '.github/workflows/task-10279-native-preflight.yml',
+                HERE.parent / 'task_10279/artifacts.py')}})
         evidence_head, _ = commands.run('evidence-source-head', ['git', 'rev-parse', 'HEAD'], EVIDENCE, env)
         assert evidence_head.strip() == os.environ['GITHUB_SHA']
         commands.run('native-os', ['uname', '-a'], root, env)
@@ -929,9 +931,28 @@ def main():
             assert after['files'] == expected and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        result['status'] = ('source-checks-passed' if result['candidate_source_exit'] == result['baseline_source_exit'] == 0
-                            else 'source-checks-failed')
-        return 0 if result['status'] == 'source-checks-passed' else 1
+        # Independent artifact origins continue after authentic characterization
+        # failures only after source teardown/native attribution is complete.
+        artifact_helper = HERE.parent / 'task_10279/artifacts.py'
+        artifacts = runpy.run_path(str(artifact_helper), run_name='hosted_artifact_coordinator')
+        result['artifacts'] = artifacts['artifact_stage'](
+            commands, candidate, baseline, root, uv, python, freeze_env,
+            constraints, descriptor, {'save': save, 'clean_env': clean_env,
+            'census': stage_native_census, 'receipts': RECEIPTS, 'wheels': wheels})
+        result['obligations']['wheel_and_frozen_behavior'] = 'actual outcomes in artifact-outcomes.json; failures retained'
+        for role, source in (('candidate', candidate), ('baseline', baseline)):
+            after = source_manifest(commands, role + '-artifacts-after', source, env,
+                CANDIDATE if role == 'candidate' else BASELINE,
+                None if role == 'candidate' else test_head)
+            original = before_candidate if role == 'candidate' else before_baseline
+            expected = dict(original['files'])
+            if role == 'baseline':
+                expected.update({relative: sha(candidate / relative) for relative in overlay})
+            assert after['files'] == expected and after['links'] == original['links'], 'artifact stage mutated source'
+        passed = (result['candidate_source_exit'] == result['baseline_source_exit'] == 0
+                  and all(row['status'] == 'passed' for row in result['artifacts'].values()))
+        result['status'] = 'source-and-artifact-checks-passed' if passed else 'source-or-artifact-checks-failed'
+        return 0 if passed else 1
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}
         raise
