@@ -13,9 +13,11 @@ The HappyRanch Linux daemon host is a special operational boundary: founder
 THR-211 seq270/271 prohibits every integration-marked test there, including
 direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
 Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
-on the candidate branch instead. The other local commands in this guide remain
-available; Mac integration verification uses the separately authorized
-disposable container-VM path.
+on the exact candidate ref instead. Commands whose unit selection includes real
+socket/daemon cases, including `scripts/local_ci.sh all`, also require that
+disposable venue. On-host verification is limited to demonstrably pure offline
+units; Mac integration verification uses the separately authorized disposable
+container-VM path.
 
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
@@ -27,6 +29,19 @@ nonexecutable identities fail visibly before execution. Intentional no-ops requi
 explicit plans. Stub argv witnesses retain only fixed flags/counts and digests;
 callback witnesses bind the actual CLI source. No provider PATH fallback or model
 network request is permitted. The unit/Web targets keep their existing selections.
+The Mac definition-owned launcher names this parent explicitly inside its
+`run_bounded_output.py` child command, preserving the pytest arguments, exit and
+1 MiB log tail under the guest's shared deadline. The guest's direct pytest
+prefix handling does not rewrite nested wrapper argv. The committed parent
+requires Git for real HEAD and source-cleanliness validation. The Mac guest
+installs `bash curl iproute2 git` with no recommends, validates Git through
+the existing bounded command, and records its version and resolved package
+identities. External installer stand-ins prove command composition only;
+actual apt/Git installation in the pinned arm64 image requires the authorized
+guest run. Focused launcher units
+include harmless real pytest/conftest subprocess collection and socket cases;
+run their complete files in the disposable manual lane. Stub-only launch controls
+are separate evidence and do not establish real pytest/conftest execution.
 Registered stubs restore the temporary callback/Python bin directory before the
 unchanged identity gate, including after uv prepends the project environment.
 
