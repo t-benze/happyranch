@@ -52,8 +52,9 @@ package-level metadata. All bootstrap commands, exits and bounded full logs are
 recorded. These tools are provisioning evidence, not built-artifact evidence.
 
 Candidate execution is exactly the accepted focused retirement command. The
-baseline receives only the two candidate test-side files absent from baseline,
-in a local test-only commit. Its tracked product source and lock must stay
+baseline receives the explicit four-file overlay described above: the parent,
+driver, fixed C observer and retirement tests, in a local test-only commit.
+Its tracked product source and lock must stay
 byte-identical to the original baseline. The baseline runs only the two
 same-root characterization rows, independently, with actual CLI callbacks and
 closed test-parent roots. Source/base/test-overlay identities are recorded

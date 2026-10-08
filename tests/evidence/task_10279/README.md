@@ -91,3 +91,13 @@ run supplies receipts, and those receipts must be inspected. BOTH artifacts,
 real isolated-daemon browser observations and side-effect-audited discovery
 remain maker work; suspended proofs remain UNFULFILLED. No overall PASS,
 independent review/QA, merge waiver or completed retirement follows.
+
+Run37843451408 at evidence79f1663408a7586bac4969322daf183bb26d02be
+passed fresh native admission (Ubuntu162/macOS416 rows) and official ordinary-UID
+tool provisioning on both runners. It then failed before source tests: the
+preliminary overlay commit HEAD observation and the independent source manifest
+HEAD check both requested `shipping-baseline-overlay-head`. The coordinator's
+strict duplicate-receipt refusal is retained. The preliminary observation now
+uses `shipping-baseline-overlay-created-head`; the manifest retains its separate
+HEAD verification. Original failure receipts remain authoritative for that run;
+the repair requires a new exact evidence push and fresh native/source receipts.

@@ -80,7 +80,8 @@ class Commands:
     def run(self, name, argv, cwd, env, seconds=120, required=True):
         # Internal calls only: no command strings, shell, service or ref input.
         name = self.prefix + name
-        assert '/' not in name and not any(row['name'] == name for row in self.rows)
+        assert '/' not in name, f'invalid receipt name: {name}'
+        assert not any(row['name'] == name for row in self.rows), f'duplicate receipt name: {name}'
         log = RECEIPTS / (name + '.log')
         started = time.monotonic()
         row = {'name': name, 'argv': list(map(str, argv)), 'cwd': str(cwd),
@@ -602,7 +603,7 @@ def overlay_characterization(commands, candidate, baseline, env, before_baseline
     commands.run('baseline-overlay-commit', ['git', '-c', 'user.name=TASK-10279 evidence',
                  '-c', 'user.email=task-10279@invalid.example', 'commit', '-m',
                  'test: overlay immutable retirement characterization helpers'], baseline, env)
-    test_head, _ = commands.run('baseline-overlay-head', ['git', 'rev-parse', 'HEAD'], baseline, env)
+    test_head, _ = commands.run('baseline-overlay-created-head', ['git', 'rev-parse', 'HEAD'], baseline, env)
     test_head = test_head.strip()
     after = source_manifest(commands, 'baseline-overlay', baseline, env, BASELINE, test_head)
     expected = dict(before_baseline['files'])
