@@ -33,6 +33,29 @@ def receipt(path):
     return {'path': str(path), 'sha256': SUPPORT['sha'](path)}
 
 
+def sudo_transport_identity() -> dict:
+    """Fixed macOS system transport identity; never claim an unreadable byte hash."""
+    assert sys.platform == 'darwin'
+    paths = ('/', '/usr', '/usr/bin', '/usr/bin/sudo')
+    entries = []
+    for value in paths:
+        path = Path(value)
+        info = path.lstat()
+        assert not path.is_symlink() and info.st_uid == 0
+        assert not info.st_mode & 0o022
+        if value == '/usr/bin/sudo':
+            assert stat.S_ISREG(info.st_mode)
+            assert info.st_mode & stat.S_ISUID and info.st_mode & 0o111 == 0o111
+        else:
+            assert stat.S_ISDIR(info.st_mode)
+        entries.append({'path': value, 'dev': info.st_dev, 'ino': info.st_ino,
+                        'mode': info.st_mode, 'uid': info.st_uid, 'gid': info.st_gid,
+                        'size': info.st_size, 'mtime_ns': info.st_mtime_ns,
+                        'ctime_ns': info.st_ctime_ns})
+    return {'path': '/usr/bin/sudo', 'authentication': 'darwin-fixed-system-stat-v1',
+            'entries': entries}
+
+
 def main():
     assert len(sys.argv) == 1
     assert os.environ.get('GITHUB_ACTIONS') == 'true'
@@ -131,11 +154,16 @@ def main():
                        for line in dependencies.splitlines()[1:] if line.strip())
         sudo = Path('/usr/bin/sudo')
         assert sudo.stat().st_uid == 0
+        sudo_receipt = (sudo_transport_identity() if sys.platform == 'darwin' else receipt(sudo))
         # Own finite native executable only; no sudo interpreter/driver/shell.
         argv = [str(sudo), '-n', '--', str(binary), str(os.getuid())]
         observer_env = {'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
         started = time.monotonic()
         probe = subprocess.run(argv, cwd='/', env=observer_env, capture_output=True, timeout=30)
+        result['native_exit'] = probe.returncode
+        result['observer_command'] = argv
+        if sys.platform == 'darwin':
+            assert sudo_receipt == sudo_transport_identity()
         assert len(probe.stdout) <= 32 * 1024 * 1024 and len(probe.stderr) <= 65536
         snapshot_path = SUPPORT['RECEIPTS'] / 'native-process-preflight.json'
         snapshot_path.write_bytes(probe.stdout)
@@ -145,7 +173,7 @@ def main():
              'parent_uid': os.getuid(), 'parent_euid': os.geteuid(), 'exit': probe.returncode,
              'elapsed_seconds': time.monotonic() - started,
              'stdout': receipt(snapshot_path), 'stderr': receipt(error_path),
-             'source': receipt(source), 'binary': receipt(binary), 'sudo': receipt(sudo)})
+             'source': receipt(source), 'binary': receipt(binary), 'sudo': sudo_receipt})
         result['native_exit'] = probe.returncode
         result['observer_command'] = argv
         if probe.returncode:
@@ -175,7 +203,7 @@ def main():
                   'compiler_uid': compiler_owner, 'header_uids': header_uids}
         admission = save('native-admission.json', {'schema_version': 1, 'venue': venue,
                          'source': receipt(source), 'binary': receipt(binary),
-                         'compiler': receipt(compiler), 'sudo': receipt(sudo), 'native': native,
+                         'compiler': receipt(compiler), 'sudo': sudo_receipt, 'native': native,
                          'compile_argv': compile_argv,
                          'preflight': {'exit': probe.returncode, 'snapshot': receipt(snapshot_path)}})
         save('native-descriptor.json', receipt(admission))

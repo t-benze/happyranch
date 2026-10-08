@@ -37,3 +37,14 @@ actions, credentials not persisted, attempt1 only, no self-hosted/main/schedule/
 arbitrary inputs/secrets/OIDC/environments, finite timeouts/concurrency and
 bounded artifacts including failure. Do not merge this branch. Preserve old
 task/TASK-10272 and all original hosted receipts. No retirement/QA/CI waiver.
+
+The execute-only macOS system sudo transport is authenticated without a byte
+hash using a closed fixed-system-stat descriptor for `/`, `/usr`, `/usr/bin`,
+and `/usr/bin/sudo`: root ownership, no symlinks or group/world write, regular
+setuid executable, recorded device/inode/mode/UID/GID/size/mtime/ctime. The
+identity is rechecked before invocation and after the initial probe. Linux
+sudo retains its hash. Observer source/binary/compiler/SDK hashes remain
+mandatory; no extra elevated command or file-permission change is admitted.
+Actual run37839436634 had native exit0/complete411 macOS rows before failing
+on ordinary receipt hashing of sudo; this repair does not assert final
+admission or product readiness until new authentic receipts are inspected.
