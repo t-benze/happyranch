@@ -91,6 +91,20 @@ readiness. The original failures remain in their original uploaded artifacts.
 Relevant native interfaces: [Linux kernel proc documentation](https://www.kernel.org/doc/html/latest/filesystems/proc.html)
 and [Apple XNU proc_info definitions](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h).
 
+Run37833032960 preserved Ubuntu's same-owner `systemd`/`sd-pam` cwd/exe
+EACCES and macOS's inaccessible native real-UID-selected PID. The native SDK
+definition confirmed the helper's omitted `pbi_xstatus`; PR1017 now corrects
+that ABI at observed candidate `e234b34d607821e70a6723bde6d0b42619f525f0`.
+Its publication requires fresh active local/hosted checks and independent
+verdicts. The immutable candidate pin is updated only after observing this
+authorized remote head. Baseline/main and official tool pins remain distinct.
+The auxiliary macOS `ps` query now selects only inaccessible native
+effective/real-owner PIDs, bounded to64; all native table rows, including
+foreign access failures, are retained. The previous whole-foreign-table `ps`
+cap failure remains a failure. This diagnostic correction does not alter the
+candidate's living-process refusal or authorize elevated privileges, ignoring
+opaque same-owner processes, new infrastructure or a readiness/PASS claim.
+
 References: [official Python3.14.4 release](https://www.python.org/downloads/release/python-3144/),
 [checkout credential persistence](https://github.com/actions/checkout/tree/34e114876b0b11c390a56381ad16ebd13914f8d5),
 [upload action inputs](https://github.com/actions/upload-artifact/tree/b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882),

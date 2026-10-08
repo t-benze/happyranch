@@ -19,7 +19,7 @@ import tarfile
 import time
 import urllib.request
 
-CANDIDATE = 'd83f79d2d2f912db066f7bd2bd57f70d38190aa7'
+CANDIDATE = 'e234b34d607821e70a6723bde6d0b42619f525f0'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
 OBSERVED_MAIN = '970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c'
 HATCH = ('hatchling', 'packaging', 'pathspec', 'pluggy', 'tomlkit', 'trove-classifiers')
@@ -313,9 +313,13 @@ try:
    got=lib.proc_pidpath(pid,buf,ctypes.sizeof(buf))
    row.update(path_bytes=got,path_errno=ctypes.get_errno())
    if got>0:row['exe']=buf.value.decode()
-  assert len(inaccessible)<=64, 'inaccessible PID diagnostic cap exceeded'
-  if inaccessible:
-   observation=subprocess.run(['/bin/ps','-p',','.join(map(str,inaccessible)),
+  # All inaccessible rows remain above. This auxiliary ps query covers only
+  # native owner-selected PIDs; no foreign PID is silently made observable.
+  owner_inaccessible=[pid for pid in inaccessible if pid in own or pid in real]
+  document['owner_inaccessible_ps_pids']=owner_inaccessible
+  assert len(owner_inaccessible)<=64, 'owner PID diagnostic cap exceeded'
+  if owner_inaccessible:
+   observation=subprocess.run(['/bin/ps','-p',','.join(map(str,owner_inaccessible)),
          '-o','pid=,uid=,ruid=,ppid=,pgid=,lstart=,comm='],capture_output=True,text=True,timeout=10)
    document['inaccessible_ps']={'exit':observation.returncode,
                                'stdout':observation.stdout,'stderr':observation.stderr}
