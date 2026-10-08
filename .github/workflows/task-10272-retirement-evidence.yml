@@ -1,0 +1,57 @@
+name: TASK-10272 supplemental retirement evidence
+
+# Never merge this branch. This finite venue entrypoint supplies no CI waiver.
+on:
+  push:
+    branches: [task/TASK-10272]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-10272-retirement-evidence
+  cancel-in-progress: false
+
+jobs:
+  source:
+    if: github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-10272'
+    name: TASK-10272 source (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Checkout evidence source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          path: evidence
+      - name: Checkout immutable candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: d83f79d2d2f912db066f7bd2bd57f70d38190aa7
+          persist-credentials: false
+          path: candidate
+      - name: Checkout immutable baseline
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 8378064e9933d5b3af4247eca55750ac427a564f
+          persist-credentials: false
+          path: baseline
+      - name: Bootstrap origins and run finite source checks
+        run: python3 -I evidence/tests/evidence/task_10272/runner.py
+      - name: Seal receipt manifest even on failure
+        id: seal
+        if: always()
+        run: python3 -I evidence/tests/evidence/task_10272/runner.py --seal
+      - name: Upload bounded receipts
+        if: always() && steps.seal.outcome == 'success'
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: task-10272-source-${{ matrix.os }}-${{ github.run_attempt }}
+          path: evidence/receipts/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6

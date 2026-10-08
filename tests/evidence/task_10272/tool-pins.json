@@ -1,0 +1,255 @@
+{
+  "python": {
+    "version": "3.14.4",
+    "release_page": "https://www.python.org/downloads/release/python-3144/",
+    "url": "https://www.python.org/ftp/python/3.14.4/Python-3.14.4.tar.xz",
+    "sha256": "d923c51303e38e249136fc1bdf3568d56ecb03214efdef48516176d3d7faaef8"
+  },
+  "packages": {
+    "uv": {
+      "version": "0.12.5",
+      "metadata_url": "https://pypi.org/pypi/uv/0.12.5/json",
+      "requires_dist": null,
+      "wheels": [
+        {
+          "filename": "uv-0.12.5-py3-none-macosx_10_12_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/bd/ec/d76387b388fa21620088b89b9c67f2596a707add585104e0cb5e8abf55f2/uv-0.12.5-py3-none-macosx_10_12_x86_64.whl",
+          "sha256": "1a06c8bc4d43b5f6c1e3f2ae3d0f6455b07515f762516f95e52e6c0cbccedf15"
+        },
+        {
+          "filename": "uv-0.12.5-py3-none-macosx_11_0_arm64.whl",
+          "url": "https://files.pythonhosted.org/packages/6d/bc/81ab953b7261ae6be40874b1f283a10873871e02eb353d354614dd8da96b/uv-0.12.5-py3-none-macosx_11_0_arm64.whl",
+          "sha256": "d87156bc174d94fae890bb7a261e2867140abb9fe1e9de81a5295e582fb9d0f5"
+        },
+        {
+          "filename": "uv-0.12.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/93/22/dacc9a0bc8604187a1ba954a3aef8329e4104eb0af772d2c3c634893bd9b/uv-0.12.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+          "sha256": "3e195ccf1ed60c8bb24a6447ce306441a4181d54b602407e09bc56e963911c15"
+        }
+      ]
+    },
+    "hatchling": {
+      "version": "1.32.4",
+      "metadata_url": "https://pypi.org/pypi/hatchling/1.32.4/json",
+      "requires_dist": [
+        "packaging>=24.2",
+        "pathspec>=0.10.1",
+        "pluggy>=1.0.0",
+        "tomli>=1.2.2; python_version < \"3.11\"",
+        "tomlkit>=0.11.1",
+        "trove-classifiers"
+      ],
+      "wheels": [
+        {
+          "filename": "hatchling-1.32.4-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/5f/80/91f51f439c05d4ec4623c22928ce16a938d6d793bf709477830823497859/hatchling-1.32.4-py3-none-any.whl",
+          "sha256": "08ecf7548fb48205e7f213d70c71e67b8271b7242093dc3f1da578b42c734a2c"
+        }
+      ]
+    },
+    "packaging": {
+      "version": "26.0",
+      "metadata_url": "https://pypi.org/pypi/packaging/26.0/json",
+      "requires_dist": null,
+      "wheels": [
+        {
+          "filename": "packaging-26.0-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl",
+          "sha256": "b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529"
+        }
+      ]
+    },
+    "pathspec": {
+      "version": "1.1.1",
+      "metadata_url": "https://pypi.org/pypi/pathspec/1.1.1/json",
+      "requires_dist": [
+        "hyperscan>=0.7; extra == \"hyperscan\"",
+        "typing-extensions>=4; extra == \"optional\"",
+        "google-re2>=1.1; extra == \"re2\""
+      ],
+      "wheels": [
+        {
+          "filename": "pathspec-1.1.1-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl",
+          "sha256": "a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189"
+        }
+      ]
+    },
+    "pluggy": {
+      "version": "1.6.0",
+      "metadata_url": "https://pypi.org/pypi/pluggy/1.6.0/json",
+      "requires_dist": [
+        "pre-commit; extra == \"dev\"",
+        "tox; extra == \"dev\"",
+        "pytest; extra == \"testing\"",
+        "pytest-benchmark; extra == \"testing\"",
+        "coverage; extra == \"testing\""
+      ],
+      "wheels": [
+        {
+          "filename": "pluggy-1.6.0-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl",
+          "sha256": "e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746"
+        }
+      ]
+    },
+    "tomlkit": {
+      "version": "0.15.1",
+      "metadata_url": "https://pypi.org/pypi/tomlkit/0.15.1/json",
+      "requires_dist": null,
+      "wheels": [
+        {
+          "filename": "tomlkit-0.15.1-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl",
+          "sha256": "177a05aece5a8ca5266fd3c448abb47b8d352f09d477d3ca8332db4d89b24304"
+        }
+      ]
+    },
+    "trove-classifiers": {
+      "version": "2026.9.21.13",
+      "metadata_url": "https://pypi.org/pypi/trove-classifiers/2026.9.21.13/json",
+      "requires_dist": null,
+      "wheels": [
+        {
+          "filename": "trove_classifiers-2026.9.21.13-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/30/81/0da8afb52a71d0a4f2bd3152357b1a441e393b286374802b9d3addab4ab5/trove_classifiers-2026.9.21.13-py3-none-any.whl",
+          "sha256": "8b1ff4f9c191b1040b71c37f1e445ab99732911e3cd91de52838453a854d7a17"
+        }
+      ]
+    },
+    "pyinstaller": {
+      "version": "6.21.0",
+      "metadata_url": "https://pypi.org/pypi/pyinstaller/6.21.0/json",
+      "requires_dist": [
+        "altgraph",
+        "importlib-metadata>=4.6; python_version < \"3.10\"",
+        "macholib>=1.8; sys_platform == \"darwin\"",
+        "packaging>=22.0",
+        "pefile>=2022.5.30; sys_platform == \"win32\"",
+        "pyinstaller-hooks-contrib>=2026.6",
+        "pywin32-ctypes>=0.2.1; sys_platform == \"win32\"",
+        "setuptools>=42.0.0",
+        "argcomplete; extra == \"completion\"",
+        "execnet>=1.5.0; extra == \"hook-testing\"",
+        "psutil; extra == \"hook-testing\"",
+        "pytest>=2.7.3; extra == \"hook-testing\""
+      ],
+      "wheels": [
+        {
+          "filename": "pyinstaller-6.21.0-py3-none-macosx_10_13_universal2.whl",
+          "url": "https://files.pythonhosted.org/packages/0c/4a/53cf98bf66daed012dc9cd78c8203f19a675d696f2fc12afcf8c5049a0e0/pyinstaller-6.21.0-py3-none-macosx_10_13_universal2.whl",
+          "sha256": "327d132389f37912609e01be62810cf96b5aa95b613903e4b8692e0d12fb0eda"
+        },
+        {
+          "filename": "pyinstaller-6.21.0-py3-none-manylinux2014_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/9f/09/51b8905714b733bac66dbc041a7821372d70d888d273ae474c4037d4202d/pyinstaller-6.21.0-py3-none-manylinux2014_x86_64.whl",
+          "sha256": "605169523a6b5ace39f13dfbff21add9f2bc43df99c7daf9394fefb2c45e8b6f"
+        }
+      ]
+    },
+    "pyinstaller-hooks-contrib": {
+      "version": "2026.6",
+      "metadata_url": "https://pypi.org/pypi/pyinstaller-hooks-contrib/2026.6/json",
+      "requires_dist": [
+        "importlib_metadata>=4.6; python_version < \"3.10\"",
+        "packaging>=22.0"
+      ],
+      "wheels": [
+        {
+          "filename": "pyinstaller_hooks_contrib-2026.6-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/e7/31/f2d7343d8ed5f7c4678377886f6ce533e6eaaa131b252ce950114c2a7efa/pyinstaller_hooks_contrib-2026.6-py3-none-any.whl",
+          "sha256": "fd13b8ac126b35361175edacd41a0d97080b75dd5f4b594ecefefff969509dd3"
+        }
+      ]
+    },
+    "altgraph": {
+      "version": "0.17.5",
+      "metadata_url": "https://pypi.org/pypi/altgraph/0.17.5/json",
+      "requires_dist": null,
+      "wheels": [
+        {
+          "filename": "altgraph-0.17.5-py2.py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/a9/ba/000a1996d4308bc65120167c21241a3b205464a2e0b58deda26ae8ac21d1/altgraph-0.17.5-py2.py3-none-any.whl",
+          "sha256": "f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597"
+        }
+      ]
+    },
+    "setuptools": {
+      "version": "82.0.1",
+      "metadata_url": "https://pypi.org/pypi/setuptools/82.0.1/json",
+      "requires_dist": [
+        "pytest!=8.1.*,>=6; extra == \"test\"",
+        "virtualenv>=13.0.0; extra == \"test\"",
+        "wheel>=0.44.0; extra == \"test\"",
+        "pip>=19.1; extra == \"test\"",
+        "packaging>=24.2; extra == \"test\"",
+        "jaraco.envs>=2.2; extra == \"test\"",
+        "pytest-xdist>=3; extra == \"test\"",
+        "jaraco.path>=3.7.2; extra == \"test\"",
+        "build[virtualenv]>=1.0.3; extra == \"test\"",
+        "filelock>=3.4.0; extra == \"test\"",
+        "ini2toml[lite]>=0.14; extra == \"test\"",
+        "tomli-w>=1.0.0; extra == \"test\"",
+        "pytest-timeout; extra == \"test\"",
+        "pytest-perf; sys_platform != \"cygwin\" and extra == \"test\"",
+        "jaraco.develop>=7.21; (python_version >= \"3.9\" and sys_platform != \"cygwin\") and extra == \"test\"",
+        "pytest-home>=0.5; extra == \"test\"",
+        "pytest-subprocess; extra == \"test\"",
+        "pyproject-hooks!=1.1; extra == \"test\"",
+        "jaraco.test>=5.5; extra == \"test\"",
+        "sphinx>=3.5; extra == \"doc\"",
+        "jaraco.packaging>=9.3; extra == \"doc\"",
+        "rst.linker>=1.9; extra == \"doc\"",
+        "furo; extra == \"doc\"",
+        "sphinx-lint; extra == \"doc\"",
+        "jaraco.tidelift>=1.4; extra == \"doc\"",
+        "pygments-github-lexers==0.0.5; extra == \"doc\"",
+        "sphinx-favicon; extra == \"doc\"",
+        "sphinx-inline-tabs; extra == \"doc\"",
+        "sphinx-reredirects; extra == \"doc\"",
+        "sphinxcontrib-towncrier; extra == \"doc\"",
+        "sphinx-notfound-page<2,>=1; extra == \"doc\"",
+        "pyproject-hooks!=1.1; extra == \"doc\"",
+        "towncrier<24.7; extra == \"doc\"",
+        "packaging>=24.2; extra == \"core\"",
+        "more_itertools>=8.8; extra == \"core\"",
+        "jaraco.text>=3.7; extra == \"core\"",
+        "importlib_metadata>=6; python_version < \"3.10\" and extra == \"core\"",
+        "tomli>=2.0.1; python_version < \"3.11\" and extra == \"core\"",
+        "wheel>=0.43.0; extra == \"core\"",
+        "jaraco.functools>=4; extra == \"core\"",
+        "more_itertools; extra == \"core\"",
+        "pytest-checkdocs>=2.4; extra == \"check\"",
+        "pytest-ruff>=0.2.1; sys_platform != \"cygwin\" and extra == \"check\"",
+        "ruff>=0.13.0; sys_platform != \"cygwin\" and extra == \"check\"",
+        "pytest-cov; extra == \"cover\"",
+        "pytest-enabler>=2.2; extra == \"enabler\"",
+        "pytest-mypy; extra == \"type\"",
+        "mypy==1.18.*; extra == \"type\"",
+        "importlib_metadata>=7.0.2; python_version < \"3.10\" and extra == \"type\"",
+        "jaraco.develop>=7.21; sys_platform != \"cygwin\" and extra == \"type\""
+      ],
+      "wheels": [
+        {
+          "filename": "setuptools-82.0.1-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/9d/76/f789f7a86709c6b087c5a2f52f911838cad707cc613162401badc665acfe/setuptools-82.0.1-py3-none-any.whl",
+          "sha256": "a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb"
+        }
+      ]
+    },
+    "macholib": {
+      "version": "1.16.4",
+      "metadata_url": "https://pypi.org/pypi/macholib/1.16.4/json",
+      "requires_dist": [
+        "altgraph>=0.17"
+      ],
+      "wheels": [
+        {
+          "filename": "macholib-1.16.4-py2.py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/c7/d1/a9f36f8ecdf0fb7c9b1e78c8d7af12b8c8754e74851ac7b94a8305540fc7/macholib-1.16.4-py2.py3-none-any.whl",
+          "sha256": "da1a3fa8266e30f0ce7e97c6a54eefaae8edd1e5f86f3eb8b95457cae90265ea"
+        }
+      ]
+    }
+  }
+}
