@@ -11,7 +11,7 @@ submission or native readiness alone establishes no source behavior. The
 prepared artifact extension below requires new actual wheel/frozen receipts;
 it runs no browser, whole collection or suspended unit/proof body.
 
-Candidate 3d41d128da9994f43aad0f02de9261b3416bcfa0 and original baseline
+Candidate b1f13ca65382a6fe169246648dd5dcea78780fde and original baseline
 8378064e9933d5b3af4247eca55750ac427a564f remain immutable product source pins.
 The new C source is independent test evidence, copied byte-for-byte from the
 published same-PR helper change, and authenticated by its literal SHA256 before
@@ -153,3 +153,11 @@ helpers, not executed artifact evidence or a PASS. Costly provisioning still
 requires fresh cheap native admission. Candidate publication/readback must
 precede immutable pin renewal and new evidence publication. Real browser and
 audited discovery remain pending; suspension/exclusions/gates stay unchanged.
+
+Current immutable pin renewed after JOB3972 exact-head active local Web/manual
+exit0 and actual PR1017 read-back at b1f13ca65382a6fe169246648dd5dcea78780fde.
+Only the concurrent empty-org test expectation/docs changed in the candidate;
+production code, native observer and tool versions remain unchanged. The
+prepared wheel/frozen coordinator requires actual fresh dual-platform receipts.
+Historical source characterization failures remain failures; browser/discovery
+and independent gates remain pending. No overall PASS or retirement completion.
