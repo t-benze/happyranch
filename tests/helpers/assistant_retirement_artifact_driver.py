@@ -150,7 +150,8 @@ def process_table() -> list[dict]:
         lib = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
         class Bsd(ctypes.Structure):
             _fields_ = [('flags', ctypes.c_uint32), ('status', ctypes.c_uint32),
-                        ('pid', ctypes.c_int), ('ppid', ctypes.c_int)] + [
+                        ('xstatus', ctypes.c_uint32),
+                        ('pid', ctypes.c_uint32), ('ppid', ctypes.c_uint32)] + [
                 (name, ctypes.c_uint32) for name in ('uid','gid','ruid','rgid','svuid','svgid','rfu')
             ] + [('comm', ctypes.c_char * 16), ('name', ctypes.c_char * 32),
                  ('nfiles', ctypes.c_int), ('pgid', ctypes.c_int), ('jobc', ctypes.c_int),

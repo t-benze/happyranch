@@ -541,6 +541,13 @@ Linux evidence. Installed-wheel RECORD/console/shebang and narrow `-I` module
 origin checks must point into that wheel-owned venv; source PYTHONPATH never
 establishes installed/frozen callbacks.
 
+The macOS `proc_bsdinfo` declaration includes the SDK's `pbi_xstatus` field
+before PID/PPID, with unsigned PID fields. The struct's total size alone does
+not establish correct UID, parent or process-group offsets. Hosted native
+receipts must match the actual selected SDK definition. Inaccessible living
+processes still refuse the census; do not omit an opaque same-owner process,
+change privileges or claim quiescence from an incomplete native table.
+
 Copy the stdlib-only driver into the verification root and hash it. Its origin
 manifest binds schema_version 1, source_role (`candidate` or `baseline`),
 origin, venue platform/arch, candidate_sha,
