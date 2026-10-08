@@ -1224,9 +1224,44 @@ async function main() {
         }
         return { missing, uncaptured: [...pending], shotsStable: shots.every(s => JSON.stringify(s.before) === JSON.stringify(s.after)), shots: shots.length };
       }
+      // Recent-task card header (shared TaskCard): the owned ID, status pill,
+      // waiting qualifier and age must each read as ONE line (not a phrase
+      // stacked glyph by glyph), and every header text line box must stay inside
+      // its element, the card, the viewport and clipping ancestors on both axes.
+      const headerLines = (id, owned) => `(() => {
+        const owned = ${JSON.stringify(owned)};
+        const link = document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-${id}"]');
+        const header = link && link.firstElementChild, card = link && link.parentElement;
+        if (!header) return { found: false, errors: [] };
+        header.scrollIntoView({ block: 'center', inline: 'nearest' });
+        const c = card.getBoundingClientRect(), errors = [], seen = [];
+        const lineCount = el => { const range = document.createRange(); range.selectNodeContents(el);
+          const boxes = [...range.getClientRects()].filter(b => b.width > 0).sort((x, y) => x.top - y.top);
+          let lines = 0, bottom = -Infinity;
+          for (const b of boxes) { if (b.top >= bottom - 1) { lines += 1; bottom = b.bottom; } else bottom = Math.max(bottom, b.bottom); }
+          return { boxes, lines }; };
+        for (const el of header.querySelectorAll('span:not([aria-hidden])')) {
+          const r = el.getBoundingClientRect(), { boxes, lines } = lineCount(el), name = JSON.stringify(el.textContent);
+          const out = b => b.left < c.left - 1 || b.right > c.right + 1 || b.top < c.top - 1 || b.bottom > c.bottom + 1 || b.left < 0 || b.top < 0 || b.right > innerWidth + 1 || b.bottom > innerHeight + 1;
+          if (!r.width || !r.height || out(r)) errors.push(name + ' element outside card/viewport');
+          if (boxes.some(b => out(b) || b.left < r.left - 1 || b.right > r.right + 1 || b.top < r.top - 1 || b.bottom > r.bottom + 1)) errors.push(name + ' text line box outside element/card/viewport');
+          for (let p = el.parentElement; p; p = p.parentElement) {
+            const s = getComputedStyle(p), b = p.getBoundingClientRect();
+            if (/(hidden|clip|auto|scroll)/.test(s.overflowX) && (r.left < b.left - 1 || r.right > b.right + 1)) errors.push(name + ' x-clipped by ' + p.tagName);
+            if (/(hidden|clip|auto|scroll)/.test(s.overflowY) && (r.top < b.top - 1 || r.bottom > b.bottom + 1)) errors.push(name + ' y-clipped by ' + p.tagName);
+          }
+          const label = owned.find(t => el.textContent.trim() === t);
+          const pill = owned.some(t => t.startsWith('· ') && [...el.children].some(k => k.textContent.trim() === t));
+          if (label || pill) { seen.push(label || 'status pill'); if (lines !== 1) errors.push(name + ' split across ' + lines + ' lines'); }
+        }
+        return { found: true, owned: new Set(seen).size, errors };
+      })()`;
+      const headerOwned = (locale, id) => [`TASK-CASE-${id}`, `· ${tr(locale, id === 'A' ? 'tasks.waiting.subtasks' : 'tasks.waiting.jobs')}`, tr(locale, 'tasks.age.minutes', { count: 5 })];
+      const headerExpected = { found: true, owned: 4, errors: [] };
       if (arg('agents-case', 'all') !== 'switch') {
       beginCase('C9-V', 'C9 focused Agents populated/loading/empty/error en/zh-CN at 390/1440');
       for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[390, 844], [1440, 900]]) {
+        let comfortablePad = null;
         for (const state of ['populated', 'loading', 'empty', 'error']) {
           const page = await openPage(`${base}/orgs/${ORG}/agents/lead?agentsFixture=${state}`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}\nDate.now = () => ${now};`, width, height });
           if (!await waitTrue(page, `Boolean(${EDIT(locale)}) && !${EDIT(locale)}.disabled`, 'valid enabled Pane editor')) throw new Error('C9 fixture prerequisite: enabled editor absent');
@@ -1243,6 +1278,8 @@ async function main() {
               check(`C9 Agents ${locale} ${width} raw ${id} original link/control bounds`, await evaluate(page, reachable(link)), reachExpected);
               check(`C9 Agents ${locale} ${width} ${id} sibling lineage`, await evaluate(page, `Boolean(${link}) && !${link}.parentElement.closest('a')`), true);
             }
+            comfortablePad = await evaluate(page, `Number.parseFloat(getComputedStyle(document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-A"]').parentElement).paddingLeft)`);
+            for (const id of ['A', 'B']) check(`C9 Agents ${locale} ${width} ${id} recent-task header labels one line, inside card/viewport`, await evaluate(page, headerLines(id, headerOwned(locale, id))), headerExpected);
           }
           const targets = state === 'populated'
             ? [tr(locale, 'tasks.waiting.subtasks'), tr(locale, 'tasks.waiting.jobs'), tr(locale, 'tasks.age.minutes', { count: 5 }), tr(locale, 'tasks.row.supersedes', { id: 'TASK-CASE-P' }), tr(locale, 'tasks.row.supersededBy', { id: 'TASK-CASE-R' })]
@@ -1256,6 +1293,17 @@ async function main() {
           }
           await closePage(page);
         }
+        // The same header at the user's compact density (narrower card padding).
+        const compact = await openPage(`${base}/orgs/${ORG}/agents/lead?agentsFixture=populated`, { init: `${seedLocale(locale)}\ntry { localStorage.setItem('happyranch.density', 'compact'); } catch (e) {}\n${CHINESE_NAVIGATOR}\nDate.now = () => ${now};`, width, height });
+        check(`C9 Agents compact ${locale} ${width} populated rows`, await waitTrue(compact, `Boolean(document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-B"]'))`, 'compact recent tasks'), true);
+        const compactPad = await evaluate(compact, `Number.parseFloat(getComputedStyle(document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-A"]').parentElement).paddingLeft)`);
+        check(`C9 Agents compact ${locale} ${width} compact card padding rendered`, { compactPad, narrower: compactPad < comfortablePad }, { compactPad, narrower: true });
+        for (const id of ['A', 'B']) check(`C9 Agents compact ${locale} ${width} ${id} recent-task header labels one line, inside card/viewport`, await evaluate(compact, headerLines(id, headerOwned(locale, id))), headerExpected);
+        const compactShots = await captureTargets(compact, `c9-${locale}-populated-compact-${width}`, headerOwned(locale, 'A').concat(headerOwned(locale, 'B').slice(0, 2)), { locale, state: 'populated', density: 'compact', viewport: `${width}x${height}` });
+        check(`C9 Agents compact ${locale} ${width} header targets visibly captured`, { missing: compactShots.missing, uncaptured: compactShots.uncaptured, stable: compactShots.shotsStable, shot: compactShots.shots > 0 }, { missing: [], uncaptured: [], stable: true, shot: true });
+        // Density persists per origin: restore the default before later comfortable pages.
+        check(`C9 Agents compact ${locale} ${width} density preference restored`, await evaluate(compact, `(() => { localStorage.removeItem('happyranch.density'); return localStorage.getItem('happyranch.density'); })()`), null);
+        await closePage(compact);
       }
       endCase();
       }

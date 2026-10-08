@@ -104,7 +104,10 @@ every cascade-row descendant's text line boxes on both axes and rejects a row
 label (waiting qualifier, task ID) split across lines. The Agents case scrolls
 each recent-task label and state message into view and captures it, in
 sequential shots when one viewport cannot hold them all, recording the targets
-measured visible just before and after each shot. The Agents case uses a
+measured visible just before and after each shot. It also requires each
+recent-task card header's task ID, status pill, waiting qualifier and age to
+read as one line, with every header line box inside the card and viewport on
+both axes, at comfortable and compact density. The Agents case uses a
 valid prompt revision and checks the retained editor before any new lookup,
 authored multiline draft, selection 3:8, focus and request/transport silence in
 both switch directions. The unchanged prompt owner tests retain Save/readback

@@ -92,14 +92,15 @@ export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes
         to={to}
         className="block hover:bg-surface-hover transition-colors rounded-lg"
       >
-        <div className="flex items-center gap-2 text-xs">
-          <IdBadge kind="task" id={task.task_id} />
-          <StatusBadge status={rollup} blockKind={task.block_kind} waitingLabels={labels?.waiting} />
+        {/* Narrow rows wrap whole groups; the ID, status pill and age keep their own width. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <span className="flex shrink-0"><IdBadge kind="task" id={task.task_id} /></span>
+          <span className="flex shrink-0"><StatusBadge status={rollup} blockKind={task.block_kind} waitingLabels={labels?.waiting} /></span>
           <span className="text-text-muted font-mono text-xs tabular-nums">{task.team}</span>
           {task.assigned_agent && (
             <span className="text-text-muted">· {task.assigned_agent}</span>
           )}
-          <span className="text-text-muted ml-auto text-xs tabular-nums">{relativeAge(task.updated_at, labels)}</span>
+          <span className="text-text-muted ml-auto shrink-0 text-xs tabular-nums">{relativeAge(task.updated_at, labels)}</span>
         </div>
         <p className="text-text-primary mt-1 line-clamp-1 text-sm">{briefHeadline(task.brief)}</p>
       </Link>
