@@ -450,5 +450,6 @@ def test_generic_publish_timing_and_roles_refuse_before_both_client_lanes(tmp_pa
         founder.assert_not_called()
         agent.assert_not_called()
         port.assert_not_called()
-    assert "invalid document-review template" in capsys.readouterr().err
-    assert "PRIVATE" not in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "invalid document-review template" in error
+    assert "PRIVATE" not in error
