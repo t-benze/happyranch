@@ -42,6 +42,14 @@ container-VM path.
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
 fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.
+Nested `uv` commands use the parent interpreter through `UV_PYTHON`. If that
+interpreter belongs to a venv, its own `pyvenv.cfg` path supplies the exact
+`VIRTUAL_ENV` and `UV_PROJECT_ENVIRONMENT`; ambient environment selectors are
+not copied. The parent uses a closed uv cache, ignores uv configuration and
+refuses downloads or synchronization. Before pytest, a bounded ordinary-user
+`uv run python -I` stdlib observation must match the parent executable path,
+SHA256, prefix and Python version. Its source/revision receipt is retained in
+the command log. A mismatch refuses before product imports or test bodies.
 It uses only source-hashed deterministic Claude/Codex/OpenCode stubs and an exact
 candidate-Python/tested-source completion CLI. Every plan is explicitly written
 through the test plan fixture and hash-approved; missing/stale/unexpected or
