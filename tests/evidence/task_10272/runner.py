@@ -184,8 +184,13 @@ def digest(p):return hashlib.sha256(p.read_bytes()).hexdigest()
 for item in request:
  d=importlib.metadata.distribution(item['name'])
  assert d.version==item['version'], (item['name'],d.version)
- files=list(d.files or []); records=[p for p in files if str(p).endswith('.dist-info/RECORD')]
- assert len(records)==1
+ files=list(d.files or [])
+ # Only this distribution's top-level metadata identifies its own RECORD.
+ # Vendored dist-info/RECORD payloads remain covered by outer RECORD and
+ # upstream wheel-member hashes; they are not extra installed distributions.
+ records=[p for p in files if len(pathlib.PurePosixPath(str(p)).parts)==2
+          and str(p).endswith('.dist-info/RECORD')]
+ assert len(records)==1, (item['name'],list(map(str,records)))
  record=pathlib.Path(d.locate_file(records[0])); checked=[]
  for relative,encoded,size in csv.reader(record.read_text().splitlines()):
   p=pathlib.Path(d.locate_file(relative))
@@ -197,7 +202,7 @@ for item in request:
   checked.append({'path':str(p),'sha256':digest(p),'size':p.stat().st_size})
  with zipfile.ZipFile(item['wheel']) as archive:
   for member in archive.namelist():
-   if member.endswith('/') or member.endswith('.dist-info/RECORD'):continue
+   if member.endswith('/') or member==str(records[0]):continue
    if '.data/scripts/' in member:
     p=pathlib.Path(sys.prefix)/'bin'/member.split('.data/scripts/',1)[1]
    else:p=pathlib.Path(d.locate_file(member))
@@ -343,14 +348,41 @@ def native_prerequisites(commands, root, env):
                  'download', package + '=' + version], downloads, env)
             import shlex
             uri = next(shlex.split(line)[0] for line in uris.splitlines() if line.startswith("'"))
-            from urllib.parse import urlparse
+            from urllib.parse import unquote, urlparse
             parsed = urlparse(uri)
-            assert parsed.scheme in ('https', 'http') and parsed.hostname in (
-                'archive.ubuntu.com', 'security.ubuntu.com', 'azure.archive.ubuntu.com')
+            allowed_hosts = ('archive.ubuntu.com', 'security.ubuntu.com',
+                             'azure.archive.ubuntu.com')
+            assert not parsed.query and not parsed.fragment and not parsed.username
+            mirror_receipt = None
+            if parsed.scheme == 'mirror+file':
+                # Exact existing image mirror list, not a caller-selected file
+                # or transport. APT retains archive trust; we record every
+                # possible concrete endpoint and the list's original bytes.
+                mirror = Path('/etc/apt/apt-mirrors.txt')
+                assert unquote(parsed.path) == str(mirror) + '/' + fields['Filename']
+                assert not parsed.netloc and mirror.is_file() and not mirror.is_symlink()
+                assert mirror.stat().st_size <= 16384
+                mirrors = [line.split('\t', 1)[0] for line in mirror.read_text().splitlines()
+                           if line and not line.startswith('#')]
+                assert mirrors, 'existing runner APT mirror list is empty'
+                for endpoint in mirrors:
+                    target = urlparse(endpoint)
+                    assert target.scheme in ('https', 'http') and target.hostname in allowed_hosts
+                    assert not target.username and not target.query and not target.fragment
+                    assert target.path in ('/ubuntu/', '/ubuntu'), endpoint
+                mirror_receipt = {'list': identity(mirror), 'endpoints': mirrors,
+                                  'package_path': fields['Filename']}
+                save('native-mirror-list.json', mirror_receipt)
+            else:
+                assert parsed.scheme in ('https', 'http') and parsed.hostname in allowed_hosts
+                assert unquote(parsed.path).endswith('/' + fields['Filename'])
+
             before = set(downloads.glob('*.deb'))
             commands.run('native-download-' + package,
                 ['apt-get', '-o', 'APT::Get::AllowUnauthenticated=false',
                  'download', package + '=' + version], downloads, env)
+            if mirror_receipt is not None:
+                assert identity('/etc/apt/apt-mirrors.txt') == mirror_receipt['list'], 'APT mirror list changed'
             added = set(downloads.glob('*.deb')) - before
             assert len(added) == 1
             archive = added.pop()
@@ -361,7 +393,8 @@ def native_prerequisites(commands, root, env):
             assert 'Architecture: amd64' in control
             commands.run('native-extract-' + package, ['dpkg-deb', '--extract', archive, destination], root, env)
             rows.append({'package': package, 'version': version, 'installed_runtime': runtime,
-                         'metadata': fields, 'url': uri, 'archive': identity(archive)})
+                         'metadata': fields, 'url': uri, 'mirror': mirror_receipt,
+                         'archive': identity(archive)})
             save('native-archives.json', rows)
     library = destination / 'usr/lib/x86_64-linux-gnu'
     include = destination / 'usr/include'
