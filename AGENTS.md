@@ -431,9 +431,13 @@ PASS. Preserve test sources, selections and coverage definitions. Web,
 canonical validation and integration jobs retain their own existing contracts;
 no hook bypass is authorized. Existing historical workflow reruns and old
 checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after founder release of the
-stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
+launch the unit suite. Restore execution only after a new founder verdict releases
+the stop instruction, through normal review and merge of source restoration for
+both the ordinary unit/wrapper pause and the separate focused-prerequisite guard
+and provenance. Reverting the TASK-10169 pause commit (`22af7c72`) alone does not
+restore the added focused prerequisites: their fixed false branch and suspended
+provenance must also be restored in the reviewed change after the new verdict.
+The ordinary commands below describe the restored behavior.
 
 ## Commands
 
