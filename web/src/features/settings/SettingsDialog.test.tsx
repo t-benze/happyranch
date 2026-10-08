@@ -94,6 +94,7 @@ function renderDialog(
       <MemoryRouter initialEntries={[page ? '/orgs/alpha/settings/daemon-capacity' : '/orgs/alpha/dashboard']}>
         <Routes>
           <Route
+            path={page ? "/orgs/:slug/settings/*" : "/orgs/:slug/dashboard"}
             element={
               <DataContext.Provider value={ctxValue}>
                 {page ? (
@@ -105,9 +106,7 @@ function renderDialog(
                 )}
               </DataContext.Provider>
             }
-          >
-            <Route path={page ? "/orgs/:slug/settings/*" : "/orgs/:slug/dashboard"} element={<div />} />
-          </Route>
+          />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,

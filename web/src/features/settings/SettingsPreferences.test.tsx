@@ -48,13 +48,15 @@ const SETTINGS_PAYLOAD = {
 
 type SettingsMode = 'ok' | 'loading' | 'error' | 'empty';
 
-function stubSettings(mode: SettingsMode): void {
+function stubSettings(mode: SettingsMode, cleanCapacity = false): void {
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
     http.get(`/api/v1/orgs/${SLUG}/settings/daemon-capacity`, () => HttpResponse.json({
       running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
       running_provenance: 'Resolved when the HappyRanch service started',
-      persisted_yaml: { queue_workers: null, host_global_session_cap: null },
+      persisted_yaml: cleanCapacity
+        ? { queue_workers: 6, host_global_session_cap: 13 }
+        : { queue_workers: null, host_global_session_cap: null },
       next_start: { queue_workers: 6, host_global_session_cap: 13 },
       environment_shadowed: [], environment_warning: null,
       producer_envelope: 13,
@@ -412,7 +414,7 @@ describe('W2c Preferences — routing, state and persistence', () => {
   });
 
   test('back/forward between Capacity and Preferences keeps locale and route semantics', async () => {
-    stubSettings('ok');
+    stubSettings('ok', true);
     mountSettings(`/orgs/${SLUG}/settings/daemon-capacity`);
     const user = userEvent.setup();
     const content = await screen.findByTestId('settings-content');
@@ -429,7 +431,7 @@ describe('W2c Preferences — routing, state and persistence', () => {
         `POP:/orgs/${SLUG}/settings/daemon-capacity`,
       ),
     );
-    expect(await screen.findByRole('heading', { name: '系统助手' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '容量' })).toBeInTheDocument();
 
     await user.click(screen.getByTestId('history-forward'));
     await waitFor(() =>

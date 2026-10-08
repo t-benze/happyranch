@@ -59,7 +59,7 @@ const TOKENS_PAYLOAD = {
   ],
 };
 
-function stubBaseHandlers() {
+function stubBaseHandlers(cleanCapacity = false) {
   server.use(
     http.get('/api/v1/orgs', () =>
       HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] }),
@@ -70,7 +70,9 @@ function stubBaseHandlers() {
     http.get(`/api/v1/orgs/${SLUG}/settings/daemon-capacity`, () => HttpResponse.json({
       running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
       running_provenance: 'Resolved when the HappyRanch service started',
-      persisted_yaml: { queue_workers: null, host_global_session_cap: null },
+      persisted_yaml: cleanCapacity
+        ? { queue_workers: 6, host_global_session_cap: 13 }
+        : { queue_workers: null, host_global_session_cap: null },
       next_start: { queue_workers: 6, host_global_session_cap: 13 },
       environment_shadowed: [], environment_warning: null,
       producer_envelope: 13,
@@ -237,6 +239,9 @@ describe('SettingsPage — sub-nav and routing', () => {
   });
 
   test('sub-nav switches panels via navigation', async () => {
+    // Absence-to-present capacity is intentionally an unsaved draft. This
+    // routing case uses saved values; absent-key and leave guards stay covered.
+    stubBaseHandlers(true);
     mountAt(`/orgs/${SLUG}/settings/assistant`);
 
     await waitFor(() =>
