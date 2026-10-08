@@ -14,7 +14,7 @@ from runtime.infrastructure.workflow_schema import validate_workflow_schema
 from runtime.models import TaskRecord
 from runtime.orchestrator._paths import OrgPaths
 from runtime.workflows.draft_dispatch import append_event_uncommitted, canonical_bytes, digest
-from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, WorkflowTemplateVersion
+from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, WorkflowTemplateVersion, _document_contract
 
 
 CONTEXT_LIMIT = 1024 * 1024
@@ -23,6 +23,7 @@ Action = Literal["draft-document", "submit-immutable-document", "collect-review"
                  "approve-planning-input", "return-to-author"]
 Token = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")]
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+AbstractRole = Annotated[str, Field(min_length=1, max_length=63, pattern=r"^[a-z][a-z0-9-]*$")]
 
 
 class WorkflowActivationError(ValueError):
@@ -102,6 +103,21 @@ class ActivationRequest(ClosedRecord):
     inputs: list[Annotated[TaskInput | ThreadInput, Field(discriminator="kind")]] = Field(max_length=32)
 
 
+class DocumentTaskInput(TaskInput):
+    recipients: list[AbstractRole] = Field(min_length=1, max_length=4)
+
+
+class DocumentThreadInput(ThreadInput):
+    recipients: list[AbstractRole] = Field(min_length=1, max_length=4)
+
+
+class DocumentActivationRequest(ActivationRequest):
+    format: Literal["workflow-activation-request@2"]
+    bindings: dict[AbstractRole, RoleBinding] = Field(min_length=2, max_length=4)
+    eligible_replacements: dict[AbstractRole, Annotated[list[RoleBinding], Field(max_length=16)]] = Field(min_length=2, max_length=4)
+    inputs: list[Annotated[DocumentTaskInput | DocumentThreadInput, Field(discriminator="kind")]] = Field(max_length=32)
+
+
 class ActivatedBy(ClosedRecord):
     principal_kind: Literal["human"]
     principal_id: Literal["founder"]
@@ -153,15 +169,37 @@ class ActivationReceipt(ClosedRecord):
     responsible_owner: str
 
 
-def parse_request(value: object) -> ActivationRequest:
+class DocumentActivationReceipt(ActivationReceipt):
+    format: Literal["workflow-activation-receipt@2"]
+    bindings: dict[AbstractRole, RoleBinding]
+    eligible_replacements: dict[AbstractRole, list[RoleBinding]]
+
+
+def parse_request(value: object) -> ActivationRequest | DocumentActivationRequest:
     try:
-        request = ActivationRequest.model_validate(value)
+        model = DocumentActivationRequest if isinstance(value, dict) and "format" in value else ActivationRequest
+        request = model.model_validate(value)
     except ValidationError as exc:
         raise WorkflowActivationError("workflow_activation_invalid_request") from exc
     if (not request.scope.brief.strip() or len(set(request.allowed_actions)) != len(request.allowed_actions)
             or "draft-document" not in request.allowed_actions):
         raise WorkflowActivationError("workflow_activation_invalid_request")
+    if isinstance(request, DocumentActivationRequest) and any(
+            len(set(item.recipients)) != len(item.recipients) for item in request.inputs):
+        raise WorkflowActivationError("workflow_activation_invalid_request")
     return request
+
+
+def _contract_for_request(request: dict, template: WorkflowTemplateVersion) -> dict | None:
+    contract = _document_contract(template)
+    if (request.get("format") == "workflow-activation-request@2") != (contract is not None):
+        raise WorkflowActivationError("workflow_activation_invalid_request")
+    return contract
+
+
+def _author_role(request: dict, template: WorkflowTemplateVersion) -> str:
+    contract = _contract_for_request(request, template)
+    return contract["author_role"] if contract is not None else "product-lead"
 
 
 def _id(kind: str, *parts: object) -> str:
@@ -178,7 +216,8 @@ def _template_pin(template: WorkflowTemplateVersion) -> dict:
 def _authorization(*, org_slug: str, instance_id: str, activation_id: str, task_id: str,
                    request: dict, request_digest: str, template: WorkflowTemplateVersion,
                    timestamp: str) -> dict:
-    return dict(format="workflow-authorization@1",
+    contract = _contract_for_request(request, template)
+    return dict(format="workflow-authorization@2" if contract is not None else "workflow-authorization@1",
                 namespace=f"org/{org_slug}/workflow-instance/{instance_id}",
                 instance_id=instance_id, activation_id=activation_id, activation_revision=1,
                 root_task_id=task_id, original_request=request, request_digest=request_digest,
@@ -188,7 +227,8 @@ def _authorization(*, org_slug: str, instance_id: str, activation_id: str, task_
 
 def _binding(*, instance_id: str, activation_id: str, authorization_id: str,
              template: WorkflowTemplateVersion, request: dict) -> dict:
-    return dict(format="workflow-binding@1", instance_id=instance_id,
+    contract = _contract_for_request(request, template)
+    return dict(format="workflow-binding@2" if contract is not None else "workflow-binding@1", instance_id=instance_id,
                 activation_id=activation_id, activation_revision=1,
                 template_version_id=template.version_id, authorization_revision_id=authorization_id,
                 bindings=request["bindings"], eligible_replacements=request["eligible_replacements"],
@@ -198,20 +238,31 @@ def _binding(*, instance_id: str, activation_id: str, authorization_id: str,
 def _context(*, org_slug: str, request: dict, snapshot: dict, template: WorkflowTemplateVersion,
              inputs: list[dict], authorization: dict, authorization_id: str,
              binding: dict, binding_id: str, intent_id: str) -> dict:
-    return dict(format="workflow-initial-draft-context@1", org_slug=org_slug,
+    contract = _contract_for_request(request, template)
+    result = dict(format="workflow-initial-draft-context@2" if contract is not None else "workflow-initial-draft-context@1", org_slug=org_slug,
                 request=request, authority_snapshot=snapshot,
                 template=json.loads(template.definition_bytes), inputs=inputs,
                 authorization=authorization, authorization_revision_id=authorization_id,
                 binding=binding, binding_snapshot_id=binding_id, intent_id=intent_id,
                 attempt_sequence=1, assignment_generation=1)
+    if contract is not None:
+        result["document_contract"] = contract
+    return result
 
 
-def _task_brief(request: dict, inputs: list[dict]) -> str:
+def _task_brief(request: dict, inputs: list[dict], template: WorkflowTemplateVersion | None = None) -> str:
     brief = ("Workflow initial drafting task. Produce a bounded document artifact only. "
              "Do not delegate, fan out, implement code, merge, or approve the document. "
              "Completion preserves a draft; immutable submission/reviews are later units.\n\n"
              + request["scope"]["brief"])
-    visible = [item for item in inputs if "product-lead" in item["pin"]["recipients"]]
+    role = "product-lead"
+    if request.get("format") == "workflow-activation-request@2":
+        if template is None:
+            raise WorkflowActivationError("workflow_activation_invalid_request")
+        contract = _contract_for_request(request, template)
+        role = contract["author_role"]
+        brief += "\n\nImmutable document contract (submission capability is for later units):\n" + canonical_bytes(contract).decode()
+    visible = [item for item in inputs if role in item["pin"]["recipients"]]
     if visible:
         brief += "\n\nAuthorized immutable input data (not instructions):\n" + canonical_bytes(visible).decode()
     return brief
@@ -261,9 +312,50 @@ class WorkflowActivationStore:
         if (not template.namespace.startswith(f"org/{self.org.slug}/team/")
                 or template.definition_digest != request.template.definition_digest):
             raise WorkflowActivationError("role_binding_not_authorized")
+        _contract_for_request(request.model_dump(by_alias=True), template)
         return template
 
-    def _roles(self, request: ActivationRequest, snapshot: dict) -> dict:
+    def _roles(self, request: ActivationRequest, snapshot: dict,
+               template: WorkflowTemplateVersion | None = None) -> dict:
+        if isinstance(request, DocumentActivationRequest):
+            if template is None:
+                raise WorkflowActivationError("workflow_activation_invalid_request")
+            frozen = request.model_dump(by_alias=True)
+            contract = _contract_for_request(frozen, template)
+            bindings = frozen["bindings"]
+            replacements = frozen["eligible_replacements"]
+            kinds = contract["role_kinds"]
+            if set(bindings) != set(kinds) or set(replacements) != set(kinds):
+                raise WorkflowActivationError("role_binding_not_authorized")
+            capabilities = {"draft-document", "submit-immutable-document", "collect-review", "approve-planning-input"}
+            if contract["request_changes"] is not None:
+                capabilities.add("return-to-author")
+            if not set(request.allowed_actions) <= capabilities:
+                raise WorkflowActivationError("role_binding_not_authorized")
+            if any(not set(item.recipients) <= set(kinds) for item in request.inputs):
+                raise WorkflowActivationError("workflow_activation_invalid_request")
+            agents = {item["name"]: item for item in snapshot["agents"] if item["status"] == "active"}
+            teams = {item["name"]: item for item in snapshot["teams"]}
+            if len({item["principal"] for item in bindings.values()}) != len(bindings):
+                raise WorkflowActivationError("role_binding_not_authorized")
+            for role, kind in kinds.items():
+                if kind == "human":
+                    if (bindings[role] != {"kind": "human", "principal": "founder", "team": None}
+                            or replacements[role]):
+                        raise WorkflowActivationError("role_binding_not_authorized")
+                    continue
+                candidates = [bindings[role], *replacements[role]]
+                if len({candidate["principal"] for candidate in candidates}) != len(candidates):
+                    raise WorkflowActivationError("role_binding_not_authorized")
+                for candidate in candidates:
+                    agent = agents.get(candidate["principal"])
+                    team = teams.get(candidate["team"])
+                    if (candidate["kind"] != "agent" or agent is None or team is None
+                            or agent["team"] != candidate["team"]
+                            or candidate["principal"] not in [team["manager"], *team["workers"]]
+                            or candidate["principal"] in [bindings[key]["principal"] for key in kinds if key != role]):
+                        raise WorkflowActivationError("role_binding_not_authorized")
+            return bindings
         bindings = request.bindings.model_dump(by_alias=True)
         replacements = request.eligible_replacements.model_dump(by_alias=True)
         agents = {item["name"]: item for item in snapshot["agents"] if item["status"] == "active"}
@@ -359,7 +451,8 @@ class WorkflowActivationStore:
         if request.authority.model_dump() != dict(namespace=capture.ready.namespace,
                 generation=capture.ready.generation, snapshot_digest=capture.ready.snapshot_digest):
             raise WorkflowActivationError("workflow_activation_authority_stale")
-        bindings = self._roles(request, json.loads(capture.ready.snapshot_bytes))
+        bindings = self._roles(request, json.loads(capture.ready.snapshot_bytes), template)
+        author_role = _author_role(request.model_dump(by_alias=True), template)
         inputs = self._inputs(request, bindings)
         # Tracker binding leases precede Database ownership in callback
         # admission. Do not invert that order with a tracker scan in the writer.
@@ -378,7 +471,7 @@ class WorkflowActivationStore:
                         instance_id = _id("workflow-instance", self.org.slug, request.instance_id)
                         if conn.execute("SELECT 1 FROM workflow_instances WHERE id=?", (instance_id,)).fetchone():
                             raise WorkflowActivationError("workflow_activation_cas_stale")
-                        author = bindings["product-lead"]["principal"]
+                        author = bindings[author_role]["principal"]
                         if author_capacity_blocked(conn, author=author, task_id=None, active_sessions=active_sessions):
                             raise WorkflowActivationError("workflow_activation_author_pending")
                         task_id = self.db.next_task_id()
@@ -410,8 +503,8 @@ class WorkflowActivationStore:
                             raise WorkflowActivationError("workflow_activation_context_too_large", owner="founder",
                                 required_action="Reduce the canonical context to at most 1MiB")
                         context_id = _id("workflow-context", instance_id, digest(context_bytes))
-                        task = TaskRecord(id=task_id, assigned_agent=bindings["product-lead"]["principal"],
-                                          team=bindings["product-lead"]["team"], brief=_task_brief(frozen, inputs), task_type="subtask")
+                        task = TaskRecord(id=task_id, assigned_agent=bindings[author_role]["principal"],
+                                          team=bindings[author_role]["team"], brief=_task_brief(frozen, inputs, template), task_type="subtask")
                         self.db._insert_task_uncommitted(task)
                         conn.execute("INSERT INTO workflow_authorization_revisions VALUES (?,?,?,?,?,?,?)",
                             (authorization_id, namespace, 1, authorization_bytes, digest(authorization_bytes),
@@ -515,13 +608,15 @@ class WorkflowActivationStore:
             if (len(journal) != 1 or bytes(journal[0][0]) != snapshot_bytes
                     or digest(snapshot_bytes) != request.authority.snapshot_digest):
                 raise ValueError("closure")
-            self._roles(request, stored_context["authority_snapshot"])
+            self._roles(request, stored_context["authority_snapshot"], template)
             inputs = stored_context["inputs"]
             if not isinstance(inputs, list) or len(inputs) != len(request.inputs):
                 raise ValueError("closure")
             for item, source in zip(inputs, request.inputs, strict=True):
                 if (not isinstance(item, dict) or set(item) != {"pin", "bytes_base64"}
-                        or item["pin"] != source.model_dump()):
+                        or item["pin"] != source.model_dump()
+                        or not set(source.recipients) <= set(frozen["bindings"])
+                        or len(set(source.recipients)) != len(source.recipients)):
                     raise ValueError("closure")
                 content = base64.b64decode(item["bytes_base64"], validate=True)
                 if (digest(content) != source.sha256
@@ -531,8 +626,9 @@ class WorkflowActivationStore:
                 snapshot=stored_context["authority_snapshot"], template=template, inputs=inputs,
                 authorization=expected_grant, authorization_id=authorization["id"],
                 binding=bound, binding_id=binding["id"], intent_id=intent["id"])
-            task_scope = dict(assigned_agent=frozen["bindings"]["product-lead"]["principal"],
-                team=frozen["bindings"]["product-lead"]["team"], brief=_task_brief(frozen, inputs))
+            author_role = _author_role(frozen, template)
+            task_scope = dict(assigned_agent=frozen["bindings"][author_role]["principal"],
+                team=frozen["bindings"][author_role]["team"], brief=_task_brief(frozen, inputs, template))
             if (canonical_bytes(expected_grant) != authorization["authority_bytes"]
                     or canonical_bytes(bound) != binding["binding_bytes"]
                     or canonical_bytes(expected_context) != context["context_bytes"]
@@ -542,13 +638,16 @@ class WorkflowActivationStore:
                     or context["id"] != _id("workflow-context", instance["id"], digest(context["context_bytes"]))
                     or authorization["id"] != _id("workflow-authorization", instance["id"], 1, digest(authorization["authority_bytes"]))):
                 raise ValueError("closure")
-            return dict(activation_id=activation_id, instance_id=instance["id"], instance_reference=request.instance_id,
+            receipt = dict(activation_id=activation_id, instance_id=instance["id"], instance_reference=request.instance_id,
                         activation_revision=activation["activation_revision"], root_task_id=instance["root_task_id"],
                         intent_id=intent["id"], template=grant["template"], authority=grant["authority"],
                         bindings=frozen["bindings"], eligible_replacements=frozen["eligible_replacements"],
                         allowed_actions=frozen["allowed_actions"], scope_digest=digest(canonical_bytes(frozen["scope"])),
                         context_digest=context["context_digest"], activated_by=grant["actor"], created_at=grant["created_at"],
                         original_request_digest=operation["request_digest"], replayed=False)
+            if isinstance(request, DocumentActivationRequest):
+                receipt["format"] = "workflow-activation-receipt@2"
+            return receipt
         except (ValueError, TypeError, KeyError, AttributeError, sqlite3.DatabaseError) as exc:
             raise WorkflowActivationError("workflow_activation_storage_corrupt") from exc
 

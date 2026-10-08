@@ -307,9 +307,13 @@ def test_activation_cli_parser_refusals_precede_transport(tmp_path, capsys, bad)
     assert 'error' in capsys.readouterr().err
 
 
-def test_activation_cli_real_http_create_replay_list_show_and_pending_exit(activation_org, tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize("format_row", ["legacy", "product", "proposal", "A", "Z"])
+def test_activation_cli_real_http_create_replay_list_show_and_pending_exit(activation_org, tmp_path, capsys, monkeypatch, request, format_row):
     from tests.daemon.test_workflow_activation_routes import BASE, _snapshot
     client, org, state, body = activation_org
+    if format_row != "legacy":
+        client, org, state, cases = request.getfixturevalue("generic_activation_org")
+        body = cases[format_row][0]
     path = tmp_path / 'activation.json'
     path.write_text(json.dumps(body))
     monkeypatch.setattr('cli.commands.workflows.OpcClient.from_env', lambda: client)
@@ -340,10 +344,14 @@ def test_activation_cli_real_http_create_replay_list_show_and_pending_exit(activ
     assert _snapshot(org) == before
 
 
+@pytest.mark.parametrize("format_row", ["legacy", "product", "proposal", "A", "Z"])
 @pytest.mark.parametrize('form', ['activate', 'list', 'show'])
-def test_activation_cli_transport_errors_are_safe_and_nonzero(activation_org, tmp_path, capsys, form):
+def test_activation_cli_transport_errors_are_safe_and_nonzero(activation_org, tmp_path, capsys, form, request, format_row):
     import httpx
     _, _, _, body = activation_org
+    if format_row != "legacy":
+        _, _, _, cases = request.getfixturevalue("generic_activation_org")
+        body = cases[format_row][0]
     path = tmp_path / 'activation.json'
     path.write_text(json.dumps(body))
     client = Mock()
@@ -362,4 +370,86 @@ def test_activation_cli_transport_errors_are_safe_and_nonzero(activation_org, tm
 
 
 # Reuse the production-org fixture; no parallel mock authority fixture.
-from tests.daemon.test_workflow_activation_routes import activation_org  # noqa: E402,F401
+from tests.daemon.test_workflow_activation_routes import activation_org, generic_activation_org  # noqa: E402,F401
+
+
+@pytest.mark.parametrize("vector", ["product", "proposal", "A", "Z"])
+def test_generic_activation_cli_forwards_exact_finite_request(tmp_path, capsys, vector):
+    body = {
+        "format": "workflow-activation-request@2", "operation_key": "generic-1",
+        "instance_id": "generic-one", "expected_activation_revision": 0,
+        "template": {"identity_id": "published-id", "version": 2, "definition_digest": "a" * 64},
+        "authority": {"namespace": "org/alpha", "generation": 1, "snapshot_digest": "b" * 64},
+        "scope": {"brief": "Draft a bounded document."},
+        "bindings": {
+            "proposal-writer": {"kind": "agent", "principal": "dev_agent", "team": "engineering"},
+            "sponsor": {"kind": "agent" if vector == "Z" else "human",
+                        "principal": "qa_engineer" if vector == "Z" else "founder",
+                        "team": "engineering" if vector == "Z" else None},
+        },
+        "eligible_replacements": {"proposal-writer": [], "sponsor": []},
+        "allowed_actions": ["draft-document", "submit-immutable-document", "collect-review", "approve-planning-input"],
+        "inputs": [],
+    }
+    if vector != "A":
+        body["allowed_actions"].append("return-to-author")
+    if vector == "product":
+        body["bindings"] = {
+            "product-lead": {"kind": "agent", "principal": "product_lead", "team": "product"},
+            "founder": {"kind": "human", "principal": "founder", "team": None},
+            "implementer": {"kind": "agent", "principal": "dev_agent", "team": "engineering"},
+            "tester": {"kind": "agent", "principal": "qa_engineer", "team": "engineering"},
+        }
+        body["eligible_replacements"] = {role: [] for role in body["bindings"]}
+    path = tmp_path / "generic-activation.json"
+    path.write_text(json.dumps(body))
+    client = Mock()
+    client.post.return_value = _response(201, {"draft_only": True})
+    with patch("cli.commands.workflows._founder_client", return_value=client), patch(
+        "cli.commands.workflows._shared._fetch_available_orgs", return_value=["alpha"],
+    ):
+        args = build_parser().parse_args(["workflows", "activate", "--org", "alpha",
+                                         "--from-file", str(path), "--json"])
+        args.func(args)
+    client.post.assert_called_once_with("/api/v1/orgs/alpha/workflows/activations", json=body)
+    assert json.loads(capsys.readouterr().out) == {"draft_only": True}
+
+
+@pytest.mark.parametrize("lane", ["founder", "agent"])
+@pytest.mark.parametrize("bad", ["role", "timing", "outcomes", "schema"])
+def test_generic_publish_timing_and_roles_refuse_before_both_client_lanes(tmp_path, capsys, lane, bad):
+    import copy
+    from tests.workflows.test_template_store import GENERIC_VECTORS
+    definition = copy.deepcopy(GENERIC_VECTORS[1][1])
+    if bad == "role":
+        definition["author"]["role"] = "PRIVATE principal!"
+    elif bad == "timing":
+        definition["submission"]["timing"] = "PRIVATE always"
+    elif bad == "outcomes":
+        definition["outcomes"] = ["PRIVATE execute"]
+    else:
+        definition["schema_version"] = True
+    path = tmp_path / "generic-template.json"
+    path.write_text(json.dumps({"operation_key": "generic-publish", "template_name": "proposal",
+                                "expected_current_version": 0, "definition": definition}))
+    args = argparse.Namespace(from_file=str(path), session_id="sess-1" if lane == "agent" else None,
+                              org="alpha", json=False)
+    daemon_port = tmp_path / "port"
+    daemon_port.write_text("9345")
+    client = Mock()
+    client.post.return_value = _response(201, {"namespace": "org/alpha/team/engineering",
+        "template_name": "proposal", "version": 1, "definition_digest": "c" * 64})
+    with patch("cli.commands.workflows._founder_client", return_value=client) as founder, patch(
+        "cli.commands.workflows.httpx.Client", return_value=client
+    ) as agent, patch("cli.commands.workflows.port_file", return_value=daemon_port) as port, patch(
+        "cli.commands.workflows._shared._fetch_available_orgs", return_value=["alpha"],
+    ):
+        with pytest.raises(SystemExit) as refused:
+            cmd_workflow_templates_publish(args)
+        assert refused.value.code == 2
+        founder.assert_not_called()
+        agent.assert_not_called()
+        port.assert_not_called()
+    error = capsys.readouterr().err
+    assert "invalid document-review template" in error
+    assert "PRIVATE" not in error

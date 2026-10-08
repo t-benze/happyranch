@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 import pytest
 
 from runtime.infrastructure.workflow_schema import validate_workflow_schema
-from tests.daemon.test_workflow_activation_routes import BASE, _snapshot, activation_org
+from tests.daemon.test_workflow_activation_routes import BASE, _snapshot, activation_org, generic_activation_org
 
 
 @pytest.mark.parametrize('boundary', [
@@ -223,8 +223,12 @@ def test_historical_semantic_corruption_refuses_all_receipt_seams_without_repair
         assert _snapshot(org) == before
 
 
-def test_admitted_context_freezes_server_identities_and_full_binding(activation_org):
+@pytest.mark.parametrize("format_row", ["legacy", "product", "proposal", "A", "Z"])
+def test_admitted_context_freezes_server_identities_and_full_binding(activation_org, request, format_row):
     client, org, state, body = activation_org
+    if format_row != "legacy":
+        client, org, state, cases = request.getfixturevalue("generic_activation_org")
+        body, published, expected_contract, contract_sha = cases[format_row]
     response = client.post(BASE, json=body)
     assert response.status_code == 201, response.text
     receipt = response.json()
@@ -247,6 +251,36 @@ def test_admitted_context_freezes_server_identities_and_full_binding(activation_
     assert stored["authorization"]["template"] == receipt["template"]
     assert row["context_bytes"] == _bytes(stored)
     assert _sha(row["context_bytes"]) == receipt["context_digest"]
+    if format_row == "legacy":
+        assert stored["format"] == "workflow-initial-draft-context@1"
+        assert "document_contract" not in stored
+        assert "format" not in receipt
+    else:
+        assert receipt["format"] == "workflow-activation-receipt@2"
+        assert stored["format"] == "workflow-initial-draft-context@2"
+        assert grant["format"] == "workflow-authorization@2"
+        assert bound["format"] == "workflow-binding@2"
+        assert stored["document_contract"] == expected_contract
+        assert _sha(_bytes(stored["document_contract"])) == contract_sha
+        assert _sha(_bytes(stored["template"])) == published["definition_digest"]
+        assert _bytes(stored["template"]) == base64.b64decode(published["definition_bytes_base64"])
+        assert grant["template"] == {**body["template"], "version_id": published["version_id"],
+            "compiler_pin": "workflow-compiler@2", "validator_pin": "workflow-validator@2", "source_pin": "operator-input@2"}
+        assert bound["bindings"] == body["bindings"]
+        assert bound["eligible_replacements"] == body["eligible_replacements"]
+        task = org.db.get_task(receipt["root_task_id"])
+        assert task.assigned_agent == ("product_lead" if format_row == "product" else "dev_agent")
+        assert "Immutable document contract (submission capability is for later units):" in task.brief
+        assert task.brief.split("Immutable document contract (submission capability is for later units):\n", 1)[1] == _bytes(expected_contract).decode()
+        assert not org.db.execute("SELECT 1 FROM workflow_submissions").fetchone()
+        assert not org.db.execute("SELECT 1 FROM workflow_review_receipts").fetchone()
+        assert stored["document_contract"]["submission"] == {"timing": "while-active-or-completed" if format_row == "product" else "on-completion"}
+        if format_row == "A":
+            assert grant["template"]["version"] == 2
+            assert org.db.execute("SELECT current_version FROM workflow_template_identities WHERE id=?", (published["identity_id"],)).fetchone()[0] == 3
+            assert stored["document_contract"]["request_changes"] is None
+        if format_row == "Z":
+            assert all(binding["kind"] == "agent" for binding in bound["bindings"].values())
 
 
 def _expected_context(body, content, snapshot, template, root_task_id, timestamp):
@@ -1431,3 +1465,105 @@ def test_canonical_nonactive_agent_cannot_be_bound_or_selected_as_replacement(
     assert response.json()['detail']['code'] == 'role_binding_not_authorized'
     assert _snapshot(org) == before
     validate_workflow_schema(org.db._conn, expected_org_slug=org.slug)
+
+
+@pytest.mark.parametrize("format_row", ["A", "Z"])
+@pytest.mark.parametrize("recipient", ["proposal-writer", "sponsor"])
+def test_generic_input_recipient_visibility_and_frozen_replay(generic_activation_org, format_row, recipient):
+    from runtime.models import ThreadRecord
+    from runtime.daemon.org_state import OrgState
+    client, org, state, cases = generic_activation_org
+    body = copy.deepcopy(cases[format_row][0])
+    content = b"Recipient-private immutable proposal input"
+    thread_id = org.db.next_thread_id()
+    org.db.insert_thread(ThreadRecord(id=thread_id, subject="Private generic source"))
+    uploaded = client.post(f"/api/v1/orgs/alpha/threads/{thread_id}/attachments",
+        files={"file": ("private.txt", content, "text/plain")}, params={"agent": "founder"})
+    assert uploaded.status_code == 200, uploaded.text
+    pin = dict(kind="thread-attachment", thread_id=thread_id,
+        attachment_id=uploaded.json()["attachment_id"], sha256=_sha(content), recipients=[recipient])
+    body["inputs"] = [pin]
+    selected = body["bindings"][recipient]
+    # A's sponsor is the existing authenticated Founder, who already has access.
+    if selected["kind"] == "agent":
+        before = _snapshot(org)
+        refusal = client.post(BASE, json=body)
+        assert refusal.status_code == 422, refusal.text
+        assert refusal.json()["detail"]["code"] == "workflow_activation_input_unavailable"
+        assert content.decode() not in refusal.text and _snapshot(org) == before
+        assert org.db.add_thread_participant(thread_id, selected["principal"], added_by="founder")
+    response = client.post(BASE, json=body)
+    assert response.status_code == 201, response.text
+    receipt = response.json()
+    context_bytes = org.db.execute("SELECT context_bytes FROM workflow_contexts WHERE context_digest=?", (receipt["context_digest"],)).fetchone()[0]
+    context = json.loads(context_bytes)
+    expected = [dict(pin=pin, bytes_base64=base64.b64encode(content).decode())]
+    assert context["inputs"] == expected
+    brief = org.db.get_task(receipt["root_task_id"]).brief
+    assert ("Authorized immutable input data" in brief) == (recipient == "proposal-writer")
+    assert (_bytes(expected).decode() in brief) == (recipient == "proposal-writer")
+    assert content.decode() not in response.text
+    org.close()
+    reopened = OrgState.load(slug="alpha", root=org.root, settings=org.settings)
+    try:
+        with state.profile_coordinator.dynamic_org_attachment(reopened):
+            state.orgs["alpha"] = reopened
+        # Remove source metadata after genuine admission; historical closure reads
+        # the frozen bytes rather than resolving a mutable source again.
+        assert reopened.db.delete_thread_scoped_attachment(thread_id, pin["attachment_id"])
+        before = _snapshot(reopened)
+        replay = client.post(BASE, json=body)
+        assert replay.status_code == 200, replay.text
+        assert replay.json()["context_digest"] == receipt["context_digest"]
+        assert reopened.db.execute("SELECT context_bytes FROM workflow_contexts WHERE context_digest=?", (receipt["context_digest"],)).fetchone()[0] == context_bytes
+        assert reopened.db.get_task(receipt["root_task_id"]).brief == brief
+        assert _snapshot(reopened) == before
+        validate_workflow_schema(reopened.db._conn, expected_org_slug="alpha")
+    finally:
+        reopened.close()
+
+
+def test_legacy_closure_bytes_survive_generic_publication_and_cold_replay(activation_org):
+    from runtime.daemon.org_state import OrgState
+    from tests.workflows.test_template_store import GENERIC_VECTORS, VALID_DEFINITION
+    client, org, state, body = activation_org
+    admitted = client.post(BASE, json=body)
+    assert admitted.status_code == 201, admitted.text
+    receipt = admitted.json()
+    with sqlite3.connect(f"file:{org.root / 'happyranch.db'}?mode=ro", uri=True) as reader:
+        protected = {name: tuple(reader.execute(f"SELECT * FROM {name} ORDER BY rowid")) for name in (
+            "tasks", "workflow_instances", "workflow_contexts", "workflow_binding_snapshots",
+            "workflow_authorization_revisions", "workflow_activation_operations", "workflow_draft_dispatch_intents",
+            "workflow_draft_dispatch_events")}
+    published = client.post("/api/v1/orgs/alpha/workflows/templates/publish", json=dict(
+        operation_key="mixed-generic-v2", template_name="product-design", team_slug="product",
+        expected_current_version=1, definition=copy.deepcopy(GENERIC_VECTORS[0][1])))
+    assert published.status_code == 201 and published.json()["version"] == 2, published.text
+    assert published.json()["compiler_pin"] == "workflow-compiler@2"
+    # Numeric version3 deliberately carries legacy format and @1 pins.
+    definition = copy.deepcopy(VALID_DEFINITION)
+    definition["description"] += " Retained legacy interpretation."
+    published = client.post("/api/v1/orgs/alpha/workflows/templates/publish", json=dict(
+        operation_key="mixed-legacy-v3", template_name="product-design", team_slug="product",
+        expected_current_version=2, definition=definition))
+    assert published.status_code == 201 and published.json()["version"] == 3, published.text
+    assert published.json()["compiler_pin"] == "workflow-compiler@1"
+    current = org
+    try:
+        for _ in range(2):
+            current.close()
+            current = OrgState.load(slug="alpha", root=org.root, settings=org.settings)
+            with state.profile_coordinator.dynamic_org_attachment(current):
+                state.orgs["alpha"] = current
+            before = _snapshot(current)
+            replay = client.post(BASE, json=body)
+            assert replay.status_code == 200, replay.text
+            for key in ("activation_id", "root_task_id", "intent_id", "context_digest", "template", "original_request_digest"):
+                assert replay.json()[key] == receipt[key]
+            assert "format" not in replay.json()
+            for name, rows in protected.items():
+                assert tuple(map(tuple, current.db.execute(f"SELECT * FROM {name} ORDER BY rowid"))) == rows, name
+            assert _snapshot(current) == before
+            validate_workflow_schema(current.db._conn, expected_org_slug="alpha")
+    finally:
+        current.close()
