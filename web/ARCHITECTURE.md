@@ -57,6 +57,16 @@ typecheck, build, and tests still cover their syntax and resolution.
 
 ## Internationalization (i18n)
 
+The AppBar language selector beside the theme toggle is a controlled consumer
+of `useI18n` (THR-118 seq88). It uses the existing Select primitive and catalog
+endonyms English/简体中文 with native `lang` attributes; owned accessible names
+and tooltips translate. Settings ▸ Preferences uses the same locale/setter.
+No new state, adapter, storage listener or request path is introduced. Header
+interaction moves focus to the selector; external changes preserve editable
+focus/selection. Existing browser precedence/persistence/tab synchronization
+and deferred native restart acceptance remain. The focused ordinary-build
+header evidence extends the existing W4a CDP fixture and reuses W5 startup cases.
+
 Ongoing delivery requires every new or changed app-owned string to ship en and
 zh-CN in the same PR, including headings, actions, dialogs, tooltips, accessible
 labels, validation, loading/empty/error states and generated narratives. Use

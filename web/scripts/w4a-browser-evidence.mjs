@@ -27,6 +27,7 @@
  *     --out <evidence dir> --head <sha>
  */
 import { runLocaleActivationCases } from './w5-locale-browser-cases.mjs';
+import { runHeaderLanguageCases } from './header-language-browser-cases.mjs';
 import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -96,6 +97,10 @@ class CDP {
       this.ws.addEventListener('open', () => ok());
       this.ws.addEventListener('error', () => fail(new Error('CDP websocket error')));
     });
+    this.ws.addEventListener('close', () => {
+      for (const pending of this.pending.values()) pending.reject(new Error('CDP websocket closed'));
+      this.pending.clear();
+    });
     this.ws.addEventListener('message', (event) => {
       const message = JSON.parse(typeof event.data === 'string' ? event.data : Buffer.from(event.data).toString('utf8'));
       if (message.id !== undefined) {
@@ -115,7 +120,16 @@ class CDP {
     const id = this.nextId++;
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
-    const promise = new Promise((ok, fail) => this.pending.set(id, { resolve: ok, reject: fail }));
+    const promise = new Promise((ok, fail) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        fail(new Error(`CDP command timed out: ${method} (${sessionId || 'browser'})`));
+      }, 30000);
+      this.pending.set(id, {
+        resolve: value => { clearTimeout(timer); ok(value); },
+        reject: error => { clearTimeout(timer); fail(error); },
+      });
+    });
     this.ws.send(JSON.stringify(payload));
     return promise;
   }
@@ -158,6 +172,7 @@ const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
+let retirementSettingsGate = 'loaded';
 
 // Daemon bytes that must survive every locale unchanged.
 const HEALTH_SNAPSHOT = {
@@ -421,7 +436,11 @@ function startServer(root) {
           // Usage-only scenario fixtures, selected by the evidence page URL.
           // These exercise ordinary shipping fetches; no app/bundle seam is added.
           const ref = new URL(request.headers.referer || 'http://127.0.0.1');
-          if (selectedSlice === 'agents-safeguard') {
+          if (selectedSlice === 'header-language' && p === `/api/v1/orgs/${ORG}/tasks/roots`) {
+            response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+            response.end(JSON.stringify({ tasks: [], next_cursor: null })); return;
+          }
+          if (['agents-safeguard', 'header-language'].includes(selectedSlice)) {
             const state = ref.searchParams.get('agentsFixture') || 'populated';
             if (p === `/api/v1/orgs/${ORG}/agents/lead/system-prompt` && request.method === 'PUT') {
               const row = LEDGER.at(-1);
@@ -453,6 +472,25 @@ function startServer(root) {
               if (state === 'loading') { HUNG.push(response); return; }
               response.writeHead(state === 'error' ? 500 : 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
               response.end(JSON.stringify(state === 'error' ? { detail: 'Raw diagnostic' } : { tasks: state === 'empty' ? [] : SAFEGUARD_TASKS, next_cursor: null })); return;
+            }
+          }
+          if (selectedSlice === 'assistant-retirement') {
+            if (p.includes('/assistant')) {
+              response.writeHead(404, { 'content-type': 'application/json' });
+              response.end(JSON.stringify({ detail: 'retired synthetic fixture' })); return;
+            }
+            if (p === `/api/v1/orgs/${ORG}/tasks/roots`) {
+              response.writeHead(200, { 'content-type': 'application/json' });
+              response.end(JSON.stringify({ tasks: [], next_cursor: null })); return;
+            }
+            if (p === `/api/v1/orgs/${ORG}/settings`) {
+              const gate = retirementSettingsGate;
+              LEDGER.at(-1).settingsGate = gate;
+              if (gate === 'loading') { HUNG.push(response); return; }
+              if (gate === 'error' || gate === 'no-data') {
+                response.writeHead(gate === 'error' ? 503 : 200, { 'content-type': 'application/json' });
+                response.end(JSON.stringify(gate === 'error' ? { detail: 'retirement fixture error' } : null)); return;
+              }
             }
           }
           if (selectedSlice === 'locale-activation' && p === '/api/v1/orgs' && ref.searchParams.has('localeStartup')) { HUNG.push(response); return; }
@@ -1019,7 +1057,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement'].includes(selectedSlice)) throw new Error('unknown --slice');
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -1036,8 +1074,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1076,12 +1114,14 @@ async function main() {
   let cdp;
   let chromeVersion = null;
   try {
+    // Header-only fixture option: keep singleton paths short while allocating
+    // anonymous font mappings on an available task-owned temp filesystem.
     chrome = spawn(chromeBin, [
       '--headless=new', '--lang=zh-CN', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`,
       '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-extensions', '--disable-background-networking', '--hide-scrollbars', '--disable-crash-reporter',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: userDataDir } });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: selectedSlice === 'header-language' ? arg('chrome-temp', userDataDir) : userDataDir } });
     const devtools = await waitForDevTools(userDataDir);
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
@@ -1119,6 +1159,7 @@ async function main() {
       return false;
     }
     async function clickSrc(page, src) {
+      await cdp.send('Page.bringToFront', {}, page.sessionId);
       const box = await evaluate(page, `(() => { const el = (${src}); if (!el) return null; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       if (!box) throw new Error(`clickSrc: not found ${src.slice(0, 120)}`);
       for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
@@ -1372,6 +1413,77 @@ async function main() {
         await closePage(page);
       }
       endCase();
+    } else if (selectedSlice === 'assistant-retirement') {
+      // Ordinary compiled SPA plus synthetic API only. The full ledger and
+      // actual browser transport observations never prove backend route absence.
+      const transport = [];
+      for (const name of ['webSocketCreated', 'eventSourceMessageReceived']) {
+        cdp.handlers.set(`Network.${name}`, [message => transport.push({ name, sessionId: message.sessionId, params: message.params })]);
+      }
+      const absent = `!document.querySelector('[data-assistant-open], [data-testid*="assistant"], [aria-label="Open assistant"], [aria-label="打开助手"]')`;
+      const nav = `([...document.querySelectorAll('[data-testid="settings-content"] aside a')].map(a => a.getAttribute('href').split('/').at(-1)))`;
+      const expectedNav = ['daemon-capacity', 'organization', 'executors', 'preferences'];
+      const root = `/orgs/${ORG}/settings`;
+      for (const locale of ['en', 'zh-CN']) for (const width of [390, 1440]) {
+        retirementSettingsGate = 'loaded';
+        const options = { init: seedLocale(locale), width, height: width === 390 ? 844 : 900 };
+        for (const [section, heading] of [
+          ['daemon-capacity', 'settings.capacity.title'], ['organization', 'settings.panel.organization.title'],
+          ['executors', 'settings.panel.executors.title'], ['preferences', 'settings.panel.preferences.title'],
+        ]) {
+          beginCase(`retirement-${locale}-${width}-${section}`, 'ordinary Settings, shell controls, removed launchers and keyboard');
+          const page = await openPage(`${base}${root}/${section}`, options);
+          check('surviving Settings heading', await waitTrue(page, `([...document.querySelectorAll('main h2')].some(e => e.textContent === ${JSON.stringify(tr(locale, heading))}))`, 'surviving heading'), true);
+          check('four surviving navigation links', await evaluate(page, nav), expectedNav);
+          check('requested locale', await evaluate(page, 'document.documentElement.lang'), locale);
+          check('no Assistant launcher or dock', await evaluate(page, absent), true);
+          check('no Assistant settings link', await evaluate(page, `!document.querySelector('a[href$="/settings/assistant"]')`), true);
+          check('ordinary Tasks navigation survives', await evaluate(page, `Boolean(document.querySelector('a[href="/orgs/${ORG}/tasks"]'))`), true);
+          check('header language selector survives moved main', await evaluate(page, `Boolean(document.querySelector('[role="combobox"][aria-label=${JSON.stringify(tr(locale, 'common.language'))}]'))`), true);
+          await capture(page, `retirement-${locale}-${width}-${section}`, { locale, viewport: `${width}x${options.height}`, scope: 'ordinary-dist/synthetic-api' });
+          await cdp.send('Page.bringToFront', {}, page.sessionId);
+          await evaluate(page, `(() => { window.__retirementKeys = []; document.addEventListener('keydown', e => { if (e.code === 'KeyK') queueMicrotask(() => window.__retirementKeys.push({trusted:e.isTrusted,prevented:e.defaultPrevented,ctrl:e.ctrlKey,meta:e.metaKey})); }); document.body.focus(); return true; })()`);
+          const locationBefore = await evaluate(page, 'location.pathname');
+          for (const modifiers of [2, 4]) {
+            await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers }, page.sessionId);
+            await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers }, page.sessionId);
+          }
+          await sleep(200);
+          check('real Ctrl-K and Meta-K are unbound', await evaluate(page, 'window.__retirementKeys'), [
+            { trusted: true, prevented: false, ctrl: true, meta: false },
+            { trusted: true, prevented: false, ctrl: false, meta: true },
+          ]);
+          check('chords preserve route', await evaluate(page, 'location.pathname'), locationBefore);
+          check('chords create no dock', await evaluate(page, absent), true);
+          if (section === 'preferences') {
+            check('Preferences language inputs survive', await evaluate(page, `document.querySelectorAll('input[name="happyranch-ui-language"]').length`), 2);
+            const themeBefore = await evaluate(page, 'document.documentElement.classList.contains("dark")');
+            await clickSrc(page, `document.querySelector('button[aria-label=${JSON.stringify(tr(locale, themeBefore ? 'shell.switchToLight' : 'shell.switchToDark'))}]')`);
+            check('ordinary theme control operates', await evaluate(page, 'document.documentElement.classList.contains("dark")'), !themeBefore);
+            const next = locale === 'en' ? 'zh-CN' : 'en';
+            await clickSrc(page, `document.querySelector('input[name="happyranch-ui-language"][value="${next}"]')`);
+            check('Preferences changes client language', await waitTrue(page, langIs(next), 'Preferences language switch'), true);
+          }
+          await closePage(page); endCase();
+        }
+        for (const gate of ['loaded', 'loading', 'error', 'no-data']) for (const suffix of ['', '/assistant', '/unknown-retirement']) {
+          beginCase(`retirement-fallback-${locale}-${width}-${gate}-${suffix || 'default'}`, 'default/legacy/unknown redirect outside data gate');
+          retirementSettingsGate = gate;
+          const gateFrom = LEDGER.length;
+          const page = await openPage(`${base}${root}${suffix}?settingsFixture=${gate}`, options);
+          check('Capacity redirect without waiting for Settings data', await waitTrue(page, `location.pathname === ${JSON.stringify(root + '/daemon-capacity')}`, 'Capacity redirect'), true);
+          check('no Assistant controls after fallback', await evaluate(page, absent), true);
+          check('requested Settings gate exercised', LEDGER.slice(gateFrom).some(row => row.path.endsWith('/settings') && row.settingsGate === gate), true);
+          await closePage(page); endCase();
+        }
+      }
+      beginCase('retirement-network', 'no retired browser HTTP/socket activity across all cases; synthetic API only');
+      check('zero retired HTTP requests', LEDGER.filter(row => /\/assistant(?:\/|$)/.test(row.path)), []);
+      check('zero retired transport activity', transport.filter(row => JSON.stringify(row.params).includes('/assistant')), []);
+      check('nonvacuous ordinary Settings HTTP', LEDGER.some(row => row.path.endsWith('/settings')), true);
+      endCase();
+    } else if (selectedSlice === 'header-language') {
+      await runHeaderLanguageCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, selectedCase: arg('header-case', 'all') });
     } else if (selectedSlice === 'locale-activation') {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
     } else if (selectedSlice === 'work-hours-reachability') {
@@ -1456,6 +1568,9 @@ async function main() {
     }
     endCase();
     }
+  } catch (error) {
+    writeFileSync(join(outDir, 'incomplete-receipt.json'), JSON.stringify({ head, incomplete: true, error: String(error), cases, screenshots, ledger: LEDGER }, null, 2) + '\n');
+    throw error;
   } finally {
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();

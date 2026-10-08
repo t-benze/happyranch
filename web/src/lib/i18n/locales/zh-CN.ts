@@ -329,6 +329,9 @@ export const zhCN: Record<MessageKey, MessageValue> = {
 
   'shell.switchToLight': '切换到浅色主题',
   'shell.switchToDark': '切换到深色主题',
+  // Native endonyms remain recognizable in either interface language.
+  'shell.languageEnglish': 'English',
+  'shell.languageChinese': '简体中文',
 
   'shell.loading': '加载中…',
   'shell.notFound.body': '未找到。{link}。',

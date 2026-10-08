@@ -116,6 +116,23 @@ surface. The daemon defaults to loopback; remote access uses the connector.
 
 ### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills)
 
+The shipping AppBar offers a compact language selector immediately beside the
+theme toggle (THR-118 seq88). It shows the current native endonym and offers
+English and 简体中文, with each text carrying its own `lang`. Its accessible
+name and tooltip translate with the interface. The existing Select primitive
+provides keyboard selection, Escape dismissal and focus return. It calls the
+same `useI18n` setter as Settings ▸ Preferences ▸ Language, so both controls
+agree immediately and remain usable independently of Settings API availability.
+Existing saved-choice precedence, browser reload persistence and storage-event
+mirroring apply without a second state/persistence owner. Selecting the header
+deliberately moves focus to that control; external tab changes preserve focused
+editors, drafts and selection. Native desktop restart persistence stays deferred.
+Focused ordinary-build evidence uses `w4a-browser-evidence.mjs --slice header-language`
+with `--header-case default|tasks|interaction|draft` and the existing W5 startup
+cases, without widening the accepted whole-console inventory. In quota-limited
+browser venues, `--chrome-temp <short task-owned disk-backed path>` selects
+the temporary font-allocation venue for this header slice.
+
 **Ongoing bilingual delivery rule (THR-118 seq81/82):** every new or changed
 app-owned heading, action, dialog, tooltip, accessible label, validation,
 loading/empty/error state and generated narrative ships en and zh-CN in the
@@ -1263,6 +1280,21 @@ or migrated. Provider conversation roles and ordinary org-agent capabilities
 remain supported. The reserved `system_assistant` workspace name stays excluded
 from the org-agent YAML migration, preventing legacy YAML reads or sentinel
 writes. Historical database, audit and token records remain readable.
+
+The finite retirement browser selection runs against the ordinary compiled SPA
+with synthetic API fixtures, and writes DOM, keyboard, HTTP/transport and image
+receipts for both locales at 390x844 and 1440x900:
+
+```bash
+cd web
+node scripts/w4a-browser-evidence.mjs --dist "$PWD/dist" --out <evidence-dir> --head <exact-head> --slice assistant-retirement
+```
+
+Default/legacy/unknown Settings paths resolve to Capacity before its data gate;
+the four remaining sections, Preferences, header language and theme controls
+remain usable. These browser fixtures supply no real backend route, daemon or
+installed/frozen readiness proof. The browser driver bounds CDP commands and
+writes an explicitly incomplete receipt on failure.
 
 ### Founder initial activation and draft receipts (S2)
 

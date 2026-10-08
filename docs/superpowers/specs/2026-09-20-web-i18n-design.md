@@ -21,7 +21,7 @@
 > Audit route families. **W4c** translated the mounted Agents
 > (`agents`, `agents/:agent_name`, `agents/:agent_name/team-escalation-policy`)
 > and Skills (every `skills*` token) route families; KB/Artifacts are translated by **W4d-1**; Usage presentation is translated by **W4d-2**.
-> The mounted Assistant dock/conversation controls are translated. W5a finite
+> System Assistant dock/conversation controls are retired (THR-294). W5a finite
 > mounted coverage is accepted (PR993); W5b enables full browser resolution at
 > the entry and AppShell and replaces the obsolete secondary-page disclosure.
 > Native preference persistence (N0/N1) remains deferred; deployment/live
@@ -30,7 +30,39 @@
 
 The THR280 prompt editor reuses the mounted Agents pane at desktop/mobile and the retained drawer component without mounting changes. Prompt-local en/zh-CN actions, initial states, pending/readback/conflict/failure guidance use catalog keys; authored multiline bodies and raw daemon diagnostics stay verbatim. Locale switching must preserve the same draft node, body, focus and selection without a request. Draft bases are frozen, controls remain disabled through PUT plus owned fresh readback, and Saved requires receipt body/revision agreement. Recoverable drafts and local navigation/discard semantics remain; no automatic retry or locale-triggered mutation. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation.
 
+> **THR-294 retirement:** System Assistant UI, settings, HTTP/WebSocket API,
+> CLI, configuration support and bootstrap are removed. All Assistant-specific
+> phase records below describe the preserved historical contract, not active
+> behavior or current verification commands. Capacity is the Settings default,
+> legacy/unknown fallback; Preferences and the shared header locale/theme
+> controls survive. Cmd/Ctrl-K is unbound. Ordinary provider conversation roles,
+> org agents/executors and their locale/transport contracts remain supported.
+
 ## 1. Scope
+
+### Header language selector (THR-118 seq88)
+
+The shipping AppBar places a compact controlled Select immediately before its
+theme toggle, in both default and tasks presentations. English and 简体中文
+remain native endonyms in both catalogs and carry their own `lang`; the active
+endonym stays visible and the open options indicate the current choice.
+The accessible name/tooltip translate. Keyboard selection, Escape dismissal
+and focus return come from the existing Select primitive. Selection applies
+immediately through the shared locale setter; Settings ▸ Preferences remains
+available and synchronized in both directions, even when its API has no data,
+is pending or has failed. There is no additional locale state, persistence or
+storage listener, route remount, request or transport behavior. Header use
+deliberately moves focus; other-tab language changes preserve focused editors.
+Browser reload, explicit saved-choice precedence and full-mode missing/invalid
+Chinese browser defaults retain their existing contracts. Native restart
+persistence remains deferred under seq39; deployment is separate.
+
+Focused acceptance uses the existing Settings component tests and the W4a
+ordinary-build `header-language` selection (default/tasks header geometry,
+pointer/keyboard/theme/agreement/reload/tabs, retained multiline Agent editor
+and original Cancel/navigation), plus existing W5 startup and provider/locale
+keepers. Both languages, 390×844/1440×900 and comfortable/compact density require
+real control/text/clipping bounds and individually inspected screenshots.
 
 ### Ongoing bilingual development safeguards (THR-118 seq81/82)
 
@@ -710,7 +742,7 @@ Assistant/Organization/Executors/Capacity sections; the Work Hours-owned
 `EligibilityEditorDialog` stayed English until W4 and is translated by W4b); the Preferences
 route/selector is mounted in ordinary builds since W3b-2.
 
-## Mounted System Assistant copy (THR-118)
+## Historical System Assistant copy (THR-118; retired THR-294)
 
 The mounted `AssistantDockHost` and its `ConversationSwitcher` resolve app-owned visible and accessible copy through `assistantDock.*` in en/zh-CN. This includes configuration/loading/empty states, header/composer/key hints, conversation list/actions/rename/delete confirmation, tool activity and fallback speaker labels. The existing MessageBubble speaker/timestamp and TypingBubble caption/ariaLabel overrides are reused; timestamps retain the viewer-local full date/time display and elapsed values retain the existing seconds/minutes calculation.
 
@@ -718,4 +750,4 @@ Errors capture provenance when they arrive: `{ key }` is an app fallback, `{ raw
 
 Locale changes do not key/remount the dock or enter its connection-effect dependencies. They preserve the active conversation, history/inflight state, composer/rename draft, selection/focus and open delete confirmation, and issue no HTTP/session/socket activity. Existing A-mode parsing/order/hydration, query/polling keys, activation/new/rename/delete callbacks, reconnect triggers, optimistic send/trim/clear semantics, hotkeys, focus trap/restore and SPA navigation remain unchanged. Help and Command Palette chrome already use the shared locale context and retain their current interaction ownership.
 
-Ordinary-build evidence uses `web/scripts/w4a-browser-evidence.mjs --slice assistant` and the narrow `assistant-dock-browser-cases.mjs` fixture/cases: real shipping HTTP/WS seams, server request/socket ledger, mounted-node/focus assertions and 390/1440 captures. The coverage inventory includes both actual mounted consumers. The `system-assistant` marker is translated after complete mounted-copy coverage is established by component regressions and ordinary-build browser evidence; catalog binding alone does not prove coverage. W5a accepted the finite mounted audit and resolved the Settings Organization disable-confirm close label (PR993). W5b enables full browser-language defaults while preserving the state/transport contract. Desktop restart persistence remains deferred; deployment/live acceptance is separate.
+Historical ordinary-build evidence used `web/scripts/w4a-browser-evidence.mjs --slice assistant` and the narrow `assistant-dock-browser-cases.mjs` fixture/cases: real shipping HTTP/WS seams, server request/socket ledger, mounted-node/focus assertions and 390/1440 captures. The coverage inventory includes both actual mounted consumers. The `system-assistant` marker is translated after complete mounted-copy coverage is established by component regressions and ordinary-build browser evidence; catalog binding alone does not prove coverage. W5a accepted the finite mounted audit and resolved the Settings Organization disable-confirm close label (PR993). W5b enables full browser-language defaults while preserving the state/transport contract. Desktop restart persistence remains deferred; deployment/live acceptance is separate.

@@ -332,6 +332,9 @@ export const en = {
 
   'shell.switchToLight': 'Switch to light theme',
   'shell.switchToDark': 'Switch to dark theme',
+  // Native endonyms remain recognizable in either interface language.
+  'shell.languageEnglish': 'English',
+  'shell.languageChinese': '简体中文',
 
   'shell.loading': 'Loading…',
   'shell.notFound.body': 'Not found. {link}.',
