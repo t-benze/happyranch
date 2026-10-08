@@ -639,3 +639,22 @@ unchanged failure remains a failure. Source baseline characterization uses
 an isolated immutable baseline checkout plus the same hash-recorded test-side
 files, with any test-only commit/head distinguished from the product source
 pin. No shipping code overlay, session forgery or shared auth repair is allowed.
+
+The hosted evidence coordinator authenticates the native descriptor against
+the current run, image, original UID, candidate/baseline pins and exact C
+source before costly provisioning. It carries only this descriptor through
+the closed source test parent; the driver revalidates it before each census.
+Preflight command logs and results remain separate from shipping logs/results.
+The baseline source characterization overlays exactly four test files:
+`integration_parent.py`, the stdlib artifact driver, its fixed C observer and
+`test_assistant_retirement.py`. Record the original baseline helper hash,
+replacement hashes and test-only commit separately from the baseline product
+pin. Assert every other tracked byte/link unchanged, and authenticate the
+unchanged conftests, executable stubs, guard, daemon script and lock before
+execution. Keep each role's original project metadata: dependencies, backend
+and build groups agree, while the candidate has the accepted eight Assistant
+knowledge force-include removals. This overlay cannot change baseline runtime
+or CLI code. Native
+admission is a prerequisite, not source, wheel, frozen or browser readiness;
+source characterization failures remain failures. Whole-repo collection
+remains held for the complete import-side-effect audit and zero-body admission.
