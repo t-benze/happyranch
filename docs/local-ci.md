@@ -638,6 +638,18 @@ exact commands/exits and residual failures; independent review and QA bind the
 final pushed PR head and renew after every push. Parent TASK-10245 owns guarded
 merge/post-main and deployment disposition.
 
+The artifact callback skeleton defines `engineering_head`, `dev_agent` and
+`code_reviewer` with coherent engineering membership before supported CLI
+`orgs init`. The default reviewer remains `code_reviewer`; these callback
+plans launch only the manager and delegated `dev_agent`. Actual run37857635882
+retained org-init HTTP500 on both wheel/frozen origins and both source roles:
+its two-agent skeleton omitted the required reviewer, producing
+`authority_reviewer_incoherent` followed by `profile_dependency_incoherent`.
+Adding the missing static definition requires new native-admitted artifact
+execution before any callback, nonrunning ownership or durable-tail PASS.
+The frozen logs also retain a caught memory-observer source-inspection warning;
+fixture repair does not establish that observation subsystem's health.
+
 The baseline role permits only `ordinary-callback` and `nonrunning-swap`,
 restricted internally to separate same-root characterization fixtures. It
 never invokes a baseline Assistant operation or treats old route/module

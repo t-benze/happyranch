@@ -621,9 +621,11 @@ class Driver:
     def ordinary(self, retry=False, held=False, same_root_register=False):
         skeleton = self.root / 'skeleton'
         agents = skeleton / 'org/agents'; agents.mkdir(parents=True)
-        (skeleton / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n')
+        (skeleton / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent, code_reviewer]\n')
         (skeleton / 'org/config.yaml').write_text('dreaming:\n  enabled: false\nworking_hours:\n  enabled: false\n')
-        for name,role in [('engineering_head','manager'),('dev_agent','worker')]:
+        # Canonical attachment requires the default reviewer to be a real
+        # roster member before orgs init; the callback plans use only head/dev.
+        for name,role in [('engineering_head','manager'),('dev_agent','worker'),('code_reviewer','worker')]:
             (agents / f'{name}.md').write_text(f'---\nname: {name}\nteam: engineering\nrole: {role}\nexecutor: codex\nallow_rules: []\nrepos: {{}}\nmodel: null\n---\n\nYou are {name}.\n')
         stub = self.root / 'bin/codex'; stub.parent.mkdir(exist_ok=True)
         stub.write_text('#!' + str(Path(sys.executable).resolve()) + '\n' +
