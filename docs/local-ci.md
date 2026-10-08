@@ -585,6 +585,12 @@ An optional `native_observer` path/SHA256 receipt adds only the hosted test-side
 admission above. Copy the hash-matched C source beside the stdlib driver outside
 checkout. The closed admission binds venue, source, binary, compiler, sudo,
 compile argv, native SDK/headers/dependencies/ABI and successful preflight. The
+native tool receipt records actual compiler/header owner UIDs and unchanged
+non-group/world-writable modes. Linux system tools/headers are root-owned;
+the selected preinstalled macOS Xcode compiler/SDK may be root- or original
+runner-owned, must share the same absolute Xcode bundle, and still require
+actual image/version/path/hash receipts. Root ownership alone is not tool
+provenance. No compiler/SDK privilege or host setting is changed. The
 source test parent passes its descriptor only to pytest; the two executable
 stub census snippets bind it explicitly. Artifact stubs use their existing
 test binding file. The elevated observer never imports this Python driver.

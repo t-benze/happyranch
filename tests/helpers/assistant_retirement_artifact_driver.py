@@ -59,18 +59,24 @@ def configure_native_observer(receipt: dict) -> None:
     for field in ('source', 'binary', 'compiler', 'sudo'):
         verify_receipt(binding[field])
     assert verify_receipt(binding['sudo']).stat().st_uid == 0
-    assert verify_receipt(binding['compiler']).stat().st_uid == 0
+    compiler_owner = verify_receipt(binding['compiler']).stat().st_uid
+    assert compiler_owner in ({0} if sys.platform == 'linux' else {0, os.getuid()})
     native = binding['native']
-    assert set(native) == {'sdk', 'headers', 'dependencies', 'abi', 'static'}
+    assert set(native) == {'sdk', 'headers', 'dependencies', 'abi', 'static', 'compiler_uid', 'header_uids'}
+    assert native['compiler_uid'] == compiler_owner
     assert native['headers']
     for header in native['headers']:
-        assert verify_receipt(header).stat().st_uid == 0
+        owner = verify_receipt(header).stat().st_uid
+        assert owner in ({0} if sys.platform == 'linux' else {0, os.getuid()})
+        assert native['header_uids'][header['path']] == owner
+    assert set(native['header_uids']) == {header['path'] for header in native['headers']}
     dependencies = verify_receipt(native['dependencies']).read_text()
     if sys.platform == 'linux':
         assert native['static'] is True and native['sdk'] is None
         assert 'There is no dynamic section in this file.' in dependencies
     else:
         assert native['static'] is False and native['sdk'].startswith('/Applications/Xcode_')
+        assert binding['compiler']['path'].startswith(native['sdk'].split('.app/')[0] + '.app/')
         assert '/usr/lib/libSystem.B.dylib' in dependencies
         assert all(line.strip().startswith(('/usr/lib/', '/System/Library/'))
                    for line in dependencies.splitlines()[1:] if line.strip())

@@ -3,6 +3,9 @@
  * (except bounded JSON stdout), exec, shell, signals, or host configuration.
  * Native SDK types are used directly; compile only on the admitted runner. */
 #define _POSIX_C_SOURCE 200809L
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE 1 /* Native libproc/vnode types, not POSIX-only namespace. */
+#endif
 #include <errno.h>
 #include <limits.h>
 #include <stddef.h>
