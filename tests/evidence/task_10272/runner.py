@@ -232,6 +232,107 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps({'version':sys.version,'executab
 '''
 
 
+NATIVE_DIAGNOSTIC = r'''
+import ctypes,hashlib,json,os,pathlib,runpy,subprocess,sys
+driver=pathlib.Path(sys.argv[1]); destination=pathlib.Path(sys.argv[2])
+document={'platform':sys.platform,'uid':os.getuid(),'observer':sys.executable,
+          'diagnostic_only':True,'shipping_census':'not-run','rows':[]}
+def failure(error):
+ return {'type':type(error).__name__,'errno':getattr(error,'errno',None),'message':str(error)}
+try:
+ if sys.platform=='linux':
+  entries=sorted((p for p in pathlib.Path('/proc').iterdir() if p.name.isdigit()),key=lambda p:int(p.name))
+  assert len(entries)<=4096, 'native diagnostic table cap exceeded'
+  for entry in entries:
+   row={'pid':int(entry.name)};document['rows'].append(row)
+   try:
+    row['directory_uid']=entry.stat().st_uid
+    line=(entry/'stat').read_text();rest=line[line.rindex(')')+1:].split()
+    row.update(comm=line[line.index('(')+1:line.rindex(')')],state=rest[0],
+               ppid=int(rest[1]),pgid=int(rest[2]),start=rest[19])
+    # No command arguments, environment, memory or credential reads.
+    row['status']={line.split(':',1)[0]:line.split(':',1)[1].strip()
+                   for line in (entry/'status').read_text().splitlines()
+                   if line.split(':',1)[0] in ('Name','State','Uid','Gid','PPid','TracerPid',
+                       'Kthread','NSpid','NoNewPrivs','Seccomp','CapEff','CoreDumping')}
+    if row['directory_uid']==os.getuid() and row['state']!='Z':
+     for member in ('cwd','exe'):
+      try:
+       info=(entry/member).lstat()
+       row[member+'_link_identity']={'uid':info.st_uid,'mode':info.st_mode,'inode':info.st_ino}
+       row[member]=os.readlink(entry/member)
+      except OSError as error:row[member+'_error']=failure(error)
+     # Record a second kernel identity; a race is evidence, never a waiver.
+     line=(entry/'stat').read_text();rest=line[line.rindex(')')+1:].split()
+     row['after']={'directory_uid':entry.stat().st_uid,'start':rest[19],'state':rest[0]}
+   except OSError as error:row['error']=failure(error)
+ elif sys.platform=='darwin':
+  sdk=subprocess.run(['/usr/bin/xcrun','--show-sdk-path'],capture_output=True,text=True,timeout=10)
+  assert sdk.returncode==0, 'native SDK identity unavailable'
+  header=pathlib.Path(sdk.stdout.strip())/'usr/include/sys/proc_info.h'
+  assert header.is_file() and header.stat().st_size<=1024*1024, 'native process header unavailable/capped'
+  text=header.read_text();offset=text.index('struct proc_bsdinfo {');end=text.index('};',offset)+2
+  document['native_bsd_header']={'path':str(header),'sha256':hashlib.sha256(header.read_bytes()).hexdigest(),
+                                'definition':text[offset:end]}
+  lib=ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True)
+  class Bsd(ctypes.Structure):
+   _fields_=[('flags',ctypes.c_uint32),('status',ctypes.c_uint32),
+             ('xstatus',ctypes.c_uint32),('pid',ctypes.c_uint32),('ppid',ctypes.c_uint32)]+[
+      (name,ctypes.c_uint32) for name in ('uid','gid','ruid','rgid','svuid','svgid','rfu')
+     ]+[('comm',ctypes.c_char*16),('name',ctypes.c_char*32),
+         ('nfiles',ctypes.c_int),('pgid',ctypes.c_int),('jobc',ctypes.c_int),
+         ('tdev',ctypes.c_uint32),('tpgid',ctypes.c_int),('nice',ctypes.c_int),
+         ('sec',ctypes.c_uint64),('usec',ctypes.c_uint64)]
+  document['diagnostic_bsd_layout']={'size':ctypes.sizeof(Bsd),
+                                   'offsets':{name:getattr(Bsd,name).offset for name,_ in Bsd._fields_}}
+  lib.proc_listpids.argtypes=[ctypes.c_uint32,ctypes.c_uint32,ctypes.c_void_p,ctypes.c_int]
+  lib.proc_pidinfo.argtypes=[ctypes.c_int,ctypes.c_int,ctypes.c_uint64,ctypes.c_void_p,ctypes.c_int]
+  lib.proc_pidpath.argtypes=[ctypes.c_int,ctypes.c_void_p,ctypes.c_uint32]
+  def listing(kind,uid):
+   size=lib.proc_listpids(kind,uid,None,0)
+   assert 0<size<=4096*4, 'native diagnostic PID size unavailable/capped'
+   buf=(ctypes.c_int*(size//4+1024))()
+   count=lib.proc_listpids(kind,uid,buf,ctypes.sizeof(buf))
+   assert 0<count<ctypes.sizeof(buf), 'native diagnostic PID table unavailable/truncated'
+   return sorted(set(pid for pid in buf[:count//4] if pid>0))
+  # XNU constants: ALL=1, effective UID=4, real UID=5. These lists
+  # characterize ownership only; they never replace the shipping observer.
+  all_pids=listing(1,0);own=listing(4,os.getuid());real=listing(5,os.getuid())
+  document.update(effective_uid_pids=own,real_uid_pids=real)
+  inaccessible=[]
+  for pid in all_pids:
+   info=Bsd();ctypes.set_errno(0)
+   got=lib.proc_pidinfo(pid,3,0,ctypes.byref(info),ctypes.sizeof(info))
+   row={'pid':pid,'bsd_bytes':got,'bsd_expected':ctypes.sizeof(info),
+        'bsd_errno':ctypes.get_errno(),'effective_uid_selected':pid in own,
+        'real_uid_selected':pid in real};document['rows'].append(row)
+   if got!=ctypes.sizeof(info):inaccessible.append(pid);continue
+   row.update(uid=info.uid,ruid=info.ruid,ppid=info.ppid,pgid=info.pgid,
+              start=f'{info.sec}.{info.usec}',state=info.status)
+   buf=ctypes.create_string_buffer(4096);ctypes.set_errno(0)
+   got=lib.proc_pidpath(pid,buf,ctypes.sizeof(buf))
+   row.update(path_bytes=got,path_errno=ctypes.get_errno())
+   if got>0:row['exe']=buf.value.decode()
+  assert len(inaccessible)<=64, 'inaccessible PID diagnostic cap exceeded'
+  if inaccessible:
+   observation=subprocess.run(['/bin/ps','-p',','.join(map(str,inaccessible)),
+         '-o','pid=,uid=,ruid=,ppid=,pgid=,lstart=,comm='],capture_output=True,text=True,timeout=10)
+   document['inaccessible_ps']={'exit':observation.returncode,
+                               'stdout':observation.stdout,'stderr':observation.stderr}
+ else:raise RuntimeError('unsupported native diagnostic venue')
+ # Keep the candidate's unchanged fail-closed observer authoritative.
+ destination.write_text(json.dumps(document,indent=2,sort_keys=True)+'\n')
+ namespace=runpy.run_path(str(driver),run_name='native_receipt_observer')
+ observed=namespace['process_table']()
+ document.update(shipping_census='observed',shipping_rows=observed)
+except BaseException as error:
+ document.update(error=failure(error),shipping_census='failed')
+ raise
+finally:
+ destination.write_text(json.dumps(document,indent=2,sort_keys=True)+'\n')
+'''
+
+
 def source_manifest(commands, role, source, env, source_pin, test_head=None):
     head, _ = commands.run(role + '-head', ['git', 'rev-parse', 'HEAD'], source, env)
     assert head.strip() == (test_head or source_pin)
@@ -463,6 +564,12 @@ def main():
         commands.run('native-compiler-version', [compiler, '--version'], root, env)
         before_candidate = source_manifest(commands, 'candidate-before', candidate, env, CANDIDATE)
         before_baseline = source_manifest(commands, 'baseline-before', baseline, env, BASELINE)
+        # Diagnose a named prerequisite failure before repeating costly tool
+        # provisioning. Bootstrap Python is diagnostic-only, never accepted
+        # CPython provenance. The official-Python census below remains required.
+        commands.run('native-process-preflight', [sys.executable, '-I', '-c', NATIVE_DIAGNOSTIC,
+                     candidate / 'tests/helpers/assistant_retirement_artifact_driver.py',
+                     RECEIPTS / 'native-process-preflight.json'], root, env)
         pins = json.loads((HERE / 'tool-pins.json').read_text())
         archive = root / 'downloads/Python-3.14.4.tar.xz'
         save('official-python-archive.json', {'upstream': pins['python'],

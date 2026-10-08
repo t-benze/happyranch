@@ -75,6 +75,22 @@ sizes/digests and symlink targets without following them. GitHub run identity
 and evidence source/workflow hashes allow independent attribution. Native
 process snapshots come from the existing stdlib driver, not a mock observer.
 
+Run37831893747 verified both official Python/tool installations, then failed
+the unchanged process observer on Ubuntu's inaccessible same-owner cwd and a
+macOS inaccessible PID. An early read-only native diagnostic now records
+kernel ownership/start/link identities, errno and races; macOS also records
+native effective/real-UID selections and bounded executable-name-only `ps`
+observations for inaccessible PIDs. It reads no process arguments, environment,
+memory or credentials and changes no process, privilege or host setting.
+The candidate's unchanged `process_table` still decides readiness and fails
+closed. Bootstrap Python is attributed only as the preflight observer; it
+never supplies accepted CPython provenance. The later official-Python census
+remains mandatory. A preflight failure stops before repeating successful
+tool provisioning and retains diagnostic receipts without claiming shipping
+readiness. The original failures remain in their original uploaded artifacts.
+Relevant native interfaces: [Linux kernel proc documentation](https://www.kernel.org/doc/html/latest/filesystems/proc.html)
+and [Apple XNU proc_info definitions](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h).
+
 References: [official Python3.14.4 release](https://www.python.org/downloads/release/python-3144/),
 [checkout credential persistence](https://github.com/actions/checkout/tree/34e114876b0b11c390a56381ad16ebd13914f8d5),
 [upload action inputs](https://github.com/actions/upload-artifact/tree/b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882),
