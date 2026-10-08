@@ -350,7 +350,7 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     assert literals['FIXED_SIBLINGS'] == expected_siblings
     assert len(set(expected_isolated)) == 101 and len(set(expected_siblings)) == 15
     assert {node.split('::')[0] for node in expected_isolated} == set(expected_siblings)
-    assert "if os.environ.get('ALL_ONLY') == 'true' and result.returncode == 0:" in python
+    assert "if not PYTHON_UNIT_SUSPENDED and os.environ.get('ALL_ONLY') == 'true' and result.returncode == 0:" in python
     assert "for round_number in (1, 2, 3, 4, 5):" in python
     assert "'--basetemp', str(basetemp)" in python and "'--junitxml'" in python
     assert python.index("receipt['exit_code'] = result.returncode") < python.index('FIXED_ISOLATED')
