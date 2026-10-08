@@ -19,6 +19,27 @@ disposable venue. On-host verification is limited to demonstrably pure offline
 units; Mac integration verification uses the separately authorized disposable
 container-VM path.
 
+The disposable manual `local-ci-all` job first runs a fixed dashboard cleanup
+prerequisite in its existing fresh HOME/config/cache/tmp/daemon environment,
+using the candidate `.venv` Python 3.14 and frozen dependencies. The six nodes in
+`tests/daemon/test_routes_dashboard.py` are
+`test_delayed_start_preserves_both_cleanup_timeout_details`,
+`test_startup_failure_without_worker_releases_and_reaps_context`,
+`test_shutdown_handshake_timeout_releases_and_reaps_owned_context`,
+`test_lifespan_async_warm_serves_503_and_clean_shutdown`,
+`test_forced_watchdog_regression_cleanup_ownership`, and
+`test_cleanup_incomplete_is_hard_failure_and_outer_owner_reaps`.
+They run serially (`-n 0`) and then with unit concurrency (`-n 4`), each with a
+300-second bound. A failed prerequisite stops immediately with its actual
+nonzero status (124 on timeout); `scripts/local_ci.sh all` is explicitly NOT RUN.
+Both prerequisites must succeed before the unchanged exact `scripts/local_ci.sh all`
+command runs its complete Python and Web selections in that same environment.
+The uploaded provenance records source/lock/interpreter/tool identities, argv,
+status, timeout and full focused stdout/stderr/log sizes and SHA256 digests.
+Focused logs are complete; the all log artifact remains a bounded 1 MiB tail,
+so recover the full hosted stream when it is truncated. Separate nightly
+integration and scheduled failure reporting retain their existing behavior.
+
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
 fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.

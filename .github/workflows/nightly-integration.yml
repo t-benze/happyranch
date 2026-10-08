@@ -38,7 +38,7 @@ jobs:
       - name: Run exact local CI all in a clean test environment
         run: |
           uv run python - <<'PY'
-          import hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile
+          import hashlib, json, os, pathlib, shutil, signal, subprocess, sys, tempfile, time
 
           source = pathlib.Path.cwd()
           head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
@@ -53,7 +53,10 @@ jobs:
                      'python_version': sys.version, 'source_sha256': {
                          name: hashlib.sha256((source / name).read_bytes()).hexdigest()
                          for name in ('scripts/local_ci.sh', 'tests/helpers/integration_parent.py',
-                                      'tests/helpers/integration_stub_guard/guard.py', 'cli/main.py')}}
+                                      'tests/helpers/integration_stub_guard/guard.py', 'cli/main.py',
+                                      'uv.lock', 'pyproject.toml', 'tests/conftest.py',
+                                      'tests/daemon/conftest.py', 'tests/daemon/test_routes_dashboard.py',
+                                      '.github/workflows/nightly-integration.yml')}}
           with tempfile.TemporaryDirectory(prefix='local-ci-parent-') as directory:
               root = pathlib.Path(directory)
               for name in ('home', 'config', 'cache', 'tmp', 'daemon', 'bin'):
@@ -75,13 +78,67 @@ jobs:
                                         'version': subprocess.check_output([tool, '--version'], env=env, text=True).strip()}
                                   for tool in ('uv', 'node', 'npm')}
               assert receipt['tools']['node']['version'].split('.')[0] == 'v24'
+              focused_nodes = [
+                  'tests/daemon/test_routes_dashboard.py::' + name for name in (
+                      'test_delayed_start_preserves_both_cleanup_timeout_details',
+                      'test_startup_failure_without_worker_releases_and_reaps_context',
+                      'test_shutdown_handshake_timeout_releases_and_reaps_owned_context',
+                      'test_lifespan_async_warm_serves_503_and_clean_shutdown',
+                      'test_forced_watchdog_regression_cleanup_ownership',
+                      'test_cleanup_incomplete_is_hard_failure_and_outer_owner_reaps')]
+              candidate_python = source / '.venv/bin/python'
+              assert candidate_python.samefile(sys.executable)
+              receipt['focused'] = [
+                  {'command': [str(candidate_python), '-m', 'pytest', *focused_nodes, '-v', '-n', str(workers)],
+                   'timeout_seconds': 300, 'status': 'not_run'} for workers in (0, 4)]
+              receipt['all_status'] = 'not_run'
               receipt_path = evidence / 'provenance.json'
               receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
               print(json.dumps(receipt, sort_keys=True), flush=True)
+              for index, focused in enumerate(receipt['focused']):
+                  label = 'focused-serial' if index == 0 else 'focused-parallel'
+                  stdout_path = evidence / (label + '.stdout.log')
+                  stderr_path = evidence / (label + '.stderr.log')
+                  started = time.monotonic()
+                  focused['status'] = 'running'
+                  receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+                  print(json.dumps(focused, sort_keys=True), flush=True)
+                  with stdout_path.open('wb') as stdout, stderr_path.open('wb') as stderr:
+                      process = subprocess.Popen(focused['command'], env=env, stdout=stdout,
+                                                 stderr=stderr, start_new_session=True)
+                      try:
+                          exit_code = process.wait(timeout=focused['timeout_seconds'])
+                          focused['timed_out'] = False
+                      except subprocess.TimeoutExpired:
+                          os.killpg(process.pid, signal.SIGKILL)
+                          process.wait()
+                          exit_code = 124
+                          focused['timed_out'] = True
+                  focused.update(status='success' if exit_code == 0 else 'failure',
+                                 exit_code=exit_code, elapsed_seconds=time.monotonic() - started)
+                  full_log = evidence / (label + '.log')
+                  with full_log.open('wb') as combined:
+                      for path, stream in ((stdout_path, sys.stdout.buffer), (stderr_path, sys.stderr.buffer)):
+                          with path.open('rb') as output:
+                              shutil.copyfileobj(output, combined)
+                          with path.open('rb') as output:
+                              shutil.copyfileobj(output, stream)
+                          stream.flush()
+                  focused['logs'] = {path.name: {'size_bytes': path.stat().st_size,
+                                               'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+                                     for path in (stdout_path, stderr_path, full_log)}
+                  receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+                  print(json.dumps(focused, sort_keys=True), flush=True)
+                  if exit_code != 0:
+                      print('focused prerequisite failed; scripts/local_ci.sh all NOT RUN', flush=True)
+                      raise SystemExit(exit_code)
+              receipt['all_status'] = 'running'
+              receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
               result = subprocess.run([sys.executable, 'scripts/run_bounded_output.py',
                                        '--output', str(evidence / 'local-ci-all.log'),
                                        '--max-bytes', '1048576', '--', 'scripts/local_ci.sh', 'all'], env=env)
               receipt['exit_code'] = result.returncode
+              receipt['all_status'] = 'success' if result.returncode == 0 else 'failure'
               receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
               print('scripts/local_ci.sh all exit_code=' + str(result.returncode), flush=True)
           raise SystemExit(result.returncode)
