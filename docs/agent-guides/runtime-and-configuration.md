@@ -829,6 +829,13 @@ launch the unit suite. Restore execution only after founder release of the
 stop instruction, by reverting the TASK-10169 pause commit through normal
 review and merge. The ordinary commands below describe the restored behavior.
 
+The manual `local-ci-all` workflow step invokes the fixed
+`uv run python scripts/nightly_local_ci_all.py` entry from the checkout root.
+Its G follow-on retains the fixed unit-suspension guard and zero-child receipt;
+source provenance authenticates both this script and the workflow YAML.
+Source-copy keepers read the script from their own archived checkout. See
+[Local CI](../local-ci.md) for the retained dormant plan and source controls.
+
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
 uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only

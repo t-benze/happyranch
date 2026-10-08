@@ -340,7 +340,8 @@ General integration SUITE remains SKIPPED under THR139seq77/THR243seq42, never P
 No manual dispatch or rerun is part of the current G source-delivery unit.
 
 Python units remain SUSPENDED under THR291 seq5/16. In addition to the inherited
-`scripts/local_ci.sh all` pause, the embedded G follow-on block has a fixed local
+`scripts/local_ci.sh all` pause, the G follow-on block in
+`scripts/nightly_local_ci_all.py` has a fixed local
 `PYTHON_UNIT_SUSPENDED = True` guard, with no operator override or input. It emits
 SUSPENDED / SKIPPED, NOT RUN and zero-child metadata before any G follow-on launch.
 The 101 selectors, 15 sibling files, 40 source controls and 580 repetition
@@ -349,6 +350,14 @@ cannot fall through a successful Web-only all wrapper. Restore execution only
 after a new Founder release through ordinary review. For TASK10062 descendants,
 new test execution is also SKIPPED / FOUNDER-WAIVED THR139seq429. Inspection does
 not verify behavior. The following describes the retained dormant plan.
+
+The manual lane invokes exactly `uv run python scripts/nightly_local_ci_all.py`
+from the checkout root, keeping the workflow run scalar below GitHub's observed
+21,000-character limit. The source manifest authenticates both the workflow YAML
+and this fixed script. Source-copy controls mutate and restore each declared path
+in their own archived checkout; the selection and preservation-plan controls
+reference the script, while input and integration-predicate controls reference YAML.
+The copied keeper reads that same checkout's script.
 
 The true lane runs the unchanged `scripts/local_ci.sh all` first and preserves
 its exit separately. Successful all is followed by the closed literal 101-node

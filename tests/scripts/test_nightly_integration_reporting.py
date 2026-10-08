@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "nightly_integration_summary.py"
 RUNNER = ROOT / "scripts" / "run_bounded_output.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "nightly-integration.yml"
+ALL_RUNNER = ROOT / "scripts" / "nightly_local_ci_all.py"
 
 
 def test_summary_reports_counts_and_failed_test_ids(tmp_path: Path) -> None:
@@ -221,7 +222,13 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     assert document['jobs']['local-ci-all']['timeout-minutes'] == '60'
     step = next(step for step in document['jobs']['local-ci-all']['steps'] if step.get('name') == 'Run exact local CI all in a clean test environment')
     assert step['env']['ALL_ONLY'] == '${{ inputs.all_only }}'
-    python = step['run'].split("uv run python - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+    assert document['jobs']['local-ci-all']['if'] == "${{ github.event_name == 'workflow_dispatch' }}"
+    assert step['run'] == 'uv run python scripts/nightly_local_ci_all.py\n'
+    assert all(len(actual_step['run']) < 21000
+               for actual_job in document['jobs'].values()
+               for actual_step in actual_job['steps'] if 'run' in actual_step)
+    # ROOT belongs to this keeper's source copy, including archived control checkouts.
+    python = ALL_RUNNER.read_text(encoding='utf-8')
     tree = ast.parse(python)
     literals = {node.targets[0].id: ast.literal_eval(node.value) for node in ast.walk(tree)
                 if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
@@ -360,6 +367,28 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     # The real source-copy controls retain their IDs and original case closure.
     assert len(controls) == 40
     control_by_id = {control['id']: control for control in controls}
+    assert control_by_id['closed-ci-selection']['patches'] == [{
+        'path': 'scripts/nightly_local_ci_all.py', 'function': None,
+        'old': "'tests/workflows/test_draft_dispatch.py::test_delayed_real_containment_keeps_cancel_and_drain_pending_until_terminal_evidence',",
+        'new': "'tests/workflows/test_draft_dispatch.py::test_omitted_delayed_real_containment_keeps_cancel_and_drain_pending_until_terminal_evidence',"}]
+    assert control_by_id['preservation-control-plan']['patches'] == [{
+        'path': 'scripts/nightly_local_ci_all.py', 'function': None,
+        'old': "'id': 'g-validator-physical-no-write'",
+        'new': "'id': 'missing-g-validator-physical-no-write'"}]
+    assert control_by_id['typed-ci-flag']['patches'] == [{
+        'path': '.github/workflows/nightly-integration.yml', 'function': None,
+        'old': '        type: boolean', 'new': '        type: string'}]
+    assert control_by_id['safe-ci-default']['patches'] == [{
+        'path': '.github/workflows/nightly-integration.yml', 'function': None,
+        'old': '        default: false', 'new': '        default: true'}]
+    assert all(control_by_id[identity]['isolated_ids'] == [101] for identity in (
+        'closed-ci-selection', 'preservation-control-plan', 'typed-ci-flag', 'safe-ci-default'))
+    manifest = next(node.value for node in ast.walk(tree)
+                    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == 'manifest')
+    assert isinstance(manifest, ast.DictComp)
+    assert ast.literal_eval(ast.Tuple(elts=manifest.generators[0].iter.elts[:2], ctx=ast.Load())) == (
+        '.github/workflows/nightly-integration.yml', 'scripts/nightly_local_ci_all.py')
     cold = control_by_id['lost-notification-discovery']
     assert cold['isolated_ids'] == [30] and cold['red_kind'] == 'business'
     assert expected_isolated[29].endswith('::test_lost_notification_cold_discovery_and_duplicate_enqueue_keep_original_attempt')
