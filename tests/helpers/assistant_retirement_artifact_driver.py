@@ -306,27 +306,67 @@ class Driver:
                 except (OSError, urllib.error.URLError): pass
             time.sleep(.1)
 
+    def census(self):
+        # Retain authentic launch identities even when a callback/characterization
+        # fails before the successful-tail assertions. Cover every fixture root.
+        path = self.root / 'launches.jsonl'
+        if path.exists():
+            launches = [json.loads(line)['process'] for line in path.read_text().splitlines()]
+            known = {(row['pid'], row['start']) for row in self.launches}
+            self.launches.extend(row for row in launches if (row['pid'], row['start']) not in known)
+        return owned_processes(self.process.pid, self.root, self.launches)
+
     def stop(self):
         if self.process is None: return
-        current = next((r for r in process_table() if r['pid'] == self.process.pid), None)
-        if current and current['start'] != self.identity['start']:
+        # Observe descendants before shutdown can orphan them. Keep exact kernel
+        # identities, so a subsequent census never signals a reused PID.
+        errors = []
+        try: before = self.census()
+        except Exception as error:
+            before = []
+            errors.append({'phase':'before-stop','type':type(error).__name__,'message':str(error)})
+        self.launches.extend(before)
+        try: current = next((r for r in process_table() if r['pid'] == self.process.pid), None)
+        except Exception as error:
+            current = None
+            errors.append({'phase':'daemon-identity','type':type(error).__name__,'message':str(error)})
+        if current and self.identity and current['start'] != self.identity['start']:
             raise RuntimeError('daemon process identity changed; cleanup refused')
+        # The unreaped direct Popen child remains ours even if the OS census
+        # failed. Stop/reap it, but never claim descendants were observed empty.
         if self.process.poll() is None:
             self.process.send_signal(signal.SIGTERM)
             try: self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.process.kill(); self.process.wait(timeout=5)
-        remaining = owned_processes(self.process.pid, self.runtime, self.launches)
+        try: remaining = self.census()
+        except Exception as error:
+            self.events.append({'kind':'cleanup','before':before,
+                'daemon_exit':self.process.returncode,'remaining':None,
+                'errors':errors+[{'phase':'after-stop','type':type(error).__name__,'message':str(error)}]})
+            self.log.close(); self.process = None
+            raise RuntimeError('artifact child reaped; descendant census unavailable') from error
         # Signal only recorded exact owned start identities, never arbitrary PIDs.
         for row in remaining:
             now = next((r for r in process_table() if r['pid'] == row['pid']), None)
-            if now and now['start'] == row['start']: os.kill(row['pid'], signal.SIGTERM)
+            if now and now['start'] == row['start']:
+                try: os.kill(row['pid'], signal.SIGTERM)
+                except ProcessLookupError: pass
         limit = time.monotonic() + 5
         while remaining and time.monotonic() < limit:
-            time.sleep(.1); remaining = owned_processes(self.process.pid, self.runtime, self.launches)
-        self.events.append({'kind':'cleanup','daemon_exit':self.process.returncode,'remaining':remaining})
+            time.sleep(.1); remaining = self.census()
+        for row in remaining:
+            now = next((r for r in process_table() if r['pid'] == row['pid']), None)
+            if now and now['start'] == row['start']:
+                try: os.kill(row['pid'], signal.SIGKILL)
+                except ProcessLookupError: pass
+        limit = time.monotonic() + 5
+        while remaining and time.monotonic() < limit:
+            time.sleep(.1); remaining = self.census()
+        self.events.append({'kind':'cleanup','before':before,
+                            'daemon_exit':self.process.returncode,'remaining':remaining,'errors':errors})
         self.log.close(); self.process = None
-        assert not remaining, 'owned artifact processes remain'
+        assert not remaining and not errors, 'owned artifact cleanup incomplete or unavailable'
 
     def parser(self):
         help_text = self.command(self.cli + ['--help']).stdout
@@ -354,7 +394,8 @@ class Driver:
 
     def lifecycle(self):
         self.command(self.cli + ['init',str(self.runtime)])
-        assert not (self.runtime / 'system').exists()
+        if self.manifest['source_role']=='candidate':
+            assert not (self.runtime / 'system').exists()
         self.command(self.cli + ['use',str(self.runtime)])
         assert self.request('GET','/runtime')[1]['runtime'] == str(self.runtime)
         # Served schema, without importing a source app into artifact checks.
@@ -369,9 +410,12 @@ class Driver:
             for method,path in RETIRED:
                 assert self.request(method,path,{} if method != 'GET' else None)[0] in (404,405)
         assert self.request('GET','/runtime',token=False)[0] in (401,403)
-        self.stop(); assert not (self.runtime / 'system').exists()
+        self.stop()
+        if self.manifest['source_role']=='candidate':
+            assert not (self.runtime / 'system').exists()
         self.start(); assert self.request('GET','/runtime')[1]['runtime'] == str(self.runtime)
-        assert not (self.runtime / 'system').exists()
+        if self.manifest['source_role']=='candidate':
+            assert not (self.runtime / 'system').exists()
 
     def legacy(self):
         # Independent existing-runtime fixtures; stop before seeding old files.
@@ -418,7 +462,21 @@ class Driver:
         entries = self.request('GET','/executor-binaries')[1]['entries']
         assert any(row['kind']=='codex' and row['path']==str(stub) and row['valid'] for row in entries)
         self.command(self.cli + ['orgs','init','test','--from',str(skeleton)])
+        # The reserved legacy workspace is inert on actual artifact reopen,
+        # before an ordinary task is admitted. Its YAML must never be consumed.
+        reserved = self.runtime / 'orgs/test/workspaces/system_assistant'
+        reserved.mkdir(parents=True)
+        sentinel = self.root / 'reserved-sentinel'
+        sentinel.write_bytes(b'old reserved malformed YAML\xff\x00')
+        (reserved / 'agent.yaml').symlink_to(sentinel)
+        old_reserved, old_sentinel = snapshot(reserved), snapshot(sentinel)
+        self.stop(); self.start()
+        binding['api'] = self.base
+        (self.root/'stub-binding.json').write_text(json.dumps(binding))
         self.command(self.cli + ['init-agent','--org','test'])
+        assert old_reserved == snapshot(reserved) and old_sentinel == snapshot(sentinel)
+        for path in ('/orgs/test/settings', '/orgs/test/audit', '/orgs/test/tokens'):
+            assert self.request('GET', path)[0] == 200
         code,body = self.request('POST','/orgs/test/tasks',{'team':'engineering','brief':'retirement ordinary callback'})
         assert code == 200; parent = body['task_id']
         if held:
@@ -446,7 +504,8 @@ class Driver:
                 p = self.request('GET','/orgs/test/tasks/'+parent)[1]
                 metrics = self.request('GET','/metrics')[1]['host_sessions']
                 assert time.monotonic() < probe_deadline, 'no-running observation window expired'
-                if p['task'].get('block_kind') == 'delegated' and metrics.get('recent') and metrics['recent'][0]['quiescent'] and not owned_processes(self.process.pid,self.runtime,self.launches): break
+                recent = metrics['receipts']['recent']
+                if p['task'].get('block_kind') == 'delegated' and recent and all(row['quiescent'] for row in recent) and not self.census(): break
                 time.sleep(.1)
             b = self.root/'runtime-b'
             # Independent same-root characterization never contaminates refusal rows.
@@ -468,8 +527,17 @@ class Driver:
             if callback_path.exists():
                 observed=[json.loads(line) for line in callback_path.read_text().splitlines()]
                 if any(row['exit']!=0 for row in observed):
+                    # Observe the genuine failed invocation's eventual durable
+                    # tail before teardown; never replace it with a fake result.
+                    failed_deadline = time.monotonic() + self.remaining(20)
+                    while True:
+                        body=self.request('GET','/orgs/test/tasks/'+parent)[1]
+                        running=self.census()
+                        if not running and body['task']['status'] in ('failed','completed','cancelled','escalated'): break
+                        if time.monotonic()>=failed_deadline: break
+                        time.sleep(.1)
                     self.events.append({'kind':'characterization-failure' if same_root_register else 'callback-failure',
-                                        'callbacks':observed,'durable':body})
+                                        'callbacks':observed,'durable':body,'remaining':running})
                     raise AssertionError('authentic callback failed; preserve separate baseline/candidate outcome')
             if body['task']['status'] in ('failed','completed','cancelled'): break
             time.sleep(.2)
@@ -487,7 +555,13 @@ class Driver:
             assert child_body['task']['status']=='completed' and child_body['results']
             assert any(row['task']==marker['task'] and row['exit']==0 for row in callbacks)
         self.events.append({'kind':'authentic-callback-tail','launches':launches,'callbacks':callbacks,'durable':body})
-        while owned_processes(self.process.pid,self.runtime,self.launches): self.remaining();time.sleep(.1)
+        while self.census(): self.remaining();time.sleep(.1)
+        metrics = self.request('GET','/metrics')[1]
+        host = metrics['host_sessions']
+        assert metrics['executor_sessions_active']==0
+        assert host['receipts']['recent'] and all(row['quiescent'] for row in host['receipts']['recent'])
+        assert host['admission']['active']==0 and host['residue']['survivors_count']==0
+        self.events.append({'kind':'terminal-quiescence','metrics':metrics,'processes':self.census()})
         history=body['results']
         assert self.request('POST','/runtime/use',{'path':str(self.runtime)})[0]==200
         b=self.root/'runtime-b'
@@ -497,6 +571,8 @@ class Driver:
         assert self.request('GET','/orgs/test/tasks/'+parent)[1]['results']==history
         self.stop();self.start()
         assert self.request('GET','/orgs/test/tasks/'+parent)[1]['results']==history
+        assert old_reserved == snapshot(reserved) and old_sentinel == snapshot(sentinel)
+        self.events.append({'kind':'reserved-legacy-fence','unchanged':True,'no_read_trace':False})
 
 
 def stub(binding_path: Path, argv: list[str]) -> int:

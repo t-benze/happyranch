@@ -67,6 +67,30 @@ def wait_for(predicate,seconds=30):
     raise AssertionError('bounded shipping observation did not become ready')
 
 
+def callback_recorder(receipt):
+    """Observe the genuine CLI callback, including a failing characterization."""
+    return f'''
+retirement_callback() {{
+    callback_out="$PWD/retirement-$session_id.stdout"
+    callback_err="$PWD/retirement-$session_id.stderr"
+    if report_completion "$@" > "$callback_out" 2> "$callback_err"; then
+        callback_exit=0
+    else
+        callback_exit=$?
+    fi
+    python - "$task_id" "$session_id" "$1" "$callback_exit" "$callback_out" "$callback_err" <<'CALLBACK_OBSERVATION'
+import json,sys
+from pathlib import Path
+task,session,agent,code,out,err=sys.argv[1:]
+with Path({str(receipt)!r}).open('a') as stream:
+    stream.write(json.dumps({{'task':task,'session':session,'agent':agent,'exit':int(code),
+                             'stdout':Path(out).read_text(),'stderr':Path(err).read_text()}})+'\\n')
+CALLBACK_OBSERVATION
+    return "$callback_exit"
+}}
+'''
+
+
 def reopen(venue):
     script=Path(__file__).resolve().parents[2]/'scripts/daemon.sh'
     env=dict(os.environ)
@@ -174,15 +198,17 @@ def assert_terminal(shipping,task,launches,container,seconds=40):
     wait_for(lambda:not owned_processes(shipping['pid'],container,launches),10)
     metrics=request(shipping,'GET','/metrics').json()
     assert metrics['executor_sessions_active']==0
-    assert metrics['host_sessions']['recent'] and all(row['quiescent'] for row in metrics['host_sessions']['recent'])
+    host=metrics['host_sessions']
+    assert host['receipts']['recent'] and all(row['quiescent'] for row in host['receipts']['recent'])
+    assert host['admission']['active']==0 and host['residue']['survivors_count']==0
     assert_launch_witness('codex')
     return result
 
 
 @pytest.mark.parametrize('same_root_register',[False,True])
 def test_held_owner_swap_and_same_root_characterization(shipping,runtime_container,fake_codex_plan_env,tmp_path,same_root_register):
-    release=tmp_path/'release';started=tmp_path/'started.json'
-    _write_plan(fake_codex_plan_env, f'''
+    release=tmp_path/'release';started=tmp_path/'started.json';callbacks=tmp_path/'callbacks.jsonl'
+    _write_plan(fake_codex_plan_env, callback_recorder(callbacks)+f'''
         task_id=$1; session_id=$2; org_slug=$3
         python - "$task_id" "$session_id" "$$" <<'OBSERVE'
 import json,sys,time
@@ -192,7 +218,7 @@ Path({str(started)!r}).write_text(json.dumps({{'task':sys.argv[1],'session':sys.
 OBSERVE
         for attempt in $(seq 1 600); do test -e {shlex.quote(str(release))} && break; sleep .1; done
         test -e {shlex.quote(str(release))}
-        report_completion engineering_head '{{"action":"done","summary":"ordinary tail"}}'
+        retirement_callback engineering_head '{{"action":"done","summary":"ordinary tail"}}'
     ''')
     parent=prepare_task(shipping,runtime_container,fake_codex_plan_env)
     wait_for(started.exists);marker=json.loads(started.read_text());assert marker['task']==parent
@@ -203,11 +229,15 @@ OBSERVE
         # Characterization deliberately asserts no hardcoded unknown_session.
         wait_for(lambda: not owned_processes(shipping['pid'],runtime_container,[marker['process']]),15)
         body=detail(shipping,parent)
-        print('R4.1 CHARACTERIZATION '+json.dumps({'task':body['task'],'results':body['results'],'audit':body.get('audit',[])},sort_keys=True))
+        assert callbacks.exists(), 'authentic CLI callback receipt missing'
+        observed=[json.loads(line) for line in callbacks.read_text().splitlines()]
+        print('R4.1 CHARACTERIZATION '+json.dumps({'callbacks':observed,'task':body['task'],
+            'results':body['results'],'audit':body['audit_log'],'processes':
+            owned_processes(shipping['pid'],runtime_container,[marker['process']])},sort_keys=True))
         callback_files=list((shipping['org']/'workspaces/engineering_head').glob('completion-*.json'))
         assert callback_files, 'authentic callback file missing'
         # A residual baseline failure must remain a failure in the report.
-        if body['task']['status']!='completed':pytest.fail('R4.1 authentic first callback did not complete; compare separate baseline receipt; shared session/auth repair excluded')
+        if any(row['exit']!=0 for row in observed) or body['task']['status']!='completed':pytest.fail('R4.1 authentic first callback did not complete; compare separate baseline receipt; shared session/auth repair excluded')
         assert_terminal(shipping,parent,[marker['process']],runtime_container)
     else:
         for suffix,target in [('/use',runtime_container),('',b),('/use',b)]:
@@ -216,6 +246,10 @@ OBSERVE
             assert parent in response.json()['detail']['task_ids']
             assert request(shipping,'GET','/runtime').json()['runtime']==str(runtime_container)
         release.write_text('release');history=assert_terminal(shipping,parent,[marker['process']],runtime_container)
+        observed=[json.loads(line) for line in callbacks.read_text().splitlines()]
+        assert observed and all(row['exit']==0 for row in observed),observed
+        assert any(row['task']==parent and row['session']==result['session_id']
+                   for row in observed for result in history['results'])
         assert request(shipping,'POST','/runtime/use',{'path':str(runtime_container)}).status_code==200
         assert request(shipping,'POST','/runtime/use',{'path':str(b)}).status_code==200
         assert request(shipping,'POST','/runtime',{'path':str(runtime_container)}).status_code==200
@@ -224,12 +258,12 @@ OBSERVE
 
 @pytest.mark.parametrize('same_root_register',[False,True])
 def test_nonrunning_retry_owner_all_runtime_census(shipping,runtime_container,fake_codex_plan_env,tmp_path,same_root_register):
-    marker=tmp_path/'retry-start.json'; delegated=tmp_path/'delegated'
-    _write_plan(fake_codex_plan_env, f'''
+    marker=tmp_path/'retry-start.json'; delegated=tmp_path/'delegated';callbacks=tmp_path/'callbacks.jsonl'
+    _write_plan(fake_codex_plan_env, callback_recorder(callbacks)+f'''
         task_id=$1; session_id=$2; org_slug=$3; agent="${{PWD##*/}}"
         if test "$agent" = engineering_head && ! test -e {shlex.quote(str(delegated))}; then
             touch {shlex.quote(str(delegated))}
-            report_completion engineering_head '{{"action":"delegate","agent":"dev_agent","prompt":"ordinary retry child"}}'
+            retirement_callback engineering_head '{{"action":"delegate","agent":"dev_agent","prompt":"ordinary retry child"}}'
         elif test "$agent" = dev_agent && ! test -e {shlex.quote(str(marker))}; then
             python - "$task_id" "$session_id" "$$" <<'OBSERVE'
 import json,sys,time
@@ -239,7 +273,7 @@ Path({str(marker)!r}).write_text(json.dumps({{'task':sys.argv[1],'session':sys.a
 OBSERVE
             echo 'rate limit' >&2; exit 1
         else
-            report_completion "$agent" '{{"action":"done","summary":"ordinary retry tail"}}'
+            retirement_callback "$agent" '{{"action":"done","summary":"ordinary retry tail"}}'
         fi
     ''')
     parent=prepare_task(shipping,runtime_container,fake_codex_plan_env)
@@ -248,8 +282,9 @@ OBSERVE
     # descendant are censused; no sleeping/running child substitutes for retry.
     def window():
         p=detail(shipping,parent);metrics=request(shipping,'GET','/metrics').json()['host_sessions']
-        return (p['task'].get('block_kind')=='delegated' and metrics['recent'] and
-                metrics['recent'][0]['quiescent'] and
+        recent=metrics['receipts']['recent']
+        return (p['task'].get('block_kind')=='delegated' and recent and
+                all(row['quiescent'] for row in recent) and
                 not owned_processes(shipping['pid'],runtime_container,[witness['process']]))
     wait_for(window,20);assert time.monotonic()<witness['at']+60
     assert not detail(shipping,child)['results']
@@ -267,9 +302,18 @@ OBSERVE
     # Natural supervisor wait/readmission, no forged session or direct result.
     try:
         assert_terminal(shipping,parent,[witness['process']],runtime_container,160)
-        assert detail(shipping,child)['results']
+        child_body=detail(shipping,child)
+        observed=[json.loads(line) for line in callbacks.read_text().splitlines()]
+        assert observed and all(row['exit']==0 for row in observed),observed
+        assert child_body['task']['status']=='completed' and child_body['results']
+        assert any(row['task']==child and row['session']==result['session_id']
+                   for row in observed for result in child_body['results'])
     except AssertionError:
-        if same_root_register:print('R4.5 SAME-ROOT CHARACTERIZATION FAILURE '+json.dumps(detail(shipping,parent)))
+        if same_root_register:
+            print('R4.5 SAME-ROOT CHARACTERIZATION FAILURE '+json.dumps({
+                'parent':detail(shipping,parent),'child':detail(shipping,child),
+                'callbacks':callbacks.read_text() if callbacks.exists() else None,
+                'processes':owned_processes(shipping['pid'],runtime_container,[witness['process']])}))
         raise
     assert request(shipping,'POST','/runtime/use',{'path':str(runtime_container)}).status_code==200
 
