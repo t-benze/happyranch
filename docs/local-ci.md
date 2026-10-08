@@ -545,8 +545,29 @@ The macOS `proc_bsdinfo` declaration includes the SDK's `pbi_xstatus` field
 before PID/PPID, with unsigned PID fields. The struct's total size alone does
 not establish correct UID, parent or process-group offsets. Hosted native
 receipts must match the actual selected SDK definition. Inaccessible living
-processes still refuse the census; do not omit an opaque same-owner process,
-change privileges or claim quiescence from an incomplete native table.
+processes still refuse the census; do not omit an opaque same-owner process or
+claim quiescence from an incomplete native table. The only privilege exception
+is the explicitly admitted TASK-10245/THR-294 ephemeral read-only native observer
+on disposable GitHub-hosted Ubuntu and native macOS15 runners. Their existing
+[passwordless sudo](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
+may execute only the fixed `assistant_retirement_native_observer.c` executable,
+compiled as the ordinary runner UID from hash-bound immutable evidence source
+using the authenticated native compiler/SDK. Its sole input is the original
+workload UID; bounded native JSON is returned on stdout. It reads no application
+code, environment, credentials, process arguments or memory, offers no command,
+ref or path service, writes no files and sends no signals. Source/binary/compiler,
+SDK/ABI/native dependencies, absolute sudo command, original UID, observer
+UID/EUID and exits are bound in a closed receipt before test-side admission.
+Real/effective/saved ownership, PID/PPID/PGID/start and required cwd/executable
+identities remain mandatory; exited/reused identities require native
+revalidation. A cheap preflight on both fresh runners precedes costly
+provisioning. Any still-inaccessible living row returns its PID/native operation
+and errno; no sudoers/sysctl/SIP/entitlement changes or weaker census follow.
+All daemon/CLI/stub/browser/build/install/import/collection/test execution stays
+under the ordinary runner UID in closed owned fixtures/user prefixes. Outside
+this explicit hosted admission, unavailable observations still refuse with no
+privilege change. There is no live-host integration, root product execution,
+privileged service or permanent gate.
 
 Copy the stdlib-only driver into the verification root and hash it. Its origin
 manifest binds schema_version 1, source_role (`candidate` or `baseline`),
@@ -560,6 +581,13 @@ OS/process receipts. `source_manifest` and `constraints` are path/SHA256
 receipts: the source record has candidate_sha, uv_lock_sha256 and a files map
 of tracked relative path to SHA256. Every path/SHA256 receipt is a regular,
 non-symlink, non-group/world-writable file. Unknown manifest keys refuse.
+An optional `native_observer` path/SHA256 receipt adds only the hosted test-side
+admission above. Copy the hash-matched C source beside the stdlib driver outside
+checkout. The closed admission binds venue, source, binary, compiler, sudo,
+compile argv, native SDK/headers/dependencies/ABI and successful preflight. The
+source test parent passes its descriptor only to pytest; the two executable
+stub census snippets bind it explicitly. Artifact stubs use their existing
+test binding file. The elevated observer never imports this Python driver.
 The tool record binds official distribution hashes and exact Python/uv versions;
 frozen also binds PyInstaller6.21.0. Bundle records bind candidate_sha and
 no-follow entries; frozen TOC records include daemon_analysis, cli_analysis,

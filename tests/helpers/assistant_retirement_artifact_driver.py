@@ -10,6 +10,7 @@ import argparse
 import base64
 import csv
 import ctypes
+import gzip
 import hashlib
 import json
 import os
@@ -25,6 +26,137 @@ import urllib.request
 import zipfile
 
 CASES = {'lifecycle', 'parser', 'ordinary-callback', 'nonrunning-swap'}
+_NATIVE_OBSERVER = None
+_NATIVE_LAST = None
+
+
+def configure_native_observer(receipt: dict) -> None:
+    """Explicit test-side admission, authenticated by the immutable hosted job.
+
+    The privileged program takes only the original UID. This unprivileged
+    consumer reads the closed evidence receipt; it never elevates Python.
+    """
+    global _NATIVE_OBSERVER
+    assert os.getuid() == os.geteuid() != 0, 'ordinary workload UID required'
+    path = verify_receipt(receipt)
+    binding = json.loads(path.read_text())
+    assert set(binding) == {'schema_version', 'venue', 'source', 'binary', 'compiler',
+                            'sudo', 'native', 'compile_argv', 'preflight'}
+    assert binding['schema_version'] == 1
+    venue = binding['venue']
+    assert set(venue) == {'repository', 'ref', 'event', 'attempt', 'run_id',
+                          'platform', 'arch', 'uid', 'euid', 'image_os', 'image_version'}
+    assert venue['repository'] == 't-benze/happyranch'
+    assert venue['ref'] in ('refs/heads/task/TASK-10272', 'refs/heads/task/TASK-10279')
+    assert venue['event'] == 'push' and venue['attempt'] == '1' and venue['run_id'].isdigit()
+    assert venue['platform'] == sys.platform and venue['arch'] == os.uname().machine
+    assert venue['uid'] == venue['euid'] == os.getuid()
+    assert venue['image_os'] and venue['image_version']
+    if sys.platform == 'darwin':
+        assert os.uname().release.split('.')[0] == '24', 'native macOS15 required'
+    else:
+        assert sys.platform == 'linux' and venue['arch'] == 'x86_64'
+    for field in ('source', 'binary', 'compiler', 'sudo'):
+        verify_receipt(binding[field])
+    assert verify_receipt(binding['sudo']).stat().st_uid == 0
+    assert verify_receipt(binding['compiler']).stat().st_uid == 0
+    native = binding['native']
+    assert set(native) == {'sdk', 'headers', 'dependencies', 'abi', 'static'}
+    assert native['headers']
+    for header in native['headers']:
+        assert verify_receipt(header).stat().st_uid == 0
+    dependencies = verify_receipt(native['dependencies']).read_text()
+    if sys.platform == 'linux':
+        assert native['static'] is True and native['sdk'] is None
+        assert 'There is no dynamic section in this file.' in dependencies
+    else:
+        assert native['static'] is False and native['sdk'].startswith('/Applications/Xcode_')
+        assert '/usr/lib/libSystem.B.dylib' in dependencies
+        assert all(line.strip().startswith(('/usr/lib/', '/System/Library/'))
+                   for line in dependencies.splitlines()[1:] if line.strip())
+    assert binding['source']['sha256'] == digest(Path(__file__).with_name('assistant_retirement_native_observer.c'))
+    assert binding['sudo']['path'] == '/usr/bin/sudo'
+    assert binding['compile_argv'][0] == binding['compiler']['path']
+    flags = (['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', '-static'] if sys.platform == 'linux'
+             else ['-isysroot', native['sdk'], '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2'])
+    libs = [] if sys.platform == 'linux' else ['-lproc']
+    assert binding['compile_argv'] == [binding['compiler']['path'], *flags,
+                                     binding['source']['path'], *libs, '-o', binding['binary']['path']]
+    assert set(binding['preflight']) == {'exit', 'snapshot'}
+    assert binding['preflight']['exit'] == 0
+    preflight = json.loads(verify_receipt(binding['preflight']['snapshot']).read_text())
+    _validate_native_snapshot(preflight)
+    assert native['abi'] == preflight['abi']
+    _NATIVE_OBSERVER = (dict(receipt), binding)
+
+
+def _validate_native_snapshot(snapshot: dict) -> None:
+    assert set(snapshot) == {'schema_version', 'path_encoding', 'workload_uid',
+                             'observer_uid', 'observer_euid', 'observer_pid', 'abi',
+                             'exited_revalidated', 'changed_revalidated', 'rows', 'complete', 'error'}
+    assert snapshot['schema_version'] == 1 and snapshot['path_encoding'] == 'byte-latin1'
+    assert snapshot['workload_uid'] == os.getuid() != 0
+    assert snapshot['observer_uid'] == snapshot['observer_euid'] == 0
+    assert snapshot['complete'] is True and snapshot['error'] is None
+    expected_abi = ({'pointer_size': 8} if sys.platform == 'linux' else
+                    {'pointer_size': 8, 'bsd_size': 136, 'bsd_uid_offset': 20,
+                     'bsd_ruid_offset': 28, 'bsd_svuid_offset': 36, 'bsd_pid_offset': 12,
+                     'bsd_ppid_offset': 16, 'bsd_pgid_offset': 100, 'bsd_start_offset': 120,
+                     'vnode_size': snapshot['abi'].get('vnode_size')})
+    assert snapshot['abi'] == expected_abi
+    if sys.platform == 'darwin':
+        assert type(snapshot['abi']['vnode_size']) is int and snapshot['abi']['vnode_size'] > 2048
+    assert 0 < len(snapshot['rows']) <= 8192
+    pids = set()
+    for row in snapshot['rows']:
+        common = {'pid', 'ppid', 'pgid', 'uid', 'ruid', 'svuid', 'fsuid', 'start', 'state'}
+        required = os.getuid() in (row['uid'], row['ruid'], row['svuid'], row['fsuid']) and row['state'] != 'Z'
+        assert set(row) == common | ({'cwd', 'exe'} if required else set())
+        assert row['pid'] > 0 and row['pid'] not in pids and row['start']
+        pids.add(row['pid'])
+        if required:
+            assert row['cwd'].startswith('/') and row['exe'].startswith('/')
+
+
+def native_process_table() -> list[dict]:
+    global _NATIVE_LAST
+    assert _NATIVE_OBSERVER is not None and os.getuid() == os.geteuid() != 0
+    receipt, binding = _NATIVE_OBSERVER
+    # Reauthenticate each invocation; no inherited loader/config/environment.
+    verify_receipt(receipt)
+    binary = verify_receipt(binding['binary'])
+    sudo = verify_receipt(binding['sudo'])
+    result = subprocess.run([str(sudo), '-n', '--', str(binary), str(os.getuid())],
+                            cwd='/', env={'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C'},
+                            capture_output=True, timeout=30)
+    _NATIVE_LAST = {'argv': result.args, 'exit': result.returncode,
+                    'stdout_sha256': hashlib.sha256(result.stdout).hexdigest(),
+                    'stderr': result.stderr.decode(errors='replace')}
+    assert len(result.stdout) <= 32 * 1024 * 1024 and len(result.stderr) <= 65536
+    # Preserve complete native snapshots, including failures, in owned evidence.
+    # This write is ordinary Python; the elevated executable only writes stdout.
+    directory = Path(receipt['path']).parent / 'native-observations'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    assert not directory.is_symlink() and directory.stat().st_uid == os.getuid()
+    assert not directory.stat().st_mode & 0o022
+    observation = directory / f'{os.getpid()}-{time.time_ns()}'
+    compressed = gzip.compress(result.stdout, mtime=0)
+    assert sum(p.stat().st_size for p in directory.iterdir()) + len(compressed) < 64 * 1024 * 1024
+    with observation.with_suffix('.json.gz').open('xb') as stream:
+        stream.write(compressed)
+    with observation.with_suffix('.receipt.json').open('x') as stream:
+        json.dump(_NATIVE_LAST, stream, sort_keys=True)
+    snapshot = json.loads(result.stdout)
+    _NATIVE_LAST['snapshot'] = snapshot
+    if result.returncode or snapshot.get('complete') is not True:
+        raise RuntimeError(f'native observer exit {result.returncode}: {snapshot.get("error")}')
+    _validate_native_snapshot(snapshot)
+    assert snapshot['abi'] == binding['native']['abi']
+    for row in snapshot['rows']:
+        for key in ('cwd', 'exe'):
+            if key in row:
+                row[key] = os.fsdecode(row[key].encode('latin1'))
+    return [row for row in snapshot['rows'] if row['state'] != 'Z']
 RETIRED = (
     ('GET', '/assistant/status'), ('POST', '/assistant/init'),
     ('POST', '/assistant/register'), ('POST', '/assistant/repair'),
@@ -124,6 +256,8 @@ def snapshot(path: Path) -> dict:
 
 def process_table() -> list[dict]:
     """Whole OS table with kernel start identities; no product observer imports."""
+    if _NATIVE_OBSERVER is not None:
+        return native_process_table()
     rows = []
     if sys.platform == 'linux':
         for entry in Path('/proc').iterdir():
@@ -458,6 +592,8 @@ class Driver:
         stub.chmod(0o700)
         binding = {'cli':self.cli,'root':str(self.root),'retry':retry,'stub_sha256':digest(stub),
                    'api':self.base, 'driver_sha256':digest(Path(__file__)), 'stub':str(stub), 'held':held}
+        if _NATIVE_OBSERVER is not None:
+            binding['native_observer'] = _NATIVE_OBSERVER[0]
         (self.root/'stub-binding.json').write_text(json.dumps(binding))
         self.command(self.cli + ['executor-binaries','register','codex','--path',str(stub)])
         entries = self.request('GET','/executor-binaries')[1]['entries']
@@ -578,6 +714,8 @@ class Driver:
 
 def stub(binding_path: Path, argv: list[str]) -> int:
     binding=json.loads(binding_path.read_text()); root=Path(binding['root'])
+    if 'native_observer' in binding:
+        configure_native_observer(binding['native_observer'])
     assert digest(Path(binding['stub']))==binding['stub_sha256']
     assert digest(Path(__file__))==binding['driver_sha256']
     assert binding_path.resolve().is_relative_to(root)
@@ -648,6 +786,9 @@ def validate_origin(manifest: dict, origin: str) -> None:
             'daemon_argv','cli_argv','path','skills_root','source_manifest','constraints'}
     extra=({'site_packages','record','console','interpreter'} if origin=='wheel' else
            {'native_os_receipt','daemon_archive','cli_archive','build_tocs','executables','bundle_root'})
+    if 'native_observer' in manifest:
+        extra = extra | {'native_observer'}
+        configure_native_observer(manifest['native_observer'])
     assert set(manifest)==common|extra, 'unknown or missing origin-manifest fields'
     assert manifest['schema_version']==1 and manifest['origin']==origin
     assert manifest['source_role'] in ('baseline','candidate')

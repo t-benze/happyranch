@@ -21,7 +21,7 @@ import websockets.sync.client
 
 from runtime.daemon import paths
 from tests.helpers.assistant_retirement_artifact_driver import (
-    LEGACY_CASES, RETIRED, owned_processes, process_table, resolve_refs, seed_legacy, snapshot,
+    LEGACY_CASES, RETIRED, configure_native_observer, owned_processes, process_table, resolve_refs, seed_legacy, snapshot,
 )
 from tests.helpers.integration_stub_guard.guard import assert_launch_witness
 from tests.integration.conftest import seed_agent_definition
@@ -34,6 +34,8 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def retirement_settings(monkeypatch):
+    if 'HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT' in os.environ:
+        configure_native_observer(json.loads(os.environ['HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT']))
     monkeypatch.setenv('HAPPYRANCH_EXECUTOR_RATE_LIMIT_BACKOFF_SECONDS','[90]')
     monkeypatch.setenv('HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS','0')
 
@@ -213,7 +215,9 @@ def test_held_owner_swap_and_same_root_characterization(shipping,runtime_contain
         python - "$task_id" "$session_id" "$$" <<'OBSERVE'
 import json,sys,time
 from pathlib import Path
-from tests.helpers.assistant_retirement_artifact_driver import process_table
+from tests.helpers.assistant_retirement_artifact_driver import configure_native_observer, process_table
+admission={os.environ.get('HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT')!r}
+if admission:configure_native_observer(json.loads(admission))
 Path({str(started)!r}).write_text(json.dumps({{'task':sys.argv[1],'session':sys.argv[2],'process':next(r for r in process_table() if r['pid']==int(sys.argv[3]))}}))
 OBSERVE
         for attempt in $(seq 1 600); do test -e {shlex.quote(str(release))} && break; sleep .1; done
@@ -268,7 +272,9 @@ def test_nonrunning_retry_owner_all_runtime_census(shipping,runtime_container,fa
             python - "$task_id" "$session_id" "$$" <<'OBSERVE'
 import json,sys,time
 from pathlib import Path
-from tests.helpers.assistant_retirement_artifact_driver import process_table
+from tests.helpers.assistant_retirement_artifact_driver import configure_native_observer, process_table
+admission={os.environ.get('HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT')!r}
+if admission:configure_native_observer(json.loads(admission))
 Path({str(marker)!r}).write_text(json.dumps({{'task':sys.argv[1],'session':sys.argv[2],'at':time.monotonic(),'process':next(r for r in process_table() if r['pid']==int(sys.argv[3]))}}))
 OBSERVE
             echo 'rate limit' >&2; exit 1

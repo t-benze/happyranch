@@ -83,6 +83,16 @@ def build_environment(root: Path, source: Path, python: Path, uv: Path,
     }
     if real_platform:
         env["HAPPYRANCH_TEST_REAL_PLATFORM"] = "1"
+    # Test-only evidence descriptor; never copy ambient runner env wholesale.
+    # The retirement fixture authenticates it before any elevated observer.
+    if "HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT" in os.environ:
+        receipt = json.loads(os.environ["HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT"])
+        assert set(receipt) == {"path", "sha256"}
+        receipt_path = Path(receipt["path"])
+        assert receipt_path.is_absolute() and not receipt_path.is_symlink()
+        assert not receipt_path.stat().st_mode & 0o022
+        assert digest(receipt_path) == receipt["sha256"]
+        env["HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT"] = json.dumps(receipt)
     return env
 
 
