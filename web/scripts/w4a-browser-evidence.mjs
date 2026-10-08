@@ -1180,6 +1180,50 @@ async function main() {
           reachable: hit === el || el.contains(hit) };
       })()`;
       const reachExpected = { found: true, bounds: true, clips: [], textBounds: true, readable: true, reachable: true };
+      // Human evidence for the recent-task labels/state messages themselves:
+      // every occurrence of each target text (its innermost element in <main>)
+      // is scrolled into view and captured, never the Edit control. Sequential
+      // shots continue until every occurrence has been visible in one; the set
+      // measured immediately before AND after each shot (no scroll between)
+      // is recorded with the page target id, so DOM and image agree.
+      const targetVisibility = texts => `(() => {
+        const main = document.querySelector('main'), out = [];
+        ${JSON.stringify(texts)}.forEach((t, ti) => [...main.querySelectorAll('*')]
+          .filter(e => e.textContent.includes(t) && ![...e.children].some(c => c.textContent.includes(t)))
+          .forEach((e, oi) => {
+            const r = e.getBoundingClientRect(), css = getComputedStyle(e);
+            let visible = r.width > 0 && r.height > 0 && r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1
+              && css.visibility === 'visible' && css.opacity !== '0';
+            for (let p = e.parentElement; visible && p; p = p.parentElement) {
+              const s = getComputedStyle(p), b = p.getBoundingClientRect();
+              if (/(hidden|clip|auto|scroll)/.test(s.overflowX) && (r.left < b.left - 1 || r.right > b.right + 1)) visible = false;
+              if (/(hidden|clip|auto|scroll)/.test(s.overflowY) && (r.top < b.top - 1 || r.bottom > b.bottom + 1)) visible = false;
+            }
+            const hit = visible && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            out.push({ key: ti + ':' + oi, text: t, visible: Boolean(hit) && (hit === e || e.contains(hit)) });
+          }));
+        return out;
+      })()`;
+      async function captureTargets(page, name, texts, meta) {
+        const all = await evaluate(page, targetVisibility(texts));
+        const pending = new Set(all.map(row => row.key));
+        const missing = texts.filter((t, ti) => !all.some(row => row.key.startsWith(ti + ':')));
+        const shots = [];
+        while (pending.size && shots.length < all.length) {
+          const [ti, oi] = [...pending][0].split(':').map(Number);
+          await evaluate(page, `(() => { const t = ${JSON.stringify(texts)}[${ti}]; const e = [...document.querySelectorAll('main *')]
+            .filter(e => e.textContent.includes(t) && ![...e.children].some(c => c.textContent.includes(t)))[${oi}]; e.scrollIntoView({ block: 'center', inline: 'nearest' }); return true; })()`);
+          await sleep(150);
+          const before = (await evaluate(page, targetVisibility(texts))).filter(row => row.visible).map(row => row.key);
+          if (!before.some(key => pending.has(key))) break;
+          const file = shots.length ? `${name}-${shots.length + 1}` : name;
+          await capture(page, file, { ...meta, pageTarget: page.targetId, visibleTargets: before });
+          const after = (await evaluate(page, targetVisibility(texts))).filter(row => row.visible).map(row => row.key);
+          shots.push({ file, before, after });
+          for (const key of before) pending.delete(key);
+        }
+        return { missing, uncaptured: [...pending], shotsStable: shots.every(s => JSON.stringify(s.before) === JSON.stringify(s.after)), shots: shots.length };
+      }
       if (arg('agents-case', 'all') !== 'switch') {
       beginCase('C9-V', 'C9 focused Agents populated/loading/empty/error en/zh-CN at 390/1440');
       for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[390, 844], [1440, 900]]) {
@@ -1200,8 +1244,12 @@ async function main() {
               check(`C9 Agents ${locale} ${width} ${id} sibling lineage`, await evaluate(page, `Boolean(${link}) && !${link}.parentElement.closest('a')`), true);
             }
           }
+          const targets = state === 'populated'
+            ? [tr(locale, 'tasks.waiting.subtasks'), tr(locale, 'tasks.waiting.jobs'), tr(locale, 'tasks.age.minutes', { count: 5 }), tr(locale, 'tasks.row.supersedes', { id: 'TASK-CASE-P' }), tr(locale, 'tasks.row.supersededBy', { id: 'TASK-CASE-R' })]
+            : [stateCopy];
+          const captured = await captureTargets(page, `c9-${locale}-${state}-${width}`, targets, { locale, state, viewport: `${width}x${height}` });
+          check(`C9 Agents ${state} ${locale} ${width} recent-task targets visibly captured`, { missing: captured.missing, uncaptured: captured.uncaptured, stable: captured.shotsStable, shot: captured.shots > 0 }, { missing: [], uncaptured: [], stable: true, shot: true });
           check(`C9 Agents ${state} ${locale} ${width} Edit readable/reachable`, await evaluate(page, reachable(EDIT(locale))), reachExpected);
-          await capture(page, `c9-${locale}-${state}-${width}`, { locale, state, viewport: `${width}x${height}` });
           if (state === 'populated') {
             await clickSrc(page, `document.querySelector('main a[href="/orgs/${ORG}/tasks/TASK-CASE-A"]')`);
             check(`C9 Agents ${locale} ${width} original task navigation action`, await waitTrue(page, `location.pathname === '/orgs/${ORG}/tasks/TASK-CASE-A'`, 'original task navigation'), true);

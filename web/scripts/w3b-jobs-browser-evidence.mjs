@@ -358,16 +358,27 @@ async function main() {
           const card = ${card}; if (!card) return { found: false };
           card.scrollIntoView({ block: 'center' });
           const errors = [];
-          for (const el of card.querySelectorAll('h3,p,li > span:not([aria-hidden]),a')) {
+          // Every row descendant (badge, waiting qualifier, ID link), not just the
+          // row's direct children: text line boxes on BOTH axes, and a row label
+          // must read as one line rather than a phrase stacked glyph by glyph.
+          for (const el of card.querySelectorAll('h3,p,li span:not([aria-hidden]),a')) {
             const r = el.getBoundingClientRect(), css = getComputedStyle(el);
             if (!r.width || !r.height || r.left < 0 || r.right > innerWidth + 1 || Number.parseFloat(css.fontSize) < 10 || css.visibility !== 'visible' || css.opacity === '0') errors.push(el.tagName + ':bounds/readability');
             if (!el.classList.contains('truncate')) {
               const text = document.createRange(); text.selectNodeContents(el);
-              if ([...text.getClientRects()].some(b => b.left < r.left - 1 || b.right > r.right + 1 || b.left < 0 || b.right > innerWidth + 1)) errors.push(el.tagName + ':text bounds');
+              const boxes = [...text.getClientRects()].filter(b => b.width > 0);
+              if (boxes.some(b => b.left < r.left - 1 || b.right > r.right + 1 || b.left < 0 || b.right > innerWidth + 1)) errors.push(el.tagName + ':text bounds');
+              if (boxes.some(b => b.top < r.top - 1 || b.bottom > r.bottom + 1 || b.top < 0 || b.bottom > innerHeight + 1)) errors.push(el.tagName + ':text vertical bounds');
+              let lines = 0, lineBottom = -Infinity;
+              for (const b of boxes.sort((x, y) => x.top - y.top)) {
+                if (b.top >= lineBottom - 1) { lines += 1; lineBottom = b.bottom; } else lineBottom = Math.max(lineBottom, b.bottom);
+              }
+              if (el.closest('li') && lines > 1) errors.push(el.tagName + ':' + JSON.stringify(el.textContent) + ' split across ' + lines + ' lines');
             }
             for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
               const a = ancestor.getBoundingClientRect(), style = getComputedStyle(ancestor);
               if (/(hidden|clip|auto|scroll)/.test(style.overflowX) && (r.left < a.left - 1 || r.right > a.right + 1)) errors.push(el.tagName + ':clipping ancestor');
+              if (/(hidden|clip|auto|scroll)/.test(style.overflowY) && (r.top < a.top - 1 || r.bottom > a.bottom + 1)) errors.push(el.tagName + ':vertical clipping ancestor');
             }
             if (el.matches('a')) { const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (hit !== el && !el.contains(hit)) errors.push('link:unreachable'); }
           }

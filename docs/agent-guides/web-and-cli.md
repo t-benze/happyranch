@@ -99,7 +99,12 @@ The focused synthetic browser selections are
 `web/scripts/w3b-jobs-browser-evidence.mjs --slice cascade`, against the ordinary
 build with private profiles and ephemeral fixture/CDP ports. They observe
 populated/loading/empty/error states in both locales at 390/1440, original task
-navigation, control/text bounds and clipping ancestors. The Agents case uses a
+navigation, control/text bounds and clipping ancestors. The Jobs case measures
+every cascade-row descendant's text line boxes on both axes and rejects a row
+label (waiting qualifier, task ID) split across lines. The Agents case scrolls
+each recent-task label and state message into view and captures it, in
+sequential shots when one viewport cannot hold them all, recording the targets
+measured visible just before and after each shot. The Agents case uses a
 valid prompt revision and checks the retained editor before any new lookup,
 authored multiline draft, selection 3:8, focus and request/transport silence in
 both switch directions. The unchanged prompt owner tests retain Save/readback
