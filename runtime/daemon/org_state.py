@@ -105,6 +105,8 @@ class OrgState:
         try:
             from runtime.infrastructure.memory_collection import CollectionObserver
             self.memory_collection = CollectionObserver(org=self.slug, root=self.root, db=self.db)
+            self.memory_collection.context = self
+            self.db._memory_collection_context = self
             self.orchestrator.attach_memory_collection(self.memory_collection)
         except Exception:
             self.memory_collection_unavailable = "observer_initialization_failed"
@@ -161,8 +163,8 @@ class OrgState:
     def memory_collection_observation(self) -> dict:
         """Read this serving org; observation failure never changes launch state."""
         try:
-            from runtime.infrastructure.memory_collection import serving_observation
-            return serving_observation(self)
+            from runtime.infrastructure.memory_collection import serving_observation, current_epoch_references
+            return current_epoch_references(self, serving_observation(self))
         except Exception:
             # Module/constructor acquisition can itself be unavailable. Keep the
             # ordinary audit route usable without importing a second observer.

@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
 from runtime.models import TaskRecord, TaskStatus
 from runtime.orchestrator.teams import TeamManager
-from tests.workflows.test_template_store import VALID_DEFINITION
+from tests.workflows.test_template_store import VALID_DEFINITION, GENERIC_VECTORS
 
 
 BASE = "/api/v1/orgs/alpha/workflows/templates"
@@ -77,21 +79,29 @@ def _agent_client(client: TestClient) -> TestClient:
     return TestClient(client.app)
 
 
+@pytest.mark.parametrize("format_row", ["legacy", "product", "proposal", "A", "Z"])
 def test_verified_current_manager_publish_list_show_and_founder_publish(
-    client_with_runtime,
+    client_with_runtime, format_row,
 ) -> None:
     founder_client, org = client_with_runtime
     session_id = _active_session(org, "engineering_head")
     agent_client = _agent_client(founder_client)
 
+    definition = VALID_DEFINITION if format_row == "legacy" else next(row[1] for row in GENERIC_VECTORS if row[0] == format_row)
     published = agent_client.post(
-        f"{BASE}/publish", params={"session_id": session_id}, json=_body(),
+        f"{BASE}/publish", params={"session_id": session_id}, json=_body(definition=copy.deepcopy(definition)),
     )
     assert published.status_code == 201, published.text
     item = published.json()
     assert item["namespace"] == "org/alpha/team/engineering"
     assert item["version"] == 1
     assert item["publisher"]["principal_id"] == "engineering_head"
+    raw = json.dumps(definition, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    assert item["definition_json"].encode() == raw
+    assert item["definition_digest"] == hashlib.sha256(raw).hexdigest()
+    family = "1" if format_row == "legacy" else "2"
+    assert (item["compiler_pin"], item["validator_pin"], item["source_pin"]) == (
+        f"workflow-compiler@{family}", f"workflow-validator@{family}", f"operator-input@{family}")
     assert base64.b64decode(item["definition_bytes_base64"]) == item["definition_json"].encode()
 
     listed = founder_client.get(BASE, params={"team_slug": "engineering"})
@@ -103,7 +113,7 @@ def test_verified_current_manager_publish_list_show_and_founder_publish(
 
     founder_body = _body(
         operation_key="founder-op", template_name="founder-design",
-        team_slug="engineering",
+        team_slug="engineering", definition=copy.deepcopy(definition),
     )
     founder = founder_client.post(f"{BASE}/publish", json=founder_body)
     assert founder.status_code == 201, founder.text
@@ -196,8 +206,9 @@ def test_route_error_codes_are_stable_and_refusals_have_zero_residue(
     assert _counts(org) == before
 
 
+@pytest.mark.parametrize("format_row", ["legacy", "product", "proposal", "A", "Z"])
 def test_publish_never_mutates_cutover_activation_task_outbox_or_authority_rows(
-    client_with_runtime,
+    client_with_runtime, format_row,
 ) -> None:
     founder_client, org = client_with_runtime
     session_id = _active_session(org, "engineering_head")
@@ -210,8 +221,9 @@ def test_publish_never_mutates_cutover_activation_task_outbox_or_authority_rows(
     )
     before = {table: tuple(map(tuple, conn.execute(f"SELECT * FROM {table}"))) for table in protected}
 
+    definition = VALID_DEFINITION if format_row == "legacy" else next(row[1] for row in GENERIC_VECTORS if row[0] == format_row)
     response = _agent_client(founder_client).post(
-        f"{BASE}/publish", params={"session_id": session_id}, json=_body(),
+        f"{BASE}/publish", params={"session_id": session_id}, json=_body(definition=copy.deepcopy(definition)),
     )
     assert response.status_code == 201, response.text
     after = {table: tuple(map(tuple, conn.execute(f"SELECT * FROM {table}"))) for table in protected}

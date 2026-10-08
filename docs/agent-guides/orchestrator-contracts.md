@@ -1972,16 +1972,38 @@ The seal-action audit GET reads the actual serving OrgState through its
 `memory_collection_observation` accessor. Nonblocking short observer snapshots
 and database-revision reads bracket bounded interpreter/source/registry/file
 identity acquisition; no database-held callback enters the observer, no metadata
-lock spans file reads, and GET never reseals or exhaustively validates history.
+lock spans file reads, and GET never reseals or writes collection history.
 A held metadata/database lock, pending preparation/writer, sticky error, changed
 boot/context or moving bookends withholds `data_through`. Failure is local to
 this read and cannot poison launch/callback/startup outcomes. A stable cutoff is
-source evidence only. Durable independent acceptance/atomic epoch transition
-and both health consumers remain a later G1 unit; epoch refs are always null.
-The exact closed projection is in the corrective memory spec.
+source evidence only. G1 epoch references are projected only after complete
+original acceptance and current-health validation, with stable evidence/source
+bookends and zero reader writes. Both successful `_log_step_result` arms
+reconcile their exact admitted row after existing completion logging; failure
+withholds authority without changing the ordinary callback/decision outcome.
+Database publication serializes observer then DB, rechecks records inside
+BEGIN IMMEDIATE and appends only new audit rows. File/output acquisition stays
+outside the DB reservation. New initial/reset checks probe age at final commit;
+equivalent replay authenticates the original committed boundary and preserves
+its ID/time. Invalidations remain append-only; reset requires fresh QA and exact
+predecessor. The exact closed projection is in the corrective memory spec.
 
 
 ### S2 initial draft consumers
+
+The document-review @2 compiler supplies the abstract author, role kinds,
+reviewer membership, output, outcomes, return/revision and submission capability.
+Activation binds current authorized actual principals separately and snapshots
+both raw definition and compiled contract. Only declared author inputs appear in
+the task brief; the immutable context retains all authorized pins/bytes. Claim,
+prelaunch and discovery load that exact retained template through the activation
+owner before checking current role membership. The task allocator, host keys,
+receipt-bound callback/result, containment and recovery owners remain unchanged.
+A successful author completes a draft; no submission, reviewer task, signature,
+join or manager decision is produced. Historical @1 closure reconstructs its
+original bytes without adding @2 defaults. New @2 closure matches only @2 requests,
+exact template pins and its original retained authority publication.
+
 
 Current S2 source supersedes the earlier U2A/U2B prerequisite statements that
 activation has no readiness consumer. Admission and prelaunch use captured

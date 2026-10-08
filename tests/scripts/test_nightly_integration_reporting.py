@@ -181,8 +181,8 @@ def test_bounded_output_returns_zero_for_success(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize('event,all_only,expected_integration', [
-    ('schedule', None, True), ('workflow_dispatch', None, True),
-    ('workflow_dispatch', False, True), ('workflow_dispatch', True, False),
+    ('schedule', None, True), ('workflow_dispatch', None, False),
+    ('workflow_dispatch', False, False), ('workflow_dispatch', True, False),
 ], ids=['schedule', 'manual-default', 'manual-false', 'manual-true'])
 def test_nightly_workflow_all_only_selection(event, all_only, expected_integration, tmp_path: Path) -> None:
     import ast
@@ -193,7 +193,7 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     assert set(inputs) == {'all_only'}
     assert inputs['all_only']['type'] == 'boolean' and inputs['all_only']['default'] == 'false'
     job = document['jobs']['integration']
-    assert job['if'] == "${{ github.event_name != 'workflow_dispatch' || !inputs.all_only }}"
+    assert job['if'] == "${{ github.event_name == 'schedule' }}"
     import re
     expression = job['if'].removeprefix('${{').removesuffix('}}').strip()
     expression = expression.replace('github.event_name', 'event').replace('inputs.all_only', 'all_only')
@@ -357,6 +357,42 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     controls = next(ast.literal_eval(node.value) for node in ast.walk(tree)
                     if isinstance(node, ast.Assign) and len(node.targets) == 1
                     and isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'SOURCE_CONTROLS')
+    # The real source-copy controls retain their IDs and original case closure.
+    assert len(controls) == 40
+    control_by_id = {control['id']: control for control in controls}
+    cold = control_by_id['lost-notification-discovery']
+    assert cold['isolated_ids'] == [30] and cold['red_kind'] == 'business'
+    assert expected_isolated[29].endswith('::test_lost_notification_cold_discovery_and_duplicate_enqueue_keep_original_attempt')
+    assert cold['patches'] == [{'path': 'runtime/workflows/recovery.py', 'function': 'recover_owned_task',
+        'old': '        queue.enqueue_if_absent(slug, task_id)',
+        'new': '        return True  # source-copy regression: lose initial queued-draft discovery'}]
+    assert cold['required_assertion'] == 'durable lost notification was not rediscovered exactly once'
+    assert cold['required_source'] == 'assert state.queue._queue.qsize() == 1'
+    assert cold['required_observed'] == 'assert 0 == 1'
+    revision = control_by_id['original-event-revision']
+    assert revision['isolated_ids'] == [3]
+    assert revision['required_assertion'] == 'assert {9} == {4}'
+    assert revision['required_source'] == "assert {r[0] for r in observer.execute('SELECT revision FROM workflow_events')} == {4}"
+    predicate = control_by_id['manual-integration-predicate']
+    assert predicate['isolated_ids'] == [101]
+    assert predicate['patches'] == [{'path': '.github/workflows/nightly-integration.yml', 'function': None,
+        'old': "\n    if: ${{ github.event_name == 'schedule' }}\n", 'new': "\n    if: ${{ github.event_name != 'schedule' }}\n"}]
+    assert "body.replace(patch['old'], patch['new'], 1)" in python
+    suspension = next(node for node in tree.body if isinstance(node, ast.Assign)
+                      and isinstance(node.targets[0], ast.Name) and node.targets[0].id == 'PYTHON_UNIT_SUSPENDED')
+    assert isinstance(suspension.value, ast.Constant) and suspension.value.value is True
+    follow_on = next(node for node in tree.body if isinstance(node, ast.If)
+                     and any(isinstance(child, ast.Name) and child.id == 'PYTHON_UNIT_SUSPENDED'
+                             for child in ast.walk(node.test)))
+    assert isinstance(follow_on.test, ast.BoolOp) and isinstance(follow_on.test.op, ast.And)
+    assert isinstance(follow_on.test.values[0], ast.UnaryOp) and isinstance(follow_on.test.values[0].op, ast.Not)
+    assert follow_on.test.values[0].operand.id == 'PYTHON_UNIT_SUSPENDED'
+    # All unit/collection/control/repetition execution remains inside that guard.
+    assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id in {'fixed_command', 'source_controls', 'run_phase'}
+                   for statement in tree.body if statement is not follow_on for node in ast.walk(statement))
+    assert "'status': 'SUSPENDED / SKIPPED'" in python and "'children_launched': 0" in python
+    assert python.index("print(json.dumps(receipt['g_follow_on']") < python.index('FIXED_ISOLATED')
     assert len({control['id'] for control in controls}) == len(controls)
     assert {i for control in controls for i in control['isolated_ids']} == set(range(1, 102))
     origin = next(control for control in controls if control['red_kind'] == 'mixed-origin')
@@ -393,7 +429,8 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     import time
     nested = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     assert 'run_batch' in nested, 'missing bounded child scheduler'
-    namespace = {'concurrent': concurrent, 'json': __import__('json')}
+    namespace = {'concurrent': concurrent, 'json': __import__('json'),
+                 'owned': tmp_path, 'head': 'test-source', 'compact_error': lambda exc: {'message': str(exc)}}
     exec(compile(ast.Module(body=[nested['run_batch']], type_ignores=[]), '<workflow scheduler>', 'exec'), namespace)
     lock = threading.Lock()
     active = peak = 0
@@ -433,7 +470,11 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     assert "record['import_proof']" in python
     assert "'full-log.json'" in python and "'raw_sha256'" in python
     assert "'stored_sha256'" in python and "'complete'" in python
-    assert 'gzip.open(collected /' in python
+    assert "log_manifest['streams']['stdout']['segments']" in python
+    assert "record['junit'] = capture_stream" in python
+    assert "'junit_manifest': str(command_dir / 'junit.xml.json')" in python
+    assert "'failure': n.find('failure').text" not in python
+    assert "error=str(exc)" not in python and "'errors': str(exc)" not in python
 
     # Observe the actual shipping stream capture, including a truncated tail and
     # a nonzero child. Full byte identity is independent of the runner's tail.
@@ -443,8 +484,11 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     import os
     import signal
     namespace.update(gzip=gzip, hashlib=hashlib, os=os, pathlib=__import__('pathlib'),
-                     signal=signal, subprocess=subprocess, sys=sys, source=ROOT)
-    exec(compile(ast.Module(body=[nested['bounded_run']], type_ignores=[]), '<workflow capture>', 'exec'), namespace)
+                     signal=signal, subprocess=subprocess, sys=sys, source=ROOT, evidence=tmp_path,
+                     concurrent=concurrent, threading=threading, artifact_lock=threading.Lock(), artifact_reserved=0,
+                     SEGMENT_BYTES=8 * 1024 * 1024, MAX_MEMBER_BYTES=128 * 1024 * 1024,
+                     MAX_ARCHIVE_BYTES=512 * 1024 * 1024)
+    exec(compile(ast.Module(body=[nested['capture_stream'], nested['bounded_run']], type_ignores=[]), '<workflow capture>', 'exec'), namespace)
     log_root = tmp_path / 'lossless'
     log_root.mkdir()
     payload = b'contract-stream\n' * 80000
@@ -461,6 +505,50 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     assert metadata['stored_sha256'] == hashlib.sha256(stored).hexdigest()
     assert json.loads((log_root / 'full-log.json').read_text()) == metadata
     assert (log_root / 'tail.log').read_bytes().startswith(b'[nightly log truncated;')
+    # Keep original tail/complete/nonzero assertions; independently consume every
+    # ordered segment and the separate runner-stderr manifest as retained files.
+    assert metadata['streams']['stderr']['complete'] is True
+    assert metadata['streams']['stderr']['raw_bytes'] == 0
+    namespace['SEGMENT_BYTES'] = 128 * 1024  # Test-local capture input, no production seam.
+    segmented = tmp_path / 'segmented'
+    segmented.mkdir()
+    status, split = namespace['bounded_run'](argv, cwd=ROOT, env=os.environ.copy(),
+        directory=segmented, tail=segmented / 'tail.log')
+    assert status == 7 and split['complete'] is True
+    assert len(split['segments']) > 1
+    chunks = []
+    for ordinal, segment in enumerate(split['segments'], 1):
+        stored = Path(segment['path']).read_bytes()
+        raw = gzip.decompress(stored)
+        assert segment['order'] == ordinal and segment['complete'] is True
+        assert len(raw) == segment['raw_bytes'] <= namespace['SEGMENT_BYTES']
+        assert len(stored) == segment['stored_bytes'] <= namespace['MAX_MEMBER_BYTES']
+        assert hashlib.sha256(raw).hexdigest() == segment['raw_sha256']
+        assert hashlib.sha256(stored).hexdigest() == segment['stored_sha256']
+        chunks.append(raw)
+    assert b''.join(chunks) == payload
+    assert split['raw_sha256'] == hashlib.sha256(payload).hexdigest()
+    assert json.loads((segmented / 'full-log.json').read_text()) == split
+    # Capture bound refusal and compact error references through the same source.
+    import io
+    namespace.update(io=io, tempfile=__import__('tempfile'))
+    exec(compile(ast.Module(body=[nested['compact_error']], type_ignores=[]), '<workflow errors>', 'exec'), namespace)
+    message = 'attributable failure evidence\n' * 80000
+    error = namespace['compact_error'](RuntimeError(message))
+    raw = message.encode()
+    assert len(error['message'].encode()) <= 1024
+    assert error['message_bytes'] == len(raw) and error['message_sha256'] == hashlib.sha256(raw).hexdigest()
+    manifest = json.loads(Path(error['message_manifest']).read_text())
+    assert error['message_complete'] is True and manifest['complete'] is True
+    assert b''.join(gzip.decompress(Path(segment['path']).read_bytes()) for segment in manifest['segments']) == raw
+    namespace['MAX_ARCHIVE_BYTES'] = 1  # Test-local bound, not a production override.
+    refused = tmp_path / 'refused'
+    refused.mkdir()
+    with pytest.raises(RuntimeError, match='archive bound'):
+        namespace['capture_stream'](io.BytesIO(b'not silently discarded'), directory=refused, stem='bound.log')
+    incomplete = json.loads((refused / 'bound.log.json').read_text())
+    assert incomplete['complete'] is False and incomplete['raw_bytes'] == 0
+
     required_assignment = next(n for n in ast.walk(nested['fixed_command'])
         if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
         and n.targets[0].id == 'required')

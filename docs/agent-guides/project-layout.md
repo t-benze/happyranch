@@ -52,7 +52,7 @@ Tracked source is split by product surface:
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
-|   |   `-- db/                  # Database facade mixins: task core, dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads (including the unchanged uncommitted pin helper; facade clock remains late-bound), reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
+|   |   `-- db/                  # Database facade mixins: task core, dreams (including the unchanged candidate updater; facade clock remains late-bound), knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads (including the unchanged uncommitted pin helper; facade clock remains late-bound), reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |   |-- task_prompt_headers.py # read-only roster, revisit/resolution, prior-step/chain and fanout headers; same-object exports through run_step.py
 |   |   |-- task_terminal_readers.py # four unchanged verdict/carrier/fingerprint/terminal-report readers; same-object run_step exports; consumers, sentinel, state and patch lookup remain in the facade
@@ -116,6 +116,13 @@ late `_now` and shared `_synchronized` keep facade clock/time patches visible
 and use the same Database-owned RLock and lock logger. The committed setter,
 archive transaction, participant reset, audit, HTTP route and transcript owners
 remain in their existing modules; this leaf does not move those boundaries.
+
+`db/threads.py` also owns the unchanged 16-line `mark_invocation_declined`
+method in `ThreadsMixin`, immediately before `get_pending_invocation`.
+The inherited `Database` attribute remains the shipping and old patch path;
+the existing late facade clock and shared decorator retain the same connection,
+RLock, whole-clock and logger ownership. HTTP validation, modern settlement,
+`fail_invocation`, audit, SSE, queue and transcript consumers retain their owners.
 
 `db/tasks.py` owns `TasksMixin`: task core CRUD, query filtering/pagination,
 subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`

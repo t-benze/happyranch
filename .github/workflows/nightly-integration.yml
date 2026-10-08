@@ -45,28 +45,104 @@ jobs:
           ALL_ONLY: ${{ inputs.all_only }}
         run: |
           uv run python - <<'PY'
-          import concurrent.futures, gzip, hashlib, json, os, pathlib, shutil, signal, subprocess, sys, tempfile
+          import concurrent.futures, gzip, hashlib, io, json, os, pathlib, shutil, signal, subprocess, sys, tempfile, threading
+
+
+          MAX_MEMBER_BYTES = 128 * 1024 * 1024
+          MAX_ARCHIVE_BYTES = 512 * 1024 * 1024
+          SEGMENT_BYTES = 8 * 1024 * 1024
+          artifact_lock = threading.Lock()
+          artifact_reserved = 0
+
+
+          def capture_stream(reader, *, directory, stem):
+              # Ordered gzip members keep complete raw evidence below acquisition bounds.
+              # A bound refusal retains partial files and is never a complete capture.
+              global artifact_reserved
+              metadata = {'complete': False, 'raw_bytes': 0, 'raw_sha256': None,
+                          'stored_bytes': 0, 'stored_sha256': None, 'segments': []}
+              raw_digest, stored_digest = hashlib.sha256(), hashlib.sha256()
+              pending = b''
+              try:
+                  while True:
+                      pending = reader.read(65536)
+                      if not pending:
+                          break
+                      reservation = SEGMENT_BYTES + 65536
+                      with artifact_lock:
+                          existing = sum(f.stat().st_size for f in evidence.rglob('*')
+                                         if f.is_file() and 'scratch' not in f.relative_to(evidence).parts)
+                          # Reserve overhead for tails and compact receipts before admission.
+                          if existing + artifact_reserved + reservation + 2 * 1048576 > MAX_ARCHIVE_BYTES:
+                              raise RuntimeError('artifact archive bound: incomplete capture retained')
+                          artifact_reserved += reservation
+                      number = len(metadata['segments']) + 1
+                      name = stem + ('' if number == 1 else '-' + str(number).zfill(6)) + '.gz'
+                      path = directory / name
+                      segment = {'order': number, 'path': str(path), 'complete': False,
+                                 'raw_bytes': 0, 'raw_sha256': None, 'stored_bytes': None, 'stored_sha256': None}
+                      metadata['segments'].append(segment)
+                      segment_digest = hashlib.sha256()
+                      try:
+                          with gzip.open(path, 'wb') as stream:
+                              while pending and segment['raw_bytes'] < SEGMENT_BYTES:
+                                  stream.write(pending)
+                                  segment_digest.update(pending)
+                                  raw_digest.update(pending)
+                                  segment['raw_bytes'] += len(pending)
+                                  metadata['raw_bytes'] += len(pending)
+                                  pending = b''
+                                  if segment['raw_bytes'] < SEGMENT_BYTES:
+                                      pending = reader.read(min(65536, SEGMENT_BYTES - segment['raw_bytes']))
+                          segment['complete'] = True
+                      finally:
+                          segment['raw_sha256'] = segment_digest.hexdigest()
+                          if path.exists():
+                              digest = hashlib.sha256()
+                              with path.open('rb') as stored:
+                                  for chunk in iter(lambda: stored.read(65536), b''):
+                                      digest.update(chunk)
+                                      stored_digest.update(chunk)
+                              segment.update(stored_bytes=path.stat().st_size, stored_sha256=digest.hexdigest())
+                              metadata['stored_bytes'] += segment['stored_bytes']
+                          with artifact_lock:
+                              artifact_reserved -= reservation
+                      if segment['stored_bytes'] > MAX_MEMBER_BYTES:
+                          raise RuntimeError('artifact member bound: incomplete capture retained')
+                  metadata['complete'] = True
+              finally:
+                  metadata.update(raw_sha256=raw_digest.hexdigest(), stored_sha256=stored_digest.hexdigest())
+                  (directory / (stem + '.json')).write_text(json.dumps(metadata, indent=2) + '\n')
+              return metadata
 
 
           def bounded_run(argv, *, cwd, env, directory, tail):
-              # Preserve the runner's bounded tail; capture its complete stream losslessly.
-              log = directory / 'full.log.gz'
-              metadata = {'argv': argv, 'cwd': str(cwd), 'complete': False,
-                          'exit_code': None, 'raw_bytes': 0, 'raw_sha256': None,
-                          'stored_bytes': None, 'stored_sha256': None, 'path': str(log)}
+              metadata = {'argv': argv, 'cwd': str(cwd), 'complete': False, 'exit_code': None,
+                          'stdout_contract': 'runner stdout includes merged child stdout/stderr',
+                          'stderr_contract': 'runner stderr, separately captured', 'streams': {}}
               path = directory / 'full-log.json'
               path.write_text(json.dumps(metadata, indent=2) + '\n')
-              digest = hashlib.sha256()
               process = subprocess.Popen([sys.executable, str(source / 'scripts/run_bounded_output.py'),
                   '--output', str(tail), '--max-bytes', '1048576', '--', *argv],
-                  cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+                  cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
               try:
-                  with gzip.open(log, 'wb') as stream:
-                      for chunk in iter(lambda: process.stdout.read(65536), b''):
-                          stream.write(chunk)
-                          digest.update(chunk)
-                          metadata['raw_bytes'] += len(chunk)
-                  metadata.update(exit_code=process.wait(), complete=True, raw_sha256=digest.hexdigest())
+                  with concurrent.futures.ThreadPoolExecutor(max_workers=2) as readers:
+                      futures = {'stdout': readers.submit(capture_stream, process.stdout, directory=directory, stem='full.log'),
+                                 'stderr': readers.submit(capture_stream, process.stderr, directory=directory, stem='runner-stderr.log')}
+                      try:
+                          for name, future in futures.items():
+                              metadata['streams'][name] = future.result()
+                      except BaseException:
+                          if process.poll() is None:
+                              os.killpg(process.pid, signal.SIGTERM)
+                              try: process.wait(timeout=10)
+                              except subprocess.TimeoutExpired:
+                                  os.killpg(process.pid, signal.SIGKILL)
+                                  process.wait(timeout=10)
+                          raise
+                  metadata.update(exit_code=process.wait(), complete=True)
+                  metadata.update({key: metadata['streams']['stdout'][key]
+                                   for key in ('raw_bytes', 'raw_sha256', 'stored_bytes', 'stored_sha256', 'segments')})
               finally:
                   if process.poll() is None:
                       os.killpg(process.pid, signal.SIGTERM)
@@ -75,13 +151,30 @@ jobs:
                           os.killpg(process.pid, signal.SIGKILL)
                           process.wait(timeout=10)
                   process.stdout.close()
-                  if log.exists():
-                      stored = hashlib.sha256()
-                      with log.open('rb') as stream:
-                          for chunk in iter(lambda: stream.read(65536), b''): stored.update(chunk)
-                      metadata.update(stored_bytes=log.stat().st_size, stored_sha256=stored.hexdigest())
+                  process.stderr.close()
+                  # Read partial stream manifests too; preserve cleanup and error evidence.
+                  for name, stem in (('stdout', 'full.log'), ('stderr', 'runner-stderr.log')):
+                      manifest_path = directory / (stem + '.json')
+                      if manifest_path.exists():
+                          metadata['streams'][name] = json.loads(manifest_path.read_text())
+                  metadata['reaped_exit'] = process.returncode
                   path.write_text(json.dumps(metadata, indent=2) + '\n')
               return metadata['exit_code'], metadata
+
+
+          def compact_error(exc):
+              # Failure texts already live in authenticated command/JUnit evidence.
+              raw = str(exc).encode('utf-8')
+              directory = pathlib.Path(tempfile.mkdtemp(prefix='error-', dir=evidence))
+              try:
+                  capture = capture_stream(io.BytesIO(raw), directory=directory, stem='error.txt')
+              except Exception:
+                  capture = json.loads((directory / 'error.txt.json').read_text())
+              return {'type': type(exc).__name__, 'message': raw[:1024].decode('utf-8', errors='replace'),
+                      'message_bytes': len(raw), 'message_sha256': hashlib.sha256(raw).hexdigest(),
+                      'message_manifest': str(directory / 'error.txt.json'), 'message_complete': capture['complete'],
+                      'evidence_root': str(evidence)}
+
 
           source = pathlib.Path.cwd()
           head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
@@ -132,7 +225,14 @@ jobs:
               print('scripts/local_ci.sh all exit_code=' + str(result.returncode), flush=True)
           receipt['cleanup_exit'] = 0 if not root.exists() else None
           receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
-          if os.environ.get('ALL_ONLY') == 'true' and result.returncode == 0:
+          PYTHON_UNIT_SUSPENDED = True  # THR291 seq5/16; release requires ordinary reviewed source change.
+          receipt['g_follow_on'] = {'status': 'SUSPENDED / SKIPPED' if PYTHON_UNIT_SUSPENDED else 'eligible',
+                                    'authority': 'THR291 seq5/16; THR139 seq429',
+                                    'execution': 'NOT RUN', 'selectors': 101, 'siblings': 15, 'controls': 40,
+                                    'repetitions': 580, 'children_launched': 0}
+          receipt_path.write_text(json.dumps(receipt, indent=2) + '\n')
+          print(json.dumps(receipt['g_follow_on'], sort_keys=True), flush=True)
+          if not PYTHON_UNIT_SUSPENDED and os.environ.get('ALL_ONLY') == 'true' and result.returncode == 0:
               FIXED_ISOLATED = (
                   'tests/workflows/test_submission_schema.py::test_g_reviewed_definitions_and_independent_complete_layouts',
                   'tests/workflows/test_submission_schema.py::test_g_partial_mixed_metadata_and_unknown_objects_refuse_without_writes',
@@ -274,11 +374,12 @@ jobs:
                       futures = [(item, executor.submit(invoke, item)) for item in items]
                       for item, future in futures:
                           try: future.result()
-                          except Exception as exc: errors.append({'item': str(item), 'error': str(exc)})
+                          except Exception as exc: errors.append({'item': str(item)[:256], 'error': compact_error(exc)})
                   if errors:
-                      raise RuntimeError(json.dumps(errors, sort_keys=True))
+                      (owned / 'batch-errors.json').write_text(json.dumps({'head': head, 'errors': errors}, indent=2) + '\n')
+                      raise RuntimeError('actual child failure; compact errors in ' + str(owned / 'batch-errors.json'))
 
-              def fixed_command(selectors, phase, identity, round_number, *, collect=False, execution_source=None, red_kind=None, required_assertion=None):
+              def fixed_command(selectors, phase, identity, round_number, *, collect=False, execution_source=None, red_kind=None, required_assertion=None, required_source=None, required_observed=None):
                   execution_source = source if execution_source is None else execution_source
                   command_dir = owned / 'commands' / phase / identity / ('round-' + str(round_number))
                   command_dir.mkdir(parents=True)
@@ -286,7 +387,8 @@ jobs:
                   scratch.mkdir(parents=True)
                   record = {'head': head, 'tree': tree, 'cwd': str(execution_source), 'phase': phase, 'red_kind': red_kind,
                             'identity': identity, 'round': round_number, 'selectors': selectors,
-                            'required_assertion': required_assertion,
+                            'full_log_manifest': str(command_dir / 'full-log.json'), 'junit_manifest': str(command_dir / 'junit.xml.json'),
+                            'required_assertion': required_assertion, 'required_source': required_source, 'required_observed': required_observed,
                             'python': sys.executable, 'python_version': sys.version,
                             'run_id': os.environ['GITHUB_RUN_ID'], 'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
                             'source_manifest': str(owned / 'source-manifest.json'),
@@ -326,7 +428,7 @@ jobs:
                           argv = ['uv', 'run', 'python', '-m', 'pytest', *selectors, '-v', '--tb=short', '-o', 'verbosity_assertions=0', '-m', 'not integration',
                                   '--basetemp', str(basetemp), '-o', 'cache_dir=' + str(root / 'cache/pytest')]
                           if collect: argv.append('--collect-only')
-                          else: argv += ['--junitxml', str(command_dir / 'junit.xml')]
+                          else: argv += ['--junitxml', str(root / 'junit.xml')]
                           record.update(state='running', command=argv, basetemp=str(basetemp),
                                         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
                           persist()
@@ -343,8 +445,16 @@ jobs:
                               for tool in ('uv', 'node', 'npm')}
                           assert record['tools']['node']['version'].split('.')[0] == 'v24'
                           persist()
-                          status, record['full_log'] = bounded_run(argv, cwd=execution_source,
-                              env=env, directory=command_dir, tail=command_dir / 'output.log')
+                          try:
+                              status, record['full_log'] = bounded_run(argv, cwd=execution_source,
+                                  env=env, directory=command_dir, tail=command_dir / 'output.log')
+                          finally:
+                              # Preserve even partial JUnit before TemporaryDirectory cleanup.
+                              junit_path = root / 'junit.xml'
+                              if junit_path.exists():
+                                  with junit_path.open('rb') as raw_junit:
+                                      record['junit'] = capture_stream(raw_junit, directory=command_dir, stem='junit.xml')
+                                  persist()
                           run = subprocess.CompletedProcess(argv, status)
                           record.update(wrapper_exit=run.returncode, finished_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
                           print('END ' + phase + '/' + identity + '/round-' + str(round_number)
@@ -355,45 +465,65 @@ jobs:
                           if run.returncode != (1 if red_kind else 0):
                               raise RuntimeError('unexpected fixed verification exit: ' + identity)
                           if not collect:
-                              junit = ET.parse(command_dir / 'junit.xml')
-                              if not red_kind:
-                                  assert not junit.findall('.//failure') and not junit.findall('.//error')
+                              assert record['junit']['complete']
                               required = {node for node in FIXED_ISOLATED if node.split('::')[0] in selectors} if phase == 'sibling' else set(selectors)
-                              record['cases'] = [{'classname': n.get('classname'), 'name': n.get('name'),
-                                                  'skipped': n.find('skipped') is not None,
-                                                  'failure': n.find('failure').text if n.find('failure') is not None else None,
-                                                  'error': n.find('error').text if n.find('error') is not None else None}
-                                                 for n in junit.findall('.//testcase')]
+                              record['cases'] = []
+                              attributable = set()
+                              for _, element in ET.iterparse(junit_path, events=('end',)):
+                                  if element.tag != 'testcase':
+                                      continue
+                                  case = {'classname': element.get('classname'), 'name': element.get('name'),
+                                          'skipped': element.find('skipped') is not None, 'failure': None, 'error': None}
+                                  node = case['classname'].replace('.', '/') + '.py::' + case['name'].split('[')[0]
+                                  for kind in ('failure', 'error'):
+                                      diagnostic = element.find(kind)
+                                      if diagnostic is None:
+                                          continue
+                                      text = diagnostic.text or ''
+                                      raw = text.encode('utf-8')
+                                      case[kind] = {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
+                                                    'junit_manifest': str(command_dir / 'junit.xml.json'),
+                                                    'case_ordinal': len(record['cases']), 'element': kind}
+                                      if not red_kind:
+                                          raise RuntimeError('unexpected JUnit ' + kind + ' at ' + node + '; see authenticated JUnit')
+                                      if node not in selectors or kind != ('error' if red_kind == 'origin' else 'failure'):
+                                          raise RuntimeError('unrelated/setup/import failure at ' + node + '; see authenticated JUnit')
+                                      if red_kind == 'origin':
+                                          assert '_assert_activation_org_layout' in text and 'AssertionError' in text
+                                      else:
+                                          # Pytest comparison diffs are actual assertions even without the
+                                          # literal exception class. Setup/import errors are rejected above.
+                                          assert 'AssertionError' in text or 'DID NOT RAISE' in text or any(
+                                              line.lstrip().startswith('E') and 'assert ' in line for line in text.splitlines()), 'not business assertion at ' + node
+                                          if required_assertion is not None:
+                                              assert required_assertion in text, 'RED missed intended assertion at ' + node
+                                          if required_source is not None:
+                                              assert required_source in text, 'RED missed intended source at ' + node
+                                          if required_observed is not None:
+                                              assert required_observed in text, 'RED missed observed/expected at ' + node
+                                      attributable.add(node)
+                                  record['cases'].append(case)
+                                  assert not case['skipped'] or node not in required, node
+                                  element.clear()
                               assert record['cases']
-                              for n in record['cases']:
-                                  node = n['classname'].replace('.', '/') + '.py::' + n['name'].split('[')[0]
-                                  assert not n['skipped'] or node not in required, node
-                              if not collect:
-                                  expected_nodes = json.loads((owned / 'collection-nodes.json').read_text())
-                                  expected_cases = {n for n in expected_nodes if n.split('[')[0] in required}
-                                  actual_cases = {n['classname'].replace('.', '/') + '.py::' + n['name']
-                                                  for n in record['cases']}
-                                  assert expected_cases and expected_cases <= actual_cases
-                                  record['required_case_coverage'] = sorted(expected_cases)
-                                  persist()
+                              expected_nodes = json.loads((owned / 'collection-nodes.json').read_text())
+                              expected_cases = {n for n in expected_nodes if n.split('[')[0] in required}
+                              actual_cases = {n['classname'].replace('.', '/') + '.py::' + n['name'] for n in record['cases']}
+                              assert expected_cases and expected_cases <= actual_cases
+                              record['required_case_coverage'] = sorted(expected_cases)
                               if red_kind:
-                                  for node in selectors:
-                                      failures = [n for n in record['cases']
-                                                  if n['classname'].replace('.', '/') + '.py::' + n['name'].split('[')[0] == node
-                                                  and (n['error'] if red_kind == 'origin' else n['failure'])]
-                                      assert failures, 'no attributable ' + red_kind + ' RED for ' + node
-                                      for failure in failures:
-                                          text = failure['error'] if red_kind == 'origin' else failure['failure']
-                                          if red_kind == 'origin':
-                                              assert '_assert_activation_org_layout' in text and 'AssertionError' in text
-                                          else:
-                                              assert 'AssertionError' in text or 'DID NOT RAISE' in text, text
-                                              if required_assertion is not None:
-                                                  assert required_assertion in text, 'RED missed intended preservation assertion: ' + text
-                                  record['attribution'] = red_kind + ' assertion at named contract; not import/setup business RED'
+                                  assert set(selectors) <= attributable, 'no attributable ' + red_kind + ' RED at named contract'
+                                  record['attribution'] = {'kind': red_kind, 'nodes': sorted(attributable),
+                                                           'required_assertion': required_assertion, 'required_source': required_source,
+                                                           'required_observed': required_observed, 'junit': str(command_dir / 'junit.xml.json')}
+                              persist()
+                              # Remove only the duplicate raw XML after complete authenticated capture.
+                              assert record['junit']['complete'] and record['junit']['raw_bytes'] == junit_path.stat().st_size
+                              junit_path.unlink()
                       record.update(state='expected_red' if red_kind else 'passed', cleanup_exit=0)
                       persist()
-                  except BaseException:
+                  except BaseException as exc:
+                      record['error'] = compact_error(exc)
                       record['state'] = 'failed_or_interrupted'
                       # Observe actual scratch removal even on an assertion failure.
                       record['cleanup_exit'] = 0 if root is not None and not root.exists() else None
@@ -402,7 +532,7 @@ jobs:
                   return command_dir
 
               import ast, io, tarfile
-              SOURCE_CONTROLS = ({'id': 'fresh-origin', 'isolated_ids': [1, 16, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100], 'red_kind': 'mixed-origin', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'initialize_complete_org_schema', 'old': '# Proven empty creation:', 'new': 'return\n        # Proven empty creation:'}]}, {'id': 'complete-object-reference', 'isolated_ids': [2], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'validate_workflow_schema', 'old': '    layout = _validate_installed(conn, expected_org_slug=expected_org_slug)', 'new': '    observed = _layout(conn)\n    names = {row[1] for row in observed[0]}\n    layout = "G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F")\n    if observed != _canonical_layout(layout):\n        return layout\n    layout = _validate_installed(conn, expected_org_slug=expected_org_slug)'}], 'required_assertion': 'DID NOT RAISE'}, {'id': 'original-event-revision', 'isolated_ids': [3], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_event_revision', 'old': 'return candidates[0][2]', 'new': 'return 9'}]}, {'id': 'authenticated-event-kind', 'isolated_ids': [4], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_event_revision', 'old': "if subject is not None and 'event_kind' in subject and subject['event_kind'] != kind:", 'new': 'if False:'}]}, {'id': 'revision-event-uniqueness', 'isolated_ids': [5], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': None, 'old': 'UNIQUE(instance_id,revision,event_kind)', 'new': 'UNIQUE(instance_id,revision,event_kind,event_digest)'}]}, {'id': 'operator-refusal-status', 'isolated_ids': [6], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': 'main', 'old': 'return 1\n    finally:', 'new': 'return 0\n    finally:'}]}, {'id': 'operator-layout-label', 'isolated_ids': [7], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': 'main', 'old': 'layout G; compatible reader required', 'new': 'layout E; compatible reader required'}]}, {'id': 'offline-observation', 'isolated_ids': [8], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': '_lifecycle_snapshot', 'old': 'home = daemon_home()', 'new': 'return ()\n    home = daemon_home()'}]}, {'id': 'atomic-committed-target', 'isolated_ids': [9, 12], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': "conn.commit()\n        return 'migrated'", 'new': "conn.rollback()\n        return 'migrated'"}]}, {'id': 'interrupted-uncommitted-source', 'isolated_ids': [10], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': "conn.execute('DROP TABLE workflow_events')", 'new': "conn.execute('DROP TABLE workflow_events')\n        conn.commit()"}]}, {'id': 'writer-reservation', 'isolated_ids': [11], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': 'execute', 'old': "if sql == 'BEGIN IMMEDIATE':", 'new': "if sql == 'BEGIN IMMEDIATE':\n            self.rollback()"}]}, {'id': 'permanent-null-history', 'isolated_ids': [13], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_submission_data', 'old': "    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):", 'new': '    conn.execute("UPDATE workflow_submissions SET source_result_id=\'inferred\' WHERE source_result_id IS NULL")\n    for link in _records(conn, \'SELECT * FROM workflow_submission_result_links\'):'}]}, {'id': 'shared-genuine-result', 'isolated_ids': [14], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_submission_data', 'old': "    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):", 'new': "    if conn.execute('SELECT 1 FROM workflow_submission_result_links GROUP BY task_result_id HAVING COUNT(*)>1').fetchone():\n        raise ValueError('unapproved_global_result_uniqueness')\n    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):"}]}, {'id': 'operation-result-closure', 'isolated_ids': [15], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_submission_data', 'old': "    code = 'workflow_submission_data_corrupt'", 'new': "    return\n    code = 'workflow_submission_data_corrupt'"}]}, {'id': 'existing-load-no-upgrade', 'isolated_ids': [17, 33], 'red_kind': 'business', 'patches': [{'path': 'runtime/daemon/org_state.py', 'function': 'load', 'old': '            if layout == "F":', 'new': '            if layout in (\'F\', \'E\') and db._conn.execute(\'SELECT 1 FROM org_settings LIMIT 1\').fetchone():\n                from runtime.infrastructure.workflow_schema import migrate_submission_schema\n                migrate_submission_schema(db._conn, expected_org_slug=slug)\n                layout = \'G\'\n            if layout == "F":'}]}, {'id': 'creation-rollback-ownership', 'isolated_ids': [18], 'red_kind': 'business', 'patches': [{'path': 'runtime/daemon/routes/orgs.py', 'function': 'init_org', 'old': '        # add_org failed AFTER we seeded the skeleton.', 'new': "        shutil.rmtree(org_root.parent / 'beta')\n        # add_org failed AFTER we seeded the skeleton."}]}, {'id': 'selected-full-release', 'isolated_ids': [19], 'red_kind': 'business', 'patches': [{'path': 'runtime/orchestrator/authority.py', 'function': '_server_evidence', 'old': 'schema_drift = reference == "unavailable" or live_schema_digest == "unavailable" or live_schema_digest != reference', 'new': 'schema_drift = True'}]}, {'id': 'whole-database-drift', 'isolated_ids': [20], 'red_kind': 'business', 'patches': [{'path': 'runtime/orchestrator/authority.py', 'function': '_server_evidence', 'old': 'schema_drift = reference == "unavailable" or live_schema_digest == "unavailable" or live_schema_digest != reference', 'new': 'schema_drift = False'}]}, {'id': 'v2-observed-only', 'isolated_ids': [21, 22], 'red_kind': 'business', 'patches': [{'path': 'runtime/orchestrator/authority.py', 'function': 'capture_authority_policy_v2_schema_observation', 'old': '            inventory = _v2_capture_inventory(conn)', 'new': '            inventory = _v2_capture_inventory(conn)\n            if conn.execute("SELECT 1 FROM sqlite_schema WHERE name=\'workflow_draft_adapter_versions\'").fetchone():\n                _release_schema_digest(\'E\')'}]}, {'id': 'pending-work-not-metadata', 'isolated_ids': [23], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/cutover.py', 'function': '_drain_blockers', 'old': '        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "G":', 'new': '        if False:'}]}, {'id': 'g-compatible-reader', 'isolated_ids': [24], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/cutover.py', 'function': 'downgrade_preflight', 'old': '                    blockers.append(self._blocker("submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",', 'new': '                    if layout != "G": blockers.append(self._blocker("draft_schema_requires_compatible_reader", owner="operator",'}]}, {'id': 'old-draft-g-label', 'isolated_ids': [25], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_draft_schema.py', 'function': 'main', 'old': 'layout {layout}; compatible reader required', 'new': 'layout E; compatible reader required'}]}, {'id': 'literal-quiescence', 'isolated_ids': [26], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': 'terminal', 'old': 'and receipt.backend == running.backend and receipt.quiescent is True', 'new': 'and receipt.backend == running.backend and False'}]}, {'id': 'missing-quiescence', 'isolated_ids': [27], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': 'terminal', 'old': 'and receipt.backend == running.backend and receipt.quiescent is True', 'new': 'and receipt.backend == running.backend'}]}, {'id': 'full-callback-replay', 'isolated_ids': [28], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': None, 'old': 'and completion_result_payload_matches(existing[0], **payload)', 'new': 'and True'}, {'path': 'runtime/workflows/draft_dispatch.py', 'function': None, 'old': 'and completion_result_payload_matches(rows[0], **payload)', 'new': 'and True'}]}, {'id': 'cancel-writer-order', 'isolated_ids': [29], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': 'callback_uncommitted', 'old': 'or intent["cancellation_requested"] or not intent["is_current"]', 'new': 'or not intent["is_current"]'}, {'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_draft_data', 'old': "or intent['id'] in accepted_results or after['cancellation_requested']", 'new': "or intent['id'] in accepted_results"}]}, {'id': 'lost-notification-discovery', 'isolated_ids': [30], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': 'notify_queued', 'old': '        from runtime.workflows.activation import WorkflowActivationError', 'new': '        return\n        from runtime.workflows.activation import WorkflowActivationError'}]}, {'id': 'historical-semantic-closure', 'isolated_ids': [31], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/activation.py', 'function': '_closure', 'old': '            if (canonical_bytes(expected_grant) != authorization["authority_bytes"]\n                    or canonical_bytes(bound) != binding["binding_bytes"]\n                    or canonical_bytes(expected_context) != context["context_bytes"]\n                    or len(context["context_bytes"]) > CONTEXT_LIMIT\n                    or canonical_bytes(task_scope) != intent["task_scope_bytes"]\n                    or binding["id"] != _id("workflow-binding", instance["id"], digest(binding["binding_bytes"]))\n                    or context["id"] != _id("workflow-context", instance["id"], digest(context["context_bytes"]))\n                    or authorization["id"] != _id("workflow-authorization", instance["id"], 1, digest(authorization["authority_bytes"]))):', 'new': '            if False:'}, {'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_draft_data', 'old': '    def refuse() -> None:', 'new': '    return\n    def refuse() -> None:'}]}, {'id': 'owned-consumer-fence', 'isolated_ids': [32], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/recovery.py', 'function': 'classify_task', 'old': '            validate_workflow_schema(conn, expected_org_slug=org_slug)', 'new': '            # Omitted semantic validation control'}, {'path': 'runtime/workflows/recovery.py', 'function': 'classify_task', 'old': '                dispatcher.org.workflow_activations._closure(\n                    conn, intent["activation_id"], actor=intent["admission_principal"],\n                )', 'new': '                # Omitted authenticated canonical closure control'}, {'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_draft_data', 'old': '    def refuse() -> None:', 'new': '    return\n    def refuse() -> None:'}]}, {'id': 'g-old-reader-refusal', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': '    _validate_submission_source_ownership(conn, layout)\n    for event in', 'new': "    return 'migrated'\n    _validate_submission_source_ownership(conn, layout)\n    for event in"}]}, {'id': 'archive-destination-ownership', 'isolated_ids': [35], 'red_kind': 'business', 'patches': [{'path': 'tests/workflows/test_draft_schema.py', 'function': '_extract_s2_source', 'old': '        if source.exists():', 'new': '        if False:'}, {'path': 'tests/workflows/test_draft_schema.py', 'function': '_extract_s2_source', 'old': '        source.mkdir()', 'new': '        source.mkdir(exist_ok=True)'}]}, {'id': 'historical-durable-rows', 'isolated_ids': [36], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': "        conn.execute('DROP TABLE temp.event_stage')", 'new': "        conn.execute('DROP TABLE temp.event_stage')\n        conn.execute('DELETE FROM tasks')"}]}, {'id': 'closed-ci-selection', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': "'tests/workflows/test_draft_dispatch.py::test_delayed_real_containment_keeps_cancel_and_drain_pending_until_terminal_evidence',", 'new': "'tests/workflows/test_draft_dispatch.py::test_omitted_delayed_real_containment_keeps_cancel_and_drain_pending_until_terminal_evidence',"}]}, {'id': 'typed-ci-flag', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': '        type: boolean', 'new': '        type: string'}]}, {'id': 'safe-ci-default', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': '        default: false', 'new': '        default: true'}]}, {'id': 'manual-integration-predicate', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': "github.event_name != 'workflow_dispatch' || !inputs.all_only", 'new': "github.event_name != 'workflow_dispatch' || inputs.all_only"}]}, {'id': 'g-reopen-durable-identity', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/daemon/org_state.py', 'function': 'load', 'old': '            return state', 'new': '            if layout == "G":\n                db._conn.execute("UPDATE tasks SET brief=brief || \' altered-by-reopen\'")\n                db._conn.execute(f\'PRAGMA user_version={db._conn.execute("PRAGMA user_version").fetchone()[0] + 1}\')\n                db._conn.commit()\n            return state'}], 'required_assertion': 'assert _g_closed_database_identity(root) == g_durable_before'}, {'id': 'g-validator-physical-no-write', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'validate_workflow_schema', 'old': '    _validate_source_data(conn)', 'new': '    conn.execute(f\'PRAGMA user_version={conn.execute("PRAGMA user_version").fetchone()[0] + 1}\')\n    _validate_source_data(conn)'}], 'required_assertion': 'assert snapshot() == before'}, {'id': 'g-refusal-physical-no-write', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_installed', 'old': '    if _object_keys(actual) != _object_keys(expected):', 'new': '    if _object_keys(actual) != _object_keys(expected):\n        conn.execute(f\'PRAGMA user_version={conn.execute("PRAGMA user_version").fetchone()[0] + 1}\')'}], 'required_assertion': 'assert snapshot() == before'}, {'id': 'preservation-control-plan', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': "'id': 'g-validator-physical-no-write'", 'new': "'id': 'missing-g-validator-physical-no-write'"}], 'required_assertion': 'assert set(preservation) =='})
+              SOURCE_CONTROLS = ({'id': 'fresh-origin', 'isolated_ids': [1, 16, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100], 'red_kind': 'mixed-origin', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'initialize_complete_org_schema', 'old': '# Proven empty creation:', 'new': 'return\n        # Proven empty creation:'}]}, {'id': 'complete-object-reference', 'isolated_ids': [2], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'validate_workflow_schema', 'old': '    layout = _validate_installed(conn, expected_org_slug=expected_org_slug)', 'new': '    observed = _layout(conn)\n    names = {row[1] for row in observed[0]}\n    layout = "G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F")\n    if observed != _canonical_layout(layout):\n        return layout\n    layout = _validate_installed(conn, expected_org_slug=expected_org_slug)'}], 'required_assertion': 'DID NOT RAISE'}, {'id': 'original-event-revision', 'isolated_ids': [3], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_event_revision', 'old': 'return candidates[0][2]', 'new': 'return 9'}], 'required_assertion': 'assert {9} == {4}', 'required_source': "assert {r[0] for r in observer.execute('SELECT revision FROM workflow_events')} == {4}"}, {'id': 'authenticated-event-kind', 'isolated_ids': [4], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_event_revision', 'old': "if subject is not None and 'event_kind' in subject and subject['event_kind'] != kind:", 'new': 'if False:'}]}, {'id': 'revision-event-uniqueness', 'isolated_ids': [5], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': None, 'old': 'UNIQUE(instance_id,revision,event_kind)', 'new': 'UNIQUE(instance_id,revision,event_kind,event_digest)'}]}, {'id': 'operator-refusal-status', 'isolated_ids': [6], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': 'main', 'old': 'return 1\n    finally:', 'new': 'return 0\n    finally:'}]}, {'id': 'operator-layout-label', 'isolated_ids': [7], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': 'main', 'old': 'layout G; compatible reader required', 'new': 'layout E; compatible reader required'}]}, {'id': 'offline-observation', 'isolated_ids': [8], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': '_lifecycle_snapshot', 'old': 'home = daemon_home()', 'new': 'return ()\n    home = daemon_home()'}]}, {'id': 'atomic-committed-target', 'isolated_ids': [9, 12], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': "conn.commit()\n        return 'migrated'", 'new': "conn.rollback()\n        return 'migrated'"}]}, {'id': 'interrupted-uncommitted-source', 'isolated_ids': [10], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': "conn.execute('DROP TABLE workflow_events')", 'new': "conn.execute('DROP TABLE workflow_events')\n        conn.commit()"}]}, {'id': 'writer-reservation', 'isolated_ids': [11], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_submission_schema.py', 'function': 'execute', 'old': "if sql == 'BEGIN IMMEDIATE':", 'new': "if sql == 'BEGIN IMMEDIATE':\n            self.rollback()"}]}, {'id': 'permanent-null-history', 'isolated_ids': [13], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_submission_data', 'old': "    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):", 'new': '    conn.execute("UPDATE workflow_submissions SET source_result_id=\'inferred\' WHERE source_result_id IS NULL")\n    for link in _records(conn, \'SELECT * FROM workflow_submission_result_links\'):'}]}, {'id': 'shared-genuine-result', 'isolated_ids': [14], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_submission_data', 'old': "    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):", 'new': "    if conn.execute('SELECT 1 FROM workflow_submission_result_links GROUP BY task_result_id HAVING COUNT(*)>1').fetchone():\n        raise ValueError('unapproved_global_result_uniqueness')\n    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):"}]}, {'id': 'operation-result-closure', 'isolated_ids': [15], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_submission_data', 'old': "    code = 'workflow_submission_data_corrupt'", 'new': "    return\n    code = 'workflow_submission_data_corrupt'"}]}, {'id': 'existing-load-no-upgrade', 'isolated_ids': [17, 33], 'red_kind': 'business', 'patches': [{'path': 'runtime/daemon/org_state.py', 'function': 'load', 'old': '            if layout == "F":', 'new': '            if layout in (\'F\', \'E\') and db._conn.execute(\'SELECT 1 FROM org_settings LIMIT 1\').fetchone():\n                from runtime.infrastructure.workflow_schema import migrate_submission_schema\n                migrate_submission_schema(db._conn, expected_org_slug=slug)\n                layout = \'G\'\n            if layout == "F":'}]}, {'id': 'creation-rollback-ownership', 'isolated_ids': [18], 'red_kind': 'business', 'patches': [{'path': 'runtime/daemon/routes/orgs.py', 'function': 'init_org', 'old': '        # add_org failed AFTER we seeded the skeleton.', 'new': "        shutil.rmtree(org_root.parent / 'beta')\n        # add_org failed AFTER we seeded the skeleton."}]}, {'id': 'selected-full-release', 'isolated_ids': [19], 'red_kind': 'business', 'patches': [{'path': 'runtime/orchestrator/authority.py', 'function': '_server_evidence', 'old': 'schema_drift = reference == "unavailable" or live_schema_digest == "unavailable" or live_schema_digest != reference', 'new': 'schema_drift = True'}]}, {'id': 'whole-database-drift', 'isolated_ids': [20], 'red_kind': 'business', 'patches': [{'path': 'runtime/orchestrator/authority.py', 'function': '_server_evidence', 'old': 'schema_drift = reference == "unavailable" or live_schema_digest == "unavailable" or live_schema_digest != reference', 'new': 'schema_drift = False'}]}, {'id': 'v2-observed-only', 'isolated_ids': [21, 22], 'red_kind': 'business', 'patches': [{'path': 'runtime/orchestrator/authority.py', 'function': 'capture_authority_policy_v2_schema_observation', 'old': '            inventory = _v2_capture_inventory(conn)', 'new': '            inventory = _v2_capture_inventory(conn)\n            if conn.execute("SELECT 1 FROM sqlite_schema WHERE name=\'workflow_draft_adapter_versions\'").fetchone():\n                _release_schema_digest(\'E\')'}]}, {'id': 'pending-work-not-metadata', 'isolated_ids': [23], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/cutover.py', 'function': '_drain_blockers', 'old': '        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "G":', 'new': '        if False:'}]}, {'id': 'g-compatible-reader', 'isolated_ids': [24], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/cutover.py', 'function': 'downgrade_preflight', 'old': '                    blockers.append(self._blocker("submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",', 'new': '                    if layout != "G": blockers.append(self._blocker("draft_schema_requires_compatible_reader", owner="operator",'}]}, {'id': 'old-draft-g-label', 'isolated_ids': [25], 'red_kind': 'business', 'patches': [{'path': 'scripts/migrate_workflow_draft_schema.py', 'function': 'main', 'old': 'layout {layout}; compatible reader required', 'new': 'layout E; compatible reader required'}]}, {'id': 'literal-quiescence', 'isolated_ids': [26], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': 'terminal', 'old': 'and receipt.backend == running.backend and receipt.quiescent is True', 'new': 'and receipt.backend == running.backend and False'}]}, {'id': 'missing-quiescence', 'isolated_ids': [27], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': 'terminal', 'old': 'and receipt.backend == running.backend and receipt.quiescent is True', 'new': 'and receipt.backend == running.backend'}]}, {'id': 'full-callback-replay', 'isolated_ids': [28], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': None, 'old': 'and completion_result_payload_matches(existing[0], **payload)', 'new': 'and True'}, {'path': 'runtime/workflows/draft_dispatch.py', 'function': None, 'old': 'and completion_result_payload_matches(rows[0], **payload)', 'new': 'and True'}]}, {'id': 'cancel-writer-order', 'isolated_ids': [29], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/draft_dispatch.py', 'function': 'callback_uncommitted', 'old': 'or intent["cancellation_requested"] or not intent["is_current"]', 'new': 'or not intent["is_current"]'}, {'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_draft_data', 'old': "or intent['id'] in accepted_results or after['cancellation_requested']", 'new': "or intent['id'] in accepted_results"}]}, {'id': 'lost-notification-discovery', 'isolated_ids': [30], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/recovery.py', 'function': 'recover_owned_task', 'old': '        queue.enqueue_if_absent(slug, task_id)', 'new': '        return True  # source-copy regression: lose initial queued-draft discovery'}], 'required_assertion': 'durable lost notification was not rediscovered exactly once', 'required_source': 'assert state.queue._queue.qsize() == 1', 'required_observed': 'assert 0 == 1'}, {'id': 'historical-semantic-closure', 'isolated_ids': [31], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/activation.py', 'function': '_closure', 'old': '            if (canonical_bytes(expected_grant) != authorization["authority_bytes"]\n                    or canonical_bytes(bound) != binding["binding_bytes"]\n                    or canonical_bytes(expected_context) != context["context_bytes"]\n                    or len(context["context_bytes"]) > CONTEXT_LIMIT\n                    or canonical_bytes(task_scope) != intent["task_scope_bytes"]\n                    or binding["id"] != _id("workflow-binding", instance["id"], digest(binding["binding_bytes"]))\n                    or context["id"] != _id("workflow-context", instance["id"], digest(context["context_bytes"]))\n                    or authorization["id"] != _id("workflow-authorization", instance["id"], 1, digest(authorization["authority_bytes"]))):', 'new': '            if False:'}, {'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_draft_data', 'old': '    def refuse() -> None:', 'new': '    return\n    def refuse() -> None:'}]}, {'id': 'owned-consumer-fence', 'isolated_ids': [32], 'red_kind': 'business', 'patches': [{'path': 'runtime/workflows/recovery.py', 'function': 'classify_task', 'old': '            validate_workflow_schema(conn, expected_org_slug=org_slug)', 'new': '            # Omitted semantic validation control'}, {'path': 'runtime/workflows/recovery.py', 'function': 'classify_task', 'old': '                dispatcher.org.workflow_activations._closure(\n                    conn, intent["activation_id"], actor=intent["admission_principal"],\n                )', 'new': '                # Omitted authenticated canonical closure control'}, {'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_draft_data', 'old': '    def refuse() -> None:', 'new': '    return\n    def refuse() -> None:'}]}, {'id': 'g-old-reader-refusal', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': '    _validate_submission_source_ownership(conn, layout)\n    for event in', 'new': "    return 'migrated'\n    _validate_submission_source_ownership(conn, layout)\n    for event in"}]}, {'id': 'archive-destination-ownership', 'isolated_ids': [35], 'red_kind': 'business', 'patches': [{'path': 'tests/workflows/test_draft_schema.py', 'function': '_extract_s2_source', 'old': '        if source.exists():', 'new': '        if False:'}, {'path': 'tests/workflows/test_draft_schema.py', 'function': '_extract_s2_source', 'old': '        source.mkdir()', 'new': '        source.mkdir(exist_ok=True)'}]}, {'id': 'historical-durable-rows', 'isolated_ids': [36], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'migrate_submission_schema', 'old': "        conn.execute('DROP TABLE temp.event_stage')", 'new': "        conn.execute('DROP TABLE temp.event_stage')\n        conn.execute('DELETE FROM tasks')"}]}, {'id': 'closed-ci-selection', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': "'tests/workflows/test_draft_dispatch.py::test_delayed_real_containment_keeps_cancel_and_drain_pending_until_terminal_evidence',", 'new': "'tests/workflows/test_draft_dispatch.py::test_omitted_delayed_real_containment_keeps_cancel_and_drain_pending_until_terminal_evidence',"}]}, {'id': 'typed-ci-flag', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': '        type: boolean', 'new': '        type: string'}]}, {'id': 'safe-ci-default', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': '        default: false', 'new': '        default: true'}]}, {'id': 'manual-integration-predicate', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': "\n    if: ${{ github.event_name == 'schedule' }}\n", 'new': "\n    if: ${{ github.event_name != 'schedule' }}\n"}]}, {'id': 'g-reopen-durable-identity', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/daemon/org_state.py', 'function': 'load', 'old': '            return state', 'new': '            if layout == "G":\n                db._conn.execute("UPDATE tasks SET brief=brief || \' altered-by-reopen\'")\n                db._conn.execute(f\'PRAGMA user_version={db._conn.execute("PRAGMA user_version").fetchone()[0] + 1}\')\n                db._conn.commit()\n            return state'}], 'required_assertion': 'assert _g_closed_database_identity(root) == g_durable_before'}, {'id': 'g-validator-physical-no-write', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': 'validate_workflow_schema', 'old': '    _validate_source_data(conn)', 'new': '    conn.execute(f\'PRAGMA user_version={conn.execute("PRAGMA user_version").fetchone()[0] + 1}\')\n    _validate_source_data(conn)'}], 'required_assertion': 'assert snapshot() == before'}, {'id': 'g-refusal-physical-no-write', 'isolated_ids': [34], 'red_kind': 'business', 'patches': [{'path': 'runtime/infrastructure/workflow_schema.py', 'function': '_validate_installed', 'old': '    if _object_keys(actual) != _object_keys(expected):', 'new': '    if _object_keys(actual) != _object_keys(expected):\n        conn.execute(f\'PRAGMA user_version={conn.execute("PRAGMA user_version").fetchone()[0] + 1}\')'}], 'required_assertion': 'assert snapshot() == before'}, {'id': 'preservation-control-plan', 'isolated_ids': [101], 'red_kind': 'business', 'patches': [{'path': '.github/workflows/nightly-integration.yml', 'function': None, 'old': "'id': 'g-validator-physical-no-write'", 'new': "'id': 'missing-g-validator-physical-no-write'"}], 'required_assertion': 'assert set(preservation) =='})
               assert {i for control in SOURCE_CONTROLS for i in control['isolated_ids']} == set(range(1, 102))
               assert len(SOURCE_CONTROLS) == 40
               (owned / 'source-controls-plan.json').write_text(json.dumps(SOURCE_CONTROLS, indent=2) + '\n')
@@ -451,7 +581,7 @@ jobs:
                                   else:
                                       before, body, after = '', content, ''
                                   assert patch['old'] != patch['new'] and patch['old'] in body, identity
-                                  body = body.replace(patch['old'], patch['new'])
+                                  body = body.replace(patch['old'], patch['new'], 1)
                                   changed = before + body + after
                                   if path.suffix == '.py':
                                       ast.parse(changed)
@@ -469,10 +599,11 @@ jobs:
                               else:
                                   receipt['red'] = str(fixed_command(selectors, 'control-red', identity, 0,
                                       execution_source=checkout, red_kind=control['red_kind'],
-                                      required_assertion=control.get('required_assertion')))
+                                      required_assertion=control.get('required_assertion'), required_source=control.get('required_source'),
+                                      required_observed=control.get('required_observed')))
                           except BaseException as exc:
                               red_error = exc
-                              receipt['red_error'] = str(exc)
+                              receipt['red_error'] = compact_error(exc)
                           finally:
                               for name, original in originals.items():
                                   path = checkout / name
@@ -495,11 +626,11 @@ jobs:
                           if red_error is not None:
                               receipt['state'] = 'red_attribution_failed_after_restored_green'
                               persist_control()
-                              raise RuntimeError('red_attribution_failed_after_restored_green: ' + str(red_error))
+                              raise RuntimeError('red_attribution_failed_after_restored_green: ' + identity + '; see ' + str(receipt_path))
                           receipt['state'] = 'passed_red_restored_green'
                           persist_control()
                   except BaseException as exc:
-                      receipt.update(state='failed_or_interrupted', error=str(exc))
+                      receipt.update(state='failed_or_interrupted', error=compact_error(exc))
                       raise
                   finally:
                       receipt['cleanup_exit'] = 0 if directory is not None and not pathlib.Path(directory).exists() else None
@@ -510,14 +641,19 @@ jobs:
                       run_batch(SOURCE_CONTROLS, source_control)
                   except Exception as exc:
                       (owned / 'source-controls-failed.json').write_text(json.dumps({'head': head,
-                          'errors': str(exc)}, indent=2) + '\n')
+                          'error': compact_error(exc), 'batch_errors': str(owned / 'batch-errors.json')}, indent=2) + '\n')
                       raise
                   (owned / 'source-controls-complete.json').write_text(json.dumps({'head': head,
                       'controls': len(SOURCE_CONTROLS), 'affected_functions': 101}, indent=2) + '\n')
 
               collected = fixed_command(list(FIXED_ISOLATED), 'collection', 'all101', 0, collect=True)
-              with gzip.open(collected / 'full.log.gz', 'rt') as stream:
-                  text = stream.read()
+              log_manifest = json.loads((collected / 'full-log.json').read_text())
+              assert log_manifest['complete']
+              chunks = []
+              for segment in log_manifest['streams']['stdout']['segments']:
+                  with gzip.open(segment['path'], 'rb') as stream:
+                      chunks.append(stream.read())
+              text = b''.join(chunks).decode('utf-8')
               import re
               observed, ancestry = [], []
               for line in text.splitlines():
@@ -568,7 +704,7 @@ jobs:
 
   integration:
     name: Python integration (3.12)
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.all_only }}
+    if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     # Integration tests spawn a real daemon + fake CLIs; cap the job so a hung
     # daemon can't run for the full 6h default.

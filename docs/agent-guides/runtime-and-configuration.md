@@ -814,11 +814,37 @@ The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 For where new test files belong, see the forward-only
 [test-placement rule](project-layout.md#test-placement).
 
+The founder suspended Python unit-suite execution in THR-291 seq5
+(TASK-10169). While this pause applies, do not launch Python unit tests,
+including focused tests or duration measurements. The `python-unit` GitHub
+job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
+reports the same suspension before continuing Web CI. This also pauses the
+unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
+exit or an `all` receipt establishes only the remaining checks, never a unit
+PASS. Preserve test sources, selections and coverage definitions. Web,
+canonical validation and integration jobs retain their own existing contracts;
+no hook bypass is authorized. Existing historical workflow reruns and old
+checkouts do not acquire this pause automatically and must not be used to
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The ordinary commands below describe the restored behavior.
+
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
 uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only
 uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable only
 ```
+
+Direct pytest uses `tmp_path_retention_policy = "failed"`: passing `tmp_path`
+and `tmpdir` fixture directories are removed best effort; ordinary failed-call
+diagnostics are retained. This does not cover arbitrary tempfile writes or
+guarantee retention after setup/teardown errors or interrupts. Use the frozen
+uv environment (currently pytest 9.0.3); the option requires pytest 7.3+, while
+the declared `pytest>=7.0` range also admits unsupported 7.0–7.2. See
+[pytest scratch scope and limits](../local-ci.md#per-run-pytest-scratch-lifecycle)
+for factory directories, explicit basetemp, version compatibility and cleanup
+limits. Full unit selections containing real daemon/socket tests also belong
+in the documented disposable CI venue.
 
 Integration tests run real production orchestration with deterministic external
 CLI stubs in disposable GitHub runners or a separately authorized Mac Linux guest.
@@ -845,6 +871,18 @@ changing launch, return or exception behavior. Historical two-org cause remains
 UNKNOWN; the offline missing-agent control is not a historical diagnosis.
 
 ### S2 activation attachment and recovery
+
+Compatible readers dispatch schema1/@1 and document-review schema2/@2 by exact
+immutable definition plus compiler/validator/source pins across every draft and
+version, including noncurrent rows. Publication version numbers do not denote
+format. Earlier readers refuse any @2 template data; retained @1 history is never
+rewritten to upgrade it. No old-reader downgrade compatibility is promised for
+mixed/new data. These formats use existing immutable JSON/BLOB storage meanings
+and leave F/E DDL/layout/reference, foundation markers, fresh-org initialization
+and explicit-only existing-org migration unchanged. Startup/reopen/enable installs
+no extension or format conversion. Recovery continues through its shipping owner
+with pinned template-driven role checks; possible launch remains uncertain.
+
 
 Actual OrgState attachment installs the consumed activation/draft services before
 workers; the generic Database constructor and runtime-audit remain workflow-free.

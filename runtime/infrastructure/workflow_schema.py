@@ -660,8 +660,9 @@ def _validate_source_data(conn: sqlite3.Connection) -> None:
         for row in _records(conn, f'SELECT * FROM {table}'):
             value = _stored_json(row[column], row[digest])
             if table.startswith('workflow_template_'):
-                from runtime.workflows.templates import _validate_definition
-                if _validate_definition(value) != row[column]:
+                from runtime.workflows.templates import _validate_definition_pins
+                if _validate_definition_pins(value, compiler_pin=row['compiler_pin'],
+                        validator_pin=row['validator_pin'], source_pin=row['source_pin']) != row[column]:
                     raise ValueError('workflow_source_data_corrupt')
     for version in _records(conn, 'SELECT * FROM workflow_template_versions'):
         draft = _records(conn, 'SELECT * FROM workflow_template_drafts WHERE id=?', (version['draft_id'],))[0]

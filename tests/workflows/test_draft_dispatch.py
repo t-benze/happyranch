@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from runtime.infrastructure.workflow_schema import validate_workflow_schema
-from tests.daemon.test_workflow_activation_routes import BASE, activation_org, _snapshot, _assert_activation_org_layout
+from tests.daemon.test_workflow_activation_routes import BASE, activation_org, generic_activation_org, _snapshot, _assert_activation_org_layout
 from tests.workflows.test_activation_store import activation_profile, _select_activation_profile
 
 
@@ -1737,3 +1737,234 @@ def test_live_periodic_discovery_never_replays_a_live_or_possible_launch(draft_h
     assert shown['reconciliation_required'] is (live_state == 'uncertain')
     assert backend.calls['launch'] == 1
     validate_workflow_schema(org.db._conn, expected_org_slug='alpha')
+
+
+@pytest.fixture
+def generic_draft_host(generic_activation_org, monkeypatch):
+    """Exact receipt ownership; only contained external process execution is controlled."""
+    from runtime.platform.session_backend import RunningHandle, LaunchSpec, BackendLaunchError
+    from runtime.orchestrator.executors import ExecutorResult
+    from tests.test_host_supervisor_lifecycle import FakeBackend, make_supervisor
+
+    client, org, state, cases = generic_activation_org
+    control = {"receipt": None, "callback": True, "quiescent": True, "ack": True,
+               "prelaunch": []}
+    observations, processes = [], []
+
+    def owned(session, *, reserved=True):
+        receipt = control["receipt"]
+        assert receipt is not None
+        task = org.db.get_task(receipt["root_task_id"])
+        intent = dict(org.db.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?",
+                                     (receipt["intent_id"],)).fetchone())
+        assert intent["task_id"] == task.id and intent["assigned_principal"] == task.assigned_agent
+        assert task.current_session_id == session
+        if reserved:
+            assert intent["session_id"] == session
+        else:
+            # bind_session publishes only the task/tracker generation. The
+            # intent records it when reserve_launch commits, after spec build.
+            assert intent["state"] == "claimed" and intent["host_launch_started"] == 0
+            assert intent["session_id"] is None and intent["host_execution_id"] is None
+        assert org.sessions.get_active(task.id, task.assigned_agent) == session
+        return task, intent
+
+    def callback(session):
+        task, intent = owned(session)
+        payload = dict(agent=task.assigned_agent, session_id=session, status="completed",
+                       output_summary="Receipt-bound immutable document draft", confidence=83)
+        response = client.post(f"/api/v1/orgs/alpha/tasks/{task.id}/completion", json=payload)
+        assert response.status_code == 200, response.text
+        observations.append((task.id, session, payload))
+        before = _snapshot(org)
+        assert client.post(f"/api/v1/orgs/alpha/tasks/{task.id}/completion", json=payload).status_code == 200
+        assert _snapshot(org) == before
+        assert client.post(f"/api/v1/orgs/alpha/tasks/{task.id}/completion",
+                           json={**payload, "confidence": 82}).status_code == 409
+        assert _snapshot(org) == before
+
+    class Backend(FakeBackend):
+        def launch(self, pending, spec):
+            self.calls["launch"] += 1
+            receipt = control["receipt"]
+            intent = dict(org.db.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?",
+                                         (receipt["intent_id"],)).fetchone())
+            task, intent = owned(intent["session_id"])
+            assert not org.db._conn.in_transaction
+            assert not org.db.execute("SELECT 1 FROM workflow_publication_leases").fetchone()
+            assert intent["state"] == "claimed" and intent["host_launch_started"] == 1
+            assert pending.request_id == f"workflow-draft-host:{receipt['intent_id']}"
+            proc = subprocess.Popen(spec.argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            processes.append(proc)
+            if not control["ack"]:
+                callback(intent["session_id"])
+                raise BackendLaunchError("controlled loss after receipt-bound process spawn")
+            self.last_running = RunningHandle(backend=self.name, token=pending.token,
+                request_id=pending.request_id, root_pid=proc.pid, start_identity="controlled-unit-process", process=proc)
+            return self.last_running
+
+        def finish(self, running, reason, grace, **kwargs):
+            running.process.wait(timeout=5)
+            return replace(super().finish(running, reason, grace, **kwargs), quiescent=control["quiescent"])
+
+    class Executor:
+        def build_launch_spec(self, **kwargs):
+            task, intent = owned(kwargs["session_id"], reserved=False)
+            control["prelaunch"].append((task.id, kwargs["session_id"], intent["id"],
+                                         intent["activation_revision"], intent["state"]))
+            return LaunchSpec(argv=(sys.executable, "-c", "pass"))
+
+        def run(self, **kwargs):
+            task, intent = owned(kwargs["session_id"])
+            assert intent["state"] == "running" and intent["host_execution_id"]
+            kwargs["running"].process.communicate(timeout=5)
+            if control["callback"]:
+                callback(kwargs["session_id"])
+            return ExecutorResult(success=True, duration_seconds=0, session_id=kwargs["session_id"])
+
+    backend = Backend(name="controlled-unit-subprocess")
+    supervisor, publisher = make_supervisor(backend=backend, max_retry_attempts=1, backoff_seconds=(0.0,))
+
+    def evidence():
+        """Bounded lossless fixture evidence, attributed to the actual receipt."""
+        import base64
+        from dataclasses import asdict
+        receipt = control["receipt"]
+        task_id, intent_id = receipt["root_task_id"], receipt["intent_id"]
+        queries = {
+            "task": ("SELECT * FROM tasks WHERE id=?", (task_id,)),
+            "intent": ("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent_id,)),
+            "events": ("SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq", (intent_id,)),
+            "results": ("SELECT * FROM task_results WHERE task_id=? ORDER BY id", (task_id,)),
+            "audit": ("SELECT * FROM audit_log WHERE task_id=? ORDER BY id", (task_id,)),
+        }
+        with org.db._lock:
+            records = {name: [dict(row) for row in org.db.execute(sql, args)]
+                       for name, (sql, args) in queries.items()}
+        records.update(receipt=receipt, prelaunch=control["prelaunch"],
+                       sessions=list(org.sessions.iter_active()), backend_calls=backend.calls,
+                       host_receipts=[asdict(row) for row in publisher.receipts])
+        def encode_bytes(value):
+            if not isinstance(value, bytes):
+                raise TypeError(f"unsupported fixture evidence type: {type(value).__name__}")
+            return {"encoding": "base64", "bytes": len(value),
+                    "data": base64.b64encode(value).decode("ascii")}
+        encoded = json.dumps(records, sort_keys=True, default=encode_bytes, allow_nan=False)
+        assert len(encoded.encode("utf8")) <= 131072, "fixture evidence exceeds lossless diagnostic bound"
+        return encoded
+
+    control["evidence"] = evidence
+    org.orchestrator.attach_host_supervisor(supervisor)
+    monkeypatch.setattr(org.orchestrator, "_build_executor", lambda provider: Executor())
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    def serve():
+        asyncio.set_event_loop(loop)
+        loop.call_soon(ready.set)
+        loop.run_forever()
+    worker = threading.Thread(target=serve)
+    worker.start()
+    try:
+        assert ready.wait(5)
+        monkeypatch.setattr(org.orchestrator, "_main_loop", loop)
+        yield client, org, state, cases, control, observations, backend
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        worker.join(5)
+        assert not worker.is_alive()
+        loop.close()
+        for proc in processes:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            for stream in (proc.stdout, proc.stderr):
+                stream.close()
+
+
+def test_generic_serial_drafts_use_receipt_bound_host_and_real_results(generic_draft_host, activation_org):
+    from runtime.workflows.recovery import classify_task
+    from runtime.workflows.templates import WorkflowTemplatePrincipal
+    client, org, state, cases, control, observations, backend = generic_draft_host
+    legacy = activation_org[3]
+    ddl = [tuple(row) for row in org.db.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY name")]
+    results, roots, sessions = [], [], []
+    for ordinal, name in enumerate(["legacy", "product", "proposal", "A", "Z"], start=1):
+        body = legacy if name == "legacy" else cases[name][0]
+        response = client.post(BASE, json=body)
+        assert response.status_code == 201, (name, response.text)
+        receipt = response.json()
+        control["receipt"] = receipt
+        task_id, intent_id = receipt["root_task_id"], receipt["intent_id"]
+        author = "product_lead" if name in {"legacy", "product"} else "dev_agent"
+        task = org.db.get_task(task_id)
+        assert task.assigned_agent == author and task.orchestration_step_count == 0
+        assert classify_task(org.db, task_id, org_slug="alpha").kind == "draft"
+        org.orchestrator.run_step(task_id)
+        print("generic-draft-producer-evidence=" + control["evidence"]())
+        intent = dict(org.db.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent_id,)).fetchone())
+        assert intent["state"] == "completed" and intent["task_id"] == task_id, control["evidence"]()
+        assert control["prelaunch"][-1] == (task_id, intent["session_id"], intent_id,
+                                           intent["activation_revision"], "claimed")
+        assert type(intent["final_result_id"]) is int
+        result = org.db.execute("SELECT * FROM task_results WHERE id=?", (intent["final_result_id"],)).fetchone()
+        assert result["task_id"] == task_id and result["agent"] == author
+        assert result["session_id"] == intent["session_id"] and result["status"] == "completed"
+        assert org.db.get_task(task_id).status.value == "completed"
+        assert org.db.get_task(task_id).orchestration_step_count == 0
+        assert org.sessions.get_active(task_id, author) is None
+        events = [dict(row) for row in org.db.execute(
+            "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq", (intent_id,))]
+        assert [row["event_kind"] for row in events] == ["admitted", "claimed", "launch_reserved", "running", "callback_recorded", "completed"]
+        assert json.loads(events[-1]["event_bytes"])["terminal_evidence"] == {"host_quiescent": True}
+        assert json.loads(events[-1]["event_bytes"])["result"] == json.loads(events[-2]["event_bytes"])["result"]
+        assert backend.calls["launch"] == backend.calls["finish"] == ordinal
+        assert backend.last_running.request_id == f"workflow-draft-host:{intent_id}"
+        assert not org.db.execute("SELECT 1 FROM workflow_submissions").fetchone()
+        assert not org.db.execute("SELECT 1 FROM workflow_review_requests").fetchone()
+        assert not org.db.execute("SELECT 1 FROM workflow_review_receipts").fetchone()
+        assert not org.db.execute("SELECT 1 FROM audit_log WHERE task_id=? AND action IN ('decision','task_failed')", (task_id,)).fetchone()
+        validate_workflow_schema(org.db._conn, expected_org_slug="alpha")
+        principal = WorkflowTemplatePrincipal.founder(org_slug="alpha", team_slug="", revalidate=lambda: None)
+        projected = org.workflow_activations.get(principal=principal, activation_id=receipt["activation_id"])
+        assert projected["state"] == "completed" and projected["pending"] is False
+        before = _snapshot(org)
+        org.orchestrator.run_step(task_id)
+        replay = client.post(BASE, json=body)
+        assert replay.status_code == 200 and replay.json()["root_task_id"] == task_id
+        assert _snapshot(org) == before
+        results.append(intent["final_result_id"])
+        roots.append(task_id)
+        sessions.append(intent["session_id"])
+        assert [tuple(row) for row in org.db.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY name")] == ddl
+    assert len(set(results)) == len(set(roots)) == len(set(sessions)) == 5
+    assert len(observations) == 5
+    assert org.db.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 5
+    assert org.db.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 5
+    assert backend.calls["launch"] == backend.calls["finish"] == 5
+
+
+@pytest.mark.parametrize("name", ["A", "Z"])
+@pytest.mark.parametrize("gap", ["callback", "quiescent", "ack"])
+def test_generic_missing_host_evidence_preserves_uncertainty(generic_draft_host, name, gap):
+    client, org, state, cases, control, observations, backend = generic_draft_host
+    control[gap] = False
+    body = cases[name][0]
+    response = client.post(BASE, json=body)
+    assert response.status_code == 201, response.text
+    receipt = response.json()
+    control["receipt"] = receipt
+    org.orchestrator.run_step(receipt["root_task_id"])
+    print("generic-draft-producer-evidence=" + control["evidence"]())
+    intent = dict(org.db.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (receipt["intent_id"],)).fetchone())
+    assert intent["state"] == "uncertain" and intent["host_launch_started"] == 1, control["evidence"]()
+    assert control["prelaunch"] == [(receipt["root_task_id"], intent["session_id"], receipt["intent_id"],
+                                      intent["activation_revision"], "claimed")]
+    assert bool(intent["host_execution_id"]) == (gap != "ack")
+    assert (intent["final_result_id"] is None) == (gap == "callback")
+    assert org.db.get_task(receipt["root_task_id"]).status.value == "in_progress"
+    before = _snapshot(org)
+    org.workflow_drafts.reconcile(receipt["root_task_id"])
+    org.orchestrator.run_step(receipt["root_task_id"])
+    assert _snapshot(org) == before and backend.calls["launch"] == 1
+    assert not org.db.execute("SELECT 1 FROM workflow_submissions").fetchone()
+    validate_workflow_schema(org.db._conn, expected_org_slug="alpha")

@@ -761,6 +761,92 @@ independent parent/tree/ancestry and per-slice reporting remain manager-owned.
 Integration SUITE INCLUDING followup E2E is SKIPPED Founder THR-243 seq42,
 NEVER PASS. No deployment or feature-completion authority follows.
 
+## S2 dream candidate updater ownership (TASK-9961, OPEN)
+
+This candidate moves only the unchanged decorated 25-line/964-byte
+`Database.update_dream_kb_candidate` into the existing `DreamsMixin`, after
+`list_dream_kb_candidates`. Source SHA256 is
+`46746730eecdaa0467debb38efc4c9f578d4ac9b79dac1840c92ffc479ed3b89`.
+The sole production import delta extends the existing shared import with the
+shipped `_late_database_now as _now`. Status validation, SQL, errors, commit,
+defaults, annotations, decorator, body and every retained byte stay unchanged,
+including the historical double decorator. Natural defining metadata changes
+are not repaired; old facade/instance dispatch, exports and MRO remain intact.
+
+The real accept route writes KB before updating the candidate; later failure
+retains that residue. Dismiss preserves an omitted promoted slug. Both shipping
+routes, list/model readers, KBStore, browser consumers, original missing-row
+transaction, facade clocks, actual RLock and shared logger retain their owners.
+Manager TASK-9785 step29 accepted TASK-9959/D1-D4/revision2 after independent
+DESIGN-ONLY TASK-9960 PASS under Founder THR-273 seq37/45/80 and DEV-G03.
+The finite14 cases, four answers, pristine full frames, selected-only controls,
+source replay and verification receipts live in `dev_agent/output/TASK-9961`;
+supplements are in `tests/daemon/test_dream_candidate_decomposition.py`.
+Existing tests, fixtures and snapshots remain unchanged. Complete app/served
+OpenAPI uses the exclusive pristine freeze, same root and unchanged interpreter.
+
+At base `cb7f227207833e09885804236a02560572e65ab6`, this move takes
+database2164→2139 and dreams243→269. ALL25 landed slices, steps1–4,
+R5 TWO122 moved/TWO288 retained, FOUR readers78, pin18, archive13 and KBview19
+remain foundations. Formatter TASK-9825 F8 stays STOP/RETAIN, not full17 PASS.
+R1 state/cache/lock/file/clock/helper, R3 compositor/logger and Database logger
+stay retained. PR682 ELEVEN R2/R4R6/completion/chain/carrier/parent/fanout/
+followup/addedcaller, PR684 insertion AND enqueue/revisit/admission, and PR840
+result/admission/insert_task_result stay HELD. Shared PR1000 coherent-read/RLock/
+audit/observer and PR1002 OrgState/reference owners require fresh composition;
+selected equality never clears caller overlap. M/E replan remains deferred.
+
+This unit is OPEN, with independent full-original-base reviewer APPROVE,
+executable QA PASS, clean final-head durable local CI, four hosted PR checks
+and distinct actual hosted Codex callback still required. Every push renews
+gates; composition, guarded merge and six main checks remain manager-owned.
+Integration including followup E2E is SKIPPED Founder THR-243 seq42, never PASS.
+No whole S2/program/feature completion, deployment or live activation follows.
+
+## S6 legacy invocation decline ownership (TASK-9981, OPEN)
+
+Under TASK-9785 and Founder THR-273 seq37/45/80, move only
+`Database.mark_invocation_declined` into existing `ThreadsMixin`, immediately
+before `get_pending_invocation`: original decorated lines1817–1832 at
+`e2780012fcba9bb0e995772f11cf1a86316485f6`, 16 lines/642 bytes, SHA256
+`a62af1f05067050487e1db00bda94598ca629a59f640464c42c0b5a5dd6032de`.
+SQL, commit, rowcount, defaults, annotations, decorator and retained bytes stay
+unchanged; no production import is added. Existing `_now` resolves the late
+facade clock, and shared `_synchronized` retains the same instance connection,
+native RLock, whole facade `_time`, logger and finally behavior. Natural
+method metadata follows the move without repair; old Database patches remain.
+
+TASK-9785 step32 accepted TASK-9977/S6-DECLINE/C1–C4/revision2 after independent
+TASK-9979 DESIGN-ONLY PASS. The forward-only test adds fifteen finite shipping
+parameters: six legacy/bootstrap/followup text/null declines with second-request
+outer refusal; whitespace; genuine inner CAS miss; facade-clock and real SQLite
+UPDATE faults; old-class patch/late clock, causal held native lock, whole-clock
+warning; and both fresh import orders. The inner CAS case uses unchanged public
+`fail_invocation` on the same token, with separate pending-predicate and zero-row
+false-success controls. Held-lock observation witnesses the actual selected
+acquire attempt or same-connection commit/return before the held durable read.
+Complete original-source HTTP/readers/persistence/audit/SSE/queue/files/cleanup
+frames and facade/OpenAPI proofs preserve NULL versus empty reason and failed
+evidence. Design PASS supplies no executable QA or release gate.
+
+Database2139→2123 and threads917→934; all26 landed foundations and steps1–4,
+R5 TWO122 moved/TWO288 retained, FOUR readers78, pin18/archive13/KBview19/
+updater25 remain. Retained `fail_invocation`, other invocation families, route
+validation/modern settlement, CLI/browser and shared owners are not extracted.
+The CLI `resp['seq']` mismatch remains an unchanged static risk. R1/R3/logger,
+PR682 ELEVEN R2/R4R6/completion-chain-carrier-parent-fanout-followup, PR684
+attachment insertion AND enqueue/revisit/admission, PR840 result admission and
+PR541 skill validation stay HELD/owned. Formatter F8 remains STOP/RETAIN, not
+full17 PASS. Shared owners require fresh manager composition; selected-source
+equality never clears caller overlap, and M/E replan remains deferred.
+
+This unit remains OPEN. Independent full-original-base code review APPROVE,
+then executable QA PASS, clean final-head durable local CI, four exact-head
+hosted pull_request successes and distinct actual hosted Codex callback remain
+required. Every push renews gates; guarded merge and six main checks belong to
+the manager. Integration including followup E2E is SKIPPED under Founder
+THR-243 seq42, never PASS. No whole S6/program/feature completion or deployment.
+
 ## Per-slice gates
 
 Before edits (dev leg, in the PR body): Native Impact Evidence — moved symbols, importers via `rg`, patch-target

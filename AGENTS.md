@@ -92,9 +92,13 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   Internal census validity is never collection health or epoch authority.
   Seal-action `/audit` adds the closed optional serving-observation/loaded-identity
   view described in the corrective memory spec; it performs zero durable writes.
-  G1 durable acceptance/B1, both health consumers, installed acceptance,
-  canary/deferred venues and full reporting remain open; backend/CLI guards stay
-  `insufficient_instrumentation`. See the memory section in the feature guide.
+  G1 validates exact admitted manager/independent-QA results, prior finite
+  delegation/command, real owned jobs/outputs and ROOT/CHILD operation evidence.
+  Final acceptance appends an epoch; equivalent replay preserves its original
+  boundary. Probe age <=48h applies at initial/reset final commit. Reports
+  authenticate original admission and current full health without age-expiring
+  that epoch. Installed acceptance and operational venues remain separate gates.
+  See the memory section in the feature guide.
 
 - **Workflow schema U1A foundation (THR-139).** U1A installs the
   unchanged inert version-1 foundation F from `OrgState.load`, after
@@ -405,10 +409,13 @@ admission, activation, or dispatch consumer; those remain later units.
 reducer, validate all four audit streams and consume only persisted version1
 exposure metadata. Backend uses one synchronized SELECT; CLI exhausts two sweeps
 of `/audit` at limit5000 and checks roles/content at a fixed UTC cutoff. Acquisition
-failures refuse as `acquisition_unavailable`, with no partial CLI stdout. G1 trusted
-epoch/canary and current-serving G3 census acceptance remain unavailable in
-this report; `session_start` denotes intended invocations. Raw day/session counts cannot enable
-collection, threshold readiness or tuning. See the memory sections in
+failures refuse as `acquisition_unavailable`, with no partial CLI stdout. Tagged
+G1 authority is revalidated through the shared reducer and serving audit view;
+unversioned or damaged evidence remains `insufficient_instrumentation`.
+`session_start` denotes intended invocations. Valid reports exclude synthetic,
+recovery and pre-start tuples; raw sample counts alone cannot enable collection.
+An operational accepted epoch and its independent within48h health duty are
+separate from source tests, review, CI and deployment. See the memory sections in
 `features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
 
 Integration collection and execution use deterministic external CLI stubs through
@@ -418,6 +425,50 @@ host cannot run integration tests, including through jobs. See `docs/local-ci.md
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
+
+### Finite document-review templates and initial drafts (THR-139 seq410)
+
+New `schema_version: 2` / `kind: document-review` definitions compile finite data:
+one agent author, 1–3 independent reviewer slots, at most one existing Founder
+human, immutable-document-revision output/description, all/current reviewer
+membership, approved with optional changes_requested, and either null return or
+return-to-author/new/all-prior-receipts. Submission timing is on-completion or
+while-active-or-completed capability; it never requires an active author to submit.
+Abstract role names are not principals or grants. Actual bindings still require
+current same-org active canonical membership, independence and authority/profile
+leases. No label, count or outcome supplies code or engineering authority.
+
+The exact @2 compiler/validator/operator-input triple accompanies every immutable
+draft/version. Activation request/receipt, authorization, binding and initial-draft
+context use @2 families; the context retains both raw definition and compiled
+contract. Author allocation and input visibility consume that pinned contract.
+Legacy @1 raw bytes, pins, replay digests, task briefs and wire serialization stay
+unchanged. Read by immutable definition/pins, never identity.version or current
+pointer; full DATA/PIN validation checks all drafts and versions. A pre-generic
+reader refuses an org with any @2 data. Such an org needs a compatible reader;
+there is no old-reader downgrade promise or automatic history conversion.
+
+F/E DDL, full layout/reference validation and explicit-only existing-org migration
+remain unchanged; generic Database/runtime-audit remain workflow-free. Existing
+queue, host, callback and recovery owners still produce truthful initial drafts.
+Completion is draft-only: submission, review requests/receipts/joins, revision and
+mounted UI remain later units. Source implementation is not review/QA/CI acceptance,
+operator observation, deployment or Phase1 completion.
+
+The founder suspended Python unit-suite execution in THR-291 seq5
+(TASK-10169). While this pause applies, do not launch Python unit tests,
+including focused tests or duration measurements. The `python-unit` GitHub
+job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
+reports the same suspension before continuing Web CI. This also pauses the
+unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
+exit or an `all` receipt establishes only the remaining checks, never a unit
+PASS. Preserve test sources, selections and coverage definitions. Web,
+canonical validation and integration jobs retain their own existing contracts;
+no hook bypass is authorized. Existing historical workflow reruns and old
+checkouts do not acquire this pause automatically and must not be used to
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The ordinary commands below describe the restored behavior.
 
 ## Commands
 

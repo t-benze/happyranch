@@ -167,13 +167,89 @@ def activation_org(request, tmp_path, monkeypatch):
             owned.close()
 
 
-def test_initial_activation_commits_authentic_root_and_admitted_lane(activation_org):
+
+@pytest.fixture
+def generic_activation_org(activation_org):
+    """Derived real publisher/roster venue; original fixture defaults stay intact."""
+    from tests.workflows.test_template_store import GENERIC_VECTORS
+    client, org, state, legacy = activation_org
+    ddl = tuple(org.db.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY name"))
+    cases = {}
+    product_bindings = {
+        "product-lead": {"kind": "agent", "principal": "product_lead", "team": "product"},
+        "founder": {"kind": "human", "principal": "founder", "team": None},
+        "implementer": {"kind": "agent", "principal": "dev_agent", "team": "engineering"},
+        "tester": {"kind": "agent", "principal": "qa_engineer", "team": "engineering"},
+    }
+    for name, definition, contract, raw_sha, contract_sha in GENERIC_VECTORS:
+        product = name == "product"
+        response = client.post("/api/v1/orgs/alpha/workflows/templates/publish", json={
+            "operation_key": f"generic-publish-{name}", "team_slug": "product" if product else "engineering",
+            "template_name": "document-product" if product else "written-proposal",
+            "expected_current_version": 0 if name in {"product", "proposal"} else 1 if name == "A" else 2,
+            "definition": copy.deepcopy(definition),
+        })
+        assert response.status_code == 201, response.text
+        published = response.json()
+        assert published["definition_digest"] == raw_sha
+        assert (published["compiler_pin"], published["validator_pin"], published["source_pin"]) == (
+            "workflow-compiler@2", "workflow-validator@2", "operator-input@2")
+        bindings = copy.deepcopy(product_bindings) if product else {
+            "proposal-writer": {"kind": "agent", "principal": "dev_agent", "team": "engineering"},
+            "sponsor": {"kind": "agent" if name == "Z" else "human",
+                        "principal": "qa_engineer" if name == "Z" else "founder",
+                        "team": "engineering" if name == "Z" else None},
+        }
+        request = {
+            "format": "workflow-activation-request@2", "operation_key": f"generic-admit-{name}",
+            "instance_id": f"generic-{name.lower()}", "expected_activation_revision": 0,
+            "template": {key: published[key] for key in ("identity_id", "version", "definition_digest")},
+            "authority": copy.deepcopy(legacy["authority"]),
+            "scope": {"brief": "Draft a bounded product requirements document." if product else "Draft a bounded written proposal."},
+            "bindings": bindings, "eligible_replacements": {role: [] for role in bindings},
+            "allowed_actions": ["draft-document", "submit-immutable-document", "collect-review", "approve-planning-input"],
+            "inputs": [],
+        }
+        if name != "A":
+            request["allowed_actions"].append("return-to-author")
+        cases[name] = (request, published, copy.deepcopy(contract), contract_sha)
+    assert tuple(org.db.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY name")) == ddl
+    assert cases["A"][1]["identity_id"] == cases["Z"][1]["identity_id"]
+    assert cases["A"][1]["version"] == 2 and cases["Z"][1]["version"] == 3
+    return client, org, state, cases
+
+@pytest.mark.parametrize("format_row", ["legacy", "product", "proposal", "A", "Z"])
+def test_initial_activation_commits_authentic_root_and_admitted_lane(activation_org, request, format_row):
     client, org, state, body = activation_org
+    expected_author, expected_team = "product_lead", "product"
+    if format_row != "legacy":
+        client, org, state, cases = request.getfixturevalue("generic_activation_org")
+        body, published, contract, contract_sha = cases[format_row]
+        if format_row != "product":
+            expected_author, expected_team = "dev_agent", "engineering"
     original_tasks = {task.id for task in org.db.list_tasks(limit=1000)}
     response = client.post(BASE, json=body)
     assert response.status_code == 201, response.text
     receipt = response.json()
     assert receipt["execution_started"] is False
+    if format_row != "legacy":
+        import hashlib, json
+        assert receipt["format"] == "workflow-activation-receipt@2"
+        assert receipt["bindings"] == body["bindings"]
+        assert receipt["template"] == {key: published[key] for key in (
+            "identity_id", "version_id", "version", "definition_digest", "compiler_pin", "validator_pin", "source_pin")}
+        stored = org.db.execute("SELECT context_bytes FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)", (receipt["intent_id"],)).fetchone()[0]
+        context = json.loads(stored)
+        assert context["format"] == "workflow-initial-draft-context@2"
+        assert context["document_contract"] == contract
+        assert hashlib.sha256(json.dumps(context["document_contract"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() == contract_sha
+        assert context["template"] == json.loads(published["definition_json"])
+        assert context["authorization"]["format"] == "workflow-authorization@2"
+        assert context["binding"]["format"] == "workflow-binding@2"
+        assert context["authorization"]["root_task_id"] == receipt["root_task_id"]
+        assert context["authorization"]["original_request"] == body
+    else:
+        assert "format" not in receipt
     with sqlite3.connect(f"file:{org.root / 'happyranch.db'}?mode=ro", uri=True) as reader:
         reader.row_factory = sqlite3.Row
         rows = reader.execute(
@@ -188,7 +264,7 @@ def test_initial_activation_commits_authentic_root_and_admitted_lane(activation_
         assert task["id"] not in original_tasks
         assert task["id"] == receipt["root_task_id"]
         assert task["intent_id"] == receipt["intent_id"]
-        assert task["assigned_agent"] == "product_lead" and task["team"] == "product"
+        assert task["assigned_agent"] == expected_author and task["team"] == expected_team
         assert task["parent_task_id"] is None and task["revisit_of_task_id"] is None
         assert task["status"] == "pending" and task["intent_state"] == "queued"
         assert task["session_id"] is None and task["current_session_id"] is None
@@ -516,3 +592,62 @@ def test_foreign_org_receipt_read_ignores_original_corruption_and_own_readiness(
         assert _snapshot(org) == before and _snapshot(beta) == beta_before
     finally:
         beta.close()
+
+
+@pytest.mark.parametrize("row", ["proposal", "A", "Z"])
+@pytest.mark.parametrize("mutation", ["missing-binding", "extra-binding", "missing-replacement", "extra-replacement",
+    "wrong-kind", "human-replacement", "unknown-human", "duplicate-principal", "foreign-team", "wrong-family"])
+def test_generic_slot_set_and_kind_refusals_leave_zero_admission_residue(generic_activation_org, row, mutation):
+    client, org, state, cases = generic_activation_org
+    body = copy.deepcopy(cases[row][0])
+    if mutation == "missing-binding":
+        body["bindings"].pop("sponsor")
+    elif mutation == "extra-binding":
+        body["bindings"]["phantom"] = {"kind": "agent", "principal": "code_reviewer", "team": "engineering"}
+    elif mutation == "missing-replacement":
+        body["eligible_replacements"].pop("sponsor")
+    elif mutation == "extra-replacement":
+        body["eligible_replacements"]["phantom"] = []
+    elif mutation == "wrong-kind":
+        body["bindings"]["sponsor"]["kind"] = "human" if row == "Z" else "agent"
+    elif mutation == "human-replacement":
+        # Z has no human slot: attempt an actual wrong-kind agent replacement.
+        body["eligible_replacements"]["sponsor"] = [{"kind": "human", "principal": "founder", "team": None}]
+    elif mutation == "unknown-human":
+        body["bindings"]["sponsor"]["principal"] = "PRIVATE-person"
+    elif mutation == "duplicate-principal":
+        body["bindings"]["sponsor"] = copy.deepcopy(body["bindings"]["proposal-writer"])
+    elif mutation == "foreign-team":
+        body["bindings"]["proposal-writer"]["team"] = "foreign"
+    else:
+        body.pop("format")
+    before = _snapshot(org)
+    queue_before = state.queue._queue.qsize()
+    response = client.post(BASE, json=body)
+    structural = mutation in {"missing-binding", "missing-replacement", "wrong-family"}
+    assert response.status_code == (422 if structural else 403), response.text
+    assert response.json()["detail"]["code"] == ("workflow_activation_invalid_request" if structural else "role_binding_not_authorized")
+    assert _snapshot(org) == before
+    assert state.queue._queue.qsize() == queue_before
+    assert "PRIVATE" not in response.text
+
+
+def test_generic_approval_only_return_refusal_and_zero_human_valid_admission(generic_activation_org):
+    client, org, state, cases = generic_activation_org
+    body = copy.deepcopy(cases["A"][0])
+    body["allowed_actions"].append("return-to-author")
+    before = _snapshot(org)
+    queue_before = state.queue._queue.qsize()
+    refused = client.post(BASE, json=body)
+    assert refused.status_code == 403 and refused.json()["detail"]["code"] == "role_binding_not_authorized"
+    assert _snapshot(org) == before and state.queue._queue.qsize() == queue_before
+    for row in ("A", "Z"):
+        admitted = client.post(BASE, json=cases[row][0])
+        assert admitted.status_code == 201, admitted.text
+        receipt = admitted.json()
+        assert receipt["bindings"] == cases[row][0]["bindings"]
+        assert ("return-to-author" in receipt["allowed_actions"]) is (row == "Z")
+        assert [value["principal"] for value in receipt["bindings"].values() if value["kind"] == "human"] == ([] if row == "Z" else ["founder"])
+        task = org.db.get_task(receipt["root_task_id"])
+        assert task.assigned_agent == "dev_agent" and task.team == "engineering"
+        assert not org.db.execute("SELECT 1 FROM task_results").fetchone()

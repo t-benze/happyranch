@@ -62,6 +62,15 @@ def _founder_client() -> OpcClient:
 
 def cmd_workflow_templates_publish(args: argparse.Namespace) -> None:
     body = _read_payload(args.from_file)
+    definition = body.get("definition")
+    if isinstance(definition, dict) and (definition.get("kind") == "document-review"
+            or definition.get("schema_version") == 2):
+        from runtime.workflows.templates import WorkflowTemplateError, _compile_document_definition
+        try:
+            _compile_document_definition(definition)
+        except WorkflowTemplateError as exc:
+            print("error: invalid document-review template", file=sys.stderr)
+            raise SystemExit(2) from exc
     if args.session_id:
         slug = resolve_org_slug(args_org=args.org, available=[])
         port_path = port_file()

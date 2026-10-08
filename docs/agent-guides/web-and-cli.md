@@ -642,13 +642,28 @@ Founder omits `--session-id`, supplies `team_slug` in the JSON payload, and the
 command uses the existing daemon bearer. The payload contains
 `operation_key`, `template_name`, `expected_current_version`, `definition`,
 and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
-session claims are rejected. `--from-file` must be absolute. The closed
+session claims are rejected. `--from-file` must be absolute. The legacy closed
 definition is `kind=product-design`, with `schema_version` set to the genuine
 JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
 author of an immutable PRD revision, Founder/implementer/tester reviewers, all
 three required on the current revision, and request-changes returning to the
 author. A non-empty description is the only variable descriptive field;
 unknown fields and kinds fail closed.
+
+New definitions use `kind=document-review`, genuine integer `schema_version=2`,
+one agent author and 1–3 reviewers with unique abstract roles matching
+`[a-z][a-z0-9-]{0,62}`, and at most one human reviewer. `output` contains
+`primitive=immutable-document-revision` and a nonblank `description`. `outcomes`
+contains `approved`, optionally `changes_requested`; `approval` is all/current
+with required_roles exactly equal to reviewer order. `request_changes` is null
+for approval-only, otherwise exactly action=return-to-author, revision=new,
+invalidate=all-prior-receipts. `submission.timing` is on-completion or
+while-active-or-completed. These are document capabilities, not execution grants.
+Malformed new policy exits2 before either CLI client or port discovery; legacy
+file/domain failures retain exit1. The server independently validates policy and
+publisher authority. @2 pins are workflow-compiler@2/workflow-validator@2/operator-input@2.
+All immutable versions remain readable by a compatible reader; earlier readers
+refuse orgs containing @2 data, with no downgrade conversion promised.
 
 Founder reads exact immutable versions with:
 
@@ -809,17 +824,29 @@ the actual serving OrgState. Other action responses remain unchanged. The
 closed source view and loaded identity are defined in the corrective memory
 spec; absent/busy/moving/failed components are explicit unknown/unavailable.
 GET performs no durable writes, resealing, provider launch or backend probe.
-Both epoch refs remain null; the CLI gains no collection authority.
+Epoch references are non-null only after G1 revalidates the original accepted
+boundary and current full health. Missing, damaged, drifting or moving evidence
+withholds those references; reads never append or repair collection state.
 Stored seals checkpoint counters only: `census_integrity` explicitly reports
 `census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
-G1 independent canary/epoch acceptance and current-serving census acceptance
-remain OPEN.
-Read-side G4 acquisition is implemented below; full eligibility reporting and installed health remain OPEN.
+G1 authority additionally reads exact admitted roles/results, original finite
+plan/tasks, owned jobs/full outputs and operation history at stable bookends.
+Its server admission, locked commit and serving checks use the existing
+recorded-retry verifier; matching briefs or paired public audits cannot replace
+raw supersession and invocation records. Synthetic closure includes every
+verified retry and supporting root and must match the complete job-returned
+set. Failed original probes still cannot supply successful canary evidence.
+The seal view checks those bookends before validating the captured census;
+measured movement returns `observation_moving` with null epoch references.
+Independent installed/provider acceptance and operational health remain
+separate from source implementation and source fixtures.
 
 `happyranch memory report` paginates the existing audit read surface but is
-currently fail-closed: JSON and text both return `insufficient_instrumentation`.
+fail-closed without valid G1 authority: JSON and text return
+`insufficient_instrumentation`. Valid authority exposes the original epoch,
+current health and eligible natural report; short samples remain insufficient.
 There is no CLI flag or input that can override the invalid current/unversioned
 epoch. Executor-owned task children receive their runtime session in the private
 `HAPPYRANCH_RUNTIME_SESSION_ID` environment hint, so `memory get`/`search`
@@ -859,16 +886,18 @@ sessions and per-agent/role/memory operation counts remain descriptive. Search
 ratios use distinct persisted, causally corroborated search-sourced read pairs.
 Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
 complete UTC days exclude partial first/current days. Raw day/session sample
-flags may be true; thresholds, diagnostics_valid_for_collection and
-evaluation_candidate remain false, decision `insufficient_instrumentation`.
+flags may be true; without authenticated G1 authority, thresholds,
+diagnostics_valid_for_collection and evaluation_candidate remain false,
+decision `insufficient_instrumentation`. Probe freshness is initial/reset final-
+commit admission only; reports authenticate that original boundary and current
+full health. Equivalent replay never starts another day or renews proof.
 `session_start` records audited intended invocations, never a complete process
-launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
-current-serving census authority. Trusted canary/epoch, census and probe
-health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
-synthetic/natural eligibility claim, authority override or epoch start.
+launch/expectation census. G1 separately revalidates the full G3 census and
+independent accepted probe/epoch evidence before natural eligibility. Report
+reads never start epochs, perform tuning or ranking writes, or override authority.
 The read-side snapshot/two-sweep contract detects observed drift; it adds no
-writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
-and actual shipping/installed canary cases remain separately gated.
+writer fence or hostile same-UID guarantee. Actual installed canary acceptance
+and operational H-v1 duties remain separately gated.
 
 ### PR CI wait / guarded merge entrypoints
 
@@ -1202,7 +1231,17 @@ inputs to their actual inlined variants in the served document; those pointers
 are part of the contract keeper.
 
 Every request object and nested record is closed; unknown fields, booleans in
-integer fields, identity/provenance claims and `latest` aliases refuse. Concrete
+integer fields, identity/provenance claims and `latest` aliases refuse. Legacy untagged requests retain exactly four fixed roles and unchanged wire
+bytes. New requests add `format=workflow-activation-request@2` and bind exactly
+the selected immutable template roles; new receipts add
+`format=workflow-activation-receipt@2`. Human slots bind Founder/founder/null with
+empty replacements, agent slots bind distinct active same-org canonical members.
+Agent-only templates have zero human aliases. Replacement maps have the same
+exact slot keys and at most16 candidates per agent slot. Recipients are1–4 unique
+abstract roles from that template. Unknown format/role syntax/duplicate recipients
+refuse locally; exact template membership remains server-owned. Requests cannot
+add return-to-author to a null-return template. The served request/receipt unions
+and input discriminator pointers cover both formats. Concrete legacy
 request fields are:
 
 | Field | Contract |

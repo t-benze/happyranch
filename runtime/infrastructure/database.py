@@ -909,6 +909,114 @@ class Database(
         return self._conn.execute(sql, params).fetchall()
 
     @_synchronized
+    def read_memory_collection_evidence(self) -> dict:
+        """Bounded SELECT-only snapshot; callers decode after releasing the DB lock."""
+        from runtime.infrastructure.memory_collection import MAX_CENSUS_READ_ROWS, AcceptanceUnavailable
+        tables = {}
+        with self.coherent_read_view() as conn:
+            for table in ("tasks", "task_results", "jobs", "audit_log"):
+                rows = conn.execute(f"SELECT * FROM {table} ORDER BY id LIMIT ?",
+                                    (MAX_CENSUS_READ_ROWS + 1,)).fetchall()
+                if len(rows) > MAX_CENSUS_READ_ROWS:
+                    raise AcceptanceUnavailable("acceptance_read_limit")
+                tables[table] = [dict(row) for row in rows]
+        return tables
+
+    def append_memory_collection_transition(self, *, result_row_id: int) -> dict:
+        """Acquire actual org evidence before the observer->DB atomic publication.
+
+        No supplied projection/flag/type can authorize a write. Both bookends
+        and the locked reread authenticate the exact server-selected result.
+        """
+        from runtime.infrastructure.memory_collection import (
+            AcceptanceUnavailable, collection_control_head, collection_logical_key,
+            equivalent_collection_control, collection_record_projection, prepare_acceptance, validate_acceptance_evidence,
+            validate_epoch_candidate,
+        )
+        org = getattr(self, "_memory_collection_context", None)
+        if org is None or org.db is not self or org.memory_collection is None:
+            raise AcceptanceUnavailable("acceptance_context_missing")
+        with org.memory_collection._transition_lock:
+            prepared = prepare_acceptance(org, result_row_id)
+            expected, candidate = prepared["tables"], prepared["candidate"]
+            payload = {"boot_id": prepared["view"]["boot_id"],
+                       "base_assigned_intents": prepared["view"]["assigned_intents"],
+                       "accepted_at": candidate["published_at"], "projection": candidate}
+            with org.memory_collection._lock, self._lock:
+                current_observer = org.memory_collection._snapshot()
+                if any(current_observer[key] != prepared["view"][key] for key in (
+                    "boot_id", "generation", "assigned_intents", "phase_counts", "phase_digests", "observation_error")):
+                    raise AcceptanceUnavailable("acceptance_observer_moving")
+                try:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    current = self.read_memory_collection_evidence()
+                    from runtime.infrastructure.memory_telemetry_report import aware_utc
+                    original = equivalent_collection_control(current, candidate)
+                    admission_time = aware_utc(original["timestamp"]) if original is not None else datetime.now(timezone.utc)
+                    validate_acceptance_evidence(current, result_row_id, prepared["view"], prepared["outputs"],
+                                                 current_time=admission_time, registered_cohort=prepared["registered_cohort"],
+                                                 retry_verifier=self.verify_retry_link)
+                    if original is not None and candidate["action"] == "accept":
+                        validate_epoch_candidate(current, original, prepared["view"], prepared["outputs"],
+                                                 current_time=datetime.now(timezone.utc), retry_verifier=self.verify_retry_link)
+                    if collection_record_projection(current) != collection_record_projection(expected):
+                        raise AcceptanceUnavailable("acceptance_records_moving")
+                    controls = [row for row in current["audit_log"]
+                                if row["action"] in {"memory_collection_epoch_started", "memory_collection_invalidated"}]
+                    head = collection_control_head(controls, candidate["org"], candidate["operational_root_task_id"])
+                    logical_key = collection_logical_key(candidate)
+                    if original is not None:
+                        self._conn.rollback()
+                        return original
+                    owner = next(row for row in current["tasks"] if row["id"] == candidate["result_ref"]["task_id"])
+                    if owner["status"] not in {"pending", "in_progress"} or owner["block_kind"] is not None:
+                        raise AcceptanceUnavailable("acceptance_owner_state")
+                    predecessor = candidate["predecessor_epoch_id"]
+                    if (head is None and predecessor is not None) or (head is not None and predecessor != head["payload"]["epoch_id"]):
+                        raise AcceptanceUnavailable("acceptance_predecessor")
+                    if candidate["action"] == "invalidate":
+                        if head is None or any(candidate[key] != head["payload"]["projection"][key] for key in (
+                                "org", "operational_root_task_id", "qa_ref", "health_definition_sha256", "release_manifest_sha256",
+                                "installed_identity", "cohort", "applicable_paths", "synthetic_task_ids", "probe_receipts")):
+                            raise AcceptanceUnavailable("acceptance_invalidation_projection")
+                    if candidate["action"] == "accept" and head is not None:
+                        if candidate["qa_ref"] == head["payload"]["qa_ref"]:
+                            raise AcceptanceUnavailable("acceptance_requires_fresh_qa")
+                    action = "memory_collection_epoch_started" if candidate["action"] == "accept" else "memory_collection_invalidated"
+                    own = candidate["result_ref"]
+                    body = {**payload, "logical_key": logical_key, "manager_ref": own,
+                            "qa_ref": candidate["qa_ref"], "org": candidate["org"],
+                            "operational_root_task_id": candidate["operational_root_task_id"],
+                            "predecessor_epoch_id": predecessor, "contract_version": 1}
+                    if candidate["action"] == "accept":
+                        body["epoch_id"] = hashlib.sha256(
+                            json.dumps([candidate["org"], own["result_id"], logical_key], separators=(",", ":")).encode()
+                        ).hexdigest()
+                    else:
+                        if head is None:
+                            raise AcceptanceUnavailable("acceptance_invalidation_without_epoch")
+                        body["epoch_id"] = predecessor
+                    row_id = self.insert_audit_log_uncommitted(
+                        task_id=own["task_id"], agent=own["agent"], action=action, payload=body,
+                    )
+                    row = dict(self._conn.execute("SELECT * FROM audit_log WHERE id=?", (row_id,)).fetchone())
+                    if candidate["action"] == "accept":
+                        # The row's server timestamp is the original admission
+                        # boundary. Recheck after insertion at the final commit
+                        # seam too, so a delayed transaction cannot cross 48h.
+                        if aware_utc(row["timestamp"]) < aware_utc(candidate["published_at"]):
+                            raise AcceptanceUnavailable("acceptance_commit_order")
+                        for boundary in (aware_utc(row["timestamp"]), datetime.now(timezone.utc)):
+                            validate_acceptance_evidence(current, result_row_id, prepared["view"], prepared["outputs"],
+                                                         current_time=boundary, retry_verifier=self.verify_retry_link)
+                    self._conn.commit()
+                    return {**row, "payload": body}
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+
+
+    @_synchronized
     def query_audit_logs(
         self,
         task_id: str | None = None,
@@ -1814,22 +1922,6 @@ class Database(
         self._conn.commit()
         return cursor.rowcount == 1
 
-    @_synchronized
-    def mark_invocation_declined(
-        self, token: str, *, decline_reason: str | None = None
-    ) -> bool:
-        """Set invocation status to 'declined' with an optional reason.
-
-        Returns True if the row was updated (was pending), False otherwise.
-        """
-        cursor = self._conn.execute(
-            "UPDATE thread_invocations SET status = 'declined', "
-            "consumed_at = ?, decline_reason = ? "
-            "WHERE invocation_token = ? AND status = 'pending'",
-            (_now().isoformat(), decline_reason, token),
-        )
-        self._conn.commit()
-        return cursor.rowcount == 1
 
     @_synchronized
     def decline_pending_invocations_for_agent(
@@ -1992,31 +2084,6 @@ class Database(
 
 
 
-    @_synchronized
-    def update_dream_kb_candidate(
-        self,
-        candidate_id: int,
-        *,
-        status: str,
-        promoted_kb_slug: str | None = None,
-    ) -> None:
-        allowed = {"pending", "promoted", "rejected", "superseded"}
-        if status not in allowed:
-            raise ValueError(f"invalid status: {status!r}, expected one of {sorted(allowed)}")
-        now = _now().isoformat()
-        params: list[object] = [status, now]
-        slug_assign = ""
-        if promoted_kb_slug is not None:
-            slug_assign = ", promoted_kb_slug = ?"
-            params.append(promoted_kb_slug)
-        params.append(candidate_id)
-        cursor = self._conn.execute(
-            f"UPDATE dream_kb_candidates SET status = ?, updated_at = ?{slug_assign} WHERE id = ?",
-            params,
-        )
-        if cursor.rowcount == 0:
-            raise ValueError(f"dream_kb_candidate {candidate_id} not found")
-        self._conn.commit()
 
     # --- Escalation Notifications ---
 
