@@ -12,6 +12,15 @@ function observe(languages) {
     Object.defineProperty(Navigator.prototype,'language',{configurable:true,get:()=>${JSON.stringify(languages[0])}});
     Object.defineProperty(Navigator.prototype,'languages',{configurable:true,get:()=>${JSON.stringify(languages)}});
     window.__w5Writes=[]; window.__w5Events=[]; window.__w5Transports=[];
+    window.__w5Http=[];
+    const fetch=window.fetch;
+    window.fetch=function(...args){
+      const input=args[0],path=new URL(input instanceof Request?input.url:String(input),location.href).pathname;
+      if(!path.startsWith('/api/'))return fetch.apply(this,args);
+      const row={path,pending:true,settledAt:null};window.__w5Http.push(row);
+      const settle=()=>{row.pending=false;row.settledAt=Date.now()};
+      try{return fetch.apply(this,args).finally(settle)}catch(error){settle();throw error}
+    };
     const set=Storage.prototype.setItem;
     Storage.prototype.setItem=function(key,value){window.__w5Writes.push({area:this===localStorage?'local':'session',key,value});return set.call(this,key,value)};
     for(const name of ['WebSocket','EventSource']) {const Original=window[name]; if(Original) window[name]=class extends Original {constructor(...args){window.__w5Transports.push({name,url:String(args[0])});super(...args)}}}
@@ -241,6 +250,16 @@ export async function runLocaleActivationCases(h) {
     check(`${locale}/${width}: shared shell mounted`,await ready(page),true);
     const retiredDom=`!document.querySelector('[data-assistant-open]')&&!document.querySelector('[role="dialog"][aria-label="Ranch Assistant"],[role="dialog"][aria-label="牧场助手"]')&&!document.querySelector('a[href$="/settings/assistant"]')`;
     check(`${locale}/${width}: launcher/dock/settings absent`,await evaluate(page,retiredDom),true);
+    // Preferences renders outside the Settings data gate. Its mounted radio
+    // does not imply that the initial query effects have even issued HTTP.
+    // Observe actual completion before measuring keyboard-caused traffic;
+    // neither the shipping query policy nor the full server ledger is changed.
+    await cdp.send('Page.bringToFront',{},page.sessionId);
+    const initialPaths=['/api/v1/orgs','/api/v1/orgs/test-org/dashboard/summary','/api/v1/orgs/test-org/settings'];
+    const initialSettled=await waitTrue(page,`window.__w5Http.every(row=>!row.pending)&&${JSON.stringify(initialPaths)}.every(path=>window.__w5Http.some(row=>row.path===path&&row.settledAt!==null))&&Date.now()-Math.max(...window.__w5Http.map(row=>row.settledAt))>=300`,'initial Settings HTTP settled',5000);
+    check(`${locale}/${width}: observed initial HTTP settled before shortcut`,initialSettled,true);
+    if(!initialSettled)throw new Error('initial Settings HTTP prerequisite did not settle');
+    const initialHttp=await evaluate(page,'window.__w5Http');
     const shortcutFrom=ledger.length;
     const transportsBefore=(await evaluate(page,state)).transports;
     for(const modifiers of [2,4]) {
@@ -268,7 +287,7 @@ export async function runLocaleActivationCases(h) {
       check(`${locale}/${width}/${section}: all existing nav child/text bounds`,bounds.over,[]);
       check(`${locale}/${width}/${section}: feature remains unmounted`,await evaluate(page,retiredDom),true);
       check(`${locale}/${width}/${section}: no assistant transport`,(await evaluate(page,state)).transports.filter(row=>row.url.includes('/assistant')),[]);
-      if (section==='daemon-capacity'||section==='preferences') await capture(page,`w5-settings-nav-${locale}-${width}`,{locale,viewport:`${width}x${width===390?844:900}`,nav,bounds});
+      if (section==='daemon-capacity'||section==='preferences') await capture(page,`w5-settings-nav-${locale}-${width}`,{locale,viewport:`${width}x${width===390?844:900}`,nav,bounds,keyboardInitialHttp:initialHttp});
     }
     await closePage(page);
   }
