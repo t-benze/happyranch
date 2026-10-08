@@ -7,6 +7,9 @@ on:
 
 jobs:
   python-unit:
+    # Suspended by founder THR-291 seq5 (TASK-10169); restore by reverting this pause.
+    # A skipped job is suspended coverage, never a unit-test PASS.
+    if: ${{ false }}
     name: Python unit (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     # No Python linter configured in-repo; add ruff via founder approval to enable Python lint.
