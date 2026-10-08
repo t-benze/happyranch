@@ -1,0 +1,57 @@
+name: TASK-10279 hosted native observer admission
+
+# Never merge. Native readiness only, no source/product proof or CI waiver.
+on:
+  push:
+    branches: [task/TASK-10279]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-10279-native-admission
+  cancel-in-progress: false
+
+jobs:
+  native:
+    if: github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-10279'
+    name: TASK-10279 native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    steps:
+      - name: Checkout evidence source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          path: evidence
+      - name: Checkout immutable candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: e234b34d607821e70a6723bde6d0b42619f525f0
+          persist-credentials: false
+          path: candidate
+      - name: Checkout immutable baseline
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: 8378064e9933d5b3af4247eca55750ac427a564f
+          persist-credentials: false
+          path: baseline
+      - name: Compile fixed observer and run cheap native admission
+        run: python3 -I evidence/tests/evidence/task_10279/preflight.py
+      - name: Seal bounded receipts including failure
+        id: seal
+        if: always()
+        run: python3 -I evidence/tests/evidence/task_10272/runner.py --seal
+      - name: Upload native receipts
+        if: always() && steps.seal.outcome == 'success'
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: task-10279-native-${{ matrix.os }}-${{ github.run_attempt }}
+          path: evidence/receipts/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
