@@ -79,6 +79,21 @@ doubled, checking primary identity and independent connector/daemon finalization
 attempts, including kill/reap on wait failure. These controls establish invocation
 and error preservation; actual resource absence requires disposable execution.
 
+The founder suspended Python unit-suite execution in THR-291 seq5
+(TASK-10169). While this pause applies, do not launch Python unit tests,
+including focused tests or duration measurements. The `python-unit` GitHub
+job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
+reports the same suspension before continuing Web CI. This also pauses the
+unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
+exit or an `all` receipt establishes only the remaining checks, never a unit
+PASS. Preserve test sources, selections and coverage definitions. Web,
+canonical validation and integration jobs retain their own existing contracts;
+no hook bypass is authorized. Existing historical workflow reruns and old
+checkouts do not acquire this pause automatically and must not be used to
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The ordinary commands below describe the restored behavior.
+
 ## Prerequisites
 
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/)
