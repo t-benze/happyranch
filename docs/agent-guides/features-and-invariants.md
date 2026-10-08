@@ -53,6 +53,25 @@ operator acceptance remain separate. Independent review/QA/CI and deployment are
 not implied by source implementation. Earlier prerequisite descriptions above
 refer to S1; S2 does not change its migration/readiness/drain meanings.
 
+### Finite template-driven draft policy
+
+Document-review schema2 permits one abstract agent author and 1–3 reviewers,
+with at most one existing Founder human. Required roles equal the declared reviewer
+list on the current revision. Approved is required; optional changes_requested
+requires the exact return-to-author/new/all-prior-receipts rule, otherwise return
+is null. Submission timing declares on-completion or while-active-or-completed
+capability for later producers. Author allocation, recipient filtering and the
+frozen context consume the compiled contract from the exact immutable version.
+A request cannot add return-to-author to an approval-only template. Agent-only
+review has no human alias; all actual principals retain canonical active membership
+and independence requirements. Initial execution creates only an author draft.
+
+Legacy schema1 uses its unchanged @1 reader/brief/envelopes. New definition and
+activation families use @2 pins/envelopes; numerical publication version and the
+current pointer never choose interpretation. Full validation visits all historical
+drafts/versions. Any @2 data requires a compatible reader, even without instances;
+older readers refuse. No DDL/history conversion or downgrade guarantee is added.
+
 ### Implemented boundaries for retained features
 
 KB input validation, duplicate detection, author stamps, and deletion checks live

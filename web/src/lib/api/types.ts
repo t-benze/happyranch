@@ -1157,7 +1157,7 @@ export type WorkflowActivationInput = {
   kind: 'thread-attachment'; thread_id: string; attachment_id: string;
   sha256: string; recipients: WorkflowActivationRole[];
 };
-export interface WorkflowActivationRequest {
+export interface LegacyWorkflowActivationRequest {
   operation_key: string;
   instance_id: string;
   expected_activation_revision: 0;
@@ -1169,7 +1169,7 @@ export interface WorkflowActivationRequest {
   allowed_actions: WorkflowActivationAction[];
   inputs: WorkflowActivationInput[];
 }
-export interface WorkflowActivationReceipt {
+export interface LegacyWorkflowActivationReceipt {
   activation_id: string;
   instance_id: string;
   instance_reference: string;
@@ -1197,3 +1197,36 @@ export interface WorkflowActivationReceipt {
   current_eligibility: { eligible: boolean; blockers: string[] };
   responsible_owner: string;
 }
+
+export type WorkflowDocumentReturnRule = {
+  action: 'return-to-author'; revision: 'new'; invalidate: 'all-prior-receipts';
+};
+export type WorkflowDocumentReviewDefinition = {
+  kind: 'document-review'; schema_version: 2; description: string;
+  author: { role: string; kind: 'agent' };
+  output: { primitive: 'immutable-document-revision'; description: string };
+  reviewers: { role: string; kind: 'agent' | 'human' }[];
+  approval: { mode: 'all'; revision: 'current'; required_roles: string[] };
+  submission: { timing: 'on-completion' | 'while-active-or-completed' };
+} & ({ outcomes: ['approved']; request_changes: null } | {
+  outcomes: ['approved', 'changes_requested'] | ['changes_requested', 'approved'];
+  request_changes: WorkflowDocumentReturnRule;
+});
+export type DocumentWorkflowActivationInput =
+  Omit<Extract<WorkflowActivationInput, { kind: 'task-attachment' }>, 'recipients'> & { recipients: string[] }
+  | Omit<Extract<WorkflowActivationInput, { kind: 'thread-attachment' }>, 'recipients'> & { recipients: string[] };
+export interface DocumentWorkflowActivationRequest extends Omit<LegacyWorkflowActivationRequest,
+  'bindings' | 'eligible_replacements' | 'inputs'> {
+  format: 'workflow-activation-request@2';
+  bindings: Record<string, WorkflowActivationRoleBinding>;
+  eligible_replacements: Record<string, WorkflowActivationRoleBinding[]>;
+  inputs: DocumentWorkflowActivationInput[];
+}
+export interface DocumentWorkflowActivationReceipt extends Omit<LegacyWorkflowActivationReceipt,
+  'bindings' | 'eligible_replacements'> {
+  format: 'workflow-activation-receipt@2';
+  bindings: Record<string, WorkflowActivationRoleBinding>;
+  eligible_replacements: Record<string, WorkflowActivationRoleBinding[]>;
+}
+export type WorkflowActivationRequest = LegacyWorkflowActivationRequest | DocumentWorkflowActivationRequest;
+export type WorkflowActivationReceipt = LegacyWorkflowActivationReceipt | DocumentWorkflowActivationReceipt;

@@ -1,7 +1,7 @@
 """Immutable U1B workflow-template authoring and version publication.
 
 This service is deliberately inert: it validates one closed pure-data
-``product-design`` definition and stores canonical bytes.  It does not activate
+versioned document-review definition and stores canonical bytes.  It does not activate
 templates, create workflow instances/tasks, dispatch work, or emit effects.
 """
 from __future__ import annotations
@@ -147,7 +147,7 @@ def _closed_dict(value: object, keys: set[str]) -> dict:
     return value
 
 
-def _validate_definition(definition: object) -> bytes:
+def _validate_legacy_definition(definition: object) -> bytes:
     root = _closed_dict(
         definition,
         {
@@ -192,6 +192,101 @@ def _validate_definition(definition: object) -> bytes:
     if request_changes != {"action": "return-to-author"}:
         raise WorkflowTemplateError("invalid_template_definition")
     return _canonical_json(root, code="invalid_template_definition")
+
+
+def _compile_document_definition(definition: object) -> dict:
+    """Compile only the finite @2 data contract, without principal authority."""
+    root = _closed_dict(definition, {
+        "kind", "schema_version", "description", "author", "output", "reviewers",
+        "outcomes", "approval", "request_changes", "submission",
+    })
+    if (type(root["schema_version"]) is not int or root["schema_version"] != 2
+            or root["kind"] != "document-review"):
+        raise WorkflowTemplateError("invalid_template_definition")
+    for description in (root["description"], _closed_dict(
+            root["output"], {"primitive", "description"})["description"]):
+        if not isinstance(description, str) or not description.strip() or len(description) > 2000:
+            raise WorkflowTemplateError("invalid_template_definition")
+    if root["output"]["primitive"] != "immutable-document-revision":
+        raise WorkflowTemplateError("invalid_template_definition")
+    author = _closed_dict(root["author"], {"role", "kind"})
+    _component(author["role"], code="invalid_template_definition")
+    if author["kind"] != "agent":
+        raise WorkflowTemplateError("invalid_template_definition")
+    reviewers = root["reviewers"]
+    if not isinstance(reviewers, list) or not 1 <= len(reviewers) <= 3:
+        raise WorkflowTemplateError("invalid_template_definition")
+    kinds = {author["role"]: "agent"}
+    reviewer_roles = []
+    for value in reviewers:
+        reviewer = _closed_dict(value, {"role", "kind"})
+        role = _component(reviewer["role"], code="invalid_template_definition")
+        if role in kinds or reviewer["kind"] not in ("agent", "human"):
+            raise WorkflowTemplateError("invalid_template_definition")
+        kinds[role] = reviewer["kind"]
+        reviewer_roles.append(role)
+    if list(kinds.values()).count("human") > 1:
+        raise WorkflowTemplateError("invalid_template_definition")
+    outcomes = root["outcomes"]
+    if (not isinstance(outcomes, list) or not 1 <= len(outcomes) <= 2
+            or any(value not in ("approved", "changes_requested") for value in outcomes)
+            or len(set(outcomes)) != len(outcomes) or "approved" not in outcomes):
+        raise WorkflowTemplateError("invalid_template_definition")
+    approval = _closed_dict(root["approval"], {"mode", "revision", "required_roles"})
+    if (approval["mode"] != "all" or approval["revision"] != "current"
+            or approval["required_roles"] != reviewer_roles):
+        raise WorkflowTemplateError("invalid_template_definition")
+    if "changes_requested" in outcomes:
+        if _closed_dict(root["request_changes"], {"action", "revision", "invalidate"}) != {
+                "action": "return-to-author", "revision": "new", "invalidate": "all-prior-receipts"}:
+            raise WorkflowTemplateError("invalid_template_definition")
+    elif root["request_changes"] is not None:
+        raise WorkflowTemplateError("invalid_template_definition")
+    submission = _closed_dict(root["submission"], {"timing"})
+    if submission["timing"] not in ("on-completion", "while-active-or-completed"):
+        raise WorkflowTemplateError("invalid_template_definition")
+    # Store the operator's ordering. Neither a name nor a numerical publication
+    # version participates in policy selection.
+    return dict(format="workflow-document-contract@2", author_role=author["role"],
+                role_kinds=kinds, reviewer_roles=reviewer_roles, output=root["output"],
+                outcomes=outcomes, approval=approval, request_changes=root["request_changes"],
+                submission=submission)
+
+
+def _validate_definition(definition: object) -> bytes:
+    if isinstance(definition, dict) and type(definition.get("schema_version")) is int and definition["schema_version"] == 2:
+        _compile_document_definition(definition)
+        return _canonical_json(definition, code="invalid_template_definition")
+    return _validate_legacy_definition(definition)
+
+
+def _definition_pins(definition: dict) -> tuple[str, str, str]:
+    if type(definition.get("schema_version")) is int and definition["schema_version"] == 2:
+        return "workflow-compiler@2", "workflow-validator@2", "operator-input@2"
+    return _COMPILER_PIN, _VALIDATOR_PIN, _SOURCE_PIN
+
+
+def _validate_definition_pins(definition: object, *, compiler_pin: str,
+                              validator_pin: str, source_pin: str) -> bytes:
+    raw = _validate_definition(definition)
+    if (compiler_pin, validator_pin, source_pin) != _definition_pins(definition):
+        raise WorkflowTemplateError("invalid_template_definition")
+    return raw
+
+
+def _document_contract(template: WorkflowTemplateVersion) -> dict | None:
+    """Read the retained definition and exact family, including during replay."""
+    try:
+        definition = json.loads(template.definition_bytes)
+        raw = _validate_definition_pins(definition, compiler_pin=template.compiler_pin,
+                                        validator_pin=template.validator_pin, source_pin=template.source_pin)
+        if raw != template.definition_bytes:
+            raise WorkflowTemplateError("template_storage_corrupt")
+        if _definition_pins(definition)[0] == "workflow-compiler@2":
+            return _compile_document_definition(definition)
+        return None
+    except (ValueError, TypeError, UnicodeError) as exc:
+        raise WorkflowTemplateError("template_storage_corrupt") from exc
 
 
 def _component(value: object, *, code: str) -> str:
@@ -245,6 +340,7 @@ class WorkflowTemplateStore:
         if not principal.principal_id or not principal.operation_principal:
             raise WorkflowTemplateError("invalid_principal")
         definition_bytes = _validate_definition(definition)
+        compiler_pin, validator_pin, source_pin = _definition_pins(definition)
         content_digest = hashlib.sha256(definition_bytes).hexdigest()
         request_digest = hashlib.sha256(
             _canonical_json(
@@ -253,9 +349,9 @@ class WorkflowTemplateStore:
                     "template_name": name,
                     "expected_current_version": expected_current_version,
                     "definition_digest": content_digest,
-                    "compiler_pin": _COMPILER_PIN,
-                    "validator_pin": _VALIDATOR_PIN,
-                    "source_pin": _SOURCE_PIN,
+                    "compiler_pin": compiler_pin,
+                    "validator_pin": validator_pin,
+                    "source_pin": source_pin,
                 },
                 code="invalid_template_request",
             )
@@ -332,7 +428,7 @@ class WorkflowTemplateStore:
                     "INSERT INTO workflow_template_drafts VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (
                         draft_id, namespace, name, definition_bytes, content_digest,
-                        _COMPILER_PIN, _VALIDATOR_PIN, _SOURCE_PIN,
+                        compiler_pin, validator_pin, source_pin,
                         publisher_json, published_at,
                     ),
                 )
@@ -340,8 +436,8 @@ class WorkflowTemplateStore:
                     "INSERT INTO workflow_template_versions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         version_id, draft_id, namespace, name, version,
-                        definition_bytes, content_digest, _COMPILER_PIN,
-                        _VALIDATOR_PIN, _SOURCE_PIN, publisher_json, published_at,
+                        definition_bytes, content_digest, compiler_pin,
+                        validator_pin, source_pin, publisher_json, published_at,
                     ),
                 )
                 conn.execute(
@@ -454,8 +550,12 @@ class WorkflowTemplateStore:
         if hashlib.sha256(definition_bytes).hexdigest() != row["definition_digest"]:
             raise WorkflowTemplateError("template_storage_corrupt")
         try:
+            canonical = _validate_definition_pins(json.loads(definition_bytes),
+                compiler_pin=row["compiler_pin"], validator_pin=row["validator_pin"], source_pin=row["source_pin"])
+            if canonical != definition_bytes:
+                raise WorkflowTemplateError("template_storage_corrupt")
             publisher = json.loads(row["published_by"])
-        except (TypeError, json.JSONDecodeError) as exc:
+        except (TypeError, ValueError, UnicodeError) as exc:
             raise WorkflowTemplateError("template_storage_corrupt") from exc
         if not isinstance(publisher, dict):
             raise WorkflowTemplateError("template_storage_corrupt")

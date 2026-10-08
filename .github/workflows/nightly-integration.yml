@@ -161,6 +161,7 @@ jobs:
 
   integration:
     name: Python integration (3.12)
+    if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     # Integration tests spawn a real daemon + fake CLIs; cap the job so a hung
     # daemon can't run for the full 6h default.

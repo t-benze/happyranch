@@ -288,7 +288,7 @@ run opens or comments on the single open issue labelled
 that issue. This repository-local issue flow uses only the workflow token and
 does not send email, Feishu, Slack, webhook, or other external notifications.
 
-Manual dispatch of the same workflow also runs the exact `scripts/local_ci.sh all`
+Manual dispatch of the same workflow runs only the exact `scripts/local_ci.sh all`
 command on its clean immutable checkout with Python 3.14 and Node 24. This
 lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
 Its closed build-tool PATH includes the standard `/usr/local/bin` directory used
@@ -298,11 +298,13 @@ uses fresh HOME/config/cache/registry/runtime directories and ordinary build/tes
 tools, and preserves the default unit/Web selections. It uploads the command's
 actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
 a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
-the actual command receipt. Scheduled integration and the PR/main matrix remain
-unchanged. The live Linux daemon host must also avoid `python`/`all` when their
-selection includes real socket or daemon tests; use this disposable manual lane
-only when authorized. During the pause, the adopted wrapper runs Web only; the
-focused Python prerequisites remain suspended even in the disposable venue.
+the actual command receipt. The integration job runs only on `schedule` events;
+manual dispatch skips it and the scheduled failure reporter. Scheduled integration
+and the PR/main matrix remain unchanged. The live Linux daemon host must also
+avoid `python`/`all` when their selection includes real socket or daemon tests;
+use this disposable manual lane only when authorized. During the pause, the
+adopted wrapper runs Web only; the focused Python prerequisites remain suspended
+even in the disposable venue.
 
 ## Git hooks
 

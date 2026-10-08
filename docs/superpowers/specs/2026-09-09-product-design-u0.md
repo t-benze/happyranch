@@ -1692,3 +1692,39 @@ focused executable QA, exact-head local/hosted CI and selected hosted callback
 remain mandatory. U3 immutable submission/concurrent reviews, U4/U5 revision/
 replacement operations and U6 mounted UI/operator acceptance remain separate,
 including distinct actual Founder Request changes and Sign off observations.
+
+
+### THR-139 seq410: generic finite templates through initial drafting
+
+The first bounded generic correction supports document-review schema2 with an
+abstract agent author and 1–3 reviewers, at most one existing Founder human,
+immutable-document-revision/output description, exact all/current membership,
+approved and optional changes_requested, null return or the exact
+return-to-author/new/all-prior-receipts rule, and on-completion or
+while-active-or-completed submission capability. Product-three retains the
+Founder395 behavior as immutable template policy. A differently named proposal
+with one human reviewer, approval-only null return, and agent-only zero-human
+review use the same compiler, activation and draft owners. Labels and counts
+provide no principal, grant, code authority or engineering-gate exception.
+
+Every new format uses exactly workflow-compiler@2/workflow-validator@2/operator-input@2.
+New activation request/receipt, authorization, binding and draft context use @2;
+context freezes raw definition and normalized document contract. Author allocation,
+input-recipient filtering, admission and prelaunch consume that immutable policy.
+Current canonical membership, independence, authority/profile/capacity and lease
+fences still apply. Read/replay retains exact historical version/pins/publication,
+never the current pointer or numerical identity version as format selector.
+Legacy @1 bytes, brief, digests, serialization and completed interpretation remain.
+All-draft/all-version DATA/PIN validation is format-aware without DDL/layout/reference
+or marker changes. A pre-generic reader refuses any @2 data; compatible readers
+are required and no earlier-reader downgrade promise/history rewriting follows.
+Existing-org migration remains explicit and fresh-org initialization unchanged.
+
+The endpoint is authentic initial author draft completion with a genuine bound
+session, INTEGER result and finalized host quiescence through existing owners.
+The contract grants future submission timing capability; active product submission
+is never an unconditional current author obligation. No immutable submission,
+request/receipt/join/finalizer, revision, mounted UI or whole-Phase1 acceptance
+is delivered by this boundary. Independent full-diff review, executable QA,
+exact-head local/hosted checks and callback remain gates; source is not deployment,
+operator person-action evidence or feature completion.
