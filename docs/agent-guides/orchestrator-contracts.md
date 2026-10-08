@@ -240,12 +240,12 @@ Founder `PUT /agents/{agent_name}/system-prompt` is a strict prompt-only CAS. It
   under ownership; event1 retains its shipped identity/digest. Progressed event
   SHA256 binds canonical UTF8 fields, fixed verifier/Founder request facts,
   actual org and previous digest. Timestamps must be UTC, not monotonic.
-  The original foundation DDL/event1 remain unchanged. Complete F and E
+  The original foundation DDL/event1 remain unchanged. Complete F, E and G
   are independently constructed release layouts; the legacy authority oracle
   validates layout/history/data, selects that layout's whole generic+workflow
   reference, and hashes all non-null SQL without filtering. Current v2 remains
   observed-only. Existing-org load/enable do not install the draft extension.
-  One cold-load call before teams/settings resumes only authentic requests on E;
+  One cold-load call before teams/settings resumes only authentic requests on validated E/G;
   F retains history and the explicit migration remedy without advancing; pure
   reads never advance. Enable verifies real integrity/FKs and absence of
   contradictory work before compatibility_verified and again before enabled.
