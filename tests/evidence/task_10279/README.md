@@ -10,7 +10,7 @@ Source results retain actual candidate/baseline exits and failure receipts;
 submission or native readiness alone establishes no source behavior. It runs
 no wheel/frozen build, browser, whole collection or suspended unit/proof body.
 
-Candidate bf2799d8a3458fba0a46c8a444986e64f560fef5 and original baseline
+Candidate 3d41d128da9994f43aad0f02de9261b3416bcfa0 and original baseline
 8378064e9933d5b3af4247eca55750ac427a564f remain immutable product source pins.
 The new C source is independent test evidence, copied byte-for-byte from the
 published same-PR helper change, and authenticated by its literal SHA256 before
@@ -101,3 +101,16 @@ strict duplicate-receipt refusal is retained. The preliminary observation now
 uses `shipping-baseline-overlay-created-head`; the manifest retains its separate
 HEAD verification. Original failure receipts remain authoritative for that run;
 the repair requires a new exact evidence push and fresh native/source receipts.
+
+Run37844553544 at evidence49d9aa4789a1e0ece96d935945e31f2a72249b68
+passed fresh native admission (Ubuntu163/macOS462 rows) and official ordinary-UID
+tool provisioning. Source collection proceeded, but candidate31/baseline2 cases
+on each venue failed in daemon setup before behavior: macOS nested uv could
+not find Python, while Linux refused the stub guard identity. Original failures
+remain in their artifacts. SAME PR1017 now binds nested uv to the actual parent
+interpreter/venv and adds a finite ordinary-user stdlib identity probe before
+pytest; this candidate was published and observed at the pin above after
+JOB3969 exact-head active local Web/manual renewal exited0. This evidence push
+renews that pin only; successful source behavior still requires new actual
+receipts. Both fresh runners repeat cheap native admission before provisioning.
+No source/R4/artifact/browser/discovery/independent QA PASS is implied.

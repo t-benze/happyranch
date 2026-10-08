@@ -2,7 +2,7 @@
 
 Historical TASK-10272 runs and source remain preserved at their immutable
 evidence refs. In this TASK-10279 recovery branch, `runner.py` is bound to
-published candidate bf2799d8a3458fba0a46c8a444986e64f560fef5 for the exact
+published candidate 3d41d128da9994f43aad0f02de9261b3416bcfa0 for the exact
 TASK-10279 hosted push after fresh fixed-native admission. The renewed workflow
 includes the fixed source step; actual new source receipts remain required.
 See `../task_10279/README.md` for the current descriptor, separate logs/results and four-file baseline overlay.
