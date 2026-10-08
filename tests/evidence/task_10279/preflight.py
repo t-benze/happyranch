@@ -24,7 +24,7 @@ SUPPORT = runpy.run_path(str(HERE.parent / 'task_10272/runner.py'), run_name='pr
 CANDIDATE = 'e234b34d607821e70a6723bde6d0b42619f525f0'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
 # Source hash is renewed from the final immutable C bytes before publication.
-SOURCE_SHA256 = '50c4e09265cecdbdde92f0973bc03b6a4c9754917ea219b158454751892ece11'
+SOURCE_SHA256 = 'f70f92756cc057b289b863f972d097ccc47b16551b5b18de4c83f968da313984'
 
 
 def receipt(path):
@@ -91,19 +91,28 @@ def main():
             flags = ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', '-static']
             libs = []
         compiler = str(Path(compiler).resolve(strict=True))
-        assert Path(compiler).stat().st_uid == 0
+        compiler_owner = Path(compiler).stat().st_uid
+        save('compiler-origin.json', {'compiler': receipt(compiler), 'uid': compiler_owner,
+                                     'mode': stat.S_IMODE(Path(compiler).stat().st_mode), 'sdk': sdk})
+        allowed_owners = {0} if sys.platform == 'linux' else {0, os.getuid()}
+        assert compiler_owner in allowed_owners, f'unexpected compiler UID {compiler_owner}'
+        if sdk:
+            assert compiler.startswith(sdk.split('.app/')[0] + '.app/')
         commands.run('compiler-version', [compiler, '--version'], root, env)
         header_output, _ = commands.run('native-headers', [compiler, *flags, '-M', source], root, env)
         # Only closed source + compiler SDK headers, never checkout modules.
         header_paths = shlex.split(header_output.split(':', 1)[1].replace('\\\n', ' '))
-        headers = []
+        headers, header_uids = [], {}
         for item in dict.fromkeys(header_paths):
             path = Path(item).resolve(strict=True)
             if path == source:
                 continue
-            assert path.stat().st_uid == 0 and not path.stat().st_mode & 0o022
+            owner = path.stat().st_uid
+            assert owner in allowed_owners, f'unexpected SDK header UID {owner}: {path}'
+            assert not path.stat().st_mode & 0o022
             assert str(path).startswith(('/usr/', '/Library/Developer/', '/Applications/Xcode_'))
             headers.append(receipt(path))
+            header_uids[str(path)] = owner
         assert headers
         binary = root / 'native-observer'
         compile_argv = [compiler, *flags, str(source), *libs, '-o', str(binary)]
@@ -162,7 +171,8 @@ def main():
             assert snapshot['abi']['bsd_uid_offset'] == 20 and snapshot['abi']['bsd_start_offset'] == 120
         native = {'sdk': sdk, 'headers': headers,
                   'dependencies': receipt(SUPPORT['RECEIPTS'] / 'native-dependencies.log'),
-                  'abi': snapshot['abi'], 'static': sys.platform == 'linux'}
+                  'abi': snapshot['abi'], 'static': sys.platform == 'linux',
+                  'compiler_uid': compiler_owner, 'header_uids': header_uids}
         admission = save('native-admission.json', {'schema_version': 1, 'venue': venue,
                          'source': receipt(source), 'binary': receipt(binary),
                          'compiler': receipt(compiler), 'sudo': receipt(sudo), 'native': native,

@@ -19,7 +19,12 @@ Only the native executable receives existing passwordless sudo, only on these
 disposable venues. Its only argument is original runner UID. Linux links
 statically; macOS links only system native libraries with selected SDK headers.
 Compiler/header/SDK/ABI/source/binary/loader dependencies and full invocation,
-ordinary parent and root observer UID/EUID/exits are recorded. All real,
+ordinary parent and root observer UID/EUID/exits are recorded.
+The actual selected Xcode compiler/headers may be original-runner-owned;
+root-or-original-owner, no group/world write, exact selected Xcode bundle and
+image/version/path/hash evidence are required. Linux tools/headers remain
+root-owned. Actual ownership is recorded; no host permissions are changed.
+All real,
 effective, saved (and Linux filesystem) UID owners retain cwd/executable/native
 start identities; all native PID/PPID/PGID rows remain required. Native exit or
 reuse is revalidated without signals. Incomplete/opaque living rows fail with
