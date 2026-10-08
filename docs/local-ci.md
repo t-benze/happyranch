@@ -13,18 +13,20 @@ The HappyRanch Linux daemon host is a special operational boundary: founder
 THR-211 seq270/271 prohibits every integration-marked test there, including
 direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
 Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
-on the exact candidate ref instead. For an authorized integration-skipped
-verification, dispatch with `run_integration=false`: the existing manual
-`local-ci-all` job still runs the exact `scripts/local_ci.sh all` command on
+on the exact candidate ref instead. Manual dispatch has no integration input:
+the existing manual `local-ci-all` job still runs the exact
+`scripts/local_ci.sh all` command on
 Python 3.14/Node 24, while the separate general integration job is SKIPPED.
 The manual lane has a finite 150-minute cap: the Python unit step alone took
 99 minutes in hosted run 37650992085, exceeding the former 60-minute cap.
 The separate nightly integration job retains its 30-minute cap.
 Record its actual checkout SHA, source/tool provenance and command exit from
-the uploaded receipt; submission or publication alone is not a pass. Schedule
-and ordinary manual/default-true dispatch retain the existing integration
-selection. General integration remains SKIPPED under THR-243 seq42 for tasks
-governed by that exception; do not dispatch default true for those tasks.
+the uploaded receipt; submission or publication alone is not a pass. General
+integration runs only on scheduled events; manual dispatch skips it and the
+scheduled failure reporter. General integration remains SKIPPED under THR-243
+seq42 for tasks governed by that exception, never PASS. While the THR-291 pause
+applies, the manual `all` command reports Python SUSPENDED and runs only the
+remaining Web checks; an exit0 does not establish a Python unit PASS.
 Commands whose unit selection includes real
 socket/daemon cases, including `scripts/local_ci.sh all`, also require that
 disposable venue. On-host verification is limited to demonstrably pure offline
@@ -263,19 +265,24 @@ run opens or comments on the single open issue labelled
 that issue. This repository-local issue flow uses only the workflow token and
 does not send email, Feishu, Slack, webhook, or other external notifications.
 
-Manual dispatch of the same workflow also runs the exact `scripts/local_ci.sh all`
+Manual dispatch of the same workflow runs only the exact `scripts/local_ci.sh all`
 command on its clean immutable checkout with Python 3.14 and Node 24. This
 lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
 Its closed build-tool PATH includes the standard `/usr/local/bin` directory used
 by the ordinary unit lane; integration keeps its separate restricted PATH.
 The disposable lane clears inherited environment variables before test imports,
 uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
-tools, and preserves the default unit/Web selections. It uploads the command's
+tools, and preserves the default unit/Web selection definitions. During the
+THR-291 pause, units are SUSPENDED and only the remaining Web checks execute.
+The manual lane retains its finite 150-minute cap; scheduled integration retains
+its separate 30-minute cap. It uploads the command's
 actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
 a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
-the actual command receipt. Scheduled integration and the PR/main matrix remain
-unchanged. The live Linux daemon host must also avoid `python`/`all` when their
-selection includes real socket or daemon tests; use this disposable manual lane.
+the actual command receipt. The integration job runs only on `schedule` events;
+manual dispatch skips it and the scheduled failure reporter. Scheduled integration
+and the PR/main matrix remain unchanged. The live Linux daemon host must also
+avoid `python`/`all` when their selection includes real socket or daemon tests;
+use this disposable manual lane.
 
 ## Git hooks
 

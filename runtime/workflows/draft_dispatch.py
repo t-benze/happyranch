@@ -135,7 +135,8 @@ class WorkflowDraftDispatcher:
                                    active_sessions=active_sessions):
             raise DraftOwnershipError("workflow_activation_author_pending")
         request = parse_request(json.loads(intent["request_bytes"]))
-        self.org.workflow_activations._roles(request, json.loads(capture.ready.snapshot_bytes))
+        template = self.org.workflow_activations._template(request)
+        self.org.workflow_activations._roles(request, json.loads(capture.ready.snapshot_bytes), template)
 
     async def claim(self, task_id: str) -> str | None:
         # Discovery and effective-profile reads precede all durable ownership.

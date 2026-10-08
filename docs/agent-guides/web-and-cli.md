@@ -669,13 +669,28 @@ Founder omits `--session-id`, supplies `team_slug` in the JSON payload, and the
 command uses the existing daemon bearer. The payload contains
 `operation_key`, `template_name`, `expected_current_version`, `definition`,
 and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
-session claims are rejected. `--from-file` must be absolute. The closed
+session claims are rejected. `--from-file` must be absolute. The legacy closed
 definition is `kind=product-design`, with `schema_version` set to the genuine
 JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
 author of an immutable PRD revision, Founder/implementer/tester reviewers, all
 three required on the current revision, and request-changes returning to the
 author. A non-empty description is the only variable descriptive field;
 unknown fields and kinds fail closed.
+
+New definitions use `kind=document-review`, genuine integer `schema_version=2`,
+one agent author and 1–3 reviewers with unique abstract roles matching
+`[a-z][a-z0-9-]{0,62}`, and at most one human reviewer. `output` contains
+`primitive=immutable-document-revision` and a nonblank `description`. `outcomes`
+contains `approved`, optionally `changes_requested`; `approval` is all/current
+with required_roles exactly equal to reviewer order. `request_changes` is null
+for approval-only, otherwise exactly action=return-to-author, revision=new,
+invalidate=all-prior-receipts. `submission.timing` is on-completion or
+while-active-or-completed. These are document capabilities, not execution grants.
+Malformed new policy exits2 before either CLI client or port discovery; legacy
+file/domain failures retain exit1. The server independently validates policy and
+publisher authority. @2 pins are workflow-compiler@2/workflow-validator@2/operator-input@2.
+All immutable versions remain readable by a compatible reader; earlier readers
+refuse orgs containing @2 data, with no downgrade conversion promised.
 
 Founder reads exact immutable versions with:
 
@@ -1242,7 +1257,17 @@ inputs to their actual inlined variants in the served document; those pointers
 are part of the contract keeper.
 
 Every request object and nested record is closed; unknown fields, booleans in
-integer fields, identity/provenance claims and `latest` aliases refuse. Concrete
+integer fields, identity/provenance claims and `latest` aliases refuse. Legacy untagged requests retain exactly four fixed roles and unchanged wire
+bytes. New requests add `format=workflow-activation-request@2` and bind exactly
+the selected immutable template roles; new receipts add
+`format=workflow-activation-receipt@2`. Human slots bind Founder/founder/null with
+empty replacements, agent slots bind distinct active same-org canonical members.
+Agent-only templates have zero human aliases. Replacement maps have the same
+exact slot keys and at most16 candidates per agent slot. Recipients are1–4 unique
+abstract roles from that template. Unknown format/role syntax/duplicate recipients
+refuse locally; exact template membership remains server-owned. Requests cannot
+add return-to-author to a null-return template. The served request/receipt unions
+and input discriminator pointers cover both formats. Concrete legacy
 request fields are:
 
 | Field | Contract |

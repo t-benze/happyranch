@@ -45,7 +45,7 @@ def _summarize(schema: dict) -> dict:
             }
             if path == '/api/v1/orgs/{slug}/workflows/activations' and method.upper() == 'POST':
                 body = op['requestBody']['content']['application/json']['schema']
-                path_summary['POST']['input_discriminator'] = body['properties']['inputs']['items']['discriminator']
+                path_summary['POST']['input_discriminators'] = [branch['properties']['inputs']['items']['discriminator'] for branch in body['anyOf']]
         if path_summary:
             paths[path] = path_summary
     return {"paths": paths}
@@ -354,7 +354,23 @@ def test_activation_openapi_pins_closed_request_and_complete_receipt():
     full = create_app(DaemonState.idle(Settings())).openapi()
     base = '/api/v1/orgs/{slug}/workflows/activations'
     post = full['paths'][base]['post']
-    request = post['requestBody']['content']['application/json']['schema']
+    request_union = post['requestBody']['content']['application/json']['schema']
+    assert len(request_union['anyOf']) == 2
+    request, document_request = request_union['anyOf']
+    assert document_request['additionalProperties'] is False
+    assert document_request['properties']['format']['const'] == 'workflow-activation-request@2'
+    assert set(document_request['required']) == set(request['required']) | {'format'}
+    for name in ('bindings', 'eligible_replacements'):
+        role_map = document_request['properties'][name]
+        assert role_map['propertyNames'] == {
+            'minLength': 1, 'maxLength': 63, 'pattern': '^[a-z][a-z0-9-]*$',
+        }
+        assert role_map['minProperties'] == 2 and role_map['maxProperties'] == 4
+        assert 'patternProperties' not in role_map
+    assert document_request['properties']['bindings']['additionalProperties']['additionalProperties'] is False
+    replacements = document_request['properties']['eligible_replacements']['additionalProperties']
+    assert replacements['type'] == 'array' and replacements['maxItems'] == 16
+    assert replacements['items']['additionalProperties'] is False
     assert request['additionalProperties'] is False
     assert set(request['required']) == {
         'operation_key', 'instance_id', 'expected_activation_revision', 'template',
@@ -365,7 +381,7 @@ def test_activation_openapi_pins_closed_request_and_complete_receipt():
     assert request['properties']['bindings']['additionalProperties'] is False
     schemas = full['components']['schemas']
     response = post['responses']['201']['content']['application/json']['schema']
-    assert response == {'$ref': '#/components/schemas/ActivationReceipt'}
+    assert response['anyOf'] == [{'$ref': '#/components/schemas/ActivationReceipt'}, {'$ref': '#/components/schemas/DocumentActivationReceipt'}]
     receipt = schemas['ActivationReceipt']
     assert receipt['additionalProperties'] is False
     assert set(receipt['required']) == {
@@ -376,10 +392,15 @@ def test_activation_openapi_pins_closed_request_and_complete_receipt():
         'execution_started', 'pending', 'reconciliation_required', 'cancellation_requested',
         'current_eligibility', 'responsible_owner',
     }
+    document_receipt = schemas['DocumentActivationReceipt']
+    assert document_receipt['additionalProperties'] is False
+    assert document_receipt['properties']['format']['const'] == 'workflow-activation-receipt@2'
+    assert set(document_receipt['required']) == set(receipt['required']) | {'format'}
+    assert 'format' not in receipt['properties']
     assert set(post['responses']) == {'200', '201', '403', '409', '422', '500'}
-    assert post['responses']['200']['content']['application/json']['schema'] == response
-    assert full['paths'][base]['get']['responses']['200']['content']['application/json']['schema']['items'] == response
-    assert full['paths'][base+'/{activation_id}']['get']['responses']['200']['content']['application/json']['schema'] == response
+    assert post['responses']['200']['content']['application/json']['schema']['anyOf'] == response['anyOf']
+    assert full['paths'][base]['get']['responses']['200']['content']['application/json']['schema']['items']['anyOf'] == response['anyOf']
+    assert full['paths'][base+'/{activation_id}']['get']['responses']['200']['content']['application/json']['schema']['anyOf'] == response['anyOf']
 
 
 def test_activation_served_openapi_resolves_all_internal_pointers_and_input_variants() -> None:
@@ -412,13 +433,15 @@ def test_activation_served_openapi_resolves_all_internal_pointers_and_input_vari
 
     check(document)
     schema = document['paths']['/api/v1/orgs/{slug}/workflows/activations']['post']['requestBody']['content']['application/json']['schema']
-    inputs = schema['properties']['inputs']['items']
-    assert inputs['discriminator']['propertyName'] == 'kind'
-    assert set(inputs['discriminator']['mapping']) == {'task-attachment', 'thread-attachment'}
-    for kind, pointer in inputs['discriminator']['mapping'].items():
-        variant = resolve(pointer)
-        assert variant in inputs['oneOf']
-        assert variant['properties']['kind']['const'] == kind
-        assert variant['additionalProperties'] is False
-        assert ('task_id' in variant['required']) is (kind == 'task-attachment')
-        assert ('thread_id' in variant['required']) is (kind == 'thread-attachment')
+    assert len(schema['anyOf']) == 2
+    for branch in schema['anyOf']:
+        inputs = branch['properties']['inputs']['items']
+        assert inputs['discriminator']['propertyName'] == 'kind'
+        assert set(inputs['discriminator']['mapping']) == {'task-attachment', 'thread-attachment'}
+        for kind, pointer in inputs['discriminator']['mapping'].items():
+            variant = resolve(pointer)
+            assert variant in inputs['oneOf']
+            assert variant['properties']['kind']['const'] == kind
+            assert variant['additionalProperties'] is False
+            assert ('task_id' in variant['required']) is (kind == 'task-attachment')
+            assert ('thread_id' in variant['required']) is (kind == 'thread-attachment')

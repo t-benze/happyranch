@@ -394,6 +394,35 @@ the existing manual nightly workflow with `run_integration=false` on the exact
 candidate ref. Authenticate the local-ci-all receipt and actual separate
 integration SKIPPED result. Schedule/default-true behavior remains unchanged.
 
+### Finite document-review templates and initial drafts (THR-139 seq410)
+
+New `schema_version: 2` / `kind: document-review` definitions compile finite data:
+one agent author, 1–3 independent reviewer slots, at most one existing Founder
+human, immutable-document-revision output/description, all/current reviewer
+membership, approved with optional changes_requested, and either null return or
+return-to-author/new/all-prior-receipts. Submission timing is on-completion or
+while-active-or-completed capability; it never requires an active author to submit.
+Abstract role names are not principals or grants. Actual bindings still require
+current same-org active canonical membership, independence and authority/profile
+leases. No label, count or outcome supplies code or engineering authority.
+
+The exact @2 compiler/validator/operator-input triple accompanies every immutable
+draft/version. Activation request/receipt, authorization, binding and initial-draft
+context use @2 families; the context retains both raw definition and compiled
+contract. Author allocation and input visibility consume that pinned contract.
+Legacy @1 raw bytes, pins, replay digests, task briefs and wire serialization stay
+unchanged. Read by immutable definition/pins, never identity.version or current
+pointer; full DATA/PIN validation checks all drafts and versions. A pre-generic
+reader refuses an org with any @2 data. Such an org needs a compatible reader;
+there is no old-reader downgrade promise or automatic history conversion.
+
+F/E DDL, full layout/reference validation and explicit-only existing-org migration
+remain unchanged; generic Database/runtime-audit remain workflow-free. Existing
+queue, host, callback and recovery owners still produce truthful initial drafts.
+Completion is draft-only: submission, review requests/receipts/joins, revision and
+mounted UI remain later units. Source implementation is not review/QA/CI acceptance,
+operator observation, deployment or Phase1 completion.
+
 The founder suspended Python unit-suite execution in THR-291 seq5
 (TASK-10169). While this pause applies, do not launch Python unit tests,
 including focused tests or duration measurements. The `python-unit` GitHub
