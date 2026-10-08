@@ -270,7 +270,7 @@ def native_prerequisites(commands, root, env):
         env['LDFLAGS'] += ' -isysroot ' + str(sdk)
         env['CPPFLAGS'] = '-isysroot ' + str(sdk)
         roots = {}
-        for name in ('openssl@3', 'xz', 'readline', 'libffi', 'sqlite'):
+        for name in ('openssl@3', 'xz', 'readline'):
             library = next((p for p in (Path('/opt/homebrew/opt') / name,
                                         Path('/usr/local/opt') / name) if p.is_dir()), None)
             assert library, f'existing native {name} prerequisite unavailable; no fallback'
@@ -283,8 +283,15 @@ def native_prerequisites(commands, root, env):
                 for p in sorted(library.rglob('*')) if p.is_file() and not p.is_symlink()},
                 'links': {str(p.relative_to(library)): os.readlink(p)
                 for p in sorted(library.rglob('*')) if p.is_symlink()}})
+        sdk_inputs = [sdk / 'usr/include/ffi/ffi.h', sdk / 'usr/include/ffi/ffitarget.h',
+                      sdk / 'usr/lib/libffi.tbd', sdk / 'usr/include/sqlite3.h',
+                      sdk / 'usr/lib/libsqlite3.tbd']
+        assert all(p.is_file() for p in sdk_inputs), 'selected Apple SDK ffi/sqlite inputs unavailable'
+        env['LIBFFI_CFLAGS'] = '-I' + str(sdk / 'usr/include/ffi')
+        env['LIBFFI_LIBS'] = '-lffi'
         save('native-sdk.json', {'sdk': str(sdk), 'developer': env['DEVELOPER_DIR'],
                                 'system_stub': identity(sdk / 'usr/lib/libSystem.tbd'),
+                                'ffi_sqlite_inputs': {str(p.relative_to(sdk)): identity(p) for p in sdk_inputs},
                                 'existing_library_roots': roots})
         return ['--with-openssl=' + roots['openssl@3'], '--with-openssl-rpath=auto']
 
@@ -306,7 +313,8 @@ def native_prerequisites(commands, root, env):
     save('native-apt-inputs.json', {
         'trust': 'existing runner authenticated apt indexes; unauthenticated downloads forbidden',
         'indexes': {str(p): identity(p) for p in sorted(Path('/var/lib/apt/lists').glob('*'))
-                    if p.is_file() and not p.is_symlink()},
+                    if p.is_file() and not p.is_symlink()
+                    and any(part in p.name for part in ('_Packages', '_InRelease', '_Release'))},
         'sources': {str(p): identity(p) for p in sorted(Path('/etc/apt/sources.list.d').glob('*'))
                     if p.is_file() and not p.is_symlink()},
         'ubuntu_archive_keyring': identity('/usr/share/keyrings/ubuntu-archive-keyring.gpg')})

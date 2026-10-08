@@ -16,8 +16,9 @@ Ubuntu development and runtime archives are extracted only into an owned
 prefix, using each observed installed runtime's exact version and authenticated
 APT index SHA256/size. There is no update/install/upgrade, unconstrained version
 selection or fallback. Download URIs, package control fields, original index
-identities, extracted files and links are retained. macOS uses the existing
-selected Xcode SDK and Homebrew library roots, explicitly passed to the compiler;
+identities (excluding operational lock files), extracted files and links are
+retained. macOS uses the existing selected Xcode SDK's ffi/sqlite headers and
+library stubs plus Homebrew OpenSSL/xz/readline roots, explicitly passed to the compiler;
 it records their origins without installing or changing them. A real compiler
 link/execution precedes configure. The bounded config.log is retained even on
 configure failure, and native dependencies of all installed extensions are
