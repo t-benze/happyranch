@@ -114,7 +114,14 @@ maker work. Submission is not PASS. Independent full-diff code APPROVE and
 behavioral QA PASS still follow readiness; every PR push renews those and all
 active CI gates. Parent TASK-10245 owns merge/post-main/final delivery.
 
-Receipt upload is limited to 64 MiB total, individual command logs to 8 MiB;
+Receipt upload is limited to 64 MiB of lossless gzip/tar transport, with an
+independent 512 MiB expanded-byte cap and 20000-file cap. Original receipt
+files stay intact, and the archive is streamed back and checked against every
+original size/digest before upload. The uploaded transport manifest binds the
+archive, original receipt manifest, exact byte/file counts and caps. A consumer
+must verify the packed hash, reject non-regular/duplicate/unsafe members, enforce
+the expanded limits, and verify every restored original size/digest. Native
+rows, result bodies and failure records are never omitted. Individual command logs remain limited to 8 MiB;
 overflow aborts the owned process group, retains an explicitly incomplete
 prefix, and is a failed run. It excludes full source/tool archives, venvs, live
 tokens and credential directories. The final manifest records regular-file

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import gzip
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,8 @@ HATCH = ('hatchling', 'packaging', 'pathspec', 'pluggy', 'tomlkit', 'trove-class
 FREEZE = ('pyinstaller', 'pyinstaller-hooks-contrib', 'altgraph', 'setuptools', 'packaging')
 LOG_CAP = 8 * 1024 * 1024
 TOTAL_CAP = 64 * 1024 * 1024
+EXPANDED_CAP = 512 * 1024 * 1024
+FILE_CAP = 20000
 HERE = Path(__file__).resolve().parent
 EVIDENCE = HERE.parents[2]
 WORKSPACE = EVIDENCE.parent
@@ -962,23 +965,85 @@ def main():
         raise
     finally:
         save('shipping-result.json', result)
+        # Keep finite failure diagnostics in Actions logs even if transport
+        # sealing refuses. Never print product responses, tokens or prompts.
+        print(json.dumps({'kind': 'shipping-summary', 'status': result['status'],
+            'candidate': CANDIDATE, 'baseline': BASELINE, 'error': result.get('error'),
+            'artifacts': {name: {'status': value['status'], 'error': value.get('error'),
+                'cases': [{'case': row['case'], 'exit': row['exit'], 'error': row['error']}
+                          for row in value.get('cases', [])]}
+                for name, value in result.get('artifacts', {}).items()},
+            'supplemental_result_is_overall_pass': False}, sort_keys=True), flush=True)
 
 
 def seal():
+    """Lossless bounded transport; original receipts remain untouched."""
     RECEIPTS.mkdir(mode=0o700, exist_ok=True)
+    assert not RECEIPTS.is_symlink() and RECEIPTS.stat().st_uid == os.getuid()
     rows, total = {}, 0
     for p in sorted(RECEIPTS.rglob('*')):
-        if p.name == 'receipt-manifest.json':
+        if p == RECEIPTS / 'receipt-manifest.json':
             continue
         if p.is_symlink():
-            rows[str(p.relative_to(RECEIPTS))] = {'link': os.readlink(p)}
-        elif p.is_file():
+            raise RuntimeError('receipt transport refuses symlinks')
+        if p.is_file():
+            info = p.stat()
+            assert info.st_uid == os.getuid() and not info.st_mode & 0o022
             rows[str(p.relative_to(RECEIPTS))] = identity(p)
-            total += p.stat().st_size
-    save('receipt-manifest.json', {'bytes': total, 'cap': TOTAL_CAP, 'files': rows,
-                                 'complete': total <= TOTAL_CAP})
-    if total > TOTAL_CAP:
-        raise RuntimeError('receipt cap exceeded; refuse upload rather than omit evidence')
+            total += info.st_size
+    complete = total <= EXPANDED_CAP and len(rows) + 1 <= FILE_CAP
+    summary = {'kind': 'receipt-seal', 'raw_bytes': total, 'files': len(rows),
+        'expanded_cap': EXPANDED_CAP, 'packed_cap': TOTAL_CAP,
+        'largest': [{'path': name, 'bytes': row['size']} for name, row in
+                    sorted(rows.items(), key=lambda item: item[1]['size'], reverse=True)[:10]],
+        'complete': complete}
+    print(json.dumps(summary, sort_keys=True), flush=True)
+    manifest = save('receipt-manifest.json', {'bytes': total, 'cap': EXPANDED_CAP,
+        'files': rows, 'complete': complete})
+    if not complete:
+        raise RuntimeError('expanded receipt byte/file cap exceeded; no upload or omission')
+    packed = EVIDENCE / 'sealed-receipts'
+    packed.mkdir(mode=0o700)  # refuse reuse, never overwrite a prior transport
+    archive = packed / 'receipts.tar.gz'
+    paths = {**rows, 'receipt-manifest.json': identity(manifest)}
+    archive_bytes = sum(row['size'] for row in paths.values())
+    if archive_bytes > EXPANDED_CAP:
+        raise RuntimeError('expanded archive cap including manifest exceeded')
+    with archive.open('xb') as stream:
+        with gzip.GzipFile(filename='', fileobj=stream, mode='wb', mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode='w|', format=tarfile.PAX_FORMAT) as payload:
+                for name, row in sorted(paths.items()):
+                    path = RECEIPTS / name
+                    assert identity(path) == row, 'receipt changed during seal'
+                    payload.add(path, arcname=name, recursive=False)
+    # Verify every archived byte before admission. No extraction or imports.
+    observed, observed_bytes = set(), 0
+    with tarfile.open(archive, 'r|gz') as payload:
+        for member in payload:
+            assert member.isfile() and member.name in paths and member.name not in observed
+            expected = paths[member.name]
+            assert member.size == expected['size']
+            observed.add(member.name)
+            observed_bytes += member.size
+            assert observed_bytes <= EXPANDED_CAP
+            h = hashlib.sha256()
+            with payload.extractfile(member) as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    h.update(block)
+            assert h.hexdigest() == expected['sha256'], 'lossless transport roundtrip failed'
+    assert observed == set(paths) and observed_bytes == archive_bytes
+    packed_bytes = archive.stat().st_size
+    print(json.dumps({'kind': 'receipt-transport', 'raw_bytes': archive_bytes,
+        'packed_bytes': packed_bytes, 'packed_cap': TOTAL_CAP,
+        'roundtrip_verified_files': len(observed)}, sort_keys=True), flush=True)
+    if packed_bytes > TOTAL_CAP:
+        raise RuntimeError('packed receipt cap exceeded; no upload or omission')
+    transport = {'schema_version': 1, 'format': 'tar.gz',
+        'archive': {'name': archive.name, 'size': packed_bytes, 'sha256': sha(archive)},
+        'expanded_bytes': archive_bytes, 'expanded_cap': EXPANDED_CAP,
+        'packed_cap': TOTAL_CAP, 'file_count': len(paths), 'file_cap': FILE_CAP,
+        'manifest_sha256': sha(manifest), 'complete': True}
+    (packed / 'transport-manifest.json').write_text(json.dumps(transport, indent=2) + '\n')
 
 
 if __name__ == '__main__':

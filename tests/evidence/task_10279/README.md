@@ -218,3 +218,20 @@ Only the existing fixed five evidence files change pins/reference/docs. Native C
 source hash and tool recipe, exact branch push, contents:read, pinned actions,
 no persisted credentials/secrets/OIDC/self-hosted/main/schedule/ref inputs,
 finite75min/concurrency/caps/retention and NEVERMERGE status are unchanged.
+
+
+Run37859744668 at evidence23ed203a91bdd5ac07427305cb12e5241b112fb4
+passed both fresh native admission steps, but the ordinary artifact stages
+failed and sealing exceeded the former 64 MiB raw-receipt cap on both venues.
+No artifact was uploaded; no detailed behavior outcome is inferred from that
+run. The candidate and tool/observer/assertion admission remain unchanged.
+The finite transport now preserves all original receipts in a hash-bound
+lossless gzip/tar archive capped at 64 MiB packed, independently 512 MiB
+expanded and 20000 files. It verifies a complete streamed byte/digest roundtrip
+before upload, retains originals, and refuses every overflow without omission.
+The consumer verifies safe regular unique members and every original manifest
+size/digest under the same limits. Shipping status/error/case exits and actual
+seal byte/count diagnostics are also emitted to Actions logs so a sealing
+failure cannot obscure its own boundary. These are diagnostics, never PASS.
+A new exact evidence push and fresh dual native admissions must precede renewed
+ordinary provisioning; original zero-artifact failure remains authentic.
