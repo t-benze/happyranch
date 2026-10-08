@@ -568,7 +568,7 @@ change must not trigger a request, mutation or transport restart. See
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.
-- Regenerate intentional OpenAPI changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run python -m pytest tests/contract/test_openapi_snapshot.py`.
+- Regenerate reviewed intentional OpenAPI changes with `uv run python scripts/generate_openapi_snapshot.py --write` (explicit atomic write; default/`--check` never writes).
 
 ## Native Impact Evidence
 

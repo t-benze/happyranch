@@ -213,31 +213,52 @@ createRoot(el).render(
   );
 
   const proc = spawn(
-    'npx',
-    ['--no-install', 'vite', '--port', '0', '--strictPort', 'false', '--host', '127.0.0.1'],
+    process.execPath,
+    [join(WEB_ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', '0', '--strictPort', 'false', '--host', '127.0.0.1'],
     { cwd: WEB_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
   );
 
-  const port = await new Promise((res, rej) => {
-    let out = '';
-    const onData = (d) => {
-      out += d.toString();
-      const m = out.match(/localhost:(\d+)|127\.0\.0\.1:(\d+)/);
-      if (m) res(Number(m[1] || m[2]));
-    };
-    proc.stdout.on('data', onData);
-    proc.stderr.on('data', onData);
-    proc.on('exit', (code) => rej(new Error(`vite exited early (${code}): ${out}`)));
-    setTimeout(() => rej(new Error(`vite did not report a port in 30s: ${out}`)), 30000);
-  });
+  const closed = new Promise((res) => proc.once('close', res));
+  const stop = async () => {
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
+    const deadline = setTimeout(() => proc.kill('SIGKILL'), 5000);
+    try {
+      // Keep a bounded reap; never remove files while the owned child lives.
+      await new Promise((res, rej) => {
+        const timer = setTimeout(() => rej(new Error('Vite teardown timed out')), 10000);
+        closed.then(() => { clearTimeout(timer); res(); });
+      });
+      await rm(tmpDir, { recursive: true, force: true });
+    } finally {
+      clearTimeout(deadline);
+    }
+  };
+
+  let port;
+  try {
+    port = await new Promise((res, rej) => {
+      let out = '';
+      const timer = setTimeout(() => rej(new Error(`vite did not report a port in 30s: ${out}`)), 30000);
+      const fail = (error) => { clearTimeout(timer); rej(error); };
+      const onData = (d) => {
+        out += d.toString();
+        const m = out.match(/localhost:(\d+)|127\.0\.0\.1:(\d+)/);
+        if (m) { clearTimeout(timer); res(Number(m[1] || m[2])); }
+      };
+      proc.stdout.on('data', onData);
+      proc.stderr.on('data', onData);
+      proc.once('error', fail);
+      proc.once('exit', (code) => fail(new Error(`vite exited early (${code}): ${out}`)));
+    });
+  } catch (error) {
+    await stop();
+    throw error;
+  }
 
   const base = `http://127.0.0.1:${port}/.screenshot-harness-tmp/harness.html`;
   return {
     url: (theme = 'light') => `${base}?theme=${theme}`,
-    stop: async () => {
-      proc.kill('SIGTERM');
-      await rm(tmpDir, { recursive: true, force: true });
-    },
+    stop,
   };
 }
 

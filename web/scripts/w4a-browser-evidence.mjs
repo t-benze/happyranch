@@ -381,6 +381,21 @@ const API_ROUTES = {
   [`/api/v1/orgs/${ORG}/schedules/SCHEDULE-120`]: TODO_MONTHLY,
   // W4b work-hours
   [`/api/v1/orgs/${ORG}/settings`]: WH_SETTINGS,
+  [`/api/v1/orgs/${ORG}/settings/daemon-capacity`]: {
+    running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
+    running_provenance: 'Resolved when the HappyRanch service started',
+    persisted_yaml: { queue_workers: 6, host_global_session_cap: 13 },
+    next_start: { queue_workers: 6, host_global_session_cap: 13 },
+    environment_shadowed: [], environment_warning: null,
+    producer_envelope: 13,
+    producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
+    effective_admission_cap: 13,
+    effective_admission_reason: 'Startup-loaded host supervisor policy',
+    warnings: [], revision: `sha256:${'a'.repeat(64)}`,
+    restart_required: false, restart_pending: false,
+    guidance: { queue_workers: 'Empirical worker guidance', host_global_session_cap: 'Empirical cap guidance', enforced: false },
+    authorization: 'Local operator; daemon bearer required.',
+  },
   [`/api/v1/orgs/${ORG}/agents`]: { agents: ROSTER },
   [`/api/v1/orgs/${ORG}/teams`]: { teams: [{ name: 'eng', manager: 'lead', workers: ['dev_agent', 'support_bot'] }] },
   [`/api/v1/orgs/${ORG}/work-hours`]: { work_hours: [
@@ -1114,14 +1129,14 @@ async function main() {
   let cdp;
   let chromeVersion = null;
   try {
-    // Header-only fixture option: keep singleton paths short while allocating
+    // Keep singleton paths short while allocating
     // anonymous font mappings on an available task-owned temp filesystem.
     chrome = spawn(chromeBin, [
       '--headless=new', '--lang=zh-CN', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`,
       '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-extensions', '--disable-background-networking', '--hide-scrollbars', '--disable-crash-reporter',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: selectedSlice === 'header-language' ? arg('chrome-temp', userDataDir) : userDataDir } });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: arg('chrome-temp', userDataDir) } });
     const devtools = await waitForDevTools(userDataDir);
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
@@ -1434,6 +1449,9 @@ async function main() {
           beginCase(`retirement-${locale}-${width}-${section}`, 'ordinary Settings, shell controls, removed launchers and keyboard');
           const page = await openPage(`${base}${root}/${section}`, options);
           check('surviving Settings heading', await waitTrue(page, `([...document.querySelectorAll('main h2')].some(e => e.textContent === ${JSON.stringify(tr(locale, heading))}))`, 'surviving heading'), true);
+          if (section === 'daemon-capacity') {
+            check('loaded Capacity fields survive', await waitTrue(page, `document.getElementById('capacity-workers')?.value === '6' && document.getElementById('capacity-cap')?.value === '13'`, 'loaded Capacity'), true);
+          }
           check('four surviving navigation links', await evaluate(page, nav), expectedNav);
           check('requested locale', await evaluate(page, 'document.documentElement.lang'), locale);
           check('no Assistant launcher or dock', await evaluate(page, absent), true);
@@ -1457,9 +1475,11 @@ async function main() {
           check('chords create no dock', await evaluate(page, absent), true);
           if (section === 'preferences') {
             check('Preferences language inputs survive', await evaluate(page, `document.querySelectorAll('input[name="happyranch-ui-language"]').length`), 2);
-            const themeBefore = await evaluate(page, 'document.documentElement.classList.contains("dark")');
-            await clickSrc(page, `document.querySelector('button[aria-label=${JSON.stringify(tr(locale, themeBefore ? 'shell.switchToLight' : 'shell.switchToDark'))}]')`);
-            check('ordinary theme control operates', await evaluate(page, 'document.documentElement.classList.contains("dark")'), !themeBefore);
+            const themeBefore = await evaluate(page, 'document.documentElement.dataset.theme');
+            check('ordinary theme starts with a valid attribute', ['light', 'dark'].includes(themeBefore), true);
+            const themeAfter = themeBefore === 'dark' ? 'light' : 'dark';
+            await clickSrc(page, `document.querySelector('button[aria-label=${JSON.stringify(tr(locale, themeBefore === 'dark' ? 'shell.switchToLight' : 'shell.switchToDark'))}]')`);
+            check('ordinary theme control operates', await waitTrue(page, `document.documentElement.dataset.theme === ${JSON.stringify(themeAfter)}`, 'theme change'), true);
             const next = locale === 'en' ? 'zh-CN' : 'en';
             await clickSrc(page, `document.querySelector('input[name="happyranch-ui-language"][value="${next}"]')`);
             check('Preferences changes client language', await waitTrue(page, langIs(next), 'Preferences language switch'), true);
@@ -1473,7 +1493,16 @@ async function main() {
           const page = await openPage(`${base}${root}${suffix}?settingsFixture=${gate}`, options);
           check('Capacity redirect without waiting for Settings data', await waitTrue(page, `location.pathname === ${JSON.stringify(root + '/daemon-capacity')}`, 'Capacity redirect'), true);
           check('no Assistant controls after fallback', await evaluate(page, absent), true);
+          const gateDeadline = Date.now() + 5000;
+          while (!LEDGER.slice(gateFrom).some(row => row.path.endsWith('/settings') && row.settingsGate === gate) && Date.now() < gateDeadline) await sleep(50);
           check('requested Settings gate exercised', LEDGER.slice(gateFrom).some(row => row.path.endsWith('/settings') && row.settingsGate === gate), true);
+          const gateReady = gate === 'loaded'
+            ? `document.getElementById('capacity-workers')?.value === '6' && document.getElementById('capacity-cap')?.value === '13'`
+            : gate === 'loading' ? bodyHas(tr(locale, 'settings.page.loading'))
+            : gate === 'error' ? bodyHas(tr(locale, 'settings.page.loadError'))
+            : `!document.querySelector('[data-testid="settings-content"]') && !(${bodyHas(tr(locale, 'settings.page.loading'))}) && !(${bodyHas(tr(locale, 'settings.page.loadError'))})`;
+          check('requested Settings gate renders', await waitTrue(page, gateReady, `${gate} Settings gate`), true);
+          await capture(page, `retirement-fallback-${locale}-${width}-${gate}-${suffix ? suffix.slice(1) : 'default'}`, { locale, viewport: `${width}x${options.height}`, gate, scope: 'ordinary-dist/synthetic-api' });
           await closePage(page); endCase();
         }
       }

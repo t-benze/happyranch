@@ -86,7 +86,10 @@ await modeCProp({
 - `defaultApiRoutes({ token, orgs })` — the routes the
   shell needs to boot (`/auth/bootstrap`, `/orgs`). Spread first, then append your overrides.
 - `startViteHarness({ importPath, exportName, render })` → `{ url(theme), stop }`
-  — vite dev serving a generated no-provider mount (mode C).
+  — the installed Vite entry runs under the current Node executable and serves
+  a generated no-provider mount (mode C). `stop()` sends TERM, escalates to KILL
+  after five seconds if needed, and waits for child closure before removing the
+  generated files. Startup and teardown failures are bounded and fail the run.
 - `capture({ url, out, viewport, theme, appTheme, prep, settleMs })` — drives
   `playwright-cli` (open → resize → goto → theme → prep → shot → close). Set
   `appTheme:false` when the theme is baked into the URL (standalone modes).
