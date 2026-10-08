@@ -51,7 +51,13 @@ outer installed RECORD and upstream wheel bytes. They do not count as additional
 package-level metadata. All bootstrap commands, exits and bounded full logs are
 recorded. These tools are provisioning evidence, not built-artifact evidence.
 
-Candidate execution is exactly the accepted focused retirement command. The
+Candidate execution partitions exactly the accepted focused retirement suite
+into nine fixed disjoint groups: four ordinary lifecycle/route/parser/concurrent
+cases, four legacy groups of six/six/six/five cases, and each of the four
+held-owner/nonrunning-owner parameter cases separately. The exact union is31
+cases, checked from source AST and literal legacy variants without importing
+test bodies. Baseline's two same-root characterization cases each run in a
+separate parent. There is no new test body or whole-repo collection. The
 baseline receives the explicit four-file overlay described above: the parent,
 driver, fixed C observer and retirement tests, in a local test-only commit.
 Its tracked product source and lock must stay
@@ -60,10 +66,35 @@ same-root characterization rows, independently, with actual CLI callbacks and
 closed test-parent roots. Source/base/test-overlay identities are recorded
 separately. Failed callback assertions remain failed; no shared auth/session
 repair, fake session, disabled worker or direct callback injection is admitted.
-The candidate focused command includes the remaining refusal/legacy/lifecycle
-rows and does not stop at the first failed row. All source stages are retained
-with their actual exits; baseline execution follows candidate failure when
-bootstrap readiness remains valid.
+Each group has a distinct owned closed stage and300-second command deadline;
+the existing75-minute hosted bound remains unchanged. Pytest uses immediate
+uncaptured output, standard native faulthandler diagnostics after90 seconds,
+short tracebacks and a group-specific JUnit receipt. This is failure diagnosis,
+not a duration/proof run. The bounded JUnit case identities must exactly match
+the selected source nodes, with zero skips/errors/failures for a group PASS.
+The strict command recorder retains timeout error,
+actual exit and explicitly incomplete output prefix as failed evidence. A
+nonrequired selection timeout no longer aborts the baseline by itself. Other
+exceptions and output caps still stop admission.
+
+Complete native censuses before/after each group retain every living row.
+Ordinary-UID source/stage cwd/executable identities seed native descendant/PGID
+closure; any attributed survivor refuses the next selection. This bounded
+attribution is not all-host quiescence, a filesystem-read trace or a substitute
+for the cases' actual launch/callback/terminal ownership assertions. The
+elevated observer still only returns native JSON; cleanup is ordinary owned
+process handling. Failed cases remain failed, and baseline follows candidate
+failures only while native admission and closed scope cleanup remain valid.
+
+Actual run37846340997 at evidence56bfd91c passed both native admissions and
+official tool provisioning but exceeded the previous720-second aggregate
+candidate deadline on both platforms. Linux retained27 passing case lines and
+one same-root held-owner failure; macOS retained23 passing case lines and
+stopped during the last legacy case. Neither candidate reached a terminal
+pytest summary or final scope cleanup, and neither baseline executed. These
+authentic partial receipts remain retained and are never full-suite PASS.
+The fixed partition rerun is required to obtain bounded terminal results and
+real failure detail; it changes no candidate/baseline pin or assertion.
 
 Python units, surviving keeper proofs, RED/GREEN, mutations, repetitions and
 duration runs remain SUSPENDED THR291seq5/16 and UNFULFILLED. General integration

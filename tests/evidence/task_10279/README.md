@@ -86,11 +86,22 @@ difference is the accepted eight Assistant knowledge force-include removals.
 
 The same-PR candidate is now published and observed at the immutable pin above;
 the renewed workflow runs the fixed source stage after fresh native admission.
-Ordinary focused shipping results remain unexecuted until a new actual hosted
-run supplies receipts, and those receipts must be inspected. BOTH artifacts,
+Ordinary focused shipping results require terminal actual hosted receipts;
+partial runs do not establish complete source/cleanup acceptance. BOTH artifacts,
 real isolated-daemon browser observations and side-effect-audited discovery
 remain maker work; suspended proofs remain UNFULFILLED. No overall PASS,
 independent review/QA, merge waiver or completed retirement follows.
+
+Actual37846340997/56bfd91c again passed native admission (Ubuntu163/macOS436
+rows) and ordinary official tool provisioning, but the aggregate source command
+timed out after720 seconds on both platforms. Partial case lines are retained
+as partial; baseline never executed. The finite coordinator now partitions
+the unchanged31 candidate nodes and two baseline nodes into disjoint bounded
+groups, with immediate diagnostics, authentic exact-case JUnit inventories and
+complete native before/after source/stage attribution. See the task_10272
+README for the300-second group deadlines and fail-closed cleanup boundary.
+This changes only never-merge evidence source/docs; immutable PR1017 stays at
+3d41d128da9994f43aad0f02de9261b3416bcfa0. New actual receipts remain required.
 
 Run37843451408 at evidence79f1663408a7586bac4969322daf183bb26d02be
 passed fresh native admission (Ubuntu162/macOS416 rows) and official ordinary-UID

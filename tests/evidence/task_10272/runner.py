@@ -4,6 +4,7 @@ No arbitrary command/ref interface. Never execute on a live runtime host.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -18,6 +19,7 @@ import sys
 import tarfile
 import time
 import urllib.request
+import xml.etree.ElementTree as ET
 
 CANDIDATE = '3d41d128da9994f43aad0f02de9261b3416bcfa0'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
@@ -119,7 +121,12 @@ class Commands:
             except BaseException as error:
                 row['status'] = 'failed'
                 row['error'] = {'type': type(error).__name__, 'message': str(error)}
-                raise
+                # A finite source selection timeout is failed evidence. Retain
+                # it so the caller can census cleanup before another selection;
+                # bootstrap, caps and all other errors still stop admission.
+                if required or not isinstance(error, TimeoutError):
+                    raise
+                row['log_complete'] = False
             finally:
                 # This invocation-owned, unreaped group only; no host sweep.
                 if process is not None:
@@ -143,6 +150,140 @@ class Commands:
         if required and row['exit'] != 0:
             raise RuntimeError(f'{name} exit {row["exit"]}; see full bounded log')
         return log.read_text(errors='strict'), row['exit']
+
+
+def source_selections(candidate, role):
+    """Fixed disjoint selections; AST/literals only, never import test bodies."""
+    assert role in ('candidate', 'baseline')
+    module = 'tests/integration/test_assistant_retirement.py'
+    tree = ast.parse((candidate / module).read_text())
+    names = {node.name for node in tree.body
+             if isinstance(node, ast.FunctionDef) and node.name.startswith('test_')}
+    assert names == {
+        'test_fresh_cli_lifecycle_creates_no_assistant',
+        'test_legacy_no_follow_survives_init_use_shutdown_reopen',
+        'test_served_rest_ws_absence_and_surviving_auth',
+        'test_cli_parser_retired_forms_do_not_touch_registry',
+        'test_held_owner_swap_and_same_root_characterization',
+        'test_nonrunning_retry_owner_all_runtime_census',
+        'test_quiescent_concurrent_org_read_swap_shutdown_reopen',
+    }, 'focused selection changed; refuse incomplete partition'
+    helper = ast.parse((candidate / 'tests/helpers/assistant_retirement_artifact_driver.py').read_text())
+    values = [ast.literal_eval(node.value) for node in helper.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == 'LEGACY_CASES'
+                      for target in node.targets)]
+    assert len(values) == 1
+    variants = values[0]
+    assert isinstance(variants, tuple) and len(variants) == len(set(variants)) == 23
+    assert all(isinstance(value, str) and value.replace('-', '').isalnum() for value in variants)
+    held = 'test_held_owner_swap_and_same_root_characterization'
+    retry = 'test_nonrunning_retry_owner_all_runtime_census'
+    if role == 'baseline':
+        return [('held-same-root', [module + '::' + held + '[True]']),
+                ('retry-same-root', [module + '::' + retry + '[True]'])]
+    selections = [('ordinary', [module + '::' + name for name in (
+        'test_fresh_cli_lifecycle_creates_no_assistant',
+        'test_served_rest_ws_absence_and_surviving_auth',
+        'test_cli_parser_retired_forms_do_not_touch_registry',
+        'test_quiescent_concurrent_org_read_swap_shutdown_reopen')])]
+    for number, start in enumerate(range(0, len(variants), 6), 1):
+        selections.append((f'legacy-{number}', [module +
+            '::test_legacy_no_follow_survives_init_use_shutdown_reopen[' + value + ']'
+            for value in variants[start:start + 6]]))
+    for label, name in (('held', held), ('retry', retry)):
+        for same_root in ('False', 'True'):
+            selections.append((label + '-' + same_root.lower(),
+                               [module + '::' + name + '[' + same_root + ']']))
+    nodes = [node for _, group in selections for node in group]
+    assert len(nodes) == len(set(nodes)) == 31
+    return selections
+
+
+def stage_native_census(commands, label, python, observer, descriptor, root, env, source, stage):
+    """Complete native table, with closed source/stage attribution and closure."""
+    code = ('import json,runpy,sys; d=runpy.run_path(sys.argv[1],run_name="native_receipt_observer"); '
+            'd["configure_native_observer"](json.loads(sys.argv[2])); '
+            'print(json.dumps(d["process_table"](),sort_keys=True))')
+    output, _ = commands.run(label, [python, '-I', '-c', code, observer,
+                            json.dumps(descriptor)], root, env)
+    rows = json.loads(output)
+    roots = (str(source.resolve()), str(stage.resolve()))
+    uid = os.getuid()
+    scoped = {row['pid'] for row in rows
+              if uid in (row.get('uid'), row.get('ruid'), row.get('svuid'), row.get('fsuid'))
+              and any(row.get(field) == path or row.get(field, '').startswith(path + '/')
+                      for field in ('cwd', 'exe') for path in roots)}
+    while True:
+        groups = {row['pgid'] for row in rows if row['pid'] in scoped}
+        expanded = scoped | {row['pid'] for row in rows
+                             if row['ppid'] in scoped or row['pgid'] in groups}
+        if expanded == scoped:
+            break
+        scoped = expanded
+    survivors = [row for row in rows if row['pid'] in scoped]
+    save(label + '-attribution.json', {'roots': roots, 'workload_uid': uid,
+         'complete_native_table_rows': len(rows), 'survivors': survivors,
+         'scope': 'closed source/stage cwd/exe plus native descendant/group closure; not all-host quiescence'})
+    assert not survivors, f'{label}: live source/stage process residue; retain identities and refuse'
+
+
+def source_stage(commands, role, source, candidate, root, env, uv, python, descriptor, observer):
+    """Run every accepted row once in bounded groups, retaining real failures."""
+    setup = clean_env(root / (role + '-source-setup'))
+    venv = root / (role + '-source-env')
+    setup['VIRTUAL_ENV'] = setup['UV_PROJECT_ENVIRONMENT'] = str(venv)
+    setup['PATH'] = str(uv.parent) + ':' + setup['PATH']
+    commands.run(role + '-source-venv', [uv, 'venv', '--python', python,
+                 '--no-python-downloads', '--no-config', venv], source, setup)
+    commands.run(role + '-source-sync', [uv, 'sync', '--active', '--frozen',
+                 '--no-install-project', '--no-install-local', '--no-build',
+                 '--python', python, '--no-python-downloads', '--no-config'], source, setup, 300)
+    selections = source_selections(candidate, role)
+    save(role + '-source-selection.json', {'groups': selections,
+         'selected_cases': sum(len(nodes) for _, nodes in selections),
+         'per_selection_deadline_seconds': 300, 'whole_collection': False})
+    outcomes = []
+    for name, nodes in selections:
+        label = role + '-source-' + name
+        stage = root / (label + '-stage')
+        child = clean_env(stage)
+        child['VIRTUAL_ENV'] = child['UV_PROJECT_ENVIRONMENT'] = str(venv)
+        child['PATH'] = str(uv.parent) + ':' + child['PATH']
+        child['UV_NO_SYNC'] = '1'
+        child['HAPPYRANCH_TEST_REAL_PLATFORM'] = '1'
+        child['HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT'] = json.dumps(descriptor)
+        stage_native_census(commands, label + '-before', python, observer, descriptor,
+                            root, env, source, stage)
+        junit = RECEIPTS / ('shipping-' + label + '-junit.xml')
+        argv = [uv, 'run', 'python', 'tests/helpers/integration_parent.py', '--',
+                'pytest', '-m', 'integration', *nodes, '-v', '-s', '--tb=short',
+                '-o', 'faulthandler_timeout=90', '--junitxml=' + str(junit)]
+        _, code = commands.run(label, argv, source, child, 300, required=False)
+        row = commands.rows[-1]
+        inventory = None
+        if junit.is_file():
+            assert not junit.is_symlink() and junit.stat().st_size <= LOG_CAP
+            cases = list(ET.fromstring(junit.read_bytes()).iter('testcase'))
+            expected = [node.split('::', 1)[1] for node in nodes]
+            inventory = {'cases': [case.attrib['name'] for case in cases],
+                         'failures': sum(case.find('failure') is not None for case in cases),
+                         'errors': sum(case.find('error') is not None for case in cases),
+                         'skipped': sum(case.find('skipped') is not None for case in cases)}
+            inventory['matches_selection'] = (sorted(inventory['cases']) == sorted(expected)
+                and all(case.attrib.get('classname') == 'tests.integration.test_assistant_retirement'
+                        for case in cases))
+        outcomes.append({'group': name, 'nodes': nodes, 'exit': code,
+                         'error': row.get('error'),
+                         'junit': identity(junit) if junit.is_file() else None,
+                         'pytest_inventory': inventory})
+        save(role + '-source-outcomes.json', outcomes)
+        stage_native_census(commands, label + '-after', python, observer, descriptor,
+                            root, env, source, stage)
+    return 0 if all(row['exit'] == 0 and not row['error'] and row['junit']
+                    and row['pytest_inventory']['matches_selection']
+                    and not any(row['pytest_inventory'][key] for key in ('failures', 'errors', 'skipped'))
+                    for row in outcomes) else 1
 
 
 def fetch(url, destination, expected=None, cap=32 * 1024 * 1024):
@@ -776,28 +917,9 @@ def main():
                      observer, json.dumps(descriptor)], root, env)
         overlay, test_head = overlay_characterization(commands, candidate, baseline, env, before_baseline)
         for role, source in (('candidate', candidate), ('baseline', baseline)):
-            child = clean_env(root / (role + '-source-stage'))
-            venv = root / (role + '-source-env')
-            child['VIRTUAL_ENV'] = child['UV_PROJECT_ENVIRONMENT'] = str(venv)
-            child['PATH'] = str(uv.parent) + ':' + child['PATH']
-            child['HAPPYRANCH_TEST_REAL_PLATFORM'] = '1'
-            child['HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT'] = json.dumps(descriptor)
-            commands.run(role + '-source-venv', [uv, 'venv', '--python', python,
-                         '--no-python-downloads', '--no-config', venv], source, child)
-            commands.run(role + '-source-sync', [uv, 'sync', '--active', '--frozen',
-                         '--no-install-project', '--no-install-local', '--no-build',
-                         '--python', python, '--no-python-downloads', '--no-config'], source, child, 300)
-            child['UV_NO_SYNC'] = '1'
-            argv = [uv, 'run', 'python', 'tests/helpers/integration_parent.py', '--', 'pytest', '-m', 'integration']
-            if role == 'candidate':
-                argv += ['tests/integration/test_assistant_retirement.py']
-            else:
-                argv += ['tests/integration/test_assistant_retirement.py::test_held_owner_swap_and_same_root_characterization[True]',
-                         'tests/integration/test_assistant_retirement.py::test_nonrunning_retry_owner_all_runtime_census[True]']
-            argv += ['-v', '--tb=short']
-            _, code = commands.run(role + '-source-shipping', argv, source, child, 720, required=False)
-            result[role + '_source_exit'] = code
-            after = source_manifest(commands, role + '-after', source, child,
+            result[role + '_source_exit'] = source_stage(commands, role, source, candidate,
+                                                       root, env, uv, python, descriptor, observer)
+            after = source_manifest(commands, role + '-after', source, env,
                                     CANDIDATE if role == 'candidate' else BASELINE,
                                     None if role == 'candidate' else test_head)
             original = before_candidate if role == 'candidate' else before_baseline
