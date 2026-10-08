@@ -30,6 +30,39 @@ _NATIVE_OBSERVER = None
 _NATIVE_LAST = None
 
 
+def sudo_transport_identity() -> dict:
+    """Fixed macOS system transport identity; never claim an unreadable byte hash."""
+    assert sys.platform == 'darwin'
+    paths = ('/', '/usr', '/usr/bin', '/usr/bin/sudo')
+    entries = []
+    for value in paths:
+        path = Path(value)
+        info = path.lstat()
+        assert not path.is_symlink() and info.st_uid == 0
+        assert not info.st_mode & 0o022
+        if value == '/usr/bin/sudo':
+            assert stat.S_ISREG(info.st_mode)
+            assert info.st_mode & stat.S_ISUID and info.st_mode & 0o111 == 0o111
+        else:
+            assert stat.S_ISDIR(info.st_mode)
+        entries.append({'path': value, 'dev': info.st_dev, 'ino': info.st_ino,
+                        'mode': info.st_mode, 'uid': info.st_uid, 'gid': info.st_gid,
+                        'size': info.st_size, 'mtime_ns': info.st_mtime_ns,
+                        'ctime_ns': info.st_ctime_ns})
+    return {'path': '/usr/bin/sudo', 'authentication': 'darwin-fixed-system-stat-v1',
+            'entries': entries}
+
+
+def verify_sudo_transport(info: dict) -> Path:
+    if sys.platform == 'darwin':
+        assert info == sudo_transport_identity()
+        return Path('/usr/bin/sudo')
+    assert sys.platform == 'linux' and info['path'] == '/usr/bin/sudo'
+    path = verify_receipt(info)
+    assert path.stat().st_uid == 0
+    return path
+
+
 def configure_native_observer(receipt: dict) -> None:
     """Explicit test-side admission, authenticated by the immutable hosted job.
 
@@ -56,9 +89,9 @@ def configure_native_observer(receipt: dict) -> None:
         assert os.uname().release.split('.')[0] == '24', 'native macOS15 required'
     else:
         assert sys.platform == 'linux' and venue['arch'] == 'x86_64'
-    for field in ('source', 'binary', 'compiler', 'sudo'):
+    for field in ('source', 'binary', 'compiler'):
         verify_receipt(binding[field])
-    assert verify_receipt(binding['sudo']).stat().st_uid == 0
+    verify_sudo_transport(binding['sudo'])
     compiler_owner = verify_receipt(binding['compiler']).stat().st_uid
     assert compiler_owner in ({0} if sys.platform == 'linux' else {0, os.getuid()})
     native = binding['native']
@@ -131,7 +164,7 @@ def native_process_table() -> list[dict]:
     # Reauthenticate each invocation; no inherited loader/config/environment.
     verify_receipt(receipt)
     binary = verify_receipt(binding['binary'])
-    sudo = verify_receipt(binding['sudo'])
+    sudo = verify_sudo_transport(binding['sudo'])
     result = subprocess.run([str(sudo), '-n', '--', str(binary), str(os.getuid())],
                             cwd='/', env={'PATH': '/usr/bin:/bin', 'LANG': 'C', 'LC_ALL': 'C'},
                             capture_output=True, timeout=30)

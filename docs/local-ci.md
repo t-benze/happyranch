@@ -585,6 +585,14 @@ An optional `native_observer` path/SHA256 receipt adds only the hosted test-side
 admission above. Copy the hash-matched C source beside the stdlib driver outside
 checkout. The closed admission binds venue, source, binary, compiler, sudo,
 compile argv, native SDK/headers/dependencies/ABI and successful preflight. The
+macOS execute-only `/usr/bin/sudo` transport has a closed fixed-system-stat
+identity instead of a byte hash: regular root-owned setuid executable, no
+group/world write, root-owned nonwritable `/`, `/usr`, `/usr/bin`, no symlinks,
+and recorded device/inode/mode/UID/GID/size/mtime/ctime for all four paths.
+Revalidate this identity before each invocation (and after the initial probe).
+Linux sudo retains its byte hash. This exception applies only to the system
+transport; observer source/binary/compiler and other readable receipts still
+require hashes. No executable permissions change. The
 native tool receipt records actual compiler/header owner UIDs and unchanged
 non-group/world-writable modes. Linux system tools/headers are root-owned;
 the selected preinstalled macOS Xcode compiler/SDK may be root- or original
