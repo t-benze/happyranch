@@ -32,6 +32,30 @@ The THR280 prompt editor reuses the mounted Agents pane at desktop/mobile and th
 
 ## 1. Scope
 
+### Header language selector (THR-118 seq88)
+
+The shipping AppBar places a compact controlled Select immediately before its
+theme toggle, in both default and tasks presentations. English and 简体中文
+remain native endonyms in both catalogs and carry their own `lang`; the active
+endonym stays visible and the open options indicate the current choice.
+The accessible name/tooltip translate. Keyboard selection, Escape dismissal
+and focus return come from the existing Select primitive. Selection applies
+immediately through the shared locale setter; Settings ▸ Preferences remains
+available and synchronized in both directions, even when its API has no data,
+is pending or has failed. There is no additional locale state, persistence or
+storage listener, route remount, request or transport behavior. Header use
+deliberately moves focus; other-tab language changes preserve focused editors.
+Browser reload, explicit saved-choice precedence and full-mode missing/invalid
+Chinese browser defaults retain their existing contracts. Native restart
+persistence remains deferred under seq39; deployment is separate.
+
+Focused acceptance uses the existing Settings component tests and the W4a
+ordinary-build `header-language` selection (default/tasks header geometry,
+pointer/keyboard/theme/agreement/reload/tabs, retained multiline Agent editor
+and original Cancel/navigation), plus existing W5 startup and provider/locale
+keepers. Both languages, 390×844/1440×900 and comfortable/compact density require
+real control/text/clipping bounds and individually inspected screenshots.
+
 ### Ongoing bilingual development safeguards (THR-118 seq81/82)
 
 Every new or changed app-owned heading, action, dialog, tooltip, accessible
