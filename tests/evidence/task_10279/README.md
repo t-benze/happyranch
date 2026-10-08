@@ -60,3 +60,32 @@ Python is not the separately required provisioned CPython3.14.4 workload.
 This changes no native observation or privileged operation. The official
 launcher implementation is
 https://github.com/python/cpython/blob/v3.14.4/Mac/Tools/pythonw.c .
+
+Actual native-only run37840922877 at evidence
+d935aed0fa91fde1a089e26524a3f3593edd9887 completed both admissions: Ubuntu164
+rows with workloadUID1001 and macOS519 rows with workloadUID501; observer
+UID/EUID0, native exit0, complete native tables and authenticated bootstrap
+parent origins on both. Artifacts11578305071/11578170198 authenticate302606
+bytes. This establishes that run's native readiness only.
+
+The prepared source coordinator in `../task_10272/runner.py` now admits only
+the exact task/TASK-10279 hosted push after its own fresh preflight. It verifies
+run/image/UID/pins/descriptor and candidate C hash before provisioning, uses
+the strict current candidate driver, and carries only the admitted descriptor
+through the closed integration parent. `shipping-commands.json`, prefixed logs
+and `shipping-result.json` preserve the native preflight inputs/results.
+Baseline characterization overlays exactly the parent, driver, C observer and
+retirement test file, recording the original parent hash and a distinct
+test-only commit. All other baseline tracked files/links stay unchanged;
+conftests, guard, executable stubs, daemon script and lock must independently
+equal the candidate before the overlay. Preserve original baseline project
+metadata; requirements/backend/groups agree and the only wheel inventory
+difference is the accepted eight Assistant knowledge force-include removals.
+
+This extension is prepared, not executed: the workflow remains native-only
+until the authorized same-PR candidate is published and observed, its immutable
+candidate/hash pins renewed, and the source stage explicitly added. Its
+ordinary focused shipping results must then be inspected. BOTH artifacts,
+real isolated-daemon browser observations and side-effect-audited discovery
+remain maker work; suspended proofs remain UNFULFILLED. No overall PASS,
+independent review/QA, merge waiver or completed retirement follows.

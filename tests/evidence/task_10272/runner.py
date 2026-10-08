@@ -72,18 +72,21 @@ def clean_env(root):
 
 
 class Commands:
-    def __init__(self):
+    def __init__(self, prefix=''):
         self.rows = []
+        assert prefix in ('', 'shipping-')
+        self.prefix = prefix
 
     def run(self, name, argv, cwd, env, seconds=120, required=True):
         # Internal calls only: no command strings, shell, service or ref input.
+        name = self.prefix + name
         assert '/' not in name and not any(row['name'] == name for row in self.rows)
         log = RECEIPTS / (name + '.log')
         started = time.monotonic()
         row = {'name': name, 'argv': list(map(str, argv)), 'cwd': str(cwd),
                'env': dict(env), 'timeout_seconds': seconds, 'status': 'in-flight'}
         self.rows.append(row)
-        save('commands.json', self.rows)
+        save(self.prefix + 'commands.json', self.rows)
         process = None
         with log.open('wb') as stream:
             try:
@@ -135,7 +138,7 @@ class Commands:
                 row['elapsed_seconds'] = round(time.monotonic() - started, 3)
                 stream.flush()
                 row['log'] = identity(log)
-                save('commands.json', self.rows)
+                save(self.prefix + 'commands.json', self.rows)
         if required and row['exit'] != 0:
             raise RuntimeError(f'{name} exit {row["exit"]}; see full bounded log')
         return log.read_text(errors='strict'), row['exit']
@@ -517,10 +520,109 @@ def native_prerequisites(commands, root, env):
     return []
 
 
+def admitted_census(commands, root, env, candidate):
+    """Read this fresh runner's fixed admission, then invoke ordinary driver."""
+    descriptor = json.loads((RECEIPTS / 'native-descriptor.json').read_text())
+    assert set(descriptor) == {'path', 'sha256'}
+    admission_path = RECEIPTS / 'native-admission.json'
+    assert descriptor['path'] == str(admission_path)
+    assert descriptor['sha256'] == sha(admission_path)
+    assert not admission_path.is_symlink() and not admission_path.stat().st_mode & 0o022
+    assert admission_path.stat().st_uid == os.getuid() == os.geteuid() != 0
+    binding = json.loads(admission_path.read_text())
+    venue = binding['venue']
+    assert venue['run_id'] == os.environ['GITHUB_RUN_ID']
+    assert venue['ref'] == os.environ['GITHUB_REF'] == 'refs/heads/task/TASK-10279'
+    assert venue['event'] == os.environ['GITHUB_EVENT_NAME'] == 'push'
+    assert venue['attempt'] == os.environ['GITHUB_RUN_ATTEMPT'] == '1'
+    assert venue['repository'] == os.environ['GITHUB_REPOSITORY'] == 't-benze/happyranch'
+    assert venue['image_os'] == os.environ['ImageOS']
+    assert venue['image_version'] == os.environ['ImageVersion']
+    preflight = json.loads((RECEIPTS / 'result.json').read_text())
+    assert preflight['status'] == 'native-admission-passed'
+    assert preflight['candidate'] == CANDIDATE and preflight['baseline'] == BASELINE
+    assert preflight['native_exit'] == 0 and preflight['venue'] == venue
+    assert preflight['admission'] == descriptor
+    observer = candidate / 'tests/helpers/assistant_retirement_artifact_driver.py'
+    c_source = candidate / 'tests/helpers/assistant_retirement_native_observer.c'
+    assert sha(c_source) == binding['source']['sha256']
+    code = ('import json,runpy,sys; d=runpy.run_path(sys.argv[1],run_name="native_receipt_observer"); '
+            'd["configure_native_observer"](json.loads(sys.argv[2])); '
+            'print(json.dumps(d["process_table"](),sort_keys=True))')
+    # No elevated interpreter: configure/process_table runs ordinary stdlib;
+    # only the authenticated fixed C binary receives sudo from the driver.
+    commands.run('native-admitted-census', [sys.executable, '-I', '-c', code,
+                 observer, json.dumps(descriptor)], root, env)
+    return descriptor, observer, code
+
+
+def overlay_characterization(commands, candidate, baseline, env, before_baseline):
+    """Explicit four-file test overlay; baseline product bytes stay pinned."""
+    overlay = ('tests/helpers/assistant_retirement_artifact_driver.py',
+               'tests/helpers/assistant_retirement_native_observer.c',
+               'tests/helpers/integration_parent.py',
+               'tests/integration/test_assistant_retirement.py')
+    equal = ('tests/conftest.py', 'tests/integration/conftest.py',
+             'tests/integration/test_end_to_end.py', 'tests/integration/fake_codex.sh',
+             'tests/integration/fake_claude.sh', 'tests/integration/fake_opencode.sh',
+             'scripts/daemon.sh', 'uv.lock')
+    guard_members = sorted((candidate / 'tests/helpers/integration_stub_guard').rglob('*'))
+    equal += tuple(str(p.relative_to(candidate)) for p in guard_members if p.is_file())
+    for relative in equal:
+        assert sha(candidate / relative) == sha(baseline / relative), relative
+    import tomllib
+    project = tomllib.loads((candidate / 'pyproject.toml').read_text())
+    original = tomllib.loads((baseline / 'pyproject.toml').read_text())
+    for field in ('project', 'build-system', 'dependency-groups'):
+        assert project.get(field) == original.get(field), 'baseline dependency/backend drift'
+    new_wheel = project['tool']['hatch']['build']['targets']['wheel']
+    old_wheel = original['tool']['hatch']['build']['targets']['wheel']
+    removed = ('README.md', *(f'docs/agent-guides/{name}.md' for name in (
+        'project-layout', 'runtime-and-configuration', 'agent-executors-and-permissions',
+        'orchestrator-contracts', 'web-and-cli', 'features-and-invariants')),
+        'skills/happyranch/SKILL.md')
+    assert {k: v for k, v in old_wheel.items() if k != 'force-include'} == {
+        k: v for k, v in new_wheel.items() if k != 'force-include'}
+    assert old_wheel['force-include'] == {**new_wheel['force-include'], **{
+        name: 'runtime/system_knowledge/' + name for name in removed}}
+    assert not set(removed) & new_wheel['force-include'].keys()
+    assert new_wheel['force-include'] == {'runtime/skills/bundled': 'runtime/skills/bundled'}
+    entries = {}
+    for relative in overlay:
+        destination = baseline / relative
+        assert not destination.is_symlink()
+        if relative == 'tests/helpers/integration_parent.py':
+            assert sha(destination) == before_baseline['files'][relative]
+        else:
+            assert not destination.exists(), 'unexpected baseline overlay member'
+        entries[relative] = {'baseline_sha256': before_baseline['files'].get(relative),
+                             'candidate_sha256': sha(candidate / relative)}
+        shutil.copyfile(candidate / relative, destination)
+    commands.run('baseline-overlay-stage', ['git', 'add', '--', *overlay], baseline, env)
+    commands.run('baseline-overlay-commit', ['git', '-c', 'user.name=TASK-10279 evidence',
+                 '-c', 'user.email=task-10279@invalid.example', 'commit', '-m',
+                 'test: overlay immutable retirement characterization helpers'], baseline, env)
+    test_head, _ = commands.run('baseline-overlay-head', ['git', 'rev-parse', 'HEAD'], baseline, env)
+    test_head = test_head.strip()
+    after = source_manifest(commands, 'baseline-overlay', baseline, env, BASELINE, test_head)
+    expected = dict(before_baseline['files'])
+    expected.update({relative: row['candidate_sha256'] for relative, row in entries.items()})
+    assert after['files'] == expected and after['links'] == before_baseline['links']
+    save('baseline-overlay.json', {'product_pin': BASELINE, 'test_head': test_head,
+         'entries': entries, 'unchanged_test_inputs': {p: sha(candidate / p) for p in equal},
+         'project_metadata': {'baseline_sha256': sha(baseline / 'pyproject.toml'),
+                              'candidate_sha256': sha(candidate / 'pyproject.toml'),
+                              'accepted_force_include_removals': list(removed),
+                              'requirements_backend_groups_equal': True},
+         'shipping_bytes_unchanged': True})
+    return overlay, test_head
+
+
 def main():
     assert os.environ.get('GITHUB_ACTIONS') == 'true', 'hosted runner only'
     assert os.environ.get('GITHUB_REPOSITORY') == 't-benze/happyranch'
-    assert os.environ.get('GITHUB_REF') == 'refs/heads/task/TASK-10272'
+    assert os.environ.get('GITHUB_REF') == 'refs/heads/task/TASK-10279'
+    assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
     assert os.environ.get('GITHUB_EVENT_NAME') == 'push'
     assert os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'no autonomous or manual reruns'
     assert platform.system() in ('Linux', 'Darwin')
@@ -529,11 +631,13 @@ def main():
         assert platform.machine() == 'x86_64'
     else:
         assert platform.mac_ver()[0].split('.')[0] == '15', 'native macOS15 required'
-    root = Path(os.environ['RUNNER_TEMP']) / 'task-10272'
+    assert os.getuid() == os.geteuid() != 0
+    root = Path(os.environ['RUNNER_TEMP']) / 'task-10279-shipping'
     root.mkdir(mode=0o700)  # refuse reuse
-    RECEIPTS.mkdir(mode=0o700)
+    assert RECEIPTS.is_dir() and not RECEIPTS.is_symlink()
+    assert RECEIPTS.stat().st_uid == os.getuid() and not RECEIPTS.stat().st_mode & 0o077
     os.umask(0o077)
-    commands = Commands()
+    commands = Commands(prefix='shipping-')
     result = {'status': 'failed', 'candidate': CANDIDATE, 'baseline': BASELINE,
               'observed_main': OBSERVED_MAIN, 'obligations': {
                   'units_and_surviving_proofs': 'SUSPENDED/UNFULFILLED',
@@ -551,7 +655,10 @@ def main():
             'uid': os.getuid(), 'gid': os.getgid(), 'bootstrap_observer': identity(sys.executable),
             'evidence_sources': {str(p.relative_to(EVIDENCE)): identity(p) for p in (
                 HERE / 'runner.py', HERE / 'tool-pins.json', HERE / 'README.md',
-                EVIDENCE / '.github/workflows/task-10272-retirement-evidence.yml')}})
+                HERE.parent / 'task_10279/preflight.py',
+                HERE.parent / 'task_10279/native_observer.c',
+                HERE.parent / 'task_10279/README.md',
+                EVIDENCE / '.github/workflows/task-10279-native-preflight.yml')}})
         evidence_head, _ = commands.run('evidence-source-head', ['git', 'rev-parse', 'HEAD'], EVIDENCE, env)
         assert evidence_head.strip() == os.environ['GITHUB_SHA']
         commands.run('native-os', ['uname', '-a'], root, env)
@@ -568,12 +675,10 @@ def main():
         commands.run('native-compiler-version', [compiler, '--version'], root, env)
         before_candidate = source_manifest(commands, 'candidate-before', candidate, env, CANDIDATE)
         before_baseline = source_manifest(commands, 'baseline-before', baseline, env, BASELINE)
-        # Diagnose a named prerequisite failure before repeating costly tool
-        # provisioning. Bootstrap Python is diagnostic-only, never accepted
-        # CPython provenance. The official-Python census below remains required.
-        commands.run('native-process-preflight', [sys.executable, '-I', '-c', NATIVE_DIAGNOSTIC,
-                     candidate / 'tests/helpers/assistant_retirement_artifact_driver.py',
-                     RECEIPTS / 'native-process-preflight.json'], root, env)
+        # The workflow must have completed the fixed native preflight first.
+        # Its fresh UID/run/image/source/descriptor binds every later census.
+        # Never replay the old unprivileged diagnostic or omit opaque rows.
+        descriptor, observer, census_code = admitted_census(commands, root, env, candidate)
         pins = json.loads((HERE / 'tool-pins.json').read_text())
         archive = root / 'downloads/Python-3.14.4.tar.xz'
         save('official-python-archive.json', {'upstream': pins['python'],
@@ -666,31 +771,16 @@ def main():
             package = next(p for p in lock['package'] if p['name'] == name)
             assert package['version'] == items[name]['version']
             assert any(w['hash'] == 'sha256:' + items[name]['sha256'] for w in package['wheels'])
-        # Capture native process API using the existing stdlib-only driver.
-        observer = candidate / 'tests/helpers/assistant_retirement_artifact_driver.py'
-        census_code = ('import json,runpy,sys; d=runpy.run_path(sys.argv[1],run_name="native_receipt_observer"); '
-                       'print(json.dumps(d["process_table"](),sort_keys=True))')
-        commands.run('native-process-census-before', [python, '-I', '-c', census_code, observer], root, env)
-        # Baseline shipping bytes remain immutable: only these two new test-side
-        # files are overlaid. Existing helpers/conftests are equal to baseline.
-        overlay = ('tests/helpers/assistant_retirement_artifact_driver.py',
-                   'tests/integration/test_assistant_retirement.py')
-        for relative in overlay:
-            destination = baseline / relative
-            assert not destination.exists()
-            shutil.copyfile(candidate / relative, destination)
-        commands.run('baseline-overlay-stage', ['git', 'add', '--', *overlay], baseline, env)
-        commands.run('baseline-overlay-commit', ['git', '-c', 'user.name=TASK-10272 evidence',
-                     '-c', 'user.email=task-10272@invalid.example', 'commit', '-m',
-                     'test: overlay immutable retirement characterization helpers'], baseline, env)
-        test_head, _ = commands.run('baseline-overlay-head', ['git', 'rev-parse', 'HEAD'], baseline, env)
-        test_head = test_head.strip()
+        commands.run('native-process-census-before', [python, '-I', '-c', census_code,
+                     observer, json.dumps(descriptor)], root, env)
+        overlay, test_head = overlay_characterization(commands, candidate, baseline, env, before_baseline)
         for role, source in (('candidate', candidate), ('baseline', baseline)):
             child = clean_env(root / (role + '-source-stage'))
             venv = root / (role + '-source-env')
             child['VIRTUAL_ENV'] = child['UV_PROJECT_ENVIRONMENT'] = str(venv)
             child['PATH'] = str(uv.parent) + ':' + child['PATH']
             child['HAPPYRANCH_TEST_REAL_PLATFORM'] = '1'
+            child['HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT'] = json.dumps(descriptor)
             commands.run(role + '-source-venv', [uv, 'venv', '--python', python,
                          '--no-python-downloads', '--no-config', venv], source, child)
             commands.run(role + '-source-sync', [uv, 'sync', '--active', '--frozen',
@@ -714,7 +804,8 @@ def main():
             if role == 'baseline':
                 expected.update({relative: sha(candidate / relative) for relative in overlay})
             assert after['files'] == expected and after['links'] == original['links'], 'source mutated'
-        commands.run('native-process-census-after', [python, '-I', '-c', census_code, observer], root, env)
+        commands.run('native-process-census-after', [python, '-I', '-c', census_code,
+                     observer, json.dumps(descriptor)], root, env)
         result['status'] = ('source-checks-passed' if result['candidate_source_exit'] == result['baseline_source_exit'] == 0
                             else 'source-checks-failed')
         return 0 if result['status'] == 'source-checks-passed' else 1
@@ -722,7 +813,7 @@ def main():
         result['error'] = {'type': type(error).__name__, 'message': str(error)}
         raise
     finally:
-        save('result.json', result)
+        save('shipping-result.json', result)
 
 
 def seal():
