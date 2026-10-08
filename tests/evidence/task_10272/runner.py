@@ -917,18 +917,25 @@ def main():
             assert any(w['hash'] == 'sha256:' + items[name]['sha256'] for w in package['wheels'])
         commands.run('native-process-census-before', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        overlay, test_head = overlay_characterization(commands, candidate, baseline, env, before_baseline)
+        # The unchanged source selections already completed at this exact head.
+        # Retain their real failed characterizations as historical evidence;
+        # this run diagnoses artifact setup and never claims fresh source PASS.
+        save('historical-source-reference.json', {
+            'run_id': '37853314823',
+            'evidence_sha': '092496db791efabede6160add2bdd60606642dd5',
+            'candidate': CANDIDATE, 'baseline': BASELINE,
+            'execution_this_run': 'not-executed',
+            'scope': 'candidate29passed/2same-rootfailed; baseline0passed/2same-rootfailed per venue',
+            'manifest_sha256': {
+                'macos-15': '5b46e63e1ce30811bcc860ad05a64b3fb36107477c1293753e76dc7bf97e9b48',
+                'ubuntu-latest': '7f37dd3b285389fec1896eb9e1b6658d571a89c6218b65f53cbf287d67d71629'},
+            'is_behavioral_pass': False})
+        result['source_execution_this_run'] = 'not-executed; historical-source-reference.json retains actual failures'
         for role, source in (('candidate', candidate), ('baseline', baseline)):
-            result[role + '_source_exit'] = source_stage(commands, role, source, candidate,
-                                                       root, env, uv, python, descriptor, observer)
             after = source_manifest(commands, role + '-after', source, env,
-                                    CANDIDATE if role == 'candidate' else BASELINE,
-                                    None if role == 'candidate' else test_head)
+                                    CANDIDATE if role == 'candidate' else BASELINE)
             original = before_candidate if role == 'candidate' else before_baseline
-            expected = dict(original['files'])
-            if role == 'baseline':
-                expected.update({relative: sha(candidate / relative) for relative in overlay})
-            assert after['files'] == expected and after['links'] == original['links'], 'source mutated'
+            assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
         # Independent artifact origins continue after authentic characterization
@@ -942,16 +949,11 @@ def main():
         result['obligations']['wheel_and_frozen_behavior'] = 'actual outcomes in artifact-outcomes.json; failures retained'
         for role, source in (('candidate', candidate), ('baseline', baseline)):
             after = source_manifest(commands, role + '-artifacts-after', source, env,
-                CANDIDATE if role == 'candidate' else BASELINE,
-                None if role == 'candidate' else test_head)
+                CANDIDATE if role == 'candidate' else BASELINE)
             original = before_candidate if role == 'candidate' else before_baseline
-            expected = dict(original['files'])
-            if role == 'baseline':
-                expected.update({relative: sha(candidate / relative) for relative in overlay})
-            assert after['files'] == expected and after['links'] == original['links'], 'artifact stage mutated source'
-        passed = (result['candidate_source_exit'] == result['baseline_source_exit'] == 0
-                  and all(row['status'] == 'passed' for row in result['artifacts'].values()))
-        result['status'] = 'source-and-artifact-checks-passed' if passed else 'source-or-artifact-checks-failed'
+            assert after['files'] == original['files'] and after['links'] == original['links'], 'artifact stage mutated source'
+        passed = all(row['status'] == 'passed' for row in result['artifacts'].values())
+        result['status'] = 'artifact-checks-passed-source-not-rerun' if passed else 'artifact-checks-failed-source-not-rerun'
         return 0 if passed else 1
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}

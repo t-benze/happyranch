@@ -237,6 +237,43 @@ def build_origin(origin: str, role: str, source: Path, source_record: Path,
     return save(label + '-manifest.json', manifest)
 
 
+def retain_daemon_diagnostics(run_root: Path, case: str, role: str) -> dict:
+    """Bounded fixture logs after teardown; never inspect ambient credentials."""
+    scenarios = {'ordinary-callback': ('normal', 'held-refusals', 'same-root-characterization'),
+                 'nonrunning-swap': ('refusals', 'same-root-characterization')}.get(case, ('default',))
+    if role == 'baseline':
+        scenarios = ('same-root-characterization',)
+    rows = {}
+    for scenario in scenarios:
+        root = run_root / case / scenario
+        log = root / 'daemon.log'
+        if not log.exists():
+            rows[scenario] = {'status': 'unavailable', 'reason': 'daemon log absent'}
+            continue
+        for path in (run_root, run_root / case, root, root / 'daemon'):
+            info = path.lstat()
+            assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+            assert not info.st_mode & 0o022
+        log_info = log.lstat()
+        assert stat.S_ISREG(log_info.st_mode) and log_info.st_uid == os.getuid()
+        assert not log_info.st_mode & 0o022 and log_info.st_size <= 1024 * 1024
+        token_path = root / 'daemon/daemon.token'
+        token_info = token_path.lstat()
+        assert stat.S_ISREG(token_info.st_mode) and token_info.st_uid == os.getuid()
+        assert stat.S_IMODE(token_info.st_mode) == 0o600 and token_info.st_size <= 8192
+        token = token_path.read_text().strip()
+        assert token
+        raw = log.read_bytes()
+        assert len(raw) == log_info.st_size
+        text = raw.decode('utf-8', errors='strict')
+        redactions = text.count(token)
+        rows[scenario] = {'status': 'retained', 'relative_path': str(log.relative_to(run_root)),
+            'original_bytes': len(raw), 'original_sha256': hashlib.sha256(raw).hexdigest(),
+            'cap_bytes': 1024 * 1024, 'complete': True,
+            'fixture_token_redactions': redactions, 'text': text.replace(token, '[fixture-token-redacted]')}
+    return rows
+
+
 def run_cases(origin: str, role: str, manifest: Path, stage: Path, commands,
               api: dict, python: Path, driver: Path, descriptor: dict, source: Path) -> list:
     env = api['clean_env'](stage / 'behavior-env')
@@ -253,6 +290,13 @@ def run_cases(origin: str, role: str, manifest: Path, stage: Path, commands,
             stage, env, 1000, required=False)
         outcome = {'case': case, 'exit': code, 'receipt': receipt(result) if result.is_file() else None,
                    'error': commands.rows[-1].get('error')}
+        try:
+            diagnostics = retain_daemon_diagnostics(stage / ('run-' + case), case, role)
+            outcome['daemon_diagnostics'] = receipt(api['save'](label + '-daemon-diagnostics.json', diagnostics))
+            if not all(row['status'] == 'retained' for row in diagnostics.values()):
+                outcome['error'] = {'type': 'DiagnosticUnavailable', 'message': 'required fixture daemon log absent'}
+        except Exception as error:
+            outcome['error'] = {'type': type(error).__name__, 'message': str(error)}
         outcomes.append(outcome)
         api['save'](role + '-' + origin + '-outcomes.json', outcomes)
         api['census'](commands, label + '-after', python, driver, descriptor,

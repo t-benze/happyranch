@@ -192,3 +192,27 @@ helpers, not executed artifact evidence or a PASS. Costly provisioning still
 requires fresh cheap native admission. Candidate publication/readback must
 precede immutable pin renewal and new evidence publication. Real browser and
 audited discovery remain pending; suspension/exclusions/gates stay unchanged.
+# Current fixed artifact diagnostic recovery (TASK-10279)
+
+Run37853314823 / evidence092496db791efabede6160add2bdd60606642dd5
+at unchanged candidateb1f13ca65382a6fe169246648dd5dcea78780fde completed
+candidate31/baseline2 source cases per venue, with29candidate passes and two
+authentic same-root failures on both baseline and candidate. Its original
+receipt manifests and failures remain controlling; main/baseline pins and all
+active/suspended gate boundaries remain unchanged.
+
+The current fixed main skips repeating those source selections and baseline
+test overlays. historical-source-reference.json records the actual prior run,
+evidence/source pins and per-venue original manifest hashes; explicitly marks
+source execution this run as not executed and never source PASS. Artifact
+builds retain distinct original immutable source manifests. After fresh native
+admission and ordinary official provisioning, both wheel and frozen origins
+execute the existing outside-checkout cases. Bounded fixed scenario daemon
+diagnostics added in task_10279/artifacts.py retain actualHTTP500 tracebacks,
+with fixture-token redaction, original log bytes/hash/completeness and protected
+ordinary-owned paths. Missing/unsafe/over-cap diagnostics remain errors.
+See that helper and task_10279 README for the exact closed file/size boundary.
+No command/ref/path inputs, privileged product, host integration, application
+imports on the live host, paused proof or broader collection are admitted.
+Artifact success alone never resolves the historical source characterizations,
+pending real browser/discovery, suspended keepers or independent verdicts.

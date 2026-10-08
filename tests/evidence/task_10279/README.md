@@ -4,11 +4,11 @@ This continues TASK-10272 evidence recovery for the same draft PR1017. The
 previous workflow and its actual failures are retained; this new exact-branch
 push workflow first performs the newly admitted cheap native preflight on fresh
 GitHub-hosted Ubuntu/native macOS15 runners, then runs the existing finite
-ordinary-UID provisioning and accepted source/artifact coordinator only after successful
+ordinary-UID provisioning and accepted artifact coordinator only after successful
 admission on that runner. Each matrix job has a finite 75-minute deadline.
 Source results retain actual candidate/baseline exits and failure receipts;
 submission or native readiness alone establishes no source behavior. The
-prepared artifact extension below requires new actual wheel/frozen receipts;
+artifact recovery below requires new actual wheel/frozen receipts;
 it runs no browser, whole collection or suspended unit/proof body.
 
 Candidate b1f13ca65382a6fe169246648dd5dcea78780fde and original baseline
@@ -161,3 +161,30 @@ production code, native observer and tool versions remain unchanged. The
 prepared wheel/frozen coordinator requires actual fresh dual-platform receipts.
 Historical source characterization failures remain failures; browser/discovery
 and independent gates remain pending. No overall PASS or retirement completion.
+
+Actual run37853314823 at evidence092496db791efabede6160add2bdd60606642dd5
+completed fresh native/tool admission and all31candidate/two baseline source
+cases on both venues: candidate29PASS/2same-rootFAIL, baseline0PASS/2same-rootFAIL.
+Concurrent org reads now pass; all23legacy and ordinary/held/nonrunning refusal
+tails pass. Wheel and frozen candidate/baseline builds and authenticated origin
+manifests completed; candidate parser/lifecycle/all23legacy passed outside
+checkout. Every artifact callback scenario failed at ordinary CLI orgs init
+withHTTP500 before any stub launch. Original failed scenarios and native cleanup
+remain failures; they are not evidence of an artifact callback PASS.
+
+The next fixed coordinator run retains a hash-bound historical source reference
+to that unchanged candidate's complete source run. It does not repeat source
+selections or overlay baseline tests, and does not claim fresh source execution.
+Independent artifact builds use the original immutable candidate/baseline
+tracked manifests. The new ordinary-user retain_daemon_diagnostics helper reads
+only the fixed owned driver scenarios' daemon.log and their own daemon.token
+after teardown. It requires regular, non-symlink, ordinary-owned protected files
+and protected scenario parents, a1MiB complete-log cap, UTF8 and bounded token
+length; records original bytes/hash/cap/completeness and token redaction count;
+retains token-redacted text in bounded receipts. Missing/unsafe/oversized logs
+fail diagnostics. No ambient credentials/environment/process argv/memory or
+application modules are read. This closes the missing traceback receipt, not
+the unknownHTTP500 cause. No production fix or fixture weakening is justified
+until the actual traceback is inspected. Candidate/pins/nativeC/workflow/actions/
+tools/permission/timeouts/caps are unchanged. No paused proof, browser or whole
+collection is executed. Remaining maker work and independent gates stay open.
