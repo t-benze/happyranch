@@ -389,10 +389,12 @@ host cannot run integration tests, including through jobs. See `docs/local-ci.md
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
-For authorized integration-skipped clean-head `scripts/local_ci.sh all`, use
-the existing manual nightly workflow with `run_integration=false` on the exact
-candidate ref. Authenticate the local-ci-all receipt and actual separate
-integration SKIPPED result. Schedule/default-true behavior remains unchanged.
+For authorized integration-skipped clean-head `scripts/local_ci.sh all`, dispatch
+the existing manual nightly workflow on the exact candidate ref with no integration
+input. Authenticate the actual local-ci-all receipt's checkout/source/tool provenance,
+command exit and separate integration SKIPPED result. General integration runs only
+on schedule; while the THR-291 pause applies, `all` reports Python SUSPENDED and
+verifies only the remaining Web checks.
 
 ### Finite document-review templates and initial drafts (THR-139 seq410)
 
