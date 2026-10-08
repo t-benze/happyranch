@@ -27,6 +27,7 @@
  *     --out <evidence dir> --head <sha>
  */
 import { runLocaleActivationCases } from './w5-locale-browser-cases.mjs';
+import { runHeaderLanguageCases } from './header-language-browser-cases.mjs';
 import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
 import { assistantFixture, runAssistantCases } from './assistant-dock-browser-cases.mjs';
 import { spawn } from 'node:child_process';
@@ -424,7 +425,11 @@ function startServer(root) {
           // Usage-only scenario fixtures, selected by the evidence page URL.
           // These exercise ordinary shipping fetches; no app/bundle seam is added.
           const ref = new URL(request.headers.referer || 'http://127.0.0.1');
-          if (selectedSlice === 'agents-safeguard') {
+          if (selectedSlice === 'header-language' && p === `/api/v1/orgs/${ORG}/tasks/roots`) {
+            response.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+            response.end(JSON.stringify({ tasks: [], next_cursor: null })); return;
+          }
+          if (['agents-safeguard', 'header-language'].includes(selectedSlice)) {
             const state = ref.searchParams.get('agentsFixture') || 'populated';
             if (p === `/api/v1/orgs/${ORG}/agents/lead/system-prompt` && request.method === 'PUT') {
               const row = LEDGER.at(-1);
@@ -1023,7 +1028,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability', 'locale-activation', 'agents-safeguard'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language'].includes(selectedSlice)) throw new Error('unknown --slice');
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -1040,8 +1045,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['assistant', 'work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = ['assistant', 'work-hours-reachability', 'locale-activation'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['assistant', 'work-hours-reachability', 'locale-activation', 'header-language'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['assistant', 'work-hours-reachability', 'locale-activation', 'header-language'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1080,12 +1085,14 @@ async function main() {
   let cdp;
   let chromeVersion = null;
   try {
+    // Header-only fixture option: keep singleton paths short while allocating
+    // anonymous font mappings on an available task-owned temp filesystem.
     chrome = spawn(chromeBin, [
       '--headless=new', '--lang=zh-CN', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`,
       '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-extensions', '--disable-background-networking', '--hide-scrollbars', '--disable-crash-reporter',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: userDataDir } });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: selectedSlice === 'header-language' ? arg('chrome-temp', userDataDir) : userDataDir } });
     const devtools = await waitForDevTools(userDataDir);
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
@@ -1376,6 +1383,8 @@ async function main() {
         await closePage(page);
       }
       endCase();
+    } else if (selectedSlice === 'header-language') {
+      await runHeaderLanguageCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, selectedCase: arg('header-case', 'all') });
     } else if (selectedSlice === 'locale-activation') {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
     } else if (selectedSlice === 'assistant') {
