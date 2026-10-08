@@ -1466,7 +1466,7 @@ draining -> drained` after enabled. `WorkflowCutoverStore.request` authenticates
 at the existing Founder route boundary and commits enable_requested before
 separate short compatibility_verified/enabled commits. Disable similarly commits
 the admission fence before drain. Cold recovery advances an authentic
-committed request only with ready E; existing F retains actual history and
+committed request only with ready E/G; existing F retains actual history and
 migration guidance without advancement. GET/preflight never advance. Every authoritative reread keeps
 complete canonical layout equality and validates exact contiguous events,
 request operation groups/unique keys, org-bound deterministic canonical UTF8

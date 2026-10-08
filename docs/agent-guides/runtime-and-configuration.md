@@ -397,7 +397,7 @@ Startup does not dispatch, activate, or admit workflow work.
 THR139 S1 separates existing and new databases. Existing `OrgState.load` retains
 foundation installation where required, validates full F/E/G before workflow
 recovery, and never adds the draft extension. F remains usable for legacy work;
-its cutover projection/log names the operator migration and recovery waits for E.
+its cutover projection/log names the operator migration and recovery waits for validated E/G.
 POST /orgs creates a fresh skeleton, initializes complete G before attachment,
 and retains its existing cleanup/error ownership. Empty files/missing tables or
 startup discovery are not proof of new creation. Generic Database/runtime-audit
@@ -896,7 +896,7 @@ workers; the generic Database constructor and runtime-audit remain workflow-free
 The S1 explicit migration/new-org contract remains unchanged: existing F startup,
 reopen and enable never install E. Empty orgs stay fenced until real coherent
 roster/team/profile publication makes them ready. Initial activation requires
-ready E and the actual Founder cutover chain. A queued committed intent survives
+ready E/G and the actual Founder cutover chain. A queued committed intent survives
 lost enqueue notification; startup and periodic sweeps rediscover its existing
 eligible task. Live author-capacity refusal, including a claim requeued before
 launch, waits for a later sweep; deduplicated queue notification runs after every

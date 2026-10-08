@@ -131,7 +131,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   strict action/key/generation input; request/fence commits precede separate
   bounded reconciliation. Every authoritative reread validates the full layout
   and org-bound deterministic event chain; cold load advances only authentic
-  committed requests only on ready E before teams/settings mutation. F keeps
+  committed requests only on ready E/G before teams/settings mutation. F keeps
   authentic history and actionable script guidance without recovery advancement.
   GET/preflight never advance.
   SQLite integrity/FKs and contradictory pre-enable work block verification;
