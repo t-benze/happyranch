@@ -198,7 +198,7 @@ export function inventorySource(webRoot = process.cwd()) {
   function module(file) {
     if (modules.has(file)) return modules.get(file);
     const source = readFileSync(file, 'utf8'), ast = parse(file, source);
-    const m = { file, path: portable(file), source, ast, definitions: new Map(), imports: new Map(), exports: new Map(), stars: [] };
+    const m = { file, path: portable(file), source, ast, definitions: new Map(), imports: new Map(), exports: new Map(), stars: [], runtimeTargets: new Set() };
     modules.set(file, m);
     for (const statement of ast.statements) {
       if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) {
@@ -212,7 +212,11 @@ export function inventorySource(webRoot = process.cwd()) {
         if (statement.modifiers?.some(n => n.kind === ts.SyntaxKind.ExportKeyword)) m.exports.set(d.name.text, { local: d.name.text });
       }
       if (ts.isImportDeclaration(statement) && !statement.importClause?.isTypeOnly) {
-        const target = localPath(file, statement.moduleSpecifier.text), clause = statement.importClause;
+        const clause = statement.importClause;
+        if (clause && !clause.name && clause.namedBindings && ts.isNamedImports(clause.namedBindings)
+          && clause.namedBindings.elements.length && clause.namedBindings.elements.every(i => i.isTypeOnly)) continue;
+        const target = localPath(file, statement.moduleSpecifier.text);
+        if (target) m.runtimeTargets.add(target);
         if (clause) {
           const origin = target ? { target } : { external: statement.moduleSpecifier.text };
           if (clause.name) m.imports.set(clause.name.text, { ...origin, name: 'default' });
@@ -221,7 +225,10 @@ export function inventorySource(webRoot = process.cwd()) {
         }
       }
       if (ts.isExportDeclaration(statement) && !statement.isTypeOnly) {
+        if (statement.exportClause && ts.isNamedExports(statement.exportClause)
+          && statement.exportClause.elements.length && statement.exportClause.elements.every(i => i.isTypeOnly)) continue;
         const target = statement.moduleSpecifier && localPath(file, statement.moduleSpecifier.text);
+        if (target) m.runtimeTargets.add(target);
         const origin = target ? { target } : statement.moduleSpecifier ? { external: statement.moduleSpecifier.text } : undefined;
         if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
           for (const i of statement.exportClause.elements) if (!i.isTypeOnly) m.exports.set(i.name.text, origin ? { ...origin, name: i.propertyName?.text ?? i.name.text } : { local: i.propertyName?.text ?? i.name.text });
@@ -401,14 +408,20 @@ export function inventorySource(webRoot = process.cwd()) {
   }
   const main = module(resolve(root, 'src/main.tsx'));
   visitOwner(main, '<module>', main.ast);
-  // A module-level render can live inside a variable initializer. Discover its
-  // static argument without treating every declaration/import as a mount.
-  function visitModuleRoots(n) {
+  // Runtime imports/reexports evaluate their modules, including side-effect
+  // imports. Inspect actual top-level root calls there, without mounting every
+  // JSX declaration or entering an uncalled function/class. Type-only edges
+  // are excluded above. The live Map iterator visits newly loaded targets once
+  // and terminates on cycles because module() caches before resolving edges.
+  function visitModuleRoots(m, n) {
     if (ts.isFunctionLike(n) || ts.isClassDeclaration(n)) return;
-    if (ts.isCallExpression(n) && rootRender(main, n)) visitRenderRoot(main, n);
-    ts.forEachChild(n, visitModuleRoots);
+    if (ts.isCallExpression(n) && rootRender(m, n)) visitRenderRoot(m, n);
+    ts.forEachChild(n, child => visitModuleRoots(m, child));
   }
-  visitModuleRoots(main.ast);
+  for (const m of modules.values()) {
+    for (const target of m.runtimeTargets) module(target);
+    visitModuleRoots(m, m.ast);
+  }
   const seen = new Set();
   const unique = rows => rows.filter(row => { const key = JSON.stringify(row); if (seen.has(key)) return false; seen.add(key); return true; });
   const copies = [...modules.values()].flatMap(m => copySites(m.path, m.source).filter(site => mounted.has(`${site.path}#${site.symbol}`)));

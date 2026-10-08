@@ -277,6 +277,25 @@ describe('C5-C7 actual disk source discovery and full-release boundary', () => {
     expect(() => inventorySource(root)).toThrow(/unsupported computed lazy import/);
   }));
 
+  it('R1 C5 transitive runtime imports and reexport cycles visit actual roots once while type-only and uncalled roots stay unmounted', () => diskFixture((root, put) => {
+    const main = readFileSync(join(root, 'src/main.tsx'), 'utf8');
+    put('src/main.tsx', `${main}\nimport './host/entry'; import type { Missing } from './never-runtime'; import { type InlineMissing } from './also-never-runtime';`);
+    put('src/host/entry.ts', "export * from './root'; export type { Missing } from './never-runtime'; export { type InlineMissing } from './also-never-runtime';");
+    put('src/host/root.tsx', `import './entry'; import { createRoot } from 'react-dom/client';
+      export const extra = <section role="dialog">Imported owned root heading</section>;
+      export const ImportOnlyDialog = () => <section role="dialog">Unused declaration</section>;
+      function uncalled() { createRoot(document.createElement('div')).render(<section role="dialog" />); }
+      createRoot(document.createElement('div')).render(extra);`);
+    const actual = inventorySource(root);
+    expect(actual.mountedSymbols).toContain('src/host/root.tsx#extra');
+    expect(actual.mountedSymbols).not.toContain('src/host/root.tsx#ImportOnlyDialog');
+    expect(actual.mountedSymbols).not.toContain('src/host/root.tsx#uncalled');
+    expect(actual.dialogs).toEqual([expect.objectContaining({ path: 'src/host/root.tsx', symbol: 'extra', site: 'role:dialog' })]);
+    expect(fullReleaseIssues(actual)).toContain('unclassified mounted surface src/host/root.tsx#extra->src/host/root.tsx#extra:role:dialog (consumer namespace help-and-palette)');
+    put('src/host/root.tsx', "import './entry'; import { createRoot } from 'react-dom/client'; const extra = makeUnknownTree(); createRoot(document.createElement('div')).render(extra);");
+    expect(() => inventorySource(root)).toThrow(/unsupported render root src\/host\/root.tsx.*extra/);
+  }));
+
   it('C5c refuses promoted fixtures/catalogs and an ungated prototype while import-only stays unmounted', () => diskFixture((root, put) => {
     for (const file of ['src/example.test.tsx', 'src/Example.stories.tsx', 'src/test/example.tsx', 'src/lib/i18n/locales/example.tsx', 'src/prototypes/example.tsx']) {
       put(file, 'export function ExampleDialog() { return <h1>Example copy</h1>; }');

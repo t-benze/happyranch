@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ESLint } from 'eslint';
@@ -124,6 +124,42 @@ describe('C1-C5 real-config owned-copy gate', () => {
       expect(refused.messages.filter(message => message.ruleId === rule)).toEqual([
         expect.objectContaining({ message: expect.stringMatching(/unsupported render root src\/main.tsx.*extra/) }),
       ]);
+    } finally { rmSync(root, { recursive: true }); }
+  });
+
+  it.each(['literal', 'translated', 'declaration-only'] as const)('R1 complete shipping source imported root %s retains real-config ownership controls', async mode => {
+    const root = mkdtempSync(join(webRoot, '.i18n-source-fixture-'));
+    try {
+      cpSync(join(webRoot, 'src'), join(root, 'src'), { recursive: true });
+      for (const file of ['index.html', 'tsconfig.json', 'vite.config.ts', 'eslint.config.js', 'package.json', 'scripts/i18n-source-inventory.mjs']) {
+        mkdirSync(dirname(join(root, file)), { recursive: true });
+        copyFileSync(join(webRoot, file), join(root, file));
+      }
+      const { inventorySource, auditCopyExceptions } = await import(resolve(webRoot, 'scripts/i18n-source-inventory.mjs'));
+      const baseline = inventorySource(root);
+      expect(baseline.mountedSymbols).toContain('src/App.tsx#App');
+      expect(auditCopyExceptions(baseline)).toEqual({ omissions: [], stale: [] });
+      const file = 'src/host/reviewer-extra-root.tsx';
+      const literal = 'Imported owned root heading';
+      const child = mode === 'translated' ? "<><h1>{t('common.save')}</h1><pre>{rawDiagnostic}</pre><input value=\"machine-id\" /></>" : `<h1>${literal}</h1>`;
+      writeFileSync(join(root, file), `import {createRoot} from 'react-dom/client'; const extra=${child};
+        export const ImportOnlyDialog = () => <section role="dialog">Unused imported declaration</section>;
+        function uncalled() { createRoot(document.createElement('div')).render(<h1>Uncalled root heading</h1>); }
+        ${mode === 'declaration-only' ? '' : "createRoot(document.body.appendChild(document.createElement('div'))).render(extra);"}`);
+      writeFileSync(join(root, 'src/main.tsx'), readFileSync(join(root, 'src/main.tsx'), 'utf8') + "\nimport './host/reviewer-extra-root';\n");
+      const actual = inventorySource(root);
+      const results = await new ESLint({ cwd: root, overrideConfig: { languageOptions: { parserOptions: { tsconfigRootDir: root } } }, allowInlineConfig: false }).lintFiles(['src/main.tsx', file]);
+      // Parser/setup failures must never substitute for the contract's RED.
+      expect(results.map(result => result.fatalErrorCount)).toEqual([0, 0]);
+      const owned = results.flatMap(result => result.messages.filter(message => message.ruleId === rule));
+      expect(owned, 'R1 actual imported root literal must be rejected by ordinary shipping ESLint').toEqual(mode === 'literal' ? [expect.objectContaining({ message: expect.stringContaining(literal) })] : []);
+      expect(actual.modules).toContain(file);
+      expect(actual.mountedSymbols.includes(`${file}#extra`)).toBe(mode !== 'declaration-only');
+      expect(actual.mountedSymbols).not.toContain(`${file}#ImportOnlyDialog`);
+      expect(actual.mountedSymbols).not.toContain(`${file}#uncalled`);
+      expect(actual.dialogs).toEqual(baseline.dialogs);
+      expect(actual.routes).toEqual(baseline.routes);
+      expect(auditCopyExceptions(actual)).toEqual({ omissions: mode === 'literal' ? [expect.objectContaining({ path: file, symbol: 'extra', literal })] : [], stale: [] });
     } finally { rmSync(root, { recursive: true }); }
   });
 

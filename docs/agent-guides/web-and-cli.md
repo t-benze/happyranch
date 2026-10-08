@@ -130,9 +130,12 @@ Run ordinary Web lint plus the real-config `lint-owned-copy.test.ts` and actual
 source `coverage.test.ts` guards. The Node-only source inventory validates the
 shipping HTML entry/static aliases and distinguishes declarations/imports from
 supported JSX/render-return mounts. Named/namespace router imports and reexports
-retain route and parent identity. Additional createRoot renders discover direct
-JSX or statically bound JSX constants; unhandled arguments refuse with their
-source, while unused declarations remain unmounted. New mounted owners require
+retain route and parent identity. Additional createRoot renders in reachable
+static runtime imports/reexports, including side-effect imports and transitive/
+cyclic module graphs, discover direct JSX or statically bound JSX constants.
+Unhandled arguments refuse with their source. Type-only edges are excluded;
+evaluating an imported module does not mount its unused JSX declarations or
+enter uncalled functions/classes. New mounted owners require
 source-qualified route/dialog classification; index/wildcard cannot borrow another owner's
 status, and full release rejects every english-only namespace. Unsupported
 entry/config/computed shapes and fixture promotion refuse with the source to
