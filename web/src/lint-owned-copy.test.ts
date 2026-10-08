@@ -127,6 +127,7 @@ describe('C1-C5 real-config owned-copy gate', () => {
     } finally { rmSync(root, { recursive: true }); }
   });
 
+  // Hosted full-tree scans with real config took 5.6-6.1s; bound only these three cases.
   it.each(['literal', 'translated', 'declaration-only'] as const)('R1 complete shipping source imported root %s retains real-config ownership controls', async mode => {
     const root = mkdtempSync(join(webRoot, '.i18n-source-fixture-'));
     try {
@@ -161,7 +162,7 @@ describe('C1-C5 real-config owned-copy gate', () => {
       expect(actual.routes).toEqual(baseline.routes);
       expect(auditCopyExceptions(actual)).toEqual({ omissions: mode === 'literal' ? [expect.objectContaining({ path: file, symbol: 'extra', literal })] : [], stale: [] });
     } finally { rmSync(root, { recursive: true }); }
-  });
+  }, 15_000);
 
   it('C1-C5 authoritative real disk scan has no owned omissions, stale exceptions or inline waiver', async () => {
     const scriptPath = resolve(webRoot, 'scripts/i18n-source-inventory.mjs');
