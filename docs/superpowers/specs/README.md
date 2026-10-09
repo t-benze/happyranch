@@ -1,6 +1,6 @@
 # Superpowers Specs Index
 
-Current combined naming contract: [`2026-10-09-identity-names-core.md`](2026-10-09-identity-names-core.md). Core/API/routing, CLI/prompt and UI/types are present in the uncommitted/unpublished candidate. THR293seq34/35 requires twelve readable E2E scenarios. Actual frontend receipts and remaining executable obligations belong in the maker handoff; mock-backed checks do not establish daemon/DB/browser acceptance.
+Current combined naming contract: [`2026-10-09-identity-names-core.md`](2026-10-09-identity-names-core.md). Core/API/routing, CLI/prompt and UI/types are published in open PR1021. THR293seq34/35 requires twelve readable E2E scenarios. The current spec attributes completed maker receipts and correction evidence to their actual sources. Independent review/behavioral QA and guarded merge remain separate; mock-backed checks do not establish daemon/DB/browser acceptance.
 
 This directory is append-only design history. Specs capture intent, alternatives, and decisions at the time they were written; they are not automatically updated when the implementation evolves.
 

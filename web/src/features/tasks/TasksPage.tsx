@@ -203,6 +203,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   const preflight = usePreflightAddresses();
   const [filterError, setFilterError] = useState<ThreadErrorDetail | null>(null);
   const filterLatch = useRef(false);
+  const filterAttempt = useRef(0);
   const abandoned = useRef(false);
   useEffect(() => { abandoned.current = false; return () => { abandoned.current = true; }; }, []);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -435,16 +436,17 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           <form aria-label={t('tasks.filters.label')} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={async (event) => {
             event.preventDefault();
             if (filterLatch.current || !orgSlug) return;
+            const attempt = ++filterAttempt.current;
             filterLatch.current = true; setFilterError(null);
             try {
             const resolved = draftAgent ? await preflight.mutateAsync({ slug: orgSlug, context: 'lookup', recipients: [draftAgent], canonicalAgentIds: identityOptions.map((a) => a.name) }) : { recipients: [] };
-            if (abandoned.current) return;
+            if (abandoned.current || attempt !== filterAttempt.current) return;
             const canonical = resolved.recipients[0];
             const next = { ...(draftStatus ? { status: draftStatus } : {}), ...(canonical ? { assigned_agent: canonical } : {}) };
             setFilters(Object.keys(next).length ? next : undefined);
             } catch (error) {
-              if (!abandoned.current) setFilterError(namingAddressError(error) ?? { kind: 'mapped', key: 'identity.unavailable' });
-            } finally { filterLatch.current = false; }
+              if (!abandoned.current && attempt === filterAttempt.current) setFilterError(namingAddressError(error) ?? { kind: 'mapped', key: 'identity.unavailable' });
+            } finally { if (!abandoned.current && attempt === filterAttempt.current) filterLatch.current = false; }
           }}>
             <label className="text-text-secondary text-sm">{t('tasks.filters.status')}
               <select aria-label={t('tasks.filters.statusSelect')} className="border-border-default bg-surface-raised block rounded-sm border px-3 py-2" value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
@@ -457,7 +459,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
             </label>
             <Button type="submit" size="sm" disabled={preflight.isPending}>{t('tasks.filters.apply')}</Button>
             {filterError && <p role="alert">{renderThreadErrorDetail(filterError, t)}</p>}
-            <Button type="button" variant="outline" size="sm" onClick={() => { setDraftStatus(''); setDraftAgent(''); setFilters(undefined); }}>{t('tasks.filters.clear')}</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => { ++filterAttempt.current; filterLatch.current = false; setFilterError(null); setDraftStatus(''); setDraftAgent(''); setFilters(undefined); }}>{t('tasks.filters.clear')}</Button>
           </form>
         )}
         {filters && <p className="text-text-secondary mb-4 text-sm">{t('tasks.filters.applied')} {filters.status && t('tasks.filters.appliedStatus', { status: filters.status })} {filters.assigned_agent && t('tasks.filters.appliedAgent', { agent: presentation.label(filters.assigned_agent) })}</p>}

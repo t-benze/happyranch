@@ -3,7 +3,7 @@ name: manage-agent
 description: Enroll, update, or terminate an agent. Write a JSON file and call happyranch manage-agent --from-file to keep the invocation single-line. Enrollment requires founder approval.
 ---
 
-## Current names and permanent automation IDs (unpublished source)
+## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
 from the injected parameters for callback agent/composer/speaker, task/session/
@@ -37,13 +37,13 @@ revisions survive absence and same-ID reenrollment. Admitted underscore-leading
 IDs retain their defaults/addresses, but editable labels require 1–64 ASCII
 letters/digits/underscore/hyphen with letter/digit first, without trimming.
 
-The unpublished bounded API source adds org-local operator name editing and
+The bounded API provides org-local operator name editing and
 read/resolve projections. Agent roster/enrollment `name` and canonical `revision`
 retain their meanings; `addressable_name`, `name_revision` and `naming_status` are
 additive metadata, null/unavailable when names cannot be read. Never use a label
 as manage-agent's name, callback actor or expected canonical-definition revision.
 Operator rename accepts only addressable_name and positive expected_name_revision,
-with raw binding-key denial and the shared bearer limitation. The operator CLI is now described above; no agent-session rename authority is added. Mention delivery source is now present, unverified; CLI targets and fresh prompts are described above; UI enrichment remains later work. Names do not
+with raw binding-key denial and the shared bearer limitation. The operator CLI is now described above; no agent-session rename authority is added. Mention delivery, CLI targets, fresh prompts and UI enrichment use current names at human boundaries. Names do not
 change allowed tools, execution permissions, task/session principals or workspace
 ownership. Coherent naming is not proof that bootstrap/cleanup/rollback succeeded.
 One daemon controls each org; no naming-specific cross-process guard is required.

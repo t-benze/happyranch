@@ -769,7 +769,24 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
                 after=snapshot(org)
                 assert after['files']==before['files'] and after['teams']==before['teams'] and after['schema']==before['schema']
                 for table,rows in before['rows'].items():
-                    if not table.startswith('identity_name_') and table!='audit_log':assert after['rows'][table]==rows
+                    if table == 'sqlite_sequence':
+                        # Only the required rename audit append advances its
+                        # AUTOINCREMENT sequence; every unrelated counter stays exact.
+                        expected = tuple((row[0], row[1], row[2] + 1)
+                                         if row[1] == 'audit_log' else row for row in rows)
+                        assert after['rows'][table] == expected
+                    elif not table.startswith('identity_name_') and table != 'audit_log':
+                        assert after['rows'][table] == rows
+                assert len(after['rows']['audit_log']) == len(before['rows']['audit_log']) + 1
+                assert after['rows']['audit_log'][:-1] == before['rows']['audit_log']
+                audits = org.db.execute(
+                    "SELECT action, payload FROM audit_log ORDER BY id DESC LIMIT 1").fetchall()
+                assert audits[0][0] == 'identity_name_changed'
+                assert json.loads(audits[0][1]) == {
+                    'org_slug': 'alpha', 'kind': 'agent', 'canonical_id': 'maker',
+                    'old_label': 'maker', 'new_label': 'Alex', 'old_revision': 1,
+                    'new_revision': 2, 'source': 'founder', 'actor': 'founder',
+                }
                 assert org.workflow_authority.verify_admission_ready()==authority
                 assert org.sessions.get_active('TASK-CALLBACK','maker')==session
                 async with httpx.AsyncClient() as client:

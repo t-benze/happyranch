@@ -19,9 +19,10 @@ automation; remembered names do not override fresh resumed-turn context.
 Full/resumed thread, full fallback and resumed nudge plus dream/wake/schedule
 production callers supply fresh context under the same rule. IDs retain authority,
 role checks, durable queue membership and callback/failure ordering. Scenario8
-renders shipping builders and scenario9 checks bindings; AUTHORED / NOT RUN is
-not provider-resume or behavioral acceptance. UI/type source is present; final
-independent whole-candidate review/QA/checks/publication/merge remain required.
+renders shipping builders and scenario9 checks bindings. Source-pinned maker
+E2E receipts do not establish real provider-resume launches or independent
+acceptance. UI/type source is published; final independent whole-candidate
+review/QA/checks and guarded merge remain required.
 See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
 
 ## Naming v1 core, API and routing source

@@ -247,6 +247,56 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     await waitFor(() => expect(f.filters).toContain('agent_a')); expect(f.filters).not.toContain('Renamed');
   });
 
+  test.each(['success', 'failure'] as const)('scenario 8: real task filter picker Clear invalidates deferred resolution %s', async (outcome) => {
+    fixture();
+    const queries: URLSearchParams[] = [];
+    let finish!: () => void;
+    const deferred = new Promise<void>((resolve) => { finish = resolve; });
+    let arrived = false;
+    server.use(
+      http.get('/api/v1/orgs/alpha/tasks/roots', ({ request }) => {
+        queries.push(new URL(request.url).searchParams);
+        return HttpResponse.json({ tasks: [], next_cursor: null });
+      }),
+      http.post('/api/v1/orgs/alpha/identities/resolve', async ({ request }) => {
+        const body = await request.json() as ResolveBody;
+        expect(body.addresses).toEqual(['Alpha']);
+        arrived = true;
+        await deferred;
+        return outcome === 'success'
+          ? HttpResponse.json({ resolutions: [{ address: 'Alpha', identity: { canonical_id: 'agent_a', kind: 'agent', lifecycle: 'active' }, status: 'resolved', eligible: true }] })
+          : HttpResponse.json({ detail: { code: 'naming_unavailable' } }, { status: 503 });
+      }),
+    );
+    const client = mount('/orgs/alpha/tasks');
+    const user = userEvent.setup();
+    try {
+      await waitFor(() => expect(queries.length).toBeGreaterThan(0));
+      await user.click(await screen.findByRole('button', { name: t('tasks.page.filter') }));
+      const agent = screen.getByLabelText(t('tasks.filters.agent'));
+      const status = screen.getByLabelText(t('tasks.filters.statusSelect'));
+      await user.type(agent, 'Alpha');
+      await user.selectOptions(status, 'completed');
+      await user.click(screen.getByRole('button', { name: t('tasks.filters.apply') }));
+      await waitFor(() => expect(arrived).toBe(true));
+      const initialQueries = queries.map((query) => query.toString());
+      await user.click(screen.getByRole('button', { name: t('tasks.filters.clear') }));
+      expect(agent).toHaveValue('');
+      expect(status).toHaveValue('');
+      await act(async () => { finish(); });
+      await waitFor(() => expect(client.isMutating()).toBe(0));
+      expect(queries.map((query) => query.toString())).toEqual(initialQueries);
+      expect(queries.some((query) => query.has('assigned_agent') || query.get('status') === 'completed')).toBe(false);
+      expect(screen.getByLabelText(t('tasks.filters.agent'))).toHaveValue('');
+      expect(screen.getByLabelText(t('tasks.filters.statusSelect'))).toHaveValue('');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(screen.queryByText((text) => text.startsWith(t('tasks.filters.applied')))).not.toBeInTheDocument();
+    } finally {
+      await act(async () => { finish(); });
+      client.clear();
+    }
+  });
+
   test('scenario 8: a selected thread recipient remains its original ID after external rename', async () => {
     const f = fixture(); const client = mount('/orgs/alpha/threads'); const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: /New thread/i }));

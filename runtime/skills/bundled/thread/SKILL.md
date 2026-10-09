@@ -3,7 +3,7 @@ name: thread
 description: Use this skill when the orchestrator invokes you for thread participation. Decide whether to reply, decline, or dispatch a task — all based on the thread context provided in your prompt.
 ---
 
-## Current names and permanent automation IDs (unpublished source)
+## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
 from the injected parameters for callback agent/composer/speaker, task/session/
@@ -19,12 +19,13 @@ interior matches remain active. Unknown body text is unchanged. Preflight is
 read-only, not a reservation or rollback across upload/message requests. The
 server still owns admission; a rename between requests can leave an independent
 upload before the message refuses. Resumed/fallback prompts refresh current
-names without rewriting history. UI and behavioral proof remain pending.
+names without rewriting history. UI labels remain presentation only; source-specific
+verification and independent acceptance belong in the maker handoff.
 
 
 # thread
 
-## Current naming routing source (THR-293, unpublished/unverified)
+## Current naming routing contract (THR-293)
 
 Human recipients and @mentions may use current names or permanent IDs; the
 server resolves them to canonical IDs. Former names refuse409 with the current

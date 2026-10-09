@@ -1,6 +1,7 @@
 # Identity names v1 — current core, API, routing, CLI, prompt and UI contract
 
-Status: combined uncommitted/unpublished candidate for TASK-10343 / THR-293.
+Status: published naming candidate in open PR1021 for TASK-10343 / THR-293;
+independent review/behavioral QA and guarded merge remain pending.
 Core/API/routing, CLI/prompt and provider-aware UI/type source are present.
 The maker handoff owns actual frontend command/runtime/source/exit evidence;
 source integration alone establishes no daemon/DB/browser acceptance.
@@ -118,12 +119,13 @@ storage. The existing one-daemon ordering applies; no nested coroutine gate,
 extra namespace lock or filesystem-under-DB lookup is introduced.
 
 THR293seq34/35 requires twelve readable E2E scenarios, not the historical233/297
-case matrix. Four authored routing bodies contribute to5/6/7/9/12 and remain
-NOT RUN; original manifests are preserved as historical proposed work. Python
-units/collection are SKIPPED/SUSPENDED, never PASS and never a blocker. General
-broken integration is SKIPPED THR243seq42. Focused naming E2E belongs later in a
-supported disposable GitHub/Mac Linux guest, with finite commands/resources and
-actual cleanup; no blanket unspecified execution release is required. This
+case matrix. The finite naming selection includes routing bodies for5/6/7/9/12;
+original manifests remain historical proposed work. Python units/collection are
+SKIPPED/SUSPENDED, never PASS and never a blocker. General broken integration is
+SKIPPED THR243seq42. Naming E2E uses a supported disposable GitHub runner or Mac
+Linux guest with finite commands/resources and actual cleanup. Source-specific
+maker receipts and remaining independent gates are recorded in the current spec
+and maker handoff; source publication does not grant feature acceptance. This
 combined candidate supplies CLI/prompt and UI/types, editors, labels, pickers and
 locale parity. Supported frontend checks and any concrete corrections are
 recorded in the maker handoff; mock-backed results cannot establish daemon/DB
@@ -175,23 +177,23 @@ atomic existing-shaped audit. Name conflict/stale revision is409, absent owner40
 naming/storage refusal503 with category-only diagnostics. Lost/ambiguous response
 requires readback through GET /identities before another CAS. No canonical change,
 namespace generation, request receipt, initial enrollment label or lifecycle
-prohibition is introduced. CLI/prompt source is below; UI/TS source is authored in TASK10399, unverified; routing source is described above.
+prohibition is introduced. CLI/prompt and functional UI/TS source are described below; routing source is above.
 
 A11 retains its twelve historical manifest-domain assertion bodies. Four readable
 routing scenario bodies in the same integrated source contribute to current
-scenarios5/6/7/9/12 via shipping routes and real DB boundaries. Every body is
-NOT RUN. Original core14/233 and integrated24/297 manifests remain unchanged as
-historical proposed work, not collection evidence or mandatory missing selectors.
-CLI/prompt assertions are authored inside5/8/9; UI and detailed branch permutations remain unexercised. Static
-AST/hash/diff evidence proves authoring/syntax only. The completed candidate still
-requires focused disposable E2E, independent full review/QA and applicable
-nonunit checks/hooks/publication/guarded merge. No feature completion is claimed.
+scenarios5/6/7/9/12 via shipping routes and real DB boundaries. The full A11 domain set is
+not a mandatory complete-domain execution selection. Original core14/233 and
+integrated24/297 manifests remain historical proposed work, not collection
+receipts or mandatory missing selectors. CLI/prompt assertions are inside5/8/9;
+finite UI/E2E maker results have source-pinned receipts below. Detailed unselected
+permutations remain unverified. Static AST/hash/diff evidence proves syntax only;
+independent full review/QA and applicable checks/hooks/guarded merge remain required. No feature completion is claimed.
 
 
 ## CLI human names and fresh prompt context
 
 TASK10385 continues preserved TASK10379 under EM TASK10343 step8 and Founder
-THR293seq14/22. This combined candidate is uncommitted/unpublished and unverified.
+THR293seq14/22. The combined CLI/prompt implementation is published in PR1021.
 `happyranch identities list [--json]` shows current Name · ID, lifecycle and
 name_revision. `identities resolve <addresses...> [--context lookup|task_owner|thread_recipient]
 [--thread-id <id>] [--json]` uses the actual read-only API. `identities rename <current-name-or-id>
@@ -242,14 +244,14 @@ delegate/then/fanout targets, role checks and config/frontmatter remain ID-bound
 Scenario8 now authors real CLI-entrypoint → loopback HTTP → stored-ID assertions
 and actual shipping prompt builders after rename. Former-with-attachment checks
 are inside5; prompt/session/file/queued-ID continuity is inside9. These are
-AUTHORED / NOT RUN, within the existing twelve scenarios; no expansion of the
-historical233/297 inventory. Unit execution/collection remains SKIPPED/SUSPENDED;
+within the existing twelve scenarios, with source-pinned maker results below;
+there is no expansion of the historical233/297 inventory. Unit execution/collection remains SKIPPED/SUSPENDED;
 broken general integration remains SKIPPED THR243seq42. The combined candidate
 includes frontend editors/pickers/locales and TypeScript adapters; exact
 source-specific supported frontend checks are recorded in the maker handoff.
-Genuine OpenAPI schema comparison, browser proof and supported disposable
-behavioral E2E remain required, followed by final whole-diff independent
-review/QA and hooked publication/guarded merge. Frontend mocks and static syntax
+Genuine OpenAPI schema comparisons, browser proof and finite disposable E2E
+are attributed below; each corrected source renews required verification,
+followed by final whole-diff independent review/QA and guarded merge. Frontend mocks and static syntax
 do not establish daemon/DB acceptance; no deployment or whole-feature completion.
 
 ## Functional naming UI and API contract
@@ -286,15 +288,17 @@ uploads when caught by separate preflight. Unknown body @text remains literal,
 including the existing quoted/email token parser behavior. This read is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
-existing controls/tokens; 390×844/1440×900 light/dark behavior and screenshots are
-unexecuted acceptance obligations, not pixel-fidelity evidence.
+existing controls/tokens. The naming browser adapter captures 390×844/1440×900
+light/dark states in en/zh-CN. Source-pinned captures and interaction receipts are
+maker evidence; they do not establish pixel fidelity or independent acceptance.
 
 The four existing naming adapters mirror IdentityView/ResolveResponse/RenameBody.
 The repository contract snapshot is a summarized route/parameter/status artifact,
-not full JSON Schema. Its four entries were authored manually from source; no
-pytest regeneration ran. Actual schema comparison, supported frontend lint/
-typecheck/build/tests, browser evidence and independent final-candidate review/
-behavioral QA remain required. The shipping-page MSW assertions in
+not full JSON Schema. Its four entries were originally authored from source;
+the supported standalone generator and genuine served-schema comparison verify
+that summary independently. Source-pinned schema/frontend/browser receipts live
+in the maker handoff; final-candidate independent review and behavioral QA remain
+separate requirements. The shipping-page MSW assertions in
 `web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
 API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
 canonical skill-row attributes and stable row identity during label refresh.
@@ -302,8 +306,8 @@ These provider/component tests use frontend mocks. Source-specific commands,
 red/keeper results and actual execution status belong in the maker handoff;
 frontend results do not establish daemon/DB end-to-end behavior. Existing
 twelve-scenario integration bodies/fixtures are preserved. Python units remain SKIPPED/SUSPENDED;
-general integration remains SKIPPED THR243seq42. No publication, merge, deployment
-or whole-feature completion is established by this source slice.
+general integration remains SKIPPED THR243seq42. Published source and maker verification do not establish independent acceptance,
+merge, deployment or whole-feature completion.
 
 ## Current finite naming verification source (TASK10429, THR293seq34)
 
@@ -351,9 +355,11 @@ real concurrent requests, supported second-tab storage events and browser-only
 upload transport abort. No mock success/readback/DB response is substituted.
 Existing assertions remain keepers, except obsolete whole-manifest completion
 accounting is removed from per-case receipt emission. No business keeper is
-deleted. Red/green, mutation and keeper execution are **NOT RUN** in this authoring
-leg; static syntax is not causal proof. Their actual results remain required
-execution/QA evidence, never inferred from the source.
+deleted. Historical TASK10429 authoring checkpoint: red/green, mutation and keeper
+execution were NOT RUN at that checkpoint. Static syntax is not causal proof.
+Later source-specific results below and the PR's enumerated affected-test case
+record distinguish actual causal assertion failures from fixture/setup failures;
+unselected/suspended bodies are never claimed executed.
 
 The historical manifest and all unselected bodies stay preserved. In particular,
 whole fresh/v2-organic/F/E/G/operator migration Cartesian loops, all input grammar
@@ -408,15 +414,16 @@ The holder is removed after export and other containers, then exact volumes.
 Workload failure remains the operation exit if cleanup/export also fails; those
 failures are separately recorded and turn an otherwise-successful operation nonzero.
 Export contains at most256MiB/14000 entries; incomplete proof is never PASS.
-Hosted run37978558761 at predecessor d1da032d executed all16 selected nodes:
-7 passed and9 failed; full naming acceptance and browser captures remain pending.
+Historical hosted run37978558761 at predecessor d1da032d executed all16 selected nodes:
+7 passed and9 failed; full naming acceptance and browser captures were pending
+at that historical checkpoint.
 Its standalone and served OpenAPI checks passed only at that source. Naming-owned
 fixture corrections use the actual session reader, explicit trusted-loopback
 Chromium launch configuration inside unchanged Docker restrictions, and real
 callback links/audits for ordinary exchange catch-up rather than assuming exactly
 two unknown-fallback invocations. These corrections need renewed published-source
 execution; prior failed results remain failures.
-Hosted run37980616999 at ac59789d executed the same16 selectors:12 passed,
+Historical hosted run37980616999 at ac59789d executed the same16 selectors:12 passed,
 4 failed, with complete export and successful owned cleanup. Both OpenAPI
 checks and the live callback case passed there; browser2/3/8 lost their CLI
 session and no authored screenshots were produced. The pinned CLI evaluates
@@ -433,17 +440,18 @@ its predecessor bytes only. Full same-head independent review, behavioral QA
 (revisit10329 through recorded supersession), current checks/hooks and guarded
 manager merge remain outstanding.
 
-Hosted run37982722702 at ef4a4baf failed dependency preparation with actual
+Historical hosted run37982722702 at ef4a4baf failed dependency preparation with actual
 Docker `OOMKilled=true`, exit137, during Vite gzip-size computation under the
 former2560MiB payload cap. No naming selector or screenshot ran there; complete
 export and owned cleanup succeeded. The bounded runner redistributes scratch
 from5GiB to4GiB and payload memory from2560MiB to3840MiB within the same8GiB
 conservative total, retaining CPU/process/evidence/inode/deadline limits.
 Existing boundary records now include actual volume bytes/inodes and cgroup
-current/peak/events. Renewed preparation and naming proof remain pending;
+current/peak/events. Renewed preparation and naming proof were pending at that
+historical checkpoint;
 previous source-specific successes and failed receipts retain their attribution.
 
-Hosted run37983990181 at a629410e executed the same16 selectors:13 passed,
+Historical hosted run37983990181 at a629410e executed the same16 selectors:13 passed,
 3 failed, with complete export and successful owned cleanup. The real founder
 editor, typed human resolve and native callback/served schema observations
 succeeded there; no screenshots were produced. The naming browser adapter
@@ -456,10 +464,11 @@ input's deferred callback reading its previous controlled value. The popup now
 reads the current DOM input value; the existing scenario8 task-picker UI test
 pastes a name without keyup and retains its ID/rename/locale/query assertions.
 Actual causal red output is preserved; renewed published-head daemon/browser
-proof and all32 authored captures remain required. These repairs add no business
+proof and all32 authored captures were still required at that checkpoint;
+run37988224256 below supplies the later attributable maker evidence. These repairs add no business
 scenario, additional product contract, schema or authority change.
 
-Hosted run37985913002 at20e0ff63 passed all16 selected assertions and both
+Historical hosted run37985913002 at20e0ff63 passed all16 selected assertions and both
 OpenAPI comparisons, but its fixture export contained zero files. Repository
 failed-only pytest temporary-path retention erased successful native fixture
 records and32 captures before export; GitHub success does not establish complete
@@ -468,4 +477,50 @@ changing the repository default. Holder export refuses success without retained
 daemon/SQL/callback/served-schema/browser closure records and every authored
 route/viewport/locale/theme PNG. It preserves exported counts and partial records
 on failure. Same12 scenarios/16 selectors and all original quotas/deadlines remain;
-renewed published-head proof is required, with the incomplete predecessor retained.
+renewed proof was required then; run37988224256 below supplies later maker proof
+while retaining this incomplete predecessor.
+
+
+## Published maker evidence and PR1021 review corrections
+
+Published source503cbeb5c601b17bc92347fd8fd2604af0f51236 has actual naming-only
+[run37988224256](https://github.com/t-benze/happyranch/actions/runs/37988224256):
+16 explicit selectors for the same12 scenarios passed in233.54s. Supported
+standalone OpenAPI check and genuine served-schema comparison passed. Actual
+daemon/native callback/SQL/CLI/browser receipts,32 route/viewport/locale/theme
+PNGs and successful owned cleanup are retained in `dev_agent/output/TASK-10434`. JOB4103 local_ci all exit0
+used byte-identical candidate bytes, Node24.19.0; Web165files/2805tests. JOB4105
+normal hooked nonforce push and JOB4106 collection exited0. Exact-head PR
+run37987921862 Web/Linux/macOS checks succeeded; Python was SKIPPED.
+
+The runner299-file export versus GitHub296-file retention omits exactly three
+hidden temporary browser configs/678bytes; missing bytes are not claimed retained
+or inspected. Required behavioral artifacts are present. Earlier failure and
+16-pass/zero-export receipts remain historical failures or INCOMPLETE, never
+substituted for this source's proof. Finite maker success is not exhaustive
+coverage, independent QA, merge acceptance or deployment.
+
+TASK10447 independent full review returned REQUEST_CHANGES for R1–R4. The current
+correction invalidates a pending task-filter attempt on Clear and checks its
+identity before success, error and finalization, preserving newer latch ownership
+and unmount protection. Scenario8's real-page deferred MSW success/failure branches
+assert empty fields, no reinstated canonical agent/status query and no obsolete
+alert. Source503cbeb5 plus the same added regression has attributable RED;
+corrected source has GREEN. Exact bytes/commands/exits are in
+`dev_agent/output/TASK-10450/r1-{red,green}-source.sha256` and
+`r1-{red,green}.log`, with final evidence in the same handoff. A prior test-draft
+query comparison also included the existing escalated attention traversal and is
+retained as a fixture-accounting failure, not the final causal proof.
+
+R2 A10 preserves every unrelated sequence/table and retained audit row while
+permitting only audit_log's one required increment and exact identity_name_changed
+payload. Forged-label409, actual canonical native callback/session/result and
+authority assertions remain. The selection is original16 plus only
+`test_identity_names_core.py::test_a10_bound_callback_continuity`:17 selectors for
+the same12 scenarios. A10's final-head hosted execution must reach its forged-label
+and genuine callback assertions; its static correction alone is not behavioral
+closure. Renewed maker runs must be attributed to their actual source in the
+handoff and PR, never to503cbeb5. Python units remain SUSPENDED THR2915/16; broad
+broken integration remains SKIPPED THR24342. Independent full review, later EM
+behavioral QA with revisit TASK10329, active exact-head checks and guarded merge
+remain required.

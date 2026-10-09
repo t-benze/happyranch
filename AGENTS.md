@@ -53,8 +53,8 @@ schedule prompts receive current self/founder/ID-selected roster labels; metadat
 failure renders ID-only context without writes or launch gates. Automation,
 callbacks, delegation/chain/fanout/config/roles and provider/task/session IDs stay
 ID-bound. The provider-aware UI/types, editors and name/ID pickers are present.
-Scenario5/8/9 E2E assertions still need execution; the maker handoff records actual
-frontend outcomes. See the current naming spec and maintained guides for the
+Source-pinned maker receipts record actual scenario5/8/9 E2E and frontend outcomes
+in the current spec and maker handoff; independent acceptance remains separate. See the current naming spec and maintained guides for the
 combined source contract and remaining behavioral acceptance gates.
 
 
@@ -79,16 +79,18 @@ storage. The existing one-daemon ordering applies; no nested coroutine gate,
 extra namespace lock or filesystem-under-DB lookup is introduced.
 
 THR293seq34/35 requires twelve readable E2E scenarios, not the historical233/297
-case matrix. Four authored routing bodies contribute to5/6/7/9/12 and remain
-NOT RUN; original manifests are preserved as historical proposed work. Python
-units/collection are SKIPPED/SUSPENDED, never PASS and never a blocker. General
-broken integration is SKIPPED THR243seq42. Focused naming E2E belongs later in a
-supported disposable GitHub/Mac Linux guest, with finite commands/resources and
-actual cleanup; no blanket unspecified execution release is required. This
+case matrix. The finite naming selection includes routing bodies for5/6/7/9/12;
+original manifests remain historical proposed work. Python units/collection are
+SKIPPED/SUSPENDED, never PASS and never a blocker. General broken integration is
+SKIPPED THR243seq42. Naming E2E uses a supported disposable GitHub runner or Mac
+Linux guest with finite commands/resources and actual cleanup. Source-specific
+maker receipts and remaining independent gates are recorded in the current spec
+and maker handoff; source publication does not grant feature acceptance. This
 combined candidate includes CLI/prompt and provider-aware UI/type source with
 English and Chinese editors, labels and pickers. Supported frontend checks run
 in the guarded worktree; exact command/runtime/source/exit receipts and remaining
-E2E/browser/schema obligations live in the maker handoff. Final whole-candidate
+source-pinned E2E/browser/schema receipts and independent gates live in the maker
+handoff. Final whole-candidate
 independent reviewer APPROVE, focused behavioral QA PASS, applicable checks/hooks,
 normal publication and guarded manager merge remain. Source integration and
 mock-backed frontend checks do not establish whole-feature acceptance.
@@ -729,7 +731,9 @@ gate for established ID operations. Editor drafts are scoped by org/kind/ID and
 survive locale changes and identity refetches.
 
 Real thread compose/follow-up/invite/forward and task read-filter pickers search
-current names and permanent IDs. Selected values stay IDs across renames. Founder
+current names and permanent IDs. Selected values stay IDs across renames. Clear
+invalidates pending task-filter resolution; stale success/error/finalization cannot
+reapply a cleared filter, show an obsolete alert or release a newer attempt. Founder
 is a separate human option routed as established `@founder`, never an agent
 participant or task owner. There is no task-create owner GUI in the present web
 source; the existing task agent filter is the relevant selector. Prospective
@@ -740,15 +744,17 @@ uploads when caught by separate preflight. Unknown body @text remains literal,
 including the existing quoted/email token parser behavior. This read is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
-existing controls/tokens; 390×844/1440×900 light/dark behavior and screenshots are
-unexecuted acceptance obligations, not pixel-fidelity evidence.
+existing controls/tokens. The naming browser adapter captures 390×844/1440×900
+light/dark states in en/zh-CN. Source-pinned captures and interaction receipts are
+maker evidence; they do not establish pixel fidelity or independent acceptance.
 
 The four existing naming adapters mirror IdentityView/ResolveResponse/RenameBody.
 The repository contract snapshot is a summarized route/parameter/status artifact,
-not full JSON Schema. Its four entries were authored manually from source; no
-pytest regeneration ran. Actual schema comparison, supported frontend lint/
-typecheck/build/tests, browser evidence and independent final-candidate review/
-behavioral QA remain required. The shipping-page MSW assertions in
+not full JSON Schema. Its four entries were originally authored from source;
+the supported standalone generator and genuine served-schema comparison verify
+that summary independently. Source-pinned schema/frontend/browser receipts live
+in the maker handoff; final-candidate independent review and behavioral QA remain
+separate requirements. The shipping-page MSW assertions in
 `web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
 API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
 canonical skill-row attributes and stable row identity during label refresh.
@@ -756,5 +762,5 @@ These provider/component tests use frontend mocks. Source-specific commands,
 red/keeper results and actual execution status belong in the maker handoff;
 frontend results do not establish daemon/DB end-to-end behavior. Existing
 twelve-scenario integration bodies/fixtures are preserved. Python units remain SKIPPED/SUSPENDED;
-general integration remains SKIPPED THR243seq42. No publication, merge, deployment
-or whole-feature completion is established by this source slice.
+general integration remains SKIPPED THR243seq42. Published source and maker verification do not establish independent acceptance,
+merge, deployment or whole-feature completion.

@@ -3,7 +3,7 @@ name: todos
 description: Use when you need to create a scheduled Todo for yourself from explicit founder or operator instruction. Never infer or proactively schedule future work. Scheduling is self-only and available to every valid in-org agent.
 ---
 
-## Current names and permanent automation IDs (unpublished source)
+## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
 from the injected parameters for callback agent/composer/speaker, task/session/

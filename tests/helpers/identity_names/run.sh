@@ -20,6 +20,7 @@ uv run python scripts/run_bounded_output.py --output "$NAMING_EVIDENCE/naming.lo
   tests/integration/test_identity_names_e2e.py::test_scenario8_live_cli_picker_and_persisted_ids \
   tests/integration/test_identity_names_integrated.py::test_scenarios9_12_queued_ids_survive_rename_and_reopen \
   tests/integration/test_identity_names_e2e.py::test_scenario9_live_history_authority_reopen \
+  tests/integration/test_identity_names_core.py::test_a10_bound_callback_continuity \
   tests/integration/test_identity_names_integrated.py::test_scenario10_bound_and_unauthorized_rename \
   tests/integration/test_identity_names_core.py::test_scenario11_one_daemon_async_contention \
   tests/integration/test_identity_names_core.py::test_scenario12_interrupted_lifecycle_and_reservations \

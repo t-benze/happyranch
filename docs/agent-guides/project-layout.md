@@ -19,7 +19,8 @@ actual routing stores. `runtime/reply_delivery.py` is the separate failure-categ
 helper. The Database facade admits public MESSAGE appends; OrgState wires only
 its org-local address provider. The daemon/thread_mentions compatibility alias
 is unchanged. `test_identity_names_integrated.py` preserves A11 and adds the four
-readable routing scenario bodies; no collection/execution has occurred.
+readable routing scenario bodies. Their finite hosted execution receipts are
+attributed separately from the retained unselected historical bodies.
 
 Current routing source resolves names/IDs case-insensitively with the unchanged
 @token grammar. Former inputs refuse409 with current_name before thread creation,

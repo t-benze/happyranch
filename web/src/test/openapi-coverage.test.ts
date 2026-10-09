@@ -51,7 +51,7 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
-  // Naming snapshot additions were manually derived from identities.py. Actual schema comparison is NOT RUN.
+  // Naming routes are checked against the maintained summary; standalone and served-schema receipts are attributed in the naming maker handoff.
   test('the four existing naming routes are browser-included', () => {
     for (const route of [
       'GET /api/v1/orgs/{slug}/identities',

@@ -3,7 +3,7 @@ name: manage-repo
 description: Add, remove, or update a repository in your AgentDef configuration (org/agents/<name>.md frontmatter). Write a JSON file and call happyranch manage-repo --from-file to keep the invocation single-line.
 ---
 
-## Current names and permanent automation IDs (unpublished source)
+## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
 from the injected parameters for callback agent/composer/speaker, task/session/

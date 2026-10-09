@@ -3,7 +3,7 @@ name: start-task
 description: Use this skill at the start of every task. Parses task_id, session_id, brief, and role_guidance from the prompt, executes the work, reports completion back to the daemon, and cleans up worktrees.
 ---
 
-## Current names and permanent automation IDs (unpublished source)
+## Current names and permanent automation IDs
 
 Fresh prompts may show current Name · ID for this turn. Use the permanent ID
 from the injected parameters for callback agent/composer/speaker, task/session/

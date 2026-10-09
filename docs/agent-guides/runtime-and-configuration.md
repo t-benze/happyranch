@@ -18,8 +18,8 @@ owners keep original checks. Installed skills are unchanged; only release-owned
 bundled wording is updated for the current-name versus automation-ID boundary.
 
 The combined candidate includes UI/type consumers. Its maker handoff records
-actual frontend checks and unexecuted disposable E2E, browser and schema
-obligations. Final independent review/QA/checks/publication/merge remain.
+source-pinned frontend, disposable E2E, browser and schema receipts. Published
+source still requires final independent review/QA/checks and guarded merge.
 No live runtime/provider/config/restart or deployment is authorized by the
 frontend verification leg. See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
 

@@ -17,12 +17,13 @@ Current task/full/resumed/fallback/dream/wake/schedule context refreshes labels
 without changing canonical role/authority/session/queue/proof bindings. Founder
 is separate human context; metadata failure supplies ID-only presentation.
 
-Relevant source assertions are inside existing scenarios5/8/9, AUTHORED / NOT RUN.
-The twelve-scenario set remains the acceptance proposal; old233/297 material is
-retained history. Actual provider resume/fallback launches, auxiliary runners,
-rename-after-upload races and actual browser/picker behavior remain unexercised.
-Frontend mock results and static evidence do not establish those behaviors. UI/types are present; disposable E2E,
-independent full review/QA and publication/merge remain required. See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+Relevant source assertions are inside scenarios5/8/9. The twelve-scenario set
+has source-pinned maker E2E receipts; old233/297 material remains historical.
+Actual provider resume/fallback launches, auxiliary runner launches and
+rename-after-upload races remain outside the finite proof. Real browser/picker
+receipts are distinct from frontend mocks. UI/types and the naming runner are
+published on the open PR; independent full review/QA and guarded merge remain
+required. See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
 
 ## Naming v1 core, API and routing source
 
@@ -987,7 +988,9 @@ gate for established ID operations. Editor drafts are scoped by org/kind/ID and
 survive locale changes and identity refetches.
 
 Real thread compose/follow-up/invite/forward and task read-filter pickers search
-current names and permanent IDs. Selected values stay IDs across renames. Founder
+current names and permanent IDs. Selected values stay IDs across renames. Clear
+invalidates pending task-filter resolution; stale success/error/finalization cannot
+reapply a cleared filter, show an obsolete alert or release a newer attempt. Founder
 is a separate human option routed as established `@founder`, never an agent
 participant or task owner. There is no task-create owner GUI in the present web
 source; the existing task agent filter is the relevant selector. Prospective
@@ -998,15 +1001,17 @@ uploads when caught by separate preflight. Unknown body @text remains literal,
 including the existing quoted/email token parser behavior. This read is not a
 reservation: final server admission may reject after an intervening rename, and
 already-completed uploads are not claimed rolled back. New en/zh-CN text uses
-existing controls/tokens; 390×844/1440×900 light/dark behavior and screenshots are
-unexecuted acceptance obligations, not pixel-fidelity evidence.
+existing controls/tokens. The naming browser adapter captures 390×844/1440×900
+light/dark states in en/zh-CN. Source-pinned captures and interaction receipts are
+maker evidence; they do not establish pixel fidelity or independent acceptance.
 
 The four existing naming adapters mirror IdentityView/ResolveResponse/RenameBody.
 The repository contract snapshot is a summarized route/parameter/status artifact,
-not full JSON Schema. Its four entries were authored manually from source; no
-pytest regeneration ran. Actual schema comparison, supported frontend lint/
-typecheck/build/tests, browser evidence and independent final-candidate review/
-behavioral QA remain required. The shipping-page MSW assertions in
+not full JSON Schema. Its four entries were originally authored from source;
+the supported standalone generator and genuine served-schema comparison verify
+that summary independently. Source-pinned schema/frontend/browser receipts live
+in the maker handoff; final-candidate independent review and behavioral QA remain
+separate requirements. The shipping-page MSW assertions in
 `web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
 API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
 canonical skill-row attributes and stable row identity during label refresh.
@@ -1014,8 +1019,8 @@ These provider/component tests use frontend mocks. Source-specific commands,
 red/keeper results and actual execution status belong in the maker handoff;
 frontend results do not establish daemon/DB end-to-end behavior. Existing
 twelve-scenario integration bodies/fixtures are preserved. Python units remain SKIPPED/SUSPENDED;
-general integration remains SKIPPED THR243seq42. No publication, merge, deployment
-or whole-feature completion is established by this source slice.
+general integration remains SKIPPED THR243seq42. Published source and maker verification do not establish independent acceptance,
+merge, deployment or whole-feature completion.
 
 
 Naming verification source now has the explicit finite selection
@@ -1023,15 +1028,15 @@ Naming verification source now has the explicit finite selection
 scenarios. Core/ASGI assertions retain their layer attribution; naming-only
 `test_identity_names_e2e.py` and `web/scripts/identity-names-e2e.mjs` add real
 served daemon/CLI/native callback/browser-to-SQL assertions for2/3/6/8/9 and
-real390x844/1440x900 en/zh-CN light/dark captures. They are AUTHORED / NOT RUN;
-MSW/component greens and static syntax do not establish these outcomes. The
+real390x844/1440x900 en/zh-CN light/dark captures. Source-pinned hosted receipts
+record actual daemon/browser outcomes separately from MSW/component evidence. The
 current case record, mutations and unselected historical branches are in
 `docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
 naming verification source. Standalone OpenAPI --check and a genuine served
-schema comparison remain required; the snapshot is still hand-authored. Clean
-hooked publication precedes the authorized disposable GitHub naming operation.
-The naming-only workflow and `scripts/identity_names_hosted.sh` are installed;
-execution remains pending actual source publication and hosted receipts. The
+schema comparison are both retained in the hosted receipts. Clean hooked
+publication precedes each authorized disposable GitHub naming operation. The
+naming-only workflow and `scripts/identity_names_hosted.sh` are published on the
+open naming PR; each corrected source requires its own attributed verification. The
 runner preserves source/evidence sentinels through init/prepare/work/export with
 a bounded offline mount holder, refuses output truncation, and reserves cleanup
 under one job-start deadline. Python unit suspension and
