@@ -1,12 +1,12 @@
 /**
  * Composable FE screenshot harness — the reusable module every FE task imports
- * to capture real-viewport Playwright evidence in one of four modes. FE tasks
+ * to capture real-viewport Playwright evidence in one of three modes. FE tasks
  * COMPOSE these primitives (they do NOT fork a copy). See README.md for the
  * mode decision tree (also landed in the shared KB:
  * `fe-screenshot-harness-mode-decision-tree`).
  *
  * Guardrails baked in:
- *   - Zero new npm dependency. Static/API/WS servers use only Node built-ins;
+ *   - Zero new npm dependency. Static/API servers use only Node built-ins;
  *     screenshots shell out to the venv Playwright via the `playwright-cli`
  *     binary (never an imported npm playwright).
  *   - Plain Node ESM (.mjs) under web/scripts/ so it stays OUT of `eslint src`,
@@ -14,13 +14,13 @@
  *     has no effect on Web CI.
  *
  * Primitives:
- *   - createServer({ root, api, ws })  -> static files + /api JSON mock + WS
+ *   - createServer({ root, api })      -> static files + /api JSON mock
  *   - defaultApiRoutes(opts)           -> the routes the SPA shell needs to boot
  *   - startViteHarness({ entry, props })-> vite dev serving a generated mount (mode C)
  *   - capture({ url, out, theme, ... })-> drive playwright-cli for one PNG
  *
  * Mode composers (thin wrappers over the primitives):
- *   - modeAProdApi, modeBDistCss, modeCProp, modeDWsDock
+ *   - modeAProdApi, modeBDistCss, modeCProp
  */
 import { createServer as httpCreateServer } from 'node:http';
 import { spawn } from 'node:child_process';
@@ -28,7 +28,6 @@ import { readFile, writeFile, mkdir, rm, access } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { attachWsMock } from './ws-mock.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** web/ root, two levels up from web/scripts/screenshot-harness/. */
@@ -53,12 +52,12 @@ const MIME = {
 // dist discovery
 // ---------------------------------------------------------------------------
 
-/** Return the built dist/ dir (modes A/B/D need it); throw a clear hint if absent. */
+/** Return the built dist/ dir (modes A/B need it); throw a clear hint if absent. */
 export function findDist() {
   const dist = join(WEB_ROOT, 'dist');
   if (!existsSync(join(dist, 'index.html'))) {
     throw new Error(
-      `No built app at ${dist}. Modes A/B/D need it — run \`npm run build\` in web/ first.`,
+      `No built app at ${dist}. Modes A/B need it — run \`npm run build\` in web/ first.`,
     );
   }
   return dist;
@@ -85,27 +84,16 @@ export function findDistCss() {
  * @param {object} [opts]
  * @param {string} [opts.token]              bearer the SPA auto-bootstraps
  * @param {Array<{slug:string,root:string}>} [opts.orgs]
- * @param {boolean} [opts.assistantConfigured] assistant status.state = 'configured'
  */
 export function defaultApiRoutes(opts = {}) {
   const {
     token = 'harness-token',
     orgs = [{ slug: 'demo', root: '/tmp/demo' }],
-    assistantConfigured = false,
   } = opts;
   const routes = [
     { path: '/api/v1/auth/bootstrap', json: { token } },
     { path: '/api/v1/orgs', json: { orgs, broken: [] } },
   ];
-  if (assistantConfigured) {
-    routes.push(
-      { path: '/api/v1/assistant/status', json: { state: 'configured' } },
-      {
-        path: '/api/v1/assistant/a-mode/status',
-        json: { available: true, executor: 'claude' },
-      },
-    );
-  }
   return routes;
 }
 
@@ -131,10 +119,9 @@ function matchApiRoute(routes, method, pathname) {
  * @param {object} opts
  * @param {string}  opts.root   directory to serve (e.g. findDist())
  * @param {Array}   [opts.api]  route list: { method?, path:string|RegExp, json | handler(req,res) }
- * @param {object}  [opts.ws]   { path, onConnect } forwarded to attachWsMock
  * @returns {Promise<{ port:number, url:string, server:import('node:http').Server, close:()=>Promise<void> }>}
  */
-export async function createServer({ root, api = [], ws = null }) {
+export async function createServer({ root, api = [] }) {
   const server = httpCreateServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const pathname = url.pathname;
@@ -163,7 +150,6 @@ export async function createServer({ root, api = [], ws = null }) {
     }
   });
 
-  if (ws) attachWsMock(server, ws);
 
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
@@ -227,31 +213,52 @@ createRoot(el).render(
   );
 
   const proc = spawn(
-    'npx',
-    ['--no-install', 'vite', '--port', '0', '--strictPort', 'false', '--host', '127.0.0.1'],
+    process.execPath,
+    [join(WEB_ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', '0', '--strictPort', 'false', '--host', '127.0.0.1'],
     { cwd: WEB_ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
   );
 
-  const port = await new Promise((res, rej) => {
-    let out = '';
-    const onData = (d) => {
-      out += d.toString();
-      const m = out.match(/localhost:(\d+)|127\.0\.0\.1:(\d+)/);
-      if (m) res(Number(m[1] || m[2]));
-    };
-    proc.stdout.on('data', onData);
-    proc.stderr.on('data', onData);
-    proc.on('exit', (code) => rej(new Error(`vite exited early (${code}): ${out}`)));
-    setTimeout(() => rej(new Error(`vite did not report a port in 30s: ${out}`)), 30000);
-  });
+  const closed = new Promise((res) => proc.once('close', res));
+  const stop = async () => {
+    if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGTERM');
+    const deadline = setTimeout(() => proc.kill('SIGKILL'), 5000);
+    try {
+      // Keep a bounded reap; never remove files while the owned child lives.
+      await new Promise((res, rej) => {
+        const timer = setTimeout(() => rej(new Error('Vite teardown timed out')), 10000);
+        closed.then(() => { clearTimeout(timer); res(); });
+      });
+      await rm(tmpDir, { recursive: true, force: true });
+    } finally {
+      clearTimeout(deadline);
+    }
+  };
+
+  let port;
+  try {
+    port = await new Promise((res, rej) => {
+      let out = '';
+      const timer = setTimeout(() => rej(new Error(`vite did not report a port in 30s: ${out}`)), 30000);
+      const fail = (error) => { clearTimeout(timer); rej(error); };
+      const onData = (d) => {
+        out += d.toString();
+        const m = out.match(/localhost:(\d+)|127\.0\.0\.1:(\d+)/);
+        if (m) { clearTimeout(timer); res(Number(m[1] || m[2])); }
+      };
+      proc.stdout.on('data', onData);
+      proc.stderr.on('data', onData);
+      proc.once('error', fail);
+      proc.once('exit', (code) => fail(new Error(`vite exited early (${code}): ${out}`)));
+    });
+  } catch (error) {
+    await stop();
+    throw error;
+  }
 
   const base = `http://127.0.0.1:${port}/.screenshot-harness-tmp/harness.html`;
   return {
     url: (theme = 'light') => `${base}?theme=${theme}`,
-    stop: async () => {
-      proc.kill('SIGTERM');
-      await rm(tmpDir, { recursive: true, force: true });
-    },
+    stop,
   };
 }
 
@@ -409,88 +416,5 @@ export async function modeCProp({ importPath, exportName, render, outDir, name, 
     return shots;
   } finally {
     await vite.stop();
-  }
-}
-
-/**
- * Mode D — prod build + node /api mock + WS mock for the A-mode assistant dock.
- * Serves the full app, mocks the WS so the dock hydrates a `history` transcript,
- * opens the dock, and captures both themes.
- *
- * @param {object} opts
- * @param {string} opts.route              page to land on (dock is global), e.g. '/orgs/demo/dashboard'
- * @param {Array}  opts.conversations      ConversationSummary[] for the switcher
- * @param {object} opts.historyByConv      map convId -> persisted turns (history frame `turns`)
- * @param {string} opts.activeConv         id of the initially active conversation
- */
-export async function modeDWsDock({
-  route,
-  outDir,
-  name,
-  conversations,
-  historyByConv,
-  activeConv,
-  orgs,
-  viewport,
-  api: extraApi = [],
-}) {
-  let active = activeConv;
-  const api = [
-    ...defaultApiRoutes({ orgs, assistantConfigured: true }),
-    ...extraApi,
-    {
-      path: '/api/v1/assistant/a-mode/conversations',
-      handler: (req, res) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(conversations.map((c) => ({ ...c, active: c.id === active }))));
-      },
-    },
-    {
-      // activate: POST /conversations/:id/activate
-      path: /\/api\/v1\/assistant\/a-mode\/conversations\/[^/]+\/activate$/,
-      handler: (req, res) => {
-        active = req.url.split('/').slice(-2)[0];
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      },
-    },
-  ];
-
-  const srv = await createServer({
-    root: findDist(),
-    api,
-    ws: {
-      path: '/api/v1/assistant/a-mode',
-      onConnect: (conn) => {
-        const turns = historyByConv[active] ?? [];
-        conn.sendJson({ type: 'history', turns });
-        conn.sendJson({ type: 'status', code: 'ready' });
-      },
-    },
-  });
-  try {
-    const shots = [];
-    for (const theme of ['light', 'dark']) {
-      shots.push(
-        await capture({
-          url: `${srv.url}${route}`,
-          out: join(outDir, `${name}-${theme}.png`),
-          theme,
-          viewport,
-          settleMs: 1400,
-          // Open the dock via the global Cmd-K hotkey (AssistantDockHost owns
-          // it); also click any explicit [data-assistant-open] trigger.
-          prep: [
-            [
-              'eval',
-              "(()=>{const e=new KeyboardEvent('keydown',{key:'k',metaKey:true,ctrlKey:true,bubbles:true});document.dispatchEvent(e);window.dispatchEvent(e);const t=document.querySelector('[data-assistant-open]');if(t)t.click();})()",
-            ],
-          ],
-        }),
-      );
-    }
-    return shots;
-  } finally {
-    await srv.close();
   }
 }

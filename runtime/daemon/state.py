@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from runtime.config import Settings
-from runtime.daemon.headless_assistant import HeadlessAssistantManager
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore
 from runtime.daemon.host_session_store import HostSessionStore
 from runtime.daemon.metrics import MetricsRegistry
@@ -39,10 +38,6 @@ class DaemonState:
     )
     direct_connect_authority_store: DirectConnectAuthorityStore | None = None
     orgs_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    assistant_lifecycle_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    headless_assistant: HeadlessAssistantManager = field(
-        default_factory=HeadlessAssistantManager
-    )
     metrics_registry: MetricsRegistry = field(default_factory=MetricsRegistry)
     metrics_store: MetricsStore | None = None
     # Throttle for periodic snapshot writes — monotonic timestamp of last write.
@@ -302,7 +297,6 @@ class DaemonState:
                 org.close()
 
     async def close_all(self) -> None:
-        await self.headless_assistant.close_all()
         async with self.orgs_lock:
             for org in self.orgs.values():
                 org.close()

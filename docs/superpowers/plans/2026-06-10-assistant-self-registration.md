@@ -1,5 +1,7 @@
 # Assistant Self-Registration Implementation Plan
 
+> RETIRED by THR-294. This document is preserved design history. The runtime-global System Assistant is no longer supported; see the maintained runtime/configuration guide for inert legacy compatibility.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the system assistant's executor *probing* with CLI *self-registration*: the founder opens their own agentic CLI in the assistant workspace, and the agent registers itself by calling `happyranch assistant register`.

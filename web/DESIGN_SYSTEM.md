@@ -53,7 +53,7 @@ crosswalk. `PASTURE_REFERENCE_REQUIREMENTS` is the single authoritative 25-row
 manifest, matching the 25 material sections in the rendered founder HTML. Every
 row names a concrete story export and stable rendered semantic selectors.
 Timeline and table, avatars/agent rows, and icon tiles are separate requirements.
-The manifest also enforces the five page states, assistant dock, review-only
+The manifest also enforces the five page states, review-only
 prototype-state selector, 42-entry retired-to-canonical rename map, 55-entry
 screen-scoped composition inventory, and narrow-width contract. The existing
 `Design System/*` stories remain the
@@ -173,3 +173,6 @@ not a product prebuild hook, preventing duplicate builds.
 - [ ] Every rendered Pasture reference section and its responsive 390 px presentation is represented by a discoverable `Pasture/*` story.
 - [ ] No live daemon, hosted visual service, or product behavior is introduced.
 - [ ] Lint, typecheck, unit tests, SPA build, Storybook build, design-system verification, browser evidence, and Node 24 local CI pass.
+
+System Assistant is retired (THR-294): no dock, settings, API domain or Cmd/Ctrl-K
+binding. Shared Composer and TypingBubble remain for ordinary threads.

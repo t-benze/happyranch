@@ -126,13 +126,13 @@ describe('IA-1: Sidebar (left rail replaces the legacy tab bar)', () => {
     });
   });
 
-  test('renders the assistant avatar entry point in the app bar (BUG-04/05, THR-056 PR-6)', async () => {
+  test('retired assistant launcher is absent while the ordinary app bar remains', async () => {
     seedSidebarShell();
     renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/dashboard` });
 
     await waitFor(() => {
-      // The assistant avatar opens the Assistant Dock — now in the top app bar.
-      expect(screen.getByLabelText('Open assistant')).toBeInTheDocument();
+      expect(screen.getByLabelText(/theme/i)).toBeInTheDocument();
+      expect(screen.queryByLabelText('Open assistant')).not.toBeInTheDocument();
     });
   });
 

@@ -59,7 +59,7 @@ export async function runHeaderLanguageCases(h) {
     await clickSrc(page,option(locale));
     check(`header applies ${locale}`,await waitTrue(page,`document.documentElement.lang==='${locale}'&&${header}.textContent.includes(${JSON.stringify(locale==='en'?'English':'简体中文')})&&!document.querySelector('[role="listbox"]')`,'immediate locale/closed menu'),true);
   }
-  const theme = `${header}.parentElement.querySelector('button[title]:not([role="combobox"]):not([data-assistant-open])')`;
+  const theme = `${header}.parentElement.querySelector('button[title]:not([role="combobox"])')`;
   async function geometry(page,expression,label){
     const observation=await evaluate(page,bounds(expression));
     check(`${label}: real rectangles and clipping ancestors`,observation.missing?observation:{missing:observation.missing,failures:observation.failures,nonempty:observation.nonempty,readable:observation.readable,reachable:observation.reachable},{missing:false,failures:[],nonempty:true,readable:true,reachable:true});
@@ -81,9 +81,9 @@ export async function runHeaderLanguageCases(h) {
         if(route!==PREFS)check(`${prefix}: real tasks empty state loaded`,await waitTrue(page,`document.querySelector('main')?.textContent.includes(${JSON.stringify(tr(locale,'tasks.list.emptyTitle'))})`,'valid tasks fixture'),true);
         const controls=`${header}.parentElement`,bar=`${controls}.parentElement`;
         check(`${prefix}: translated name/title and endonym lang`,await evaluate(page,`[${header}.getAttribute('aria-label'),${header}.getAttribute('title'),${header}.querySelector('[lang]').lang]`),[tr(locale,'common.language'),tr(locale,'common.language'),locale]);
-        check(`${prefix}: adjacent theme and usable assistant`,await evaluate(page,`${header}.nextElementSibling===${theme}&&${header}.previousElementSibling.hasAttribute('data-assistant-open')`),true);
+        check(`${prefix}: adjacent theme and retired assistant absence`,await evaluate(page,`${header}.nextElementSibling===${theme}&&!document.querySelector('[data-assistant-open]')`),true);
         const measurements=[];
-        for(const [expression,label] of [[header,'language'],[theme,'theme'],[`${header}.previousElementSibling`,'assistant'],[`${bar}.firstElementChild`,'title']])measurements.push(await geometry(page,expression,`${prefix} ${label}`));
+        for(const [expression,label] of [[header,'language'],[theme,'theme'],[`${bar}.firstElementChild`,'title']])measurements.push(await geometry(page,expression,`${prefix} ${label}`));
         check(`${prefix}: controls do not overlap title`,await evaluate(page,`${bar}.firstElementChild.getBoundingClientRect().right<=${controls}.getBoundingClientRect().left+1`),true);
         await clickSrc(page,header);
         check(`${prefix}: both options rendered`,await waitTrue(page,`Boolean(${option('en')})&&Boolean(${option('zh-CN')})`,'both options'),true);
@@ -192,7 +192,7 @@ export async function runHeaderLanguageCases(h) {
     check('original Cancel removes authored draft',await waitTrue(page,`!document.querySelector('main textarea')`,'Cancel'),true);
     check('Cancel issues no PUT',ledger.slice(from).filter(r=>r.method==='PUT'),[]);
     await clickSrc(page,`document.querySelector('a[href="/orgs/test-org/settings"]')`);
-    check('original Settings navigation',await waitTrue(page,`location.pathname==='/orgs/test-org/settings/assistant'`,'navigation'),true);
+    check('original Settings navigation',await waitTrue(page,`location.pathname==='/orgs/test-org/settings/daemon-capacity'`,'navigation'),true);
     await closePage(other);await closePage(page);endCase();
   }
 }

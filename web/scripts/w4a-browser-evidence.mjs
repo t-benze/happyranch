@@ -29,7 +29,6 @@
 import { runLocaleActivationCases } from './w5-locale-browser-cases.mjs';
 import { runHeaderLanguageCases } from './header-language-browser-cases.mjs';
 import { runWorkHoursCases, workHoursFixture } from './work-hours-browser-cases.mjs';
-import { assistantFixture, runAssistantCases } from './assistant-dock-browser-cases.mjs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
@@ -98,6 +97,10 @@ class CDP {
       this.ws.addEventListener('open', () => ok());
       this.ws.addEventListener('error', () => fail(new Error('CDP websocket error')));
     });
+    this.ws.addEventListener('close', () => {
+      for (const pending of this.pending.values()) pending.reject(new Error('CDP websocket closed'));
+      this.pending.clear();
+    });
     this.ws.addEventListener('message', (event) => {
       const message = JSON.parse(typeof event.data === 'string' ? event.data : Buffer.from(event.data).toString('utf8'));
       if (message.id !== undefined) {
@@ -117,7 +120,16 @@ class CDP {
     const id = this.nextId++;
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
-    const promise = new Promise((ok, fail) => this.pending.set(id, { resolve: ok, reject: fail }));
+    const promise = new Promise((ok, fail) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        fail(new Error(`CDP command timed out: ${method} (${sessionId || 'browser'})`));
+      }, 30000);
+      this.pending.set(id, {
+        resolve: value => { clearTimeout(timer); ok(value); },
+        reject: error => { clearTimeout(timer); fail(error); },
+      });
+    });
     this.ws.send(JSON.stringify(payload));
     return promise;
   }
@@ -160,7 +172,7 @@ const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
-const ASSISTANT_FIXTURE = assistantFixture(LEDGER, HUNG);
+let retirementSettingsGate = 'loaded';
 
 // Daemon bytes that must survive every locale unchanged.
 const HEALTH_SNAPSHOT = {
@@ -369,6 +381,21 @@ const API_ROUTES = {
   [`/api/v1/orgs/${ORG}/schedules/SCHEDULE-120`]: TODO_MONTHLY,
   // W4b work-hours
   [`/api/v1/orgs/${ORG}/settings`]: WH_SETTINGS,
+  [`/api/v1/orgs/${ORG}/settings/daemon-capacity`]: {
+    running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
+    running_provenance: 'Resolved when the HappyRanch service started',
+    persisted_yaml: { queue_workers: 6, host_global_session_cap: 13 },
+    next_start: { queue_workers: 6, host_global_session_cap: 13 },
+    environment_shadowed: [], environment_warning: null,
+    producer_envelope: 13,
+    producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
+    effective_admission_cap: 13,
+    effective_admission_reason: 'Startup-loaded host supervisor policy',
+    warnings: [], revision: `sha256:${'a'.repeat(64)}`,
+    restart_required: false, restart_pending: false,
+    guidance: { queue_workers: 'Empirical worker guidance', host_global_session_cap: 'Empirical cap guidance', enforced: false },
+    authorization: 'Local operator; daemon bearer required.',
+  },
   [`/api/v1/orgs/${ORG}/agents`]: { agents: ROSTER },
   [`/api/v1/orgs/${ORG}/teams`]: { teams: [{ name: 'eng', manager: 'lead', workers: ['dev_agent', 'support_bot'] }] },
   [`/api/v1/orgs/${ORG}/work-hours`]: { work_hours: [
@@ -416,7 +443,6 @@ function startServer(root) {
         const p = url.pathname;
         if (p.startsWith('/api/')) {
           LEDGER.push({ method: request.method, path: p, search: url.search, t: Date.now() });
-          if (selectedSlice === 'assistant' && ASSISTANT_FIXTURE.handle(request, response, p)) return;
           if (p.endsWith('/events') || p.includes('/stream') || p.endsWith('/tail')) {
             response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             HUNG.push(response);
@@ -463,6 +489,25 @@ function startServer(root) {
               response.end(JSON.stringify(state === 'error' ? { detail: 'Raw diagnostic' } : { tasks: state === 'empty' ? [] : SAFEGUARD_TASKS, next_cursor: null })); return;
             }
           }
+          if (selectedSlice === 'assistant-retirement') {
+            if (p.includes('/assistant')) {
+              response.writeHead(404, { 'content-type': 'application/json' });
+              response.end(JSON.stringify({ detail: 'retired synthetic fixture' })); return;
+            }
+            if (p === `/api/v1/orgs/${ORG}/tasks/roots`) {
+              response.writeHead(200, { 'content-type': 'application/json' });
+              response.end(JSON.stringify({ tasks: [], next_cursor: null })); return;
+            }
+            if (p === `/api/v1/orgs/${ORG}/settings`) {
+              const gate = retirementSettingsGate;
+              LEDGER.at(-1).settingsGate = gate;
+              if (gate === 'loading') { HUNG.push(response); return; }
+              if (gate === 'error' || gate === 'no-data') {
+                response.writeHead(gate === 'error' ? 503 : 200, { 'content-type': 'application/json' });
+                response.end(JSON.stringify(gate === 'error' ? { detail: 'retirement fixture error' } : null)); return;
+              }
+            }
+          }
           if (selectedSlice === 'locale-activation' && p === '/api/v1/orgs' && ref.searchParams.has('localeStartup')) { HUNG.push(response); return; }
           if (selectedSlice === 'work-hours-reachability') {
             const fixture = workHoursFixture(p, ref, { org: ORG, settings: WH_SETTINGS, roster: ROSTER });
@@ -496,7 +541,6 @@ function startServer(root) {
         response.end(String(error));
       }
     });
-    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.attach(server);
     server.on('error', fail);
     server.listen(0, '127.0.0.1', () => ok({ server, url: `http://127.0.0.1:${server.address().port}` }));
   });
@@ -622,7 +666,7 @@ const VIEW_ROUTES = [
     id: 'kb-detail', route: 'kb detail', path: `/orgs/${ORG}/kb/raw-knowledge`, ready: () => bodyHas(W4D_KB.body),
     keys: ['kb.pageTitle', 'kb.sourceTaskLabel', ['kb.authoredBy', { agent: 'Raw_Agent' }]],
     verbatim: [W4D_KB.title, W4D_KB.body, 'Raw_Agent', 'TASK-0042'],
-    // The closed Assistant dock also stays mounted with role=dialog. Bind the
+    // Bind the
     // bounds oracle to this open drawer and its verbatim authored title.
     checks: () => [['drawer fits viewport', `(() => { const el = [...document.querySelectorAll('[role="dialog"][data-state="open"]')].find(d => d.querySelector('h2')?.textContent === ${JSON.stringify(W4D_KB.title)}); if (!el) return false; const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; })()`, true]],
   },
@@ -1028,7 +1072,7 @@ const SWITCH_ROUTES = [
 ];
 
 const selectedSlice = arg('slice', 'all');
-if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'assistant', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language'].includes(selectedSlice)) throw new Error('unknown --slice');
+if (!['all', 'kb-artifacts', 'usage', 'usage-fallback', 'work-hours-reachability', 'locale-activation', 'agents-safeguard', 'header-language', 'assistant-retirement'].includes(selectedSlice)) throw new Error('unknown --slice');
 // F1 repair: reuse the real populated and switch cases with only malformed
 // response metadata. Keep the independent raw-string oracle out of formatters.
 const emptyZoneChecks = () => [['both Usage sections retain raw Data-through and Generated timestamps', `(() => { const sections = [...document.querySelectorAll('section[aria-labelledby^="usage-"]')]; return sections.length === 2 && sections.every(s => s.textContent.split('2026-09-29T06:03:00Z').length - 1 === 2); })()`, true]];
@@ -1045,8 +1089,8 @@ const EMPTY_ZONE_SWITCH = {
   checks: locale => [...switchUsage.checks(locale), ...emptyZoneChecks()],
   shot: 'zh-usage-empty-zone-switch-1440',
 };
-const ACTIVE_VIEWS = ['assistant', 'work-hours-reachability', 'locale-activation', 'header-language'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
-const ACTIVE_SWITCHES = ['assistant', 'work-hours-reachability', 'locale-activation', 'header-language'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
+const ACTIVE_VIEWS = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_VIEW] : selectedSlice === 'all' ? VIEW_ROUTES : VIEW_ROUTES.filter(row => selectedSlice === 'usage' ? row.id.startsWith('usage-') : row.id.startsWith('kb-') || row.id.startsWith('artifacts-'));
+const ACTIVE_SWITCHES = ['work-hours-reachability', 'locale-activation', 'header-language', 'assistant-retirement'].includes(selectedSlice) ? [] : selectedSlice === 'usage-fallback' ? [EMPTY_ZONE_SWITCH] : selectedSlice === 'all' ? SWITCH_ROUTES : SWITCH_ROUTES.filter(row => row.id.startsWith(selectedSlice === 'usage' ? 'usage-' : 'artifacts-'));
 
 /** Resolve a VIEW_ROUTES key spec; a param value '@key' is itself translated. */
 function expected(locale, spec) {
@@ -1085,14 +1129,14 @@ async function main() {
   let cdp;
   let chromeVersion = null;
   try {
-    // Header-only fixture option: keep singleton paths short while allocating
+    // Keep singleton paths short while allocating
     // anonymous font mappings on an available task-owned temp filesystem.
     chrome = spawn(chromeBin, [
       '--headless=new', '--lang=zh-CN', '--remote-debugging-port=0', `--user-data-dir=${userDataDir}`,
       '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-extensions', '--disable-background-networking', '--hide-scrollbars', '--disable-crash-reporter',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: selectedSlice === 'header-language' ? arg('chrome-temp', userDataDir) : userDataDir } });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: arg('chrome-temp', userDataDir) } });
     const devtools = await waitForDevTools(userDataDir);
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
@@ -1130,6 +1174,7 @@ async function main() {
       return false;
     }
     async function clickSrc(page, src) {
+      await cdp.send('Page.bringToFront', {}, page.sessionId);
       const box = await evaluate(page, `(() => { const el = (${src}); if (!el) return null; el.scrollIntoView({ block: 'center' }); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
       if (!box) throw new Error(`clickSrc: not found ${src.slice(0, 120)}`);
       for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
@@ -1383,12 +1428,93 @@ async function main() {
         await closePage(page);
       }
       endCase();
+    } else if (selectedSlice === 'assistant-retirement') {
+      // Ordinary compiled SPA plus synthetic API only. The full ledger and
+      // actual browser transport observations never prove backend route absence.
+      const transport = [];
+      for (const name of ['webSocketCreated', 'eventSourceMessageReceived']) {
+        cdp.handlers.set(`Network.${name}`, [message => transport.push({ name, sessionId: message.sessionId, params: message.params })]);
+      }
+      const absent = `!document.querySelector('[data-assistant-open], [data-testid*="assistant"], [aria-label="Open assistant"], [aria-label="打开助手"]')`;
+      const nav = `([...document.querySelectorAll('[data-testid="settings-content"] aside a')].map(a => a.getAttribute('href').split('/').at(-1)))`;
+      const expectedNav = ['daemon-capacity', 'organization', 'executors', 'preferences'];
+      const root = `/orgs/${ORG}/settings`;
+      for (const locale of ['en', 'zh-CN']) for (const width of [390, 1440]) {
+        retirementSettingsGate = 'loaded';
+        const options = { init: seedLocale(locale), width, height: width === 390 ? 844 : 900 };
+        for (const [section, heading] of [
+          ['daemon-capacity', 'settings.capacity.title'], ['organization', 'settings.panel.organization.title'],
+          ['executors', 'settings.panel.executors.title'], ['preferences', 'settings.panel.preferences.title'],
+        ]) {
+          beginCase(`retirement-${locale}-${width}-${section}`, 'ordinary Settings, shell controls, removed launchers and keyboard');
+          const page = await openPage(`${base}${root}/${section}`, options);
+          check('surviving Settings heading', await waitTrue(page, `([...document.querySelectorAll('main h2')].some(e => e.textContent === ${JSON.stringify(tr(locale, heading))}))`, 'surviving heading'), true);
+          if (section === 'daemon-capacity') {
+            check('loaded Capacity fields survive', await waitTrue(page, `document.getElementById('capacity-workers')?.value === '6' && document.getElementById('capacity-cap')?.value === '13'`, 'loaded Capacity'), true);
+          }
+          check('four surviving navigation links', await evaluate(page, nav), expectedNav);
+          check('requested locale', await evaluate(page, 'document.documentElement.lang'), locale);
+          check('no Assistant launcher or dock', await evaluate(page, absent), true);
+          check('no Assistant settings link', await evaluate(page, `!document.querySelector('a[href$="/settings/assistant"]')`), true);
+          check('ordinary Tasks navigation survives', await evaluate(page, `Boolean(document.querySelector('a[href="/orgs/${ORG}/tasks"]'))`), true);
+          check('header language selector survives moved main', await evaluate(page, `Boolean(document.querySelector('[role="combobox"][aria-label=${JSON.stringify(tr(locale, 'common.language'))}]'))`), true);
+          await capture(page, `retirement-${locale}-${width}-${section}`, { locale, viewport: `${width}x${options.height}`, scope: 'ordinary-dist/synthetic-api' });
+          await cdp.send('Page.bringToFront', {}, page.sessionId);
+          await evaluate(page, `(() => { window.__retirementKeys = []; document.addEventListener('keydown', e => { if (e.code === 'KeyK') queueMicrotask(() => window.__retirementKeys.push({trusted:e.isTrusted,prevented:e.defaultPrevented,ctrl:e.ctrlKey,meta:e.metaKey})); }); document.body.focus(); return true; })()`);
+          const locationBefore = await evaluate(page, 'location.pathname');
+          for (const modifiers of [2, 4]) {
+            await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers }, page.sessionId);
+            await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers }, page.sessionId);
+          }
+          await sleep(200);
+          check('real Ctrl-K and Meta-K are unbound', await evaluate(page, 'window.__retirementKeys'), [
+            { trusted: true, prevented: false, ctrl: true, meta: false },
+            { trusted: true, prevented: false, ctrl: false, meta: true },
+          ]);
+          check('chords preserve route', await evaluate(page, 'location.pathname'), locationBefore);
+          check('chords create no dock', await evaluate(page, absent), true);
+          if (section === 'preferences') {
+            check('Preferences language inputs survive', await evaluate(page, `document.querySelectorAll('input[name="happyranch-ui-language"]').length`), 2);
+            const themeBefore = await evaluate(page, 'document.documentElement.dataset.theme');
+            check('ordinary theme starts with a valid attribute', ['light', 'dark'].includes(themeBefore), true);
+            const themeAfter = themeBefore === 'dark' ? 'light' : 'dark';
+            await clickSrc(page, `document.querySelector('button[aria-label=${JSON.stringify(tr(locale, themeBefore === 'dark' ? 'shell.switchToLight' : 'shell.switchToDark'))}]')`);
+            check('ordinary theme control operates', await waitTrue(page, `document.documentElement.dataset.theme === ${JSON.stringify(themeAfter)}`, 'theme change'), true);
+            const next = locale === 'en' ? 'zh-CN' : 'en';
+            await clickSrc(page, `document.querySelector('input[name="happyranch-ui-language"][value="${next}"]')`);
+            check('Preferences changes client language', await waitTrue(page, langIs(next), 'Preferences language switch'), true);
+          }
+          await closePage(page); endCase();
+        }
+        for (const gate of ['loaded', 'loading', 'error', 'no-data']) for (const suffix of ['', '/assistant', '/unknown-retirement']) {
+          beginCase(`retirement-fallback-${locale}-${width}-${gate}-${suffix || 'default'}`, 'default/legacy/unknown redirect outside data gate');
+          retirementSettingsGate = gate;
+          const gateFrom = LEDGER.length;
+          const page = await openPage(`${base}${root}${suffix}?settingsFixture=${gate}`, options);
+          check('Capacity redirect without waiting for Settings data', await waitTrue(page, `location.pathname === ${JSON.stringify(root + '/daemon-capacity')}`, 'Capacity redirect'), true);
+          check('no Assistant controls after fallback', await evaluate(page, absent), true);
+          const gateDeadline = Date.now() + 5000;
+          while (!LEDGER.slice(gateFrom).some(row => row.path.endsWith('/settings') && row.settingsGate === gate) && Date.now() < gateDeadline) await sleep(50);
+          check('requested Settings gate exercised', LEDGER.slice(gateFrom).some(row => row.path.endsWith('/settings') && row.settingsGate === gate), true);
+          const gateReady = gate === 'loaded'
+            ? `document.getElementById('capacity-workers')?.value === '6' && document.getElementById('capacity-cap')?.value === '13'`
+            : gate === 'loading' ? bodyHas(tr(locale, 'settings.page.loading'))
+            : gate === 'error' ? bodyHas(tr(locale, 'settings.page.loadError'))
+            : `!document.querySelector('[data-testid="settings-content"]') && !(${bodyHas(tr(locale, 'settings.page.loading'))}) && !(${bodyHas(tr(locale, 'settings.page.loadError'))})`;
+          check('requested Settings gate renders', await waitTrue(page, gateReady, `${gate} Settings gate`), true);
+          await capture(page, `retirement-fallback-${locale}-${width}-${gate}-${suffix ? suffix.slice(1) : 'default'}`, { locale, viewport: `${width}x${options.height}`, gate, scope: 'ordinary-dist/synthetic-api' });
+          await closePage(page); endCase();
+        }
+      }
+      beginCase('retirement-network', 'no retired browser HTTP/socket activity across all cases; synthetic API only');
+      check('zero retired HTTP requests', LEDGER.filter(row => /\/assistant(?:\/|$)/.test(row.path)), []);
+      check('zero retired transport activity', transport.filter(row => JSON.stringify(row.params).includes('/assistant')), []);
+      check('nonvacuous ordinary Settings HTTP', LEDGER.some(row => row.path.endsWith('/settings')), true);
+      endCase();
     } else if (selectedSlice === 'header-language') {
       await runHeaderLanguageCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, selectedCase: arg('header-case', 'all') });
     } else if (selectedSlice === 'locale-activation') {
       await runLocaleActivationCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, cdp, ledger: LEDGER, base, tr, startupOnly: arg('locale-case', 'all') === 'startup', geometryOnly: arg('locale-case', 'all') === 'geometry' });
-    } else if (selectedSlice === 'assistant') {
-      await runAssistantCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR, switchOnly: arg('assistant-case', 'all') === 'switch' }, ASSISTANT_FIXTURE);
     } else if (selectedSlice === 'work-hours-reachability') {
       await runWorkHoursCases({ ...h, openPage, closePage, capture, check, beginCase, endCase, crossTabSwitch, cdp, ledger: LEDGER, base, tr, seedLocale, chineseNavigator: CHINESE_NAVIGATOR }, { org: ORG, geometryOnly: arg('work-hours-case', 'all') === 'geometry', entryOnly: arg('work-hours-case', 'all') === 'entry', longOnly: arg('work-hours-case', 'all') === 'long-cell', editorOnly: ['editor', 'editor-keyboard'].includes(arg('work-hours-case', 'all')), editorRed: arg('work-hours-case', 'all') === 'editor-red', editorKeyboard: arg('work-hours-case', 'all') === 'editor-keyboard' });
     } else {
@@ -1471,8 +1597,10 @@ async function main() {
     }
     endCase();
     }
+  } catch (error) {
+    writeFileSync(join(outDir, 'incomplete-receipt.json'), JSON.stringify({ head, incomplete: true, error: String(error), cases, screenshots, ledger: LEDGER }, null, 2) + '\n');
+    throw error;
   } finally {
-    if (selectedSlice === 'assistant') ASSISTANT_FIXTURE.cleanup();
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();
     if (chrome && chrome.exitCode === null && chrome.signalCode === null) {

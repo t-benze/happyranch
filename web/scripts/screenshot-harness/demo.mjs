@@ -7,13 +7,12 @@
  *   node scripts/screenshot-harness/demo.mjs a   # prod build + /api mock (Agents page)
  *   node scripts/screenshot-harness/demo.mjs b   # standalone dist-CSS (button + swatches)
  *   node scripts/screenshot-harness/demo.mjs c   # prop-driven Button, no providers
- *   node scripts/screenshot-harness/demo.mjs d   # A-mode dock via WS mock
  *   node scripts/screenshot-harness/demo.mjs all # every mode
  *
  * Output: web/scripts/screenshot-harness/out/mode-<x>-<theme>.png
  */
 import { join } from 'node:path';
-import { modeAProdApi, modeBDistCss, modeCProp, modeDWsDock, WEB_ROOT } from './harness.mjs';
+import { modeAProdApi, modeBDistCss, modeCProp, WEB_ROOT } from './harness.mjs';
 
 const OUT = join(WEB_ROOT, 'scripts', 'screenshot-harness', 'out');
 
@@ -56,45 +55,14 @@ async function runC() {
   });
 }
 
-async function runD() {
-  return modeDWsDock({
-    route: '/orgs/demo/agents',
-    outDir: OUT,
-    name: 'mode-d',
-    // Agents page renders cleanly under the dock; provide its list route.
-    api: [{ path: '/api/v1/orgs/demo/agents', json: { agents: [] } }],
-    activeConv: 'c1',
-    conversations: [
-      { id: 'c1', title: 'Weekly spend review', created_at: '2026-07-01T10:00:00Z', active: true },
-      { id: 'c2', title: 'Deploy checklist', created_at: '2026-07-02T09:00:00Z', active: false },
-    ],
-    historyByConv: {
-      c1: [
-        {
-          prompt: 'How much did we spend last week?',
-          started_at: '2026-07-01T10:00:05Z',
-          frames: [
-            { type: 'turn_start' },
-            { type: 'text_delta', text: 'Last week total spend was $432.17 across 3 orgs. ' },
-            { type: 'tool_call', name: 'query_metrics' },
-            { type: 'tool_result', name: 'query_metrics', ok: true },
-            { type: 'text_delta', text: 'The largest line was compute at $310.' },
-            { type: 'turn_end' },
-          ],
-        },
-      ],
-    },
-  });
-}
-
-const MODES = { a: runA, b: runB, c: runC, d: runD };
+const MODES = { a: runA, b: runB, c: runC };
 
 const arg = (process.argv[2] || 'all').toLowerCase();
 const toRun = arg === 'all' ? Object.keys(MODES) : [arg];
 
 for (const m of toRun) {
   if (!MODES[m]) {
-    console.error(`unknown mode '${m}' (use a|b|c|d|all)`);
+    console.error(`unknown mode '${m}' (use a|b|c|all)`);
     process.exit(2);
   }
   console.log(`\n=== mode ${m.toUpperCase()} ===`);

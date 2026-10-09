@@ -78,7 +78,7 @@ const radioSel = (value) => `${RADIO}[value="${value}"]`;
 const PANEL = '[data-testid="settings-preferences"]';
 const STATUS = '[data-testid="settings-preferences-status"]';
 const PREFS_PATH = `/orgs/${ORG}/settings/preferences`;
-const ASSISTANT_PATH = `/orgs/${ORG}/settings/assistant`;
+const CAPACITY_PATH = `/orgs/${ORG}/settings/daemon-capacity`;
 const GATED_STRINGS = ['settings-preferences', 'happyranch-ui-language'];
 const ORG_PATH = `/orgs/${ORG}/settings/organization`;
 const EXECUTORS_PATH = `/orgs/${ORG}/settings/executors`;
@@ -133,7 +133,6 @@ function apiBody(pathname) {
   if (pathname === '/api/v1/executor-binaries') return { entries: [{ kind: 'claude', path: null, valid: false }] };
   if (pathname === '/api/v1/executors/runtime/profiles') return { profiles: [PROFILE] };
   if (pathname === '/api/v1/runtime/adapters') return [];
-  if (pathname.endsWith('/status') && pathname.includes('assistant')) return { state: 'idle', available: false };
   return {};
 }
 

@@ -1785,7 +1785,7 @@ def format_repo_refresh_note(results: dict[str, bool]) -> str:
 
 
 # ── Canonical instruction pair (THR-262 Slice B / founder seq59) ──────
-# Every generated agent and system-assistant workspace converges
+# Every generated ordinary agent workspace converges
 # non-destructively on one regular ``AGENTS.md`` plus a raw relative
 # ``CLAUDE.md -> AGENTS.md`` symlink. This module owns the shared
 # classifier/writer used by the built-in workspace adapters and the

@@ -126,7 +126,7 @@ Web copy uses the first-party typed contract in `src/lib/i18n/` (`locale`,
 Chinese (`zh-CN`) catalogs are static and co-loaded; keys are typed, parameters
 are named, and plurals declare explicit per-locale forms with a parity check.
 
-**W5a copy repair:** the mounted Jobs Run/Reject, Settings Assistant/Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads and both Assistant turn variants supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+**W5a copy repair:** the mounted Jobs Run/Reject, Settings Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
 **W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
 
 
@@ -162,7 +162,7 @@ extracting the single `lib/addOrgError.ts` classifier consumed by both
 AddOrgDialog and onboarding. Because ConnectFlow is shared, its Settings ▸
 Executors mount is localized too. **W2c** translated the Settings surface
 (`features/settings/SettingsPage.tsx` header/sub-nav/loading/error/panel copy and
-the Assistant, Organization, Executors/custom-profiles/binaries and Daemon /
+Organization, Executors/custom-profiles/binaries and Daemon /
 Capacity section bodies; raw daemon detail, identifiers, config keys and every
 capacity number stay verbatim; the Work Hours-owned `EligibilityEditorDialog`
 stayed English until W4 and is translated by W4b) and built the client-only Settings ▸ Preferences
@@ -184,8 +184,7 @@ production builds.
 
 The Agents pane is mounted on desktop and mobile; the retained drawer component shares `SystemPromptEditor` without a routing change. Prompt drafts freeze their base revision and captured org/target; the providers expose prompt-only PUT and explicit uncached roster readback for that identity. Saved requires matching receipt body and exact revision, never query invalidation alone. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation. PUT plus readback disables draft controls. Errors retain the authored draft until local discard or explicit fresh inspection/reapply, and late results are isolated by identity. Prompt errors are locale-neutral descriptors and raw diagnostics remain verbatim; locale changes preserve the same node/body/focus/selection.
 
-The assistant dock body and conversation controls are translated in en/zh-CN
-with complete mounted-copy evidence; W5a finite audit is accepted and W5b enables full browser resolution. The mount-time coverage
+System Assistant copy is retired (THR-294). The mount-time coverage
 inventory lives in `src/lib/i18n/coverage.ts`: it separates copy-bearing routes
 (root shell `index`, the `*` NotFound catch-all and onboarding — now
 `translated`) from
@@ -281,7 +280,7 @@ stacks above the feed, and the header actions stack below the title so list
 copy stays readable; desktop retains the side rail and header layout. Raw KB
 type badges retain their stored case (for example, `sop` rather than `SOP`)
 in both locales instead of applying a CSS uppercase transform. `kb` and
-`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. W5b supersedes the historical preview default with full browser resolution
+`artifacts` coverage is translated; `usage` is translated by W4d-2. W5b supersedes the historical preview default with full browser resolution
 and bilingual availability disclosure; native N0/N1 remain deferred.
 Browser evidence adds representative KB list/detail/candidates and artifact
 list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
@@ -299,11 +298,10 @@ parts already describe org-local wall-clock time and never shift with viewer
 TZ; UTC instants use the response timezone and explicit locale. Invalid-format
 fallbacks keep their original behavior. Compare/cohort/default/manual selection
 and all query/refetch/server metric semantics are unchanged; locale changes
-preserve nodes, focus and selection without new API calls. Usage is translated; the mounted Assistant dock and conversation controls are
-also translated. W5b enables full browser-language defaults; native N0/N1 remain deferred. Browser evidence:
+preserve nodes, focus and selection without new API calls. Usage is translated. W5b enables full browser-language defaults; native N0/N1 remain deferred. Browser evidence:
 `web/scripts/w4a-browser-evidence.mjs --slice usage` (ordinary bundle).
 
-Settings uses the existing five sub-nav links above the panel below640px, wrapping
+Settings uses four sub-nav links above the panel below640px, wrapping
 without changing routes, labels, icons or active state. At640px and wider it
 retains the rail/panel layout. Preferences uses local minimum sizing, wrapping
 and narrow-screen padding; all copy remains visible and the API-independent
@@ -318,8 +316,8 @@ route/state/persistence contracts are unchanged.
 - `--as-founder` impersonation surface for KB deletes. Stays TTY-gated in CLI.
 - Multi-user concerns: login screens, account model, RBAC. Localhost only.
 
-### System Assistant mounted copy (THR-118)
+### Retired System Assistant
 
-The global `AssistantDockHost` and its mounted `ConversationSwitcher` bind en/zh-CN app-owned visible/accessibility copy, including composer/state/key hints, typing/tool activity and conversation actions/rename/delete confirmation. Shared MessageBubble/TypingBubble copy overrides are reused. Errors retain capture-time provenance: app fallback keys resolve at render time; raw daemon detail/message and caught diagnostic values (including empty or catalog-equal values) stay exact. Executor/tool names, titles, authored content and IDs remain data. Viewer-local timestamp and elapsed semantics remain unchanged.
-
-Locale switches preserve mounted nodes, active conversation, transcript/inflight state, drafts, focus and selection without entering connection-effect dependencies or issuing requests/mutations/reconnects. The detailed boundary is [Assistant Web UI §6.12](../docs/superpowers/specs/2026-06-12-system-assistant-web-ui-design.md#612-mounted-dock-locale-presentation-thr-118). Ordinary-build evidence is `scripts/w4a-browser-evidence.mjs --slice assistant`: real HTTP/WS seams and request/socket ledger plus 390/1440 screenshots. Coverage inventory includes both consumers and marks only `system-assistant` translated in this slice, supported by component regressions and ordinary-build mounted-copy evidence. W5b enables full browser-language defaults; native restart acceptance remains deferred.
+System Assistant is retired (THR-294): no dock, settings, API domain or Cmd/Ctrl-K
+binding. Legacy files remain inert. Shared Composer and TypingBubble remain for
+ordinary threads.

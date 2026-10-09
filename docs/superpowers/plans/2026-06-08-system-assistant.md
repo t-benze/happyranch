@@ -1,5 +1,7 @@
 # System Assistant Implementation Plan
 
+> RETIRED by THR-294. This document is preserved design history. The runtime-global System Assistant is no longer supported; see the maintained runtime/configuration guide for inert legacy compatibility.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a runtime-global system assistant that is initialized through a fixed PTY request/reply probe, stores runtime-level assistant config, and can be attached through a daemon-owned interactive PTY session.

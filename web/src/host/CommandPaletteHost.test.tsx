@@ -81,10 +81,9 @@ describe('CommandPaletteHost', () => {
     expect(getHttpHits()).toBe(0);
   });
 
-  // ⌘K hotkey was moved to AssistantDockHost (design-overhaul v1).
   // The command palette no longer responds to Cmd-K; it is opened
   // via programmatic control when needed. W2a does NOT reactivate it.
-  it('stays closed on Cmd-K (hotkey moved to AssistantDock)', () => {
+  it('stays closed on Cmd-K (unbound shortcut)', () => {
     setup({ route: '/orgs/demo/threads' });
     expect(screen.queryByRole('dialog')).toBeNull();
     act(() => fireCmdK());

@@ -18,6 +18,7 @@ import { SettingsPage } from './SettingsPage';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
+import { renderGuarded } from './sections/capacityTestMount';
 import { LOCALE_STORAGE_KEY, type Locale, type LocalePreferenceAdapter } from '@/lib/i18n';
 
 const SLUG = 'test-org';
@@ -47,9 +48,26 @@ const SETTINGS_PAYLOAD = {
 
 type SettingsMode = 'ok' | 'loading' | 'error' | 'empty';
 
-function stubSettings(mode: SettingsMode): void {
+function stubSettings(mode: SettingsMode, cleanCapacity = false): void {
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
+    http.get(`/api/v1/orgs/${SLUG}/settings/daemon-capacity`, () => HttpResponse.json({
+      running_at_daemon_start: { queue_workers: 6, host_global_session_cap: 13 },
+      running_provenance: 'Resolved when the HappyRanch service started',
+      persisted_yaml: cleanCapacity
+        ? { queue_workers: 6, host_global_session_cap: 13 }
+        : { queue_workers: null, host_global_session_cap: null },
+      next_start: { queue_workers: 6, host_global_session_cap: 13 },
+      environment_shadowed: [], environment_warning: null,
+      producer_envelope: 13,
+      producer_components: { task_workers: 6, thread_workers: 4, dream_workers: 1, wake_workers: 1, schedule_workers: 1 },
+      effective_admission_cap: 13,
+      effective_admission_reason: 'Startup-loaded host supervisor policy',
+      warnings: [],
+      revision: 'sha256:test', restart_required: false, restart_pending: false,
+      guidance: { queue_workers: 'Empirical worker guidance', host_global_session_cap: 'Empirical cap guidance', enforced: false },
+      authorization: 'Local operator; daemon bearer required.',
+    })),
     http.get(SETTINGS_URL, async () => {
       if (mode === 'loading') {
         await delay('infinite');
@@ -104,7 +122,7 @@ function mountSettings(
   adapter: LocalePreferenceAdapter = savedLocaleAdapter('en'),
 ) {
   sessionStorage.setItem('happyranch.token', 'tok');
-  return renderWithProviders(
+  return renderGuarded(
     <>
       <Routes>
         <Route path="/orgs/:slug/settings/*" element={<SettingsPage />} />
@@ -112,7 +130,7 @@ function mountSettings(
       <RouteEvidence />
       <HistoryControls />
     </>,
-    { route, i18n: { adapter } },
+    { entries: [route], i18nAdapter: adapter },
   );
 }
 
@@ -317,18 +335,17 @@ describe('shipping header language control', () => {
 
 describe('W2c Preferences — routing, state and persistence', () => {
 
-  test('sub-nav lists Preferences last; index still redirects to Assistant', async () => {
+  test('sub-nav lists Preferences last; index redirects to Capacity', async () => {
     stubSettings('ok');
     mountSettings(`/orgs/${SLUG}/settings`);
     await waitFor(() =>
       expect(screen.getByTestId('route-evidence')).toHaveTextContent(
-        `REPLACE:/orgs/${SLUG}/settings/assistant`,
+        `REPLACE:/orgs/${SLUG}/settings/daemon-capacity`,
       ),
     );
     const subnav = within(await screen.findByTestId('settings-content')).getByRole('complementary');
     expect(within(subnav).getAllByRole('link').map((l) => l.textContent)).toEqual([
       'Capacity',
-      'Assistant',
       'Organization',
       'Executors',
       'Preferences',
@@ -361,9 +378,9 @@ describe('W2c Preferences — routing, state and persistence', () => {
     },
   );
 
-  test('other panels keep the API gate: Assistant shows the error with raw detail verbatim', async () => {
+  test('other panels keep the API gate: Capacity shows the error with raw detail verbatim', async () => {
     stubSettings('error');
-    mountSettings(`/orgs/${SLUG}/settings/assistant`, savedLocaleAdapter('zh-CN'));
+    mountSettings(`/orgs/${SLUG}/settings/daemon-capacity`, savedLocaleAdapter('zh-CN'));
     const error = await screen.findByText(/无法加载设置。/);
     expect(error).toHaveTextContent('API 500 (settings_exploded_raw_42)');
     expect(screen.queryByTestId('settings-content')).not.toBeInTheDocument();
@@ -498,9 +515,9 @@ describe('W2c Preferences — routing, state and persistence', () => {
     setItem.mockRestore();
   });
 
-  test('back/forward between Assistant and Preferences keeps locale and route semantics', async () => {
-    stubSettings('ok');
-    mountSettings(`/orgs/${SLUG}/settings/assistant`);
+  test('back/forward between Capacity and Preferences keeps locale and route semantics', async () => {
+    stubSettings('ok', true);
+    mountSettings(`/orgs/${SLUG}/settings/daemon-capacity`);
     const user = userEvent.setup();
     const content = await screen.findByTestId('settings-content');
     await user.click(within(content).getByRole('link', { name: 'Preferences' }));
@@ -513,10 +530,10 @@ describe('W2c Preferences — routing, state and persistence', () => {
     await user.click(screen.getByTestId('history-back'));
     await waitFor(() =>
       expect(screen.getByTestId('route-evidence')).toHaveTextContent(
-        `POP:/orgs/${SLUG}/settings/assistant`,
+        `POP:/orgs/${SLUG}/settings/daemon-capacity`,
       ),
     );
-    expect(await screen.findByRole('heading', { name: '系统助手' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '容量' })).toBeInTheDocument();
 
     await user.click(screen.getByTestId('history-forward'));
     await waitFor(() =>

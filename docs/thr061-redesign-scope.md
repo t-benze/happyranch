@@ -31,7 +31,7 @@ All slices are **PRESENTATION-only** and land on already-Direction-A foundations
 | 9 | Work Hours polish | a-workhours | Restyle-only pass to close screenshot-diff gaps. Routine-task editor stays read-only. |
 | 10 | **Runtime Health (NEW page)** | a-health | New `/health` page + web `metrics.ts` client/hook against existing `/api/v1/metrics` + `/metrics/history` (**no new daemon route**). Cards + loop/HTTP tables + history charts. Satisfies #302. |
 | 11 | Onboarding shell (NEW, partial) | a-onboarding | Welcome/create/success + broken-org list (backed today). **Gate/defer** template picker, broken-Retry, executor-prereqs. Presentational shell only. |
-| 12 *(optional)* | Assistant dock placement | a-assistant | **Only if founder wants** center-float vs the shipped right-drawer. Otherwise no-op. |
+| 12 *(retired THR-294)* | Historical Assistant dock placement | a-assistant | System Assistant is retired; no placement work remains. |
 
 ---
 

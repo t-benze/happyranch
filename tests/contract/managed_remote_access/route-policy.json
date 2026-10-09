@@ -169,10 +169,6 @@
   "allow": [
     {
       "method": "DELETE",
-      "path_template": "/api/v1/assistant/a-mode/conversations/{conv_id}"
-    },
-    {
-      "method": "DELETE",
       "path_template": "/api/v1/executor-binaries/{kind}"
     },
     {
@@ -194,18 +190,6 @@
     {
       "method": "DELETE",
       "path_template": "/api/v1/runtime/adapters/{adapter_id}"
-    },
-    {
-      "method": "GET",
-      "path_template": "/api/v1/assistant/a-mode/conversations"
-    },
-    {
-      "method": "GET",
-      "path_template": "/api/v1/assistant/a-mode/status"
-    },
-    {
-      "method": "GET",
-      "path_template": "/api/v1/assistant/status"
     },
     {
       "method": "GET",
@@ -457,10 +441,6 @@
     },
     {
       "method": "PATCH",
-      "path_template": "/api/v1/assistant/a-mode/conversations/{conv_id}"
-    },
-    {
-      "method": "PATCH",
       "path_template": "/api/v1/orgs/{slug}/custom-skills/{skill_id}"
     },
     {
@@ -470,26 +450,6 @@
     {
       "method": "PATCH",
       "path_template": "/api/v1/orgs/{slug}/skills/{skill_id}"
-    },
-    {
-      "method": "POST",
-      "path_template": "/api/v1/assistant/a-mode/conversations"
-    },
-    {
-      "method": "POST",
-      "path_template": "/api/v1/assistant/a-mode/conversations/{conv_id}/activate"
-    },
-    {
-      "method": "POST",
-      "path_template": "/api/v1/assistant/init"
-    },
-    {
-      "method": "POST",
-      "path_template": "/api/v1/assistant/register"
-    },
-    {
-      "method": "POST",
-      "path_template": "/api/v1/assistant/repair"
     },
     {
       "method": "POST",
