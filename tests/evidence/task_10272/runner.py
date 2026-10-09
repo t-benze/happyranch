@@ -23,9 +23,15 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-CANDIDATE = '0d498d535b779853470d007da4f9d4e4d0b2962b'
+CANDIDATE = 'c6dcefa2a933443504f9e36e854bca9cf020ce78'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
 OBSERVED_MAIN = '970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c'
+SOURCE_INPUT_SHA256 = {
+    'tests/helpers/assistant_retirement_artifact_driver.py': '3627ca48916117fc3fa99f6465bc0fc878839e7b24ea07d7b1cecdea5c104118',
+    'tests/helpers/assistant_retirement_native_observer.c': 'f70f92756cc057b289b863f972d097ccc47b16551b5b18de4c83f968da313984',
+    'tests/helpers/integration_parent.py': 'c7e0718e54f3c783561423f718b0a4073ff2638cf2d2af978d8013e3070f46ba',
+    'tests/integration/test_assistant_retirement.py': '90508e047050a8bbe0250ccf4d6aad9f79ff5f2ecbbaf2d7c7983a7b44a012e3',
+}
 HATCH = ('hatchling', 'packaging', 'pathspec', 'pluggy', 'tomlkit', 'trove-classifiers')
 FREEZE = ('pyinstaller', 'pyinstaller-hooks-contrib', 'altgraph', 'setuptools', 'packaging')
 LOG_CAP = 8 * 1024 * 1024
@@ -789,7 +795,8 @@ def main():
                   'units_and_surviving_proofs': 'SUSPENDED/UNFULFILLED',
                   'general_integration': 'SKIPPED',
                   'wheel_and_frozen_behavior': 'historical37866089378 actual cases retained; not rerun',
-                  'real_daemon_browser': 'this finite ordinary-dist stage; actual receipts required',
+                  'real_daemon_browser': 'historical37883864316 macOS4cases; Linux sandbox refusal held; not rerun',
+                  'source_shipping': 'this fixed candidate31/baseline2 stage; actual receipts required',
                   'whole_repo_discovery': 'held for audit',
                   'independent_code_review_and_qa': 'pending'}}
     env = clean_env(root / 'bootstrap')
@@ -829,27 +836,9 @@ def main():
         # The workflow must have completed the fixed native preflight first.
         # Its fresh UID/run/image/source/descriptor binds every later census.
         # Never replay the old unprivileged diagnostic or omit opaque rows.
+        assert all(sha(candidate / name) == digest for name, digest in SOURCE_INPUT_SHA256.items())
+        save('source-input-hashes.json', {'candidate': CANDIDATE, 'files': SOURCE_INPUT_SHA256})
         descriptor, observer, census_code = admitted_census(commands, root, env, candidate)
-        if sys.platform == 'linux':
-            # Fresh native admission is still required on both venues. The
-            # original ordinary Chrome launch failed before DevTools with no
-            # usable default sandbox; do not repeat costly provisioning or
-            # silently disable a control. Preserve the exact historical failure
-            # separately from this unexecuted browser stage.
-            result['status'] = 'browser-prerequisite-unavailable-original-linux-failure-retained'
-            result['source_execution_this_run'] = 'not-executed; prior source/artifact receipts retained'
-            result['browser'] = {'exit': None, 'execution_this_run': 'not-executed',
-                'error': {'type': 'HostedBrowserSandboxUnavailable',
-                    'message': 'Original ordinary Chrome exited No usable sandbox! before DevTools; no admitted workaround'},
-                'original_failure': {'run_id': '37874844097',
-                    'evidence_sha': 'd2e8697696806bc12ea4ee5a3f291ba276454c19',
-                    'candidate': CANDIDATE, 'baseline': BASELINE,
-                    'archive_sha256': '4dfe43307436542f356d74235b0513590592d2e90fc00c61011abebc3e487686',
-                    'manifest_sha256': '3645379473b0dbbd1020210c330b00dd93fd02d63165bd6a68a4856d5add9bec',
-                    'driver_sha256': 'ad73f37e0d23b6bdc0c2f9c7759afebc8d789a3937fcd3f6dad34be358841ce8',
-                    'chrome_log_sha256': 'f7ae2d59d26259590eb9848d7974d5ce8983a793a0a5c4c3198b72b1458dcccb'},
-                'scope': 'Linux browser readiness held; zero cases/images, no behavioral PASS'}
-            return 1
         pins = json.loads((HERE / 'tool-pins.json').read_text())
         archive = root / 'downloads/Python-3.14.4.tar.xz'
         save('official-python-archive.json', {'upstream': pins['python'],
@@ -931,7 +920,7 @@ def main():
         save('historical-artifact-reference.json', {
             'run_id': '37866089378',
             'evidence_sha': '3ba49054f3e0574d5e9008a6e4abd0550848e6d4',
-            'candidate': CANDIDATE, 'baseline': BASELINE,
+            'candidate': '0d498d535b779853470d007da4f9d4e4d0b2962b', 'baseline': BASELINE,
             'execution_this_run': 'not-executed', 'is_behavioral_pass': False,
             'scope': 'candidate wheel/frozen lifecycle/parser/legacy/normal/held-refusal/delegated-refusal tails passed; same-root failures retained; Linux baseline-wheel native readlink-exe ENOENT retained',
             'manifest_sha256': {
@@ -939,31 +928,47 @@ def main():
                 'ubuntu-latest': 'eee6ded9dedf4fb28aad76046fd0873095509a8fa57beefd2069531ba3b607e6'}})
         save('historical-source-reference.json', {
             'run_id': '37868783544', 'evidence_sha': '0542d92d80617fc39884f6e4c13b541a43b844ef',
-            'candidate': CANDIDATE, 'baseline': BASELINE, 'execution_this_run': 'not-executed',
+            'candidate': '0d498d535b779853470d007da4f9d4e4d0b2962b', 'baseline': BASELINE, 'execution_this_run': 'not-executed',
             'is_behavioral_pass': False,
             'scope': 'both venues candidate29passed/2same-rootfailed, baseline2same-rootfailed; full native attribution retained',
             'manifest_sha256': {
                 'macos-15': 'fe24830b480a5e2217c73754919808c3da4857f342d20559eb51c4d3eba120bb',
                 'ubuntu-latest': '930ef84ea56bcfe93138d8932f0f88b0568bab00006b8e06d95f193341152c10'}})
-        result['source_execution_this_run'] = 'not-executed; authenticated current-head source failures retained'
-        for role, source in (('candidate', candidate), ('baseline', baseline)):
-            after = source_manifest(commands, role + '-after', source, env,
-                                    CANDIDATE if role == 'candidate' else BASELINE)
-            original = before_candidate if role == 'candidate' else before_baseline
-            assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
-        browser = runpy.run_path(str(HERE.parent / 'task_10279/browser.py'), run_name='fixed_browser_coordinator')
-        result['browser'] = browser['browser_stage'](commands, candidate, root, uv, python,
-            constraints, descriptor, {'save': save, 'clean_env': clean_env,
-                'receipts': RECEIPTS, 'wheels': wheels, 'census': stage_native_census})
+        save('historical-browser-reference.json', {
+            'run_id': '37883864316',
+            'evidence_sha': '3c94c86b02e684a7cd2701e3976f7170b5d1da7f',
+            'candidate': '0d498d535b779853470d007da4f9d4e4d0b2962b',
+            'execution_this_run': 'not-executed', 'is_behavioral_pass': False,
+            'scope': 'archived macOS four real wheel-daemon browser cases/eight viewed images; Linux browser held; no current-head browser evidence',
+            'original_linux_failure': {
+                'run_id': '37874844097',
+                'evidence_sha': 'd2e8697696806bc12ea4ee5a3f291ba276454c19',
+                'error': 'No usable sandbox! before DevTools; zero cases/images; no admitted workaround',
+                'archive_sha256': '4dfe43307436542f356d74235b0513590592d2e90fc00c61011abebc3e487686',
+                'manifest_sha256': '3645379473b0dbbd1020210c330b00dd93fd02d63165bd6a68a4856d5add9bec',
+                'driver_sha256': 'ad73f37e0d23b6bdc0c2f9c7759afebc8d789a3937fcd3f6dad34be358841ce8',
+                'chrome_log_sha256': 'f7ae2d59d26259590eb9848d7974d5ce8983a793a0a5c4c3198b72b1458dcccb'}})
+        overlay, baseline_test_head = overlay_characterization(commands, candidate, baseline, env, before_baseline)
+        expected_baseline = json.loads((RECEIPTS / 'baseline-overlay-source-manifest.json').read_text())
+        candidate_exit = source_stage(commands, 'candidate', candidate, candidate,
+            root, env, uv, python, descriptor, observer)
+        baseline_exit = source_stage(commands, 'baseline', baseline, candidate,
+            root, env, uv, python, descriptor, observer)
+        result['source_execution_this_run'] = 'candidate31 and separate immutable baseline2 accepted integration cases'
+        result['source'] = {'candidate_exit': candidate_exit, 'baseline_exit': baseline_exit,
+            'candidate': CANDIDATE, 'baseline': BASELINE, 'baseline_test_head': baseline_test_head,
+            'baseline_overlay': list(overlay), 'whole_collection': False,
+            'same_root_characterization_failures_are_failures': True}
         for role, source in (('candidate', candidate), ('baseline', baseline)):
             after = source_manifest(commands, role + '-final', source, env,
-                                    CANDIDATE if role == 'candidate' else BASELINE)
-            original = before_candidate if role == 'candidate' else before_baseline
+                CANDIDATE if role == 'candidate' else BASELINE,
+                None if role == 'candidate' else baseline_test_head)
+            original = before_candidate if role == 'candidate' else expected_baseline
             assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        passed = result['browser']['exit'] == 0 and not result['browser']['error']
-        result['status'] = 'browser-stage-passed-source-characterization-failures-retained' if passed else 'browser-stage-failed-source-characterization-failures-retained'
+        passed = candidate_exit == baseline_exit == 0
+        result['status'] = 'source-stage-passed' if passed else 'source-stage-failed-characterization-failures-retained'
         return 0 if passed else 1
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}

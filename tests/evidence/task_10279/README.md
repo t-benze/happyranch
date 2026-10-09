@@ -1,5 +1,26 @@
 # TASK-10279 native admission, never merge
 
+Published PR1017 candidate c6dcefa2a933443504f9e36e854bca9cf020ce78 has
+new test-side all-runtime ownership and authentic callback/durable-tail receipts.
+This revision pins that candidate and its four closed test-side input hashes.
+Fresh cheap native admission on both disposable hosted venues precedes official
+CPython3.14.4/uv0.12.5/constrained Hatchling1.32.4 provisioning. Existing fixed
+source selections run exactly 31 candidate cases and two separate baseline
+same-root characterizations through ordinary integration_parent. The four-file
+baseline test overlay records a distinct commit; baseline product and other
+inputs stay at 8378064e9933d5b3af4247eca55750ac427a564f. Native pre/post attribution
+and source-byte preservation remain mandatory. Same-root failures stay failures.
+Receipt acquisition is no behavioral PASS.
+
+No browser/wheel/frozen body reruns in this revision. Historical source37868783544
+and artifacts37866089378 remain bound to old candidate0d498d53. macOS browser
+37883864316 retains four cases/eight viewed images; Linux's ordinary Chrome
+sandbox refusal remains held. No control weakening or privileged product.
+Origins stay distinct. Whole discovery HELD, Python units/proofs SUSPENDED and
+keepers UNFULFILLED; general integration SKIPPED. Review/QA and remaining maker
+work are pending. Never merge this evidence branch.
+
+
 Run 37882779591 at evidence 6d863d7e authenticated 202 original dual archive members
 and 18 complete native snapshots. Both cheap native admissions passed. The
 script-free native Tab/Enter control passed. All four application keyboard
