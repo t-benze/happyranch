@@ -1,5 +1,34 @@
 # Runtime And Configuration
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Settings
 
 Bundled skill sources resolve under the selected package root at
@@ -366,13 +395,20 @@ digest must equal the current global digest before readiness is exposed.
 Startup does not dispatch, activate, or admit workflow work.
 
 THR139 S1 separates existing and new databases. Existing `OrgState.load` retains
-foundation installation where required, validates full F/E before workflow
+foundation installation where required, validates full F/E/G before workflow
 recovery, and never adds the draft extension. F remains usable for legacy work;
-its cutover projection/log names the operator migration and recovery waits for E.
-POST /orgs creates a fresh skeleton, initializes complete E before attachment,
+its cutover projection/log names the operator migration and recovery waits for validated E/G.
+POST /orgs creates a fresh skeleton, initializes complete G before attachment,
 and retains its existing cleanup/error ownership. Empty files/missing tables or
 startup discovery are not proof of new creation. Generic Database/runtime-audit
 construction remains workflow-free.
+
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
 
 Explicit existing-org migration (operator authorization required):
 
@@ -385,10 +421,10 @@ The script validates the schema-v2 runtime and actual org path, full F/E SQL,
 markers/history/integrity and stored source/draft closure without running generic
 migrations. One bounded SQLite writer transaction installs only the exact three
 draft tables/six indexes and version1 marker, validates E, then commits. Partial,
-unknown/corrupt layouts and nonorg/missing/symlink targets refuse; complete E
-replay preserves existing data. `--check` performs no migration, exits0 for ready
-E or3 for migration-needed F; refusal1, parser2. Pristine F retains preceding-reader
-compatibility until migration. **Every E requires a compatible reader**, including
+unknown/corrupt layouts and nonorg/missing/symlink targets refuse; complete E/G
+replay preserves existing data and labels its actual layout. `--check` performs no migration, exits0 for ready
+E/G or3 for migration-needed F; refusal1, parser2. Pristine F retains preceding-reader
+compatibility until migration. **Every E/G requires a compatible reader**, including
 new empty orgs; no downgrade stripping or live migration is implied by shipping
 this script. Read-only WAL inspection can use SQLite sidecars; crash rollback may
 leave a non-hot journal, while original data/schema/files remain intact.
@@ -797,6 +833,40 @@ restore the added focused prerequisites: their fixed false branch and suspended
 provenance must also be restored in the reviewed change after the new verdict.
 The ordinary commands below describe the restored behavior.
 
+The bounded THR289 seq33/seq31 release covers only PR1010's literal 13-node,
+29-case UNIT acceptance through the existing extracted manual runner. It admits
+`refs/heads/task/TASK-10008` only with the exact clean `GITHUB_SHA`, candidate
+Python3.14 and literal retained29e2/accepted970 merge parents, then uses the
+existing disposable environment, frozen/no-sync dependencies, serial `-n 0`,
+300-second child/360-second native-job bounds and complete stream/hash/exit and
+cleanup provenance. Independent control review precedes execution. It exits
+before broad `all` and G follow-ons; ordinary unit/wrapper, historical SIX and
+fixed G suspension stay intact. Other refs retain the existing default path.
+
+For PR1010 only, Founder THR289 seq45 approving seq44 and seq40–41 permits
+independently audited exact finite verification instead of a fresh
+`scripts/local_ci.sh all` for local verification and publication. Authenticate
+the complete immutable candidate through supported transport and obtain
+independent changed-control audit before publication or execution. Normally push
+retained `task/TASK-10008` with hooks and without force while canonical maker
+completion remains pending, execute the exact 13-definition/29-case command
+through the existing reviewed isolated driver, then report canonical maker
+completion with actual command/head/tree/source/tool/stream/hash/exit evidence.
+Omit success-only `local_ci` unless actual `all` exited0; finite and historical
+receipts never belong there. Preparation and initial audit are not final
+APPROVE/PASS, and publication is not acceptance. Renew independent FULL
+published-head review, complete actual behavioral QA including browser/CLI,
+applicable CI with the actual selected hosted Codex callback, guarded manager
+merge and post-main gates. This changes no receipt schema, hook or continuing
+ordinary-unit/SIX/G suspension. See the PR1010 exception in `docs/local-ci.md`.
+
+The manual `local-ci-all` workflow step invokes the fixed
+`uv run python scripts/nightly_local_ci_all.py` entry from the checkout root.
+Its G follow-on retains the fixed unit-suspension guard and zero-child receipt;
+source provenance authenticates both this script and the workflow YAML.
+Source-copy keepers read the script from their own archived checkout. See
+[Local CI](../local-ci.md) for the retained dormant plan and source controls.
+
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
 uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only
@@ -857,7 +927,7 @@ workers; the generic Database constructor and runtime-audit remain workflow-free
 The S1 explicit migration/new-org contract remains unchanged: existing F startup,
 reopen and enable never install E. Empty orgs stay fenced until real coherent
 roster/team/profile publication makes them ready. Initial activation requires
-ready E and the actual Founder cutover chain. A queued committed intent survives
+ready E/G and the actual Founder cutover chain. A queued committed intent survives
 lost enqueue notification; startup and periodic sweeps rediscover its existing
 eligible task. Live author-capacity refusal, including a claim requeued before
 launch, waits for a later sweep; deduplicated queue notification runs after every

@@ -255,22 +255,22 @@ function IfApprovedCascade({ slug, jobId }: { slug: string; jobId: string }): JS
   return (
     <Card title={t('jobs.cascade.titleCount', { count: tasks.length })}>
       <ul className="space-y-2">
-        {tasks.map((t) => (
-          <li key={t.task_id} className="flex items-center gap-2.5 text-sm">
+        {tasks.map((task) => (
+          <li key={task.task_id} className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-sm">
             <span
               aria-hidden="true"
               className="bg-accent-default h-2 w-2 shrink-0 rounded-full"
             />
             <Link
-              to={`/orgs/${slug}/tasks/${t.task_id}`}
-              className="text-accent-default font-mono text-xs hover:underline"
+              to={`/orgs/${slug}/tasks/${task.task_id}`}
+              className="text-accent-default shrink-0 font-mono text-xs hover:underline"
             >
-              {t.task_id}
+              {task.task_id}
             </Link>
             <span className="text-text-primary min-w-0 truncate">
-              {t.brief.slice(0, 80)}{t.brief.length > 80 ? '…' : ''}
+              {task.brief.slice(0, 80)}{task.brief.length > 80 ? '…' : ''}
             </span>
-            <StatusBadge status={t.status} blockKind={t.block_kind} />
+            <span className="flex shrink-0"><StatusBadge status={task.status} blockKind={task.block_kind} waitingLabels={{ delegated: t('tasks.waiting.subtasks'), blocked_on_job: t('tasks.waiting.jobs') }} /></span>
           </li>
         ))}
       </ul>

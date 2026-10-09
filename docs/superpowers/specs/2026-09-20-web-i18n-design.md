@@ -32,6 +32,90 @@ The THR280 prompt editor reuses the mounted Agents pane at desktop/mobile and th
 
 ## 1. Scope
 
+### Header language selector (THR-118 seq88)
+
+The shipping AppBar places a compact controlled Select immediately before its
+theme toggle, in both default and tasks presentations. English and 简体中文
+remain native endonyms in both catalogs and carry their own `lang`; the active
+endonym stays visible and the open options indicate the current choice.
+The accessible name/tooltip translate. Keyboard selection, Escape dismissal
+and focus return come from the existing Select primitive. Selection applies
+immediately through the shared locale setter; Settings ▸ Preferences remains
+available and synchronized in both directions, even when its API has no data,
+is pending or has failed. There is no additional locale state, persistence or
+storage listener, route remount, request or transport behavior. Header use
+deliberately moves focus; other-tab language changes preserve focused editors.
+Browser reload, explicit saved-choice precedence and full-mode missing/invalid
+Chinese browser defaults retain their existing contracts. Native restart
+persistence remains deferred under seq39; deployment is separate.
+
+Focused acceptance uses the existing Settings component tests and the W4a
+ordinary-build `header-language` selection (default/tasks header geometry,
+pointer/keyboard/theme/agreement/reload/tabs, retained multiline Agent editor
+and original Cancel/navigation), plus existing W5 startup and provider/locale
+keepers. Both languages, 390×844/1440×900 and comfortable/compact density require
+real control/text/clipping bounds and individually inspected screenshots.
+
+### Ongoing bilingual development safeguards (THR-118 seq81/82)
+
+Every new or changed app-owned heading, action, dialog, tooltip, accessible
+label, validation, loading/empty/error state and generated narrative ships
+English and Simplified Chinese together in the same PR. Typed catalogs, named
+parameters, explicit plurals and locale-aware helpers own presentation. Pure
+shared UI receives localized props; authored content, machine identifiers and
+raw diagnostics remain verbatim.
+
+The maintained Web guide and PR template require both locales for applicable
+affected populated/loading/empty/error states at 390×844 and 1440×900. Acceptance
+includes actual text/control bounds against clipping ancestors, whole Chinese
+readability after permitted scrolling, pointer/keyboard reachability and original
+navigation/actions. Both locale switch directions preserve mounted nodes, drafts,
+focus and selection with zero switch-window HTTP of any method, mutations and
+transport restarts/messages. Retained DOM references are observed before fresh
+lookup or refocus. Untranslated owned copy or broken Chinese layout requires
+`REQUEST_CHANGES`; automation checks supported structure/completeness while human
+review owns meaning and usability. Historical phase receipts retain their scope,
+and finite namespace inventory never claims exhaustive rendering or dataflow
+proof. Native persistence and live deployment remain separate.
+
+The bounded TaskCard repair supplies existing age/lineage/waiting catalog values
+from the mounted Agents pane; standalone pattern defaults and chained rounding
+remain unchanged. The Jobs cascade supplies existing waiting labels and retains
+its blocked-on-job filter, raw statuses and task destinations. Focused ordinary
+browser selections are `w4a-browser-evidence.mjs --slice agents-safeguard` and
+`w3b-jobs-browser-evidence.mjs --slice cascade`. They cover applicable task states
+and en/zh-CN at 390/1440 without the historical whole-console run. The named
+`C9 Agents SystemPromptEditor locale preservation` case uses a valid revision,
+authored multiline draft and selection 3:8; observes retained-DOM connectedness
+before lookup/refocus/reopen; checks both directions and HTTP/WS/SSE silence;
+and retains original Cancel/navigation. Save receipt/readback contracts remain
+owned by the unchanged SystemPromptEditor tests. A temporary shipping Pane
+locale-key remount is the causal RED control; every mutated production byte is
+restored and the ordinary build rebuilt before GREEN. Receipts determine actual
+execution status; source bindings and screenshots alone are not acceptance.
+
+The locked ESLint/TypeScript source guard covers literal JSX/static branches,
+visible text attributes and known direct default-bearing shared UI mounts.
+Raw/default exceptions require exact path, declaration, slot, literal and reason;
+stale/overbroad exceptions fail the authoritative real-config test with inline
+configuration disabled. The Node-only inventory reads shipping HTML and static
+Vite/TS aliases, resolves supported relative/reexport/literal-lazy owners and
+finds JSX/render-return route/dialog sites rather than counting imports. Router
+named/namespace imports and reexports retain route identity and parent paths.
+Additional createRoot renders in reachable static runtime imports/reexports
+(including side-effect imports and transitive/cyclic module graphs) discover
+direct JSX or statically bound JSX constants (including aliases and bound root
+handles), or refuse unhandled arguments with their source. Type-only edges are
+excluded; evaluating an imported module does not mount unused JSX declarations
+or enter uncalled functions/classes. Changes
+outside those supported static shapes and fixture/prototype promotion refuse.
+New source owners require qualified classification; the outer Settings wildcard
+is translated loading/error chrome and its nested wildcard is the existing
+copy-free redirect. Full release refuses english-only namespaces while preserving
+the historical 21 translated/3 not-applicable subset and truthful bilingual
+coverage markers. These are finite source completeness gates, not rendering,
+dataflow, bundler completeness or translation-quality proof.
+
 THR-118 implements a first-party, typed English (`en`) / Simplified Chinese
 (`zh-CN`) contract for the web console. **W1** covered the foundation,
 contract and test harness; it intentionally did not translate any route or

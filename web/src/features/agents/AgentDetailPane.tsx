@@ -625,13 +625,27 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             <p className="text-text-muted text-xs">{t('agents.detail.loadingTasks')}</p>
           ) : tasksQuery.data && tasksQuery.data.tasks.length > 0 ? (
             <ul className="space-y-2">
-              {tasksQuery.data.tasks.map((t) => (
-                <li key={t.task_id}>
+              {tasksQuery.data.tasks.map((task) => (
+                <li key={task.task_id}>
                   <TaskCard
-                    task={t}
-                    to={taskRoutes.detail(t.task_id)}
+                    task={task}
+                    to={taskRoutes.detail(task.task_id)}
                     density={density}
                     taskRoutes={taskRoutes}
+                    labels={{
+                      age: {
+                        justNow: t('tasks.age.justNow'),
+                        minutes: (count) => t('tasks.age.minutes', { count }),
+                        hours: (count) => t('tasks.age.hours', { count }),
+                        days: (count) => t('tasks.age.days', { count }),
+                      },
+                      supersedes: (id) => render('tasks.row.supersedes', { id }),
+                      supersededBy: (id) => render('tasks.row.supersededBy', { id }),
+                      waiting: {
+                        delegated: t('tasks.waiting.subtasks'),
+                        blocked_on_job: t('tasks.waiting.jobs'),
+                      },
+                    }}
                   />
                 </li>
               ))}

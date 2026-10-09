@@ -1,5 +1,34 @@
 # Features And Invariants
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 This file serves two purposes. The **Feature Modules Overview** below is an orientation map of the product's feature modules — each module is one short paragraph (what it does) plus a pointer to its authoritative spec or implementation. The per-surface sections after it are the original feature-specific traps, to be read only when touching the relevant surface; the overview points down to those sections where one exists rather than restating them.
 
 For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/agent-guides/` explains those sources. Prefer them over the design specs — `docs/superpowers/specs/` is append-only design history unless `docs/superpowers/specs/README.md` marks a spec `current`.
@@ -17,17 +46,17 @@ request replay reconstructs the original action/CAS before obsolete gates and
 returns its identity separately from current pending/enabled/draining state.
 
 Foundation installation still writes only generation1/event1. S1 independently
-validates foundation F or complete E; only explicit POST /orgs fresh creation
-initializes E automatically. Existing F requires the operator script documented in
+validates complete F/E/G; only explicit POST /orgs fresh creation
+initializes G automatically. Existing F requires the operator script documented in
 runtime-and-configuration.md; startup/reopen/enable never adds draft DDL. Cold
 `OrgState.load` forwards actual org context and resumes committed requests only
-on ready E, retaining earlier F history and actionable guidance. Existing templates,
+on ready E/G, retaining earlier F history and actionable guidance. Existing templates,
 authority and profiles may remain inert; pre-enable activation/dispatch/recovery
 work blocks enabling. Drain never cancels or settles F5 or draft work: queued/prelaunch,
 running, uncertain and incomplete closures project actual owners and deferred
 U2D/U4/U5 actions. Terminal history remains. Downgrade requires pristine F initial
-history and no workflow data, including template-only data. Every E requires a
-compatible reader even with zero draft business rows; version1 alone is metadata. Historical v0/v1
+history and no workflow data, including template-only data. Every E/G requires a
+compatible reader even with zero business rows; version1 alone is metadata. Historical v0/v1
 source-pinned initializer/migration tests prove preservation at that boundary,
 not whole-runtime conversion or old-binary gate compliance. S1 supplies draft storage/closure validation only. Activation/first
 draft production, dispatch/recovery routing and operator acceptance remain later work.
@@ -849,3 +878,11 @@ rejects the former autonomous identity markers `invocation_token` and
 or the shared human resolver. A field-free agent thread `continue` is also
 retired. Ordinary human task resolution and thread `supersede` remain
 unchanged.
+
+Complete legacy release references also cover independently pinned v0 and
+historical authority-v2 constructor inputs, including the organic additive
+migration order. Each reference runs current generic migrations and the
+requested F/E/G installer on its own disposable database; the comparison
+includes every SQL object. A candidate never supplies a baseline, and any
+required reference failure or unrelated object still refuses. This changes
+no observed-only authority-v2 claim rule.

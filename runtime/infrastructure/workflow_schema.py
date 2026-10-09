@@ -1,8 +1,8 @@
 """Installed U1A workflow schema and compatibility boundary.
 
 F is the unchanged inert version-one foundation. Existing OrgState.load installs
-only F and validates complete F/E; explicit new-org creation initializes E. The
-operator script alone upgrades existing F. Generic Database construction,
+only F and validates complete F/E/G; explicit new-org creation initializes G.
+The explicit operator scripts alone upgrade existing F/E. Generic Database construction,
 including runtime-audit.db, has no workflow side effect.
 """
 from __future__ import annotations
@@ -253,6 +253,46 @@ CREATE INDEX workflow_draft_activation_idx
   ON workflow_draft_dispatch_intents(activation_id,attempt_sequence);
 """
 
+CANONICAL_WORKFLOW_SUBMISSION_DDL = """\
+-- PROPOSAL ONLY; NOT APPROVED, NOT EXECUTED. Desired G definitions, not an upgrade script.
+-- These two replace their named F/E definitions only in G; all other F/E objects stay unchanged.
+CREATE TABLE workflow_submissions (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES workflow_instances(id), revision INTEGER NOT NULL CHECK(revision>0), submission_bytes BLOB NOT NULL, submission_digest TEXT NOT NULL, storage_ref TEXT, source_task_id TEXT NOT NULL, source_session_id TEXT NOT NULL, source_result_id TEXT, author_principal TEXT NOT NULL, UNIQUE(instance_id,revision), UNIQUE(id,submission_digest), CHECK(storage_ref IS NOT NULL OR length(submission_bytes)>0));
+CREATE TABLE workflow_events (id TEXT PRIMARY KEY, instance_id TEXT NOT NULL REFERENCES workflow_instances(id), revision INTEGER NOT NULL CHECK(revision>0), event_kind TEXT NOT NULL CHECK(event_kind IN ('submitted','joined')), event_bytes BLOB NOT NULL, event_digest TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, UNIQUE(instance_id,revision,event_kind));
+-- G-only additive objects. Marker row inserted in the same successful migration/creation transaction.
+CREATE TABLE workflow_submission_schema_versions (version INTEGER PRIMARY KEY CHECK(version=1));
+CREATE TABLE workflow_submission_operations (
+    submission_id TEXT PRIMARY KEY REFERENCES workflow_submissions(id),
+    instance_id TEXT NOT NULL REFERENCES workflow_instances(id),
+    org_slug TEXT NOT NULL,
+    principal TEXT NOT NULL,
+    source_task_id TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    operation_key TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    provenance_bytes BLOB NOT NULL,
+    provenance_digest TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    UNIQUE(org_slug,principal,operation_key),
+    UNIQUE(submission_id,source_task_id,source_session_id)
+);
+CREATE TABLE workflow_submission_result_links (
+    submission_id TEXT PRIMARY KEY REFERENCES workflow_submission_operations(submission_id),
+    source_task_id TEXT NOT NULL,
+    source_session_id TEXT NOT NULL,
+    task_result_id INTEGER NOT NULL REFERENCES task_results(id),
+    result_bytes BLOB NOT NULL,
+    result_digest TEXT NOT NULL,
+    accepted_at TEXT NOT NULL,
+    FOREIGN KEY(submission_id,source_task_id,source_session_id)
+        REFERENCES workflow_submission_operations(submission_id,source_task_id,source_session_id)
+);
+CREATE INDEX workflow_submission_operations_source_idx
+    ON workflow_submission_operations(instance_id,source_task_id,source_session_id);
+CREATE INDEX workflow_submission_result_links_result_idx
+    ON workflow_submission_result_links(task_result_id);
+"""
+
+
 _INSTALL_EVENT = {
     "event": "adapter_installed",
     "state_before": None,
@@ -330,16 +370,18 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
     return normalized_objects, tuple(table_metadata), tuple(index_metadata)
 
 
-@lru_cache(maxsize=2)
-def _canonical_layout(layout: Literal["F", "E"] = "F") -> tuple[object, ...]:
+@lru_cache(maxsize=3)
+def _canonical_layout(layout: Literal["F", "E", "G"] = "F") -> tuple[object, ...]:
     expected = sqlite3.connect(":memory:")
     try:
         expected.execute("PRAGMA foreign_keys=ON")
-        _execute_ddl(expected, CANONICAL_WORKFLOW_DDL)
-        if layout == "E":
+        _execute_ddl(expected, _g_foundation_ddl() if layout == "G" else CANONICAL_WORKFLOW_DDL)
+        if layout in ("E", "G"):
             _execute_ddl(expected, CANONICAL_WORKFLOW_DRAFT_DDL)
         elif layout != "F":
             raise ValueError("unsupported_workflow_layout")
+        if layout == "G":
+            _execute_ddl(expected, _g_additions_ddl())
         return _layout(expected)
     finally:
         expected.close()
@@ -349,6 +391,29 @@ def _object_keys(layout: tuple[object, ...]) -> set[tuple[object, ...]]:
     objects = layout[0]
     assert isinstance(objects, tuple)
     return {(row[0], row[1], row[2]) for row in objects}
+
+
+def _g_definitions() -> tuple[str, str, str]:
+    """Approved desired definitions, independent of any inspected database."""
+    start = CANONICAL_WORKFLOW_SUBMISSION_DDL.index('CREATE TABLE workflow_submissions')
+    middle = CANONICAL_WORKFLOW_SUBMISSION_DDL.index('CREATE TABLE workflow_events')
+    end = CANONICAL_WORKFLOW_SUBMISSION_DDL.index('-- G-only additive objects.')
+    return (CANONICAL_WORKFLOW_SUBMISSION_DDL[start:middle].strip(),
+            CANONICAL_WORKFLOW_SUBMISSION_DDL[middle:end].strip(),
+            CANONICAL_WORKFLOW_SUBMISSION_DDL[end:])
+
+
+def _g_foundation_ddl() -> str:
+    ddl = CANONICAL_WORKFLOW_DDL
+    for table, replacement in zip(('workflow_submissions', 'workflow_events'), _g_definitions()[:2], strict=True):
+        start = ddl.index(f'CREATE TABLE {table} (')
+        end = ddl.index(';', start) + 1
+        ddl = ddl[:start] + replacement + ddl[end:]
+    return ddl
+
+
+def _g_additions_ddl() -> str:
+    return _g_definitions()[2]
 
 
 
@@ -454,9 +519,10 @@ def _validate_cutover_data(
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
     validate_data: bool = True,
-) -> Literal["F", "E"]:
+) -> Literal["F", "E", "G"]:
     actual = _layout(conn)
-    layout = "E" if any(row[1] == "workflow_draft_adapter_versions" for row in actual[0]) else "F"
+    names = {row[1] for row in actual[0]}
+    layout = "G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F")
     expected = _canonical_layout(layout)
     if _object_keys(actual) != _object_keys(expected):
         raise ValueError("workflow_schema_object_set_mismatch")
@@ -473,12 +539,17 @@ def _validate_installed(
         raise ValueError("workflow_schema_marker_mismatch")
 
     _validate_cutover_data(conn, expected_org_slug=expected_org_slug)
-    if layout == "E":
+    if layout in ("E", "G"):
         draft_versions = [tuple(row) for row in conn.execute("SELECT version FROM workflow_draft_adapter_versions")]
         if draft_versions != [(1,)]:
             raise ValueError("workflow_draft_schema_marker_mismatch")
         if validate_data:
             _validate_draft_data(conn, expected_org_slug=expected_org_slug)
+    if layout == "G":
+        if [tuple(row) for row in conn.execute("SELECT version FROM workflow_submission_schema_versions")] != [(1,)]:
+            raise ValueError("workflow_submission_schema_marker_mismatch")
+        if validate_data:
+            _validate_submission_data(conn, expected_org_slug=expected_org_slug)
     return layout
 
 
@@ -809,7 +880,7 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
         refuse()
 
 
-def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E']:
+def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E', 'G']:
     """Complete layout/discriminator/history and stored source/data validation."""
     layout = _validate_installed(conn, expected_org_slug=expected_org_slug)
     _validate_source_data(conn)
@@ -820,7 +891,7 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     """Explicit operator/fresh-owner primitive; never opens or commits a DB."""
     if not conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_draft_migration_requires_writer_and_foreign_keys')
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) == 'E':
+    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) in ('E', 'G'):
         return 'ready'
     _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
     conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
@@ -835,3 +906,283 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
             raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
         _install_foundation(conn, expected_org_slug=expected_org_slug)
         migrate_draft_schema(conn, expected_org_slug=expected_org_slug)
+        # Proven empty creation: no inbound work exists and FK enforcement stays on.
+        conn.execute("DROP TABLE workflow_events")
+        conn.execute("DROP TABLE workflow_submissions")
+        _execute_ddl(conn, CANONICAL_WORKFLOW_SUBMISSION_DDL)
+        conn.execute("CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id)")
+        conn.execute("INSERT INTO workflow_submission_schema_versions VALUES (1)")
+        validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+
+
+def submission_migration_guidance(*, org_slug: str, runtime_root: str = '<absolute-root>') -> str:
+    """Existing reader guidance; this grants no permission for live migration."""
+    import shlex
+    root = runtime_root if runtime_root == '<absolute-root>' else shlex.quote(runtime_root)
+    return (f'python scripts/migrate_workflow_submission_schema.py --runtime-root {root} '
+            f'--org {shlex.quote(org_slug)}; stop the daemon and reconcile source owners first; '
+            'every G database requires a compatible reader')
+
+
+def _event_revision(conn: sqlite3.Connection, event: dict) -> int:
+    """Authenticate an original event without choosing a current/newest round.
+
+    The historical isolated F2 joined preimage is b'joined' + body. Its raw
+    operation body may be opaque; only a unique retained, authenticated round
+    closure can map that form. A canonical explicit subject is checked against
+    every retained relation. Unsupported or ambiguous archival input refuses.
+    """
+    raw = event['event_bytes']
+    kind = event['event_kind']
+    code = (f"workflow_legacy_event_unmappable: event={event['id']} "
+            f"instance={event['instance_id']}; source owner must restore authentic "
+            'submission/round/event/replay archival closure')
+    if not isinstance(raw, bytes) or not raw:
+        raise ValueError(code)
+    ordinary = hashlib.sha256(raw).hexdigest()
+    historical_join = kind == 'joined' and hashlib.sha256(b'joined' + raw).hexdigest() == event['event_digest']
+    if event['event_digest'] != ordinary and not historical_join:
+        raise ValueError(code)
+    replays = _records(conn, 'SELECT * FROM workflow_operation_replays WHERE effect_id=?', (event['id'],))
+    if any(r['instance_id'] != event['instance_id'] or r['request_digest'] != ordinary for r in replays):
+        raise ValueError(code)
+    subject = None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and _canonical_bytes(parsed) == raw:
+            subject = parsed
+    except (ValueError, UnicodeError):
+        pass
+    if subject is not None and 'event_kind' in subject and subject['event_kind'] != kind:
+        raise ValueError(code)
+    candidates = []
+    for round_ in _records(conn, 'SELECT * FROM workflow_rounds WHERE instance_id=?', (event['instance_id'],)):
+        submissions = _records(conn, 'SELECT * FROM workflow_submissions WHERE id=?', (round_['submission_id'],))
+        if len(submissions) != 1:
+            continue
+        submission = submissions[0]
+        revision = submission['revision']
+        if (submission['instance_id'] != event['instance_id'] or type(revision) is not int
+                or revision <= 0 or round_['current_revision'] != revision
+                or not isinstance(submission['submission_bytes'], bytes)
+                or hashlib.sha256(submission['submission_bytes']).hexdigest() != submission['submission_digest']):
+            continue
+        if subject is not None:
+            identities = {'instance_id': event['instance_id'], 'round_id': round_['id'],
+                          'submission_id': submission['id'], 'revision': revision,
+                          'submission_digest': submission['submission_digest']}
+            if (not any(k in subject for k in ('round_id', 'submission_id'))
+                    or any(subject[k] != v or (k == 'revision' and type(subject[k]) is not int)
+                           for k, v in identities.items() if k in subject)):
+                continue
+        elif not historical_join:
+            continue
+        receipts = _records(conn, 'SELECT r.* FROM workflow_review_receipts r JOIN workflow_review_requests q '
+                            'ON q.id=r.request_id WHERE q.round_id=?', (round_['id'],))
+        if any(r['submission_id'] != submission['id'] or r['submission_digest'] != submission['submission_digest']
+               for r in receipts):
+            continue
+        receipt_valid = True
+        for receipt in receipts:
+            requests = _records(conn, 'SELECT * FROM workflow_review_requests WHERE id=?', (receipt['request_id'],))
+            if len(requests) != 1:
+                receipt_valid = False
+                break
+            request = requests[0]
+            if (not isinstance(receipt['proof_bytes'], bytes)
+                    or hashlib.sha256(receipt['proof_bytes']).hexdigest() != receipt['proof_digest']
+                    or not isinstance(request['request_scope_bytes'], bytes)
+                    or hashlib.sha256(request['request_scope_bytes']).hexdigest() != request['request_scope_digest']
+                    or request['request_scope_digest'] != receipt['request_scope_digest']
+                    or request['assignment_generation'] != receipt['assignment_generation']
+                    or (historical_join and (receipt['outcome'] != 'approved' or request['status'] != 'approved'))):
+                receipt_valid = False
+                break
+        if not receipt_valid:
+            continue
+        if historical_join and (not replays or len(receipts) != 3):
+            continue
+        candidates.append((round_['id'], submission['id'], revision))
+    if len(candidates) != 1:
+        raise ValueError(code + f'; candidates={candidates}')
+    return candidates[0][2]
+
+
+def _validate_submission_data(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> None:
+    """G storage validation only; no submission, linking, or finalizer producer."""
+    code = 'workflow_submission_data_corrupt'
+    operations = {r['submission_id']: r for r in _records(conn, 'SELECT * FROM workflow_submission_operations')}
+    for submission in _records(conn, 'SELECT * FROM workflow_submissions'):
+        if (type(submission['revision']) is not int or submission['revision'] <= 0
+                or not isinstance(submission['submission_bytes'], bytes)
+                or hashlib.sha256(submission['submission_bytes']).hexdigest() != submission['submission_digest']):
+            raise ValueError(code)
+        op = operations.get(submission['id'])
+        if op is None:
+            if submission['source_result_id'] is None:
+                raise ValueError(code)
+            continue
+        if (submission['source_result_id'] is not None or not expected_org_slug
+                or op['org_slug'] != expected_org_slug or op['instance_id'] != submission['instance_id']
+                or op['principal'] != submission['author_principal']
+                or op['source_task_id'] != submission['source_task_id']
+                or op['source_session_id'] != submission['source_session_id']
+                or any(not isinstance(op[k], str) or not op[k] or op[k].strip() != op[k]
+                       for k in ('operation_key', 'principal', 'source_task_id', 'source_session_id', 'created_at'))):
+            raise ValueError(code)
+        proof = _stored_json(op['provenance_bytes'], op['provenance_digest'], code=code)
+        intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents WHERE instance_id=? '
+                           'AND task_id=? AND session_id=?',
+                           (op['instance_id'], op['source_task_id'], op['source_session_id']))
+        if (len(intents) != 1 or not isinstance(proof, dict)
+                or set(proof) != {'format', 'operation', 'submission', 'source_intent', 'request_bytes'}
+                or proof['format'] != 'workflow-submission-operation@1'
+                or _canonical_bytes(proof['operation']) != _canonical_bytes({k: v for k, v in op.items() if k not in ('provenance_bytes', 'provenance_digest')})
+                or _canonical_bytes(proof['submission']) != _canonical_bytes({k: (v.hex() if isinstance(v, bytes) else v) for k, v in submission.items()})
+                or _canonical_bytes(proof['source_intent']) != _canonical_bytes({k: (v.hex() if isinstance(v, bytes) else v)
+                                              for k, v in intents[0].items() if k not in _DRAFT_MUTABLE})
+                or intents[0]['assigned_principal'] != op['principal']):
+            raise ValueError(code)
+        try:
+            request = bytes.fromhex(proof['request_bytes'])
+        except (TypeError, ValueError):
+            raise ValueError(code) from None
+        payload = _stored_json(request, op['request_digest'], code=code)
+        if (not isinstance(payload, dict) or payload.get('submission_id') != submission['id']
+                or payload.get('submission_digest') != submission['submission_digest']
+                or payload.get('instance_id') != submission['instance_id']
+                or type(payload.get('revision')) is not int or payload['revision'] != submission['revision']):
+            raise ValueError(code)
+    for round_ in _records(conn, 'SELECT r.*,s.instance_id AS subject_instance,s.revision AS subject_revision '
+                          'FROM workflow_rounds r JOIN workflow_submissions s ON s.id=r.submission_id'):
+        if round_['instance_id'] != round_['subject_instance'] or round_['current_revision'] != round_['subject_revision']:
+            raise ValueError(code)
+    for event in _records(conn, 'SELECT * FROM workflow_events'):
+        if type(event['revision']) is not int or event['revision'] != _event_revision(conn, event):
+            raise ValueError(code)
+    for link in _records(conn, 'SELECT * FROM workflow_submission_result_links'):
+        op = operations.get(link['submission_id'])
+        if op is None or type(link['task_result_id']) is not int:
+            raise ValueError(code)
+        results = _records(conn, 'SELECT * FROM task_results WHERE id=?', (link['task_result_id'],))
+        intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=? AND session_id=?',
+                           (link['source_task_id'], link['source_session_id']))
+        if len(results) != 1 or len(intents) != 1:
+            raise ValueError(code)
+        result, intent = results[0], intents[0]
+        payload = _stored_json(link['result_bytes'], link['result_digest'], code=code)
+        callbacks = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? "
+                             "AND event_kind='callback_recorded' AND result_id=?", (intent['id'], result['id']))
+        if (_canonical_bytes(payload) != _canonical_bytes(result) or result['task_id'] != link['source_task_id']
+                or result['session_id'] != link['source_session_id'] or result['agent'] != op['principal']
+                or link['source_task_id'] != op['source_task_id'] or link['source_session_id'] != op['source_session_id']
+                or intent['final_result_id'] != result['id'] or len(callbacks) != 1
+                or callbacks[0]['result_digest'] != link['result_digest']):
+            raise ValueError(code)
+
+
+def _validate_release_database(conn: sqlite3.Connection, layout: str) -> None:
+    """Compare every whole-database SQL object to an independent release DB."""
+    from runtime.orchestrator.authority import _release_schema_digest, _RELEASE_REFERENCE_HISTORIES
+    rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name').fetchall()
+    actual = hashlib.sha256('\n'.join(str(r[0]) for r in rows).encode()).hexdigest()
+    expected = tuple(_release_schema_digest(layout, history) for history in _RELEASE_REFERENCE_HISTORIES)
+    if 'unavailable' in expected or actual not in expected:
+        raise ValueError('workflow_submission_whole_database_mismatch')
+
+
+def _validate_submission_source_ownership(conn: sqlite3.Connection, layout: str) -> None:
+    """An absent PID never discharges durable possible-launch/recovery work."""
+    queries = (
+        ('workflow_publication_leases', '1'), ('workflow_profile_leases', '1'),
+        ('workflow_publication_journals', "state NOT IN ('cache_installed','aborted')"),
+        ('workflow_profile_operations', "state NOT IN ('published','aborted')"),
+        ('workflow_dispatch_outbox', "state IN ('claimed','running','uncertain') OR (host_launch_started=1 AND state NOT IN ('cancelled','completed'))"),
+        ('workflow_request_task_bridges', "state IN ('claimed','running','uncertain')"),
+        ('workflow_recovery_claims', "state='claimed'"),
+    )
+    if layout in ('E', 'G'):
+        queries += (('workflow_draft_dispatch_intents', "state IN ('claimed','running','uncertain') OR "
+                     "(cancellation_requested=1 AND state NOT IN ('cancelled','failed','completed')) OR "
+                     "(host_launch_started=1 AND state NOT IN ('cancelled','failed','completed'))"),)
+    for table, predicate in queries:
+        if conn.execute(f'SELECT 1 FROM {table} WHERE {predicate} LIMIT 1').fetchone():
+            raise ValueError(f'workflow_submission_source_owner_active: {table}; reconcile its durable owner and host closure')
+
+
+def _retained_rows(conn: sqlite3.Connection) -> dict[str, tuple]:
+    """Exact rowid, original column types/bytes and transitive inbound rows."""
+    result = {}
+    for (table,) in conn.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name"):
+        quoted = str(table).replace('"', '""')
+        result[table] = tuple(tuple(row) for row in conn.execute(f'SELECT rowid,* FROM "{quoted}" ORDER BY rowid'))
+    return result
+
+
+def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
+    """Own one raw, idle, FK-enabled connection transaction; never a daemon DB.
+
+    Offline daemon observation belongs to the operator script. This primitive
+    independently fences persisted owners and rechecks after writer acquisition.
+    """
+    if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+        raise ValueError('workflow_submission_migration_requires_idle_foreign_keys')
+    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    _validate_release_database(conn, layout)
+    if layout == 'G':
+        return 'ready'
+    _validate_submission_source_ownership(conn, layout)
+    for event in _records(conn, 'SELECT * FROM workflow_events'):
+        _event_revision(conn, event)
+    conn.execute('PRAGMA foreign_keys=OFF')
+    try:
+        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 0:
+            raise ValueError('workflow_submission_fk_policy_unavailable')
+        conn.execute('BEGIN IMMEDIATE')
+        layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+        _validate_release_database(conn, layout)
+        if layout == 'G':
+            conn.rollback()
+            return 'ready'
+        _validate_submission_source_ownership(conn, layout)
+        revisions = {e['id']: _event_revision(conn, e) for e in _records(conn, 'SELECT * FROM workflow_events')}
+        retained = _retained_rows(conn)
+        conn.execute('CREATE TEMP TABLE submission_stage AS SELECT rowid AS original_rowid,* FROM workflow_submissions')
+        conn.execute('CREATE TEMP TABLE event_stage AS SELECT rowid AS original_rowid,* FROM workflow_events')
+        conn.execute('DROP TABLE workflow_events')
+        conn.execute('DROP TABLE workflow_submissions')
+        submissions, events, additions = _g_definitions()
+        _execute_ddl(conn, submissions)
+        _execute_ddl(conn, events)
+        conn.execute('INSERT INTO workflow_submissions(rowid,id,instance_id,revision,submission_bytes,submission_digest,'
+                     'storage_ref,source_task_id,source_session_id,source_result_id,author_principal) SELECT * FROM submission_stage')
+        for row in conn.execute('SELECT * FROM event_stage ORDER BY original_rowid').fetchall():
+            values = tuple(row)
+            conn.execute('INSERT INTO workflow_events(rowid,id,instance_id,revision,event_kind,event_bytes,event_digest,created_at) '
+                         'VALUES (?,?,?,?,?,?,?,?)', values[:3] + (revisions[values[1]],) + values[3:])
+        conn.execute('CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id)')
+        if layout == 'F':
+            _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+            conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
+        _execute_ddl(conn, additions)
+        conn.execute('INSERT INTO workflow_submission_schema_versions VALUES (1)')
+        validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+        _validate_release_database(conn, 'G')
+        after = _retained_rows(conn)
+        for table, rows in retained.items():
+            observed = after[table]
+            if table == 'workflow_events':
+                observed = tuple(row[:3] + row[4:] for row in observed)
+            if observed != rows:
+                raise ValueError(f'workflow_submission_retained_relation_mismatch: {table}')
+        conn.execute('DROP TABLE temp.submission_stage')
+        conn.execute('DROP TABLE temp.event_stage')
+        conn.commit()
+        return 'migrated'
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute('PRAGMA foreign_keys=ON')
+        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+            raise ValueError('workflow_submission_fk_policy_restore_failed')

@@ -330,7 +330,8 @@ def test_permission_surface_drift_still_refuses_historical_claim_audit(tmp_path)
     assert outcome.refusal_code == "evidence_drift"
 
 
-def test_complete_e_real_v2_claim_continues_and_keeps_observation_diagnostic(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize('layout', ['E', 'G'])
+def test_complete_e_real_v2_claim_continues_and_keeps_observation_diagnostic(tmp_path, monkeypatch, layout) -> None:
     from runtime.infrastructure.workflow_schema import install_or_recover, migrate_draft_schema
     store, _, _, row, attempt = _admit_historical(tmp_path)
     db = store._db
@@ -338,6 +339,12 @@ def test_complete_e_real_v2_claim_continues_and_keeps_observation_diagnostic(tmp
         install_or_recover(db,expected_org_slug='test-org')
         with db.workflow_schema_transaction() as conn:
             migrate_draft_schema(conn,expected_org_slug='test-org')
+        if layout == 'G':
+            import sqlite3
+            from runtime.infrastructure.workflow_schema import migrate_submission_schema
+            with sqlite3.connect(db.path) as writer:
+                writer.execute('PRAGMA foreign_keys=ON')
+                migrate_submission_schema(writer, expected_org_slug='test-org')
         observed = authority.capture_authority_policy_v2_schema_observation(db)
         assert observed is not None
         db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)

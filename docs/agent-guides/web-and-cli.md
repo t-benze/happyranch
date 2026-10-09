@@ -1,5 +1,34 @@
 # Web And CLI
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Daemon-managed workspace cleanup
 
 `workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean
@@ -86,6 +115,87 @@ Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the curren
 surface. The daemon defaults to loopback; remote access uses the connector.
 
 ### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills)
+
+The shipping AppBar offers a compact language selector immediately beside the
+theme toggle (THR-118 seq88). It shows the current native endonym and offers
+English and 简体中文, with each text carrying its own `lang`. Its accessible
+name and tooltip translate with the interface. The existing Select primitive
+provides keyboard selection, Escape dismissal and focus return. It calls the
+same `useI18n` setter as Settings ▸ Preferences ▸ Language, so both controls
+agree immediately and remain usable independently of Settings API availability.
+Existing saved-choice precedence, browser reload persistence and storage-event
+mirroring apply without a second state/persistence owner. Selecting the header
+deliberately moves focus to that control; external tab changes preserve focused
+editors, drafts and selection. Native desktop restart persistence stays deferred.
+Focused ordinary-build evidence uses `w4a-browser-evidence.mjs --slice header-language`
+with `--header-case default|tasks|interaction|draft` and the existing W5 startup
+cases, without widening the accepted whole-console inventory. In quota-limited
+browser venues, `--chrome-temp <short task-owned disk-backed path>` selects
+the temporary font-allocation venue for this header slice.
+
+**Ongoing bilingual delivery rule (THR-118 seq81/82):** every new or changed
+app-owned heading, action, dialog, tooltip, accessible label, validation,
+loading/empty/error state and generated narrative ships en and zh-CN in the
+same PR. Use typed catalogs, named parameters, explicit plurals and locale-aware
+helpers. Pure shared UI takes localized presentation props. Authored content,
+machine identifiers and raw diagnostics stay verbatim.
+
+The focused synthetic browser selections are
+`web/scripts/w4a-browser-evidence.mjs --slice agents-safeguard` and
+`web/scripts/w3b-jobs-browser-evidence.mjs --slice cascade`, against the ordinary
+build with private profiles and ephemeral fixture/CDP ports. They observe
+populated/loading/empty/error states in both locales at 390/1440, original task
+navigation, control/text bounds and clipping ancestors. The Jobs case measures
+every cascade-row descendant's text line boxes on both axes and rejects a row
+label (waiting qualifier, task ID) split across lines. The Agents case scrolls
+each recent-task label and state message into view and captures it, in
+sequential shots when one viewport cannot hold them all, recording the targets
+measured visible just before and after each shot. It also requires each
+recent-task card header's task ID, status pill, waiting qualifier and age to
+read as one line, with every header line box inside the card and viewport on
+both axes, at comfortable and compact density. The Agents case uses a
+valid prompt revision and checks the retained editor before any new lookup,
+authored multiline draft, selection 3:8, focus and request/transport silence in
+both switch directions. The unchanged prompt owner tests retain Save/readback
+and Cancel contracts; actual browser receipts and human usability review remain
+required evidence.
+
+Use this checklist in the existing case record and PR template:
+
+- Exercise both locales and applicable populated/loading/empty/error states at
+  390×844 and 1440×900. Check actual affected text/control bounds against clipping
+  ancestors, readable whole Chinese text after permitted scrolling, and pointer
+  and keyboard reachability; document width alone is insufficient.
+- Switch in both directions while retaining the actual mounted nodes, authored
+  draft, focus and selection. Observe retained DOM references before fresh lookup
+  or refocus, and require zero switch-window HTTP of any method, mutations and
+  transport restarts/messages.
+- Execute the original actions and navigation with unchanged payloads, raw
+  bytes, filters and destinations. Keep existing qualified behavioral tests;
+  screenshots and unrelated requests do not prove an action.
+- Record source/runtime/command/exit evidence and the test-authoring gate's four
+  answers, named tests/producers, attributable RED, byte-exact restoration/GREEN
+  and keeper disposition for changed tests. Preserve historical receipts.
+- Human review checks meaning and usability. Untranslated owned copy or broken
+  Chinese layout requires `REQUEST_CHANGES`; automation establishes only its
+  supported structural/completeness boundaries.
+
+Run ordinary Web lint plus the real-config `lint-owned-copy.test.ts` and actual
+source `coverage.test.ts` guards. The Node-only source inventory validates the
+shipping HTML entry/static aliases and distinguishes declarations/imports from
+supported JSX/render-return mounts. Named/namespace router imports and reexports
+retain route and parent identity. Additional createRoot renders in reachable
+static runtime imports/reexports, including side-effect imports and transitive/
+cyclic module graphs, discover direct JSX or statically bound JSX constants.
+Unhandled arguments refuse with their source. Type-only edges are excluded;
+evaluating an imported module does not mount its unused JSX declarations or
+enter uncalled functions/classes. New mounted owners require
+source-qualified route/dialog classification; index/wildcard cannot borrow another owner's
+status, and full release rejects every english-only namespace. Unsupported
+entry/config/computed shapes and fixture promotion refuse with the source to
+review. Exact path/declaration/slot/literal/reason exceptions preserve reviewed
+raw values and shared defaults; they never exempt neighboring owned copy.
+See `web/ARCHITECTURE.md` for the scanner's finite supported shapes and limits.
 
 Current W5b browser contract: English and Simplified Chinese are available. The
 entry selects full mode synchronously before the first React text and hands its
@@ -688,10 +798,11 @@ existing500 category `draft_schema_migration_required`; GET's existing blocker
 --runtime-root <absolute-root> --org <slug>`. The operator runs that script
 explicitly; `--check` exits3 when needed, 0 ready, 1 refusal, 2 parser. Existing F
 history remains visible without recovery advancement. New `orgs init`/POST /orgs
-creation initializes complete E directly. Preflight is read-only and permits only
-pristine F initial history with no workflow data; every E needs a compatible
+creation initializes complete G directly. Preflight is read-only and permits only
+pristine F initial history with no workflow data; every E/G needs a compatible
 reader, including empty new/migrated orgs; even empty drained or template-only stores refuse.
-The pinned preceding reader accepts pristine F and refuses E; older binaries
+The faf40744 reader accepts pristine F and refuses E/G; the b0b55e9f
+reader accepts F/E and refuses G; older binaries
 are not claimed to enforce the current cutover decision. Activation, first-draft
 work and cancellation/dispatch remain later units; no live enable or deployment
 is implied by these methods.
@@ -1262,3 +1373,21 @@ Founder Request changes/Sign off/operator observations remain acceptance gates.
 The Web inbox reads one active Open, Archived or All stream in 50-row pages. Header/bucket/dream counts come from server totals, remain unknown before the first successful read, and show recorded values with updating/stale state during refresh/failure. All uses one global order. Search retains the literal case-insensitive subject-or-ID predicate; whitespace-only disables it, while every other filter serially exhausts the stream even when early matches fill the viewport. The ContentWrap sentinel and accessible Load more share one request latch. A failed continuation leaves rows navigable and pauses automatic demand until Retry.
 
 Refresh restarts at a null cursor, privately stages a prefix to prior depth and commits it together. Org/bucket/generation ownership and abort signals reject late results. Inbox reconnect/events, focus and local thread mutations reconcile rows and totals. Pin freezes paging, snapshots actual legacy/infinite/detail caches, reorders loaded Open rows only, conditionally rolls back owned writes and restarts authoritatively. Scoped scroll offset/anchor/depth survives detail/back; restoration waits for enough content or termination and retains its target through errors. User movement cancels pending restoration. Command palette reads only committed active-org caches without fetching. CLI calls retain the existing omitted-pagination contract.
+
+### Manual local-CI receipt contract
+
+The nightly workflow's sole manual input is `all_only` (boolean, default false);
+there is no `run_integration` toggle. It invokes the extracted receipt-producing
+`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root,
+which records actual checkout/source/tool provenance and, for other refs, the
+`scripts/local_ci.sh all` command exit. Retained PR1010 selects only its bounded
+THR289seq33 acceptance as documented in `docs/local-ci.md`, after independent
+control review; broad wrapper/SIX/G suspension remains. The manual cap is the approved 150
+minutes; general integration retains its 30-minute cap and exact schedule-only
+predicate, so all three manual input cases skip it. Under THR291, Python units
+and the runner's G collection/source-control/repetition follow-on remain
+SUSPENDED and unexecuted, including when `all_only` is true. A successful paused
+wrapper verifies only remaining Web checks; dormant keeper/proof edits are not
+behavioral PASS or RED/GREEN evidence. The current merge-forward repair requires
+no manual dispatch or rerun. General integration remains SKIPPED under
+THR243 seq42, never PASS. See `docs/local-ci.md` for the maintained CI contract.

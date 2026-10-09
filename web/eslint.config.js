@@ -25,6 +25,7 @@ import react from "eslint-plugin-react";
 import reactHooks from "eslint-plugin-react-hooks";
 import tailwind from "eslint-plugin-tailwindcss";
 import path from "node:path";
+import { ownedCopyPlugin } from './scripts/i18n-source-inventory.mjs';
 
 const FEATURE_MARKER = `${path.sep}src${path.sep}features${path.sep}`;
 
@@ -108,6 +109,11 @@ const featureBoundariesPlugin = {
 };
 
 export default tseslint.config(
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    plugins: { 'owned-copy': ownedCopyPlugin },
+    rules: { 'owned-copy/no-untranslated-copy': 'error' },
+  },
   {
     ignores: [
       "dist",

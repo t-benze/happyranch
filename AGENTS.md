@@ -1,5 +1,41 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel; each organization is loaded from `<runtime>/orgs/<slug>/org/`.
 
 **Current THR-259 workspace-cleanup safety contract.** The shared cleanup procedure accepts only a closed-schema, non-truncated host-job receipt binding the current task/session to the actual job, agent, stored command, interpreter, resolved cwd, timestamps, terminal result, complete output totals, and exact scanner coverage; it has no direct fallback. PR evidence is completely paginated and repeated, and open, closed-unmerged, duplicate, changing, conflicting, or malformed rows refuse. A removable containing worktree must be registered at its owning primary checkout's exact `.claude/worktrees/<TASK>` path on `task/<TASK>`. A cache must be positively Git-ignored, untracked, and absent from status before isolation. Before action and again at the action boundary, the literal candidate is completely walked without following symlinks; nested mounts, cross-device or foreign-owned entries, protected descendants, unreadable/capped/changing evidence, and identity drift refuse. The only external-link exception is a recorded `python`/`python3`/`python3.N` link directly under an owned literal `.venv/bin`, resolving to its configured uv store or `pyvenv.cfg` home outside every protected/workspace/candidate root; deletion unlinks and never follows it. Measurement includes the root inode, and success requires literal absence plus unchanged protected-path identities. Failed restoration after isolation is measured `isolation_anomaly`; failure after deletion starts is measured `removed_with_anomaly`. Both are exit-3 batch halts, never refusals, and account for original, isolated, and isolation-directory residuals without false zeroes. Batch resume accepts only a unique closed-schema terminal row exactly bound to the current manifest and argv; timeout, signal, malformed/mismatched output, unreceipted nonzero exit, runner exception, exit 3, or any unclassifiable outcome halts after journaling and before another candidate.
@@ -68,8 +104,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   unchanged inert version-1 foundation F from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
   membership validation, or orchestrator construction. Deliberate POST /orgs
-  creation proves a fresh skeleton, then initializes complete E (F plus the
-  reviewed three draft tables/six explicit indexes and draft version1) in one
+  creation proves a fresh skeleton, then initializes complete G (F plus the
+  reviewed E draft extension and exact THR139seq395 submission definitions/additions) in one
   transaction before attachment. Existing startup/reopen/enable never installs
   E: use `python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> [--check]`
   only with operator authorization. Check exits0 ready, 3 migration-needed,
@@ -86,7 +122,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
-  canonical F or E reference after full layout/history/data validation, caches
+  canonical F, E or G reference after full layout/history/data validation, caches
   independently by layout, and hashes every non-null sqlite_master SQL object; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
   store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain
@@ -95,7 +131,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   strict action/key/generation input; request/fence commits precede separate
   bounded reconciliation. Every authoritative reread validates the full layout
   and org-bound deterministic event chain; cold load advances only authentic
-  committed requests only on ready E before teams/settings mutation. F keeps
+  committed requests only on ready E/G before teams/settings mutation. F keeps
   authentic history and actionable script guidance without recovery advancement.
   GET/preflight never advance.
   SQLite integrity/FKs and contradictory pre-enable work block verification;
@@ -390,6 +426,18 @@ host cannot run integration tests, including through jobs. See `docs/local-ci.md
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
+For authorized integration-skipped clean-head `scripts/local_ci.sh all`, dispatch
+the existing manual nightly workflow on the exact candidate ref when execution is
+authorized. Its sole input is `all_only` (boolean, default false), with no
+`run_integration` toggle. The receipt-producing extracted runner is
+`uv run python scripts/nightly_local_ci_all.py`; authenticate its actual
+local-ci-all checkout/source/tool provenance, command exit and separate
+integration SKIPPED result. The manual job retains the approved 150-minute cap;
+schedule-only integration retains 30 minutes. While the THR-291 pause applies,
+`all` reports Python SUSPENDED and verifies only the remaining Web checks. The
+extracted runner's fixed guard also suspends G collection, source controls and
+repetitions for every input value. Dormant keeper/proof edits remain unexecuted;
+no manual dispatch or rerun is required for the current merge-forward repair.
 
 ### Finite document-review templates and initial drafts (THR-139 seq410)
 
@@ -439,6 +487,33 @@ restore the added focused prerequisites: their fixed false branch and suspended
 provenance must also be restored in the reviewed change after the new verdict.
 The ordinary commands below describe the restored behavior.
 
+Founder THR289 seq33 approving seq31 releases only PR1010's literal 13-node,
+29-case UNIT acceptance in the existing disposable manual `local-ci-all` job.
+The extracted runner selects it only for `refs/heads/task/TASK-10008`, the exact
+clean `GITHUB_SHA` checkout and literal retained29e2/accepted970 merge parents;
+mismatches refuse. Independent control review must precede execution. Its
+frozen/no-sync Python3.14 command runs serially with a 300-second child bound
+(360-second native-job bound), complete stream/hash/exit and cleanup receipts.
+It exits before `all` or G follow-ons. Ordinary units/wrapper, historical SIX
+serial/parallel prerequisites and fixed G remain SUSPENDED/NOT RUN; this is no
+general THR291 release or THR139seq429 waiver. Other refs retain the default path.
+
+For PR1010 only, Founder THR289 seq45 approving seq44 and seq40–41 permits
+independently audited exact finite verification to satisfy local verification
+and publication instead of a fresh `scripts/local_ci.sh all`. Authenticate the
+complete immutable candidate through supported transport and obtain independent
+changed-control audit before publication or execution. Then normally push the
+retained `task/TASK-10008` ref with hooks and without force while canonical maker
+completion remains pending, execute the exact finite command through the existing
+reviewed isolated driver, and report canonical maker completion with actual
+command/head/source/tool/stream/exit evidence. Omit success-only `local_ci` unless
+the actual `all` command exited0; neither finite nor historical receipts belong
+there. Preparation and initial control audit are not final APPROVE or PASS, and
+publication is not acceptance. Renew independent FULL published-head review,
+complete behavioral QA, applicable CI including the actual selected hosted Codex
+callback, guarded manager merge and post-main gates. Browser/CLI acceptance and
+all continuing suspension controls remain required as documented above.
+
 ## Commands
 
 ```bash
@@ -480,6 +555,13 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
   re-dispatch an edit-forbidden CI-only brief unchanged after mainline drift.
   The `jobs` skill defines the full gate and the existing external-job terminal
   verdict still controls completion.
+- **Bilingual Web delivery:** Include English and Simplified Chinese for every
+  new or changed app-owned string in the same PR. Provide affected-state evidence
+  in both locales at 390×844 and 1440×900, including draft, focus, selection and
+  original-action preservation with no locale-triggered requests or mutations.
+  Untranslated owned copy or unreadable/unreachable Chinese layout requires
+  `REQUEST_CHANGES`. Automation checks structure and completeness; reviewers
+  assess meaning and usability. Use the PR template and Web guide checklist.
 - **Frontend handoff:** Before review/QA, supply acceptance/spec mapping;
   loading, empty, error, and populated-state coverage; auth/permission
   coverage when applicable; screenshot or deterministic-test evidence; and
@@ -501,6 +583,16 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
 ## Web Contract
 
 Every browser-callable daemon route maps to one TS function in `web/src/lib/api/`.
+
+All new or changed app-owned headings, actions, dialogs, tooltips, accessible
+labels, validation, loading, empty/error states and generated narratives must
+ship English (`en`) and Simplified Chinese (`zh-CN`) together in the same PR.
+Use typed catalogs, named parameters, explicit plurals and locale-aware helpers.
+Pure shared UI receives localized props from its callers. Authored content,
+machine identifiers and raw diagnostics remain verbatim. Preserve drafts, focus,
+selection, navigation and original actions across locale changes; a locale
+change must not trigger a request, mutation or transport restart. See
+`docs/agent-guides/web-and-cli.md` for the affected-state review checklist.
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.

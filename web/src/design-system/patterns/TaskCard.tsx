@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 import { StatusBadge } from './StatusBadge';
 import { IdBadge } from './IdBadge';
 import type { TaskRecord, TaskStatus } from '@/lib/api/types';
+import type { ReactNode } from 'react';
 
 // Inline the union rather than importing `Density` from `@/hooks/` —
 // patterns must not reach into hooks (per `ARCHITECTURE.md`). The
@@ -10,15 +11,15 @@ import type { TaskRecord, TaskStatus } from '@/lib/api/types';
 // receives the value as a prop.
 type Density = 'comfortable' | 'compact';
 
-function relativeAge(iso: string): string {
+function relativeAge(iso: string, labels?: TaskCardProps['labels']): string {
   const ms = Date.now() - new Date(iso).getTime();
   const min = Math.round(ms / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m`;
+  if (min < 1) return labels?.age.justNow ?? 'just now';
+  if (min < 60) return labels?.age.minutes(min) ?? `${min}m`;
   const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h`;
+  if (hr < 24) return labels?.age.hours(hr) ?? `${hr}h`;
   const d = Math.round(hr / 24);
-  return `${d}d`;
+  return labels?.age.days(d) ?? `${d}d`;
 }
 
 // Briefs are markdown — often a multi-page document with headings, code
@@ -59,10 +60,22 @@ export interface TaskCardProps {
   density?: Density;
   /** Injected by the feature layer so the pattern doesn't import useTasksRoutes. */
   taskRoutes?: TaskCardRoutes;
+  /** Feature owners supply presentation only; omitted props retain standalone defaults. */
+  labels?: {
+    age: {
+      justNow: string;
+      minutes(count: number): string;
+      hours(count: number): string;
+      days(count: number): string;
+    };
+    supersedes(id: ReactNode): ReactNode;
+    supersededBy(id: ReactNode): ReactNode;
+    waiting: Record<'delegated' | 'blocked_on_job', string>;
+  };
 }
 
 /** Direction-A Pasture task card — ds.css .card (bg-surface, rounded-lg 18px, soft shadow). */
-export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes }: TaskCardProps): JSX.Element {
+export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes, labels }: TaskCardProps): JSX.Element {
   const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3';
   const rollup = severityRollupStatus(task);
   const revisits = directRevisits(task);
@@ -79,14 +92,15 @@ export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes
         to={to}
         className="block hover:bg-surface-hover transition-colors rounded-lg"
       >
-        <div className="flex items-center gap-2 text-xs">
-          <IdBadge kind="task" id={task.task_id} />
-          <StatusBadge status={rollup} blockKind={task.block_kind} />
+        {/* Narrow rows wrap whole groups; the ID, status pill and age keep their own width. */}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <span className="flex shrink-0"><IdBadge kind="task" id={task.task_id} /></span>
+          <span className="flex shrink-0"><StatusBadge status={rollup} blockKind={task.block_kind} waitingLabels={labels?.waiting} /></span>
           <span className="text-text-muted font-mono text-xs tabular-nums">{task.team}</span>
           {task.assigned_agent && (
             <span className="text-text-muted">· {task.assigned_agent}</span>
           )}
-          <span className="text-text-muted ml-auto text-xs tabular-nums">{relativeAge(task.updated_at)}</span>
+          <span className="text-text-muted ml-auto shrink-0 text-xs tabular-nums">{relativeAge(task.updated_at, labels)}</span>
         </div>
         <p className="text-text-primary mt-1 line-clamp-1 text-sm">{briefHeadline(task.brief)}</p>
       </Link>
@@ -99,8 +113,9 @@ export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes
               to={taskRoutes.detail(task.revisit_of_task_id)}
               className="hover:underline"
             >
-              supersedes{' '}
-              <span className="font-mono text-id-task">{task.revisit_of_task_id}</span>
+              {labels
+                ? labels.supersedes(<span className="font-mono text-id-task">{task.revisit_of_task_id}</span>)
+                : <>supersedes{' '}<span className="font-mono text-id-task">{task.revisit_of_task_id}</span></>}
             </Link>
           )}
           {revisits.map((rid) => (
@@ -109,8 +124,9 @@ export function TaskCard({ task, to, active, density = 'comfortable', taskRoutes
               to={taskRoutes.detail(rid)}
               className="hover:underline"
             >
-              superseded by{' '}
-              <span className="font-mono text-id-task">{rid}</span>
+              {labels
+                ? labels.supersededBy(<span className="font-mono text-id-task">{rid}</span>)
+                : <>superseded by{' '}<span className="font-mono text-id-task">{rid}</span></>}
             </Link>
           ))}
         </div>

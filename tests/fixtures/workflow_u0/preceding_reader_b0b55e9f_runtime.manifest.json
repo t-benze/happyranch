@@ -1,0 +1,1607 @@
+{
+  "archive_command": "git archive --format=tar b0b55e9f3302d04c4a5feffee56971db12eac25e runtime",
+  "commit": "b0b55e9f3302d04c4a5feffee56971db12eac25e",
+  "files": [
+    {
+      "mode": "0o664",
+      "path": "runtime/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/adapters/__init__.py",
+      "sha256": "cce183bce98c24e1fd2629be4165bd53864fbdc510244cfbd51f0f9cf5f480f0",
+      "size": 7108
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/adapters/claude.py",
+      "sha256": "dd1bd74bacd32016942cafbbd278ae6c63d70b997f292241baf11fef71194136",
+      "size": 2438
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/adapters/codex.py",
+      "sha256": "0b64ee8888a603d859e27b78b8e9188068f280b0a7d0b7356c3ed304466db956",
+      "size": 2789
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/adapters/opencode.py",
+      "sha256": "301ee85baa3a1a06f64dce025d33b03aa491824f82aa8506db502a407b4c9731",
+      "size": 2456
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/adapters/pi.py",
+      "sha256": "338ee724213629ae8e5a79d3671d25046f7044766e374f60c1397258ec450dba",
+      "size": 2320
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/agents/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/config.py",
+      "sha256": "55d2f74d971e6c816f3c0b2217d0522ac0c7d9fa88ae679d920a99fbe47cd775",
+      "size": 5926
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/__init__.py",
+      "sha256": "9b3af7ee8716d14fe2430056b43b340bbeb989546131834b3bb836210a4b1674",
+      "size": 70
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/__main__.py",
+      "sha256": "fc12ec4d51e7afc21e2e3852bf67e9e735425767b50edb4e781565b275b89d15",
+      "size": 39253
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/agent_config.py",
+      "sha256": "c42cb8a9f93f982f85c3bc1ce84ed60cfa323c379f6c1d8078cb10d38dbdfcd0",
+      "size": 9634
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/app.py",
+      "sha256": "ad3d7367738c7c88f35d1d2f3e5c142ecd470bd5eace0ab1639e380d91c625fe",
+      "size": 23302
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/auth.py",
+      "sha256": "93a57b388ac4603f8749d63cffcd4445429f2c77552cd81381dc19063823d259",
+      "size": 5849
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/capacity_config.py",
+      "sha256": "6598a45c0f3c05a1e01500288a3af241531a940fbb3e83a0138ea561497b30e7",
+      "size": 18628
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/direct_connect_projection.py",
+      "sha256": "b5408a713c1ef81ea1fffa4b84b8c2431726d3e85c5cb7faa4d07ce52d25cb64",
+      "size": 12076
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/direct_connect_projection_sweep.py",
+      "sha256": "547c783bc130c79cb70259a2f10a100789b8375807af3c523ded48f211115aba",
+      "size": 2201
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/direct_connect_retry.py",
+      "sha256": "754b7072db797b36fc0fec37fcb5ea250d3e91f04a2d328aa9f5720f0bc7a725",
+      "size": 9420
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/direct_connect_store.py",
+      "sha256": "245b9ffe3742f04acfa548c61d296b19b4b913f10a7bacfe77d96cbd1d6ca21c",
+      "size": 96364
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/dispatcher.py",
+      "sha256": "2e8a00bbcd2e76c1b4f654f6a1fce314d10ee72494b149bf652c8edc98f2f1f9",
+      "size": 1682
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/dream_queue.py",
+      "sha256": "1521b729f78558bb0660ce828a366e90faf826e69016c3ab424a2baa3b474916",
+      "size": 1711
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/dream_runner.py",
+      "sha256": "c53d90c5d1f54bcf498802140aa2ff6bc2a7b14a12a72199b71a8f71cfa03f85",
+      "size": 21312
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/dream_scheduler.py",
+      "sha256": "04d1ae9f8610e806c8ec5e0297836f6da5feb01629201aa8d6a72b426ce3072f",
+      "size": 8225
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/event_bus.py",
+      "sha256": "9f54dabe544bf0314e9a0e2088770eeb4765b395e1dd073891b31401d68f95b1",
+      "size": 1773
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/exchange_reaper.py",
+      "sha256": "8eb30cb9bbe76cdfc4a2c7eec7100558963fdb6c3cff0b2bda56e6938bda0658",
+      "size": 2145
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/headless_assistant.py",
+      "sha256": "8f87a5bb3caeb156354e6240607bb4b8aab56016ff903545a02c2e67edbce6a2",
+      "size": 61870
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/host_session_store.py",
+      "sha256": "98cb434005d289fbc9a13e2a636d3fd7620d3df47c86d647944f98bd6414e96d",
+      "size": 13446
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/jobs_runner.py",
+      "sha256": "11356b9fe22a7d5580e1fa5047dbddf851411d15c889eff929b6d6005cb88915",
+      "size": 25183
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/metrics.py",
+      "sha256": "cc3eb091b91ff356684eff9c42e2a8d621ba1dfa2ae83d7ec4be7409dc00e952",
+      "size": 6778
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/metrics_store.py",
+      "sha256": "bab30f6f223189d76e760561a24205c16f4abef4ec19ad17a9153536bc980a48",
+      "size": 17856
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/org_state.py",
+      "sha256": "a281b48de8215e558d639000b05a069541262755d04b515360ebab7bbd874c76",
+      "size": 15158
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/paths.py",
+      "sha256": "31bfe1f6d8565706f34c241be72a5ede249c941677592927c2205d7d8d3e5ad7",
+      "size": 1510
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/pr_ci_merge.py",
+      "sha256": "a45b7b4a9ec5236791e431ca5693c3b0daf2d5a3a7a0b3d818b30a0c3ebcc68c",
+      "size": 26736
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/pr_ci_waiter.py",
+      "sha256": "1b390b3bc28b36a9460aa29bb1dd74704063760d0412d63a5bb72064284f12c3",
+      "size": 16795
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/queue.py",
+      "sha256": "4f3566d6681446a2e7724efd0e0070901880fb8ef914477645c57a682feace65",
+      "size": 9419
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/registration_token.py",
+      "sha256": "d65cf28d9b4649e3c6f9a3530018503c01dbedcdfb9c53425ebb8f0cf658c513",
+      "size": 23036
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/__init__.py",
+      "sha256": "c4361e2d1a973f82a1538b0dc8e9b9f7cbda73eaee993d302bd5aab158469135",
+      "size": 52
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/_doctrine.py",
+      "sha256": "f86215a93cf0edcff5902f57565967d4adc09fdaf262fa181fa78de0d153309f",
+      "size": 743
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/_org_dep.py",
+      "sha256": "4486423a447c0f23eb0366712130caaaa7195ee7614ce711760c1a1be883b74b",
+      "size": 928
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/adapters.py",
+      "sha256": "aa917134c8955c782943e8cfd276f2582abad21b0f80384eedff7fd2023a9204",
+      "size": 99402
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/agents.py",
+      "sha256": "ee55d26a3effbe8c8a63401412c9c3bf7730931e611ecff41ee31e1cfe47604c",
+      "size": 137026
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/artifacts.py",
+      "sha256": "f870639d5ffb7d1af3c3180b5b615c0e337cba9b98c22751a3c1a678c049f2f2",
+      "size": 3918
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/assistant.py",
+      "sha256": "2f1286242b0098e37f1bb40bc67d9a1cf542ac4298420edc9fca90f032f52dfc",
+      "size": 8964
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/assistant_a_mode.py",
+      "sha256": "c97de67daedc413ff2f1825461aa26d4701a091715e9b4fdfdc42d5f54005964",
+      "size": 19734
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/audit.py",
+      "sha256": "bf7769aa43d03ac85ddc2ba694522f5842b0495e4c75879cc2a6b5a4ace9a632",
+      "size": 3745
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/auth.py",
+      "sha256": "0f339be81de60898522deaf32f12352065970296eaeb84e2382af66f87ab7905",
+      "size": 6945
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/authority_policy.py",
+      "sha256": "faf289c2035f028e7baa33612713fdeb657d1b2c70bc751a75b3622bef7bdb29",
+      "size": 39628
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/custom_skills.py",
+      "sha256": "e2e140f98ecd79663db9d35d58a59052b897ef700428f71ce1758745312035c0",
+      "size": 34432
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/dashboard.py",
+      "sha256": "d0def45a172d9b309ab4c825dccfe886179f677f9142e05cd3d64f6fea4a916e",
+      "size": 1631
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/direct_connect.py",
+      "sha256": "dfe7295a1f89cbeceafd9a6a1212dd53871b50e0819e79cf5a776be50caa7abf",
+      "size": 17625
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/direct_connect_commit.py",
+      "sha256": "b346dc13d58af0e8f4d85050475bdea4990705c9bb99bc6d447b8c94f167878a",
+      "size": 13644
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/dreams.py",
+      "sha256": "7bfd3b69c45396b7982411c27f96429ea92c5a9eb273ea8b3f8efb4c6688a776",
+      "size": 12213
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/executor_binaries.py",
+      "sha256": "9fae726b99f715a921e644f23b79da508ef43144e4bf12f32c3aeb7c3f4bb489",
+      "size": 11225
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/executors.py",
+      "sha256": "62a64ecfd42e7522bf09741d3b98a9765c1c7f91e809da54efcb23e2fb43f219",
+      "size": 32478
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/health.py",
+      "sha256": "b4537fec965205b02dbb52544d024fbfd54cdb9405a18cb7c7e4b44f62b26abe",
+      "size": 7582
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/jobs.py",
+      "sha256": "e85530c26255e925e6c8875af1ade8257ad0e75269c5a62d84fb4c6e684fa3be",
+      "size": 40724
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/kb.py",
+      "sha256": "bf962239201165568e58b569dbbfe895f7d0a37641e5b1808f5fd0105c991836",
+      "size": 8763
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/metrics.py",
+      "sha256": "fe3652b668cdbdc747648a54755cc8c3577b76e6ae90a3707a73392518ebefd8",
+      "size": 1451
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/orgs.py",
+      "sha256": "821b9f7d099d965ee4f295076958ed443650952a7f0f3644c04679bc45bd49ae",
+      "size": 8852
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/portability.py",
+      "sha256": "8055edb86238d75acfa5d28bc4ae6ce6e5291a78f570ce118d30522457edad6b",
+      "size": 13340
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/runtime.py",
+      "sha256": "1a2707f11ce2a5e4c29e05eb8be5d587f39e978f0de46a19365c266bcc8b7446",
+      "size": 4484
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/schedules.py",
+      "sha256": "812288d90d49dee5baa73299240327643b235f60655c3ce919c7999f16313677",
+      "size": 31522
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/settings.py",
+      "sha256": "fbdc19db3c1796b577e977c20c0afbb5228d06dd55d3f9a02fcd0ae1f08c326e",
+      "size": 42398
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/skills.py",
+      "sha256": "ba8e14ae1dec5da26a5e6b75bc01c6dfd671c2a504163c38f3e4f67e4d9708a0",
+      "size": 51191
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/tasks.py",
+      "sha256": "2fadda95ff510260c5e166d2dafcc3381d6afafd4e9963088273a143072f1d0f",
+      "size": 91199
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/teams.py",
+      "sha256": "0788c1942a3ad570f2221c508e9a465dfc5e441770569e51bd7514e4c2d042d4",
+      "size": 667
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/threads.py",
+      "sha256": "ec7066bcf970a0ce64ab2a0e5a29e72279af8db916ad3a1af42fc4b562e22321",
+      "size": 111438
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/tokens.py",
+      "sha256": "7f9b7cb0f1534e4389492f82da3cf61a2fc15f50c61fed47e490465b183cba46",
+      "size": 3545
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/usage.py",
+      "sha256": "a7a77487bc5a27f668cd8a51961ca7f26737202b880fae06a7bfa7adcd276f1a",
+      "size": 4755
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/web_static.py",
+      "sha256": "c9a287276b2f0eed869913b4fb192903c2593ba5aef0c5c90a288fda2883c862",
+      "size": 5212
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/work_hours.py",
+      "sha256": "b8a522e2a9e20e90b23cc9b393e5e52fc5b3809923f55f4a61ad1f577f661097",
+      "size": 10577
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/workflow_activations.py",
+      "sha256": "cd5c95dfdd60ac24e231e33cafe20dc51fab39a85faf9ade87e66fbcd033531b",
+      "size": 6029
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/workflow_cutover.py",
+      "sha256": "f47ebf69caf0f90db8d938bad34c6d6188175bc1f30bf2aefdb1f8486f729e9c",
+      "size": 5914
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/routes/workflow_templates.py",
+      "sha256": "305b753a4e24b6e1b5bf7f2470493b75a59419c6329a7d49d74321af5a14b8ca",
+      "size": 8162
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/runner.py",
+      "sha256": "5c9ceaad59ff38c225f8d0521fec627b0d8f9da3946e17851e5a21684e499315",
+      "size": 1674
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/runtimes.py",
+      "sha256": "cb28b83d0cc2982990b2140e9e27a5ac6b189a8f894f0be207b8ef29d04d3a09",
+      "size": 1907
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/schedule_queue.py",
+      "sha256": "6b341c315e6e53605b0af6095244d5359cf5854bea64c14c4df74bd0cdc2d26b",
+      "size": 2083
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/schedule_runner.py",
+      "sha256": "a35d05ecd9182ad87230cfa97c3549d1694cb4ff8b9665f87f2f812b723ee93d",
+      "size": 19152
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/schedule_scheduler.py",
+      "sha256": "214d3d367699397cf26521cbdebce2e87acef7ffa61f38e5c886eb7ad134e410",
+      "size": 7232
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/sessions.py",
+      "sha256": "ba81ac9b24372ea4593ea364d6351920da9557e23ac17b769081040715ab140f",
+      "size": 20201
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/stale_pending_jobs.py",
+      "sha256": "eb0b9d094471497f28579dcb8bb0a666fde21d22af2a8851078fef34875646c4",
+      "size": 6518
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/state.py",
+      "sha256": "5f4d1131d836fd5e853753736d859bb5f235f37dea5be796759153bae80ef35c",
+      "size": 15216
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/task_scratch_coverage.py",
+      "sha256": "db266b640535473475d6e43fde307f9be3bd8775d77e2f8ab1eddcc77ce73ccc",
+      "size": 228
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/task_scratch_evidence.py",
+      "sha256": "dbfd0e5e46290061bbec11e41f0433d788a0e8323a62d48660b1b77d996ea1c3",
+      "size": 228
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/task_scratch_reclamation.py",
+      "sha256": "a439e286f6b3cbf92aa178a416c8d6903cb25ec749d74db64b4ba2aadb925551",
+      "size": 33359
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/task_scratch_report.py",
+      "sha256": "efe9b847434fb97537e369bf9782909895f9dc362c488da053cef1b59bc344e6",
+      "size": 224
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/thread_breaker_scheduler.py",
+      "sha256": "b741e9d5bd8016aaa1501120b14bc4a27d12c77f378e56ce8264eba4728626f3",
+      "size": 1725
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/thread_mentions.py",
+      "sha256": "d83e9a98818eb773a8a7e82b11a8e05d3bf7bed3d48e0bd039b7b1cdaa722b60",
+      "size": 220
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/thread_queue.py",
+      "sha256": "ca060c79ff28f9d04e16c968a5247abe0f7760c19e35d03aac7d85dfe6148247",
+      "size": 3279
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/thread_runner.py",
+      "sha256": "9d0c964592db57424c20cc704a911b755d64cb777cedf9f686ef4a0184138333",
+      "size": 88407
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/wake_queue.py",
+      "sha256": "5eda3837cac9f6d0fc979e3517a1b2d99aa33116ba8dafa602bef22871f99aa6",
+      "size": 2048
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/wake_runner.py",
+      "sha256": "e03c3f1c0d341dabbd98404f319cb2a8ef756a99166e340ab3f0c43119ed02ac",
+      "size": 19069
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/work_hours_scheduler.py",
+      "sha256": "a71f8d8092ebfb99babbfd4aaa14e418ef854ed6dcc2558248219a6f3f1ba281",
+      "size": 14123
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/work_status.py",
+      "sha256": "906e5ea8a37e0fb09e1b69fd00321c88b78c6ecfc4dff7553c36416b553b8281",
+      "size": 12755
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/workspace_cleanup_scheduler.py",
+      "sha256": "8fbd93fa75985aea16cd820ad990abc568a2115e8d9a5044f45c714fd280b1d9",
+      "size": 63398
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/daemon/zombie_reaper.py",
+      "sha256": "891fe3fe50d36135e04ce010adb08054512b6c0e64cc88fc4dbf1d2ed27204c3",
+      "size": 15756
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/artifact_store.py",
+      "sha256": "c6770936af73d2c195a14dc557119c0eb4d504b206130d20fcc034f7dff62e8d",
+      "size": 5914
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/audit_logger.py",
+      "sha256": "590870e073f5575a5323b0f079a38ba4a40029f558f2a61c06374d772be43d2a",
+      "size": 60390
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/database.py",
+      "sha256": "3d887739b464fad8263e588133d318a0f16eddcb7e3e0e2e9f14f636772fa2bc",
+      "size": 88469
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/__init__.py",
+      "sha256": "5d0e5feb5ea359e566a25e300e6b9f0de7f6f01ec06add4aaa6f24778584c889",
+      "size": 85
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/_shared.py",
+      "sha256": "b7a969a39635df38f172470f8bd5915d1113946e29b806a4307b348da18e7560",
+      "size": 2633
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/attachments.py",
+      "sha256": "f644c0483011b737e115501e0879502a4968bb334c2e9137161a22e2d6a710e1",
+      "size": 7341
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/audit.py",
+      "sha256": "d0669c1c100f5e366d9dcb64084d76f54873d34b4afac3847dbb7c4eeff3cc2d",
+      "size": 6638
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/authority_policy.py",
+      "sha256": "1d9518080c20316e90df4314876c41e2f7ccd210dd417568fbab48c1b3a9403d",
+      "size": 106801
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/authority_v1.py",
+      "sha256": "44e80bada7a8cacd5b29179f2fa16a052ad0b923e8b2969cc9683be704ae2a02",
+      "size": 45118
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/authority_v2_attempts.py",
+      "sha256": "a18e07a95e05b18251d699d959c3d3b51b093910aedb965f0825ceda84fc10ac",
+      "size": 161378
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/authority_v2_continuation.py",
+      "sha256": "014644b31c4cf234372b0bc41fc46807638804589478a9d3e2af7019a7d72bf2",
+      "size": 291664
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/dreams.py",
+      "sha256": "5d319dfe348231fd5efc326b6713c30bdacbe7fb94adad7871ebddfd2e88655c",
+      "size": 9809
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/jobs.py",
+      "sha256": "47b5abf7c8bc97b92671cf67557b0a3d07b3d24698f1fb74fafea11c6dc92bb8",
+      "size": 16642
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/knowledge.py",
+      "sha256": "fbfa26df5805079ee58a46745b20607a6d9de85eb127bc2fd7a36ad15c48ad7a",
+      "size": 7474
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/reply_delivery.py",
+      "sha256": "7fcdd27e227472199daa99df0221d32da64b2eadd7b1662275f1806d60d85ab6",
+      "size": 109025
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/reply_exchange.py",
+      "sha256": "5f56ea6a19d849289c046e2e559e455b2a8fa8aff2f931771eaba8c4b0e7262a",
+      "size": 33367
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/schema.py",
+      "sha256": "0531237bf5a73f6143128a8f0603996f18b3860bd622da76b1fcae197d64eb85",
+      "size": 158085
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/sessions.py",
+      "sha256": "dc4c6fb7905b9237ea61cd90e9f4ced74b9d37b2ffbeb468077882ca37caaa57",
+      "size": 28553
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/tasks.py",
+      "sha256": "a967eae30b137c5782dae2d4f3ee307201a1f2dd45100cf89aaa90091d96513f",
+      "size": 151637
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/threads.py",
+      "sha256": "e24aef5713133fa843ad0b4e204a823dd83a1e2b862c59404007eac412b07273",
+      "size": 36685
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/db/workspace_cleanup.py",
+      "sha256": "2483aa9175ee35de6ab94ae2eb34e78b92836ea55693b3d75677f6bf646207fb",
+      "size": 31346
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/dream_store.py",
+      "sha256": "66e80bc091182cd54094278d71a9f5cdb31a6567893bd1eb67c3abbd398d5b6a",
+      "size": 3236
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/kb_store.py",
+      "sha256": "5772bc87486c5bf818d7c3c98e0dad30d88bb63db120d816aa60f94d0a5e7375",
+      "size": 13925
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/learnings_store.py",
+      "sha256": "6c9fa83c9a1809a590696433d2f843f8dae49324cb77b9a8be3dce7633a923a9",
+      "size": 56554
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/memory_collection.py",
+      "sha256": "149b4311c17fbab26c106754ef4f02ce0b912f36fba7d4b1d001318e0d3f9b54",
+      "size": 42832
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/memory_migration.py",
+      "sha256": "28c107771970a911281738fb2f55f999a86e684c35609f2f27f84635a168ded8",
+      "size": 4287
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/memory_telemetry_report.py",
+      "sha256": "199f0c6101c11ef678c54edb8c62ddf1c846bb71331dabe39ffcc843da0a1093",
+      "size": 17975
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/remote_job_schema.py",
+      "sha256": "e2e3ea3626ce1efe494a5cec91dae7c88aa030594f821f402e9b8741f2baa31e",
+      "size": 28433
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/schedule_store.py",
+      "sha256": "c1dd39d9fec3d6b2ecf7b156062c2cb0f7b22f151760942e4775afa36bbe3fec",
+      "size": 12566
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/task_attachment_store.py",
+      "sha256": "ad200f4f2ec192c85a966b8d9ff3ac98bdb55af4c96b50f9dd8f65b0c7732862",
+      "size": 11725
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/thread_mentions.py",
+      "sha256": "0bbc7545523c201ddbc7e32dab62b8a99ed8d26affbd6351661d2d65f1a093b6",
+      "size": 3460
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/thread_release_measurement.py",
+      "sha256": "0d8a5e0e3b2766a859457c9cabe508ffaafd7614abb9ae58bdd9a7a92dc107d0",
+      "size": 50038
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/thread_scoped_attachment_store.py",
+      "sha256": "6b07809203339d41db0e1a8517e07c78ad6c79f54edd7ec00b6274dadeb8fa39",
+      "size": 2285
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/thread_store.py",
+      "sha256": "a48551a392d66527ad85b5efb248bb3bf38ac2a5e621f5639df8fefd5b42a4ec",
+      "size": 6493
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/work_hours_store.py",
+      "sha256": "7133fd7996e047941b29238f9f7444ef392e37a146fda020dc5444545afdb98f",
+      "size": 7900
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/infrastructure/workflow_schema.py",
+      "sha256": "aeb4dc21e80f2e4f112d7f76b2d273aa761317e5499fc577401d6581cfcbf835",
+      "size": 60413
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/models.py",
+      "sha256": "6d797a0455e9f6eef1f4f997f755cbb23794336c69e37623cc1b4c17009c3546",
+      "size": 202551
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/_paths.py",
+      "sha256": "8384350c22f56ca3ccf2fa9ceb9c749325ad3c77c00b4c21a42680234aa0118e",
+      "size": 1153
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/active_authority_policy.py",
+      "sha256": "26d029f29738d59204e1970e9c5529183880dd38521f44270d8dfaa995607c21",
+      "size": 29384
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/adapter_contract.py",
+      "sha256": "e8520c9a2f442d0eea499a150db0aa5ace6958087cdabed0f9ea76d70f850be5",
+      "size": 10074
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/adapter_store.py",
+      "sha256": "2d4730dcdd6a0f7baa20f1c4dd058bf34ae937b4586ae9cd7bb02532cc0fccdb",
+      "size": 12325
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/agent_def.py",
+      "sha256": "85d3029a79a0cea8bb42e29dd17e3b9613a78b39914e60d2fb98f2fd2ba72755",
+      "size": 7501
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/authority.py",
+      "sha256": "f66329d648adaf628e19285479d09f423117b3514fd81e4dd9ee2f65f7da82f7",
+      "size": 148584
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/authority_policy.py",
+      "sha256": "ce54fdeb9e29b7714a128ee59ca3456616093d110c15d95ed9dd933d2fae10b6",
+      "size": 27696
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/authority_policy_store.py",
+      "sha256": "0c0bd8aa04490dd2bd24eb95112c5542f324bdb9cc953b79c48115d35eef7373",
+      "size": 34326
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/capabilities.py",
+      "sha256": "54ba6d93ab30d010919edf5f997d5686fc8cb8f8c34d87ab3ebe0b2b4395e92d",
+      "size": 14872
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/chain.py",
+      "sha256": "6d5130f6f472cf0424e8c88ec8145b5da53a0ada388fb0590ff10f16b547e9cc",
+      "size": 6423
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/context_builder.py",
+      "sha256": "580ef4b8f8d8cad4f7403934bf1d3a3eb98d12a982c623a7470258666a4121c1",
+      "size": 5206
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/custom_adapter_registry.py",
+      "sha256": "7b5cdfb2790f4f4dc7c758205b76e569179e41e590b7c061bcaeaf66a528ea65",
+      "size": 79359
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/dashboard_projection.py",
+      "sha256": "d137f611ead8f2c1802312f7094e355dbc60ee28177115178b8364e9b0a6b37a",
+      "size": 17611
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/dashboard_summary.py",
+      "sha256": "0d47f75ad8c0d8b68cde194edf2f4924de8948498613245d9f8158a033fd0fcb",
+      "size": 26279
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/escalation_reason.py",
+      "sha256": "2c35804cbbd45517d148db37c01360378b410433cfaa1600b4a8269c71683f46",
+      "size": 4514
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/executor_binary_registry.py",
+      "sha256": "151fe94ec9252c586429f35e408549b81a55fa4b2c4d186565c055282278b5e6",
+      "size": 15143
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/executor_registry.py",
+      "sha256": "e5089ae0ab420fe631542d220dc8da419c3d895b97879b26bc4ab5c0d92bead8",
+      "size": 28147
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/executors.py",
+      "sha256": "81437dbe0504969dfe697d6b320c28751a77ff4b51cd1f728d805114bd639216",
+      "size": 114608
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/fanout.py",
+      "sha256": "0354ddce507cde1a1a7c058edfbb4961bbd4fe4e99b2d17421ae20f385312795",
+      "size": 8801
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/host_supervisor.py",
+      "sha256": "b16d75b2e7a41daebc07bc9b41bc46ba025084a00b2e3cd498f2fd28fc566917",
+      "size": 77149
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/orchestrator.py",
+      "sha256": "559639e2ee008a8b404a6d4016e6e1ca706d4cfe30b2a73db136db9914dc7ccb",
+      "size": 78155
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/org_config.py",
+      "sha256": "d9fe8ea037d52d262eff732b32e005cf684737b308f2c5077657cfb7b844f304",
+      "size": 70430
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/org_validation.py",
+      "sha256": "944df9c8a434b133ac85c7cc1f0eaaed7dc54877f56db926a44dd61b7d9dcc93",
+      "size": 2475
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/prompt_loader.py",
+      "sha256": "ebebcf690053ae3acbd023ca6cb95ff2f285f49fcea1a2bd877c1dd284202aca",
+      "size": 6927
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/routine_parser.py",
+      "sha256": "04bf01d6c19531ed04e6504bd101b7ff7bfa2b2fa8f446d7cc50c86843bd55d3",
+      "size": 3914
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/run_step.py",
+      "sha256": "8efe7bd98f9e64ff1548a66e685ee2819f99bd75fd8c40a09d564cf1ec74cfd4",
+      "size": 218528
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/runtime_executor_store.py",
+      "sha256": "66517e0b1d0232813fe191e538599b3d0c474c8cbae59566a8cd4883094ab35f",
+      "size": 5533
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/schedule_rules.py",
+      "sha256": "ed000fd4bc0a1bf33b279e5c59f18ea13d51da3db70f4af09c143ebb52d7a759",
+      "size": 16408
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/schedule_service.py",
+      "sha256": "8f5fd60a84c415db07ccc0e86baabbd6180955e83fd8a1ca47bfa02a83d3fe36",
+      "size": 24157
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/task_prompt_headers.py",
+      "sha256": "26cc523b1b70c47cee603b307d11f0c3f81bb790af4fdf4ddbecd7d38dec6cb9",
+      "size": 17728
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/task_scratch.py",
+      "sha256": "3a95bdaba8f981f933a558e9a2ee44021ff6c6703d854c384586037d6785a9cb",
+      "size": 12739
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/task_scratch_coverage.py",
+      "sha256": "e82da4cb9d31f114adccbbfa4c932fd2478bd68212d2632b79d487fef2d2b278",
+      "size": 18165
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/task_scratch_evidence.py",
+      "sha256": "8a764ef88603b3b1360faae0559e37b26456efe8e46c916e96ca8ba357147afa",
+      "size": 17842
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/task_scratch_report.py",
+      "sha256": "acf3f4d30ceebe27fcbe0096028d2146b090fe4a3bbf600cc91805629005be86",
+      "size": 12674
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/task_thread_posting.py",
+      "sha256": "c363a3d796c1ba317b279cd07f3202c828a6fcf27847ec2fb87b32abcdb51c06",
+      "size": 5860
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/teams.py",
+      "sha256": "e4cd0acb752116d8eff20d23b0d901518ee45293cdfe176c1c39a6e63518398f",
+      "size": 6153
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/throttle.py",
+      "sha256": "89508856ebdbaac18ddbac7e21b7c07a218b94603f520f9d02099fbed699e971",
+      "size": 10895
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/usage_normalization.py",
+      "sha256": "bbdc186ed27a6b5a93aa7ce999ba3d30d4fb4c2598c93a33d1f9ceaefef134c2",
+      "size": 3919
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/usage_read_model.py",
+      "sha256": "aec536a1594d57ce13ba33d48e9fde1229436e4f4da08c60416e9aec6187b33d",
+      "size": 22304
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/orchestrator/workspace_adapters.py",
+      "sha256": "b2a0c32b56ffb0a4bb90087792599b5806746059b98de0aa3ea98537446daf64",
+      "size": 107814
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/__init__.py",
+      "sha256": "0963fa436be215ec23b6b9dea14b4d32f1a1898901a1b8c15a4229bd81601c06",
+      "size": 469
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/backend_factory.py",
+      "sha256": "1e3452cf11f0f83c81ded9456540d55abde0f4f67d592a655085af48d5374f6d",
+      "size": 4535
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/enforcement_policy.py",
+      "sha256": "c17b99a91c274eb9a15d46d548bdab609e0ef6f5abd4dd36f962c585c449f34b",
+      "size": 7815
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/isolation.py",
+      "sha256": "195fddf7a2c3b80e0960c1c7fbfea3bbeabc622ce5cf9fe497622ab976951f4c",
+      "size": 28193
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/linux_systemd.py",
+      "sha256": "53f5ba9fb909858560bd6cfa1cec50df3ee002d1b66ced4ec877ca9977e34149",
+      "size": 62867
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/macos_process_group.py",
+      "sha256": "08219251305d9ab2e3c8ab7dbd7b46b277002fb397935b906d88eefc11ca45cd",
+      "size": 23642
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/passthrough_backend.py",
+      "sha256": "9c318ce9b7d9180317be97c80a08968adeb2c7b8873d3d1c4a9e424bff17aa08",
+      "size": 6828
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/process_census.py",
+      "sha256": "1106a8d9fad6d2c2ffd8e8c54a739a63820440cc28cf2b66c8a9fe8dbf55f3f0",
+      "size": 22924
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/platform/session_backend.py",
+      "sha256": "4bc95c58f03dd467429d2f7b5eeac2062d4211ea792ede8993b9f75e43cd2e9a",
+      "size": 17152
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/portability/__init__.py",
+      "sha256": "b5f03c88f4b0f62a9ec83c1844aa7a176db49153f53d2345cba48b96d2806b9e",
+      "size": 520
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/portability/eligibility.py",
+      "sha256": "f05219a72393ed4bc50ddd82d7715f863af77807d37b369101cd9ed4a30abb3c",
+      "size": 5951
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/portability/roots.py",
+      "sha256": "2a51fe9a9c2fcd5996387fb366b943d774bce69d91e2710035eb60d7c0ad27e3",
+      "size": 15274
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/__init__.py",
+      "sha256": "9b2ee2c706eb4951890e15ad4b90678b52eb10ce4197b991559f1bc7584d57ab",
+      "size": 3556
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/allowlist.py",
+      "sha256": "a9e18d6b064ad0fc3f34a394f8d2683ee7cd207a916bb83832f477d6b7fde7db",
+      "size": 2126
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/audit.py",
+      "sha256": "cc36066cd77b8115beba5dc0ca308b499da0398606f96d62dcf9f41d4e5588f1",
+      "size": 7495
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/authorization.py",
+      "sha256": "18944abb6509b138340ccce106eb96c49dc9559a27b4cd7c95ae982e4203630a",
+      "size": 6446
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/cli.py",
+      "sha256": "86a96b8631f7a2ab9878f4142670a03c1c167257d813dc3c33dc6afb4f41974d",
+      "size": 13702
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/credentials.py",
+      "sha256": "b6bd1d13b6a4d42802ae8aec63876915850231ca3e8f94e9f6597af22315db04",
+      "size": 3982
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/diy_provider.py",
+      "sha256": "012c8d5dfc0945baa97926ba249a01d0f6862a3a740e24209ed9070ef239c7d0",
+      "size": 17062
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/forwarding.py",
+      "sha256": "7bdba1cd72d7912e24a26822199836ea0eacd5043378746ec19bf3de91a3ad4b",
+      "size": 9010
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/gateway.py",
+      "sha256": "520c8ebfc5e343bb73c8715524d103cd41a6c21dda6b51d009314fadfddc3555",
+      "size": 18452
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/httpd.py",
+      "sha256": "841321dd2124eabe3afd95a962f4fcd94de23a862f8b75c20dfff8a9f74b4752",
+      "size": 5139
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/identity.py",
+      "sha256": "8a9fb5f843236ed87c39d79f08266ed728d7aaf6f5c8d618418f5b8ef132b932",
+      "size": 4919
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/lab_provider.py",
+      "sha256": "905606cf62dc86336864742573e16714490a6f986b5ad7fcf9c4775202ba5f3c",
+      "size": 8089
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/managed_provider.py",
+      "sha256": "df1131018a0aa8bd278e922430ef5e9bee8fa7b4748e5121acc1ea1a3face87e",
+      "size": 2618
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/models.py",
+      "sha256": "e0cc0848cfd6a9c7c147684c23ada95b518d2d8991cded161b47814b45790b14",
+      "size": 2188
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/network.py",
+      "sha256": "7bd3946e314e26334b97cef196e0255985d6673f8f57928c7ef03a8363ef1921",
+      "size": 7176
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/normalization.py",
+      "sha256": "1c1a8460b8fb4cbc3bcb1afe7bfa1e4f3b4f27875ae683d932d7607372636e2d",
+      "size": 6380
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/pairing.py",
+      "sha256": "98a07f6887de5454dd754e9d35f980e42ed1f2b2c735746149e082b062e69667",
+      "size": 23482
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/policy.py",
+      "sha256": "64af8d91d3abb92b24f15588ac492068a85672ca0af82afe87998358225da313",
+      "size": 19235
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/readiness.py",
+      "sha256": "41304eb57a249dacc36daa1c214f1680a9fde5e0abb04d7c51657c328aa5a3c8",
+      "size": 8908
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/revocation.py",
+      "sha256": "722221ad2ab0ff7e8ceeba118dce4ea906850e1e50246df965d55d701ce4e4b7",
+      "size": 7516
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/service_manager.py",
+      "sha256": "2eb47a388ec0610b0132d1abf86b24a63218d087e7505faf3a462a1023bab29d",
+      "size": 11209
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/state.py",
+      "sha256": "892934df9741da03b076191df66bf576087d4cead29789b87ec92954b820be3c",
+      "size": 3703
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/state_store.py",
+      "sha256": "33ec9377124bd1c2dcd723056d14757b703a0d813f35dfa4b1a819dfee93142f",
+      "size": 35916
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/streams.py",
+      "sha256": "74707353d544417a3dcd8482db90f96c1323017b8e75a9d7c09f6de480a8fbd8",
+      "size": 28625
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/stripping.py",
+      "sha256": "e5b1c041d11be9373f94337eb926e271138f83e83a63b4198c87ef605e567b8c",
+      "size": 4456
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/supervisor.py",
+      "sha256": "ad551f5e1be53ae71f9beb30b9b28f374dd6d813ea588cef8c40e8db26cbe592",
+      "size": 49019
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_access/systemd_unit.py",
+      "sha256": "234803fb10634056c4cd398bd18300218cf3034ef653239eb47b7f662ca2d501",
+      "size": 5372
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_jobs/__init__.py",
+      "sha256": "c5226b85b932fe7b92ab9d8aecba97ba8fca5c4507cfba06343880974fdd2e2a",
+      "size": 196
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/remote_jobs/contracts.py",
+      "sha256": "7d69d88a27b549dfb2da059e4496b24edbb45bae2fd247859a3053c9a7b501fd",
+      "size": 41510
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/reply_delivery.py",
+      "sha256": "cd9b6b94167b3df194b3cd7caba863696c599e2df5c85064f320ff561aaace20",
+      "size": 992
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/runtime.py",
+      "sha256": "3e07d7e9c5c768dd6b6507eb603e6f5ddeca5d0ea207b6871762d5a6f31c4f36",
+      "size": 4139
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/README.md",
+      "sha256": "e70e2fa70d0a15f8ed6ed9f231ffc0fcd0bc904967bb477a9e25c57035b6748d",
+      "size": 997
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/__init__.py",
+      "sha256": "91ca92b49cd9d60f0e01f33a5b1ca905bab426ebec294f0dc12b46827b9c1f92",
+      "size": 590
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/create-skill/SKILL.md",
+      "sha256": "624d00966e4fba54156d1c76f09fb780de673c30be55203c6733fcf7375050c7",
+      "size": 10114
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/dream/SKILL.md",
+      "sha256": "6e560586938965b9a2982d2ef4968e1e2cc8b6b22e96cdea6f23fa7f0c3ce8aa",
+      "size": 1848
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/jobs/SKILL.md",
+      "sha256": "54ed5e9b6f53abe90146dbe11663ee2312810fb6dc16113b7d1a41af087ed183",
+      "size": 16479
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/make-worktree/SKILL.md",
+      "sha256": "c86554da0d62c1e4262747e819da22f8177bb2c4cdb88942694e5e31a1e3bb9a",
+      "size": 6752
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/make-worktree/worktree_guard.py",
+      "sha256": "dd115fa2e23c2a446c7524ef3f726c69631129c1b4f65eab9f69234df13a3bab",
+      "size": 25604
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/manage-agent/SKILL.md",
+      "sha256": "3ff3a9aaa6aa13c828af455d9d1b1d484de70341010dea5b4d90f2777887c2bc",
+      "size": 8603
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/manage-repo/SKILL.md",
+      "sha256": "d1d50e9ce0cba365a6f369f3a4ebd5960505d7548fb5c3a299c67efbbca21c6b",
+      "size": 2451
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/reflection/SKILL.md",
+      "sha256": "807d07fad177cd9047d839e6946344ad12db1ca67b18934911d626cbc5915946",
+      "size": 4716
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/start-task/SKILL.md",
+      "sha256": "17655b909df34d7229380a2dc32ade763bb24ed82e07bc7ac41a869c4a23d70b",
+      "size": 22484
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/thread/SKILL.md",
+      "sha256": "41662e82e046a00baa66f44a83d50f6f734441c2e6ddd924eaff49ae08f48654",
+      "size": 16517
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/todos/SKILL.md",
+      "sha256": "2658b32e63502ae767f253736529afffac331f77062b234f86f5b879c69adc84",
+      "size": 13407
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/workspace-cleanup/SKILL.md",
+      "sha256": "403ab63015329b47843ab4c619485c01b8bd8268ecdbbb7663c8751f67861df9",
+      "size": 23224
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py",
+      "sha256": "83710f1ed79aeb91e65573acfb27377aa58c6983b39d765d019041259ef97830",
+      "size": 74257
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_batch.py",
+      "sha256": "5ebf3732f0603daefda2e3a6898e58c2a90c5740ad9d0a5cb1ca1f7f32272372",
+      "size": 15779
+    },
+    {
+      "mode": "0o775",
+      "path": "runtime/skills/bundled/workspace-cleanup/scripts/run_cleanup_candidate.sh",
+      "sha256": "2e2584516ac02100992fb9e38a5067601c7da91f720985672df687820af48bea",
+      "size": 71272
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/canonical_store.py",
+      "sha256": "9893c240ab18b472feae949ddeeb31144f6c566a93e8cbbfcaa21a46cb302cfc",
+      "size": 31060
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/custom/__init__.py",
+      "sha256": "600f8aa723639fac1774cdffffd5cb1e58eaf2802759fe586dbd0de6a63c931f",
+      "size": 47
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/custom/service.py",
+      "sha256": "a267b3d4ba1c2ab23d44a53745e3ebeaf2b6f1e7e3275a31fae4bc28e5736267",
+      "size": 5675
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/custom_store.py",
+      "sha256": "4d423733f9a4c37e11853411762374e0b0d8379ca9b9750104d54ab1d3f7714a",
+      "size": 4353
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/eligibility.py",
+      "sha256": "e75f04b27dc902d1987c745afc0c11641d31218ae2c94565985e7efa981f4881",
+      "size": 2807
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/exposure.py",
+      "sha256": "ce185ef4b9c393009418fdae794f074080eef413d6d75f3b017c54a4fed57cc8",
+      "size": 2294
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/manage-agent/SKILL.md",
+      "sha256": "990afaf025e4ccf5412ec24a226b03c6657e17fb06dec7f3df10f6941366cd86",
+      "size": 6765
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/manage-agent/skill.yaml",
+      "sha256": "660f5dcd6567c4c942adfe0cee2536e7ddb23be6a271124d2ee1e94b12252b12",
+      "size": 518
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/manage-repo/SKILL.md",
+      "sha256": "d1d50e9ce0cba365a6f369f3a4ebd5960505d7548fb5c3a299c67efbbca21c6b",
+      "size": 2451
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/manage-repo/skill.yaml",
+      "sha256": "0bdb6d5a067f891efaa96959eaaad6d2fa3659d9d41c5a0b0da3873290617561",
+      "size": 503
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/models.py",
+      "sha256": "83bcf7072626ad3ea7c1b9154c8b1e8c7f03b4e2a0f5444a5b1cdd0817e8bfd4",
+      "size": 4154
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/reflection/SKILL.md",
+      "sha256": "807d07fad177cd9047d839e6946344ad12db1ca67b18934911d626cbc5915946",
+      "size": 4716
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/reflection/skill.yaml",
+      "sha256": "1e5da8233e72bddca513862232d950618aaba2e75da048553e4737d573a1b393",
+      "size": 376
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/registry.py",
+      "sha256": "29a301c71a0ebffbe1202772d919cb63e3971bd13272ec73a0c5f49c1fd585bf",
+      "size": 5042
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/resolver.py",
+      "sha256": "0e53a850098e3f4f5d7eeeb460388d80c95ab4058ae46e88ba5756bc57c73c48",
+      "size": 7285
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/skill_md.py",
+      "sha256": "4cbbefc39a43f3c90012b0009ab7b1829dc28b53248aa7277a700b25a809b103",
+      "size": 20040
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/sources.py",
+      "sha256": "1ded415b680c5a4a425efd3f18ae3c072bf3aed13049aad4f33c13018f5650a3",
+      "size": 682
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/symlink_materializer.py",
+      "sha256": "85f7823217b297ff273f6030f849b02cfd8ceb46467ad31c7c3ed6372338d4d0",
+      "size": 13595
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/skills/system_contracts.py",
+      "sha256": "73adcf7fce43f8d2c23113dac6aaacfef01e0937d46802c1c951134f31d8b92a",
+      "size": 9592
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/system_assistant.py",
+      "sha256": "c86ed4f163393aebad93c4ffd5e8e918c2e7269727ae3cf4437d45d5dbe219ec",
+      "size": 35701
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/system_knowledge/__init__.py",
+      "sha256": "f688d9cd22e6d02e39201bc3299d8c73e130e64f12e033f9e01e286a1cf77ad8",
+      "size": 69
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/tools/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/tools/worktree_guard.py",
+      "sha256": "dd115fa2e23c2a446c7524ef3f726c69631129c1b4f65eab9f69234df13a3bab",
+      "size": 25604
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/__init__.py",
+      "sha256": "6ba40466cd69939df1a1275fdf7cd2dd5075d284da59288caa71b04c31469544",
+      "size": 586
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/activation.py",
+      "sha256": "89527b8c33d24568a77aa4c2e262420bb0ce280036ce8b523e144f56edb3c622",
+      "size": 37529
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/authority.py",
+      "sha256": "5659b3e2c2339ef1b870b71359543dd7c95515c2d7ae0b4ab1e9249fe1f49e98",
+      "size": 58634
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/cutover.py",
+      "sha256": "9cc78335a870f5dc38e2e1a3d7d0cc9c11ab854268eac5b03fa0c42edae271e3",
+      "size": 20335
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/draft_dispatch.py",
+      "sha256": "185511ebd4cbd3c8bb8391ca8cb50a89718ae7ce2dd292128cb4775d9782561e",
+      "size": 27292
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/profile_coordinator.py",
+      "sha256": "afa9a1961aeed17acb739576d8bec1156684aeb13e601a18d2bb27a4cd4fd385",
+      "size": 62766
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/recovery.py",
+      "sha256": "c3730235ffac053854144fa278f02defb09959ce9fd57fb3471a0acfbf5efff1",
+      "size": 6604
+    },
+    {
+      "mode": "0o664",
+      "path": "runtime/workflows/templates.py",
+      "sha256": "0668408ebf0030265daec1e3635b3381be031c40ca3ffc82cb34d41496eae43d",
+      "size": 18888
+    }
+  ],
+  "format": "workflow-preceding-reader-source@1",
+  "generation_python": "3.14.4",
+  "git_version": "git version 2.53.0",
+  "gzip_bytes": 1407169,
+  "gzip_command": "gzip.compress(tar, compresslevel=9, mtime=0)",
+  "gzip_sha256": "7812a3b4cc6887c2744805c3622da94fa07b2611202b4a2194ad2745235e185d",
+  "runtime_tree": "470f1194847c05348531bd6bb59faae41f49c278",
+  "subtree": "runtime",
+  "tar_bytes": 6461440,
+  "tar_sha256": "4f1f972b009945f93b63d7001c82b24cd43e04ab4152cc2f6793f9d8efa9d6e6",
+  "tree": "c8545c48dd63f3d1798cbb4453639b546b9ee473"
+}
