@@ -31,7 +31,7 @@ jobs:
       - name: Checkout immutable candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: c6dcefa2a933443504f9e36e854bca9cf020ce78
+          ref: 294beab846efbceecc3fa5dbfb77ff40c95fa5af
           persist-credentials: false
           path: candidate
       - name: Checkout immutable baseline
@@ -46,7 +46,7 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.19.0
-      - name: Run accepted current-head wheel and frozen evidence
+      - name: Renew affected source cases and macOS ordinary-distribution browser
         run: python3 -I evidence/tests/evidence/task_10272/runner.py
       - name: Seal bounded receipts including failure
         id: seal

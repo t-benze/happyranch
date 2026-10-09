@@ -23,14 +23,14 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-CANDIDATE = 'c6dcefa2a933443504f9e36e854bca9cf020ce78'
+CANDIDATE = '294beab846efbceecc3fa5dbfb77ff40c95fa5af'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
 OBSERVED_MAIN = '970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c'
 SOURCE_INPUT_SHA256 = {
     'tests/helpers/assistant_retirement_artifact_driver.py': '3627ca48916117fc3fa99f6465bc0fc878839e7b24ea07d7b1cecdea5c104118',
     'tests/helpers/assistant_retirement_native_observer.c': 'f70f92756cc057b289b863f972d097ccc47b16551b5b18de4c83f968da313984',
     'tests/helpers/integration_parent.py': 'c7e0718e54f3c783561423f718b0a4073ff2638cf2d2af978d8013e3070f46ba',
-    'tests/integration/test_assistant_retirement.py': '90508e047050a8bbe0250ccf4d6aad9f79ff5f2ecbbaf2d7c7983a7b44a012e3',
+    'tests/integration/test_assistant_retirement.py': 'd64d0fd32f18e1c610e80ecb310321d73dbdcf0f2d9bbfd16f588ab94d9baf0e',
 }
 ARTIFACT_HELPER_SHA256 = '9c3103af313403d2bff2f69dec2a2ef28090bf3fffc71ebc6f6aca484a9ba0c3'
 HATCH = ('hatchling', 'packaging', 'pathspec', 'pluggy', 'tomlkit', 'trove-classifiers')
@@ -251,6 +251,12 @@ def source_stage(commands, role, source, candidate, root, env, uv, python, descr
                  '--no-install-project', '--no-install-local', '--no-build',
                  '--python', python, '--no-python-downloads', '--no-config'], source, setup, 300)
     selections = source_selections(candidate, role)
+    # Parent step8: renew only affected refusal/readmission/tail cases.
+    # Immutable unaffected source/artifact receipts retain their original scope.
+    if role == 'candidate':
+        selections = [(name, nodes) for name, nodes in selections
+                      if name in ('held-false', 'held-true', 'retry-false', 'retry-true')]
+        assert len(selections) == 4 and sum(len(nodes) for _, nodes in selections) == 4
     save(role + '-source-selection.json', {'groups': selections,
          'selected_cases': sum(len(nodes) for _, nodes in selections),
          'per_selection_deadline_seconds': 300, 'whole_collection': False})
@@ -795,9 +801,9 @@ def main():
               'observed_main': OBSERVED_MAIN, 'obligations': {
                   'units_and_surviving_proofs': 'SUSPENDED/UNFULFILLED',
                   'general_integration': 'SKIPPED',
-                  'wheel_and_frozen_behavior': 'current-head fixed wheel/frozen renewal; actual outcomes required',
-                  'real_daemon_browser': 'historical37883864316 macOS4cases; Linux sandbox refusal held; not rerun',
-                  'source_shipping': 'historical37887632538 current-head28passed/3failed + baseline2failed; not rerun',
+                  'wheel_and_frozen_behavior': 'historical37890296572 pinned c6dcefa2; not rerun or relabeled',
+                  'real_daemon_browser': 'current-head macOS4cases required; Linux sandbox refusal retained, not rerun',
+                  'source_shipping': 'candidate4 affected cases + baseline2 same-root characterizations; actual failures retained',
                   'whole_repo_discovery': 'held for audit',
                   'independent_code_review_and_qa': 'pending'}}
     env = clean_env(root / 'bootstrap')
@@ -882,8 +888,8 @@ def main():
         wheels = root / 'wheels'
         wheels.mkdir()
         items = {}
-        # Renew both artifact origins at the unchanged current candidate.
-        names = ('uv', *HATCH, *FREEZE, *(('macholib',) if sys.platform == 'darwin' else ()))
+        # Official Python/uv plus the browser wheel's constrained backend only.
+        names = ('uv', *HATCH) if sys.platform == 'darwin' else ('uv',)
         for name in dict.fromkeys(names):
             wheel = wheels_for(pins, name)
             metadata = RECEIPTS / (name + '-official-metadata.json')
@@ -905,34 +911,17 @@ def main():
         uv = uv_env / 'bin/uv'
         commands.run('uv-version', [uv, '--version'], root, env)
         save('uv-executable.json', identity(uv))
-        hatch_env = root / 'hatch-env'
         constraints = root / 'build-constraints.txt'
-        constraints.write_text(''.join(f'{n}=={items[n]["version"]} --hash=sha256:{items[n]["sha256"]}\n' for n in HATCH))
-        shutil.copyfile(constraints, RECEIPTS / 'build-constraints.txt')
-        commands.run('hatch-venv', [uv, 'venv', '--python', python, '--no-python-downloads',
-                                  '--no-config', hatch_env], root, env)
-        commands.run('hatch-install', [uv, 'pip', 'install', '--python', hatch_env / 'bin/python',
-                     '--no-index', '--find-links', wheels, '--require-hashes', '--no-build',
-                     '--no-python-downloads', '--no-config', '-r', constraints], root, env)
-        distribution_receipt(commands, 'hatch', hatch_env / 'bin/python', [items[n] for n in HATCH], env, root)
-        freeze_env = root / 'freeze-env'
-        freeze_child = clean_env(root / 'freeze-setup')
-        freeze_child['VIRTUAL_ENV'] = str(freeze_env)
-        commands.run('freeze-venv', [uv, 'venv', '--python', python, '--no-python-downloads',
-                                   '--no-config', freeze_env], root, freeze_child)
-        commands.run('freeze-locked-sync', [uv, 'sync', '--active', '--group', 'build', '--frozen',
-                     '--no-dev', '--no-install-project', '--no-install-local', '--no-build',
-                     '--python', python, '--no-python-downloads', '--no-config'], candidate, freeze_child, 300)
-        distribution_receipt(commands, 'freeze', freeze_env / 'bin/python',
-                             [items[n] for n in dict.fromkeys((*FREEZE, *(('macholib',) if sys.platform == 'darwin' else ())))],
-                             freeze_child, root)
-        # Locked tool closure must match both accepted pins and official wheels.
-        import tomllib
-        lock = tomllib.loads((candidate / 'uv.lock').read_text())
-        for name in FREEZE + (('macholib',) if sys.platform == 'darwin' else ()):
-            package = next(p for p in lock['package'] if p['name'] == name)
-            assert package['version'] == items[name]['version']
-            assert any(w['hash'] == 'sha256:' + items[name]['sha256'] for w in package['wheels'])
+        if sys.platform == 'darwin':
+            constraints.write_text(''.join(f'{n}=={items[n]["version"]} --hash=sha256:{items[n]["sha256"]}\n' for n in HATCH))
+            shutil.copyfile(constraints, RECEIPTS / 'build-constraints.txt')
+            hatch_env = root / 'hatch-env'
+            commands.run('hatch-venv', [uv, 'venv', '--python', python, '--no-python-downloads',
+                                      '--no-config', hatch_env], root, env)
+            commands.run('hatch-install', [uv, 'pip', 'install', '--python', hatch_env / 'bin/python',
+                         '--no-index', '--find-links', wheels, '--require-hashes', '--no-build',
+                         '--no-python-downloads', '--no-config', '-r', constraints], root, env)
+            distribution_receipt(commands, 'hatch', hatch_env / 'bin/python', [items[n] for n in HATCH], env, root)
         commands.run('native-process-census-before', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
         save('historical-artifact-reference.json', {
@@ -959,31 +948,43 @@ def main():
                 'manifest_sha256': '3645379473b0dbbd1020210c330b00dd93fd02d63165bd6a68a4856d5add9bec',
                 'driver_sha256': 'ad73f37e0d23b6bdc0c2f9c7759afebc8d789a3937fcd3f6dad34be358841ce8',
                 'chrome_log_sha256': 'f7ae2d59d26259590eb9848d7974d5ce8983a793a0a5c4c3198b72b1458dcccb'}})
-        result['source_execution_this_run'] = 'not-executed; historical-source-reference.json retains actual failures'
+        save('latest-authenticated-artifact-reference.json', {'run': '37890296572', 'evidence': '148135061a6ea49d2f1bb2d76e4bd85cdcaa6280', 'candidate': 'c6dcefa2a933443504f9e36e854bca9cf020ce78', 'baseline': '8378064e9933d5b3af4247eca55750ac427a564f', 'execution_this_run': 'not-executed', 'is_behavioral_pass': False, 'scope': 'Authenticated original wheel/frozen tool/RECORD/TOC/bundle/source and actual scenario/cleanup scopes only; failures retained; no new-head execution/no-read claim', 'manifests': {'task-10279-native-macos-15-1': {'archive_sha256': '5e8dbfa9cc70fb862e8d1f82b950018219cac1d805e1514184852dc964a27452', 'manifest_sha256': '98829cada436f7d9ddd9a4404bcede5b0efbaa967a85b0048855faaf40122e2d', 'original_files': 1742}, 'task-10279-native-ubuntu-latest-1': {'archive_sha256': '93faa1b410284499477ecb1f5072f5491b752cf5955e4d620f4ca141568d0e65', 'manifest_sha256': '0e043bf80340532fee16117917ee35296b1b44ff165707120b69698a7cbae3c7', 'original_files': 1805}}})
+        overlay, baseline_test_head = overlay_characterization(commands, candidate, baseline, env, before_baseline)
+        expected_baseline = json.loads((RECEIPTS / 'baseline-overlay-source-manifest.json').read_text())
+        candidate_exit = source_stage(commands, 'candidate', candidate, candidate,
+            root, env, uv, python, descriptor, observer)
+        baseline_exit = source_stage(commands, 'baseline', baseline, candidate,
+            root, env, uv, python, descriptor, observer)
+        result['source_execution_this_run'] = 'candidate4 affected cases and separate immutable baseline2; authentic failures retained'
+        result['source'] = {'candidate_exit': candidate_exit, 'baseline_exit': baseline_exit,
+            'candidate': CANDIDATE, 'baseline': BASELINE, 'baseline_test_head': baseline_test_head,
+            'baseline_overlay': list(overlay), 'whole_collection': False,
+            'same_root_characterization_failures_are_failures': True}
         for role, source in (('candidate', candidate), ('baseline', baseline)):
             after = source_manifest(commands, role + '-after', source, env,
-                                    CANDIDATE if role == 'candidate' else BASELINE)
-            original = before_candidate if role == 'candidate' else before_baseline
+                CANDIDATE if role == 'candidate' else BASELINE,
+                None if role == 'candidate' else baseline_test_head)
+            original = before_candidate if role == 'candidate' else expected_baseline
             assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        # Independent artifact origins continue after authentic characterization
-        # failures only after source teardown/native attribution is complete.
-        artifact_helper = HERE.parent / 'task_10279/artifacts.py'
-        assert sha(artifact_helper) == ARTIFACT_HELPER_SHA256, 'immutable artifact coordinator drift'
-        artifacts = runpy.run_path(str(artifact_helper), run_name='hosted_artifact_coordinator')
-        result['artifacts'] = artifacts['artifact_stage'](
-            commands, candidate, baseline, root, uv, python, freeze_env,
-            constraints, descriptor, {'save': save, 'clean_env': clean_env,
-            'census': stage_native_census, 'receipts': RECEIPTS, 'wheels': wheels})
-        result['obligations']['wheel_and_frozen_behavior'] = 'actual outcomes in artifact-outcomes.json; failures retained'
-        for role, source in (('candidate', candidate), ('baseline', baseline)):
-            after = source_manifest(commands, role + '-artifacts-after', source, env,
-                CANDIDATE if role == 'candidate' else BASELINE)
-            original = before_candidate if role == 'candidate' else before_baseline
-            assert after['files'] == original['files'] and after['links'] == original['links'], 'artifact stage mutated source'
-        passed = all(row['status'] == 'passed' for row in result['artifacts'].values())
-        result['status'] = 'artifact-checks-passed-source-not-rerun' if passed else 'artifact-checks-failed-source-not-rerun'
+        # A failed characterization does not prevent independent macOS browser
+        # observations once native source cleanup and byte preservation pass.
+        browser_passed = True
+        if sys.platform == 'darwin':
+            assert sha(HERE.parent / 'task_10279/artifacts.py') == ARTIFACT_HELPER_SHA256, 'immutable browser wheel coordinator drift'
+            browser = runpy.run_path(str(HERE.parent / 'task_10279/browser.py'), run_name='hosted_browser_coordinator')
+            result['browser'] = browser['browser_stage'](commands, candidate, root, uv, python,
+                constraints, descriptor, {'save': save, 'clean_env': clean_env,
+                'census': stage_native_census, 'receipts': RECEIPTS, 'wheels': wheels})
+            browser_passed = result['browser']['exit'] == 0 and not result['browser']['error']
+            final = source_manifest(commands, 'candidate-browser-final', candidate, env, CANDIDATE)
+            assert final['files'] == before_candidate['files'] and final['links'] == before_candidate['links'], 'browser mutated source'
+        else:
+            result['browser'] = {'execution_this_run': 'not-executed',
+                'original_failure': 'historical-browser-reference.json', 'status': 'Linux sandbox refusal retained'}
+        passed = candidate_exit == baseline_exit == 0 and browser_passed
+        result['status'] = 'renewal-stage-passed' if passed else 'renewal-stage-failed-actual-failures-retained'
         return 0 if passed else 1
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}

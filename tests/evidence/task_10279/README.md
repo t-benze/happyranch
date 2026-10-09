@@ -1,3 +1,37 @@
+# TASK-10305 bounded renewal on the existing NEVER-MERGE coordinator
+
+Parent TASK10245 step8 admits the test-only R4.5 logical1/native0 correction.
+Candidate294beab846efbceecc3fa5dbfb77ff40c95fa5af is SAME draft PR1017;
+baseline8378064e and main970cdfa7 remain pinned. Renew exactly four affected
+candidate held/retry False/True cases and two independent baseline same-root
+characterizations on both admitted disposable venues. Preserve the ordinary
+closed-stub parent, complete native census, before/after attribution, genuine
+readmission and CLI/result/audit/parent+child/logical0/native0 terminal tail.
+Same-root callbacks retain actual failed exits/results; no shared auth/session
+repair, fake state or assertion waiver. Original failures below stay historical.
+
+After successful native source cleanup and byte preservation, macOS15 alone
+builds a fresh browser wheel and ordinary distribution and runs all four en/
+zh-CN390x844/1440x900 cases/eight real screenshots with HTTP/WS/native keyboard/
+settings/preferences/tasks observations. Added checks observe unbound Cmd/Ctrl-K,
+real help shortcut/tabs, shell absence and bounded layout/raw diagnostic evidence.
+No product instrumentation, mocked endpoint, root/unsandboxed browser or policy
+installation. Linux browser refusal remains historical and is not repeated.
+English overflow/Chinese raw diagnostic require receipt/image comparison before
+baseline/removal disposition; this preparation is no browser or behavioral PASS.
+
+No artifact scenario/frozen-project rerun: original authenticated run37890296572
+wheel/frozen receipts retain actual immutable tools/RECORD/TOC/bundle/source and
+scenario scopes only, with failed same-root outcomes. A new browser wheel proves
+only its actual new origin. Byte equality is no renewed execution or no-read proof.
+Whole discovery remains held pending COMPLETE import/global/decorator/conftest/
+plugin/hook/loader audit; the three admitted exact source-hashed read-only ip
+probes do not admit any unknown launch. No collect/import-all/test body here.
+Units/proofs SUSPENDED THR291seq5/16, keepers UNFULFILLED, general integration
+SKIPPED THR243seq42. Independent full-diff APPROVE/behavioral PASS still pending.
+No merge/deploy/restart/live cleanup/migration. The paragraphs below are retained
+historical receipts and preparations, not the current execution specification.
+
 # TASK-10279 native admission, never merge
 
 Current-head artifact renewal after authenticated source run37887632538:

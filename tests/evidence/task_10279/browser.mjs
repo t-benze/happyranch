@@ -182,6 +182,82 @@ const absence = String.raw`(() => {
     location:location.pathname, navLinks:controls.filter(e => e.href.startsWith('/orgs/test/')) };
 })()`;
 
+// Only native input and DOM observations of the ordinary application.
+// No synthetic event dispatch, app imports, handler calls or event listeners.
+async function fixedShortcut(session, name) {
+  assert.ok(['Meta-K', 'Control-K', 'Help'].includes(name));
+  const help = name === 'Help';
+  const params = { key: help ? '?' : 'k', code: help ? 'Slash' : 'KeyK',
+    modifiers: help ? 8 : name === 'Meta-K' ? 4 : 2,
+    windowsVirtualKeyCode: help ? 191 : 75,
+    ...(binding.platform === 'darwin' ? { nativeVirtualKeyCode: help ? 0x2c : 0x28 } : {}) };
+  await cdp.send('Input.dispatchKeyEvent', { type: help ? 'keyDown' : 'rawKeyDown', ...params,
+    ...(help ? { text: '?', unmodifiedText: '/' } : {}) }, session);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params }, session);
+  await sleep(50);
+  return { name, params, after: await keyState(session) };
+}
+
+async function shellPaletteHelp(session, locale) {
+  const observation = { unbound: [], helpTabs: [] };
+  const editable = `!!document.activeElement?.closest('input,textarea,[contenteditable="true"],[role="textbox"]')`;
+  observation.focusTabs = [];
+  for (let attempt = 0; attempt < 60 && await evaluate(session, editable); attempt++) {
+    await key(session, 'Tab', 9);
+    observation.focusTabs.push(await keyState(session));
+  }
+  const before = await keyState(session);
+  observation.before = before;
+  assert.equal(await evaluate(session, editable), false, 'shortcuts require actual noneditable focus');
+  assert.equal(await evaluate(session, '!!document.querySelector("[role=dialog]")'), false);
+  for (const name of ['Meta-K', 'Control-K']) {
+    const input = await fixedShortcut(session, name);
+    input.dialogCount = await evaluate(session, 'document.querySelectorAll("[role=dialog]").length');
+    input.absence = await evaluate(session, absence);
+    observation.unbound.push(input);
+    assert.equal(input.dialogCount, 0, `${name} remains unbound`);
+    assert.deepEqual(input.absence.forbidden, []);
+    assert.equal(input.absence.dockCount, 0);
+  }
+  observation.helpInput = await fixedShortcut(session, 'Help');
+  const title = locale === 'en' ? 'Keyboard shortcuts' : '键盘快捷键';
+  await wait(session, `(() => { const d=document.querySelector('[role="dialog"]');
+    return !!d && [...d.querySelectorAll('h2')].some(e=>e.textContent.trim()===${JSON.stringify(title)}); })()`);
+  const labels = await evaluate(session, `[...document.querySelectorAll('[role="dialog"] [role="tab"]')].map(e=>e.textContent.trim())`);
+  assert.equal(labels.length, 7, 'all surviving help sections are present');
+  for (const label of labels) {
+    await evaluate(session, `(() => { const t=[...document.querySelectorAll('[role="dialog"] [role="tab"]')]
+      .filter(e=>e.textContent.trim()===${JSON.stringify(label)}); if(t.length!==1)throw new Error('ambiguous help tab');
+      t[0].click(); return true; })()`);
+    await wait(session, `!![...document.querySelectorAll('[role="dialog"] [role="tab"]')]
+      .find(e=>e.textContent.trim()===${JSON.stringify(label)} && e.getAttribute('aria-selected')==='true')`);
+    const tab = await evaluate(session, `(() => { const d=document.querySelector('[role="dialog"]');
+      return {text:d.innerText, absence:${absence}}; })()`);
+    assert.ok(tab.text.length > 0 && tab.text.length <= 8192, 'bounded readable help');
+    assert.ok(!/assistant|助手|a-mode/i.test(tab.text), 'help contains no retired entry');
+    assert.deepEqual(tab.absence.forbidden, []);
+    assert.equal(tab.absence.dockCount, 0);
+    observation.helpTabs.push({ label, ...tab });
+  }
+  await key(session, 'Escape', 27);
+  await wait(session, '!document.querySelector("[role=dialog]")');
+  observation.shell = await evaluate(session, absence);
+  assert.deepEqual(observation.shell.forbidden, []);
+  assert.equal(observation.shell.dockCount, 0);
+  return observation;
+}
+
+const layoutObservation = String.raw`(() => {
+  const root=document.documentElement;
+  const alerts=[...document.querySelectorAll('[role="alert"]')].map(e=>e.innerText.slice(0,1024));
+  const outside=[...document.querySelectorAll('aside a,main button,main input,main h1,main h2')]
+    .filter(e=>{const r=e.getBoundingClientRect();return r.width>0 && (r.left<0 || r.right>innerWidth);})
+    .slice(0,30).map(e=>({tag:e.tagName,text:(e.innerText||e.getAttribute('aria-label')||'').slice(0,80),
+      left:e.getBoundingClientRect().left,right:e.getBoundingClientRect().right}));
+  return {viewport:innerWidth,scrollWidth:root.scrollWidth,overflow:root.scrollWidth>innerWidth,
+    outside,alerts,knownRawDiagnostics:(document.body.innerText.match(/(?:authority_reviewer_incoherent|profile_dependency_incoherent|Traceback|[a-z_]+_not_registered)/g)||[]).slice(0,20)};
+})()`;
+
 try {
   if (binding.platform === 'linux') {
     const targetId = (await cdp.send('Target.createTarget', { url: 'chrome://sandbox' })).targetId;
@@ -221,6 +297,7 @@ try {
       await wait(session, `!!document.body && !document.body.innerText.includes(${JSON.stringify(locale === 'en' ? 'Loading settings' : '正在加载设置')})`);
       row.phase = 'settings-observation';
       row.settings = await evaluate(session, absence);
+      row.settingsLayout = await evaluate(session, layoutObservation);
       assert.deepEqual(row.settings.forbidden, []);
       assert.equal(row.settings.dockCount, 0);
       assert.ok(row.settings.navLinks.some(link => link.href === '/orgs/test/settings/preferences'));
@@ -281,9 +358,15 @@ try {
       row.tasksAfterWait = await evaluate(session, `({location:location.pathname,
         hasAside:!!document.querySelector('aside'), hasTasksLink:!!document.querySelector('a[href="/orgs/test/tasks"]')})`);
       row.navigation = await evaluate(session, absence);
+      row.tasksLayout = await evaluate(session, layoutObservation);
       assert.deepEqual(row.navigation.forbidden, []);
       assert.equal(row.navigation.dockCount, 0);
       row.screenshots.push(await screenshot(session, `${locale}-${width}-${row.navigationError ? 'navigation-failed' : 'tasks'}.png`));
+      try {
+        row.shellPaletteHelp = await shellPaletteHelp(session, locale);
+      } catch (error) {
+        row.shellPaletteHelpError = { type: error.name, message: error.message };
+      }
       row.phase = 'http-observation';
       row.http = cdp.events.filter(event => event.session === session).map(({ session: _session, ...event }) => event);
       for (const path of ['/api/v1/auth/bootstrap', '/api/v1/orgs', '/api/v1/orgs/test/settings'])
@@ -291,8 +374,8 @@ try {
       assert.ok(!row.http.some(event => event.path.startsWith('/api/v1/assistant')), 'UI must not call retired Assistant HTTP');
       assert.equal(row.screenshots.length, 2);
       assert.ok(row.screenshots.every(shot => shot.width === width && shot.height === height));
-      row.phase = row.keyboardError || row.navigationError ? 'complete-with-navigation-failure' : 'complete';
-      row.status = row.keyboardError || row.navigationError ? 'failed' : 'passed';
+      row.phase = row.keyboardError || row.navigationError || row.shellPaletteHelpError ? 'complete-with-required-check-failure' : 'complete';
+      row.status = row.keyboardError || row.navigationError || row.shellPaletteHelpError ? 'failed' : 'passed';
     } catch (error) {
       row.error = { type: error.name, message: error.message };
     } finally {
