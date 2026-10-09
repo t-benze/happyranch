@@ -15,6 +15,8 @@ import stat
 import subprocess
 import sys
 import time
+import tarfile
+import urllib.request
 
 
 def file_receipt(path):
@@ -23,89 +25,113 @@ def file_receipt(path):
     return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
-def prepare_linux_chrome(commands, root, env, save):
-    """Authenticate fixed installed package bytes into an ordinary protected copy.
+# Immutable official Google Packages metadata observed before this evidence edit.
+CHROME_URL = 'https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_155.0.8059.39-1_amd64.deb'
+CHROME_SHA256 = 'c58aa0f2cd66179c9f050e062c882d27aa9b9f8c2b7c73fee3498560b5ed0b38'
+CHROME_SIZE = 143552428
+CHROME_METADATA_SHA256 = '15c94819fc901aac960b974ddb747a45ec5f1cc85b0f30e3adbb02642e23bdbb'
 
-    A writable image executable is input only, never the launched executable.
-    No privileged sandbox helper is copied or invoked; default user-namespace
-    sandbox readiness remains an actual browser requirement, with no fallback.
+
+def prepare_linux_chrome(commands, root, env, save):
+    """Read a fixed authenticated archive into an ordinary protected prefix.
+
+    Never install a package, execute maintainer scripts, alter the host or
+    materialize the privileged sandbox helper. Default sandbox remains required.
     """
     assert sys.platform == 'linux' and os.getuid() == os.geteuid() != 0
-    source = Path('/opt/google/chrome')
-    metadata = Path('/var/lib/dpkg/info/google-chrome-stable.md5sums')
-    for path in (metadata, *metadata.parents, source, *source.parents):
+    tool = Path('/usr/bin/dpkg-deb')
+    for path in (tool, *tool.parents):
         info = path.lstat()
         assert not stat.S_ISLNK(info.st_mode) and info.st_uid == 0
-        assert not info.st_mode & 0o022, f'unprotected package origin parent: {path}'
-    assert metadata.stat().st_size <= 1024 * 1024
-    metadata_bytes = metadata.read_bytes()
-    package, _ = commands.run('browser-chrome-package', ['/usr/bin/dpkg-query', '-W',
-        '-f=${binary:Package}\t${Version}\t${db:Status-Abbrev}\n', 'google-chrome-stable'], root, env)
-    package_name, version, status = package.strip().split('\t')
-    assert package_name == 'google-chrome-stable' and status.strip() == 'ii'
-    assert version and len(version) <= 100
-    inventory = {}
-    for line in metadata_bytes.decode('utf-8', errors='strict').splitlines():
-        checksum, name = line.split(None, 1)
-        assert len(checksum) == 32 and all(c in '0123456789abcdef' for c in checksum)
-        assert name not in inventory and not Path(name).is_absolute() and '..' not in Path(name).parts
-        inventory[name] = checksum
-    assert len(inventory) <= 2000 and 'opt/google/chrome/chrome' in inventory
-    destination = root / 'browser-chrome'
-    destination.mkdir(mode=0o700)
-    entries = {}; total = 0
-    for directory, directories, files in os.walk(source, followlinks=False):
-        directories.sort(); files.sort()
-        for name in directories:
-            info = (Path(directory) / name).lstat()
-            assert stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
-        for name in files:
-            original = Path(directory) / name
-            relative = original.relative_to(source).as_posix()
-            before = original.lstat()
-            assert stat.S_ISREG(before.st_mode) and before.st_uid == 0
-            key = 'opt/google/chrome/' + relative
-            assert key in inventory, f'unrecorded Chrome package member: {relative}'
-            assert len(entries) < 2000 and before.st_size <= 300 * 1024 * 1024
+        assert not info.st_mode & 0o022, f'unprotected archive tool origin: {path}'
+    tool_origin = file_receipt(tool)
+    version, _ = commands.run('browser-chrome-archive-tool-version', [tool, '--version'], root, env)
+    archive = root / 'browser-chrome.deb'
+    digest = hashlib.sha256(); size = 0
+    with urllib.request.urlopen(CHROME_URL, timeout=30) as response, archive.open('xb') as sink:
+        assert response.geturl() == CHROME_URL and response.status == 200
+        for block in iter(lambda: response.read(1024 * 1024), b''):
+            size += len(block)
+            assert size <= CHROME_SIZE
+            digest.update(block); sink.write(block)
+    archive.chmod(0o400)
+    assert size == CHROME_SIZE and digest.hexdigest() == CHROME_SHA256
+    archive_receipt = file_receipt(archive)
+    save('browser-linux-chrome-download.json', {'url': CHROME_URL, 'size': size,
+        'sha256': digest.hexdigest(), 'official_metadata_url':
+        'https://dl.google.com/linux/chrome/deb/dists/stable/main/binary-amd64/Packages',
+        'official_metadata_sha256': CHROME_METADATA_SHA256,
+        'authentication': 'immutable official HTTPS archive SHA256 and size pin',
+        'archive': archive_receipt, 'workload_uid': os.getuid()})
+    # dpkg-deb streams data only; this command cannot invoke package scripts.
+    tar = root / 'browser-chrome-data.tar'
+    started = time.monotonic()
+    with tar.open('xb') as sink:
+        unpack = subprocess.run([str(tool), '--fsys-tarfile', str(archive)], cwd=root,
+            env=env, stdout=sink, stderr=subprocess.PIPE, timeout=120, check=False)
+    tar.chmod(0o400)
+    assert len(unpack.stderr) <= 16384
+    save('browser-linux-chrome-unpack.json', {'argv': [str(tool), '--fsys-tarfile', str(archive)],
+        'tool': tool_origin, 'tool_version': version, 'exit': unpack.returncode,
+        'stderr': unpack.stderr.decode('utf-8', errors='strict'),
+        'duration_seconds': time.monotonic() - started, 'ordinary_uid': os.getuid(),
+        'data_archive_size': tar.stat().st_size})
+    assert unpack.returncode == 0 and tar.stat().st_size <= 600 * 1024 * 1024
+    assert file_receipt(tool) == tool_origin and file_receipt(archive) == archive_receipt
+    destination = root / 'browser-chrome'; destination.mkdir(mode=0o700)
+    entries = {}; names = set(); total = 0
+    with tarfile.open(tar, 'r|') as stream:
+        for member in stream:
+            name = member.name.removeprefix('./')
+            assert not Path(name).is_absolute() and '..' not in Path(name).parts
+            assert name not in names and len(names) < 2000
+            names.add(name)
+            assert 0 <= member.size <= 300 * 1024 * 1024
+            total += member.size
+            assert total <= 512 * 1024 * 1024
+            if not name.startswith('opt/google/chrome/'):
+                continue
+            relative = name.removeprefix('opt/google/chrome/')
+            if not relative:
+                assert member.isdir()
+                continue
+            assert member.uid == 0 and member.gid == 0
             target = destination / relative
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            md5 = hashlib.md5(usedforsecurity=False); sha = hashlib.sha256(); size = 0
-            # Authenticate the excluded helper too, but never materialize or launch it.
-            sink = None if relative == 'chrome-sandbox' else target.open('xb')
+            if member.isdir():
+                target.mkdir(mode=0o700, parents=True, exist_ok=True)
+                continue
+            assert member.isfile(), f'nonregular Chrome package member: {relative}'
+            assert relative not in entries and len(entries) < 2000
+            # Hash excluded setuid helper directly from archive, never extract it.
+            copied = relative != 'chrome-sandbox'
+            if copied:
+                assert not member.mode & (stat.S_ISUID | stat.S_ISGID)
+                target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            sha = hashlib.sha256(); count = 0
+            sink = target.open('xb') if copied else None
             try:
-                with original.open('rb') as stream:
-                    for block in iter(lambda: stream.read(1024 * 1024), b''):
-                        size += len(block); total += len(block)
-                        assert size <= 300 * 1024 * 1024 and total <= 512 * 1024 * 1024
-                        md5.update(block); sha.update(block)
+                with stream.extractfile(member) as source:
+                    for block in iter(lambda: source.read(1024 * 1024), b''):
+                        count += len(block); assert count <= member.size
+                        sha.update(block)
                         if sink is not None:
                             sink.write(block)
             finally:
                 if sink is not None:
                     sink.close()
-            assert original.lstat() == before and size == before.st_size
-            assert md5.hexdigest() == inventory[key], f'Chrome installed-package byte mismatch: {relative}'
-            row = {'sha256': sha.hexdigest(), 'package_md5': md5.hexdigest(),
-                'size': size, 'source_uid': before.st_uid, 'source_mode': before.st_mode,
-                'source_device': before.st_dev, 'source_inode': before.st_ino,
-                'copied': sink is not None}
-            if sink is not None:
-                assert not before.st_mode & (stat.S_ISUID | stat.S_ISGID), 'privileged Chrome member refused'
-                target.chmod(0o500 if before.st_mode & 0o111 else 0o400)
-                row['copy'] = file_receipt(target)
-                row['copy_mode'] = target.stat().st_mode
+            assert count == member.size
+            row = {'sha256': sha.hexdigest(), 'size': count, 'archive_uid': member.uid,
+                'archive_mode': member.mode, 'copied': copied}
+            if copied:
+                target.chmod(0o500 if member.mode & 0o111 else 0o400)
+                row['copy'] = file_receipt(target); row['copy_mode'] = target.stat().st_mode
             entries[relative] = row
-    expected = {name.removeprefix('opt/google/chrome/') for name in inventory
-                if name.startswith('opt/google/chrome/')}
-    assert set(entries) == expected and 'chrome' in entries
-    assert metadata.read_bytes() == metadata_bytes
-    for name, row in entries.items():
-        path = source / name; info = path.lstat()
-        assert (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size) == (
-            row['source_device'], row['source_inode'], row['source_mode'], row['source_uid'], row['size'])
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256']
-    origin = {'schema_version': 1, 'source': str(source), 'destination': str(destination),
-        'package': package_name, 'version': version, 'metadata': file_receipt(metadata),
+    assert 'chrome' in entries and 'chrome-sandbox' in entries
+    assert file_receipt(archive) == archive_receipt and file_receipt(tool) == tool_origin
+    origin = {'schema_version': 2, 'source': CHROME_URL, 'destination': str(destination),
+        'package': 'google-chrome-stable', 'version': '155.0.8059.39-1',
+        'archive': archive_receipt, 'archive_size': CHROME_SIZE,
+        'official_metadata_sha256': CHROME_METADATA_SHA256, 'tool': tool_origin,
         'entries': entries, 'bytes': total, 'workload_uid': os.getuid(),
         'sandbox_flags': [], 'excluded_privileged_member': 'chrome-sandbox'}
     record = save('browser-linux-chrome-origin.json', origin)
@@ -114,20 +140,26 @@ def prepare_linux_chrome(commands, root, env, save):
 
 
 def validate_linux_chrome(record, executable):
-    """Revalidate every closed copied package member, with no origin exception."""
+    """Revalidate the pinned archive and every closed protected extracted member."""
     value = json.loads(Path(record).read_text())
     assert set(value) == {'schema_version', 'source', 'destination', 'package', 'version',
-        'metadata', 'entries', 'bytes', 'workload_uid', 'sandbox_flags', 'excluded_privileged_member'}
-    assert value['schema_version'] == 1 and value['source'] == '/opt/google/chrome'
-    assert value['package'] == 'google-chrome-stable'
+        'archive', 'archive_size', 'official_metadata_sha256', 'tool', 'entries', 'bytes',
+        'workload_uid', 'sandbox_flags', 'excluded_privileged_member'}
+    assert value['schema_version'] == 2 and value['source'] == CHROME_URL
+    assert value['package'] == 'google-chrome-stable' and value['version'] == '155.0.8059.39-1'
+    assert value['archive_size'] == CHROME_SIZE and value['archive']['sha256'] == CHROME_SHA256
+    assert value['official_metadata_sha256'] == CHROME_METADATA_SHA256
+    archive = Path(value['archive']['path'])
+    assert archive.name == 'browser-chrome.deb' and archive.stat().st_size == CHROME_SIZE
+    assert file_receipt(archive) == value['archive']
+    assert value['tool']['path'] == '/usr/bin/dpkg-deb'
+    assert file_receipt(value['tool']['path']) == value['tool']
     assert value['workload_uid'] == os.getuid() != 0 and value['sandbox_flags'] == []
     assert value['excluded_privileged_member'] == 'chrome-sandbox'
     assert 0 < len(value['entries']) <= 2000 and 0 < value['bytes'] <= 512 * 1024 * 1024
-    assert value['metadata']['path'] == '/var/lib/dpkg/info/google-chrome-stable.md5sums'
-    assert file_receipt(value['metadata']['path']) == value['metadata']
     destination = Path(value['destination'])
     assert destination.is_absolute() and destination.name == 'browser-chrome'
-    assert Path(executable) == destination / 'chrome'
+    assert archive.parent == destination.parent and Path(executable) == destination / 'chrome'
     actual = set()
     for directory, directories, files in os.walk(destination, followlinks=False):
         for name in (None, *directories):
@@ -136,12 +168,10 @@ def validate_linux_chrome(record, executable):
             assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022
         for name in files:
             path = Path(directory) / name; relative = path.relative_to(destination).as_posix()
-            actual.add(relative)
-            assert len(actual) <= 2000
+            actual.add(relative); assert len(actual) <= 2000
             row = value['entries'][relative]; info = path.lstat()
-            assert set(row) == {'sha256', 'package_md5', 'size', 'source_uid', 'source_mode',
-                'source_device', 'source_inode', 'copied', 'copy', 'copy_mode'}
-            assert row['source_uid'] == 0 and 0 <= row['size'] <= 300 * 1024 * 1024
+            assert set(row) == {'sha256', 'size', 'archive_uid', 'archive_mode', 'copied', 'copy', 'copy_mode'}
+            assert row['archive_uid'] == 0 and 0 <= row['size'] <= 300 * 1024 * 1024
             assert stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
             assert not info.st_mode & (stat.S_ISUID | stat.S_ISGID | 0o022)
             assert row['copied'] and row['copy']['path'] == str(path)

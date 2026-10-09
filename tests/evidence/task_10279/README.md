@@ -334,3 +334,32 @@ readiness claim. This pin-only recovery preserves observer/tool/action/cap
 contracts and historical source origins. Current-head source, real browser,
 audited collection and independent review/QA remain pending; suspended keepers
 remain UNFULFILLED. The evidence branch must never merge.
+
+
+Run37873453720 at evidence01729a6c8 retained complete dual native admissions,
+but Linux refused unprotected installed Chrome parent /opt/google/chrome.
+macOS executed four genuine wheel-daemon/ordinary-dist browser cases and all
+failed a browser evaluation exception before screenshots. Original failures,
+complete archives and scoped cleanup remain retained, never promoted to PASS.
+
+The finite Linux tool admission now downloads exactly official Google Chrome
+stable155.0.8059.39-1/amd64 archive143552428bytes, SHA256
+c58aa0f2cd66179c9f050e062c882d27aa9b9f8c2b7c73fee3498560b5ed0b38.
+The immutable pin was recorded from official HTTPS Google Packages metadata
+SHA25615c94819fc901aac960b974ddb747a45ec5f1cc85b0f30e3adbb02642e23bdbb.
+Ordinary root-owned authenticated dpkg-deb streams only the archive data;
+no install or maintainer scripts execute. Bounded safe regular Chrome members
+are copied into a protected ordinary-owned prefix, every byte SHA256 recorded
+and revalidated together with the pinned archive/tool before and after use.
+The setuid sandbox helper is hashed in the archive but never materialized.
+No unprotected installed Chrome executes; no source permission fence is relaxed.
+Default namespace and seccomp sandbox status remains mandatory and unavailable
+sandbox/access still fails. No host settings/privileged browser/fallback.
+
+DOM waits tolerate an unloaded document during ordinary Page.navigate.
+Fixed case phase and bounded exception class/text/line/column are retained;
+actual exceptions and failed HTTP/keyboard/WS/absence assertions remain failed.
+No response bodies, headers, credentials or application instrumentation added.
+Fresh dual native admission and real four cases/eight directly viewed images
+remain required. Candidate/workflow/native observer/pins unchanged; all other
+pending scope and suspended UNFULFILLED keepers retained. Never merge evidence.

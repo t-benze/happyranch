@@ -63,7 +63,14 @@ class CDP {
 const cdp = new CDP(binding.devtools);
 async function evaluate(session, expression) {
   const value = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, session);
-  assert.ok(!value.exceptionDetails, 'browser evaluation exception');
+  if (value.exceptionDetails) {
+    // Bounded primitive error identity; no exception objects or response bodies.
+    const detail = value.exceptionDetails;
+    const diagnostic = { text: String(detail.text).slice(0, 256),
+      type: String(detail.exception?.className || 'unknown').slice(0, 128),
+      line: detail.lineNumber, column: detail.columnNumber };
+    throw new Error('browser evaluation exception: ' + JSON.stringify(diagnostic));
+  }
   return value.result.value;
 }
 async function wait(session, expression) {
@@ -119,6 +126,7 @@ try {
     const row = { locale, width, height, status: 'failed', screenshots: [] };
     results.cases.push(row);
     let context;
+    row.phase = 'context';
     try {
       context = (await cdp.send('Target.createBrowserContext')).browserContextId;
       const targetId = (await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: context })).targetId;
@@ -129,9 +137,11 @@ try {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, session);
       await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source:
         `if (location.origin===${JSON.stringify(origin.origin)}) localStorage.setItem('happyranch.ui.locale', ${JSON.stringify(locale)});` }, session);
+      row.phase = 'settings-navigation';
       await cdp.send('Page.navigate', { url: binding.base + 'orgs/test/settings/daemon-capacity' }, session);
-      await wait(session, `document.documentElement.lang===${JSON.stringify(locale)} && !!document.querySelector('a[href="/orgs/test/settings/preferences"]')`);
-      await wait(session, `!document.body.innerText.includes(${JSON.stringify(locale === 'en' ? 'Loading settings' : '正在加载设置')})`);
+      await wait(session, `document.documentElement?.lang===${JSON.stringify(locale)} && !!document.querySelector('a[href="/orgs/test/settings/preferences"]')`);
+      await wait(session, `!!document.body && !document.body.innerText.includes(${JSON.stringify(locale === 'en' ? 'Loading settings' : '正在加载设置')})`);
+      row.phase = 'settings-observation';
       row.settings = await evaluate(session, absence);
       assert.deepEqual(row.settings.forbidden, []);
       assert.equal(row.settings.dockCount, 0);
@@ -139,6 +149,7 @@ try {
       row.screenshots.push(await screenshot(session, `${locale}-${width}-settings.png`));
       // Focus via native Tab events, then activate the actual Preferences link with Enter.
       let reached = false;
+      row.phase = 'keyboard-navigation';
       for (let attempt = 0; attempt < 60; attempt++) {
         await key(session, 'Tab', 9);
         if (await evaluate(session, `document.activeElement?.getAttribute('href')==='/orgs/test/settings/preferences'`)) {
@@ -154,6 +165,7 @@ try {
       assert.deepEqual(row.preferences.forbidden, []);
       assert.equal(row.preferences.dockCount, 0);
       // Actual retired transport from the browser. No fake backend or auth injection.
+      row.phase = 'retired-websocket';
       row.retiredWebSocket = await evaluate(session, `new Promise((resolve,reject) => {
         const ws=new WebSocket(location.origin.replace('http:','ws:')+'/api/v1/assistant/a-mode');
         const timer=setTimeout(()=>{ws.close();reject(new Error('retired WS deadline'));},5000);
@@ -161,18 +173,21 @@ try {
         ws.onclose=e=>{clearTimeout(timer);resolve({accepted:false,code:e.code});};
       })`);
       assert.equal(row.retiredWebSocket.accepted, false);
+      row.phase = 'tasks-navigation';
       await evaluate(session, `(() => { const a=document.querySelector('a[href="/orgs/test/tasks"]'); if(!a)throw new Error('Tasks navigation absent'); a.click(); return true; })()`);
       await wait(session, `location.pathname==='/orgs/test/tasks' && !!document.querySelector('aside')`);
       row.navigation = await evaluate(session, absence);
       assert.deepEqual(row.navigation.forbidden, []);
       assert.equal(row.navigation.dockCount, 0);
       row.screenshots.push(await screenshot(session, `${locale}-${width}-tasks.png`));
+      row.phase = 'http-observation';
       row.http = cdp.events.filter(event => event.session === session).map(({ session: _session, ...event }) => event);
       for (const path of ['/api/v1/auth/bootstrap', '/api/v1/orgs', '/api/v1/orgs/test/settings'])
         assert.ok(row.http.some(event => event.path === path && event.status === 200), `real HTTP ${path}`);
       assert.ok(!row.http.some(event => event.path.startsWith('/api/v1/assistant')), 'UI must not call retired Assistant HTTP');
       assert.equal(row.screenshots.length, 2);
       assert.ok(row.screenshots.every(shot => shot.width === width && shot.height === height));
+      row.phase = 'complete';
       row.status = 'passed';
     } catch (error) {
       row.error = { type: error.name, message: error.message };
