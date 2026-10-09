@@ -1,5 +1,22 @@
 # TASK10335 audited whole-repository collection under root10318
 
+Original macOS15 run37923353211/attempt1 at evidence6650179f retained parent
+exit87: the hash corpus omitted candidate/tests/client/__init__.py. The emitted
+effective options establish collectonly=true, markexpr='', tests/ selection,
+no distribution/workers/looponfail; full registration/counts/errors/IP outcomes
+and final body/provider/launch control tail remain unestablished. Original failure
+and archive are preserved; acquisition JOB4046 exit0 is not collection PASS.
+The missing-initializer class is repaired together: runtime/agents, tests/client,
+tests/contract and tests/tenant_isolation are exactly empty; tests/scripts contains
+only its literal docstring. Every missing candidate package initializer was read
+from immutable294beab8; these five bytes are now individually hash-bound alongside
+the unchanged746-file conservative aid. No source code or execution control
+changed. Full transitive closure remains subject to actual receipts and semantic
+review; no arbitrary origin/launch is admitted. Failed invocation native tables
+527/537 have scoped owned survivors[] at UID501, and complete source manifests
+match. These facts are historical cleanup/pristine-source evidence only.
+
+
 The selected remaining stage uses the existing native macOS15 admission and
 pinned CPython3.14.4/uv/locked dependency recipe. Before collection,
 collection-audit.json binds the reviewed immutable source, installed packages,
