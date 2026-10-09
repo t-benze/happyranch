@@ -98,6 +98,18 @@ def seed(root, *, worker='maker', lifecycle='active', executor='claude'):
     return paths
 
 
+def _execute_release_ddl(conn: sqlite3.Connection, ddl: str) -> None:
+    """Execute independent literal DDL without splitting comments or committing."""
+    statement = ''
+    for line in ddl.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ''
+    if statement.strip():
+        raise ValueError('incomplete_identity_names_release_ddl')
+
+
 def release_seed(path, history, layout, *, names=False, slug='alpha'):
     literals = json.loads((ASSETS / 'release_literals.json').read_text())
     if history != 'fresh':
@@ -114,8 +126,7 @@ def release_seed(path, history, layout, *, names=False, slug='alpha'):
     db = Database(path)
     try:
         with db.workflow_schema_transaction() as conn:
-            for sql in literals['CANONICAL_WORKFLOW_DDL'].split(';'):
-                if sql.strip(): conn.execute(sql)
+            _execute_release_ddl(conn, literals['CANONICAL_WORKFLOW_DDL'])
             stamp='2026-10-09T00:00:00+00:00'
             event_digest=hashlib.sha256(json.dumps(literals['install_event'],sort_keys=True,separators=(',',':')).encode()).hexdigest()
             conn.execute('INSERT INTO workflow_adapter_versions VALUES (1)')
@@ -126,20 +137,17 @@ def release_seed(path, history, layout, *, names=False, slug='alpha'):
         if layout in ('E', 'G'):
             with db.workflow_schema_transaction() as conn:
                 # Independent literal reference: no candidate layout/DDL input.
-                for sql in literals['CANONICAL_WORKFLOW_DRAFT_DDL'].split(';'):
-                    if sql.strip(): conn.execute(sql)
+                _execute_release_ddl(conn, literals['CANONICAL_WORKFLOW_DRAFT_DDL'])
                 conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
                 if layout == 'G':
                     conn.execute('DROP TABLE workflow_events')
                     conn.execute('DROP TABLE workflow_submissions')
-                    for sql in literals['CANONICAL_WORKFLOW_SUBMISSION_DDL'].split(';'):
-                        if sql.strip(): conn.execute(sql)
+                    _execute_release_ddl(conn, literals['CANONICAL_WORKFLOW_SUBMISSION_DDL'])
                     conn.execute('CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id)')
                     conn.execute('INSERT INTO workflow_submission_schema_versions VALUES (1)')
         if names:
             with db.workflow_schema_transaction() as conn:
-                for sql in (ASSETS / 'naming-v1.sql').read_text().split(';'):
-                    if sql.strip(): conn.execute(sql)
+                _execute_release_ddl(conn, (ASSETS / 'naming-v1.sql').read_text())
                 conn.execute('INSERT INTO identity_name_schema VALUES (1,1,?)', (slug,))
                 for key, life, label, rev in (('founder','founder','Founder',9), ('manager','active','Manager',4), ('maker','active','Sam',7)):
                     kind = 'founder' if key == 'founder' else 'agent'
