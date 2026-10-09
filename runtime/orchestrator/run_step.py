@@ -909,6 +909,8 @@ class _HumanFailedRecoveryOperation:
     result_id: int
     phase: str = "evidence"
     key: tuple | None = None
+    accepted_payload: tuple[dict, dict, dict] | None = None
+    relation: tuple[str, str] | None = None
     completion: Future = field(default_factory=Future)
     disposition: str = "continuation_pending"
     timer: object | None = None
@@ -916,6 +918,17 @@ class _HumanFailedRecoveryOperation:
     job_ids: tuple[str, ...] = ()
     bookkeeping: list[Callable[[], None]] = field(default_factory=list)
     parent_effect: Callable[[], None] | None = None
+
+    def matches_context(self, context: dict) -> bool:
+        task, episode = context["task"], context["episode"]
+        return bool(self.accepted_payload is not None
+            and self.key == (task.id, self.agent, episode["origin_session_id"], self.session_id, self.result_id)
+            and self.relation == (task.parent_task_id, task.team)
+            and self.accepted_payload[1] == context["report"].model_dump()
+            and self.accepted_payload[2] == context["selected_row"]
+            and all(self.accepted_payload[0][name] == episode[name]
+                    for name in ("origin_session_id", "provider_session_id", "claimed_at",
+                                 "expires_at", "accepted_result_session_id")))
 
     def finish(self, disposition: str) -> None:
         self.disposition = disposition
@@ -970,6 +983,8 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
                 key = (operation.task_id, operation.agent, episode["origin_session_id"], operation.session_id, operation.result_id)
                 if operation.key is None:
                     operation.key = key
+                    operation.accepted_payload = episode, context["report"].model_dump(), context["selected_row"]
+                    operation.relation = (task.parent_task_id, task.team)
                     if operation.parent_effect is None:
                         operation.parent_effect = lambda: _enqueue_parent_if_waiting(
                             orch, operation.task_id, root_auto_revisit_spawned=False)
@@ -977,7 +992,7 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
                     if full is None:
                         full = orch._human_failed_recovery_by_fingerprint = {}
                     full[key] = operation
-                elif operation.key != key:
+                elif not operation.matches_context(context):
                     operation.finish("lost_owner")
                     return
                 if episode["state"] == "callback_consumed" and operation.phase in ("evidence", "chain", "fanout", "fail", "review", "history", "marker"):
@@ -1055,7 +1070,10 @@ def _retry_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
     def retry() -> None:
         operation.timer = None
         _drive_human_failed_recovery(orch, operation)
-    operation.timer = loop.call_later(0.05, retry)
+    try:
+        operation.timer = loop.call_later(0.05, retry)
+    except RuntimeError:
+        operation.finish("recovery_required")
 
 
 def _drain_human_failed_recovery_jobs(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
@@ -1069,12 +1087,15 @@ def _drain_human_failed_recovery_jobs(orch: "Orchestrator", operation: _HumanFai
         operation.phase = "parent_handoff"
         return
     operation.disposition = "continuation_pending"
-    operation.drain = _kill_jobs_for_terminating_task(
-        orch, operation.task_id,
-        recovery_owner=(operation.agent, operation.session_id, operation.result_id, TaskStatus.FAILED.value),
-        recovery_job_ids=operation.job_ids,
-        human_recovery_operation=operation,
-    )
+    try:
+        operation.drain = _kill_jobs_for_terminating_task(
+            orch, operation.task_id,
+            recovery_owner=(operation.agent, operation.session_id, operation.result_id, TaskStatus.FAILED.value),
+            recovery_job_ids=operation.job_ids,
+            human_recovery_operation=operation,
+        )
+    except RuntimeError:
+        operation.finish("recovery_required")
 
 
 def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str,
@@ -3604,8 +3625,7 @@ def _kill_jobs_for_terminating_task(
                     result_row_id=operation.result_id,
                 )
                 if (disposition != "eligible" or context["episode"]["state"] != "callback_consumed"
-                        or operation.key != (task_id, operation.agent, context["episode"]["origin_session_id"],
-                                             operation.session_id, operation.result_id)):
+                        or not operation.matches_context(context)):
                     operation.finish(disposition if disposition != "eligible" else "lost_owner")
                     return
             except Exception:
@@ -3727,6 +3747,25 @@ def _log_verdict_if_delegated(
     agent = task.assigned_agent
     if not agent or orch.teams.is_team_manager(agent) or agent in ("orchestrator", "unknown"):
         return
+    if not success:
+        with orch._db._lock:
+            current = orch._db.get_task(task_id)
+            try:
+                human = current is not None and orch.teams.manager_for_team(current.team).kind == "human"
+            except KeyError:
+                human = False
+            if human:
+                if current.assigned_agent != agent or (current.task_type == "subtask" and orch._db.selected_human_leaf_recovery_result(
+                        task_id=task_id, agent=agent, session_id=current.current_session_id or "") is not None):
+                    # The selected effect owner alone inserts or reuses this
+                    # row; an ordinary late tail cannot append a verdict.
+                    return
+                orch._audit.log_review_verdict(
+                    task_id=task_id, reviewer=_delegated_reviewer(orch, current),
+                    verdict=_verdict_for_delegated(orch, task_id, success=success),
+                    feedback=current.note, reviewed_agent=agent,
+                )
+                return
     reviewer = _delegated_reviewer(orch, task)
     orch._audit.log_review_verdict(
         task_id=task_id,

@@ -80,7 +80,8 @@ codes=[code for code in members(compile(data,str(path),'exec',dont_inherit=True,
        if code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect']
 assert len(codes)==1
 expected=hashlib.sha256(marshal.dumps(codes[0])).hexdigest()
-writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_before_retry'}
+writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_before_retry',
+             'writer_cancelled_before_retry'}
 writer_path=source/'runtime/orchestrator/run_step.py'
 writer_data=writer_path.read_bytes()
 assert writer_data==subprocess.check_output(['git','-C',str(source),'show',revision+':runtime/orchestrator/run_step.py'])
@@ -329,10 +330,16 @@ PARTIAL_ROSTERS = [(head, codex, roster, empty)
                        (False, False, True), (True, True, False), (True, False, True), (False, True, True))]
 
 
-def _attach_process(root: Path, slug: str = 'test', *, save: bool = False) -> subprocess.CompletedProcess[str]:
+def _attach_process(root: Path, slug: str = 'test', *, save: bool = False,
+                    reader_source: Path | None = None, reader_sha: str | None = None) -> subprocess.CompletedProcess[str]:
     """Actual cold OrgState attachment in a fresh candidate interpreter."""
     from tests.helpers.integration_stub_guard.guard import manifest
     binding = manifest()
+    source = Path(binding['source']) if reader_source is None else reader_source
+    revision = binding['revision'] if reader_sha is None else reader_sha
+    assert source.is_absolute() and not source.is_symlink()
+    assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == revision
+    assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain']).strip()
     script = '''
 import json,sys
 from pathlib import Path
@@ -343,12 +350,12 @@ assert Path(sys.modules['runtime'].__file__).resolve().parent == Path(sys.argv[1
 org=OrgState.load(slug=sys.argv[3],root=Path(sys.argv[2]),settings=Settings(project_root=Path(sys.argv[1])))
 try:
     if sys.argv[4]=='save': org.teams.save()
-    print(json.dumps({'agents':org.teams.all_agents(),'default':org.teams.default_team,
-                      'task_default':org.teams.task_default_team}))
+    print(json.dumps({'agents':org.teams.all_agents(),'default':getattr(org.teams,'default_team','engineering'),
+                      'task_default':getattr(org.teams,'task_default_team','engineering')}))
 finally:
     org.close()
 '''
-    return subprocess.run([sys.executable, '-I', '-c', script, binding['source'], str(root), slug,
+    return subprocess.run([sys.executable, '-I', '-c', script, str(source), str(root), slug,
                            'save' if save else 'read'],
                           capture_output=True, text=True, timeout=30)
 
@@ -655,7 +662,8 @@ C4_SCENARIOS = [
     for agent, recovery in [('consultant_head', False), ('consultant_codex', False), ('consultant_codex', True)]
     for status in ('completed', 'blocked')
 ] + [('consultant_codex', True, 'blocked', cut) for cut in (
-    'fail', 'review', 'writer_busy_before_consumption-inline_worker', 'writer_reacquired_before_retry')]
+    'fail', 'review', 'writer_busy_before_consumption-inline_worker', 'writer_reacquired_before_retry',
+    'writer_cancelled_before_retry')]
 
 
 @pytest.mark.parametrize('agent,recovery,status,cut', C4_SCENARIOS, ids=[
@@ -707,7 +715,8 @@ def test_c4_normal_and_recovered_verdict_attribution(
             # a genuine callback/result for its next parent invocation is owed.
             assert conn.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (reply['task_id'],)).fetchone()[0] == 1
         port = owned['start']('none')
-    elif cut in ('writer_busy_before_consumption-inline_worker', 'writer_reacquired_before_retry'):
+    elif cut in ('writer_busy_before_consumption-inline_worker', 'writer_reacquired_before_retry',
+                  'writer_cancelled_before_retry'):
         owned = request.node._roster_fault_daemon
         witness = owned['witness']
         def record(event: str) -> dict:
@@ -742,6 +751,18 @@ def test_c4_normal_and_recovered_verdict_attribution(
                 assert conn.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (reply['task_id'],)).fetchone()[0] == 1
                 assert conn.execute("SELECT COUNT(*) FROM jobs WHERE task_id=? AND reason='task_ended'", (observed['task'],)).fetchone()[0] == 0
         held_readback()
+        cancelled_before = None
+        if cut == 'writer_cancelled_before_retry':
+            cancelled = httpx.post(_base(port) + f'/tasks/{observed["task"]}/cancel',
+                headers=_auth_headers(), json={'rationale': 'selected writer cancellation winner', 'cascade': False},
+                timeout=10)
+            assert cancelled.status_code == 200, cancelled.text
+            assert observed['task'] in cancelled.json()['cancelled']
+            with sqlite3.connect(root / 'happyranch.db') as conn:
+                cancelled_before = conn.execute('SELECT status,cancelled_at,note,current_session_id FROM tasks WHERE id=?',
+                    (observed['task'],)).fetchone()
+                assert cancelled_before[0] == 'failed' and cancelled_before[1]
+                assert cancelled_before[3] == observed['session']
         witness.with_name(witness.name + '.release-0').write_text('release owned native writer\n')
         if cut == 'writer_reacquired_before_retry':
             second = record('held-1')
@@ -750,6 +771,23 @@ def test_c4_normal_and_recovered_verdict_attribution(
             witness.with_name(witness.name + '.release-1').write_text('release second owned native writer\n')
         record('writer-complete')
         completed = record('consumer-finished')
+        if cut == 'writer_cancelled_before_retry':
+            assert completed['disposition'] == 'lost_owner'
+            actual_parent = _wait_for_terminal(_base(port), reply['task_id'])
+            assert actual_parent['task']['status'] == 'completed'
+            with sqlite3.connect(root / 'happyranch.db') as conn:
+                assert conn.execute('SELECT status,cancelled_at,note,current_session_id FROM tasks WHERE id=?',
+                    (observed['task'],)).fetchone() == cancelled_before
+                assert conn.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone() == selected_before
+                assert conn.execute("SELECT COUNT(*) FROM audit_log WHERE task_id=? AND action='review_verdict'",
+                    (observed['task'],)).fetchone() == (0,)
+                assert conn.execute('SELECT state,accepted_result_id FROM task_completion_recoveries WHERE task_id=?',
+                    (observed['task'],)).fetchone() == ('callback_accepted', observed['result'])
+                parents = conn.execute('SELECT id,session_id FROM task_results WHERE task_id=? ORDER BY id',
+                    (reply['task_id'],)).fetchall()
+                assert len(parents) == 2 and all(type(row[0]) is int and row[0] > 0 for row in parents)
+                assert parents[0][1] != parents[1][1]
+            return  # cancellation's real parent progression is the winner
         assert completed['disposition'] == 'done'
         assert completed['key'] == [observed[key] for key in ('task', 'agent', 'origin', 'session', 'result')]
     final = _wait_for_terminal(_base(port), reply['task_id'])
@@ -803,9 +841,13 @@ def test_c4_normal_and_recovered_verdict_attribution(
             assert conn.execute('SELECT * FROM task_results WHERE task_id=? ORDER BY id', (children[0][0],)).fetchall() == frozen
 
 
-@pytest.mark.parametrize('roster_kind', ['human', 'legacy-agent-control'])
+@pytest.mark.parametrize('roster_kind,reader_kind', [
+    ('human', 'current'), ('legacy-agent-control', 'current'),
+    ('legacy-agent-control', 'pinned-b317-schema2-refusal'),
+    ('legacy-agent-control', 'pinned-b317-schema1-control'),
+], ids=['human-current', 'legacy-agent-current', 'b317-schema2-refusal', 'b317-schema1-control'])
 def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: Path,
-                                                       roster_kind: str) -> None:
+                                                       roster_kind: str, reader_kind: str) -> None:
     """Real current publication/cold reader plus a pinned admission input.
 
     This L subcase owns current JSON/cold-process admission. Historical
@@ -814,6 +856,16 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
     """
     from tests.helpers.integration_stub_guard.guard import manifest
     binding = manifest()
+    old_sha = 'b3179b123fddbb0f0f604ed9e0d148f1b23455f3'
+    reader_source = Path(binding['source'])
+    reader_sha = binding['revision']
+    old_control = reader_kind == 'pinned-b317-schema1-control'
+    if reader_kind != 'current':
+        supplied = os.environ.get('HAPPYRANCH_TEST_ROSTER_OLD_READER_SOURCE')
+        assert supplied, 'HELD: manager must authorize and provide independently owned exact b317 reader source'
+        reader_source, reader_sha = Path(supplied), old_sha
+        assert reader_source.is_absolute() and not reader_source.is_symlink()
+        assert reader_source.resolve(strict=True) != Path(binding['source']).resolve(strict=True)
     if roster_kind == 'human':
         data = yaml.safe_load((runtime / 'org/teams.yaml').read_text())
         data['teams']['default'] = {'manager': {'kind': 'human', 'principal': 'founder'},
@@ -824,21 +876,25 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
         seed_workspace(runtime, 'consultant_codex', executor='codex')
     # No daemon owns this fixture. Each actual attachment process exits/closes
     # before independent source/row readback and before the next process.
-    attached = _attach_process(runtime)
+    attached = _attach_process(runtime, reader_source=reader_source if old_control else None,
+                               reader_sha=reader_sha if old_control else None)
     assert attached.returncode == 0, attached.stderr
     authority = runtime / 'org/.workflow-authority.json'
     raw = authority.read_bytes()
     snapshot = json.loads(raw)
-    assert snapshot['schema_version'] == 2
-    assert snapshot['task_default_team'] == 'engineering'
-    assert all(set(row['manager']) == {'kind', 'principal'} for row in snapshot['teams'])
+    assert snapshot['schema_version'] == (1 if old_control else 2)
+    if not old_control:
+        assert snapshot['task_default_team'] == 'engineering'
+        assert all(set(row['manager']) == {'kind', 'principal'} for row in snapshot['teams'])
+    else:
+        assert all(isinstance(row['manager'], str) for row in snapshot['teams'])
     if roster_kind == 'human':
         assert snapshot['default_team'] == 'default'
         assert next(row for row in snapshot['teams'] if row['name'] == 'default') == {
             'name': 'default', 'manager': {'kind': 'human', 'principal': 'founder'},
             'workers': ['consultant_codex', 'consultant_head']}
         assert 'founder' not in [row['name'] for row in snapshot['agents']]
-    else:
+    elif not old_control:
         assert snapshot['default_team'] == 'engineering'
         assert all(row['manager']['kind'] == 'agent' for row in snapshot['teams'])
     with sqlite3.connect(runtime / 'happyranch.db') as conn:
@@ -846,7 +902,8 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
         pointer = conn.execute('SELECT current_generation,snapshot_digest,state FROM workflow_authority_pointers WHERE namespace=?', ('org/test',)).fetchone()
         assert pointer == (1, hashlib.sha256(raw).hexdigest(), 'ready')
         assert conn.execute('SELECT COUNT(*) FROM workflow_publication_leases').fetchone()[0] == 0
-    reopened = _attach_process(runtime)
+    reopened = _attach_process(runtime, reader_source=reader_source if old_control else None,
+                              reader_sha=reader_sha if old_control else None)
     assert reopened.returncode == 0, reopened.stderr
     assert authority.read_bytes() == raw
     with sqlite3.connect(runtime / 'happyranch.db') as conn:
@@ -857,15 +914,16 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
     # Parent admission already closes the environment. Override only this
     # separately owned reader's home; never attach an ambient registered org.
     reader_environment = {**os.environ, 'HAPPYRANCH_DAEMON_HOME': str(reader_home)}
-    command = [sys.executable, '-I', str(probe), '--source', binding['source'],
-               '--source-sha', binding['revision'], '--root', str(runtime), '--org', 'test',
-               '--operation', 'capture-admission', '--expect', 'admitted',
+    expected = 'workflow_activation_authority_stale' if reader_kind == 'pinned-b317-schema2-refusal' else 'admitted'
+    command = [sys.executable, '-I', str(probe), '--source', str(reader_source),
+               '--source-sha', reader_sha, '--root', str(runtime), '--org', 'test',
+               '--operation', 'capture-admission', '--expect', expected,
                '--snapshot-digest', hashlib.sha256(raw).hexdigest()]
     actual = subprocess.run(command, env=reader_environment, capture_output=True, text=True, timeout=30)
     assert actual.returncode == 0, (actual.stdout, actual.stderr)
     receipt = json.loads(actual.stdout.splitlines()[-1])
-    assert receipt['actual'] == 'admitted' and receipt['persisted_readback_unchanged']
-    assert receipt['reader_source_sha'] == binding['revision']
+    assert receipt['actual'] == expected and receipt['persisted_readback_unchanged']
+    assert receipt['reader_source_sha'] == reader_sha
     assert receipt['snapshot_digest'] == hashlib.sha256(raw).hexdigest()
     (tmp_path / 'C5-current-reader-receipt.json').write_text(json.dumps(
         {'command': command, 'daemon_home': str(reader_home), 'exit': actual.returncode,
@@ -919,6 +977,60 @@ runpy.run_path(str(script),run_name='__main__')
         {'source_sha': binding['revision'], 'command': command, 'exit': actual.returncode,
          'refusal': expected, 'closed_file_readback_unchanged': True,
          'transient_write_proof': 'separate observer required', 'M_success': 'not attempted'}, sort_keys=True))
+
+
+@pytest.mark.parametrize('refusal', ['missing-direction', 'missing-operation', 'wrong-digest',
+                                   'design-plan-not-manifest'])
+def test_c9_crash_recovery_and_replay(runtime: Path, tmp_path: Path, refusal: str) -> None:
+    """L-only recovery command refusal and repeated input preservation.
+
+    These are process/argument subcases, not a successful maintenance/crash
+    replay. M cuts, actual checked-manifest recovery, reboot and transient
+    zero-write proof still require the independently authorized M capability.
+    The distinct C8 risk is apply/check admission; C9 must reject recovery's
+    absent direction/operation without treating a prior plan as owned state.
+    """
+    from tests.helpers.human_team_incompatible_reader_probe import _closed_files
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    actual_attach = _attach_process(runtime)
+    assert actual_attach.returncode == 0, actual_attach.stderr
+    proposed = tmp_path / 'unexecuted-recovery-plan.json'
+    raw = json.dumps({'kind': 'THR296-design-plan-v1', 'source_sha': binding['revision'],
+                      'operation_id': 'unexecuted-proposal', 'containment': {}}).encode()
+    proposed.write_bytes(raw)
+    arguments = ['--recover', '--runtime-root', str(runtime.parent.parent), '--org', 'test',
+                 '--manifest', str(proposed), '--expected-digest',
+                 '0' * 64 if refusal == 'wrong-digest' else hashlib.sha256(raw).hexdigest()]
+    if refusal != 'missing-direction':
+        arguments.extend(['--direction', 'complete'])
+    if refusal != 'missing-operation':
+        arguments.extend(['--operation-id', 'unexecuted-proposal'])
+    expected = ('manifest_digest_mismatch' if refusal == 'wrong-digest' else
+                'real_checked_manifest_and_exact_candidate_required' if refusal == 'design-plan-not-manifest'
+                else 'explicit_recovery_owner_and_direction_required')
+    launcher = """
+import runpy,sys
+from pathlib import Path
+source=Path(sys.argv[1]);sys.dont_write_bytecode=True;sys.path.insert(0,str(source))
+script=source/'scripts/migrate_human_team_roster.py'
+sys.argv=[str(script),*sys.argv[2:]]
+runpy.run_path(str(script),run_name='__main__')
+"""
+    command = [sys.executable, '-I', '-c', launcher, binding['source'], *arguments]
+    before = _closed_files(runtime.parent.parent)
+    receipts = []
+    for invocation in range(2):
+        actual = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        assert actual.returncode == 1, (actual.stdout, actual.stderr)
+        assert expected in actual.stderr, actual.stderr
+        assert proposed.read_bytes() == raw
+        assert _closed_files(runtime.parent.parent) == before
+        receipts.append({'invocation': invocation, 'exit': actual.returncode, 'refusal': expected})
+    (tmp_path / 'C9-L-refusal-receipt.json').write_text(json.dumps(
+        {'source_sha': binding['revision'], 'command': command, 'invocations': receipts,
+         'closed_file_readback_unchanged': True, 'transient_write_proof': 'UNAVAILABLE without observer',
+         'M_crash_recovery_and_reboot': 'NOT EXECUTED'}, sort_keys=True))
 
 
 CONTEXTS = [(agent, kind) for agent in ('consultant_head', 'consultant_codex')

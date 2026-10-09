@@ -2271,7 +2271,7 @@ class TasksMixin:
             return "ambiguous_history", None
         return "eligible", dict(task=task, episode=episode, report=report,
                                 reviewer=reviewer, note=note, verdict=verdict,
-                                bound=bound, reviews=reviews)
+                                bound=bound, reviews=reviews, selected_row=row)
 
     @_synchronized
     def apply_human_failed_recovery_effect(self, *, task_id: str, agent: str,

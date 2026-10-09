@@ -4963,7 +4963,11 @@ def test_consumed_agent_failed_subtask_preserves_legacy_owner_guard(tmp_path: Pa
         org.close()
 
 
-@pytest.mark.parametrize('cut', ['completed', 'rf5_zero_review', 'rf6_one_review'])
+@pytest.mark.parametrize('cut', ['completed', 'rf5_zero_review', 'rf6_one_review',
+    'defer-no-jobs', 'defer-cancelled', 'defer-new-session', 'defer-shutdown', 'defer-loop-refused',
+    'rf5-foreign-result', 'rf5-foreign-review', 'rf5-foreign-completion',
+    'rf5-unknown-audit', 'rf5-third-start', 'rf5-wrong-note', 'rf6-reviewer-drift',
+    'rf5-long-informational'])
 @pytest.mark.parametrize('verdict', [value for value, _ in C4_HUMAN_VERDICTS], ids=[name for _, name in C4_HUMAN_VERDICTS])
 def test_c4_human_codex_accepted_exact_verdict(tmp_path: Path, cut: str, verdict: str | None) -> None:
     """SUSPENDED accepted-result/SQLite localization, explicitly fixture data.
@@ -5029,16 +5033,115 @@ teams:
         if cut == 'completed':
             _consume_accepted_completion_recovery(org.orchestrator, 'TASK-LEAF', report,
                 agent=owner, session_id='recovery', result_row_id=result_id)
+        elif cut.startswith('defer-'):
+            from runtime.orchestrator.run_step import _submit_human_failed_recovery
+            def persisted():
+                with sqlite3.connect(db.path) as observer:
+                    return tuple(observer.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
+                                 for table in ('tasks', 'task_results', 'task_completion_recoveries', 'audit_log'))
+            async def deferred():
+                org.orchestrator._main_loop = asyncio.get_running_loop()
+                await org.workflow_authority._async_writer_lock.acquire()
+                try:
+                    before = persisted()
+                    if cut == 'defer-loop-refused':
+                        with mock.patch.object(asyncio.get_running_loop(), 'call_later',
+                                               side_effect=RuntimeError('loop closed at scheduling boundary')):
+                            operation = _submit_human_failed_recovery(org.orchestrator, 'TASK-LEAF', owner, 'recovery', result_id)
+                        assert operation.completion.done() and operation.completion.result() == 'recovery_required'
+                        assert operation.timer is None and persisted() == before
+                        return
+                    operation = _submit_human_failed_recovery(org.orchestrator, 'TASK-LEAF', owner, 'recovery', result_id)
+                    assert operation.disposition == 'writer_busy' and not operation.completion.done()
+                    assert operation.timer is not None and operation.phase == 'evidence'
+                    # A second caller joins the same owning entry. Its Future
+                    # must stay pending too; neither caller supplies a verdict.
+                    joined = _submit_human_failed_recovery(org.orchestrator, 'TASK-LEAF', owner, 'recovery', result_id)
+                    await asyncio.sleep(0.12)
+                    assert not operation.completion.done() and not joined.completion.done()
+                    assert persisted() == before
+                    if cut == 'defer-cancelled':
+                        db.update_task('TASK-LEAF', cancelled_at=claim_time.isoformat())
+                    elif cut == 'defer-new-session':
+                        db.update_task('TASK-LEAF', current_session_id='replacement')
+                    elif cut == 'defer-shutdown':
+                        queue._stopping = True
+                    winner = persisted()
+                finally:
+                    org.workflow_authority._async_writer_lock.release()
+                # Timeout is solely a test oracle, never a production retry cap.
+                actual = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(operation.completion)), 2)
+                assert await asyncio.wrap_future(joined.completion) == actual
+                assert operation.timer is None
+                if cut != 'defer-no-jobs':
+                    assert actual == ('recovery_required' if cut == 'defer-shutdown' else 'lost_owner')
+                    assert persisted() == winner
+                else:
+                    assert actual == 'done'
+                    assert operation.key == ('TASK-LEAF', owner, 'origin', 'recovery', result_id)
+                    assert operation.phase == 'caller_bookkeeping'
+            try:
+                asyncio.run(deferred())
+            finally:
+                org.orchestrator._main_loop = None
+            if cut != 'defer-no-jobs':
+                return
         else:
-            effects = ('evidence', 'chain', 'fanout', 'fail') + (('review',) if cut == 'rf6_one_review' else ())
+            effects = ('evidence', 'chain', 'fanout', 'fail') + (('review',) if cut in ('rf6_one_review', 'rf6-reviewer-drift') else ())
             for effect in effects:
                 assert db.apply_human_failed_recovery_effect(task_id='TASK-LEAF', agent=owner,
                     session_id='recovery', result_row_id=result_id, effect=effect) == 'progressed'
             with sqlite3.connect(db.path) as observer:
                 assert observer.execute('SELECT state FROM task_completion_recoveries WHERE task_id=?', ('TASK-LEAF',)).fetchone() == ('callback_accepted',)
                 reviews = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", ('TASK-LEAF',)).fetchall()
-                assert len(reviews) == (0 if cut == 'rf5_zero_review' else 1)
+                assert len(reviews) == (1 if cut in ('rf6_one_review', 'rf6-reviewer-drift') else 0)
                 original_review = reviews[0] if reviews else None
+            if cut in ('rf5-foreign-result', 'rf5-foreign-review', 'rf5-foreign-completion',
+                       'rf5-unknown-audit', 'rf5-third-start', 'rf5-wrong-note', 'rf6-reviewer-drift'):
+                # Deliberate historical fixture corruption, never asserted as
+                # an actual process/provider callback. Independent complete SQL
+                # readback owns the refusal/preservation assertion.
+                if cut == 'rf5-foreign-result':
+                    db.insert_task_result(task_id='TASK-LEAF', agent=owner, session_id='foreign',
+                        status='completed', output_summary='foreign', confidence_score=90)
+                elif cut == 'rf5-foreign-review':
+                    audit.log_review_verdict('TASK-LEAF', reviewer='foreign', verdict='rejected',
+                        feedback='self-blocked: literal accepted outcome', reviewed_agent=owner)
+                elif cut == 'rf5-foreign-completion':
+                    db.insert_audit_log(task_id='TASK-LEAF', agent=owner, action='completion_report',
+                        payload={**report.model_dump(), 'output_summary': 'foreign'})
+                elif cut == 'rf5-unknown-audit':
+                    db.insert_audit_log(task_id='TASK-LEAF', agent=owner, action='foreign_lifecycle_effect', payload={})
+                elif cut == 'rf5-third-start':
+                    audit.log_session_start('TASK-LEAF', owner, str(root / 'workspaces' / owner),
+                        session_id='third', invocation_purpose='worker_execution', executor='codex')
+                elif cut == 'rf5-wrong-note':
+                    db.update_task('TASK-LEAF', note='agent session failed: different cause')
+                else:
+                    db.update_task('TASK-PARENT', assigned_agent=owner)
+                with sqlite3.connect(db.path) as observer:
+                    before = tuple(observer.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
+                                   for table in ('tasks', 'task_results', 'task_completion_recoveries', 'audit_log'))
+                operation = _consume_accepted_completion_recovery(org.orchestrator, 'TASK-LEAF', report,
+                    agent=owner, session_id='recovery', result_row_id=result_id)
+                assert operation is not None and operation.completion.done()
+                assert operation.completion.result() == ('lost_owner' if cut == 'rf5-wrong-note' else 'ambiguous_history')
+                with sqlite3.connect(db.path) as observer:
+                    assert tuple(observer.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
+                                 for table in ('tasks', 'task_results', 'task_completion_recoveries', 'audit_log')) == before
+                return
+            if cut == 'rf5-long-informational':
+                for number in range(1100):
+                    db.insert_audit_log(task_id='TASK-LEAF', agent=owner, action='progress',
+                        payload={'message': f'preserved observation {number}'})
+            # A late ordinary failure tail must not append a task-wide review
+            # to the accepted selected cause, at either failed prefix.
+            from runtime.orchestrator.run_step import _log_verdict_if_delegated
+            with sqlite3.connect(db.path) as observer:
+                logs_before = observer.execute('SELECT * FROM audit_log ORDER BY id').fetchall()
+            _log_verdict_if_delegated(org.orchestrator, 'TASK-LEAF', success=False)
+            with sqlite3.connect(db.path) as observer:
+                assert observer.execute('SELECT * FROM audit_log ORDER BY id').fetchall() == logs_before
             org.close()
             org = OrgState.load(slug='test', root=root, settings=Settings())
             org.orchestrator._queue = queue

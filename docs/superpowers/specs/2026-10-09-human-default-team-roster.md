@@ -38,8 +38,12 @@ review is inserted/reused; RF6 must preserve bytes/ID. Review and native history
 precede consumed marker. Jobs reuse the unchanged native settlement helper.
 Retained phase/original callbacks survive main-loop writer contention with
 nonblocking publisher-before-DB attempts, async-writer exclusion and uncapped
-50ms outside-lock retry. Portability waits outside org.db_lock; pending is never
-success. Cancellation/owner drift/shutdown stop further effects and preserve
+50ms outside-lock retry. The retained operation compares the original selected
+row/report, omission episode and parent/team relation before subsequent effects
+and native job-control admission. Loop scheduling refusal resolves to
+recovery-required, retaining durable residue. An ordinary failed verdict tail
+cannot append a review owned by that selected callback.
+Portability waits outside org.db_lock; pending is never success. Cancellation/owner drift/shutdown stop further effects and preserve
 truthful residue. Cold startup may reconcile durable evidence without signalling
 persisted PIDs. Completed-leaf and agent-team behavior remain unchanged.
 Selected live job drain uses the existing termination owner with full K and
