@@ -40,7 +40,15 @@ def test_manual_local_ci_preserves_schedule_only_integration() -> None:
     assert manual_steps["Set up Node"]["with"]["node-version"] == "24"
     assert manual_steps["Sync dependencies (frozen)"]["run"] == "uv sync --frozen"
     local_all = manual_steps["Run exact local CI all in a clean test environment"]
-    assert local_all["run"] == "uv run python scripts/nightly_local_ci_all.py\n"
+    assert local_all["run"] == (
+        'if [ "$GITHUB_REPOSITORY" = "t-benze/happyranch" ] && '
+        '[ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && '
+        '[ "$GITHUB_REF" = "refs/heads/task/TASK-10034" ]; then\n'
+        '  uv run --frozen --no-sync python scripts/nightly_local_ci_all.py\n'
+        'else\n'
+        '  uv run python scripts/nightly_local_ci_all.py\n'
+        'fi\n'
+    )
     assert local_all["env"]["ALL_ONLY"] == "${{ inputs.all_only }}"
     # Receipt production moved out of the workflow scalar. Inspect its actual
     # owner without importing/executing it; Python keeper proof stays suspended.
