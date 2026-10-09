@@ -393,10 +393,10 @@ checks source/evidence sentinels, cgroup v2 and actual tmpfs byte/inode quotas.
 The operation records admitted Docker>=26, its exact version's Moby local-driver
 source, <=2GiB immutable base input, Python3.14/Node24 and locked dependencies/
 venue-only browser pins. No local host image pull or workload launch follows.
-One holder0.05CPU/64MiB/16processes and one serial payload1.95CPU/2560MiB/496
-stay within2CPU/512processes. Reserving all persistent5GiB scratch plus192MiB
-evidence in addition to payload/holder memory totals7936MiB<8GiB. New tmpfs
-pages also charge the writing payload's cgroup and may fail its2560MiB limit;
+One holder0.05CPU/64MiB/16processes and one serial payload1.95CPU/3840MiB/496
+stay within2CPU/512processes. Reserving all persistent4GiB scratch plus192MiB
+evidence in addition to payload/holder memory totals8192MiB=8GiB. New tmpfs
+pages also charge the writing payload's cgroup and may fail its3840MiB limit;
 filesystem capacity supplies no extra memory. Scratch has200000 inodes and
 evidence10000. Work files have8MiB limits; complete stage/control output is
 bounded and any cap or retained-tail marker refuses acceptance. Rotated Docker
@@ -432,3 +432,13 @@ SKIPPED THR243seq42, never PASS. Historical JOB4075 frontend-all exit0 applies t
 its predecessor bytes only. Full same-head independent review, behavioral QA
 (revisit10329 through recorded supersession), current checks/hooks and guarded
 manager merge remain outstanding.
+
+Hosted run37982722702 at ef4a4baf failed dependency preparation with actual
+Docker `OOMKilled=true`, exit137, during Vite gzip-size computation under the
+former2560MiB payload cap. No naming selector or screenshot ran there; complete
+export and owned cleanup succeeded. The bounded runner redistributes scratch
+from5GiB to4GiB and payload memory from2560MiB to3840MiB within the same8GiB
+conservative total, retaining CPU/process/evidence/inode/deadline limits.
+Existing boundary records now include actual volume bytes/inodes and cgroup
+current/peak/events. Renewed preparation and naming proof remain pending;
+previous source-specific successes and failed receipts retain their attribution.

@@ -173,16 +173,16 @@ naming_call 10 65536 local-driver.go curl --fail --silent --show-error --max-tim
 sha256sum "$naming_destination/local-driver.go" > "$naming_destination/local-driver.sha256"
 naming_scratch_created=1 # include a create with uncertain response in cleanup
 naming_call 3 65536 scratch-create.txt docker volume create --driver local --opt type=tmpfs --opt device=tmpfs \
-  --opt o=size=5g,nr_inodes=200000,mode=1777 "$naming_scratch"
+  --opt o=size=4g,nr_inodes=200000,mode=1777 "$naming_scratch"
 naming_artifacts_created=1 # include a create with uncertain response in cleanup
 naming_call 3 65536 artifacts-create.txt docker volume create --driver local --opt type=tmpfs --opt device=tmpfs \
   --opt o=size=192m,nr_inodes=10000,mode=1777 "$naming_artifacts"
-# Holder0.05CPU/64MiB/16processes + one serial payload1.95CPU/2560MiB/496.
-# Conservatively reserve ALL persistent tmpfs pages separately:5GiB+192MiB+
-# 2560MiB+64MiB=7936MiB<8GiB. Each payload's cgroup also charges its new tmpfs
+# Holder0.05CPU/64MiB/16processes + one serial payload1.95CPU/3840MiB/496.
+# Conservatively reserve ALL persistent tmpfs pages separately:4GiB+192MiB+
+# 3840MiB+64MiB=8192MiB=8GiB. Each payload's cgroup also charges its new tmpfs
 # pages; filesystem capacity is never promised as additional cgroup memory.
 # /dev/shm pages charge the active cgroup and are already within its memory cap.
-naming_limits=(--cpus=1.95 --memory=2560m --memory-swap=2560m --pids-limit=496 --read-only \
+naming_limits=(--cpus=1.95 --memory=3840m --memory-swap=3840m --pids-limit=496 --read-only \
   --cap-drop=ALL --security-opt=no-new-privileges --shm-size=256m \
   --log-driver=local --log-opt max-size=2m --log-opt max-file=1 --log-opt compress=false)
 naming_remaining=$((naming_deadline-$(date +%s)))
@@ -239,16 +239,19 @@ cat > "$naming_dir/boundary.sh" <<'BOUNDARY'
 set -euo pipefail
 stage=$1 sha=$2
 # Refuse absent or silently weakened cgroup/volume byte/inode controls.
-test "$(cat /sys/fs/cgroup/memory.max)" = 2684354560
+test "$(cat /sys/fs/cgroup/memory.max)" = 4026531840
 test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
 test "$(cat /sys/fs/cgroup/pids.max)" = 496
 test "$(cat /sys/fs/cgroup/cpu.max)" = '195000 100000'
 node - "$stage" "$sha" <<'JS'
 const f=require('fs'); const [stage,sha]=process.argv.slice(2);
-for(const [path,bytes,inodes] of [['/scratch',5*1024**3,200000],['/evidence',192*1024**2,10000]]) {
+const volumes=[];
+for(const [path,bytes,inodes] of [['/scratch',4*1024**3,200000],['/evidence',192*1024**2,10000]]) {
   const s=f.statfsSync(path);
   if(s.type!==0x1021994 || s.bsize*s.blocks!==bytes || s.files!==inodes)
     throw Error('unsupported tmpfs byte/inode quota: '+path+JSON.stringify(s));
+  volumes.push({path,capacity_bytes:s.bsize*s.blocks,used_bytes:s.bsize*(s.blocks-s.bfree),
+    capacity_inodes:s.files,used_inodes:s.files-s.ffree});
 }
 if(stage==='init') {
   f.writeFileSync('/scratch/source-sentinel',sha);
@@ -258,7 +261,12 @@ if(stage==='init') {
   for(const path of ['/scratch/source-sentinel','/evidence/evidence-sentinel'])
     if(f.readFileSync(path,'utf8')!==sha) throw Error('lost stage sentinel: '+path);
 }
-f.writeFileSync('/evidence/boundary-'+stage+'.json',JSON.stringify({stage,sha,pid:process.pid,tmpfs_quotas_verified:true})+'\n');
+const cgroup={};
+for(const name of ['memory.current','memory.peak','memory.events'])
+  cgroup[name]=f.readFileSync('/sys/fs/cgroup/'+name,'utf8').trim();
+const boundary={stage,sha,pid:process.pid,tmpfs_quotas_verified:true,volumes,cgroup};
+f.writeFileSync('/evidence/boundary-'+stage+'.json',JSON.stringify(boundary)+'\n');
+console.log('actual boundary resources',JSON.stringify(boundary));
 console.log('source/evidence stage boundary retained',stage,sha);
 JS
 BOUNDARY
