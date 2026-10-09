@@ -2,10 +2,11 @@
 
 A dependency-light local CI wrapper (`scripts/local_ci.sh`) mirrors GitHub
 Actions commands as closely as practical. Use it for pre-push feedback;
-**GitHub CI remains authoritative**. GitHub PR CI runs Python units on 3.14,
+**GitHub CI remains authoritative**. GitHub PR CI retains Python units on 3.14,
 Web CI on Node 24, Linux Canonical Store Validation (Ubuntu), and macOS
 Canonical Store Validation (macOS 15). After merges and pushes to main,
-GitHub CI runs the full Python 3.12/3.13/3.14 matrix. Nightly integration
+GitHub CI retains the full Python 3.12/3.13/3.14 matrix. Unit portions are
+currently suspended as described below. Nightly integration
 remains a separate job. A local pass is feedforward signal, not a substitute
 for the named hosted checks.
 
@@ -28,7 +29,7 @@ integration runs only on scheduled events; manual dispatch skips it and the
 scheduled failure reporter. General integration remains SKIPPED under THR-243
 seq42 for tasks governed by that exception, never PASS. While the THR-291 pause
 applies, the manual `all` command reports Python SUSPENDED and runs only the
-remaining Web checks; an exit0 does not establish a Python unit PASS. The
+remaining Web nonunit checks; an exit0 does not establish a unit PASS. The
 extracted runner's fixed suspension guard also prevents G collection, source
 controls and repetitions for every `all_only` value; their dormant definitions
 remain retained and unexecuted. No manual dispatch or rerun is required for the
@@ -48,7 +49,8 @@ through the test plan fixture and hash-approved; missing/stale/unexpected or
 nonexecutable identities fail visibly before execution. Intentional no-ops require
 explicit plans. Stub argv witnesses retain only fixed flags/counts and digests;
 callback witnesses bind the actual CLI source. No provider PATH fallback or model
-network request is permitted. The unit/Web targets keep their existing selections.
+network request is permitted. Unit/Web definitions remain retained;
+unit invocations are suspended.
 The Mac definition-owned launcher names this parent explicitly inside its
 `run_bounded_output.py` child command, preserving the pytest arguments, exit and
 1 MiB log tail under the guest's shared deadline. The guest's direct pytest
@@ -99,20 +101,25 @@ doubled, checking primary identity and independent connector/daemon finalization
 attempts, including kill/reap on wait failure. These controls establish invocation
 and error preservation; actual resource absence requires disposable execution.
 
-The founder suspended Python unit-suite execution in THR-291 seq5
-(TASK-10169). While this pause applies, do not launch Python unit tests,
-including focused tests or duration measurements. The `python-unit` GitHub
-job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
-reports the same suspension before continuing Web CI. This also pauses the
-unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
-exit or an `all` receipt establishes only the remaining checks, never a unit
-PASS. Preserve test sources, selections and coverage definitions. Web,
-canonical validation and integration jobs retain their own existing contracts;
-no hook bypass is authorized. Existing historical workflow reruns and old
-checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after founder release of the
-stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
+The founder suspended Python units in THR-291 seq5/16 (TASK-10169);
+THR-228 seq355 permits PR800 to proceed without any units. Coverage is
+**SUSPENDED / SKIPPED**, never PASS. Preserve all unit sources and commands;
+do not execute, collect, measure or copy unit cases. The official Python
+job pause and PR/main matrix definitions remain. Local `python` reports
+suspension; local/default/manual `all` and `web` skip Vitest and the shared
+scanner regression. Hosted Web, both Go shipping builds, and both seven-file
+Linux/macOS canonical pytest steps explicitly skip their unit portions.
+Production colour scanning, lint, typecheck, Web/Storybook builds and actual
+Go/wheel/connector/package/install operations remain enabled and propagate
+failures. The selected actual hosted Codex callback and real Managed N3 remain
+separate gates. N3's zero-skip systemd acceptance contract is unchanged;
+its Go units are suspended. macOS checkout/setup proves no canonical behavior.
+A wrapper exit0 or `all` receipt certifies only checks actually run.
+Unit absence blocks neither PR800 review/QA, authorized publication nor its
+one authorized N3; independent gates and publication allocation remain intact.
+No hook bypass is authorized. Old checkouts/reruns do not acquire this pause
+and must not launch suspended units. Resume only after Founder release
+through ordinary review. Retained unit commands below describe dormant coverage.
 
 ## Prerequisites
 
@@ -136,8 +143,8 @@ commands only; the canonical-store validations remain hosted PR checks.
 
 ```bash
 scripts/local_ci.sh              # default: python + web (local PR-command coverage)
-scripts/local_ci.sh python       # Python unit tests only
-scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run)
+scripts/local_ci.sh python       # Report Python unit suspension; no execution
+scripts/local_ci.sh web          # Production scan + lint + typecheck + Web/Storybook builds; units skipped
 scripts/local_ci.sh integration  # Python integration tests (spawns daemon + fake CLIs)
 scripts/local_ci.sh help         # List targets and caveats
 ```
@@ -146,17 +153,15 @@ scripts/local_ci.sh help         # List targets and caveats
 
 | Target | GHA job | Commands |
 |--------|---------|----------|
-| `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` |
-| `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
+| `all` (default) | `python-unit` + `web` | Report Python suspension, then run `web` nonunit commands |
+| `python` | `python-unit` | Report suspension; dormant command: `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` |
+| `web` | `web` (Node 24) | `cd web; npm ci; bash scripts/verify-design-system-colour-gate.sh; npm run lint; npm run typecheck; npm run build; npm run build-storybook`; report suspended units |
 | `integration` | `nightly-integration` | `uv sync --frozen; uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration --basetemp <fresh per-run dir>` |
 
-Local commands run the same test commands as the corresponding GitHub Actions job
-on your installed Python interpreter (3.12+). They **cannot** select or replace
-the hosted version matrix or canonical-store validation. GitHub PR CI runs
-`python-unit` on Python **3.14**, `web` on Node 24, and Linux/macOS Canonical
-Store Validation on their named platforms; push-to-main runs the Python tests
-across **3.12/3.13/3.14**. GitHub CI is authoritative.
+Local commands mirror the corresponding GitHub Actions selections subject to
+the suspension above. They **cannot** select or replace hosted version/platform
+definitions. PR Python **3.14**, main **3.12/3.13/3.14**, Web Node 24 and
+Linux/macOS canonical definitions remain retained. GitHub CI is authoritative.
 
 ## Per-run pytest scratch lifecycle
 
@@ -192,11 +197,11 @@ which lack this option: unknown-key validation warns with `PytestConfigWarning`,
 or fails with `UsageError` under `--strict-config`, without providing retention.
 Those versions are not verified or supported for this feature.
 
-Pytest normally allocates its session base under
-`pytest-of-<user>/pytest-<n>` in `TMPDIR`. The existing `python`, `integration`,
-and `all` wrapper targets manage their own scratch by passing an
-explicit `--basetemp` to their single pytest invocation (integration enters the
-preimport parent first):
+When authorized, pytest allocates its session base under
+`pytest-of-<user>/pytest-<n>` in `TMPDIR`. Each executed wrapper pytest invocation
+receives an explicit `--basetemp` (integration enters the preimport parent first).
+Suspended `python` and `all` unit portions allocate no pytest scratch. The
+retained scratch lifecycle is:
 
 - The directory is freshly and uniquely created for that invocation with
   `mktemp -d` beneath the effective `TMPDIR` (normally the runtime-bound
@@ -230,8 +235,9 @@ with a running production daemon).
 
 ### `python`
 
-Runs the full Python unit test suite with `uv sync --frozen` and
-`uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>`. Uses your local
+Reports suspension without execution. The dormant full unit command is
+`uv sync --frozen` followed by
+`uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>`. It would use the local
 installed Python interpreter;
 does **not** reproduce the GHA 3.12/3.13/3.14 matrix. `pyproject.toml`
 addopts exclude integration tests by default (`-m 'not integration'`), so
@@ -244,12 +250,11 @@ invocation ends.
 
 ### `web`
 
-Runs the full Web CI pipeline in `web/`: `npm ci`, `npm run lint`,
-`npm run typecheck`, `npm run build`, `npm run build-storybook`, and
-`npx vitest run`. The two explicit build commands build the SPA and the
-deterministic static Storybook catalogue exactly once each.
-`vitest run` is non-watch mode; do not use bare `vitest` which enters watch
-mode and hangs.
+Runs the Web nonunit pipeline in `web/`: `npm ci`, the shared colour gate's
+production scan, `npm run lint`, `npm run typecheck`, `npm run build`, and
+`npm run build-storybook`. The two build commands build the SPA and static
+Storybook catalogue once each. Scanner regression and Vitest report suspension.
+The dormant `npx vitest run` command is non-watch; bare `vitest` enters watch mode.
 
 ### `integration`
 
@@ -301,10 +306,11 @@ publication-process requirements.
 
 **Policy constraints:**
 - `git push --no-verify` remains **prohibited** by engineering policy.
-- **GitHub CI is authoritative.** PR CI runs Python units on 3.14, Web CI on
+- **GitHub CI is authoritative.** PR CI retains suspended Python 3.14 units and
+  Web CI on
   Node 24, Linux Canonical Store Validation (Ubuntu), and macOS Canonical
   Store Validation (macOS 15). After merges and pushes to main, the Python
-  unit matrix runs on 3.12/3.13/3.14; nightly integration is separate.
+  unit matrix retains 3.12/3.13/3.14, suspended; nightly integration is separate.
   Local-CI is pre-push feedback only and does not replace either canonical-store
   validation.
 - A pushed-PR completion must include the success-only `local_ci` receipt in
@@ -315,17 +321,17 @@ publication-process requirements.
 ## Caveats
 
 - **GitHub CI is authoritative.** The local wrapper gives fast feedback on
-  your machine. GitHub PR CI runs Python units on 3.14, Web CI on Node 24,
+  your machine. GitHub PR CI retains suspended Python 3.14 units and Web Node 24,
   Linux Canonical Store Validation (Ubuntu), and macOS Canonical Store
-  Validation (macOS 15). After merges and pushes to main, GitHub CI runs the
-  Python 3.12/3.13/3.14 matrix. Nightly integration remains a separate job.
+  Validation (macOS 15). After merges and pushes to main, GitHub CI retains the
+  suspended Python 3.12/3.13/3.14 matrix. Nightly integration remains a separate job.
   The PR checks run on their named Ubuntu or macOS platforms; local `all` does
   not replace canonical-store validation.
 - **Single Python version.** `python` and `integration` targets use the
   installed `uv` + Python interpreter. They do not reproduce the GHA
   `python-version` matrix.
-- **Per-run pytest scratch.** `python`, `integration`, and `all` create a fresh
-  `--basetemp` under the effective `TMPDIR` and remove exactly that directory on
+- **Per-run pytest scratch.** Every executed wrapper pytest invocation creates
+  a fresh `--basetemp` under the effective `TMPDIR` and removes that directory on
   success, failure, and catchable `HUP`/`INT`/`TERM`. Uncatchable termination
   (`SIGKILL`, power loss, kernel crash) is outside the guarantee. The wrapper
   never touches `TMPDIR` itself, sibling content, pre-existing `pytest-of-*`
@@ -338,8 +344,8 @@ publication-process requirements.
   `HAPPYRANCH_DAEMON_PORT=0`), so a running production daemon does NOT conflict
   and does NOT need to be stopped. The two processes only share machine RAM — a
   production daemon with active Claude sessions can inflate memory during the run.
-- **Vitest non-watch.** Web tests use `npx vitest run` (non-watch), not
-  bare `vitest` which enters interactive watch mode.
+- **Vitest non-watch.** The suspended Web command remains `npx vitest run`
+  (non-watch); bare `vitest` enters interactive watch mode.
 - **Exact Node 24 runtime precondition.** `web` and `all` read the repository
   `.nvmrc` declaration (Node 24, matching the GitHub "Web (Node 24)" job) and
   verify the effective `node --version` major is exactly 24 **before** running

@@ -67,12 +67,16 @@ jobs:
       - name: Build Storybook
         run: npm run build-storybook
       # Bare `vitest` is watch mode and would hang CI; `vitest run` is non-watch.
+      - name: Report Web unit suspension
+        run: echo "SKIPPED - Web units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
       - name: Test (non-watch)
+        # Retain the unit command; restore only after founder release.
+        if: ${{ false }}
         run: npx vitest run
 
   # ── Linux canonical skill store validation (same-owner, unconditional) ──
-  # Runs the production canonical-store boundary against the real Linux
-  # adapter rather than relying only on the unit-suite launch double.
+  # Shipping and the selected real callback remain enabled; the canonical
+  # unit command below remains dormant during the founder suspension.
   linux-canonical-validation:
     name: Linux Canonical Store Validation (Ubuntu)
     runs-on: ubuntu-latest
@@ -95,7 +99,9 @@ jobs:
           set -eux
           package_tmp="$(mktemp -d)"
           trap 'rm -rf "$package_tmp"' EXIT
-          (cd app/linux/tsnet-sidecar && go test ./... && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+          # Retained unit command: (cd app/linux/tsnet-sidecar && go test ./...)
+          echo "SKIPPED - Go units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
+          (cd app/linux/tsnet-sidecar && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
           uv build --wheel --out-dir "$package_tmp"
           wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
           uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
@@ -103,7 +109,11 @@ jobs:
           uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"
           PACKAGE_TMP="$package_tmp" uv run python -c 'from pathlib import Path; from runtime.remote_access.linux_package import install_linux_package; import os; root=Path(os.environ["PACKAGE_TMP"])/"fixture-root"; install_linux_package(Path(os.environ["PACKAGE_TMP"])/"happyranch-linux-amd64.tar", root); print(root)'
 
+      - name: Report Linux canonical unit suspension
+        run: echo "SKIPPED - Linux canonical units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
       - name: Run canonical store + validation tests
+        # Retain the seven-file selection; shipping and actual callback stay enabled.
+        if: ${{ false }}
         env:
           HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
           HAPPYRANCH_TEST_REAL_PLATFORM: "1"
@@ -149,7 +159,9 @@ jobs:
           set -euo pipefail
           package_tmp="$(mktemp -d)"
           echo "PACKAGE_TMP=$package_tmp" >> "$GITHUB_ENV"
-          (cd app/linux/tsnet-sidecar && go test ./... && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
+          # Retained unit command: (cd app/linux/tsnet-sidecar && go test ./...)
+          echo "SKIPPED - Go units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
+          (cd app/linux/tsnet-sidecar && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
           uv build --wheel --out-dir "$package_tmp"
           wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
           uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
@@ -174,7 +186,7 @@ jobs:
   # ── macOS canonical skill store validation (same-owner, unconditional) ──
   # Executor and daemon share the same OS identity — same-owner is the only
   # supported delivery mode. No distinct-account provisioning or sudo.
-  # This job verifies deterministic canonical-store behavior on real macOS.
+  # Canonical unit coverage is suspended; checkout/setup are not behavior PASS.
   macos-canonical-validation:
     name: macOS Canonical Store Validation (macOS 15)
     runs-on: macos-15
@@ -192,7 +204,11 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
+      - name: Report macOS canonical unit suspension
+        run: echo "SKIPPED - macOS canonical units SUSPENDED under THR-291 / THR-228 seq355; setup is not a behavior PASS."
       - name: Run canonical store + validation tests
+        # Retain the seven-file selection; restore only after founder release.
+        if: ${{ false }}
         env:
           HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
         run: |

@@ -497,20 +497,25 @@ Completion is draft-only: submission, review requests/receipts/joins, revision a
 mounted UI remain later units. Source implementation is not review/QA/CI acceptance,
 operator observation, deployment or Phase1 completion.
 
-The founder suspended Python unit-suite execution in THR-291 seq5
-(TASK-10169). While this pause applies, do not launch Python unit tests,
-including focused tests or duration measurements. The `python-unit` GitHub
-job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
-reports the same suspension before continuing Web CI. This also pauses the
-unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
-exit or an `all` receipt establishes only the remaining checks, never a unit
-PASS. Preserve test sources, selections and coverage definitions. Web,
-canonical validation and integration jobs retain their own existing contracts;
-no hook bypass is authorized. Existing historical workflow reruns and old
-checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after founder release of the
-stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
+The founder suspended Python units in THR-291 seq5/16 (TASK-10169);
+THR-228 seq355 permits PR800 to proceed without any units. Coverage is
+**SUSPENDED / SKIPPED**, never PASS. Preserve all unit sources and commands;
+do not execute, collect, measure or copy unit cases. The official Python
+job pause and PR/main matrix definitions remain. Local `python` reports
+suspension; local/default/manual `all` and `web` skip Vitest and the shared
+scanner regression. Hosted Web, both Go shipping builds, and both seven-file
+Linux/macOS canonical pytest steps explicitly skip their unit portions.
+Production colour scanning, lint, typecheck, Web/Storybook builds and actual
+Go/wheel/connector/package/install operations remain enabled and propagate
+failures. The selected actual hosted Codex callback and real Managed N3 remain
+separate gates. N3's zero-skip systemd acceptance contract is unchanged;
+its Go units are suspended. macOS checkout/setup proves no canonical behavior.
+A wrapper exit0 or `all` receipt certifies only checks actually run.
+Unit absence blocks neither PR800 review/QA, authorized publication nor its
+one authorized N3; independent gates and publication allocation remain intact.
+No hook bypass is authorized. Old checkouts/reruns do not acquire this pause
+and must not launch suspended units. Resume only after Founder release
+through ordinary review. Retained unit commands below describe dormant coverage.
 
 ## Commands
 
@@ -528,8 +533,8 @@ cd web && npm run dev
 happyranch web [--no-open]
 
 scripts/local_ci.sh              # default: python + web (mirrors GitHub PR CI)
-scripts/local_ci.sh python       # Python unit only
-scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run)
+scripts/local_ci.sh python       # Report Python unit suspension; no execution
+scripts/local_ci.sh web          # Production scan + lint + typecheck + Web/Storybook builds; units skipped
 scripts/local_ci.sh integration  # Python integration tests
 scripts/local_ci.sh help         # List targets and caveats
 # Full guide: docs/local-ci.md

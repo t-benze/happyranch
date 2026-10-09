@@ -15,7 +15,7 @@
 #   python       Report founder-suspended Python unit suite (no execution)
 #   web          cd web; npm ci; design-system colour gate; npm run lint;
 #                npm run typecheck; npm run build; npm run build-storybook;
-#                npx vitest run
+#                report suspended scanner regression and Vitest (no units)
 #   integration  uv sync --frozen; uv run pytest tests/ -v -m integration
 #   all          python + web (default; mirrors GitHub PR CI)
 #   help         Show this help
@@ -331,7 +331,8 @@ ensure_node_declared() {
 
 run_python() {
   # Founder THR-291 seq5 / TASK-10169: suspend the unit invocation, including
-  # the manual hosted all lane. Restore by reverting this pause.
+  # the manual hosted all lane. Restore only after founder release.
+  # Retained unit command: run_pytest_suite tests/ -v -n 4
   echo "SKIPPED: Python unit suite SUSPENDED by founder THR-291 seq5 (TASK-10169)."
   echo "No Python unit tests executed; this is not a unit-test PASS."
 }
@@ -351,8 +352,9 @@ run_web() {
   npm run build
   echo -e "${YELLOW}--- Storybook static build ---${NC}"
   npm run build-storybook
-  echo -e "${YELLOW}--- Test (non-watch) ---${NC}"
-  npx vitest run
+  # Retained non-watch unit command; restore only after founder release.
+  # npx vitest run
+  echo "SKIPPED: Web unit suite SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
 }
 
 run_integration() {
@@ -377,7 +379,8 @@ show_help() {
   echo "Targets:"
   echo "  python       Report Python unit suite SUSPENDED (THR-291 seq5); no tests run"
   echo "  web          Run Web CI"
-  echo "               (npm ci + colour gate + lint + typecheck + build + build-storybook + vitest run)"
+  echo "               (npm ci + production colour scan + lint + typecheck + build + build-storybook)"
+  echo "               Scanner regression and Vitest units SUSPENDED / SKIPPED (THR-228 seq355)"
   echo "  integration  Run Python integration tests"
   echo "               (uv run pytest tests/ -v -m integration)"
   echo "  all          Default: runs python + web (mirrors GitHub PR CI)"
@@ -393,11 +396,11 @@ show_help() {
   echo "  - Integration tests spawn an isolated daemon per test (tmp"
   echo "    HAPPYRANCH_DAEMON_HOME + ephemeral port), so a production"
   echo "    daemon does not conflict. Both share machine RAM."
-  echo "  - Web CI runs vitest run (non-watch mode), matching GHA behavior."
+  echo "  - Retained vitest run (non-watch) is SUSPENDED; no unit-test PASS."
   echo "  - uv sync --frozen ensures lockfile parity; run 'uv lock' first if"
   echo "    you've changed pyproject.toml."
-  echo "  - python/integration/all create a fresh pytest --basetemp under the"
-  echo "    effective TMPDIR and remove exactly that directory on success,"
+  echo "  - Every executed pytest invocation creates a fresh --basetemp under the"
+  echo "    effective TMPDIR and removes that directory on success,"
   echo "    failure, and catchable HUP/INT/TERM. SIGKILL, power loss, and"
   echo "    kernel crash are uncatchable and leave scratch behind."
 }
