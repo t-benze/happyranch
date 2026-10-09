@@ -1,177 +1,197 @@
-name: Nightly integration
-
+name: TASK10343 acquisition diagnostic only
+run-name: TASK10343 acquisition-only ${{ github.sha }}
 on:
-  schedule:
-    # 07:00 UTC nightly — off-peak. Adjust the cron if you prefer another window.
-    - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
-      all_only:
-        description: Run only the manual exact all and fixed G verification lane
-        type: boolean
-        default: false
-
+      definition_sha:
+        description: Manager-approved immutable commit containing these exact workflow bytes
+        type: string
+        required: true
 permissions:
   contents: read
-
+concurrency:
+  group: task10343-acquisition-only
+  cancel-in-progress: false
 jobs:
-  local-ci-all:
-    name: Manual local CI all (Python 3.14, Node 24)
-    if: ${{ github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    # Python units alone took 99 minutes in run 37650992085; allow full local CI.
-    timeout-minutes: 150
+  acquisition:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
     steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - name: Install zsh (real-zsh cleanup regression)
-        run: sudo apt-get update && sudo apt-get install -y zsh
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          python-version: '3.14'
-      - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Sync dependencies (frozen)
-        run: uv sync --frozen
-      - name: Run exact local CI all in a clean test environment
+      - name: One acquisition, no workload or repository code execution
+        timeout-minutes: 4
         env:
-          ALL_ONLY: ${{ inputs.all_only }}
+          DIAG_DEFINITION_SHA: ${{ inputs.definition_sha }}
+        shell: bash
         run: |
-          uv run python scripts/nightly_local_ci_all.py
-      - name: Upload manual local CI evidence
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, re, selectors, signal, subprocess, time
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'task10343-acquisition'
+          root.mkdir(mode=0o700, exist_ok=False)
+          source = 'daad742572d8cfae4962d5e5856807ffbff5cfae'
+          image = 'node@sha256:107ceb6ad85808049dccef12414bf17b08eceb299eaf755c0339dc5fc8958d6b'
+          expected_id = 'sha256:e28cf840f0cdbd6e03a6756ac9d5c8285ef20f7aee64fcde14c1ea4cccef4362'
+          started = time.monotonic()
+          deadline = started + 210
+          receipts = []
+          cancelled = False
+          def cancel(signum, frame):
+              global cancelled
+              cancelled = True
+          signal.signal(signal.SIGTERM, cancel)
+          signal.signal(signal.SIGINT, cancel)
+          record = dict(source_sha=source, image=image, definition_sha=os.environ['GITHUB_SHA'],
+                        run_id=os.environ['GITHUB_RUN_ID'], attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+                        completed=False, acquisition_validated=False, behavioral_proof=False,
+                        cleanup='runner disposal required; no image pruning or workload creation',
+                        runner={k: os.environ.get(k, 'unavailable') for k in
+                                ('RUNNER_OS', 'RUNNER_ARCH', 'ImageOS', 'ImageVersion')}, receipts=receipts)
+          def disk():
+              s = os.statvfs('/var/lib/docker')
+              return dict(capacity_bytes=s.f_blocks*s.f_frsize, available_bytes=s.f_bavail*s.f_frsize,
+                          available_inodes=s.f_favail)
+          def redact(data):
+              value = data.decode('utf-8', errors='replace')
+              value = re.sub(r'(?i)(authorization\s*[:=]\s*)[^\r\n]+', r'\1[REDACTED]', value)
+              value = re.sub(r'(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+', r'\1 [REDACTED]', value)
+              value = re.sub(r'(?i)([?&](?:token|access_token|refresh_token|password|secret)=)[^&\s"\']+', r'\1[REDACTED]', value)
+              value = re.sub(r'(?i)("(?:token|access_token|refresh_token|password|secret)"\s*:\s*")[^"]*', r'\1[REDACTED]', value)
+              value = re.sub(r'https://[^/\s:@]+:[^/\s@]+@', 'https://[REDACTED]@', value)
+              return value.encode('utf-8')
+          def call(name, seconds, cap, args, watch_disk=False):
+              end = min(deadline-10, time.monotonic()+seconds)
+              if end <= time.monotonic():
+                  raise RuntimeError('shared deadline exhausted')
+              before = time.monotonic()
+              child = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+              sel = selectors.DefaultSelector()
+              sel.register(child.stdout, selectors.EVENT_READ)
+              data = bytearray()
+              reason = None
+              try:
+                  while sel.get_map():
+                      if cancelled:
+                          reason = 'interrupted'; break
+                      if time.monotonic() >= end:
+                          reason = 'timeout'; break
+                      if watch_disk:
+                          current = disk()
+                          if (initial_disk['available_bytes']-current['available_bytes'] > 4*1024**3
+                              or current['available_bytes'] < 1024**3 or current['available_inodes'] < 10000):
+                              reason = 'sampled disk abort threshold'; break
+                      for key, _ in sel.select(min(.2, max(0, end-time.monotonic()))):
+                          block = os.read(key.fileobj.fileno(), min(4096, cap+1-len(data)))
+                          if not block:
+                              sel.unregister(key.fileobj); break
+                          data.extend(block)
+                          if len(data) > cap:
+                              reason = 'output cap'; break
+                      if reason:
+                          break
+                  if reason:
+                      try:
+                          os.killpg(child.pid, signal.SIGTERM)
+                      except ProcessLookupError:
+                          pass
+                  try:
+                      status = child.wait(timeout=min(2, max(.01, end-time.monotonic())))
+                  except subprocess.TimeoutExpired:
+                      try:
+                          os.killpg(child.pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      status = child.wait(timeout=3)
+                      reason = reason or 'reap timeout'
+              finally:
+                  sel.close()
+                  child.stdout.close()
+                  if child.poll() is None:
+                      try:
+                          os.killpg(child.pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      child.wait(timeout=3)
+              clean = redact(bytes(data[:cap]))[:cap]
+              (root / name).write_bytes(clean)
+              result = dict(file=name, exit=status, control_failure=reason,
+                            elapsed_s=round(time.monotonic()-before, 3), bytes=len(clean),
+                            sha256=hashlib.sha256(clean).hexdigest())
+              receipts.append(result)
+              print(json.dumps(result))
+              return result, clean
+          def require(result):
+              if result['exit'] != 0 or result['control_failure']:
+                  raise RuntimeError('failed acquisition control')
+          fmt = '{"id":{{json .Id}},"digests":{{json .RepoDigests}},"os":{{json .Os}},"arch":{{json .Architecture}},"size":{{json .Size}},"layers":{{json .RootFS.Layers}}}'
+          outcome = 1
+          try:
+              assert re.fullmatch('[0-9a-f]{40}', os.environ['DIAG_DEFINITION_SHA'])
+              assert os.environ['DIAG_DEFINITION_SHA'] == os.environ['GITHUB_SHA']
+              assert os.environ['GITHUB_REPOSITORY'] == 't-benze/happyranch'
+              assert os.environ['GITHUB_RUN_ATTEMPT'] == '1', 'no diagnostic rerun'
+              assert os.environ['RUNNER_OS'] == 'Linux' and os.environ['RUNNER_ARCH'] == 'X64'
+              initial_disk = disk(); record['disk_before'] = initial_disk
+              assert initial_disk['available_bytes'] >= 5*1024**3 and initial_disk['available_inodes'] >= 20000
+              require(call('docker-version.txt', 5, 8192, ['docker', 'version', '--format', '{{.Client.Version}} / {{.Server.Version}}'])[0])
+              for kind in ('container', 'volume'):
+                  r, data = call(kind+'-before.txt', 5, 8192, ['docker', kind, 'ls', '-aq' if kind == 'container' else '-q'])
+                  require(r); assert not data.strip(), 'nonempty disposable runner; refuse without cleanup'
+              call('image-before.json', 5, 8192, ['docker', 'image', 'inspect', '--format', fmt, image])
+              # HEAD only, no curl config, authorization, redirects, retry, or response body.
+              for label, url in (
+                  ('registry', 'https://registry-1.docker.io/v2/'),
+                  ('auth', 'https://auth.docker.io/token?service=registry.docker.io&scope=repository%3Alibrary%2Fnode%3Apull')):
+                  call(label+'-head.txt', 15, 16384, ['curl', '-q', '--silent', '--show-error', '--head',
+                       '--connect-timeout', '5', '--max-time', '15', '--retry', '0', '--output', '/dev/null',
+                       '--write-out', 'status=%{http_code} remote_ip=%{remote_ip} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total}\n', url])
+              # Same pull command and 120-second outer bound as the failed source; exactly one call.
+              r, _ = call('acquisition.log', 120, 262144, ['docker', 'pull', image], watch_disk=True)
+              record['pull'] = r
+              require(r)
+              r, data = call('image-after.json', 5, 16384, ['docker', 'image', 'inspect', '--format', fmt, image])
+              record['inspection'] = r
+              require(r)
+              info = json.loads(data)
+              assert info['id'] == expected_id and info['os'] == 'linux' and info['arch'] == 'amd64'
+              assert info['size'] == 1133855425 and image in info['digests']
+              record['acquisition_validated'] = True
+              outcome = 0
+          except Exception as error:
+              record['error_class'] = type(error).__name__
+              # No raw exception/credential/config/environment dumps.
+          finally:
+              try:
+                  record['disk_after'] = disk()
+                  if 'disk_before' in record:
+                      record['disk_available_delta_bytes'] = record['disk_before']['available_bytes']-record['disk_after']['available_bytes']
+                  for kind in ('container', 'volume'):
+                      r, data = call(kind+'-after.txt', 5, 8192, ['docker', kind, 'ls', '-aq' if kind == 'container' else '-q'])
+                      if r['exit'] != 0 or r['control_failure'] or data.strip():
+                          outcome = outcome or 3
+                  entries = list(root.iterdir())
+                  record['evidence_bytes_before_receipt'] = sum(p.stat().st_size for p in entries)
+                  record['evidence_files_before_receipt'] = len(entries)
+                  assert len(entries) <= 12 and record['evidence_bytes_before_receipt'] <= 512*1024
+                  record['completed'] = True
+              except Exception as error:
+                  record['finalization_error_class'] = type(error).__name__
+                  outcome = outcome or 3
+              if cancelled:
+                  outcome = 124
+                  record['interrupted'] = True
+              record['exit'] = outcome
+              record['elapsed_s'] = round(time.monotonic()-started, 3)
+              (root / 'operation.json').write_text(json.dumps(record, indent=2)+'\n')
+          raise SystemExit(outcome)
+          PY
+      - name: Upload sanitized acquisition evidence even on failure
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: local-ci-all-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/local-ci-all/
-          if-no-files-found: warn
+          name: task10343-acquisition-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/task10343-acquisition/
+          if-no-files-found: error
           retention-days: 14
-
-  integration:
-    name: Python integration (3.12)
-    if: ${{ github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
-    # Integration tests spawn a real daemon + fake CLIs; cap the job so a hung
-    # daemon can't run for the full 6h default.
-    timeout-minutes: 30
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          python-version: '3.12'
-      - name: Sync dependencies (frozen)
-        run: uv sync --frozen
-      - name: Run integration tests
-        run: |
-          mkdir -p artifacts
-          python3 scripts/run_bounded_output.py \
-            --output artifacts/nightly-integration.log \
-            --max-bytes 1048576 \
-            -- uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration \
-              --junitxml=artifacts/nightly-integration.xml
-      - name: Build integration summary
-        if: ${{ always() }}
-        env:
-          NIGHTLY_ARTIFACT_NAME: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
-          NIGHTLY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          python3 scripts/nightly_integration_summary.py \
-            artifacts/nightly-integration.xml \
-            --output artifacts/nightly-summary.md \
-            --head-sha "${GITHUB_SHA}" \
-            --run-url "${NIGHTLY_RUN_URL}" \
-            --artifact-name "${NIGHTLY_ARTIFACT_NAME}"
-          cat artifacts/nightly-summary.md >> "${GITHUB_STEP_SUMMARY}"
-      - name: Upload nightly evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            artifacts/nightly-integration.xml
-            artifacts/nightly-integration.log
-            artifacts/nightly-summary.md
-          if-no-files-found: warn
-          retention-days: 14
-
-  report-scheduled-failure:
-    name: Report scheduled integration failure
-    needs: integration
-    if: ${{ always() && github.event_name == 'schedule' && needs.integration.result == 'failure' }}
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      issues: write
-    steps:
-      - name: Download nightly evidence
-        continue-on-error: true
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: nightly-integration-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts
-      - name: Open or update nightly failure issue
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const fs = require('fs');
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const label = 'nightly-integration-failure';
-            const title = 'Nightly integration scheduled failure';
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const summaryPath = 'artifacts/nightly-summary.md';
-            const summary = fs.existsSync(summaryPath)
-              ? fs.readFileSync(summaryPath, 'utf8')
-              : 'Nightly summary artifact was unavailable; inspect the hosted run logs.';
-            const body = `Scheduled run [${context.runId}](${runUrl}) failed at \`${context.sha}\`.\n\n${summary}`;
-
-            try {
-              await github.rest.issues.getLabel({ owner, repo, name: label });
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              await github.rest.issues.createLabel({
-                owner,
-                repo,
-                name: label,
-                color: 'b60205',
-                description: 'Automated failures from the scheduled integration suite',
-              });
-            }
-
-            const openIssues = await github.paginate(github.rest.issues.listForRepo, {
-              owner,
-              repo,
-              state: 'open',
-              labels: label,
-              per_page: 100,
-            });
-            const matches = openIssues.filter(
-              issue => !issue.pull_request && issue.title === title,
-            );
-            if (matches.length > 1) {
-              core.setFailed(`Refusing ambiguous nightly issue set: found ${matches.length}`);
-              return;
-            }
-            if (matches.length === 1) {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: matches[0].number,
-                body,
-              });
-              return;
-            }
-            await github.rest.issues.create({ owner, repo, title, body, labels: [label] });
+          compression-level: 0
