@@ -1,5 +1,33 @@
 # TASK-10279 native admission, never merge
 
+Run37881568164/evidence57e32fc455 retained all198 original dual archive members
+and18 complete native snapshots. Both cheap native admissions passed. All four
+macOS Settings cases and the script-free control still failed Enter activation.
+The four product cases observed actual retired WebSocket refusal with code1006,
+then timed out at the unchanged Tasks pathname/aside predicate. Four authentic
+Settings images were directly viewed; zero Tasks images were produced. Linux
+remains held on its original ordinary Chrome sandbox refusal before provisioning.
+These original failures remain recorded, with no keyboard/navigation/browser PASS.
+
+The fixed key helper now waits for two renderer animation frames after keyUp
+before inspecting focus or sending the next key. Key serialization is unchanged.
+This is finite renderer synchronization, not an assertion that timing caused the
+failure. The same script-free control anchor/button is loaded into about:blank
+through [Page.setDocumentContent](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-setDocumentContent),
+so data-URL navigation policy is separated from the native Enter observation.
+It remains control-only evidence, with no product imports or event listeners.
+
+Tasks navigation now records primitive focus/href/path state before/after the
+existing click and actual pathname/aside/link presence after its unchanged
+predicate. A failed predicate is retained as `navigationError`; independent HTTP
+observations can still finish, and its image is named `navigation-failed`, never
+`tasks`. Every required keyboard/navigation error keeps that case and the whole
+browser stage failed. Preferences still requires actual Tab/Enter; no DOM click
+substitutes for it. Actual outcomes and correctly named screenshots require a
+fresh hosted run. Candidate, workflow/pins, deadlines, observer, tools, workload
+UID/sandbox controls, Linux refusal and pending maker/keeper gates are unchanged.
+Never merge this evidence branch.
+
 Run37880480022/evidence52b308427 retained198 original dual archive members and
 18 complete native snapshots. Both cheap native admissions passed. Four genuine
 Settings screenshots were directly viewed, but all four Preferences activation

@@ -99,6 +99,8 @@ async function key(session, name, code, diagnostics) {
   if (diagnostics) diagnostics.afterDown = await keyState(session);
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name,
     modifiers: 0, windowsVirtualKeyCode: code, ...native }, session);
+  // Finish renderer frames before observing focus or dispatching the next key.
+  await evaluate(session, 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
   if (diagnostics) diagnostics.afterUp = await keyState(session);
 }
 async function nativeKeyboardProbe() {
@@ -113,7 +115,8 @@ async function nativeKeyboardProbe() {
     await cdp.send('Runtime.enable', {}, session);
     await cdp.send('Page.bringToFront', {}, session);
     const html = '<!doctype html><meta charset="utf-8"><title>Native keyboard probe</title><a href="#entered">Enter</a><button type="button">Next</button>';
-    await cdp.send('Page.navigate', { url: 'data:text/html,' + encodeURIComponent(html) }, session);
+    const frameId = (await cdp.send('Page.getFrameTree', {}, session)).frameTree.frame.id;
+    await cdp.send('Page.setDocumentContent', { frameId, html }, session);
     await wait(session, `document.hasFocus() && !!document.querySelector('a[href="#entered"]')`);
     probe.tabs = [];
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -236,12 +239,20 @@ try {
       })`);
       assert.equal(row.retiredWebSocket.accepted, false);
       row.phase = 'tasks-navigation';
-      await evaluate(session, `(() => { const a=document.querySelector('a[href="/orgs/test/tasks"]'); if(!a)throw new Error('Tasks navigation absent'); a.click(); return true; })()`);
-      await wait(session, `location.pathname==='/orgs/test/tasks' && !!document.querySelector('aside')`);
+      try {
+        row.tasksBeforeClick = await keyState(session);
+        await evaluate(session, `(() => { const a=document.querySelector('a[href="/orgs/test/tasks"]'); if(!a)throw new Error('Tasks navigation absent'); a.click(); return true; })()`);
+        row.tasksAfterClick = await keyState(session);
+        await wait(session, `location.pathname==='/orgs/test/tasks' && !!document.querySelector('aside')`);
+      } catch (error) {
+        row.navigationError = { type: error.name, message: error.message };
+      }
+      row.tasksAfterWait = await evaluate(session, `({location:location.pathname,
+        hasAside:!!document.querySelector('aside'), hasTasksLink:!!document.querySelector('a[href="/orgs/test/tasks"]')})`);
       row.navigation = await evaluate(session, absence);
       assert.deepEqual(row.navigation.forbidden, []);
       assert.equal(row.navigation.dockCount, 0);
-      row.screenshots.push(await screenshot(session, `${locale}-${width}-tasks.png`));
+      row.screenshots.push(await screenshot(session, `${locale}-${width}-${row.navigationError ? 'navigation-failed' : 'tasks'}.png`));
       row.phase = 'http-observation';
       row.http = cdp.events.filter(event => event.session === session).map(({ session: _session, ...event }) => event);
       for (const path of ['/api/v1/auth/bootstrap', '/api/v1/orgs', '/api/v1/orgs/test/settings'])
@@ -249,8 +260,8 @@ try {
       assert.ok(!row.http.some(event => event.path.startsWith('/api/v1/assistant')), 'UI must not call retired Assistant HTTP');
       assert.equal(row.screenshots.length, 2);
       assert.ok(row.screenshots.every(shot => shot.width === width && shot.height === height));
-      row.phase = row.keyboardError ? 'complete-with-keyboard-failure' : 'complete';
-      row.status = row.keyboardError ? 'failed' : 'passed';
+      row.phase = row.keyboardError || row.navigationError ? 'complete-with-navigation-failure' : 'complete';
+      row.status = row.keyboardError || row.navigationError ? 'failed' : 'passed';
     } catch (error) {
       row.error = { type: error.name, message: error.message };
     } finally {
