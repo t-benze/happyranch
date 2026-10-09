@@ -275,7 +275,12 @@ naming_stage 60 init.log docker run --name "$naming_init" \
     cp -a /var /scratch/var
     mkdir -p /scratch/{tmp,cache,browsers,python,home}
     cp /input/uv /scratch/usr/local/bin/uv
-    git -c safe.directory=/input/source clone --no-local /input/source /scratch/source
+    # upload-pack opens .git separately; both processes need the exact mounted
+    # input admitted in protected config, confined to this clone and scratch.
+    printf "[safe]\n\tdirectory =\n\tdirectory = /input/source\n\tdirectory = /input/source/.git\n" > /scratch/source-read.gitconfig
+    git --version
+    stat -c "%u:%g %n" /input/source /input/source/.git
+    GIT_CONFIG_GLOBAL=/scratch/source-read.gitconfig git clone --no-local /input/source /scratch/source
     git -C /scratch/source checkout --detach "$1"
     test "$(git -C /scratch/source rev-parse HEAD)" = "$1"
     bash /boundary.sh init "$1"
