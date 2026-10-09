@@ -486,5 +486,5 @@ def mounted_naming_app(tmp_path, *, lifecycle='active'):
 def http_naming_snapshot(orgs):
     """Exact persistent effects in BOTH orgs plus actual live session bindings."""
     return {slug: {'persistent': snapshot(org),
-                   'manager_session': org.sessions.get_active_session_id('TASK-OWNER', 'manager')}
+                   'manager_session': org.sessions.get_active('TASK-OWNER', 'manager')}
             for slug, org in orgs.items()}

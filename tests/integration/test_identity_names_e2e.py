@@ -86,10 +86,36 @@ def test_scenario6_live_current_name_callback_and_unknown_fallback(naming_daemon
         'SELECT agent_name FROM thread_invocations WHERE thread_id=?', (other,))} == {'maker', 'manager'}
     assert sql_rows(daemon.alpha,
         'SELECT mentions_json FROM thread_messages WHERE thread_id=? AND seq=1', (other,)) == [['[]']]
-    wait_for(lambda: sql_rows(daemon.alpha,
-        'SELECT agent_name,status FROM thread_invocations WHERE thread_id=? ORDER BY agent_name', (other,)),
-        lambda rows: rows == [['maker', 'consumed'], ['manager', 'consumed']])
-    assert_launch_witness('claude', callbacks=3)
+    # Both initial recipients must reply. Depending on actual callback ordering,
+    # the existing exchange can also release a covered-range catch-up. Each
+    # extra wake needs its real audit provenance and consumed callback link.
+    invocations = wait_for(lambda: sql_rows(daemon.alpha,
+        'SELECT agent_name,status,triggering_seq,invocation_token,reply_message_seq '
+        'FROM thread_invocations WHERE thread_id=? ORDER BY id', (other,)),
+        lambda rows: {row[0] for row in rows} == {'maker', 'manager'}
+        and all(row[1] == 'consumed' for row in rows))
+    assert sorted(row[0] for row in invocations if row[2] == 1) == ['maker', 'manager']
+    wakes = [json.loads(row[0]) for row in sql_rows(daemon.alpha,
+        "SELECT payload FROM audit_log WHERE task_id=? AND action IN "
+        "('thread_reply_wake_created','thread_reply_wake_settled') ORDER BY id", (other,))]
+    links = sql_rows(daemon.alpha,
+        'SELECT i.invocation_token,m.seq,m.speaker,m.body_markdown '
+        'FROM thread_invocations i JOIN thread_messages m '
+        'ON m.thread_id=i.thread_id AND m.seq=i.reply_message_seq '
+        'WHERE i.thread_id=? ORDER BY i.id', (other,))
+    assert len(links) == len(invocations)
+    assert len({row[3] for row in invocations}) == len(invocations)
+    assert len({row[1] for row in links}) == len(links)
+    for invocation, link in zip(invocations, links, strict=True):
+        agent, _status, triggering_seq, token, reply_seq = invocation
+        assert type(reply_seq) is int and reply_seq > triggering_seq >= 1
+        assert link == [token, reply_seq, agent, '@founder naming delivery ' + agent]
+        if triggering_seq > 1:
+            assert any(wake.get('agent_name') == agent and (
+                wake.get('follow_on_token_prefix') == token[:8]
+                or (wake.get('kind') in ('exchange_catch_up', 'deferred_catch_up')
+                    and wake.get('token_prefix') == token[:8])) for wake in wakes)
+    assert_launch_witness('claude', callbacks=1 + len(invocations))
 
 
 def test_scenario8_live_cli_picker_and_persisted_ids(naming_daemon):

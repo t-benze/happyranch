@@ -143,9 +143,12 @@ class NamingDaemon:
         env['NODE_OPTIONS'] = '--require=' + str(SOURCE / 'tests/helpers/identity_names/observe-node.cjs')
         config = work / '.playwright'
         config.mkdir()
+        # Only our trusted loopback SPA is reachable. Chromium's CLI sandbox
+        # default cannot launch inside the capability-free, no-new-privileges
+        # venue; Docker's network, seccomp and resource restrictions stay intact.
         (config / 'cli.config.json').write_text(json.dumps({
             'browser': {'browserName': 'chromium', 'isolated': True,
-                        'launchOptions': {'headless': True}},
+                        'launchOptions': {'headless': True, 'chromiumSandbox': False}},
             'outputDir': str(work / 'cli-output')}))
         command = ['/usr/bin/node', str(SOURCE / 'web/scripts/identity-names-e2e.mjs'),
                    '--base-url', self.origin, '--out', str(work), '--scenario', scenario]

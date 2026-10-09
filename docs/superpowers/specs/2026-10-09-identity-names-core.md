@@ -408,7 +408,14 @@ The holder is removed after export and other containers, then exact volumes.
 Workload failure remains the operation exit if cleanup/export also fails; those
 failures are separately recorded and turn an otherwise-successful operation nonzero.
 Export contains at most256MiB/14000 entries; incomplete proof is never PASS.
-All new scenarios/browser/captures/schema checks remain **AUTHORED / NOT RUN**.
+Hosted run37978558761 at predecessor d1da032d executed all16 selected nodes:
+7 passed and9 failed; full naming acceptance and browser captures remain pending.
+Its standalone and served OpenAPI checks passed only at that source. Naming-owned
+fixture corrections use the actual session reader, explicit trusted-loopback
+Chromium launch configuration inside unchanged Docker restrictions, and real
+callback links/audits for ordinary exchange catch-up rather than assuming exactly
+two unknown-fallback invocations. These corrections need renewed published-source
+execution; prior failed results remain failures.
 Python units are SKIPPED/SUSPENDED THR291seq5/16; broken general integration is
 SKIPPED THR243seq42, never PASS. Historical JOB4075 frontend-all exit0 applies to
 its predecessor bytes only. Full same-head independent review, behavioral QA
