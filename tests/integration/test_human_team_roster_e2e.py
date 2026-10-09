@@ -841,6 +841,9 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
                         files={'file': ('roster.png', b'\x89PNG\r\n\x1a\nfixture', 'image/png')})
     assert upload.status_code == 200, upload.text
     attachment = upload.json()
+    uploaded_blob = root / 'task-attachments' / attachment['storage_key']
+    blob_before = uploaded_blob.read_bytes()
+    assert blob_before == b'\x89PNG\r\n\x1a\nfixture'
     with sqlite3.connect(root / 'happyranch.db') as conn:
         before = conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
         before_attachments = conn.execute('SELECT COUNT(*) FROM task_attachments').fetchone()[0]
@@ -875,6 +878,7 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
             assert results[0][1] and results[0][2] == expected_owner
         return
     assert reply.json()['detail']['code'] == code
+    assert uploaded_blob.read_bytes() == blob_before
     with sqlite3.connect(root / 'happyranch.db') as conn:
         assert conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == before
         assert conn.execute('SELECT COUNT(*) FROM task_attachments').fetchone()[0] == before_attachments
