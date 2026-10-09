@@ -2130,6 +2130,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'agents.add.nameHint': '仅限小写字母、数字和下划线，且必须以字母开头。',
   'agents.add.role': '角色',
   'agents.add.noTeams': '还没有团队。请添加一名经理来创建第一个团队。',
+  'agents.add.teamsLoading': '正在加载团队…',
+  'agents.add.teamsError': '无法加载团队。',
   'agents.add.team': '团队',
   'agents.add.selectTeam': '选择团队…',
   'agents.add.newTeam': '新团队名称',

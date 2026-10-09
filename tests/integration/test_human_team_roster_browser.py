@@ -28,7 +28,8 @@ pytestmark = pytest.mark.integration
 @contextmanager
 def _spa(dist: Path, daemon_port: int):
     """Serve the actual build; proxy only to the fixture-owned local daemon."""
-    state = {'mode': 'populated', 'requests': [], 'release': threading.Event()}
+    state = {'mode': 'populated', 'requests': [], 'release': threading.Event(),
+             'teams_mode': 'populated', 'teams_release': threading.Event()}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -47,6 +48,17 @@ def _spa(dist: Path, daemon_port: int):
             path = urlsplit(self.path).path
             if path.startswith('/api/'):
                 state['requests'].append((self.command, path))
+                if path == '/api/v1/orgs/test/teams' and self.command == 'GET':
+                    if state['teams_mode'] == 'loading':
+                        if not state['teams_release'].wait(30):
+                            self.send_error(504)
+                            return
+                    if state['teams_mode'] == 'error':
+                        self.send_response(503)
+                        self.send_header('Content-Type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(b'{"detail":"synthetic team roster outage"}')
+                        return
                 if path == '/api/v1/orgs/test/agents' and self.command == 'GET':
                     if state['mode'] == 'loading':
                         if not state['release'].wait(30):
@@ -108,6 +120,7 @@ def _spa(dist: Path, daemon_port: int):
         yield f'http://127.0.0.1:{server.server_port}', state
     finally:
         state['release'].set()
+        state['teams_release'].set()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
@@ -243,6 +256,53 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                     shot('agents', 'recovered')
                 fixture['release'].set()
             fixture['mode'] = 'populated'
+            fixture['teams_mode'] = 'loading'
+            fixture['teams_release'].clear()
+            pw('goto', base + '/orgs/test/agents')
+            wait('document.body.innerText.includes("consultant_head")')
+            cta = 'Add agent' if locale == 'en' else '添加智能体'
+            create_label = 'Create' if locale == 'en' else '创建'
+            team_loading = 'Loading teams…' if locale == 'en' else '正在加载团队…'
+            team_error = 'Could not load teams.' if locale == 'en' else '无法加载团队。'
+            evaluate(f'Array.from(document.querySelectorAll("button")).find(e=>e.textContent.trim()==={json.dumps(cta)}).click()')
+            wait(f'Boolean(document.querySelector("[role=dialog] [role=status]")) && document.body.innerText.includes({json.dumps(team_loading)})')
+            enrollment = {'name': 'browser_worker', 'description': 'Browser worker draft',
+                          'system_prompt': 'Preserved browser prompt'}
+            # Edit the existing controls. Source fixture changes only HTTP
+            # availability, never component state or the enrollment result.
+            evaluate(f'''(() => {{for (const [id,value] of Object.entries({json.dumps({
+                'agent-name': enrollment['name'], 'agent-description': enrollment['description'],
+                'agent-system-prompt': enrollment['system_prompt']})})) {{const input=document.getElementById(id);
+                Object.getOwnPropertyDescriptor(id==='agent-system-prompt'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype,'value').set.call(input,value);
+                input.dispatchEvent(new Event('input',{{bubbles:true}}));}} return true;}})()''')
+            assert evaluate(f'Array.from(document.querySelectorAll("[role=dialog] button")).find(e=>e.textContent.trim()==={json.dumps(create_label)}).disabled')
+            shot('add-agent', 'team-loading-draft')
+            fixture['teams_mode'] = 'error'
+            fixture['teams_release'].set()
+            wait(f'Boolean(document.querySelector("[role=dialog] [role=alert]")) && document.body.innerText.includes({json.dumps(team_error)})')
+            assert not evaluate('Boolean(document.querySelector("[role=dialog] #agent-team"))')
+            assert evaluate(f'Array.from(document.querySelectorAll("[role=dialog] button")).find(e=>e.textContent.trim()==={json.dumps(create_label)}).disabled')
+            shot('add-agent', 'team-error-draft')
+            fixture['teams_mode'] = 'populated'
+            evaluate(f'Array.from(document.querySelectorAll("[role=dialog] button")).find(e=>e.textContent.trim()==={json.dumps(retry)}).click()')
+            wait('Boolean(document.querySelector("[role=dialog] #agent-team option[value=default]"))')
+            preserved_enrollment = evaluate('({name:document.getElementById("agent-name").value,description:document.getElementById("agent-description").value,system_prompt:document.getElementById("agent-system-prompt").value})')
+            assert preserved_enrollment == enrollment
+            evaluate('''(() => {const team=document.getElementById('agent-team');team.value='default';
+                team.dispatchEvent(new Event('change',{bubbles:true}));const prompt=document.getElementById('agent-system-prompt');
+                prompt.focus();prompt.setSelectionRange(1,7);return true;})()''')
+            assert evaluate('document.activeElement.id==="agent-system-prompt" && document.activeElement.selectionStart===1 && document.activeElement.selectionEnd===7')
+            wait(f'!Array.from(document.querySelectorAll("[role=dialog] button")).find(e=>e.textContent.trim()==={json.dumps(create_label)}).disabled')
+            shot('add-agent', 'team-retry-preserved-draft')
+            creates_before = sum(method == 'POST' and path == '/api/v1/orgs/test/agents' for method, path in fixture['requests'])
+            evaluate(f'Array.from(document.querySelectorAll("[role=dialog] button")).find(e=>e.textContent.trim()==={json.dumps(create_label)}).click()')
+            wait('location.pathname.endsWith("/browser_worker") && !document.querySelector("[role=dialog]")')
+            actual_worker = next(row for row in httpx.get(_base(port) + '/agents', headers=_auth_headers())
+                .raise_for_status().json()['agents'] if row['name'] == enrollment['name'])
+            assert actual_worker['team'] == 'default' and actual_worker['role'] == 'worker'
+            assert actual_worker['description'] == enrollment['description']
+            assert sum(method == 'POST' and path == '/api/v1/orgs/test/agents' for method, path in fixture['requests']) == creates_before + 1
+            shot('add-agent', 'original-create-worker-readback')
             pw('goto', base + '/orgs/test/work-hours')
             wait('Boolean(document.querySelector("table")) && document.body.innerText.includes("consultant_head") && document.body.innerText.includes("consultant_codex")')
             assert not evaluate('Array.from(document.querySelectorAll("tbody tr")).some(e=>e.innerText.includes("founder")||e.innerText.includes("null"))')
@@ -265,6 +325,8 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 'source_sha': binding['revision'], 'cli': cli, 'cli_version': cli_version,
                 'browser_user_agent': evaluate('navigator.userAgent'), 'screenshots': evidence,
                 'requests': fixture['requests'], 'draft_retention': retained, 'direct_policy_status': denied.status_code,
+                'enrollment_draft_retention': preserved_enrollment, 'created_worker': {
+                    key: actual_worker[key] for key in ('name', 'team', 'role', 'description')},
                 'engineering_policy_status': allowed.status_code,
             }, sort_keys=True))
         finally:

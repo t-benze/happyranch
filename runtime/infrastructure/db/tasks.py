@@ -2697,9 +2697,10 @@ class TasksMixin:
         for row in rows:
             task = self.get_task(row["task_id"])
             if row["status"] == TaskStatus.FAILED.value and task is not None and task.task_type == "subtask":
-                if not self.consumed_task_completion_recovery_owner_is_current(
-                        task_id=row["task_id"], agent=row["agent"], recovery_session_id=row["recovery_session_id"],
-                        result_row_id=row["accepted_result_id"], terminal_status=row["status"]):
+                disposition, context = self.human_failed_recovery_context(
+                    task_id=row["task_id"], agent=row["agent"], session_id=row["recovery_session_id"],
+                    result_row_id=row["accepted_result_id"])
+                if disposition != "eligible" or context["episode"]["state"] != "callback_consumed":
                     continue
             owners.append(dict(row))
         return owners
@@ -2734,7 +2735,14 @@ class TasksMixin:
         ).fetchone()
         if row is not None and terminal_status == TaskStatus.FAILED.value:
             task = self.get_task(task_id)
-            if task is not None and task.task_type == "subtask":
+            org = getattr(getattr(self, "_workflow_drafts", None), "org", None)
+            human = False
+            if task is not None and org is not None:
+                try:
+                    human = org.teams.manager_for_team(task.team).kind == "human"
+                except KeyError:
+                    pass
+            if task is not None and task.task_type == "subtask" and human:
                 disposition, context = self.human_failed_recovery_context(
                     task_id=task_id, agent=agent, session_id=recovery_session_id, result_row_id=result_row_id)
                 return disposition == "eligible" and context["episode"]["state"] == "callback_consumed"

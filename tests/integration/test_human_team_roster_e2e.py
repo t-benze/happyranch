@@ -61,7 +61,7 @@ def human_daemon(runtime: Path, request: pytest.FixtureRequest,
     # and abruptly exits only after the real separately committed effect. It
     # does not replace SQL, a method, an executor, or a final transition.
     launcher = r'''
-import hashlib,json,marshal,os,runpy,sys,threading,types
+import asyncio,hashlib,json,marshal,os,runpy,sys,threading,types
 from pathlib import Path
 source=Path(sys.argv[1]); revision=sys.argv[2]; cut=sys.argv[3]; receipt=Path(sys.argv[4])
 sys.dont_write_bytecode=True
@@ -80,7 +80,76 @@ codes=[code for code in members(compile(data,str(path),'exec',dont_inherit=True,
        if code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect']
 assert len(codes)==1
 expected=hashlib.sha256(marshal.dumps(codes[0])).hexdigest()
+writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_before_retry'}
+writer_path=source/'runtime/orchestrator/run_step.py'
+writer_data=writer_path.read_bytes()
+assert writer_data==subprocess.check_output(['git','-C',str(source),'show',revision+':runtime/orchestrator/run_step.py'])
+writer_codes={code.co_qualname:hashlib.sha256(marshal.dumps(code)).hexdigest()
+    for code in members(compile(writer_data,str(writer_path),'exec',dont_inherit=True,optimize=sys.flags.optimize))
+    if code.co_qualname in {'_submit_human_failed_recovery','_drive_human_failed_recovery','_HumanFailedRecoveryOperation.finish'}}
+assert len(writer_codes)==3
+writer_state={}
+def record_writer(event, **fields):
+    target=receipt.with_name(receipt.name+'.'+event)
+    value={'event':event,'pid':os.getpid(),'thread':threading.get_ident(),
+        'source_sha':revision,'file_sha256':hashlib.sha256(writer_data).hexdigest(),**fields}
+    fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w') as out:
+        json.dump(value,out,sort_keys=True);out.flush();os.fsync(out.fileno())
+async def held_writer(org):
+    # Real supported context entry, on the daemon's actual owning loop. No
+    # canonical segment is called: unrelated writer holds only its async bit.
+    for number in range(2 if cut=='writer_reacquired_before_retry' else 1):
+        async with org._profile_coordinator.consumer_writer(org=org,
+                publisher='THR296-isolated-writer-control',consumer='consultant_head',preserve=True):
+            assert org.workflow_authority._async_writer_lock.locked()
+            record_writer('held-'+str(number),loop=id(asyncio.get_running_loop()),**writer_state['identity'])
+            writer_state['ready'].set()
+            release=receipt.with_name(receipt.name+'.release-'+str(number))
+            while not release.exists():
+                await asyncio.sleep(0.01)
+        record_writer('released-'+str(number),**writer_state['identity'])
+    record_writer('writer-complete',**writer_state['identity'])
+def observe_writer(frame,event,arg):
+    if frame.f_code.co_filename!=str(writer_path) or frame.f_code.co_qualname not in writer_codes:
+        return
+    assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==writer_codes[frame.f_code.co_qualname]
+    local=frame.f_locals
+    if frame.f_code.co_qualname=='_submit_human_failed_recovery' and event=='call' and not writer_state:
+        orch=local['orch']; task=orch._db.get_task(local['task_id'])
+        if task is None or task.task_type!='subtask' or task.team!='default':return
+        try:asyncio.get_running_loop()
+        except RuntimeError:pass
+        else:raise AssertionError('inline-worker barrier must not block daemon loop')
+        assert local['agent']=='consultant_codex' and orch._main_loop.is_running()
+        with orch._db._lock:
+            rows=orch._db._conn.execute('SELECT * FROM task_completion_recoveries WHERE task_id=?',(task.id,)).fetchall()
+            assert len(rows)==1
+            episode=dict(rows[0])
+        assert episode['state']=='callback_accepted' and episode['accepted_result_id']==local['result_id']
+        writer_state.update(identity={'task':task.id,'agent':local['agent'],'origin':episode['origin_session_id'],
+            'session':local['session_id'],'result':local['result_id']},ready=threading.Event())
+        org=orch._workflow_drafts.org
+        writer_state['writer']=asyncio.run_coroutine_threadsafe(held_writer(org),orch._main_loop)
+        assert writer_state['ready'].wait(10),'native writer did not acquire actual async interval'
+    elif frame.f_code.co_qualname=='_drive_human_failed_recovery' and event=='return' and writer_state:
+        operation=local['operation']
+        if operation.task_id!=writer_state['identity']['task']:return
+        if operation.disposition=='writer_busy' and 'deferred' not in writer_state:
+            assert operation.timer is not None and not operation.completion.done()
+            writer_state['deferred']=True
+            writer_state['operation']=operation
+            record_writer('consumer-deferred',phase=operation.phase,**writer_state['identity'])
+    elif frame.f_code.co_qualname=='_HumanFailedRecoveryOperation.finish' and event=='return' and writer_state:
+        operation=local['self']
+        if operation is writer_state.get('operation') and 'finished' not in writer_state:
+            writer_state['finished']=True
+            record_writer('consumer-finished',disposition=operation.disposition,phase=operation.phase,
+                key=list(operation.key) if operation.key is not None else None,**writer_state['identity'])
 def observe(frame,event,arg):
+    if cut in writer_cuts:
+        observe_writer(frame,event,arg)
+        return
     if (event!='return' or frame.f_code.co_filename!=str(path)
             or frame.f_code.co_qualname!='TasksMixin.apply_human_failed_recovery_effect'
             or frame.f_locals.get('effect')!=cut or arg!='progressed'): return
@@ -185,8 +254,11 @@ with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) a
         assert prior == 0
 if administration:
     import ast, httpx
-    from runtime.daemon.paths import port_file
+    from runtime.daemon.paths import port_file, read_token
     base = 'http://127.0.0.1:' + port_file().read_text().strip() + '/api/v1/orgs/' + org
+    token = read_token()
+    assert token
+    headers = {'Authorization': 'Bearer ' + token}
     observed = []
     for action in ('enroll', 'update', 'terminate'):
         body = {'action': action, 'name': 'consultant_codex' if agent == 'consultant_head' else 'consultant_head',
@@ -194,7 +266,7 @@ if administration:
                 'system_prompt': 'Advise the founder.', 'executor': 'codex'}
         if action == 'enroll':
             body['name'] = 'ungranted_worker'
-        reply = httpx.post(base + '/agents/manage', json=body)
+        reply = httpx.post(base + '/agents/manage', json=body, headers=headers)
         assert reply.status_code == 403 and reply.json()['detail'] == 'manage-agent requires an active team-manager session', reply.text
         observed.append({'action': action, 'status': reply.status_code, 'detail': reply.json()['detail']})
     # Reuse the independently literal existing valid fixture without importing
@@ -210,6 +282,26 @@ if administration:
         'expected_current_version': 0, 'definition': definitions[0]})
     assert reply.status_code == 403 and reply.json()['detail']['code'] == 'manager_required', reply.text
     observed.append({'action': 'template-publish', 'status': reply.status_code, 'detail': reply.json()['detail']})
+    # Token here belongs solely to the synthetic fixture harness. It reaches
+    # the actual target eligibility boundary, without attributing operator
+    # bearer authority to this worker's session or changing auth semantics.
+    control = httpx.get(base + '/agents/engineering_head/team-escalation-policy', headers=headers)
+    assert control.status_code == 200, control.text
+    control = control.json()
+    assert control['target_manager'] == 'engineering_head' and control['team'] == 'engineering'
+    assert control['family'] == 'empty' and control['selector_epoch'] == 0
+    observed.append({'action': 'agent-manager-policy-control', 'status': 200})
+    reply = httpx.get(base + '/agents/' + agent + '/team-escalation-policy', headers=headers)
+    assert reply.status_code == 404 and reply.json()['detail']['code'] == 'policy_surface_not_available', reply.text
+    observed.append({'action': 'worker-policy-read', 'status': 404, 'detail': reply.json()['detail']})
+    body = {**control['v2_starter'], 'create_request_id': 'worker-create-' + T,
+        'activation_request_id': 'worker-activate-' + T, 'based_on_selector_id': control['selector_id'],
+        'expected_selector_id': control['selector_id'], 'action': 'bootstrap',
+        'acknowledge_shared_credential_attribution': True}
+    reply = httpx.post(base + '/agents/' + agent + '/team-escalation-policy/v2/releases',
+                      headers=headers, json=body)
+    assert reply.status_code == 404 and reply.json()['detail']['code'] == 'policy_surface_not_available', reply.text
+    observed.append({'action': 'worker-policy-create-activate', 'status': 404, 'detail': reply.json()['detail']})
     pathlib.Path(str(witness) + '.administration.json').write_text(json.dumps(observed))
 payload = {'task_id': T, 'session_id': S, 'agent': agent, 'status': 'completed', 'summary': 'root done', 'confidence': 90}
 if attempted_decision is not None and parent is None and prior == 0:
@@ -237,7 +329,7 @@ PARTIAL_ROSTERS = [(head, codex, roster, empty)
                        (False, False, True), (True, True, False), (True, False, True), (False, True, True))]
 
 
-def _attach_process(root: Path, slug: str = 'test') -> subprocess.CompletedProcess[str]:
+def _attach_process(root: Path, slug: str = 'test', *, save: bool = False) -> subprocess.CompletedProcess[str]:
     """Actual cold OrgState attachment in a fresh candidate interpreter."""
     from tests.helpers.integration_stub_guard.guard import manifest
     binding = manifest()
@@ -250,20 +342,104 @@ from runtime.daemon.org_state import OrgState
 assert Path(sys.modules['runtime'].__file__).resolve().parent == Path(sys.argv[1])/'runtime'
 org=OrgState.load(slug=sys.argv[3],root=Path(sys.argv[2]),settings=Settings(project_root=Path(sys.argv[1])))
 try:
+    if sys.argv[4]=='save': org.teams.save()
     print(json.dumps({'agents':org.teams.all_agents(),'default':org.teams.default_team,
                       'task_default':org.teams.task_default_team}))
 finally:
     org.close()
 '''
-    return subprocess.run([sys.executable, '-I', '-c', script, binding['source'], str(root), slug],
+    return subprocess.run([sys.executable, '-I', '-c', script, binding['source'], str(root), slug,
+                           'save' if save else 'read'],
                           capture_output=True, text=True, timeout=30)
 
 
-@pytest.mark.parametrize('partial', [None, *PARTIAL_ROSTERS], ids=[
+C1_ATTACH_CASES = [
+    'unknown-manager-kind', 'unknown-human-principal', 'extra-manager-tag',
+    'missing-manager-principal', 'blank-agent-principal', 'duplicate-worker',
+    'cross-team-worker', 'duplicate-agent-manager', 'missing-worker-definition',
+    'unregistered-active-worker', 'wrong-worker-team', 'wrong-worker-role',
+    'wrong-manager-role', 'pending-worker-control', 'pending-manager-refused',
+    'legacy-save-control', 'human-save-control',
+]
+
+
+@pytest.mark.parametrize('partial', [None, *PARTIAL_ROSTERS, *C1_ATTACH_CASES], ids=[
     'human-get', *[f"partial-{int(h)}{int(c)}{int(r)}-{'empty-default' if e else 'absent-default'}"
-                   for h, c, r, e in PARTIAL_ROSTERS]])
+                   for h, c, r, e in PARTIAL_ROSTERS], *C1_ATTACH_CASES])
 def test_c1_registry_and_attachment(request: pytest.FixtureRequest, runtime: Path,
-                                    tmp_path: Path, partial: tuple | None) -> None:
+                                    tmp_path: Path, partial: tuple | str | None) -> None:
+    if isinstance(partial, str):
+        # Finite malformed/positive fixtures exercise the real cold attachment
+        # process, not a unit call to the validator or an invented callback.
+        cold = tmp_path / 'cold-attachment'
+        shutil.copytree(runtime / 'org', cold / 'org')
+        if partial not in ('legacy-save-control', 'wrong-manager-role', 'duplicate-agent-manager', 'pending-manager-refused'):
+            _seed_human_roster(cold)
+        path = cold / 'org/teams.yaml'
+        data = yaml.safe_load(path.read_text())
+        teams = data['teams']
+        malformed = {
+            'unknown-manager-kind': {'kind': 'robot', 'principal': 'founder'},
+            'unknown-human-principal': {'kind': 'human', 'principal': 'someone_else'},
+            'extra-manager-tag': {'kind': 'human', 'principal': 'founder', 'executor': 'codex'},
+            'missing-manager-principal': {'kind': 'human'},
+            'blank-agent-principal': {'kind': 'agent', 'principal': ''},
+        }
+        if partial in malformed:
+            teams['default']['manager'] = malformed[partial]
+        elif partial == 'duplicate-worker':
+            teams['default']['workers'].append('consultant_codex')
+        elif partial == 'cross-team-worker':
+            teams['engineering']['workers'].append('consultant_codex')
+        elif partial == 'duplicate-agent-manager':
+            teams['content']['workers'].append('engineering_head')
+        elif partial == 'missing-worker-definition':
+            (cold / 'org/agents/consultant_codex.md').unlink()
+        elif partial == 'unregistered-active-worker':
+            teams['default']['workers'].remove('consultant_codex')
+        elif partial in ('wrong-worker-team', 'wrong-worker-role', 'wrong-manager-role'):
+            from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
+            from dataclasses import replace
+            name = 'engineering_head' if partial == 'wrong-manager-role' else 'consultant_codex'
+            target = cold / 'org/agents' / f'{name}.md'
+            definition = parse_agent_text(target.read_text(), expected_name=name)
+            changed = replace(definition, team='engineering') if partial == 'wrong-worker-team' else replace(
+                definition, role='worker' if partial == 'wrong-manager-role' else 'manager')
+            target.write_text(render_agent_text(changed))
+        elif partial in ('pending-worker-control', 'pending-manager-refused'):
+            name = 'consultant_codex' if partial == 'pending-worker-control' else 'engineering_head'
+            pending = cold / 'org/agents/_pending'
+            pending.mkdir(exist_ok=True)
+            (cold / 'org/agents' / f'{name}.md').rename(pending / f'{name}.md')
+        path.write_text(yaml.safe_dump(data))
+        before = {str(p.relative_to(cold)): p.read_bytes() for p in (cold / 'org').rglob('*') if p.is_file()}
+        successful = partial in ('pending-worker-control', 'legacy-save-control', 'human-save-control')
+        actual = _attach_process(cold, save=partial.endswith('save-control'))
+        if successful:
+            assert actual.returncode == 0, actual.stderr
+            value = json.loads(actual.stdout.splitlines()[-1])
+            assert 'founder' not in value['agents']
+            assert value['default'] == ('engineering' if partial == 'legacy-save-control' else 'default')
+            assert value['task_default'] == 'engineering'
+            assert yaml.safe_load(path.read_text()) == data
+            expected = sorted(name for entry in teams.values() for name in
+                ([entry['manager']] if isinstance(entry['manager'], str) else []) + entry['workers'])
+            assert sorted(value['agents']) == expected
+            if partial == 'pending-worker-control':
+                assert not (cold / 'org/agents/consultant_codex.md').exists()
+                assert (cold / 'org/agents/_pending/consultant_codex.md').read_bytes() == before['org/agents/_pending/consultant_codex.md']
+        else:
+            assert actual.returncode != 0, actual.stdout
+            expected = 'ValueError' if partial in malformed else 'OrgConsistencyError'
+            assert expected in actual.stderr, actual.stderr
+            assert {str(p.relative_to(cold)): p.read_bytes() for p in (cold / 'org').rglob('*') if p.is_file()} == before
+        assert not (cold / 'workspaces/founder').exists()
+        with sqlite3.connect(cold / 'happyranch.db') as conn:
+            assert conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0
+            assert conn.execute('SELECT COUNT(*) FROM task_results').fetchone()[0] == 0
+            if not successful:
+                assert conn.execute('SELECT COUNT(*) FROM workflow_publication_journals').fetchone()[0] == 0
+        return
     if partial is not None:
         # A fresh fixture copy has no running database or worker. This drives
         # the shipped attachment owner, unlike the suspended validator units.
@@ -339,15 +515,41 @@ def test_c1_registry_and_attachment(request: pytest.FixtureRequest, runtime: Pat
     ('founder', 'unknown_owner', 400),
     ('missing_worker', 'unknown_owner', 400),
     ('dev_agent', 'owner_team_mismatch', 400),
+    ('pending-head', 'unknown_owner', 400),
+    ('inactive-codex', 'unknown_owner', 400),
+    ('wrong-role-head', 'unknown_owner', 400),
+    ('unknown-team', 'unknown_team', 400),
+    ('fresh-omitted', 'owner_required_for_human_team', 422),
     ('consultant_head', None, 200),
     ('consultant_codex', None, 200),
     ('legacy-omitted', None, 200),
 ], ids=['missing-owner', 'founder', 'unknown-worker', 'other-team-worker',
+        'pending-worker', 'inactive-worker', 'wrong-worker-role', 'unknown-team', 'fresh-default-omitted',
         'head-with-attachment', 'codex-owner-only-with-attachment', 'legacy-omitted-with-attachment'])
 def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
                                              owner: str | None, code: str, http_status: int) -> None:
     port, root = human_daemon
-    upload = httpx.post(_base(port) + '/tasks/attachments', headers=_auth_headers(),
+    base = _base(port)
+    if owner == 'fresh-omitted':
+        created = httpx.post(f'http://127.0.0.1:{port}/api/v1/orgs',
+            json={'slug': 'fresh-owner'}, headers=_auth_headers())
+        assert created.status_code == 200, created.text
+        root = root.parent / 'fresh-owner'
+        base = f'http://127.0.0.1:{port}/api/v1/orgs/fresh-owner'
+    elif owner in ('pending-head', 'inactive-codex'):
+        # Intentional test-fixture loss of active eligibility after attachment
+        # must be observed again by the actual submission boundary.
+        name = 'consultant_head' if owner == 'pending-head' else 'consultant_codex'
+        destination = root / 'org/agents' / ('_pending' if owner == 'pending-head' else '_terminated')
+        destination.mkdir(exist_ok=True)
+        (root / 'org/agents' / f'{name}.md').rename(destination / f'{name}.md')
+    elif owner == 'wrong-role-head':
+        from dataclasses import replace
+        from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
+        path = root / 'org/agents/consultant_head.md'
+        definition = parse_agent_text(path.read_text(), expected_name='consultant_head')
+        path.write_text(render_agent_text(replace(definition, role='manager')))
+    upload = httpx.post(base + '/tasks/attachments', headers=_auth_headers(),
                         params={'agent': 'founder'},
                         files={'file': ('roster.png', b'\x89PNG\r\n\x1a\nfixture', 'image/png')})
     assert upload.status_code == 200, upload.text
@@ -357,14 +559,20 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
         before_attachments = conn.execute('SELECT COUNT(*) FROM task_attachments').fetchone()[0]
     body = {'team': 'default', 'brief': 'owner guard before any durable allocation',
             'attachments': [{'storage_key': attachment['storage_key'], 'display_name': 'roster.png'}]}
-    if owner == 'legacy-omitted':
+    if owner in ('legacy-omitted', 'fresh-omitted'):
         del body['team']
+    elif owner in ('pending-head', 'wrong-role-head'):
+        body['owner'] = 'consultant_head'
+    elif owner == 'inactive-codex':
+        body['owner'] = 'consultant_codex'
+    elif owner == 'unknown-team':
+        body.update(team='missing_team', owner='consultant_codex')
     elif owner == 'consultant_codex':
         del body['team']
         body['owner'] = owner
     elif owner is not None:
         body['owner'] = owner
-    reply = httpx.post(_base(port) + '/tasks', json=body, headers=_auth_headers())
+    reply = httpx.post(base + '/tasks', json=body, headers=_auth_headers())
     assert reply.status_code == http_status
     if code is None:
         task_id = reply.json()['task_id']
@@ -434,7 +642,8 @@ def test_c3_worker_lifecycle_and_denials(human_daemon: tuple[int, Path], agent: 
             for path in (root / 'org').rglob('*.md') if path.is_file()} == canonical_before
     if operation == 'administration':
         evidence = json.loads(Path(str(plan) + '.calls.jsonl.administration.json').read_text())
-        assert [row['action'] for row in evidence] == ['enroll', 'update', 'terminate', 'template-publish']
+        assert [row['action'] for row in evidence] == ['enroll', 'update', 'terminate', 'template-publish',
+            'agent-manager-policy-control', 'worker-policy-read', 'worker-policy-create-activate']
         assert not (root / 'org/agents/ungranted_worker.md').exists()
     # Current human-team worker is not an eligible manager policy target.
     denied = httpx.get(_base(port) + f'/agents/{agent}/team-escalation-policy', headers=_auth_headers())
@@ -445,11 +654,12 @@ C4_SCENARIOS = [
     (agent, recovery, status, None)
     for agent, recovery in [('consultant_head', False), ('consultant_codex', False), ('consultant_codex', True)]
     for status in ('completed', 'blocked')
-] + [('consultant_codex', True, 'blocked', cut) for cut in ('fail', 'review')]
+] + [('consultant_codex', True, 'blocked', cut) for cut in (
+    'fail', 'review', 'writer_busy_before_consumption-inline_worker', 'writer_reacquired_before_retry')]
 
 
 @pytest.mark.parametrize('agent,recovery,status,cut', C4_SCENARIOS, ids=[
-    ('rf5-zero-review' if cut == 'fail' else 'rf6-one-review') if cut else
+    ('rf5-zero-review' if cut == 'fail' else 'rf6-one-review' if cut == 'review' else cut) if cut else
     ('head' if agent == 'consultant_head' else 'codex-accepted' if recovery else 'codex') +
     ('-completed' if status == 'completed' else '-failed')
     for agent, recovery, status, cut in C4_SCENARIOS])
@@ -467,7 +677,7 @@ def test_c4_normal_and_recovered_verdict_attribution(
     reply = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'owner': agent, 'brief': 'self child then final parent'}, headers=_auth_headers()).raise_for_status().json()
     original_review = None
     selected_before = None
-    if cut:
+    if cut in ('fail', 'review'):
         owned = request.node._roster_fault_daemon
         assert owned['process'].wait(timeout=150) == 86
         observed = json.loads(owned['witness'].read_text())
@@ -497,6 +707,51 @@ def test_c4_normal_and_recovered_verdict_attribution(
             # a genuine callback/result for its next parent invocation is owed.
             assert conn.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (reply['task_id'],)).fetchone()[0] == 1
         port = owned['start']('none')
+    elif cut in ('writer_busy_before_consumption-inline_worker', 'writer_reacquired_before_retry'):
+        owned = request.node._roster_fault_daemon
+        witness = owned['witness']
+        def record(event: str) -> dict:
+            path = witness.with_name(witness.name + '.' + event)
+            deadline = time.monotonic() + 150
+            while not path.exists() and time.monotonic() < deadline:
+                assert owned['process'].poll() is None, 'writer barrier daemon exited'
+                time.sleep(0.05)
+            assert path.exists(), f'no real native writer/consumer observation: {event}'
+            return json.loads(path.read_text())
+        observed = record('held-0')
+        deferred = record('consumer-deferred')
+        assert deferred['task'] == observed['task'] and deferred['phase'] == 'evidence'
+        assert observed['pid'] == owned['process'].pid
+        assert observed['origin'] != observed['session'] and type(observed['result']) is int
+        assert observed['result'] > 0
+        def held_readback() -> None:
+            nonlocal selected_before
+            with sqlite3.connect(root / 'happyranch.db') as conn:
+                selected = conn.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone()
+                assert selected is not None
+                if selected_before is None:
+                    selected_before = selected
+                assert selected == selected_before
+                assert conn.execute('SELECT parent_task_id,status,assigned_agent,current_session_id,cancelled_at FROM tasks WHERE id=?',
+                    (observed['task'],)).fetchone() == (reply['task_id'], 'in_progress', agent, observed['session'], None)
+                assert conn.execute('SELECT state,accepted_result_id,accepted_result_session_id FROM task_completion_recoveries WHERE task_id=?',
+                    (observed['task'],)).fetchone() == ('callback_accepted', observed['result'], observed['session'])
+                logs = conn.execute("SELECT action,payload FROM audit_log WHERE task_id=?", (observed['task'],)).fetchall()
+                assert not [row for row in logs if row[0] == 'review_verdict']
+                assert not [row for row in logs if row[0] == 'completion_report' and '_result_row_id' in json.loads(row[1])]
+                assert conn.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (reply['task_id'],)).fetchone()[0] == 1
+                assert conn.execute("SELECT COUNT(*) FROM jobs WHERE task_id=? AND reason='task_ended'", (observed['task'],)).fetchone()[0] == 0
+        held_readback()
+        witness.with_name(witness.name + '.release-0').write_text('release owned native writer\n')
+        if cut == 'writer_reacquired_before_retry':
+            second = record('held-1')
+            assert second['loop'] == observed['loop'] and second['task'] == observed['task']
+            held_readback()
+            witness.with_name(witness.name + '.release-1').write_text('release second owned native writer\n')
+        record('writer-complete')
+        completed = record('consumer-finished')
+        assert completed['disposition'] == 'done'
+        assert completed['key'] == [observed[key] for key in ('task', 'agent', 'origin', 'session', 'result')]
     final = _wait_for_terminal(_base(port), reply['task_id'])
     assert final['task']['status'] == 'completed'
     with sqlite3.connect(root / 'happyranch.db') as conn:

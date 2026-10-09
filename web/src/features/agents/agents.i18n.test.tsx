@@ -15,7 +15,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
-import { createMemoryRouter, RouterProvider } from 'react-router-dom';
+import { createMemoryRouter, MemoryRouter, RouterProvider } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { AppProvider } from '@/design-system/providers/AppProvider';
@@ -79,6 +79,118 @@ describe('THR296 human roster query states', () => {
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByRole('combobox', { name: translate(locale, 'agents.add.team') })).toBeInTheDocument();
     expect(screen.queryByTestId('team-escalation-policy')).not.toBeInTheDocument();
+  });
+});
+
+describe('THR296 human team query states', () => {
+  test.each(['en', 'zh-CN'] as const)('team loading and failure preserve enrollment draft through retry in %s', async (locale) => {
+    stub();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let failed = true;
+    let teamReads = 0;
+    const creates: unknown[] = [];
+    server.use(
+      http.get(`${API}/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })),
+      http.get(`${API}/orgs/${SLUG}/teams`, async () => {
+        teamReads += 1;
+        await pending;
+        return failed ? HttpResponse.json({ detail: 'fixture outage' }, { status: 503 })
+          : HttpResponse.json({ teams: [{ name: 'default', manager: null, manager_kind: 'human',
+              human_manager: 'founder', is_default: true, workers: [] }] });
+      }),
+      http.post(`${API}/orgs/${SLUG}/agents`, async ({ request }) => {
+        creates.push(await request.json());
+        return HttpResponse.json({ name: 'new_consultant', team: 'default', role: 'worker' });
+      }),
+    );
+    mount(locale, `/orgs/${SLUG}/agents`);
+    fireEvent.click(await screen.findByRole('button', { name: translate(locale, 'agents.empty.cta') }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByRole('textbox', { name: translate(locale, 'agents.add.name') }),
+      { target: { value: 'new_consultant' } });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: translate(locale, 'agents.field.description') }),
+      { target: { value: 'Original description' } });
+    const prompt = within(dialog).getByRole('textbox', { name: translate(locale, 'agents.field.systemPrompt') });
+    fireEvent.change(prompt, { target: { value: 'Original worker prompt' } });
+    try {
+      expect(within(dialog).getByRole('status')).toHaveTextContent(locale === 'en' ? 'Loading teams…' : '正在加载团队…');
+      expect(within(dialog).queryByText(translate(locale, 'agents.add.noTeams'))).not.toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: translate(locale, 'agents.add.create') })).toBeDisabled();
+    } finally {
+      release();
+    }
+    const message = locale === 'en' ? 'Could not load teams.' : '无法加载团队。';
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(message);
+    expect(within(dialog).queryByText(translate(locale, 'agents.add.noTeams'))).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: translate(locale, 'agents.add.create') })).toBeDisabled();
+    failed = false;
+    fireEvent.click(within(dialog).getByRole('button', { name: translate(locale, 'common.retry') }));
+    const selector = await within(dialog).findByRole('combobox', { name: translate(locale, 'agents.add.team') });
+    expect(within(selector).getByRole('option', { name: `default · ${translate(locale, 'agents.team.founderManaged')}` })).toBeInTheDocument();
+    fireEvent.change(selector, { target: { value: 'default' } });
+    await waitFor(() => expect(within(dialog).getByRole('combobox', { name: translate(locale, 'agents.executor.label') })).toHaveValue('claude'));
+    prompt.focus();
+    (prompt as HTMLTextAreaElement).setSelectionRange(1, 7);
+    const next = locale === 'en' ? 'zh-CN' : 'en';
+    fireEvent.click(screen.getByTestId(`test-set-locale-${next}`));
+    expect(prompt).toHaveFocus();
+    expect(prompt).toHaveValue('Original worker prompt');
+    expect((prompt as HTMLTextAreaElement).selectionStart).toBe(1);
+    expect((prompt as HTMLTextAreaElement).selectionEnd).toBe(7);
+    expect(selector).toHaveValue('default');
+    expect(within(dialog).getByRole('textbox', { name: translate(next, 'agents.add.name') })).toHaveValue('new_consultant');
+    expect(within(dialog).getByRole('textbox', { name: translate(next, 'agents.field.description') })).toHaveValue('Original description');
+    expect(teamReads).toBe(2);
+    expect(creates).toEqual([]);
+    fireEvent.click(within(dialog).getByRole('button', { name: translate(next, 'agents.add.create') }));
+    await waitFor(() => expect(creates).toEqual([{ name: 'new_consultant', role: 'worker', team: 'default',
+      executor: 'claude', description: 'Original description', system_prompt: 'Original worker prompt' }]));
+  });
+
+  test.each(['en', 'zh-CN'] as const)('removed selected human team cannot submit a stale draft in %s', async (locale) => {
+    stub();
+    let removed = false;
+    const creates: unknown[] = [];
+    server.use(
+      http.get(`${API}/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })),
+      http.get(`${API}/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: removed
+        ? [{ name: 'engineering', manager: 'engineering_manager', workers: [] }]
+        : [{ name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder',
+            is_default: true, workers: [] }] })),
+      http.post(`${API}/orgs/${SLUG}/agents`, async ({ request }) => {
+        creates.push(await request.json());
+        return HttpResponse.json({ name: 'new_consultant', team: 'default', role: 'worker' });
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<MemoryRouter initialEntries={[`/orgs/${SLUG}/agents`]}>
+      <I18nProvider adapter={savedLocaleAdapter(locale)}>
+        <AppProvider client={client}><AppRoutes /></AppProvider>
+      </I18nProvider>
+    </MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: translate(locale, 'agents.empty.cta') }));
+    const dialog = await screen.findByRole('dialog');
+    const team = await within(dialog).findByRole('combobox', { name: translate(locale, 'agents.add.team') });
+    fireEvent.change(team, { target: { value: 'default' } });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: translate(locale, 'agents.add.name') }),
+      { target: { value: 'new_consultant' } });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: translate(locale, 'agents.field.description') }),
+      { target: { value: 'Original description' } });
+    const prompt = within(dialog).getByRole('textbox', { name: translate(locale, 'agents.field.systemPrompt') });
+    fireEvent.change(prompt, { target: { value: 'Original worker prompt' } });
+    const create = within(dialog).getByRole('button', { name: translate(locale, 'agents.add.create') });
+    await waitFor(() => expect(create).toBeEnabled());
+    removed = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: ['teams', SLUG], exact: true }); });
+    await waitFor(() => expect(within(team).getByRole('option', { name: 'engineering' })).toBeInTheDocument());
+    expect(within(team).queryByRole('option', { name: /default/ })).not.toBeInTheDocument();
+    expect(create).toBeDisabled();
+    fireEvent.click(create);
+    expect(creates).toEqual([]);
+    expect(prompt).toHaveValue('Original worker prompt');
+    fireEvent.change(team, { target: { value: 'engineering' } });
+    expect(create).toBeEnabled();
   });
 });
 

@@ -4894,6 +4894,75 @@ C4_HUMAN_VERDICTS = [(None, 'none'), ('', 'blank'), ('CUSTOM_REVIEW_OUTCOME', 'c
                     ('REVISE', 'revise'), ('BLOCK', 'block')]
 
 
+@pytest.mark.parametrize('ownership', ['current', 'cancelled', 'new-binding', 'foreign-result'])
+def test_consumed_agent_failed_subtask_preserves_legacy_owner_guard(tmp_path: Path, ownership: str) -> None:
+    """SUSPENDED C4 agent-team control, not shipping callback evidence.
+
+    Genuine native SQL writers create this localized fixture. The additional
+    human history predicate must not change the preexisting agent-team guard
+    or expand FAILED/subtask startup discovery to agent-managed teams.
+    """
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    from runtime.daemon.org_state import OrgState
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    root = tmp_path / 'legacy-failed-agent'
+    (root / 'org/agents').mkdir(parents=True)
+    (root / 'org/teams.yaml').write_text('''teams:
+  engineering:
+    manager: engineering_head
+    workers: [dev_agent]
+''')
+    for name, role in (('engineering_head', 'manager'), ('dev_agent', 'worker')):
+        (root / 'org/agents' / f'{name}.md').write_text(render_agent_text(AgentDef(
+            name=name, team='engineering', role=role, executor='codex', allow_rules=(), repos={},
+            enrolled_by=None, enrolled_at_task=None, enrolled_at=None, system_prompt=f'You are {name}.')))
+    org = OrgState.load(slug='test', root=root, settings=Settings())
+    try:
+        db = org.db
+        db.insert_task(TaskRecord(id='TASK-PARENT', brief='parent', team='engineering',
+            assigned_agent='engineering_head', status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED))
+        db.insert_task(TaskRecord(id='TASK-LEAF', brief='legacy consumed fixture', team='engineering',
+            assigned_agent='dev_agent', task_type='subtask', parent_task_id='TASK-PARENT',
+            status=TaskStatus.IN_PROGRESS, current_session_id='origin'))
+        now = datetime.now(timezone.utc)
+        assert db.claim_task_completion_recovery(task_id='TASK-LEAF', agent='dev_agent',
+            origin_session_id='origin', recovery_session_id='recovery', provider_session_id='provider',
+            claimed_at=now.isoformat(), expires_at=(now + timedelta(minutes=2)).isoformat())
+        assert db.publish_task_completion_recovery_binding(task_id='TASK-LEAF', agent='dev_agent',
+            origin_session_id='origin', recovery_session_id='recovery')
+        assert db.admit_task_completion_callback(task_id='TASK-LEAF', agent='dev_agent',
+            session_id='recovery', status='blocked', output_summary='legacy nonroot failure', confidence_score=90)
+        selected = db.get_accepted_task_completion_recovery_result(task_id='TASK-LEAF', agent='dev_agent')
+        assert selected is not None and type(selected['id']) is int and selected['id'] > 0
+        assert db.consume_accepted_nonroot_escalation_recovery(task_id='TASK-LEAF', agent='dev_agent',
+            session_id='recovery', result_row_id=selected['id'], note='legacy nonroot failure',
+            completion_payload={'fixture': 'localized legacy state'}, settled_at=now.isoformat())
+        if ownership == 'cancelled':
+            db.update_task('TASK-LEAF', cancelled_at=now.isoformat())
+        elif ownership == 'new-binding':
+            db.update_task('TASK-LEAF', current_session_id='new-owner')
+        result_id = selected['id'] + 1 if ownership == 'foreign-result' else selected['id']
+        with sqlite3.connect(db.path) as observer:
+            before = (observer.execute('SELECT * FROM tasks ORDER BY id').fetchall(),
+                      observer.execute('SELECT * FROM task_results ORDER BY id').fetchall(),
+                      observer.execute('SELECT * FROM task_completion_recoveries ORDER BY id').fetchall(),
+                      observer.execute('SELECT * FROM audit_log ORDER BY id').fetchall())
+        params = dict(task_id='TASK-LEAF', agent='dev_agent', recovery_session_id='recovery',
+                      result_row_id=result_id, terminal_status='failed')
+        assert db.consumed_task_completion_recovery_owner_is_current(**params) is (ownership == 'current')
+        # FAILED agent subtasks were not included by the preceding reader's
+        # startup selector. Only the accepted human arm may add them now.
+        assert db.get_consumed_task_completion_recovery_owners() == []
+        with sqlite3.connect(db.path) as observer:
+            assert (observer.execute('SELECT * FROM tasks ORDER BY id').fetchall(),
+                    observer.execute('SELECT * FROM task_results ORDER BY id').fetchall(),
+                    observer.execute('SELECT * FROM task_completion_recoveries ORDER BY id').fetchall(),
+                    observer.execute('SELECT * FROM audit_log ORDER BY id').fetchall()) == before
+    finally:
+        org.close()
+
+
 @pytest.mark.parametrize('cut', ['completed', 'rf5_zero_review', 'rf6_one_review'])
 @pytest.mark.parametrize('verdict', [value for value, _ in C4_HUMAN_VERDICTS], ids=[name for _, name in C4_HUMAN_VERDICTS])
 def test_c4_human_codex_accepted_exact_verdict(tmp_path: Path, cut: str, verdict: str | None) -> None:

@@ -21,6 +21,9 @@ projection. Worker decisions grant self-decomposition only, without admin,
 peer delegation/fanout, supersession, policy or template powers.
 Existing bilingual Agents views retain loading/error/empty states, Retry and
 detail auto-selection after recovery, without exposing a human executor.
+The worker enrollment selector distinguishes teams loading, failed fetch and
+successful empty data. Retry preserves its draft; Create requires the selected
+team to remain in the current successful roster, including empty human Default.
 
 Normal child outcomes use the valid executable persisted parent owner only on
 human teams; invalid ancestry is unknown_manager. Agent-team attribution is

@@ -39,6 +39,9 @@ leadership while preserving executable worker selection. Demoted consultants
 are ineligible for manager policy views; no transfer UI is introduced.
 The existing roster shows localized loading/error/empty states and Retry;
 a recovered first fetch still selects the ordinary worker detail pane.
+Worker enrollment distinguishes teams loading, failed fetch with Retry and a
+successful empty roster. Retry and locale changes preserve the enrollment
+draft; Create requires the selected team to remain in the current roster.
 `happyranch run --team default` requires an explicit active executable --owner.
 Omitted requests follow task_default_team (legacy Engineering). Founder cannot
 be selected as an executor. Normal and recovered review_verdict audits record

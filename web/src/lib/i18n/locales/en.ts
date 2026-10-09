@@ -2258,6 +2258,8 @@ export const en = {
   'agents.add.nameHint': 'Lowercase + digits + underscores; must start with a letter.',
   'agents.add.role': 'Role',
   'agents.add.noTeams': 'No teams yet. Add a manager to create the first team.',
+  'agents.add.teamsLoading': 'Loading teams…',
+  'agents.add.teamsError': 'Could not load teams.',
   'agents.add.team': 'Team',
   'agents.add.selectTeam': 'Select team…',
   'agents.add.newTeam': 'New team name',

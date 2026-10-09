@@ -131,10 +131,13 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
     executorOk &&
     description.trim().length > 0 &&
     systemPrompt.trim().length > 0 &&
-    (role === 'worker' ? !!team && teams.length > 0 : !!newTeam);
+    (role === 'worker'
+      ? !teamsQuery.isLoading && !teamsQuery.isError && teams.some((entry) => entry.name === team)
+      : !!newTeam);
   const canSubmit = fieldsOk && !create.isPending;
 
   const onSubmit = async () => {
+    if (!canSubmit) return;
     const body =
       role === 'worker'
         ? {
@@ -210,7 +213,18 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
           </fieldset>
 
           {role === 'worker' ? (
-            teams.length === 0 ? (
+            teamsQuery.isLoading ? (
+              <p className="text-fg-muted text-sm" role="status">
+                {t('agents.add.teamsLoading')}
+              </p>
+            ) : teamsQuery.isError ? (
+              <div className="space-y-2" role="alert">
+                <p className="text-fg-muted text-sm">{t('agents.add.teamsError')}</p>
+                <Button variant="outline" size="sm" onClick={() => teamsQuery.refetch()}>
+                  {t('common.retry')}
+                </Button>
+              </div>
+            ) : teams.length === 0 ? (
               <p className="text-fg-muted text-sm">
                 {t('agents.add.noTeams')}
               </p>
