@@ -1,5 +1,22 @@
 # Current TASK-10279 browser-only continuation
 
+Current-head artifact renewal after authenticated source run37887632538:
+candidate c6dcefa2a933443504f9e36e854bca9cf020ce78 and baseline
+8378064e9933d5b3af4247eca55750ac427a564f remain immutable. Both original
+candidate selections passed28/failed3 and both separate baseline cases failed
+on each venue. The new all-runtime refusal check retains active logical session1
+while the native table and host admission show zero executors; no production
+session/metric repair or relaxed assertion is admitted. Source and browser
+bodies are not rerun in this artifact renewal. The existing fixed artifacts.py
+stages renew BOTH wheel and frozen daemon/CLI parser/lifecycle/legacy/ordinary
+callback/nonrunning-swap cases outside checkout under the ordinary UID.
+Restore only the already accepted official locked PyInstaller closure, including
+macOS macholib, after cheap complete native admission. Hash-bound artifact helper,
+source/tool/RECORD/archive/TOC/bundle/native/skills and full cleanup receipts
+are required; real failures still prevent artifact/overall PASS. Historical
+browser/Linux sandbox and source failures remain at their authentic refs.
+No whole discovery, units/proofs, provider, live integration or permanent lane.
+
 Published PR1017 candidate c6dcefa2a933443504f9e36e854bca9cf020ce78 has
 new test-side all-runtime ownership and authentic callback/durable-tail receipts.
 This revision pins that candidate and its four closed test-side input hashes.
