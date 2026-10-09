@@ -1,5 +1,29 @@
 # TASK-10279 native admission, never merge
 
+Run37876709497/evidence834e7fef retained complete fresh native admission on both
+venues. Ubuntu stopped at the explicit original sandbox-prerequisite refusal
+before provisioning. The macOS archive authenticates162 original files and16
+complete native snapshots; four ordinary wheel-daemon/default-SPA Settings
+screenshots were produced and directly viewed, one per locale/viewport. Each
+case then failed keyboard-navigation at the unchanged Preferences location
+predicate after Tab reached the link and Enter was dispatched. No Tasks images,
+keyboard/WS/navigation/HTTP-tail PASS or overall browser PASS follows.
+The four Settings images and all original failed cases remain partial evidence.
+
+The fixed key helper now sends Enter with carriage-return text/unmodifiedText,
+and Tab/Escape as rawKeyDown, followed by keyUp. It omits the incorrectly shared
+platform-specific nativeVirtualKeyCode. This follows the CDP sequence in
+[Puppeteer's Input implementation](https://github.com/puppeteer/puppeteer/blob/main/packages/puppeteer-core/src/cdp/Input.ts)
+and its
+[Enter definition](https://github.com/puppeteer/puppeteer/blob/main/packages/puppeteer-core/src/common/USKeyboardLayout.ts),
+and the existing repository nontext/text key helper. The actual fixed Tab focus,
+Enter location assertion, retired WS rejection, HTTP assertions, Tasks navigation
+and screenshot bounds remain mandatory. No DOM click substitutes for Enter,
+app instrumentation, simulated handler or backend mocking is added. Fresh native
+admission and authentic browser receipts must establish the next run's result.
+Linux's refusal, candidate/pins/workflow/tools/observer and other pending maker
+obligations are unchanged. Never merge this branch.
+
 Actual run37874844097/evidenced2e869769 passed fresh native preflight on both
 venues, then failed the browser stage. Its retained macOS archive verifies all
 158 original files and 16 complete native snapshots including preflight. Four

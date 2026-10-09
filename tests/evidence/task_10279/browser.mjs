@@ -83,10 +83,11 @@ async function wait(session, expression) {
   throw new Error(`browser condition timed out: ${expression}`);
 }
 async function key(session, name, code) {
-  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: name, code: name,
-    windowsVirtualKeyCode: code, nativeVirtualKeyCode: code }, session);
+  const text = name === 'Enter' ? '\r' : '';
+  await cdp.send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: name, code: name,
+    windowsVirtualKeyCode: code, ...(text ? { text, unmodifiedText: text } : {}) }, session);
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name,
-    windowsVirtualKeyCode: code, nativeVirtualKeyCode: code }, session);
+    windowsVirtualKeyCode: code }, session);
 }
 async function screenshot(session, name) {
   const value = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, session);
