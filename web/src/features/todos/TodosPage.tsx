@@ -1,3 +1,4 @@
+import { useIdentityPresentation } from '@/hooks/identities';
 /**
  * TodosPage — the main list view for agent Todos (scheduled commitments).
  *
@@ -30,6 +31,7 @@ export function TodosPage(): JSX.Element {
   }>()
   const org = slug ?? ''
   const { t, locale } = useTranslation()
+  const presentation = useIdentityPresentation()
   const [activeFilter, setActiveFilter] = useState<FilterGroup>('all')
   const [agentFilter, setAgentFilter] = useState<string | undefined>(undefined)
 
@@ -111,7 +113,7 @@ export function TodosPage(): JSX.Element {
               <option value="">{t('todos.filter.allAgents')}</option>
               {agentNames.map((name) => (
                 <option key={name} value={name}>
-                  {name}
+                  {presentation.label(name)}
                 </option>
               ))}
             </select>

@@ -21,6 +21,7 @@ export function agentInitials(name: string): string {
 
 interface AgentAvatarProps {
   name: string;
+  displayName?: string;
   role: AgentSummary['role'];
   /** `sm` = 36px roster chip, `lg` = 48px detail-hero chip. */
   size?: 'sm' | 'lg';
@@ -29,6 +30,7 @@ interface AgentAvatarProps {
 
 export function AgentAvatar({
   name,
+  displayName,
   role,
   size = 'sm',
   className = '',
@@ -47,7 +49,7 @@ export function AgentAvatar({
         role === 'manager' ? 'bg-agent-manager' : 'bg-agent-worker'
       } ${className}`}
     >
-      {agentInitials(name)}
+      {agentInitials(displayName ?? name)}
     </span>
   );
 }

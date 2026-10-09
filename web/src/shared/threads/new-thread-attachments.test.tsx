@@ -14,6 +14,22 @@ import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { NewThreadDialog } from './NewThreadDialog';
 
+// Naming diagnostics precede the original action; its endpoint still decides eligibility.
+beforeEach(() => {
+  server.use(
+    http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ identities: [] })),
+    http.post('/api/v1/orgs/:slug/identities/resolve', async ({ request }) => {
+      const body = await request.json() as { addresses: string[] };
+      const known = new Set(['agent_a', 'agent_b']);
+      return HttpResponse.json({ resolutions: body.addresses.map((address) => ({
+        address, status: known.has(address) ? 'resolved' : 'unknown_identity', eligible: known.has(address),
+        identity: known.has(address) ? { canonical_id: address, kind: 'agent', lifecycle: 'active',
+          addressable_name: address, name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' } : null,
+      })) });
+    }),
+  );
+});
+
 const SLUG = 'alpha';
 
 function NavTo({ to, label, testId }: { to: string; label: string; testId?: string }) {

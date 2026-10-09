@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 import type { ReplyDeliveryEntry } from '@/lib/api/types';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
@@ -99,7 +100,7 @@ function DeliveryRow({
       <span aria-hidden="true" className={`mt-1 h-1.5 w-1.5 rounded-full ${dotClass(entry.state)}`} />
       <span className="min-w-0">
         <span className="text-text-primary block font-mono text-xs leading-tight break-all">
-          {entry.agent_name}
+          <IdentityName canonicalId={entry.agent_name} />
         </span>
         <span className={`text-caption block leading-snug break-words ${stateClass(entry.state)}`}>
           {replyDeliveryCaption(entry, t, nowMs)}

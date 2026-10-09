@@ -11,6 +11,8 @@ from typing import Awaitable, Callable
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.identities.presentation import prompt_name_context
+from runtime.identities.registry import read_name_metadata
 from runtime.orchestrator.executors import _meaningful_stderr
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.models import DreamRecord, DreamStatus
@@ -62,6 +64,7 @@ def build_dream_prompt(
     managed_skills_index: str = "",
     repo_refresh_note: str = "",
     active_policy_section: str = "",
+    name_metadata=None,
 ) -> str:
     """Compose the private dream-session prompt.
 
@@ -82,7 +85,7 @@ def build_dream_prompt(
 You are {dream.agent_name}. This is private reflection for HappyRanch org `{org_slug}`.
 This is not a task or thread. Do not call report-completion.
 
-current_time: {current_time}{skills_block}{repo_refresh_block}
+{prompt_name_context(name_metadata, dream.agent_name)}current_time: {current_time}{skills_block}{repo_refresh_block}
 Dream id: {dream.id}
 Window start: {dream.window_start.isoformat() if dream.window_start else "last 24 hours"}
 Window end: {dream.window_end.isoformat()}
@@ -310,6 +313,7 @@ async def run_dream(
         managed_skills_index=managed_skills_index,
         repo_refresh_note=repo_refresh_note,
         active_policy_section=active_policy_section,
+        name_metadata=read_name_metadata(org_state),
     )
 
     executor_name = _prov  # already resolved above (TASK-2511)

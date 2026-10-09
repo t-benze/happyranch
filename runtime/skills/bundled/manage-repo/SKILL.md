@@ -3,6 +3,19 @@ name: manage-repo
 description: Add, remove, or update a repository in your AgentDef configuration (org/agents/<name>.md frontmatter). Write a JSON file and call happyranch manage-repo --from-file to keep the invocation single-line.
 ---
 
+## Current names and permanent automation IDs
+
+Fresh prompts may show current Name · ID for this turn. Use the permanent ID
+from the injected parameters for callback agent/composer/speaker, task/session/
+invocation proofs, configuration and delegate/then/fanout targets. A name is
+human-addressing/presentation data, never actor authority. Human destination
+arguments and @mentions accept current names or IDs; former names refuse with
+the current name and do not forward. Founder is a separate human; recipient
+transport remains `@founder`. Metadata failure gives ID-only context.
+
+The manage-repo callback agent remains the permanent ID, and repository keys/URLs/configuration stay unchanged. Operator name resolution never rewrites this payload.
+
+
 # manage-repo
 
 Manage the repositories cloned into your `repos/` directory. You can **add** a new repo, **remove** an existing one, or **update** the URL of an existing repo (which deletes the old clone and re-clones from the new URL).

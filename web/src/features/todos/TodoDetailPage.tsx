@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * TodoDetailPage — detail view for a single Todo (schedule).
  *
@@ -207,7 +208,7 @@ export function TodoDetailPage({
             >
               {agentInitials(schedule.agent_name)}
             </span>
-            <span className="text-fg">{schedule.agent_name}</span>
+            <span className="text-fg"><IdentityName canonicalId={schedule.agent_name} /></span>
             <span className="text-fg-subtle font-mono text-xs">
               {schedule.schedule_id}
             </span>

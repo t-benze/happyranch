@@ -15,6 +15,22 @@ import { useResolveEscalation } from '@/hooks/tasks';
 import type { SSEOptions } from '@/lib/api';
 import type { ActiveChainResponse, JobRecord, TaskEvent, TaskRecord } from '@/lib/api/types';
 
+// Naming diagnostics precede the original action; its endpoint still decides eligibility.
+beforeEach(() => {
+  server.use(
+    http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ identities: [] })),
+    http.post('/api/v1/orgs/:slug/identities/resolve', async ({ request }) => {
+      const body = await request.json() as { addresses: string[] };
+      const known = new Set(['content_writer', 'agent-c09']);
+      return HttpResponse.json({ resolutions: body.addresses.map((address) => ({
+        address, status: known.has(address) ? 'resolved' : 'unknown_identity', eligible: known.has(address),
+        identity: known.has(address) ? { canonical_id: address, kind: 'agent', lifecycle: 'active',
+          addressable_name: address, name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' } : null,
+      })) });
+    }),
+  );
+});
+
 beforeEach(() => {
   server.use(
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
@@ -523,6 +539,7 @@ describe('TasksPage — read path (roots endpoint)', () => {
       queryClient.setQueryData(key, cached);
       let shouldFail = true;
       const ledger: { pathname: string; params: Record<string, string>; bearer: string | null }[] = [];
+      server.use(http.get(`/api/v1/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })));
       server.use(http.get(`/api/v1/orgs/${SLUG}/tasks/roots`, ({ request }) => {
         const url = new URL(request.url);
         if (url.searchParams.get('status') === 'escalated') {
@@ -585,6 +602,8 @@ describe('TasksPage — read path (roots endpoint)', () => {
           await user.selectOptions(screen.getByLabelText('Task status'), params.status);
           await user.type(screen.getByLabelText('Assigned agent (exact name)'), params.assigned_agent);
           await user.click(screen.getByRole('button', { name: 'Apply' }));
+          // Naming preflight settles before the canonical filter is applied.
+          await waitFor(() => inventory('Cached second page'));
         }
         inventory('Cached second page');
         expect(ledger).toEqual([]);

@@ -1,10 +1,26 @@
 import { fireEvent, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, test, vi } from 'vitest';
+import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+
+// Naming diagnostics precede the original action; its endpoint still decides eligibility.
+beforeEach(() => {
+  server.use(
+    http.get('/api/v1/orgs/:slug/identities', () => HttpResponse.json({ identities: [] })),
+    http.post('/api/v1/orgs/:slug/identities/resolve', async ({ request }) => {
+      const body = await request.json() as { addresses: string[] };
+      const known = new Set(['agent_a', 'agent_b', 'agent_c', 'agent_extra']);
+      return HttpResponse.json({ resolutions: body.addresses.map((address) => ({
+        address, status: known.has(address) ? 'resolved' : 'unknown_identity', eligible: known.has(address),
+        identity: known.has(address) ? { canonical_id: address, kind: 'agent', lifecycle: 'active',
+          addressable_name: address, name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' } : null,
+      })) });
+    }),
+  );
+});
 
 // THR-137 helpers — stub roster that includes both a participant
 // and an extra non-participant approved agent.

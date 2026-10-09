@@ -15,10 +15,17 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { AgentSummary } from '@/lib/api/agents';
 
+export interface AddressOption extends Pick<AgentSummary, 'name' | 'team'> {
+  kind?: 'agent' | 'founder';
+  addressable_name?: AgentSummary['addressable_name'];
+  label?: string;
+  kindLabel?: string;
+}
+
 export interface MentionAutocompleteProps {
   anchor: { x: number; y: number; width: number; height: number };
-  matches: AgentSummary[];
-  onSelect: (agent: AgentSummary) => void;
+  matches: AddressOption[];
+  onSelect: (agent: AddressOption) => void;
   onDismiss: () => void;
   /** Localized listbox label; defaults to the English copy. */
   ariaLabel?: string;
@@ -69,7 +76,7 @@ export function MentionAutocomplete({
 
   const style: React.CSSProperties = {
     position: 'fixed',
-    left: anchor.x,
+    left: Math.max(4, Math.min(anchor.x, window.innerWidth - Math.min(320, window.innerWidth - 8) - 4)),
     // Anchor the popup's BOTTOM edge just above the input when opening
     // upward (grows upward, no height measurement needed); otherwise pin
     // its TOP just below the input.
@@ -77,7 +84,7 @@ export function MentionAutocomplete({
       ? { bottom: window.innerHeight - anchor.y + 4 }
       : { top: anchor.y + anchor.height + 4 }),
     minWidth: 200,
-    maxWidth: 320,
+    maxWidth: Math.min(320, window.innerWidth - 8),
     zIndex: 1000,
     // When portalled to document.body inside a Radix modal Dialog (which
     // makes everything outside DialogContent pointer-inert), the popup
@@ -114,7 +121,8 @@ export function MentionAutocomplete({
             i === active ? 'bg-accent-muted' : 'hover:bg-surface-raised'
           }`}
         >
-          <span className="font-medium">{a.name}</span>
+          <span className="font-medium">{a.label ?? a.name}</span>
+          {a.kindLabel && <span className="text-text-muted ml-2">{a.kindLabel}</span>}
           {a.team && <span className="text-text-muted ml-2">{a.team}</span>}
         </button>
       ))}

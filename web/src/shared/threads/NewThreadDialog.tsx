@@ -1,3 +1,4 @@
+import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Paperclip, X } from 'lucide-react';
 import {
@@ -56,6 +57,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
   const { t } = useTranslation();
   const slug = useOrgSlug();
   const compose = useComposeThread();
+  const identityOptions = useIdentityOptions(agents, true);
+  const preflight = usePreflightAddresses();
   const [subject, setSubject] = useState('');
   const [recipientsRaw, setRecipientsRaw] = useState('');
   const [body, setBody] = useState('');
@@ -142,17 +145,19 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       return;
     }
     const capturedSlug = slug;
+    // Capture retained selections before preflight yields to a replacement view.
+    const runRefs = new Map(attachmentRefsRef.current);
+    const runNames = new Map(attachmentNamesRef.current);
+    const reserved = new Set(runNames.values());
     setUploading(true);
     let failedUpload: PendingAttachment | null = null;
     try {
+      const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients, body, canonicalAgentIds: agents.map((a) => a.name), allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       // Run-owned snapshot; every read below uses this copy. Selection ids
       // restart on a fresh dialog (`nsel-1`), so reading the shared maps after
       // an await could substitute a reopened dialog's selection (mirrors the
       // ThreadsPage repair).
-      const runRefs = new Map(attachmentRefsRef.current);
-      const runNames = new Map(attachmentNamesRef.current);
-      const reserved = new Set(runNames.values());
       for (const pending of pendingAttachments) {
         failedUpload = pending;
         let ref = runRefs.get(pending.id);
@@ -188,8 +193,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       failedUpload = null;
       const result = await compose.mutateAsync({
         subject: subject.trim(),
-        recipients,
-        body_markdown: body.trim(),
+        recipients: resolved.recipients,
+        body_markdown: body,
         ...(refs.length ? { attachments: refs } : {}),
         ...(prefill?.forwarded_from_id
           ? {
@@ -216,14 +221,14 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
           ...(failedUpload
             ? { label: { key: 'threads.newThread.uploadFailedFor', params: { name: failedUpload.file.name } } }
             : {}),
-          detail: classifyThreadError(err),
+          detail: namingAddressError(err) ?? classifyThreadError(err),
         });
         submittingRef.current = false;
       }
     } finally {
       if (isCurrent()) setUploading(false);
     }
-  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose]);
+  }, [subject, recipientsRaw, body, pendingAttachments, prefill, compose, slug, onCreated, onClose, preflight, agents]);
 
   const handleReflection = useCallback(async () => {
     if (submittingRef.current) return;
@@ -242,9 +247,11 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
 
     setUploading(true);
     try {
+      const resolved = await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', recipients: [agentName], canonicalAgentIds: agents.map((a) => a.name) });
+      if (!isCurrent()) return;
       const result = await compose.mutateAsync({
         subject: `Reflection - ${agentName}`,
-        recipients: [agentName],
+        recipients: resolved.recipients,
         body_markdown:
           `Run self-reflection (hr:reflection) on your recent work and post your opening reflection report.`,
         destination: { slug: capturedSlug },
@@ -255,13 +262,13 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
       onClose();
     } catch (err) {
       if (isCurrent()) {
-        setErrorView({ detail: classifyThreadError(err) });
+        setErrorView({ detail: namingAddressError(err) ?? classifyThreadError(err) });
         submittingRef.current = false;
       }
     } finally {
       if (isCurrent()) setUploading(false);
     }
-  }, [reflection, compose, onCreated, onClose, slug]);
+  }, [reflection, compose, onCreated, onClose, slug, preflight, agents]);
 
   // The dialog's OWN run state owns pending presentation for the whole
   // upload+compose (and Reflection) lifecycle. The surviving mutation
@@ -300,7 +307,8 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               id={recipientsId}
               value={recipientsRaw}
               onChange={setRecipientsRaw}
-              agents={agents}
+              agents={identityOptions}
+              disabled={inFlight}
               placeholder="agent_a, agent_b"
               mentionListLabel={t('threads.newThread.mentionList')}
             />
@@ -310,7 +318,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
               id={bodyId}
               value={body}
               onChange={setBody}
-              agents={agents}
+              agents={identityOptions}
               mentionListLabel={t('threads.newThread.mentionList')}
               onSubmit={() => { if (!submittingRef.current) submit(); }}
               disabled={inFlight}
@@ -367,7 +375,7 @@ export function NewThreadDialog({ open, onClose, prefill, onCreated, agents = []
             </div>
           )}
           {errorView !== null && (
-            <p className="text-feedback-danger text-xs">{renderThreadError(errorView, t)}</p>
+            <p role="alert" className="text-feedback-danger text-xs">{renderThreadError(errorView, t)}</p>
           )}
         </div>
         <DialogFooter>

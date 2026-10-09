@@ -6,6 +6,18 @@ on:
     - cron: '0 7 * * *'
   workflow_dispatch:
     inputs:
+      naming_only:
+        description: Run only the finite naming proof (explicit source and image)
+        type: boolean
+        default: false
+      naming_source_sha:
+        description: Published reviewed complete naming candidate SHA (40 hex)
+        type: string
+        default: ''
+      naming_image:
+        description: Reviewed linux/amd64 node24.19.0-bookworm node@sha256 digest
+        type: string
+        default: ''
       all_only:
         description: Run only the manual exact all and fixed G verification lane
         type: boolean
@@ -17,7 +29,7 @@ permissions:
 jobs:
   local-ci-all:
     name: Manual local CI all (Python 3.14, Node 24)
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.naming_only }}
     runs-on: ubuntu-latest
     # Python units alone took 99 minutes in run 37650992085; allow full local CI.
     timeout-minutes: 150
@@ -53,6 +65,48 @@ jobs:
           name: local-ci-all-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/local-ci-all/
           if-no-files-found: warn
+          retention-days: 14
+
+  naming:
+    name: Finite naming daemon/browser proof (Python 3.14, Node 24)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.naming_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Record naming job deadline before acquisition
+        run: echo "NAMING_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - name: Validate explicit naming invocation
+        env:
+          NAMING_SHA: ${{ inputs.naming_source_sha }}
+          NAMING_IMAGE: ${{ inputs.naming_image }}
+          ALL_ONLY: ${{ inputs.all_only }}
+        run: |
+          [[ "$ALL_ONLY" != 'true' ]]
+          [[ "$NAMING_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$NAMING_SHA" == "$GITHUB_SHA" ]]
+          [[ "$NAMING_IMAGE" =~ ^node@sha256:[0-9a-f]{64}$ ]]
+      - name: Checkout exact published source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          ref: ${{ inputs.naming_source_sha }}
+          persist-credentials: false
+      - name: Install uv tool (dependencies installed only in bounded preparation)
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
+        with:
+          enable-cache: false
+      - name: Run sequential bounded naming operation
+        env:
+          NAMING_SHA: ${{ inputs.naming_source_sha }}
+          NAMING_IMAGE: ${{ inputs.naming_image }}
+        run: |
+          bash scripts/identity_names_hosted.sh "$NAMING_SHA" "$NAMING_IMAGE"
+      - name: Upload actual naming output (failures and truncation retained)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: naming-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/naming-evidence/
+          if-no-files-found: error
           retention-days: 14
 
   integration:

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from cli import _shared
+from cli import identities
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import OpcClient
 
@@ -68,10 +69,12 @@ def cmd_dreams_complete(args: argparse.Namespace) -> None:
 
 
 def cmd_dreams_status(args: argparse.Namespace) -> None:
+    identities.validate_address(args.agent)
     client, slug = _client_and_org(args)
+    filter_agent = identities.filter_target(client, slug, args.agent)
     params = {}
     if args.agent:
-        params["agent"] = args.agent
+        params["agent"] = filter_agent
     r = client.get(f"/api/v1/orgs/{slug}/dreams/status", params=params)
     if not _ok(r):
         return
@@ -79,10 +82,12 @@ def cmd_dreams_status(args: argparse.Namespace) -> None:
 
 
 def cmd_dreams_list(args: argparse.Namespace) -> None:
+    identities.validate_address(args.agent)
     client, slug = _client_and_org(args)
+    filter_agent = identities.filter_target(client, slug, args.agent)
     params = {"limit": args.limit}
     if args.agent:
-        params["agent"] = args.agent
+        params["agent"] = filter_agent
     r = client.get(f"/api/v1/orgs/{slug}/dreams", params=params)
     if not _ok(r):
         return
@@ -90,12 +95,13 @@ def cmd_dreams_list(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(dreams, indent=2))
         return
+    names = identities.labels(client, slug)
     if not dreams:
         print("(no dreams)")
         return
     for d in dreams:
         print(
-            f"{d['dream_id']:10s}  {d['status']:10s}  {d['agent_name']:20s}  "
+            f"{d['dream_id']:10s}  {d['status']:10s}  {identities.display(names, d['agent_name']):20s}  "
             f"{_fmt_ts(d.get('ended_at') or d['scheduled_for'])}  "
             f"learnings={d['new_learnings_count']} candidates={d['kb_candidate_count']}"
         )
@@ -110,7 +116,8 @@ def cmd_dreams_show(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(body, indent=2))
         return
-    print(f"# {body['dream_id']} - {body['agent_name']}")
+    names = identities.labels(client, slug)
+    print(f"# {body['dream_id']} - {identities.display(names, body['agent_name'])}")
     print(f"status={body['status']} scheduled={_fmt_ts(body['scheduled_for'])}")
     if body.get("summary"):
         print("\n## Summary\n")

@@ -811,31 +811,34 @@ _RELEASE_REFERENCE_PREIMAGES = (
 )
 
 
-_release_schema_digest_cache: dict[tuple[str, str], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, int], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh") -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_version: int = 0) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
     generic migrations, then the requested complete workflow installer before
     hashing every SQL object. No candidate schema is used as an input. No
     persistent generic or runtime-audit database is changed. Cache identity
-    includes both layout and source history; unavailable construction fails closed.
+    includes layout, source history and absent/complete naming version;
+    unavailable construction fails closed.
     """
     global _release_schema_digest_cache
-    if layout not in ("F", "E", "G") or history not in _RELEASE_REFERENCE_HISTORIES:
+    if (layout not in ("F", "E", "G") or history not in _RELEASE_REFERENCE_HISTORIES
+            or type(naming_version) is not int or naming_version not in (0, 1)):
         return "unavailable"
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history)
+    key = (layout, history, naming_version)
     if key in _release_schema_digest_cache:
         return _release_schema_digest_cache[key]
     try:
         import tempfile
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
-        from runtime.infrastructure.workflow_schema import install_or_recover, initialize_complete_org_schema, migrate_draft_schema
+        from runtime.infrastructure.workflow_schema import (install_or_recover, initialize_complete_org_schema,
+            _execute_ddl, CANONICAL_WORKFLOW_DRAFT_DDL)
         with tempfile.TemporaryDirectory() as td:
             path = _Path(td) / "fresh-authority-schema.db"
             if history != 'fresh':
@@ -856,9 +859,20 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh") -> str:
                 elif layout == "E":
                     install_or_recover(fresh)
                     with fresh.workflow_schema_transaction() as conn:
-                        migrate_draft_schema(conn, expected_org_slug="release-reference")
+                        _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+                        conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
                 else:
                     initialize_complete_org_schema(fresh, expected_org_slug="release-reference")
+                if naming_version:
+                    from runtime.identities.schema import REFERENCE_DDL, execute_literal, validate_names
+                    with fresh.workflow_schema_transaction() as conn:
+                        execute_literal(conn, REFERENCE_DDL)
+                        conn.execute("INSERT INTO identity_name_schema VALUES (1,1,?)", ("release-reference",))
+                        conn.execute("INSERT INTO identity_name_owners VALUES (?,?,?,?,?)",
+                                     ("founder", "founder", "founder", "founder", 1))
+                        conn.execute("INSERT INTO identity_name_claims VALUES (?,?,?,?,?)",
+                                     ("founder", "founder", "founder", 1, 0))
+                        validate_names(conn, org_slug="release-reference")
                 _release_schema_digest_cache[key] = _live_schema_digest(fresh)
             finally:
                 fresh.close()
@@ -2259,7 +2273,9 @@ def _server_evidence(
         with db.coherent_read_view() as conn:
             live_schema_digest = _live_schema_digest(db)
             layout = validate_workflow_schema(conn, expected_org_slug=orch._slug)
-        references = tuple(_release_schema_digest(layout, history) for history in _RELEASE_REFERENCE_HISTORIES)
+            from runtime.identities.schema import validate_names
+            names = validate_names(conn, org_slug=orch._slug)
+        references = tuple(_release_schema_digest(layout, history, names) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"

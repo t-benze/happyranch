@@ -32,7 +32,7 @@ import {
   createSelectionIdFactory,
 } from '@/lib/threadAttachments';
 import { MentionTextarea } from './MentionTextarea';
-import type { AgentSummary } from '@/lib/api/agents';
+import type { AddressOption } from './MentionAutocomplete';
 
 const DRAFT_CAP_CHARS = 65_536;
 const DRAFT_DEBOUNCE_MS = 300;
@@ -137,7 +137,7 @@ interface ComposerProps {
   registerFocus?: (focus: () => void) => void;
 
   // Required
-  agents: AgentSummary[];
+  agents: AddressOption[];
   threadId: string;
   /**
    * Active org slug — keys the localStorage draft alongside threadId. Passed

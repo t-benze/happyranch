@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * EscalationInboxRow — inline continue-and-resolve expander for the
  * "Waiting on you" panel.
@@ -104,7 +105,7 @@ export function EscalationInboxRow({
     >
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="text-text-primary font-mono text-xs font-medium">
-          {row.agent}
+          <IdentityName canonicalId={row.agent} />
         </span>
         <span className="text-text-muted font-mono text-xs">·</span>
         <span className="text-text-muted font-mono text-xs">

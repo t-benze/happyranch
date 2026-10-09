@@ -223,8 +223,8 @@ describe('ThreadsPage list i18n (zh-CN)', () => {
     expect(within(pinnedRow).getByText('来自梦境')).toBeInTheDocument();
     expect(within(pinnedRow).getByText('最后发言')).toBeInTheDocument();
     // Agent names / ids stay verbatim; relative time is localized.
-    expect(within(pinnedRow).getByText('engineering_manager')).toBeInTheDocument();
-    expect(within(pinnedRow).getByText('founder · engineering_manager')).toBeInTheDocument();
+    expect(within(pinnedRow).getAllByText('engineering_manager')[0]).toBeInTheDocument();
+    expect(within(pinnedRow).getByText((_text, node) => node?.tagName === 'DIV' && node.textContent === 'founder · engineering_manager')).toBeInTheDocument();
     expect(within(pinnedRow).getByText(/^\d+ 天前$/)).toBeInTheDocument();
     // English copy of the same keys is absent.
     expect(screen.queryByText('Pinned')).not.toBeInTheDocument();
@@ -347,7 +347,7 @@ describe('ThreadsPage detail i18n (zh-CN)', () => {
 
     const rail = screen.getByRole('complementary', { name: '会话属性' });
     expect(within(rail).getByText('参与者')).toBeInTheDocument();
-    expect(within(rail).getByText('你')).toBeInTheDocument();
+    expect(within(rail).getByText('founder')).toBeInTheDocument();
     expect(within(rail).getByText('创始人')).toBeInTheDocument();
     expect(within(rail).getByText('engineering_manager')).toBeInTheDocument();
     expect(within(rail).getByRole('button', { name: '移除 engineering_manager' })).toBeInTheDocument();

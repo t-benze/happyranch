@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * AuditTimeline — day-grouped reverse-chronological timeline.
  *
@@ -130,9 +131,9 @@ function routeFor(ref: EntityRef, slug: string): string {
 
 /** Render one narrative segment: bold subject, plain prose, or an entity link.
  *  Id-shaped refs (task/thread/job) render monospace; agent refs stay prose. */
-function Segment({ seg, slug }: { seg: NarrativeSegment; slug: string }): JSX.Element {
+function Segment({ seg, slug, actor }: { seg: NarrativeSegment; slug: string; actor?: string | null }): JSX.Element {
   if (seg.kind === 'subject') {
-    return <span className="text-text-primary font-medium">{seg.text}</span>;
+    return <span className="text-text-primary font-medium">{actor ? <IdentityName canonicalId={actor} /> : seg.text}</span>;
   }
   if (seg.kind === 'text') {
     return <span>{seg.text}</span>;
@@ -147,7 +148,7 @@ function Segment({ seg, slug }: { seg: NarrativeSegment; slug: string }): JSX.El
         ref.type !== 'agent' && 'font-mono',
       )}
     >
-      {ref.label}
+      {ref.type === 'agent' ? <IdentityName canonicalId={ref.id} /> : ref.label}
     </Link>
   );
 }
@@ -196,7 +197,7 @@ function TimelineRow({ entry, legendColor, slug }: TimelineRowProps): JSX.Elemen
         <div className="flex flex-wrap items-baseline gap-3">
           <p className="text-text-secondary min-w-0 flex-1 leading-snug">
             {narrative.segments.map((seg, i) => (
-              <Segment key={i} seg={seg} slug={slug} />
+              <Segment key={i} seg={seg} slug={slug} actor={entry.agent} />
             ))}
           </p>
           {hasDream && (

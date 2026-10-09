@@ -33,6 +33,10 @@ function client() {
   qc.setQueryData(['orgs'], orgs);
   for (const slug of ['org-a', 'org-b']) {
     qc.setQueryData(['dashboard-summary', slug], summary);
+    qc.setQueryDefaults(['identities', slug], { staleTime: Infinity });
+    qc.setQueryData(['identities', slug], { identities: [] });
+    qc.setQueryDefaults(['agents', slug], { staleTime: Infinity });
+    qc.setQueryData(['agents', slug], { agents: [] });
     // These acceptance cases exercise the ordinary roots reader's recovery
     // contract. Seed an exhausted, fresh attention reader so its independent
     // status=escalated request cannot alter their ordinary-request ledgers or
@@ -59,7 +63,15 @@ function mount(qc: ReturnType<typeof client>, slug = 'org-a') {
 beforeEach(() => {
   __resetTokenCacheForTests(); sessionStorage.clear();
   sessionStorage.setItem('happyranch.token', 'synthetic-stale');
-  server.use(http.get('/api/v1/orgs', () => HttpResponse.json(orgs)),
+  server.use(http.post('/api/v1/orgs/:slug/identities/resolve', async ({ request }) => {
+    const body = await request.json() as { addresses: string[] };
+    const fixtureIds = new Set(['agent-a', 'agent-b', 'missing-agent']);
+    return HttpResponse.json({ resolutions: body.addresses.map((address) => ({
+      address, status: fixtureIds.has(address) ? 'resolved' : 'unknown_identity', eligible: fixtureIds.has(address),
+      identity: fixtureIds.has(address) ? { canonical_id: address, kind: 'agent', lifecycle: 'active',
+        addressable_name: address, name_revision: 1, canonical_definition_revision: null, naming_status: 'ready' } : null,
+    })) });
+  }), http.get('/api/v1/orgs', () => HttpResponse.json(orgs)),
     http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json(summary)));
 });
 afterEach(async () => {

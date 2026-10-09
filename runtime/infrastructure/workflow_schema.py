@@ -891,11 +891,16 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     """Explicit operator/fresh-owner primitive; never opens or commits a DB."""
     if not conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_draft_migration_requires_writer_and_foreign_keys')
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) in ('E', 'G'):
+    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    from runtime.identities.schema import validate_names
+    validate_names(conn, org_slug=expected_org_slug)
+    _validate_release_database(conn, layout)
+    if layout in ('E', 'G'):
         return 'ready'
     _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
     conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
     validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    _validate_release_database(conn, 'E')
     return 'migrated'
 
 
@@ -905,7 +910,8 @@ def initialize_complete_org_schema(database: Database, *, expected_org_slug: str
         if _layout(conn)[0]:
             raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
         _install_foundation(conn, expected_org_slug=expected_org_slug)
-        migrate_draft_schema(conn, expected_org_slug=expected_org_slug)
+        _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
+        conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
         # Proven empty creation: no inbound work exists and FK enforcement stays on.
         conn.execute("DROP TABLE workflow_events")
         conn.execute("DROP TABLE workflow_submissions")
@@ -1086,7 +1092,9 @@ def _validate_release_database(conn: sqlite3.Connection, layout: str) -> None:
     from runtime.orchestrator.authority import _release_schema_digest, _RELEASE_REFERENCE_HISTORIES
     rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name').fetchall()
     actual = hashlib.sha256('\n'.join(str(r[0]) for r in rows).encode()).hexdigest()
-    expected = tuple(_release_schema_digest(layout, history) for history in _RELEASE_REFERENCE_HISTORIES)
+    from runtime.identities.schema import validate_names
+    names = validate_names(conn)
+    expected = tuple(_release_schema_digest(layout, history, names) for history in _RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
         raise ValueError('workflow_submission_whole_database_mismatch')
 
@@ -1128,6 +1136,8 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_submission_migration_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    from runtime.identities.schema import validate_names
+    validate_names(conn, org_slug=expected_org_slug)
     _validate_release_database(conn, layout)
     if layout == 'G':
         return 'ready'

@@ -230,7 +230,7 @@ describe('THR-209 — Pinned section', () => {
     for (const thread of state.filter((thread) => bucket === 'All' || thread.status === (bucket === 'Open' ? 'open' : 'archived'))) {
       const link = screen.getByRole('link', { name: new RegExp(thread.subject) });
       expect(within(link).queryByRole('button')).not.toBeInTheDocument();
-      expect(within(link).getByText('agent_a · agent_b')).toBeInTheDocument();
+      expect(within(link).getByText((_text, node) => node?.tagName === 'DIV' && node.textContent === 'agent_a · agent_b')).toBeInTheDocument();
     }
     expect(screen.queryByRole('button', { name: /pin/i })).not.toBeInTheDocument();
     expect(row).toHaveAttribute('href', `/orgs/${SLUG}/threads/${target.thread_id}`);

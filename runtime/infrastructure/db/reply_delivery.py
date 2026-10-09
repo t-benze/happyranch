@@ -8,6 +8,8 @@ from runtime.infrastructure.db._shared import (
     _synchronized,
 )
 from runtime.infrastructure.thread_mentions import (
+    MessageAddresses,
+    classify_message_write,
     parse_mentions,
     resolve_wake_set,
     valid_mentions,
@@ -1180,6 +1182,8 @@ class ReplyDeliveryMixin:
         speaker: str,
         kind: ThreadMessageKind,
         body_markdown: str | None,
+        *,
+        addresses: MessageAddresses | None = None,
     ) -> list[str] | None:
         """Server-side derivation of the durable mention signal for a
         conversational write (THR-198 Slice A). Only kind=MESSAGE rows carry
@@ -1197,9 +1201,11 @@ class ReplyDeliveryMixin:
             ).fetchall()
         ]
         return valid_mentions(
-            parse_mentions(body_markdown), participants, speaker,
+            list(addresses.agents) if addresses is not None else parse_mentions(body_markdown),
+            participants, speaker,
         )
 
+    @classify_message_write
     @_synchronized
     def record_conversational_arrival(
         self,
@@ -1211,6 +1217,7 @@ class ReplyDeliveryMixin:
         attachments: list[ThreadAttachment] | None = None,
         sent_from_task_id: str | None = None,
         recipients: list[str],
+        _addresses: MessageAddresses | None = None,
     ) -> tuple[int, list[ThreadReplyArrival]]:
         """Atomic conversational-arrival: append the message, raise the
         obligation watermark for EVERY recipient (U0 — full-recipient
@@ -1228,11 +1235,13 @@ class ReplyDeliveryMixin:
         arrivals: list[ThreadReplyArrival] = []
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            self.validate_thread_message(_addresses)
             mentions = self._derive_conversational_mentions(
-                thread_id, speaker, kind, body_markdown,
+                thread_id, speaker, kind, body_markdown, addresses=_addresses,
             )
-            # TASK-5966: a stale exchange closes BEFORE the new message is
-            # classified (its catch-up tokens join this write's arrivals).
+            founder_only = bool(_addresses and _addresses.founder_only)
+            # Prior committed catch-up is independent of this message's wake
+            # selection. Validate former names BEFORE any stale-close effect.
             arrivals.extend(self._evaluate_exchange_closure(thread_id))
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
@@ -1251,6 +1260,7 @@ class ReplyDeliveryMixin:
                     mentions=mentions or [],
                     recipients=recipients,
                     open_exchange=open_exchange,
+                    founder_only=founder_only,
                 )
                 if kind is ThreadMessageKind.MESSAGE:
                     self._extend_reply_exchange_uncommitted(thread_id, seq)
@@ -1259,7 +1269,7 @@ class ReplyDeliveryMixin:
                 # Phase-2 mention routing (valid mentions → exactly that
                 # set; zero valid mentions → broadcast).
                 wake_set = resolve_wake_set(
-                    mentions or [], recipients, speaker,
+                    mentions or [], recipients, speaker, founder_only=founder_only,
                 )
             # U0: wake-set members mint/coalesce exactly one queued REPLY.
             for name in wake_set:
@@ -1694,6 +1704,7 @@ class ReplyDeliveryMixin:
             raise
         return settlement, arrivals
 
+    @classify_message_write
     @_synchronized
     def reply_conversational(
         self,
@@ -1704,6 +1715,7 @@ class ReplyDeliveryMixin:
         attachments: list[ThreadAttachment] | None,
         token: str,
         token_purpose: ThreadInvocationPurpose,
+        _addresses: MessageAddresses | None = None,
     ) -> tuple[int, ThreadReplySettlement | None, list[ThreadReplyArrival]]:
         """Atomic reply: append the reply message, settle the held token, and
         broadcast to every OTHER participant.
@@ -1718,9 +1730,7 @@ class ReplyDeliveryMixin:
         settlement: ThreadReplySettlement | None = None
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            # TASK-5966: a stale exchange closes before this reply is
-            # classified (catch-up tokens join this write's arrivals).
-            arrivals.extend(self._evaluate_exchange_closure(thread_id))
+            self.validate_thread_message(_addresses)
             participants = [
                 p["agent_name"] for p in self._conn.execute(
                     "SELECT agent_name FROM thread_participants WHERE thread_id = ?",
@@ -1728,8 +1738,11 @@ class ReplyDeliveryMixin:
                 ).fetchall()
             ]
             mentions = valid_mentions(
-                parse_mentions(body_markdown), participants, speaker,
+                list(_addresses.agents), participants, speaker,
             )
+            # Refusal above precedes closure AND consumption/settlement. Due
+            # catch-up remains enqueued even for a founder-only current reply.
+            arrivals.extend(self._evaluate_exchange_closure(thread_id))
             seq = self._append_thread_message_uncommitted(
                 thread_id=thread_id,
                 speaker=speaker,
@@ -1798,12 +1811,13 @@ class ReplyDeliveryMixin:
                         mentions=mentions,
                         recipients=recipients,
                         open_exchange=open_exchange,
+                        founder_only=_addresses.founder_only,
                     )
                     self._extend_reply_exchange_uncommitted(thread_id, seq)
                 else:
                     # Outside E: unconditional Phase-2 mention routing.
                     wake_set = resolve_wake_set(
-                        mentions, recipients, speaker,
+                        mentions, recipients, speaker, founder_only=_addresses.founder_only,
                     )
             else:
                 wake_set = recipients

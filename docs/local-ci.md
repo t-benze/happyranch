@@ -13,9 +13,13 @@ The HappyRanch Linux daemon host is a special operational boundary: founder
 THR-211 seq270/271 prohibits every integration-marked test there, including
 direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
 Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
-on the exact candidate ref when execution is authorized. Manual dispatch exposes
-only `all_only` (boolean, default false), with no `run_integration` toggle. The
-existing manual `local-ci-all` job invokes the receipt-producing extracted
+on the exact candidate ref when execution is authorized. The default manual lane
+accepts `all_only` (boolean, default false), with no `run_integration` toggle.
+The separate default-false `naming_only` choice requires `all_only=false`, an
+exact published `naming_source_sha` and `naming_image=node@sha256:<amd64-digest>`.
+It suppresses `local-ci-all` and selects only the finite naming operation on one
+Ubuntu24.04 runner. Schedule, default behavior and active PR/main checks remain
+unchanged. The existing manual `local-ci-all` job invokes the receipt-producing extracted
 `uv run python scripts/nightly_local_ci_all.py` runner from the checkout root.
 It runs the exact `scripts/local_ci.sh all` command on
 Python 3.14/Node 24, while the separate general integration job is SKIPPED.
@@ -279,7 +283,8 @@ run opens or comments on the single open issue labelled
 that issue. This repository-local issue flow uses only the workflow token and
 does not send email, Feishu, Slack, webhook, or other external notifications.
 
-Manual dispatch of the same workflow runs only the exact `scripts/local_ci.sh all`
+Default manual dispatch (`naming_only=false`) of the same workflow runs only the
+exact `scripts/local_ci.sh all`
 command on its clean immutable checkout with Python 3.14 and Node 24. This
 lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
 Its closed build-tool PATH includes the standard `/usr/local/bin` directory used

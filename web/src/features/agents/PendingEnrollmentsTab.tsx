@@ -1,3 +1,5 @@
+import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * PendingEnrollmentsTab — lists agents in `_pending/`, each with an
  * approve / reject action.
@@ -89,7 +91,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-display text-text-primary text-sm font-medium">
-                    {e.name}
+                    <IdentityName canonicalId={e.name} />
                   </span>
                   <span
                     aria-hidden="true"
@@ -129,6 +131,7 @@ export function PendingEnrollmentsTab(): JSX.Element {
                 </Button>
               </div>
             </div>
+            <div className="mt-3"><AddressableNameEditor canonicalId={e.name} /></div>
           </li>
         ))}
       </ul>

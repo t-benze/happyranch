@@ -1,3 +1,7 @@
+import { useAgentsList } from '@/hooks/agents';
+import { useIdentityOptions, useIdentityPresentation, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
+import { RecipientsInput } from '@/design-system/patterns/RecipientsInput';
+import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErrors';
 /**
  * Tasks list — Direction-A Pasture, roots-only dense list.
  *
@@ -20,7 +24,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertCircle, Filter, RefreshCw } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger } from '@/design-system/primitives/Tabs';
-import { Input } from '@/design-system/primitives/Input';
 import { Button } from '@/design-system/primitives/Button';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
@@ -194,6 +197,15 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
   const [filterOpen, setFilterOpen] = useState(false);
   const [draftStatus, setDraftStatus] = useState(filters?.status ?? '');
   const [draftAgent, setDraftAgent] = useState(filters?.assigned_agent ?? '');
+  const agents = useAgentsList();
+  const identityOptions = useIdentityOptions(agents.data?.agents ?? []);
+  const presentation = useIdentityPresentation();
+  const preflight = usePreflightAddresses();
+  const [filterError, setFilterError] = useState<ThreadErrorDetail | null>(null);
+  const filterLatch = useRef(false);
+  const filterAttempt = useRef(0);
+  const abandoned = useRef(false);
+  useEffect(() => { abandoned.current = false; return () => { abandoned.current = true; }; }, []);
   const [isRetrying, setIsRetrying] = useState(false);
   const [nextPageError, setNextPageError] = useState(false);
   const [attentionNextPageError, setAttentionNextPageError] = useState(false);
@@ -421,10 +433,20 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           </div>
         </div>
         {filterOpen && (
-          <form aria-label={t('tasks.filters.label')} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(event) => {
+          <form aria-label={t('tasks.filters.label')} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={async (event) => {
             event.preventDefault();
-            const next = { ...(draftStatus ? { status: draftStatus } : {}), ...(draftAgent ? { assigned_agent: draftAgent } : {}) };
+            if (filterLatch.current || !orgSlug) return;
+            const attempt = ++filterAttempt.current;
+            filterLatch.current = true; setFilterError(null);
+            try {
+            const resolved = draftAgent ? await preflight.mutateAsync({ slug: orgSlug, context: 'lookup', recipients: [draftAgent], canonicalAgentIds: identityOptions.map((a) => a.name) }) : { recipients: [] };
+            if (abandoned.current || attempt !== filterAttempt.current) return;
+            const canonical = resolved.recipients[0];
+            const next = { ...(draftStatus ? { status: draftStatus } : {}), ...(canonical ? { assigned_agent: canonical } : {}) };
             setFilters(Object.keys(next).length ? next : undefined);
+            } catch (error) {
+              if (!abandoned.current && attempt === filterAttempt.current) setFilterError(namingAddressError(error) ?? { kind: 'mapped', key: 'identity.unavailable' });
+            } finally { if (!abandoned.current && attempt === filterAttempt.current) filterLatch.current = false; }
           }}>
             <label className="text-text-secondary text-sm">{t('tasks.filters.status')}
               <select aria-label={t('tasks.filters.statusSelect')} className="border-border-default bg-surface-raised block rounded-sm border px-3 py-2" value={draftStatus} onChange={(event) => setDraftStatus(event.target.value)}>
@@ -433,13 +455,14 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
               </select>
             </label>
             <label className="text-text-secondary text-sm">{t('tasks.filters.agent')}
-              <Input value={draftAgent} onChange={(event) => setDraftAgent(event.target.value)} />
+              <RecipientsInput multiple={false} value={draftAgent} onChange={setDraftAgent} agents={identityOptions} ariaLabel={t('tasks.filters.agent')} disabled={preflight.isPending} />
             </label>
-            <Button type="submit" size="sm">{t('tasks.filters.apply')}</Button>
-            <Button type="button" variant="outline" size="sm" onClick={() => { setDraftStatus(''); setDraftAgent(''); setFilters(undefined); }}>{t('tasks.filters.clear')}</Button>
+            <Button type="submit" size="sm" disabled={preflight.isPending}>{t('tasks.filters.apply')}</Button>
+            {filterError && <p role="alert">{renderThreadErrorDetail(filterError, t)}</p>}
+            <Button type="button" variant="outline" size="sm" onClick={() => { ++filterAttempt.current; filterLatch.current = false; setFilterError(null); setDraftStatus(''); setDraftAgent(''); setFilters(undefined); }}>{t('tasks.filters.clear')}</Button>
           </form>
         )}
-        {filters && <p className="text-text-secondary mb-4 text-sm">{t('tasks.filters.applied')} {filters.status && t('tasks.filters.appliedStatus', { status: filters.status })} {filters.assigned_agent && t('tasks.filters.appliedAgent', { agent: filters.assigned_agent })}</p>}
+        {filters && <p className="text-text-secondary mb-4 text-sm">{t('tasks.filters.applied')} {filters.status && t('tasks.filters.appliedStatus', { status: filters.status })} {filters.assigned_agent && t('tasks.filters.appliedAgent', { agent: presentation.label(filters.assigned_agent) })}</p>}
         {/* The attention traversal owns its own loading/error states. Its rows
             render inside the shared list shell below, as the first group. */}
         {attentionLoading && (
@@ -536,7 +559,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
               return (
                 <div key={key} className="tasks-group">
                   <GroupHeading
-                    label={groupLabel(key, groupBy, t)}
+                    label={groupBy === 'agent' && key !== UNASSIGNED_GROUP ? presentation.label(key) : groupLabel(key, groupBy, t)}
                     count={tasks.length}
                     dot={groupDot(key, groupBy)}
                   />

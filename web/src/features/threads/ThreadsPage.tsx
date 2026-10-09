@@ -1,3 +1,5 @@
+import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * ThreadsPage — list + detail reshape (§4.2, design-overhaul).
  *
@@ -148,11 +150,11 @@ function localeTimestamp(locale: Locale, iso: string): string {
  * Derive a display label for the last speaker.
  * Returns { name, role } for AgentChip, or null if the thread has no speaker yet.
  */
-function lastSpeakerChip(speaker: string | null | undefined): { name: string; role: 'manager' | 'worker' | 'founder' } | null {
+function lastSpeakerChip(speaker: string | null | undefined): { name: string; label?: React.ReactNode; role: 'manager' | 'worker' | 'founder' } | null {
   if (!speaker) return null;
-  if (speaker === 'founder') return { name: 'founder', role: 'founder' };
+  if (speaker === 'founder') return { name: 'founder', label: <IdentityName canonicalId="founder" />, role: 'founder' };
   if (speaker === 'system') return { name: 'system', role: 'worker' };
-  return { name: speaker, role: 'worker' };
+  return { name: speaker, label: <IdentityName canonicalId={speaker} />, role: 'worker' };
 }
 
 /**
@@ -584,6 +586,8 @@ export function ThreadsPage(): JSX.Element {
 
   // Send mutation lives at the page level so the Composer pattern is pure.
   const sendFollowUp = useSendFollowUp(threadId ?? '');
+  const preflight = usePreflightAddresses();
+  const composerIdentityOptions = useIdentityOptions(composerAgents, true);
   const abortReplies = useAbortReplies(threadId ?? '');
   // THR-209 rename + pin mutations live at the page level; the detail toolbar
   // controls drive them.
@@ -731,6 +735,7 @@ export function ThreadsPage(): JSX.Element {
     // succeed so a later send failure is never blamed on the last file.
     let failedUpload: PendingAttachment | null = null;
     try {
+      await preflight.mutateAsync({ slug: capturedSlug, context: 'thread_recipient', thread_id: capturedThreadId, body: markdown, canonicalAgentIds: composerAgents.map((a) => a.name), allowFounder: true });
       const refs: ThreadAttachmentRef[] = [];
       for (const pending of attachments) {
         failedUpload = pending;
@@ -769,7 +774,7 @@ export function ThreadsPage(): JSX.Element {
       }
       failedUpload = null;
       await sendFollowUp.mutateAsync({
-        body_markdown: markdown.trim(),
+        body_markdown: markdown,
         ...(refs.length ? { attachments: refs } : {}),
         destination: { slug: capturedSlug, threadId: capturedThreadId },
       } as Parameters<typeof sendFollowUp.mutateAsync>[0]);
@@ -789,7 +794,7 @@ export function ThreadsPage(): JSX.Element {
                 },
               }
             : {}),
-          detail: classifyThreadError(err),
+          detail: namingAddressError(err) ?? classifyThreadError(err),
         });
       }
       throw err;
@@ -990,6 +995,7 @@ export function ThreadsPage(): JSX.Element {
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
                     participants={t.participants}
+                    participantLabels={(t.participants ?? []).map((id, index) => <span key={id}>{index > 0 && " · "}<IdentityName canonicalId={id} /></span>)}
                     labels={rowLabels(t.status)}
                   />
                 );
@@ -1021,6 +1027,7 @@ export function ThreadsPage(): JSX.Element {
                     href={path}
                     onSelect={() => { rememberRowNavigationScroll(); navigate(path); }}
                     participants={t.participants}
+                    participantLabels={(t.participants ?? []).map((id, index) => <span key={id}>{index > 0 && " · "}<IdentityName canonicalId={id} /></span>)}
                     labels={rowLabels(t.status)}
                   />
                 );
@@ -1060,7 +1067,7 @@ export function ThreadsPage(): JSX.Element {
           pinError={pinError ? t(pinError) : null}
           composer={
             <Composer
-              agents={composerAgents}
+              agents={composerIdentityOptions}
               threadId={threadId ?? ''}
               orgSlug={slug ?? ''}
               disabled={activeThread.data?.status !== 'open'}
@@ -1298,6 +1305,7 @@ function DetailColumn({
         subject={thread.subject}
         status={threadStatusOrFallback(thread.status)}
         participants={thread.participants}
+        participantLabels={thread.participants.map((id, index) => <span key={id}>{index > 0 && ", "}<IdentityName canonicalId={id} /></span>)}
         archiveSummary={thread.summary}
         dreamOriginated={isDreamOriginated}
         renaming={renaming}
@@ -1389,7 +1397,7 @@ function DetailColumn({
                       : respStatus
                         ? responderStatusLabel(respStatus, t)
                         : null;
-                  const displayName = p === 'founder' ? t('threads.page.rail.you') : p;
+                  const displayName = <IdentityName canonicalId={p} />;
                   return (
                     <li key={p} className="flex items-center gap-2 py-1">
                       <span aria-hidden="true" className={`h-1.5 w-1.5 shrink-0 rounded-full ${led}`} />
@@ -1703,6 +1711,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
                     variant={variant}
                     seq={m.seq}
                     speaker={m.speaker}
+                    speakerLabel={<IdentityName canonicalId={m.speaker} />}
                     speakerRole={m.speaker === 'founder' ? 'founder' : 'worker'}
                     timestamp={m.created_at}
                     body={m.body_markdown}
@@ -1740,6 +1749,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
           <div className="min-w-0 flex-1">
             <TypingBubble
               agentName={e.agent_name}
+              agentLabel={<IdentityName canonicalId={e.agent_name} />}
               status={e.state === 'running' ? 'working' : 'queued'}
               startedAt={e.started_at}
               nowMs={nowMs}
@@ -1764,6 +1774,7 @@ function ThreadDetailTranscript({ messages, loading, slug, threadId, nowMs, repl
           <div className="min-w-0 flex-1">
             <TypingBubble
               agentName={s.agent_name}
+              agentLabel={<IdentityName canonicalId={s.agent_name} />}
               status={s.status as 'queued' | 'working'}
               startedAt={s.started_at}
               nowMs={nowMs}

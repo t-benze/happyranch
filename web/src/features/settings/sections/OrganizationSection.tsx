@@ -1,3 +1,6 @@
+import { renderThreadErrorDetail, type ThreadErrorDetail } from '@/lib/threadErrors';
+import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
+import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
 /**
  * OrganizationSection — editable org settings with real saves via PUT /settings/org.
  *
@@ -112,8 +115,15 @@ export function OrganizationSection({ org }: Props): JSX.Element {
     [agentsQuery.data?.agents],
   );
 
+  const identityOptions = useIdentityOptions(agentsList);
+  const identityPreflight = usePreflightAddresses();
+  const [identityError, setIdentityError] = useState<ThreadErrorDetail | null>(null);
+  const savingLatch = useRef(false);
+
   // ── Operating controls (work-hours enablement + eligibility) ──
   const { slug: orgSlug } = useParams<{ slug: string }>();
+  const orgGeneration = useRef(0);
+  useEffect(() => { orgGeneration.current += 1; return () => { orgGeneration.current += 1; }; }, [orgSlug]);
   const wh = org.working_hours;
   const allAgentNames = useMemo(
     () => agentsList.map((a) => a.name),
@@ -160,10 +170,11 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   );
 
   const dirty = useMemo(() => {
-    const filteredInclude = rosterTokens(fields.dreamInclude, rosterNames);
-    const filteredExclude = rosterTokens(fields.dreamExclude, rosterNames);
-    const savedInclude = rosterTokens(lastSaved.dreamInclude, rosterNames);
-    const savedExclude = rosterTokens(lastSaved.dreamExclude, rosterNames);
+    const addresses = new Set([...rosterNames, ...identityOptions.flatMap((option) => option.addressable_name ? [option.addressable_name] : [])]);
+    const filteredInclude = rosterTokens(fields.dreamInclude, addresses);
+    const filteredExclude = rosterTokens(fields.dreamExclude, addresses);
+    const savedInclude = rosterTokens(lastSaved.dreamInclude, addresses);
+    const savedExclude = rosterTokens(lastSaved.dreamExclude, addresses);
     return (
       fields.timeout !== lastSaved.timeout ||
       fields.dreamEnabled !== lastSaved.dreamEnabled ||
@@ -176,7 +187,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
       fields.threadsEnabled !== lastSaved.threadsEnabled ||
       fields.threadsTimeout !== lastSaved.threadsTimeout
     );
-  }, [fields, lastSaved, rosterNames]);
+  }, [fields, lastSaved, rosterNames, identityOptions]);
 
   const update = useCallback(
     <K extends keyof FieldState>(key: K, value: FieldState[K]) => {
@@ -219,19 +230,32 @@ export function OrganizationSection({ org }: Props): JSX.Element {
   }, [fields, rosterNames]);
 
   const handleSave = useCallback(async () => {
+    if (savingLatch.current || !orgSlug) return;
+    const generation = orgGeneration.current;
+    savingLatch.current = true; setIdentityError(null);
     setSaveState({ phase: 'saving' });
     try {
       const patch = buildPatch();
+      // Picker selections are IDs. Typed current names resolve before the existing ID-valued patch.
+      const resolve = async (raw: string) => raw ? (await identityPreflight.mutateAsync({ slug: orgSlug, context: 'lookup', recipients: raw.split(',').map((s) => s.trim()).filter(Boolean), canonicalAgentIds: agentsList.map((a) => a.name) })).recipients.filter((id) => agentsList.some((a) => a.name === id)) : [];
+      const include = await resolve(fields.dreamInclude);
+      const exclude = await resolve(fields.dreamExclude);
+      if (patch.dreaming?.agents) { patch.dreaming.agents.include = include; patch.dreaming.agents.exclude = exclude; }
+      if (orgGeneration.current !== generation) return;
       const data = await mutation.mutateAsync(patch);
+      if (orgGeneration.current !== generation) return;
       const fresh = buildFieldState(data.org);
       setFields(fresh);
       setLastSaved(fresh);
       setSaveState({ phase: 'saved' });
     } catch (err: unknown) {
+      if (orgGeneration.current !== generation) return;
       const msg = err instanceof Error ? err.message : String(err);
-      setSaveState({ phase: 'error', message: msg });
-    }
-  }, [buildPatch, mutation]);
+      const naming = namingAddressError(err);
+      if (naming) { setIdentityError(naming); setSaveState({ phase: 'idle' }); }
+      else setSaveState({ phase: 'error', message: msg });
+    } finally { savingLatch.current = false; }
+  }, [buildPatch, mutation, orgSlug, identityPreflight, fields.dreamInclude, fields.dreamExclude, agentsList]);
 
   // ⌘S shortcut
   useEffect(() => {
@@ -260,6 +284,8 @@ export function OrganizationSection({ org }: Props): JSX.Element {
 
   return (
     <section>
+      <div className="mb-4"><AddressableNameEditor kind="founder" canonicalId="founder" /></div>
+      {identityError && <p role="alert" className="text-feedback-danger mb-4 text-sm">{renderThreadErrorDetail(identityError, t)}</p>}
       {saveState.phase === 'error' && (
         <div className="border-tier-red bg-feedback-danger/10 text-tier-red mb-4 rounded border p-3 text-sm">
           {t('settings.organization.saveFailed', { detail: saveState.message })}
@@ -331,7 +357,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           <RecipientsInput
             value={fields.dreamInclude}
             onChange={(next) => update('dreamInclude', next)}
-            agents={agentsList}
+            agents={identityOptions}
             restrictToOptions
             placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
             className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"
@@ -341,7 +367,7 @@ export function OrganizationSection({ org }: Props): JSX.Element {
           <RecipientsInput
             value={fields.dreamExclude}
             onChange={(next) => update('dreamExclude', next)}
-            agents={agentsList}
+            agents={identityOptions}
             restrictToOptions
             placeholder={t('settings.organization.dreaming.addAgentsPlaceholder')}
             className="bg-bg-raised border-border text-fg w-56 rounded border px-2 py-0.5 text-sm"

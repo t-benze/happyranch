@@ -54,7 +54,7 @@ export interface InboxRowLabels {
 interface InboxRowProps {
   threadId: string;
   subject: string;
-  lastSpeaker?: { name: string; role: 'manager' | 'worker' | 'founder' };
+  lastSpeaker?: { name: string; label?: ReactNode; role: 'manager' | 'worker' | 'founder' };
   meta?: ReactNode;
   status: 'open' | 'archived';
   needsYou: boolean;
@@ -75,6 +75,7 @@ interface InboxRowProps {
    */
   onSelect?: () => void;
   participants?: string[];
+  participantLabels?: ReactNode;
   /** Optional localized product copy. */
   labels?: InboxRowLabels;
 }
@@ -95,6 +96,7 @@ export function InboxRow({
   href,
   onSelect,
   participants = [],
+  participantLabels,
   labels,
 }: InboxRowProps): JSX.Element {
   const fromDreamLabel = labels?.fromDream ?? 'from dream';
@@ -157,7 +159,7 @@ export function InboxRow({
               <span className="text-caption text-text-muted inline-flex items-center gap-1">
                 {labels?.last ?? 'last'}
                 <span className="text-text-secondary font-mono">
-                  {lastSpeaker.name}
+                  {lastSpeaker.label ?? lastSpeaker.name}
                 </span>
               </span>
             )}
@@ -169,7 +171,7 @@ export function InboxRow({
           )}
         </div>
         <div className="text-caption text-text-muted mt-1 ml-[18px] truncate font-mono">
-          {participants.join(' · ')}
+          {participantLabels ?? participants.join(' · ')}
         </div>
       </a>
     );
@@ -222,7 +224,7 @@ export function InboxRow({
           {lastSpeaker && (
             <>
               <span aria-hidden="true">·</span>
-              <AgentChip name={lastSpeaker.name} role={lastSpeaker.role} />
+              <AgentChip name={lastSpeaker.name} label={lastSpeaker.label} role={lastSpeaker.role} />
             </>
           )}
         </div>

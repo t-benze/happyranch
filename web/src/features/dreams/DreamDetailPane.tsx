@@ -1,3 +1,5 @@
+import { useIdentityPresentation } from '@/hooks/identities';
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * DreamDetailPane — detail drawer for a single dream.
  * Direction-A Pasture fidelity pass (THR-030 Leg B Batch 9).
@@ -76,17 +78,18 @@ function CandidateCard({
   dismissPending: boolean;
 }): JSX.Element {
   const { t } = useTranslation();
+  const presentation = useIdentityPresentation();
   const isPending = candidate.status === 'pending';
   const isPromoted = candidate.status === 'promoted';
   const isRejected = candidate.status === 'rejected';
   const anyPending = acceptPending || dismissPending;
 
   const label = isPending
-    ? t('dreams.candidate.pending', { agent: candidate.agent_name })
+    ? t('dreams.candidate.pending', { agent: presentation.label(candidate.agent_name) })
     : isPromoted
-      ? t('dreams.candidate.accepted', { agent: candidate.agent_name })
+      ? t('dreams.candidate.accepted', { agent: presentation.label(candidate.agent_name) })
       : isRejected
-        ? t('dreams.candidate.rejected', { agent: candidate.agent_name })
+        ? t('dreams.candidate.rejected', { agent: presentation.label(candidate.agent_name) })
         : candidate.status;
 
   return (
@@ -230,7 +233,7 @@ export function DreamDetailPane({
             <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dreamId}</span>
           </div>
           <DrawerTitle className="text-text-primary font-display mt-1 text-lg">
-            {dream ? `${dream.agent_name} · ${dream.local_date}` : t('dreams.drawer.loading')}
+            {dream ? <><IdentityName canonicalId={dream.agent_name} /> · {dream.local_date}</> : t('dreams.drawer.loading')}
           </DrawerTitle>
           {dream && (
             <div className="mt-1 flex items-center gap-2">
