@@ -72,6 +72,21 @@ UID/EUID0, native exit0, complete native tables and authenticated bootstrap
 parent origins on both. Artifacts11578305071/11578170198 authenticate302606
 bytes. This establishes that run's native readiness only.
 
+The current source-only renewal follows the completed artifact run37866089378
+at evidence3ba49054f3e0574d5e9008a6e4abd0550848e6d4. Both native preflights and
+candidate wheel/frozen lifecycle/parser/all23legacy/ordinary/held-refusal/
+delegated nonrunning-refusal tails passed on both platforms. Genuine same-root
+characterizations failed; Linux baseline-wheel native readlink-exe ENOENT remains
+failed evidence. The source-only coordinator restores the existing31candidate/
+two-baseline focused partition at the current immutable pin, preserves the
+four-file test-only baseline overlay and complete native before/after attribution,
+and skips artifact/build-tool provisioning. Fresh official CPython3.14.4/uv0.12.5
+and locked source dependencies are still required after cheap native admission.
+Original artifact manifests are retained by historical-artifact-reference.json.
+No source PASS is inferred from preparation, publication or artifact successes.
+Browser/audited discovery/independent verdicts and suspended keeper obligations
+remain pending. Historical recovery paragraphs below describe their actual runs.
+
 The prepared source coordinator in `../task_10272/runner.py` now admits only
 the exact task/TASK-10279 hosted push after its own fresh preflight. It verifies
 run/image/UID/pins/descriptor and candidate C hash before provisioning, uses

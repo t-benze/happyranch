@@ -42,7 +42,7 @@ jobs:
           path: baseline
       - name: Compile fixed observer and run cheap native admission
         run: python3 -I evidence/tests/evidence/task_10279/preflight.py
-      - name: Run finite wheel, frozen and baseline characterization
+      - name: Run current-head focused source and baseline characterization
         run: python3 -I evidence/tests/evidence/task_10272/runner.py
       - name: Seal bounded receipts including failure
         id: seal

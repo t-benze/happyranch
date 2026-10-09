@@ -203,6 +203,29 @@ precede immutable pin renewal and new evidence publication. Real browser and
 audited discovery remain pending; suspension/exclusions/gates stay unchanged.
 # Current fixed artifact diagnostic recovery (TASK-10279)
 
+The paragraphs below retain historical artifact recovery. The current coordinator
+now renews only the accepted focused source selection at candidate
+`0d498d535b779853470d007da4f9d4e4d0b2962b`, with the separate immutable baseline
+`8378064e9933d5b3af4247eca55750ac427a564f` and its existing four-file test overlay.
+Both fresh hosted runners still require cheap native admission before official
+CPython3.14.4/uv0.12.5 provisioning and the closed locked source environment.
+The disjoint31 candidate/two baseline nodes,300-second group deadlines, original
+JUnit inventories and complete native attribution remain unchanged. Actual
+same-root characterization failures remain failures; no shared auth/session repair.
+
+Run37866089378 at evidence3ba49054f3e0574d5e9008a6e4abd0550848e6d4 completed
+both native admissions and the candidate wheel/frozen lifecycle/parser/all23legacy,
+ordinary callback, held-refusal and delegated nonrunning-refusal tails on both
+platforms. Separate same-root characterizations failed. Linux baseline-wheel also
+retained native readlink-exe PID20353 ENOENT; no incomplete census is accepted.
+Historical-artifact-reference.json binds both original manifests and distinct
+source origins. These artifact cases and their Hatchling/PyInstaller provisioning
+are not repeated by the source-only renewal. Their original receipts remain
+authoritative, including failures. No current-head source result follows until
+the new source run is terminal and authenticated. Real daemon browser evidence,
+side-effect-audited discovery and independent verdicts remain pending; suspended
+keeper proofs remain UNFULFILLED. No overall PASS or merge waiver.
+
 Run37853314823 / evidence092496db791efabede6160add2bdd60606642dd5
 at unchanged candidateb1f13ca65382a6fe169246648dd5dcea78780fde completed
 candidate31/baseline2 source cases per venue, with29candidate passes and two
