@@ -9,6 +9,8 @@
  * ISO-8601 instant (no sub-second fraction, Z suffix) or null.
  */
 
+import { formatDateShapeFor, type Locale } from '@/lib/i18n'
+
 const WEEKDAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
 const WEEKDAY_NAMES_LONG = [
   'Sunday',
@@ -203,23 +205,12 @@ export function nextWeeklyOccurrence(
 }
 
 /** Format a UTC ISO-8601 datetime string in the given IANA timezone. */
-export function formatFireAtInTz(isoString: string, tz: string): string {
+export function formatFireAtInTz(isoString: string, tz: string, locale: Locale = 'en'): string {
   try {
     const d = new Date(isoString)
     if (Number.isNaN(d.getTime())) return isoString
-    const datePart = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    }).format(d)
-    const timePart = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(d)
+    const datePart = formatDateShapeFor(locale, d, 'weekdayDate', tz)
+    const timePart = formatDateShapeFor(locale, d, 'clock24', tz)
     return `${datePart} · ${timePart}`
   } catch {
     return isoString
@@ -227,21 +218,10 @@ export function formatFireAtInTz(isoString: string, tz: string): string {
 }
 
 /** Format a Date for preview in a given IANA timezone. */
-export function formatPreviewInTz(date: Date, tz: string): string {
+export function formatPreviewInTz(date: Date, tz: string, locale: Locale = 'en'): string {
   try {
-    const datePart = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    }).format(date)
-    const timePart = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(date)
+    const datePart = formatDateShapeFor(locale, date, 'weekdayDate', tz)
+    const timePart = formatDateShapeFor(locale, date, 'clock24', tz)
     return `${datePart} · ${timePart}`
   } catch {
     return String(date)
@@ -249,33 +229,31 @@ export function formatPreviewInTz(date: Date, tz: string): string {
 }
 
 /** Format a UTC ISO-8601 timestamp as an abbreviated date in the given TZ. */
-export function formatDateShortInTz(isoString: string, tz: string): string {
+export function formatDateShortInTz(isoString: string, tz: string, locale: Locale = 'en'): string {
   try {
     const d = new Date(isoString)
     if (Number.isNaN(d.getTime())) return isoString
-    return new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-    }).format(d)
+    return formatDateShapeFor(locale, d, 'weekdayMonthDay', tz)
   } catch {
     return isoString
   }
 }
 
 /** Format a UTC ISO-8601 timestamp as time-only in the given TZ. */
-export function formatTimeInTz(isoString: string, tz: string): string {
+export function formatTimeInTz(isoString: string, tz: string, locale: Locale = 'en'): string {
   try {
     const d = new Date(isoString)
     if (Number.isNaN(d.getTime())) return isoString
-    return new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    }).format(d)
+    return formatDateShapeFor(locale, d, 'clock24', tz)
   } catch {
     return isoString
   }
+}
+
+/**
+ * Calendar date (month short, day, year) for review/expiry presentation in the
+ * host timezone, through the canonical explicit-locale formatter.
+ */
+export function formatReviewDate(value: Date, locale: Locale = 'en'): string {
+  return formatDateShapeFor(locale, value, 'monthDayYear')
 }

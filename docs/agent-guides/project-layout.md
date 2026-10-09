@@ -52,8 +52,11 @@ Tracked source is split by product surface:
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
-|   |   `-- db/                  # Database facade mixins: dreams, knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads, reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences
+|   |   `-- db/                  # Database facade mixins: task core, dreams (including the unchanged candidate updater; facade clock remains late-bound), knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads (including the unchanged uncommitted pin helper; facade clock remains late-bound), reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
+|   |   |-- task_prompt_headers.py # read-only roster, revisit/resolution, prior-step/chain and fanout headers; same-object exports through run_step.py
+|   |   |-- task_terminal_readers.py # four unchanged verdict/carrier/fingerprint/terminal-report readers; same-object run_step exports; consumers, sentinel, state and patch lookup remain in the facade
+|   |   `-- task_thread_posting.py # unchanged append/mint/enqueue tail and audit-payload decoder; same-object run_step exports; followup/escalation callers retain facade-global patch lookup
 |   |-- platform/                # process/session backends and platform enforcement
 |   |-- portability/             # org portability classification helpers
 |   |-- remote_access/           # managed remote-access client and packaging support
@@ -97,6 +100,61 @@ identity aliases retained for import and monkeypatch compatibility.
 Capability-owned methods move incrementally into mixins under
 `runtime/infrastructure/db/`; callers continue importing and instantiating the
 facade from its original module.
+
+
+`db/knowledge.py` owns the unchanged 19-line `record_kb_view` writer
+and the existing `kb_view_stats` reader in `KnowledgeMixin`. The inherited
+`Database.record_kb_view` remains the shipping route and old patch path.
+The existing late facade `_now`, shared `_synchronized`, whole facade `_time`,
+Database-owned connection/RLock/threshold and lock logger retain their owners.
+The KB HTTP caller, KBStore and CLI header/read paths remain in their modules.
+
+`db/threads.py` owns the unchanged 13-line
+`_set_thread_status_archived_uncommitted` archive helper in `ThreadsMixin`.
+Its inherited `Database` attribute remains the patch/dispatch path. The existing
+late `_now` and shared `_synchronized` keep facade clock/time patches visible
+and use the same Database-owned RLock and lock logger. The committed setter,
+archive transaction, participant reset, audit, HTTP route and transcript owners
+remain in their existing modules; this leaf does not move those boundaries.
+
+`db/threads.py` also owns the unchanged 16-line `mark_invocation_declined`
+method in `ThreadsMixin`, immediately before `get_pending_invocation`.
+The inherited `Database` attribute remains the shipping and old patch path;
+the existing late facade clock and shared decorator retain the same connection,
+RLock, whole-clock and logger ownership. HTTP validation, modern settlement,
+`fail_invocation`, audit, SSE, queue and transcript consumers retain their owners.
+
+`db/tasks.py` owns `TasksMixin`: task core CRUD, query filtering/pagination,
+subtree severity, ancestor/revisit walks and recall, including `_SEVERITY_RANK`
+and `LineageTooDeep`, plus verified retry lineage, atomic single/fanout child
+spawning and retry feedback/admission, ordinary task claim and budget failure,
+manager supersession and non-root/thread-origin refusal, transactional chain
+advance, revision increments, task-ID allocation and state queries, plus the
+completion-recovery ledger claim/publication/launch/expiry lifecycle, accepted
+and consumed receipt selection/settlement, receipt-owned parent handoff, and
+completion-result readers and projection (`get_task_results`,
+`get_agent_task_results`, `get_latest_task_result`,
+`get_latest_completion_report`, and `_row_to_completion_report`), plus atomic
+task/attachment admission (`insert_task_with_attachments`) and causal
+task-followup replacement (`dispatch_task_followup_replacement`), and
+cross-domain agent termination cleanup (`terminate_agent_cleanups`). These
+writers use the existing shared `_late_database_now` helper as `_now`, resolving
+the whole facade clock after import; the shared decorator still resolves the
+facade `_time` late and uses the same instance RLock.
+`LineageTooDeep`, `VerifiedRetry`,
+`InvalidLineage`, `RetryClaim`, `Committed`, `LostClaim`, `SpawnOutcome`,
+`PendingRetry` and `_RetryEvidenceRefusal` remain identity-re-exported from
+`database.py`. Callback admission, result writers, logger-dependent
+escalation remain in the facade. Termination retains dynamic session-reset and
+uncommitted-audit helper calls, the single cleanup transaction, and the separate
+AuditMixin audit clock. PR #955's
+`try_fail_nonroot_manager_supersede` now belongs to `TasksMixin`, unchanged.
+The six remaining task keepers are `try_escalate`, `try_escalate_runtime`,
+`try_escalate_over_budget`, `insert_task_result`, `_insert_task_result`,
+and `admit_task_completion_callback`.
+The exact S8a/S8b/S8c/S8d/S8e/S8f/S8g method inventories and remaining collision holds are
+recorded in
+`docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
 
 ## Test placement
 

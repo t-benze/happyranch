@@ -1,9 +1,10 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
 import { renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
+import { translate } from '@/lib/i18n';
 import type {
   AgentSummary,
   SettingsSnapshot,
@@ -108,9 +109,19 @@ describe('Work-Hours Overview (S1)', () => {
       expect(screen.getByText('support_bot')).toBeInTheDocument();
     });
 
+    const region = screen.getByRole('region', { name: 'Work Hours roster table' });
+    expect(region.tabIndex).toBe(0);
+    region.focus();
+    expect(region).toHaveFocus();
+    const table = within(region).getByRole('table');
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['Agent', 'Team', 'Mode', 'Cadence (effective)', 'On', 'Eligibility']);
+    expect(within(table).getByText("dev_agent")).toBeInTheDocument();
+
     // Effective cadence from the org default.
     expect(
-      screen.getAllByText(/every 2h · 09:00–17:00/).length,
+      screen.getAllByText(
+        new RegExp(`^${translate('en', 'workHours.cadence.every', { interval: '2h' })} · 09:00–17:00`),
+      ).length,
     ).toBeGreaterThanOrEqual(1);
 
     // Read-only status — no role="switch" with aria-label for work-hours on/off.
@@ -120,11 +131,13 @@ describe('Work-Hours Overview (S1)', () => {
 
     // Manage operating control link present.
     expect(
-      screen.getByText('Manage operating control'),
+      screen.getByText(translate('en', 'workHours.manageOperatingControl')),
     ).toBeInTheDocument();
 
     // Tier editing still present.
-    expect(screen.getByRole('button', { name: 'Edit org default' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: translate('en', 'workHours.editOrgDefault') }),
+    ).toBeInTheDocument();
 
     // Eligibility editing button NOT present.
     expect(
@@ -144,7 +157,7 @@ describe('Work-Hours Overview (S1)', () => {
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
 
     // Deep link to settings is present.
-    const manageLink = screen.getByText('Manage operating control');
+    const manageLink = screen.getByText(translate('en', 'workHours.manageOperatingControl'));
     expect(manageLink.tagName).toBe('A');
     expect(manageLink.getAttribute('href')).toBe(
       `/orgs/${SLUG}/settings/organization`,
@@ -165,9 +178,9 @@ describe('Work-Hours Overview (S1)', () => {
     });
 
     // dev_agent eligible → On; support_bot excluded → Off + Excluded chip.
-    expect(screen.getAllByText('On').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Off')).toBeInTheDocument();
-    expect(screen.getByText('Excluded')).toBeInTheDocument();
+    expect(screen.getAllByText(translate('en', 'workHours.onDot.on')).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(translate('en', 'workHours.onDot.off'))).toBeInTheDocument();
+    expect(screen.getByText(translate('en', 'workHours.eligibility.excluded'))).toBeInTheDocument();
   });
 
   test('flags an enabled, eligible agent that has no routine tasks', async () => {
@@ -178,7 +191,7 @@ describe('Work-Hours Overview (S1)', () => {
       expect(screen.getByText('support_bot')).toBeInTheDocument();
     });
     // support_bot has no `## Routine Tasks` section → warning flag rendered.
-    expect(screen.getByText('no routine tasks')).toBeInTheDocument();
+    expect(screen.getByText(translate('en', 'workHours.noRoutineTasks'))).toBeInTheDocument();
   });
 
   test('renders the recovery banner when the live config fails to load', async () => {
@@ -196,7 +209,7 @@ describe('Work-Hours Overview (S1)', () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText(/Live config failed to load/),
+        screen.getByText(translate('en', 'workHours.recovery.title')),
       ).toBeInTheDocument();
     });
   });

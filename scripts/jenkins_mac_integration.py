@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -61,6 +64,9 @@ _STOPPED_SYSTEM_STATUS_OUTPUTS = frozenset(
         "apiserver is not running and not registered with launchd",
     }
 )
+
+_GUEST_BYTES = Path(__file__).with_name("jenkins_mac_guest.py").read_bytes()
+_GUEST_DIGEST = hashlib.sha256(_GUEST_BYTES).hexdigest()
 
 
 class JobError(RuntimeError):
@@ -262,6 +268,7 @@ import sys
 raw = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
 expected = {{"/workspace/src", "/workspace/artifacts"}}
 host_backed = set()
+mount_modes = {{}}
 for line in raw.splitlines():
     fields = line.split()
     try:
@@ -272,8 +279,9 @@ for line in raw.splitlines():
     fs_type = fields[separator + 1]
     if fs_type == "virtiofs":
         host_backed.add(mount_point)
+        mount_modes[mount_point] = set(fields[5].split(","))
 
-verdict = host_backed == expected and not any(
+verdict = host_backed == expected and mount_modes.get("/workspace/src", set()) >= {{"ro"}} and mount_modes.get("/workspace/artifacts", set()) >= {{"rw"}} and not any(
     path == "/Users" or path.startswith("/Users/") for path in host_backed
 )
 evidence = [
@@ -288,18 +296,42 @@ Path("/workspace/artifacts/mount-evidence.txt").write_text(
 )
 if not verdict:
     sys.exit(81)
+import base64
+helper = Path("/tmp/happyranch-guest.py")
+with helper.open("xb") as stream:
+    stream.write(base64.b64decode("{base64.b64encode(_GUEST_BYTES).decode('ascii')}"))
 PY
 workload_status=$?
+helper=/tmp/happyranch-guest.py
+state=/tmp/happyranch-guest-state.json
+guest() {{ python "$helper" --state "$state" "$@"; }}
+bounded() {{ seconds=$1; reserve=$2; shift 2; guest command --seconds "$seconds" --reserve "$reserve" -- "$@"; }}
+uv() {{ bounded 15 60 uv "$@"; }}
 if [ "$workload_status" -eq 0 ]; then
-  apt-get update && apt-get install -y --no-install-recommends bash curl
+  guest start --source /workspace/src --artifacts /workspace/artifacts --basetemp /tmp/happyranch-pytest
   workload_status=$?
 fi
 if [ "$workload_status" -eq 0 ]; then
-  dpkg-query -W -f='os_tool=${{Package}} ${{Version}}\\n' bash curl \\
+  bounded 15 60 dpkg-query -W -f='${{Package}} ${{Version}}\\n' > /tmp/happyranch-packages-before.txt
+  workload_status=$?
+fi
+if [ "$workload_status" -eq 0 ]; then
+  bounded 300 60 apt-get update && bounded 300 60 apt-get install -y --no-install-recommends bash curl iproute2 git
+  workload_status=$?
+fi
+if [ "$workload_status" -eq 0 ]; then
+  observed_git="$(bounded 15 60 git --version)" && \\
+    printf 'git_version=%s\\n' "$observed_git" >> /workspace/artifacts/identity.txt
+  workload_status=$?
+fi
+if [ "$workload_status" -eq 0 ]; then
+  bounded 15 60 dpkg-query -W -f='os_tool=${{Package}} ${{Version}}\\n' bash curl iproute2 git \\
     >> /workspace/artifacts/identity.txt
-  python --version 2>&1 | sed 's/^/python_version=/' \\
+  bounded 15 60 dpkg-query -W -f='${{Package}} ${{Version}}\\n' > /tmp/happyranch-packages-after.txt
+  bounded 15 60 python "$helper" --state "$state" packages
+  bounded 15 60 python --version 2>&1 | sed 's/^/python_version=/' \\
     >> /workspace/artifacts/identity.txt
-  python -m pip install --disable-pip-version-check --no-cache-dir "uv=={UV_VERSION}"
+  bounded 600 60 python -m pip install --disable-pip-version-check --no-cache-dir "uv=={UV_VERSION}"
   workload_status=$?
 fi
 if [ "$workload_status" -eq 0 ]; then
@@ -327,26 +359,32 @@ if [ "$workload_status" -eq 0 ]; then
 fi
 if [ "$workload_status" -eq 0 ]; then
   cd /workspace/src
-  uv sync --frozen
+  bounded 600 60 uv sync --frozen
   workload_status=$?
 fi
 if [ "$workload_status" -eq 0 ]; then
-  python scripts/run_bounded_output.py \\
+  bounded 15 60 "$UV_PROJECT_ENVIRONMENT/bin/python" "$helper" --state "$state" ipv4
+  ipv4_status=$?
+  printf 'ipv4_probe_status=%s\\n' "$ipv4_status" >> /workspace/artifacts/identity.txt
+  bounded 2300 60 python scripts/run_bounded_output.py \\
     --output /workspace/artifacts/integration.log \\
     --max-bytes 1048576 \\
-    -- uv run pytest tests/ -v -m integration \\
+    -- uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration \\
       --basetemp=/tmp/happyranch-pytest \\
       -p no:cacheprovider \\
       --junitxml=/workspace/artifacts/integration.xml
   workload_status=$?
 fi
-python /workspace/src/scripts/nightly_integration_summary.py \\
+bounded 30 30 python "$helper" --state "$state" capture
+capture_status=$?
+bounded 20 10 python /workspace/src/scripts/nightly_integration_summary.py \\
   /workspace/artifacts/integration.xml \\
   --output /workspace/artifacts/integration-summary.md \\
   --head-sha "$SOURCE_SHA" \\
   --run-url "$JOB_BUILD_URL" \\
   --artifact-name "jenkins-mac-integration-$SOURCE_SHA"
 summary_status=$?
+bounded 10 0 python "$helper" --state "$state" finish "$workload_status" "$summary_status" "$capture_status"
 if [ "$workload_status" -eq 0 ] && [ "$summary_status" -ne 0 ]; then
   exit "$summary_status"
 fi
@@ -383,6 +421,8 @@ def build_container_argv(
         "XDG_CACHE_HOME=/tmp/xdg-cache",
         "--env",
         "TMPDIR=/tmp",
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
         "--env",
         f"SOURCE_SHA={source_sha}",
         "--env",
@@ -460,12 +500,12 @@ def cleanup_container(
     return verified
 
 
-def final_exit_code(workload_status: int, *, cleanup_ok: bool) -> int:
+def final_exit_code(workload_status: int, *, cleanup_ok: bool, evidence_ok: bool = True) -> int:
     if workload_status != 0:
         return workload_status
     if not cleanup_ok:
         return CLEANUP_FAILURE_EXIT
-    return 0
+    return 0 if evidence_ok else EVIDENCE_FAILURE_EXIT
 
 
 def _identity_text(
@@ -479,6 +519,7 @@ def _identity_text(
         f"source_repository={SOURCE_REPOSITORY}\n"
         f"source_sha={source_sha}\n"
         f"job_definition_sha={definition_sha}\n"
+        f"guest_helper_sha256={_GUEST_DIGEST}\n"
         f"image_reference={IMAGE_REFERENCE}\n"
         f"image_linux_arm64_manifest_digest={IMAGE_MANIFEST_DIGEST}\n"
         f"apple_container_version={container_version}\n"
@@ -565,15 +606,38 @@ def _run_job(args: argparse.Namespace) -> int:
                     stream.write(
                         f"image_inspect_error={inspect.stderr[:1000].strip()}\n"
                     )
-            evidence_ok = inspect.returncode == 0
+            guest_ok = False
+            try:
+                receipt_path = artifacts / "guest-result.json"
+                if receipt_path.is_symlink() or receipt_path.stat().st_size > 8192:
+                    raise ValueError("unsafe or oversized guest receipt")
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                expected_status = receipt["workload_status"] or receipt["summary_status"]
+                guest_ok = (
+                    type(receipt["workload_status"]) is int
+                    and type(receipt["summary_status"]) is int
+                    and expected_status == workload_status
+                    and receipt["capture_status"] == 0
+                    and receipt["diagnostics_before_exit"] is True
+                    and receipt["source_unchanged"] is True
+                    and receipt["source_digest_before"] == receipt["source_digest_after"]
+                    and receipt["helper_sha256"] == _GUEST_DIGEST
+                    and receipt["setup_evidence_complete"] is True
+                    and type(receipt["diagnostic_bytes"]) is int
+                    and 0 < receipt["diagnostic_bytes"] <= 65536
+                    and all((artifacts / name).is_file() and not (artifacts / name).is_symlink()
+                            for name in ("guest-diagnostics.json", "guest-packages.json", "guest-ipv4.json"))
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+            with (artifacts / "identity.txt").open("a", encoding="utf-8") as stream:
+                stream.write(f"guest_evidence_valid={str(guest_ok).lower()}\n")
+            evidence_ok = inspect.returncode == 0 and guest_ok
         finally:
             cleanup_ok = cleanup_container(
                 runner, container_name, artifacts=artifacts
             )
-        status = final_exit_code(workload_status, cleanup_ok=cleanup_ok)
-        if status == 0 and not evidence_ok:
-            return EVIDENCE_FAILURE_EXIT
-        return status
+        return final_exit_code(workload_status, cleanup_ok=cleanup_ok, evidence_ok=evidence_ok)
     except Exception as exc:
         (artifacts / "job-error.txt").write_text(
             f"{type(exc).__name__}: {exc}\n", encoding="utf-8"

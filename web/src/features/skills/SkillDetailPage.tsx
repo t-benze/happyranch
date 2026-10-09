@@ -33,10 +33,12 @@ import {
   TriangleAlert,
 } from 'lucide-react';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
+import { useTranslation } from '@/hooks/i18n';
 import { useSkillDetail } from '@/hooks/skills';
 import { SkillAssignmentPanel } from './SkillAssignmentPanel';
 import { SkillStatusBadge } from './SkillStatusBadge';
-import type { ValidationTone } from './skills-catalog';
+import { SOURCE_LABEL_KEYS, type ValidationTone } from './skills-catalog';
+import { classifySkillError, renderSkillError } from './strings';
 import {
   agentProvenanceList,
   assignmentRollup,
@@ -77,6 +79,7 @@ function Eyebrow({ children }: { children: ReactNode }): JSX.Element {
 }
 
 export function SkillDetailPage(): JSX.Element {
+  const { t } = useTranslation();
   const { slug, skillId } = useParams<{ slug: string; skillId: string }>();
   const query = useSkillDetail(skillId);
 
@@ -86,7 +89,7 @@ export function SkillDetailPage(): JSX.Element {
       className="text-fg-muted hover:text-fg text-body-sm mb-4 inline-flex items-center gap-1.5"
     >
       <ArrowLeft size={15} aria-hidden="true" />
-      Back to skills
+      {t('skills.detail.back')}
     </Link>
   );
 
@@ -111,8 +114,8 @@ export function SkillDetailPage(): JSX.Element {
           {backLink}
           <EmptyState
             icon={<TriangleAlert size={28} />}
-            title="Could not load this skill"
-            body="This skill is unavailable right now, or the link is out of date."
+            title={t('skills.detail.loadErrorTitle')}
+            body={renderSkillError(classifySkillError(query.error, 'skills.detail.loadErrorBody'), t)}
           />
         </div>
       </div>
@@ -150,12 +153,12 @@ export function SkillDetailPage(): JSX.Element {
                 }`}
               >
                 <SourceIcon size={10} aria-hidden="true" />
-                {source}
+                {t(SOURCE_LABEL_KEYS[source])}
               </span>
               {skill.system_contract && (
                 <span className="text-2xs text-fg-muted bg-bg-subtle border-border-default inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-bold tracking-wide uppercase">
                   <Lock size={10} aria-hidden="true" />
-                  system contract
+                  {t('skills.badge.systemContract')}
                 </span>
               )}
               <SkillStatusBadge
@@ -186,15 +189,15 @@ export function SkillDetailPage(): JSX.Element {
                 className="border-border-default bg-surface-subtle text-fg hover:bg-bg-subtle text-body-sm inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-semibold"
               >
                 <Pencil size={14} aria-hidden="true" />
-                Edit skill
+                {t('skills.detail.editSkill')}
               </Link>
             ) : (
               <span
                 className="text-fg-subtle inline-flex items-center gap-1.5 text-xs"
-                title={lockReason ?? undefined}
+                title={lockReason ? t(lockReason) : undefined}
               >
                 <Lock size={14} aria-hidden="true" />
-                Read-only
+                {t('skills.detail.readOnly')}
               </span>
             )}
           </div>
@@ -203,7 +206,7 @@ export function SkillDetailPage(): JSX.Element {
         {/* Read-only rationale (bundled / system contract). */}
         {lockReason && (
           <p className="text-fg-subtle border-border-subtle mt-4 border-t pt-3 text-xs">
-            {lockReason}
+            {t(lockReason)}
           </p>
         )}
       </header>
@@ -212,16 +215,14 @@ export function SkillDetailPage(): JSX.Element {
       {attention && (
         <section
           className="border-attention/40 bg-attention-soft mt-4 rounded-md border p-4"
-          aria-label="Needs attention"
+          aria-label={t('skills.status.needsAttention')}
         >
           <div className="text-attention-text flex items-center gap-2 text-sm font-semibold">
             <TriangleAlert size={15} aria-hidden="true" />
-            Needs attention
+            {t('skills.status.needsAttention')}
           </div>
           <p className="text-fg-muted text-body-sm mt-1.5">
-            This skill did not pass validation, so it is not shown to any agent
-            yet. Editing it keeps the draft — nothing is lost. Fix the items
-            below and re-validate.
+            {t('skills.detail.attentionBody')}
           </p>
           {issues.length > 0 && (
             <ul className="text-fg-muted text-body-sm mt-2 list-disc space-y-1 pl-5">
@@ -235,12 +236,12 @@ export function SkillDetailPage(): JSX.Element {
 
       {/* ── Source / SKILL.md content ─────────────────────────── */}
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
-        <Eyebrow>Source</Eyebrow>
+        <Eyebrow>{t('skills.catalog.source')}</Eyebrow>
         <p className="text-mono-sm text-fg-muted break-words">{skill.source}</p>
 
         {skill.when_to_use && (
           <div className="mt-5">
-            <Eyebrow>When to use</Eyebrow>
+            <Eyebrow>{t('skills.detail.whenToUse')}</Eyebrow>
             <p className="text-fg-muted text-body-sm leading-relaxed">
               {skill.when_to_use}
             </p>
@@ -249,7 +250,7 @@ export function SkillDetailPage(): JSX.Element {
 
         {skill.description && (
           <div className="mt-5">
-            <Eyebrow>Guidance (SKILL.md)</Eyebrow>
+            <Eyebrow>{t('skills.detail.guidance')}</Eyebrow>
             <p className="text-fg-muted text-body-sm leading-relaxed">
               {skill.description}
             </p>
@@ -266,26 +267,22 @@ export function SkillDetailPage(): JSX.Element {
         <SkillAssignmentPanel slug={slug ?? ''} skillId={skill.skill_id} />
       ) : (
       <section className="border-border-default bg-surface-raised mt-4 rounded-md border p-5 md:p-6">
-        <Eyebrow>Per-agent visibility</Eyebrow>
-        <h2 className="text-h2 text-fg mb-1">Where this skill is effective</h2>
-        <p className="text-fg-muted text-body-sm">
-          Which agents can see this skill as guidance, and why. Assigning a
-          skill changes guidance visibility only — it never changes the tools or
-          commands an agent can use.
-        </p>
+        <Eyebrow>{t('skills.detail.perAgent')}</Eyebrow>
+        <h2 className="text-h2 text-fg mb-1">{t('skills.detail.whereEffective')}</h2>
+        <p className="text-fg-muted text-body-sm">{t('skills.detail.perAgentDesc')}</p>
 
         {assignments.length > 0 ? (
           <>
             {/* Rollup */}
             <div className="text-fg-subtle mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
               <span className="inline-flex items-center gap-1.5">
-                Assigned{' '}
+                {t('skills.card.assigned')}{' '}
                 <span className="text-fg-muted font-semibold tabular-nums">
                   {rollup.assigned}
                 </span>
               </span>
               <span className="inline-flex items-center gap-1.5">
-                Effective{' '}
+                {t('skills.card.effective')}{' '}
                 <span className="text-accent-text font-semibold tabular-nums">
                   {rollup.effective}
                 </span>
@@ -296,7 +293,7 @@ export function SkillDetailPage(): JSX.Element {
                     aria-hidden="true"
                     className="bg-attention h-1.5 w-1.5 rounded-full"
                   />
-                  {rollup.notYetEffective} takes effect next session
+                  {t('skills.detail.notYetEffective', { count: rollup.notYetEffective })}
                 </span>
               )}
             </div>
@@ -316,7 +313,7 @@ export function SkillDetailPage(): JSX.Element {
                         {p.agent}
                       </div>
                       <p className="text-fg-muted text-body-sm mt-1">
-                        {p.reason}
+                        {t(p.reason)}
                       </p>
                     </div>
                     <span
@@ -325,7 +322,7 @@ export function SkillDetailPage(): JSX.Element {
                       }`}
                     >
                       <Icon size={11} aria-hidden="true" className="shrink-0" />
-                      {p.statusLabel}
+                      {t(p.statusLabel)}
                     </span>
                   </li>
                 );
@@ -335,12 +332,11 @@ export function SkillDetailPage(): JSX.Element {
         ) : skill.system_contract ? (
           <p className="text-fg-muted border-border-subtle bg-surface-subtle text-body-sm mt-4 flex items-start gap-2.5 rounded-md border p-3">
             <Info size={15} aria-hidden="true" className="text-fg-subtle mt-0.5 shrink-0" />
-            Applied to agents by context, not per-agent assignment. This
-            contract is shown to every agent its predicate matches.
+            {t('skills.detail.contextApplied')}
           </p>
         ) : (
           <p className="text-fg-subtle text-body-sm mt-4">
-            No agents are assigned this skill yet.
+            {t('skills.detail.noAgents')}
           </p>
         )}
       </section>
@@ -350,9 +346,8 @@ export function SkillDetailPage(): JSX.Element {
       <div className="border-border-default bg-bg-subtle text-fg-muted text-body-sm mt-4 flex items-center gap-2.5 rounded-md border px-3 py-2.5">
         <Info size={15} aria-hidden="true" className="text-fg-subtle shrink-0" />
         <span>
-          <b className="text-fg font-semibold">Guidance visibility only.</b>{' '}
-          Skills shape what an agent is told — they never change the tools or
-          commands an agent can use.
+          <b className="text-fg font-semibold">{t('skills.guidanceOnly')}</b>{' '}
+          {t('skills.detail.footerBody')}
         </span>
       </div>
       </div>

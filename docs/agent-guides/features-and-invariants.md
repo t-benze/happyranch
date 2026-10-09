@@ -1,10 +1,105 @@
 # Features And Invariants
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 This file serves two purposes. The **Feature Modules Overview** below is an orientation map of the product's feature modules — each module is one short paragraph (what it does) plus a pointer to its authoritative spec or implementation. The per-surface sections after it are the original feature-specific traps, to be read only when touching the relevant surface; the overview points down to those sections where one exists rather than restating them.
 
 For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/agent-guides/` explains those sources. Prefer them over the design specs — `docs/superpowers/specs/` is append-only design history unless `docs/superpowers/specs/README.md` marks a spec `current`.
 
 ## Feature Modules Overview
+
+### Workflow cutover prerequisite
+
+`runtime/workflows/cutover.py` owns the existing version-1 lifecycle marker and
+its contiguous org-bound event chain. Founder bearer requests commit the
+request/admission fence before verification or drain; recovery checks the full
+canonical layout/history, SQLite integrity/FKs and real work closure under each
+short writer reservation. GET and downgrade preflight never advance. Historical
+request replay reconstructs the original action/CAS before obsolete gates and
+returns its identity separately from current pending/enabled/draining state.
+
+Foundation installation still writes only generation1/event1. S1 independently
+validates complete F/E/G; only explicit POST /orgs fresh creation
+initializes G automatically. Existing F requires the operator script documented in
+runtime-and-configuration.md; startup/reopen/enable never adds draft DDL. Cold
+`OrgState.load` forwards actual org context and resumes committed requests only
+on ready E/G, retaining earlier F history and actionable guidance. Existing templates,
+authority and profiles may remain inert; pre-enable activation/dispatch/recovery
+work blocks enabling. Drain never cancels or settles F5 or draft work: queued/prelaunch,
+running, uncertain and incomplete closures project actual owners and deferred
+U2D/U4/U5 actions. Terminal history remains. Downgrade requires pristine F initial
+history and no workflow data, including template-only data. Every E/G requires a
+compatible reader even with zero business rows; version1 alone is metadata. Historical v0/v1
+source-pinned initializer/migration tests prove preservation at that boundary,
+not whole-runtime conversion or old-binary gate compliance. S1 supplies draft storage/closure validation only. Activation/first
+draft production, dispatch/recovery routing and operator acceptance remain later work.
+
+### Initial workflow draft lifecycle (S2)
+
+The S2 source consumes the S1 draft lane through `WorkflowActivationStore` and
+`WorkflowDraftDispatcher`, attached by actual OrgState. Founder exact-version
+admission creates one genuine bounded author task/root, authorization, immutable
+binding/context, activation, intent and admitted event in one writer. Template
+publication alone grants no assignment. Historical replay retains original IDs
+and pins with no queue effects; current eligibility is a separate projection.
+
+Draft completion requires the authentic accepted result and finalized contained
+host quiescence. Session publication alone does not prove launch; possible launch
+without exact acknowledgment stays uncertain and is never blindly requeued.
+Cancellation commits a fence before containment. Startup, run_step, callback,
+zombie TTL and portability route owned work before ordinary lifecycle effects;
+malformed or dual closure requires reconciliation. Draft authors, even managers,
+receive no generic decision/delegate/then/fanout/code authority. F5 producers and
+U3 immutable submission/reviews, U4/U5 replacement operations, U6 mounted UI and
+operator acceptance remain separate. Independent review/QA/CI and deployment are
+not implied by source implementation. Earlier prerequisite descriptions above
+refer to S1; S2 does not change its migration/readiness/drain meanings.
+
+### Finite template-driven draft policy
+
+Document-review schema2 permits one abstract agent author and 1–3 reviewers,
+with at most one existing Founder human. Required roles equal the declared reviewer
+list on the current revision. Approved is required; optional changes_requested
+requires the exact return-to-author/new/all-prior-receipts rule, otherwise return
+is null. Submission timing declares on-completion or while-active-or-completed
+capability for later producers. Author allocation, recipient filtering and the
+frozen context consume the compiled contract from the exact immutable version.
+A request cannot add return-to-author to an approval-only template. Agent-only
+review has no human alias; all actual principals retain canonical active membership
+and independence requirements. Initial execution creates only an author draft.
+
+Legacy schema1 uses its unchanged @1 reader/brief/envelopes. New definition and
+activation families use @2 pins/envelopes; numerical publication version and the
+current pointer never choose interpretation. Full validation visits all historical
+drafts/versions. Any @2 data requires a compatible reader, even without instances;
+older readers refuse. No DDL/history conversion or downgrade guarantee is added.
 
 ### Implemented boundaries for retained features
 
@@ -32,8 +127,11 @@ preserving rank. Pending input/search or metadata refresh hides stale results;
 metadata errors or missing hit metadata show the existing recoverable Knowledge
 error, never successful-empty. Retry refreshes search and list metadata. Clearing
 search restores the list immediately, and old query settlements cannot replace
-the current query. Narrow 390px clipping remains an existing desktop-only
-limitation; shared App/Drawer layout is unchanged.
+the current query. Below 640px, the feature-local filter rail stacks above the
+list, stays full-width and scrolls within a 16rem height bound. Header actions
+stack below the title, and the list and detail drawer remain contained at 390px.
+Desktop retains the side rail and header arrangement; shared App/Drawer
+primitives are unchanged.
 
 
 Generic remote jobs remain dormant. `runtime/remote_jobs/` provides contextual
@@ -157,7 +255,7 @@ cannot exclude future writers or a hostile same-UID race.
 - **Manage-repo.** Add, remove, or update a repository in an agent's `org/agents/<name>.md` frontmatter. Spec `docs/superpowers/specs/2026-04-17-manage-repo-design.md`; CLI `happyranch manage-repo`.
 - **Founder-facing executor-switch.** `happyranch set-executor` switches an existing agent's executor end-to-end in the org `.md` frontmatter and executor bootstrap (THR-095: agent.yaml is no longer synced). A real executor change clears the old executor-specific `model`; an idempotent request preserves it. The shared canonical instruction pair (`AGENTS.md` + `CLAUDE.md -> AGENTS.md`) and `.claude/skills` are preserved across a switch; only the executor-only `.claude/settings.json` is stale and WARNs by default; cleanup requires an explicit `--clean` flag. CLI-only — no web surface. Keep this distinct from the **system assistant self-registration** (`happyranch assistant register`), which is the assistant's own executor declaration. Commit cf4c9e0; impl `cli/commands/agents.py`, `runtime/daemon/routes/agents.py`.
 - **Per-agent memory.** Each agent keeps durable `MEM-NNN` learnings plus task recall. Specs `docs/superpowers/specs/2026-04-18-agent-memory-design.md` (superseded), `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`; impl `runtime/infrastructure/learnings_store.py`. See [Per-Agent Learnings](#per-agent-learnings) below for traps.
-- **System assistant.** A founder-facing assistant surface reached via the **Cmd-K dock** (global &#8984;K A-mode structured chat dock mounted in the AppShell) and the **CLI** (`happyranch assistant status|init|register`). Onboarding is by **self-registration** (unchanged). The dock uses a JSON-framed WebSocket for structured conversations. **Action chips:** (a) *reference-existing* chips (Approve JOB-083, Open THR-021, Show diff, any TASK/JOB/THR/KB id) deep-link/navigate to the existing object's approval or detail surface — no POST, no self-approval; (b) *propose-new-action* chips (a chip proposing a gated op that does NOT yet exist as an object, e.g. "propose merging PR X") MUST create a PENDING `review_required` job through the EXISTING jobs gate (the already-authenticated assistant WS carries the structured frame; the daemon-side handler submits the job through the existing jobs mechanism). The assistant NEVER self-approves or self-executes a privileged op. Impl `runtime/daemon/routes/assistant_a_mode.py` (A-mode WS), `runtime/daemon/headless_assistant.py` (headless adapters), `web/src/features/system-assistant/AssistantDockHost.tsx` (⌘K dock).
+- **System assistant.** A founder-facing assistant surface reached via the **Cmd-K dock** (global &#8984;K A-mode structured chat dock mounted in the AppShell) and the **CLI** (`happyranch assistant status|init|register`). Onboarding is by **self-registration** (unchanged). The dock uses a JSON-framed WebSocket for structured conversations. **Action chips:** (a) *reference-existing* chips (Approve JOB-083, Open THR-021, Show diff, any TASK/JOB/THR/KB id) deep-link/navigate to the existing object's approval or detail surface — no POST, no self-approval; (b) *propose-new-action* chips (a chip proposing a gated op that does NOT yet exist as an object, e.g. "propose merging PR X") MUST create a PENDING `review_required` job through the EXISTING jobs gate (the already-authenticated assistant WS carries the structured frame; the daemon-side handler submits the job through the existing jobs mechanism). The assistant NEVER self-approves or self-executes a privileged op. Dock copy follows the locale/error/state boundary in `docs/superpowers/specs/2026-06-12-system-assistant-web-ui-design.md` §6.12. Impl `runtime/daemon/routes/assistant_a_mode.py` (A-mode WS), `runtime/daemon/headless_assistant.py` (headless adapters), `web/src/features/system-assistant/AssistantDockHost.tsx` (⌘K dock).
 - **Jobs.** Background subprocesses run by the daemon, with two policy flags (`review_required`, `persistent`) and founder-review gating. Spec `docs/superpowers/specs/2026-05-26-jobs-design.md` (current); skill `runtime/skills/bundled/jobs/SKILL.md`; impl `runtime/daemon/routes/jobs.py`, `runtime/daemon/jobs_runner.py`. (Jobs absorbed the earlier "agent script requests" feature, `docs/superpowers/specs/2026-05-23-agent-script-requests-design.md`, now superseded.) See [Jobs](#jobs) below for traps.
 - **Task blocked by job.** A task can self-block on one or more jobs via `tasks.blocked_on_job_ids`; it auto-resumes when all are terminal. Spec `docs/superpowers/specs/2026-05-28-task-blocked-by-job-design.md`. See [Task Blocked By Job](#task-blocked-by-job) below for traps.
 - **PR CI wait / guarded merge.** PR-producing engineering tasks use the jobs + `blocked_on_job_ids` path to wait for GitHub CI outside the agent session. Two CLI entrypoints (`python -m runtime.daemon.pr_ci_waiter` and `python -m runtime.daemon.pr_ci_merge`) wired to real `gh` provide the polling and guarded-merge mechanisms. The poll job (submitted through the existing jobs path with `review_required=false`) polls checks for a pinned PR head SHA, handles no-checks-yet settling, detects stale heads and timeouts, and prints a structured verdict JSON. The poll job performs NO merge. On resume, the task owner triggers `guarded_merge` as a short daemon-run step; it re-enforces all guards (review APPROVE + QA PASS + CI PASS + unchanged SHA + mergeable CLEAN) before merge. No new daemon route, no new task state, and no raw `gh pr merge` permission broadening. Current contract: `docs/agent-guides/orchestrator-contracts.md` (including the **Merge-evidence contract** — the canonical vocabulary `APPROVE | REQUEST_CHANGES | BLOCK | PASS | REVISE | FAIL` and the structured-vs-prose extraction rules: a NON-NULL structured `verdict` is primary; serialized `null`, the durable recall producer's representation of legacy/no-structured rows, uses the strict annotated-prose fallback); implementation: `runtime/daemon/pr_ci_waiter.py`, `runtime/daemon/pr_ci_merge.py`.
@@ -180,7 +278,13 @@ cannot exclude future writers or a hostile same-UID race.
 - **Token-usage tracking.** Per-task, per-agent, thread-scoped, dream-scoped, and work-hour-scoped token accounting with two complementary legacy metrics: **churn** (`churn_tokens` = input + output + reasoning, the cache-excluded value used for existing ranking/thresholds) and **context** (`context_tokens` = churn + cache_read + cache_creation). Codex ingest keeps issue #216's net-of-cache input normalization and now preserves integer `cache_write_input_tokens` exactly, including `0`; absence/non-integer stays `NULL`. The Usage v1 pure normalizer distinguishes reported zero from `not_reported`, exposes uncached-only Fresh input as partial when cache write is absent, and counts reasoning once from declared parser semantics. Lifecycle cohort identity is captured when a run starts: thread rows carry nullable executor/model, task `session_start` carries session ID, actual spawn purpose, executor/model, and `dream_started` carries executor/model. `thread_invocations.reply_message_seq` is the nullable, transaction-owned link to the one persisted reply message; NULL means “reply outcome not recorded” (legacy or no persisted message), never an inferred negative. Missing configured models and pre-change history stay unattributed/NULL and are never guessed or backfilled. The lifecycle-first Workload/Efficiency read model is exposed through bearer-authenticated `GET /usage/workload` and `GET /usage/efficiency`; Workload rows require current-window activity, Replies count only linked consumed REPLY wakes, recorded/total-consumed reply outcome coverage is explicit, and any unknown outcome withholds only the Replies comparison. Missing/ambiguous usage remains in lifecycle denominators, and dream usage correlates by dream ID + agent rather than provider session ID. It never consumes legacy churn, whose Codex reasoning double-count is intentionally unchanged. Specs `docs/superpowers/specs/2026-05-05-token-usage-tracking-design.md`, `docs/superpowers/specs/2026-06-08-thread-talk-token-usage-scope-design.md`, and `docs/superpowers/specs/2026-09-30-usage-v1-design.md`; APIs `runtime/daemon/routes/tokens.py` and `runtime/daemon/routes/usage.py`; CLI `happyranch tokens` (issue #216).
 ### Web & CLI
 
-- **Web UI.** React SPA with a flat primary sidebar nav (Home · Threads · Tasks · Jobs · Todos · Agents · Work Hours · Skills · Knowledge · Artifacts · Audit · Dreams · Usage · Health), footer-pinned Settings + account row (founder-approved flattening: THR-140 seq 208 / PR #644 superseded the #633/#577 grouped-nav pilot), org switcher at the sidebar top, theme toggle in the AppBar; desktop window chrome, served from `web/dist/`. **Default landing route is Home** (the Dashboard page at `/orgs/:slug/dashboard`). Specs `docs/superpowers/specs/2026-05-14-web-ui-design.md`, `docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md`, `docs/design-overhaul/product_lead-2026-06-16-design-overhaul-PRD-build-spec.md` (Direction-A IA); architecture `web/ARCHITECTURE.md`; guide `docs/agent-guides/web-and-cli.md`.
+- **Settings narrow layout (THR-118 W5b).** Below640px the five existing sub-nav links wrap above the panel; wider screens retain the left rail. Preferences has locally bounded, wrapped full copy and narrow-screen padding. Routes, active state, icons, API gates, client-only Preferences independence and all handlers/state/focus remain unchanged.
+- **Browser locale activation (THR-118 W5b).** `main.tsx` synchronously selects full mode and hands one resolution through App/AppShell before the first React text. AppShell also selects full mode for later storage events. Valid saved en/zh-CN wins the environment; absent/invalid values follow ordered supported browser languages, then English. Startup performs no preference write. Storage delete/clear resolves the same full fallback without echo. Resolver/provider API preview defaults, native authority and sequenced acknowledgements remain unchanged. Inventory remains 21 translated/3 not-applicable, supported by the accepted finite W5a map rather than exhaustive coverage claims. Native N0/N1 and deployment/live verification remain deferred/separate.
+
+- **Web loading and modal copy (THR-118 W5a).** Mounted dialog close controls use `common.close`. Markdown’s optional `mermaidLoadingLabel`, forwarded by `MessageBubble.labels.mermaidLoading`, localizes only per-block lazy-loading chrome; omitted props retain English. KB, Task detail/recall, Threads and both Assistant turn variants provide the catalog label. Renderer identity and loaded SVGs remain stable on locale changes; authored text/code and Mermaid failure source stay verbatim. Namespace markers are inventory, not rendering acceptance. W5a finite coverage is accepted (PR993); W5b enables full browser-language defaults and bilingual availability copy. Native N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+- **Work Hours reachability (THR-118 W5a).** Local heading/actions wrap within agent detail; both reconciliation and roster preserve every raw column/value in localized named focusable horizontal scroll regions. Arrow keys reach the final effective/eligibility column. Shared primitives and editor/navigation/save semantics remain unchanged. Historical document-width assertions did not establish essential-child reachability; keep the historical clipping evidence and original source/build limits. W5a finite coverage is accepted with PR993; W5b enables full browser-language defaults. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
+
+- **Web UI.** Usage v1 app-owned Workload/Efficiency presentation is translated in en/zh-CN (THR-118 W4d-2); locale switching preserves Compare/cohort/focus and issues no API requests. Org-wall-clock window parts do not shift with viewer TZ; instants use the response timezone. Assistant dock and conversation controls bind en/zh-CN app copy; complete mounted-copy coverage is recorded as translated. W5b enables full browser-language defaults. React SPA with a flat primary sidebar nav (Home · Threads · Tasks · Jobs · Todos · Agents · Work Hours · Skills · Knowledge · Artifacts · Audit · Dreams · Usage · Health), footer-pinned Settings + account row (founder-approved flattening: THR-140 seq 208 / PR #644 superseded the #633/#577 grouped-nav pilot), org switcher at the sidebar top, theme toggle in the AppBar; desktop window chrome, served from `web/dist/`. **Default landing route is Home** (the Dashboard page at `/orgs/:slug/dashboard`). Specs `docs/superpowers/specs/2026-05-14-web-ui-design.md`, `docs/superpowers/specs/2026-05-30-dashboard-overhaul-design.md`, `docs/design-overhaul/product_lead-2026-06-16-design-overhaul-PRD-build-spec.md` (Direction-A IA); architecture `web/ARCHITECTURE.md`; guide `docs/agent-guides/web-and-cli.md`.
 - **CLI.** `happyranch`, a thin HTTP client over the daemon API used by both the founder and agents for all side effects. Guide `docs/agent-guides/web-and-cli.md`; impl `cli/`.
 - **Audit log.** Append-only record of every state-changing action, keyed by task id (with scope prefixes for non-task actors). Impl `runtime/infrastructure/audit_logger.py`, `runtime/daemon/routes/audit.py`; CLI `happyranch audit`.
 - **Token-usage visibility (Phase 1 dashboard panel).** A `TopTokenThreadsPanel` on the org dashboard showing thread-scoped token spend ranked by total tokens, plus CLI drill-down (`happyranch tokens --by-thread`). This is a **dashboard panel**, NOT a dedicated page. The underlying token-accounting infrastructure (per-task, per-agent, thread-scoped) is documented under [Token-usage tracking](#org--runtime) below. Commit f1dd539; impl `web/src/features/dashboard/components/TopTokenThreadsPanel.tsx`, `cli/commands/tasks.py`.
@@ -247,23 +351,142 @@ Implementation: `runtime/infrastructure/kb_store.py` and `runtime/daemon/routes/
 
 ### Memory telemetry guard (THR-091, TASK-7767)
 
-`AuditLogger.compute_memory_telemetry_report` and `happyranch memory report`
-currently report `insufficient_instrumentation`. Current audit rows have no
-versioned, production-canary-accepted epoch and no independently demonstrated
-automatic transport, so counts, elapsed time, manually attributed reads, and
-diagnostic ratios are observation-only and must never select tuning. This guard
-does not start collection or change memory get/search behavior, audit rows, or
-ranking. The frozen next-phase measurement definitions are in
-`docs/superpowers/specs/2026-09-11-memory-telemetry-corrective-guard.md`.
-Fail-closed output explicitly marks thresholds as not met and collection as not
-started; malformed diagnostic rows also remain ineligible rather than being
-credited or crashing the report.
-The report-local backend and CLI validators intentionally remain separate.
-Observation-only malformed read/search diagnostic parity and the full
-controlled-clock whole-report matrix are frozen acceptance obligations for the
-versioned reporting implementation; this guard does not claim either as passed.
+Task bootstrap retains text and item IDs from one actual `MemoryStore.render_memory_digest` pass; `build_memory_digest` remains a compatible string/None wrapper. Only appended full blocks or pointer lines contribute IDs. Directive fit is full-body exposure; budget fallback is pointer exposure. IDs merely mentioned in bodies, titles, header, or nudge are not item exposure. Scoring, ordering, salience, character budgets, prompt bytes and nudge behavior remain unchanged. A header/nudge-only result has no items and emits no impression. Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+
+After trusted task/session binding and before launch/session_start, one existing `memory_digest_impression` stores accurate `digest_ids`/`digest_count` with exactly three new keys: `memory_telemetry_version=1`, `pointer_ids`, `full_body_ids`. Lists are unique and disjoint, with union equal to the digest IDs/count. If duplicate files render one ID in both forms, the observed full body owns that ID; no duplicate opportunity is recorded. No prompt, title, body, query or brief is logged. Optional metadata rejects inconsistent types/version/duplicates/overlap/union before insertion. Logger calls without metadata retain the byte-equivalent old unversioned payload; no history is inferred, upgraded or backfilled. Existing audit action and actual task row scope stay unchanged.
+
+The unchanged source resolver checks accurate digest IDs before validated search results, so a body-mentioned but nonrendered `MEM-999` can receive search attribution after an actual search, while the shown item stays digest-sourced. Read/search writers, SessionTracker validation, task/session identity and eligibility are unchanged. Recovery/unattributed rows gain no task eligibility from a version field. Exposure metadata alone leaves both report consumers fail-closed. G1's independent role/job/probe and current-serving census validation is described below; actual installed canary acceptance remains a separate operational gate. `session_start` records intended invocation, not a complete process-launch census. No canary is accepted, clean epoch started or collection enabled by this metadata.
+
+The source-side G3 observer is attached by real `OrgState` construction before
+workers. One actual `_run_agent` entry reserves an independent boot-local ordinal
+before telemetry writes. Metadata-only `memory_runtime_intent`,
+`memory_runtime_identity`, `memory_runtime_expectation`, `memory_runtime_binding`,
+`memory_runtime_launched`, `memory_runtime_terminal` and `memory_collection_seal`
+use the existing actual-task audit scope. SID is observed at its original
+assignment; parent relation and recovery purpose come from runtime facts,
+never provider resume or request claims. Provider retries add started-callback
+occurrences under one logical invocation. Each terminal belongs to its own
+ordinal/runtime SID; no latest-agent session-end inference is used.
+
+Expectation freezes the same structured render/config used by the unchanged
+prompt: `disabled/budget_zero`, `empty/memory_directory_absent`,
+`empty/renderer_empty`, `empty/no_valid_rendered_ids`, or
+`nonempty/rendered_ids`. Text presence is separate from eligible item exposure;
+full-body-only exposure is nonempty with zero pointer opportunities. No content
+is recorded and no missing expectation is inferred from an absent impression.
+
+Live attempted/persisted counts and chained digests are independent of stored
+rows. A short metadata lock never spans rendering, execution or application
+callbacks. Observation-boundary persistence drains concurrent metadata in
+generation order; another invocation's callback need not wait on a blocked
+observer writer. Writer failures are sticky and affect observation availability
+only. Seals checkpoint independent counters/digests without reading history;
+their diagnostic integrity is `census_not_reconciled`, never a validation or
+health claim. Exhaustive zero-write read validation rejects missing/duplicate/
+corrupt phases and seals, missing starts or expected impressions at zero reads,
+unresolved population/parent/type facts, unknown/pending preparation and zero
+population. It compares opening/closing semantic observer facts (including
+errors, pending writer/preparation state and seal progress), excluding sample
+timestamps. Audit history is acquired in primary-key pages of at most 256 rows,
+with no shared Database lock across pages or decoding, and a 100,000-row total
+work limit including unrelated/prior-boot history. Same-connection write counts
+and other-connection data versions bracket acquisition. Movement, read failure
+or work exhaustion returns unavailable; no partial history is validated and no
+retry-until-quiet loop or reader write is performed. A restart allocates a new
+observer boot and never reconstructs old completeness. Constructor/attachment
+failure preserves ordinary org startup with explicit unavailable observation.
+
+The seal-action audit GET now supplies an optional closed current-serving
+observation from the actual OrgState, with explicit unavailable/unknown fields,
+paired live counters and bounded loaded/disk/interpreter/registry identities.
+It does not write rows, reseal or produce an epoch. G1 validates complete
+acceptance evidence and current census before projecting existing epoch references.
+Other audit response shapes remain unchanged. The exact response and nested
+identity are specified in the corrective memory spec; a stable empty N0 view
+is descriptive and unaccepted.
+
+This census and its seals are not independent installed acceptance. G1's
+opt-in `MemoryCollectionV1:` summary protocol authenticates exact admitted
+manager/QA rows, registered roles, prior finite original delegation/command,
+owned terminal job/audits/complete outputs and real ROOT/CHILD operations.
+Only final post-log reconciliation may append an epoch or invalidation; both
+successful result-log arms use their exact persisted result ID. Parseable
+summaries, fixtures, versions or flags cannot establish health.
+The assigned QA must differ from the makers in every preapproved ROOT/CHILD
+slot as well as from the manager; registered worker status alone is insufficient.
+Each original probe task must also remain completed, uncancelled and bound to
+its recorded maker/team. A successful earlier session on a subsequently failed
+probe task cannot provide positive health evidence.
+
+New initial/reset admission requires each probe age in [0,48h] at the FINAL
+server commit. Reports and equivalent replay authenticate that original age
+against the immutable original commit, while rechecking original evidence and
+CURRENT complete source/import/loaded-code/boot/cohort/profile/path/census.
+Elapsed age alone does not expire an accepted epoch. Replay neither renews nor
+replaces QA; fresh reset requires exact predecessor and fresh independent QA.
+Withdrawal remains possible after stale or unhealthy proof. Damaged, lost,
+ambiguous, partial or moving evidence closes collection with no latest fallback.
+Readers never write, reseal, repair, invalidate or start epochs.
+
+Backend and canonical CLI JSON/text share the report core. G1 acquisition
+exhausts original tasks/results/jobs/audit evidence with stable bookends and
+complete owned outputs; legacy diagnostics still acquire all four memory
+streams and roles before empty/short returns. HTTP/decoder/timeout, cursor or
+SELECT failures refuse as `acquisition_unavailable`, without partial CLI stdout.
+Natural population excludes designated probes/retries, recovery and all
+pre-start invocations, including their late events. D1 remains the later of
+original epoch start and first qualifying natural impression, counting complete
+UTC days only. Valid short samples remain `insufficient_sample`.
+
+Source tests and source publication do not accept a production canary, start
+an official epoch, or fulfill the independently owned durable health check
+within48h AFTER a future accepted production epoch. Missing/late/in-flight/job-
+error receipts leave that duty unfulfilled; only measured health failure closes
+through health predicates. Installed/provider/deferred venues, deployment and
+14-day/500 production follow-through remain separately owned operational gates.
+
+Structural returned-data corruption produces the full empty-metrics error object
+(null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
+errors). Task-only sources are `digest`, `search`, `explicit_or_other`; unsupported
+strings use `invalid_source`, nonstrings `malformed_read_source_type`, and causal
+or digest-first contradictions `source_contradiction`. Independently identified
+manual/thread/dream/recovery/legacy populations are excluded before task source
+validation. Runtime task credit requires the actual task/agent/runtime-session
+start tuple; prefixes, client claims and SID-only matching cannot establish it.
+
+Version1 observed pointer/full-body lists are validated, disjoint and duplicate
+free, with union matching digest IDs/count. Legacy impressions remain unversioned
+with unavailable mode metrics; no memory-file/body/directive inference occurs.
+Exact tuple+memory pairs deduplicate opportunities and reads; secondary activated
+sessions and per-agent/role/memory operation counts remain descriptive. Search
+ratios use distinct persisted, causally corroborated search-sourced read pairs.
+Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
+complete UTC days exclude partial first/current days. Raw day/session sample
+flags may be true; without valid G1 authority, thresholds,
+diagnostics_valid_for_collection and evaluation_candidate remain false,
+decision `insufficient_instrumentation`. With valid authority, retain14 complete
+UTC days AND500 qualifying sessions, per-agent30, aggregate<10% AND strict
+eligible-agent majority, and >25% distinct validated search-read pairs with
+eligible-role>=30-pair corroboration. Zero-pointer agents do not vote. Repeated
+gets retain operation counts while distinct tuple/item pairs own rates.
+Full-body-only natural launches supply zero pointer opportunities; disabled
+launches remain in the intended census. Manual reads and searches retain their
+excluded diagnostics in both consumers after acceptance.
+`session_start` records audited intended invocations, never a complete process
+launch/expectation census. G1 separately validates the complete G3 census and
+independent original probe/epoch evidence before granting natural eligibility.
+Without that authority, collection health remains unavailable. Report reads
+never start epochs, perform tuning or ranking writes, or override authority.
+The read-side snapshot/two-sweep contract detects observed drift; it adds no
+writer fence or hostile same-UID guarantee. Actual installed canary acceptance
+and operational H-v1 duties remain separately gated.
 
 Per-agent memory lives under `<runtime>/orgs/<slug>/workspaces/<agent>/memory/`, one `MEM-NNN-<slug>.md` per entry. CLI: `happyranch memory list|get|search|add|update|promote|reindex`.
+Runtime-owned task children automatically forward their actual invocation
+session as a private CLI hint for get/search attribution. The route still
+derives org, agent, and task from `SessionTracker`; nonempty explicit CLI session
+IDs win, while empty flags retain the hint fallback. Stale, cross-agent, cross-org, thread/dream, or manual contexts remain
+uncorrelated.
 
 Implementation: `runtime/infrastructure/learnings_store.py` and `runtime/daemon/routes/agents.py`. Spec: `docs/superpowers/specs/2026-05-13-per-agent-learnings-structural-upgrade-design.md`.
 
@@ -500,6 +723,17 @@ Traps:
 - `ExecutorResult.agent_session_id` is not `ExecutorResult.session_id`.
 - **GH-688 Phase 1 claim gate + no-message-omission proof.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq` AND the ENTIRE required post-watermark range is proven present and contiguous at the production seam: the runner loads the canonical transcript UNCAPPED, independently queries the authoritative transcript max, and authorizes the delta only when every required claimed sequence exists (the claim's inclusive end must also exist). Truncated loads, internal holes, equal/ahead watermarks, a null/zero/negative (<= 0) watermark (a stored id with watermark <= 0 is never eligible), and claim ends beyond the transcript fail closed to the genuinely complete canonical full prompt — a delta can never omit a message the delivery state requires. `last_resumed_seq` is observed session presentation and is never the delivery cursor.
 
+**Cleanup indexes and breaker scheduling (issue1019 / THR-295).** The common
+schema tail creates three nonunique indexes with `IF NOT EXISTS` after legacy
+columns exist: tasks(assigned_agent,created_at DESC,id DESC), audit_log(task_id,agent)
+where action='workspace_cleanup_triggered', and task_results(task_id,agent,id DESC).
+Existing names are retained without definition validation; display SQL is unchanged.
+Delivery listing and mint run sequentially via `await asyncio.to_thread` under the
+original DB RLock. Close uses that lock too. Removal can cause a logged sweep error;
+cancellation can leave worker work running. Pending-token recovery, publication,
+claim/count-once and cooldown behavior remain unchanged. No org lifetime lock or
+worker drain is added; other synchronous DB callers retain their limitations.
+
 ## Thread Task Followup
 
 When a task dispatched from a thread reaches true terminal state, `_maybe_post_thread_followup` appends a system message and mints a `TASK_FOLLOWUP` invocation. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.
@@ -652,3 +886,11 @@ rejects the former autonomous identity markers `invocation_token` and
 or the shared human resolver. A field-free agent thread `continue` is also
 retired. Ordinary human task resolution and thread `supersede` remain
 unchanged.
+
+Complete legacy release references also cover independently pinned v0 and
+historical authority-v2 constructor inputs, including the organic additive
+migration order. Each reference runs current generic migrations and the
+requested F/E/G installer on its own disposable database; the comparison
+includes every SQL object. A candidate never supplies a baseline, and any
+required reference failure or unrelated object still refuses. This changes
+no observed-only authority-v2 claim rule.

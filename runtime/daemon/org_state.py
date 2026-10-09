@@ -12,6 +12,10 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.infrastructure.memory_collection import CollectionObserver
 
 from runtime.config import Settings
 from runtime.daemon.dream_queue import DreamQueue
@@ -22,7 +26,10 @@ from runtime.daemon.sessions import SessionTracker
 from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
-from runtime.infrastructure.workflow_schema import install_or_recover
+from runtime.infrastructure.workflow_schema import (
+    draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
+)
+from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.dashboard_projection import DashboardProjectionManager
@@ -30,6 +37,8 @@ from runtime.orchestrator.orchestrator import Orchestrator
 from runtime.orchestrator.org_validation import validate_team_membership
 from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
+from runtime.workflows.activation import WorkflowActivationStore
+from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +61,10 @@ class OrgState:
     settings: Settings
     orchestrator: Orchestrator
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
+    workflow_activations: WorkflowActivationStore = field(init=False)
+    workflow_drafts: WorkflowDraftDispatcher = field(init=False)
+    memory_collection: CollectionObserver | None = field(init=False, default=None)
+    memory_collection_unavailable: str | None = field(init=False, default=None)
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -89,12 +102,28 @@ class OrgState:
     }
 
     def __post_init__(self) -> None:
+        try:
+            from runtime.infrastructure.memory_collection import CollectionObserver
+            self.memory_collection = CollectionObserver(org=self.slug, root=self.root, db=self.db)
+            self.memory_collection.context = self
+            self.db._memory_collection_context = self
+            self.orchestrator.attach_memory_collection(self.memory_collection)
+        except Exception:
+            self.memory_collection_unavailable = "observer_initialization_failed"
+            if self.memory_collection is not None:
+                self.memory_collection.unavailable(self.memory_collection_unavailable)
+            logger.exception("org %r: memory collection observation unavailable", self.slug)
         self.workflow_authority = WorkflowAuthorityCoordinator(
             db=self.db,
             org_slug=self.slug,
             root=self.root,
             teams=self.teams,
         )
+        self.workflow_activations = WorkflowActivationStore(self)
+        self.workflow_drafts = WorkflowDraftDispatcher(self)
+        if self.orchestrator is not None:
+            self.orchestrator._workflow_drafts = self.workflow_drafts
+        self.db._workflow_drafts = self.workflow_drafts
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,
         )
@@ -130,6 +159,23 @@ class OrgState:
             return history
         self.event_bus = EventBus(history_loader=loader)
         self.thread_store = ThreadStore(self.root / "threads")
+
+    def memory_collection_observation(self) -> dict:
+        """Read this serving org; observation failure never changes launch state."""
+        try:
+            from runtime.infrastructure.memory_collection import serving_observation, current_epoch_references
+            return current_epoch_references(self, serving_observation(self))
+        except Exception:
+            # Module/constructor acquisition can itself be unavailable. Keep the
+            # ordinary audit route usable without importing a second observer.
+            from datetime import datetime, timezone
+            return {"contract_version": 1, "org": self.slug, "boot_id": None,
+                    "installed_identity": None, "generation": None, "assigned_intents": None,
+                    "intent_digest": None, "phase_counts": None, "phase_digests": None,
+                    "active_preparations": None,
+                    "observation_error": self.memory_collection_unavailable or "observation_unavailable",
+                    "latest_seal_audit_id": None, "epoch_id": None, "epoch_audit_id": None,
+                    "sampled_at": datetime.now(timezone.utc).isoformat(), "data_through": None}
 
     def bind_authority_v2_owner(self) -> None:
         """Bind the real owning-process identity + permission-surface reader.
@@ -199,7 +245,18 @@ class OrgState:
         paths = OrgPaths(root=root)
         db = Database(paths.db_path)
         try:
-            install_or_recover(db)
+            install_or_recover(db, expected_org_slug=slug)
+            with db._lock:
+                layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
+            if layout == "F":
+                logger.warning("org %r: %s", slug, draft_migration_guidance(
+                    org_slug=slug, runtime_root=str(root.parent.parent),
+                ))
+            if layout in ("F", "E"):
+                logger.warning("org %r: %s", slug, submission_migration_guidance(
+                    org_slug=slug, runtime_root=str(root.parent.parent),
+                ))
+            WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.

@@ -1,12 +1,48 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel; each organization is loaded from `<runtime>/orgs/<slug>/org/`.
 
 **Current THR-259 workspace-cleanup safety contract.** The shared cleanup procedure accepts only a closed-schema, non-truncated host-job receipt binding the current task/session to the actual job, agent, stored command, interpreter, resolved cwd, timestamps, terminal result, complete output totals, and exact scanner coverage; it has no direct fallback. PR evidence is completely paginated and repeated, and open, closed-unmerged, duplicate, changing, conflicting, or malformed rows refuse. A removable containing worktree must be registered at its owning primary checkout's exact `.claude/worktrees/<TASK>` path on `task/<TASK>`. A cache must be positively Git-ignored, untracked, and absent from status before isolation. Before action and again at the action boundary, the literal candidate is completely walked without following symlinks; nested mounts, cross-device or foreign-owned entries, protected descendants, unreadable/capped/changing evidence, and identity drift refuse. The only external-link exception is a recorded `python`/`python3`/`python3.N` link directly under an owned literal `.venv/bin`, resolving to its configured uv store or `pyvenv.cfg` home outside every protected/workspace/candidate root; deletion unlinks and never follows it. Measurement includes the root inode, and success requires literal absence plus unchanged protected-path identities. Failed restoration after isolation is measured `isolation_anomaly`; failure after deletion starts is measured `removed_with_anomaly`. Both are exit-3 batch halts, never refusals, and account for original, isolated, and isolation-directory residuals without false zeroes. Batch resume accepts only a unique closed-schema terminal row exactly bound to the current manifest and argv; timeout, signal, malformed/mismatched output, unreceipted nonzero exit, runner exception, exit 3, or any unclassifiable outcome halts after journaling and before another candidate.
 
 **Current THR-229 contract.** The current implementation contains the complete dual-text control/editor path, selector-family launch binding, strict completion admission, automatic pre-final/final/post-final continuation, startup/reaper recovery, authenticated publication/admission, and single-use next-result spend. The maintained shipping proof runs a real ordinary child through queue/Dispatcher/run-step/provider launch on a fully historical-migrated database, retains `REQUEST_CHANGES` and the accepted raw-DDL inequality as diagnostics, wakes the same root, reports an arbitrary-reason escalation with a valid dual assessment through the real CLI, observes that root Pending before tagged dequeue, and spends/applies exactly one reserved next result. Every live manager with exactly one matching `teams.yaml` registration uses the same team-scoped surface, server-projected neutral v2 starter, selector/binding path, and downstream identity propagation; workers and stale, mismatched, or duplicate registrations fail closed before policy access. Existing persisted Engineering identities remain unchanged, while legacy compatibility is data-driven by `POLICY_BY_TEAM`. The UI retains immutable dual-text history but removes the two legacy read-only sections and eager requests. `web/scripts/screenshot-harness/shot-thr229-v2-policy.mjs` remains the owned browser receipt. No production policy is saved or activated by landing code. Older THR-229 checkpoint paragraphs below are historical implementation snapshots: their statements that later stages, the hook, recovery, or editor were dark/unimplemented apply only to that named checkpoint and are superseded by this current-state paragraph. Source merge is not rollout: compatible binaries must be deployed and every old manager launch/completion consumer drained before any future production activation; rollback is compatible-code-only. Exact-final-head CI, independent review/QA, guarded merge, deployment, and natural production continuation remain outstanding/unobserved, so the combined feature remains unaccepted.
 
-**Current THR-229 v2 schema-observation correction (founder seq351).** The v2 decision path no longer performs a schema-integrity/reference comparison or schema recheck. Candidate and pin rows still store the real claim-time raw-schema digest, inventory digest, and object count as observed-only diagnostics; those values are never placeholders, compared, or rechecked, and structural differences cannot produce a v2 `schema_drift` refusal. Genuine observation failure retains the bounded `claim_failed` outcome. The historical fixture remains real migration-path test support, while the legacy v1 schema clause and every non-schema v2 fence remain unchanged. The checkpoint C3a and issue #918 paragraphs below are historical implementation records superseded only for this removed gate; their recovery and idempotency behavior remains current.
+**Current THR-229 v2 schema-observation correction (founder seq351).** The v2 decision path no longer performs a schema-integrity/reference comparison or schema recheck. Candidate and pin rows still store the real claim-time raw-schema digest, inventory digest, and object count as observed-only diagnostics; those values are never placeholders, compared, or rechecked, and structural differences cannot produce a v2 `schema_drift` refusal. Genuine observation failure retains the bounded `claim_failed` outcome. The historical fixture remains real migration-path test support, while the legacy v1 full-schema comparison (with S1 F/E references) and every non-schema v2 fence remain in force. The checkpoint C3a and issue #918 paragraphs below are historical implementation records superseded only for this removed gate; their recovery and idempotency behavior remains current.
 
 **Current THR-279 v2 final-return diagnostic.** When the automatic v2 hook's final continuation call returns a bounded non-success status, the hook records that exact closed status and reason through the existing best-effort `authority_hook` `capture_failure` action before requesting the unchanged `final_commit_failed` refusal. A raised finalizer exception retains its distinct existing diagnostic. This changes no continuation decision, refusal code, audit action, task note, or identity semantics.
 
@@ -43,25 +79,71 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 ## Essentials
 
-- **Workflow schema U1A foundation (THR-139).** The U1A candidate installs the
-  complete inert version-1 workflow layout only from `OrgState.load`, after
+- **Observation-only memory census (THR-091).** Real `OrgState` attaches a
+  boot-local observer before workers. Actual `_run_agent` entry reserves intent
+  independently of starts/impressions/reads; the same structured render freezes
+  disabled/empty/nonempty expectations. Existing task-scoped audit rows record
+  identity/binding/started-callback occurrences/own terminal plus seals. Loss,
+  corruption, zero/pending/unknown population and failed initialization remain
+  unavailable; application returns/exceptions and session ownership stay intact.
+  Seals checkpoint counters without history reads and explicitly remain
+  `census_not_reconciled`. Exhaustive read validation is bounded and compares
+  closing semantic observer/database facts; movement or work exhaustion refuses.
+  Internal census validity is never collection health or epoch authority.
+  Seal-action `/audit` adds the closed optional serving-observation/loaded-identity
+  view described in the corrective memory spec; it performs zero durable writes.
+  G1 validates exact admitted manager/independent-QA results, prior finite
+  delegation/command, real owned jobs/outputs and ROOT/CHILD operation evidence.
+  Final acceptance appends an epoch; equivalent replay preserves its original
+  boundary. Probe age <=48h applies at initial/reset final commit. Reports
+  authenticate original admission and current full health without age-expiring
+  that epoch. Installed acceptance and operational venues remain separate gates.
+  See the memory section in the feature guide.
+
+- **Workflow schema U1A foundation (THR-139).** U1A installs the
+  unchanged inert version-1 foundation F from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
-  membership validation, or orchestrator construction. Generic
+  membership validation, or orchestrator construction. Deliberate POST /orgs
+  creation proves a fresh skeleton, then initializes complete G (F plus the
+  reviewed E draft extension and exact THR139seq395 submission definitions/additions) in one
+  transaction before attachment. Existing startup/reopen/enable never installs
+  E: use `python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> [--check]`
+  only with operator authorization. Check exits0 ready, 3 migration-needed,
+  1 refusal (parser2); bounded contention/invalid targets refuse without partial
+  installation. Generic
   `Database(...)` construction never installs it: machine-global
   `runtime-audit.db` and every adapter/executor audit caller remain untouched.
   One Database-owned synchronized `BEGIN IMMEDIATE` installs all workflow
   objects, version 1, the singleton `installed_legacy_only` generation 1 owned
   by `workflow_cutover_reconciler`, and its install event; interruption rolls
   back to zero workflow residue. Every reopen validates the full canonical
-  table/column/default/PK/CHECK/UNIQUE/FK/index/trigger layout and exact initial
-  marker/event, refusing missing, extra, malformed, conflicting, newer, or
+  table/column/default/PK/CHECK/UNIQUE/FK/index/trigger layout and the complete validated
+  marker/event history (initial-only references need no org context; progressed
+  histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
-  canonical org installer, and hashes the complete schema; it never filters
+  canonical F, E or G reference after full layout/history/data validation, caches
+  independently by layout, and hashes every non-null sqlite_master SQL object; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
-  store. This is schema/compatibility foundation only: U1B-U6 template,
-  activation, authority coordination, dispatch, callback, route/UI,
-  enable/cutover-transition behavior remain unimplemented. U1B adds only
+  store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain
+  from installed_legacy_only through enable_requested, compatibility_verified,
+  enabled, disable_requested, draining and drained. Founder-only requests use
+  strict action/key/generation input; request/fence commits precede separate
+  bounded reconciliation. Every authoritative reread validates the full layout
+  and org-bound deterministic event chain; cold load advances only authentic
+  committed requests only on ready E/G before teams/settings mutation. F keeps
+  authentic history and actionable script guidance without recovery advancement.
+  GET/preflight never advance.
+  SQLite integrity/FKs and contradictory pre-enable work block verification;
+  incomplete/nonterminal F5 closures block drain with actual ownership and
+  deferred U2D/U4/U5 actions, never cancellation or task/outbox mutation.
+  Downgrade is eligible only for pristine F initial history and zero workflow data.
+  Every E requires a compatible reader, including empty marker-only E; the marker
+  is structural metadata, while draft intents/events are work and their complete
+  retained history/result closure is validated. Drain never settles draft work.
+  Integrity hashes are cooperative coherence, not hostile same-UID proof.
+  S2 now connects initial activation, draft dispatch and callback ownership as
+  described below; operator UI and full Phase1 acceptance remain deferred. U1B adds only
   inert, immutable `product-design` template authoring/versioning in
   `runtime/workflows/templates.py`: current active managers publish only in
   their uniquely registered team's org namespace through verified task/session
@@ -70,7 +152,38 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   SHA-256 digest, gap-free version, CAS pointer and replay receipt in the
   existing U1A tables. Publication never activates, creates tasks/instances,
   dispatches, emits outbox/notification effects or changes cutover/authority
-  state. U2-U6 remain unimplemented.
+  state. U2A/U2B and the cutover prerequisite are shipped. S2 source adds the
+  Founder-only exact-version initial admission and bounded document lifecycle;
+  independent review/QA/CI and U3-U6/operator acceptance remain separate.
+
+- **Initial workflow activation and draft ownership (THR139 S2).**
+  `WorkflowActivationStore` is attached by `OrgState` and consumed by Founder
+  POST/get/list `/workflows/activations`. Initial admission atomically allocates
+  the actual task through the unchanged MAX allocator and freezes its root,
+  exact template/version, request, authorization, binding/context and intent/event.
+  Historical actor/org/key/request replay authenticates retained closure before
+  mutable new-admission gates, returns the original receipt200 without queue
+  effects, and projects current eligibility separately. New admission returns201
+  only after commit; disabled/fenced admission creates no successful empty receipt.
+  Profile discovery precedes async serialization, sorted selected profile leases,
+  org publication ownership and the synchronized SQLite writer. No host/queue
+  effect occurs under durable ownership. Draft/F5/malformed closures are routed
+  before legacy startup/run_step/completion/cancellation effects. Startup and
+  periodic sweeps rediscover the same authenticated queued intent after lost
+  notifications or author-capacity refusal. Periodic discovery checks current
+  authority/capacity and deduplicates enqueue only after all leases release;
+  claim and prelaunch still arbitrate, without an immediate retry loop. A real session
+  is not launch evidence: possible launch is durably reserved, running needs a
+  genuine bound handle, and completion needs the exact accepted INTEGER result
+  plus finalized host quiescence. Missing acknowledgment/callback/quiescence stays
+  workflow-owned uncertain; PID/TTL absence cannot settle it. Cancellation fences
+  before containment. The author, including a manager, has only bounded document
+  responsibility; no generic manager decision/delegation/fanout is consumed.
+  CLI `workflows activate --org ... --from-file /absolute/request.json` and
+  `workflows activations list/show` use the existing Founder client; parser2,
+  domain/transport1, valid receipt including pending0. This adds no DDL or
+  migration, no reassignment/reactivation API, and no U3 submission/approval.
+  Source is not deployment or Phase1/operator acceptance.
 
 - **Task-scratch reclamation contract (THR-195 B1).** `runtime/daemon/task_scratch_reclamation.py` accepts only immutable finalized ledger rows for valid canonical manifested `TASK-*` roots. Its caller-constructible `*Assertions` values are explicitly untrusted shapes, have no permissive defaults, and reject missing, malformed, stale-boot, truncated, ambiguous, unsupported-platform, recovery/job/live-reference, unavailable, or internally inconsistent values; B1 does not establish their provenance or independently validate lifecycle/liveness/current-boot authority, whose producers are deferred to B2/B3. The private `collect_revalidate_seal_consume_disposable` seam retains the typed values from each existing bounded E/C admission, compares liveness/session/process and complete coverage projections (including bucket classification/accounting and dominance) across E1..E4/C1..C3 while excluding collection timestamps, and binds final C3's canonical workspace/root/manifest/census fields to its successfully sealed stack-local row. It refuses malformed/private-identity/boot-mismatched or exhausted bounded observations before execution, and a partial executor failure claims zero while preserving the remainder for a fresh refusal. The sole production caller is the bounded pre-agent `run_step` hook. It is disabled by default through the strict boolean `workspace_cleanup.reclamation_actions_enabled` (default `false`), and disabling affects later admissions only — it cannot revoke an already admitted consumer call. It acts only on a third-or-later cleanup ordinal whose scheduler-created preclaim owner is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to this invocation's initial successful `0 -> 1` claim (the first two runs stay report-only), applies one shared one-second deadline and at most 23 read/load admissions with no refill or recovery, and makes at most five best-effort calls to the unchanged consumer. Each attempt records the owner `workspace_cleanup_reclamation_attempt` audit before the prompt carries the known facts into the ordinary completion summary; the transported remainder is exactly the returned `after` accounting or `null`; scheduler triggering/order remains unchanged. It adds no writer fence or future-writer/same-UID guarantee. Sealing also re-derives the canonical root and applies the 60-second newest-mtime floor. Execution hard-skips Git/worktree/bare-repository ancestor or descendant evidence and cross-device ambiguity, uses fd-relative no-follow pathname removal with verified parent/root identity, exact allocated-byte/inode accounting, and complete protected manifest/lock/parent/directory-entry/sibling postconditions. Detected pre-action identity mismatches fail the row with zero reclaimed claims. Portable POSIX unlink/rmdir is not inode-bound: the threat contract deliberately excludes a hostile same-UID replacement in the final identity-check-to-pathname-syscall window, and does not promise that replacement survives. The separate report-only coordinator remains report-only after teardown and through the existing daily trigger; deployment, legacy-backlog eligibility, and activation beyond the explicitly enabled hook remain absent. Unmanifested `.happyranch/tmp`, `.tmp`, `.task-cache`, `.t`, shared `/tmp`, and pre-contract roots remain ineligible.
 
@@ -162,7 +275,7 @@ Sidecar shutdown retains one listener-first teardown owner, closes active connec
 - **Managed remote access N3 packaging amendment (THR-097 seq379/seq392).** `runtime/remote_access/linux_package.py`, `app/linux/package/build_connector.py`, and `app/linux/package/build_package.py` install the real portable Python wheel into an isolated build target, freeze it into an explicit self-contained connector executable, and compose that executable with the N1 embedded-tsnet sidecar into a reproducible Linux archive; launch never depends on ambient Python or a source checkout. The closed archive path set and exact manifest membership are strictly validated before writes. The exact N1 inventory, CycloneDX purl/SPDX/go.sum/license evidence, license content checksums, and structured third-party notices validate one-to-one. A durable install marker classifies every publication boundary and restores the coherent last-known-good payload/unit composition before re-entry. That marker is now the schema-version-2 minimum ownership record: the exact 32-hex attempt identity whose `.happyranch-stage-<attempt>-<8 chars>` stage-shape must match, recorded prior existence plus a complete recursive byte/mode identity for payload/units/enrollment drop-in, the digest-and-mode backup inventory, the intended NEW identity, newly-created parents restricted to the finite source-derived plan, publication intent/progress, and the authoritative commit flag. It is written atomically before any prior byte is mutated, prior payload/unit/drop-in bytes AND modes are preserved for rollback, every rollback/recovery decision is made from the last record that reached disk, an already-restored artifact is recognized from its recorded identity while a mismatched or unexplained-missing backup, contradictory phase/progress facts, an out-of-plan created parent, a non-string list element, and any unsafe symlink or wrong leaf type at a path or in an ancestor above the selected root are refused before mutation, commit is recorded before old backups are deleted, recovery classifies before mutating, and an interrupted fresh-payload rollback resumes from its recorded `rolling_back` progress (a remaining tree that is an exact subset of the recorded NEW identity is owned deletion progress, never a foreign tree). Legacy schema-v1 markers and unrecorded residue, including a lone `.happyranch-install-transaction.json.tmp`, are preserved and refused as insufficient ownership evidence. The connector supervisor observes sidecar health through one named-property `systemctl show` query (no `--value`), failing closed on missing/duplicate/empty/malformed records while preserving the existing absent/healthy/unhealthy/unknown classification. Composite systemd ordering starts the connector/readiness boundary before sidecar admission and reverses on stop so the listener is removed before connector/downstream cleanup; the sidecar truthfully emits READY only after admission and WATCHDOG while healthy, connector crash binds its lifetime, and sidecar crash removes admission and restarts without replacing connector authority. N3 changes no dependency, authorization, credential, identity, epoch, allow-list, revocation, bearer, or redaction semantics and makes no provisioning, deployment, default, launch, or acceptance claim. Operator contract: `docs/operations/managed-remote-access-linux-package.md`.
 - **Managed remote access N0/N1/N2 amendment (THR-097 seq360/seq374/seq379/seq392).** The managed transport value is `embedded`: packaged macOS tsnet/userspace WireGuard connects to the build/test-only Linux core in `app/linux/tsnet-sidecar/`, which proxies raw TCP only to the N2 Python connector's explicit `managed` listener on literal `127.0.0.1`. `runtime/remote_access/managed_provider.py` reuses the existing pairing and locked gateway pipeline; the connector alone owns application identity, credentials, epoch, allow-list/route policy and revocation and injects the daemon bearer only on the final `127.0.0.1:8765` hop. The N1 core fail-closes credential redemption/listener startup and removes external admission before active connections and engine state; persisted N2 revocation likewise stops the listener first, then seals/closes active flows, then performs downstream runtime cleanup, retaining failed cleanup handles for idempotent retry. Supervisor provider start, READY publication, persisted-revocation reconciliation, and shutdown share one re-entrant lifecycle boundary: either provider start completes first and stop follows it, or stop/revocation completes first and late start is refused/idempotent; partial start is cleaned without retained provider/registry state. Shutdown observably stops the listener, closes registered active flows, and drops cached registry/pairing runtime state exactly once, so repeated shutdown leaves no listener, active flow, or runtime residue. N2 adds no address selector or fallback and exposes readiness only after the existing connector gates pass and the loopback listener binds. The checksum-pinned N1 dependency/license artifacts are unchanged. N1/N2 are not package/composite-service integration, provisioning, deployment, distribution, or acceptance; N3–N6 remain gated. Neither endpoint requires system Tailscale; wildcard, LAN/plaintext, public-Tailscale, and public-DERP fallbacks remain forbidden. TASK-6298/TASK-6289 remains unchanged Supported-DIY, and Unit 4B-2 remains independent.
 - **Managed remote access (normative contract, THR-097 merge unit A).** Fixed invariants: one Headscale cell per customer is the primary hostile-tenant boundary; the shared DERP fleet observes/relays only network metadata and WireGuard ciphertext and never grants reachability; the home connector is a **supervised portable Python companion** (never an in-process daemon listener) that enforces an explicit allow-by-method+normalized-template remote allow-list, current paired/current-device identity, and current policy/revocation epoch, failing closed; the daemon stays **loopback-only**; the daemon bearer is injected **only** by the connector on the final connector→127.0.0.1 hop and must never appear in remote input, client, Services, Headscale, DERP, network, fixture secrets, logs, errors, or audit. Revocation denies/closes before or atomically with node removal; never success early. Governing spec: `docs/superpowers/specs/2026-08-26-managed-remote-access-contract.md`; machine-readable contract + hostile threat fixtures: `tests/contract/managed_remote_access/` (validated by `tests/contract/test_managed_remote_access_contract.py`). `route-classification.json` `included` (web coverage) is NOT remotely-allowed-equivalent; Swift `SurfaceAllowList` is legacy deny-list evidence, not authority. **Implementation status:** the portable supervised Python connector core (merge unit C / TASK-5724 phase unit 2) ships in `runtime/remote_access/` with a loopback-only harness and tests at `tests/remote_access/` — strict parser/canonical normalization, versioned route-policy consumer (locked nine-step decision order + every security-relevant nested value validated by exact canonical equality against the Unit-A semantics — contradictory non-empty prose and altered allowed-template lists rejected at load — plus operational state; schema/digest/version/staleness drift fails closed; unknown states never active), connector identity + device-proof verifier seam, current authorization/revocation with live-stream closure via one authoritative `RevocationCoordinator` transaction (the registry seals the retained stream wrapper fail closed before trust-state application — a raising transport close leaves the externally retained handle irrevocably rejecting receive/send, surfaced as `RevocationIncomplete`; the transaction is serialized across concurrent revocations and the stream registry shares/persists the complete cleanup terminal result, so no caller returns success while an in-flight or completed cleanup failure relevant to the sealed generation is unreported; old public `apply_revocation` bypass removed; admission and EVERY ownership/membership mutation — `open` admission, duplicate-id replacement, `close(stream_id)`, the retained-wrapper public `close`, and `close_all` — share ONE atomic lifecycle boundary: the lifecycle lock guards both the sealed flag and registry membership, every mutation seals the affected wrapper(s) atomically with its membership transition (no pop-without-seal ownership escape), any admission not fully registered before the seal fails closed and never returns a usable wrapper, transport open/close and duplicate-replacement callbacks never run under the lifecycle lock but remain INSIDE the revocation acknowledgement barrier (outside-lock transport closes that linearized before the seal are terminal before `close_all` success — revocation never reports success early), and same-thread re-entrant `close_all` from an unfinished transport cleanup callback MUST return fail-closed non-success (founder ruling THR-097 seq140): it may not exclude its own in-flight cleanup and publish success, may not mark the cleanup terminal with an incomplete failed-id set, and may not erase a callback failure that becomes terminal after the re-entrant call — the failure is persisted on the registry and re-surfaced by a later close_all/revoke (REV-007/REV-008), and derived `is_open`/`raise_if_open` are synchronized on the same lock; the gateway never double-closes a handle the registry owns), allow-list enforcement, remote-auth/hop-by-hop stripping, daemon-credential-provider seam, and a forwarder that targets only literal 127.0.0.1 and normalizes every forward/open/stream failure (connection refusal, timeouts, hostile exception text) into stable secret-free denials while deterministically closing partial resources; in-memory persistence abstraction only, no tailnet/external bind, no Headscale/DERP/Services integration, no packaging. **Linux supervised connector packaging (phase unit 3) is IMPLEMENTED** in the same package: an atomic, corruption-detecting, owner-only local trust-state store (``AtomicFileTrustStateStore`` satisfies the ``TrustStateStore`` protocol with a schema-agnostic non-normative envelope — atomic replace/fsync, sha256 corruption detection, symlink/loose-permission rejection, plus a founder-approved (THR-097 seq163) **non-database companion monotonic generation/digest anchor** at ``<state>.anchor`` outside the replaceable snapshot: the envelope generation must equal the anchored generation AND the anchor digest covers the exact snapshot bytes, so any previously valid OLDER snapshot replayed after a newer revocation/generation — including across a new store/process instance — is deterministically rejected, and missing/mismatched/corrupt/stale anchors, partial snapshot/anchor pairs, symlinked anchors, and loose anchor permissions all fail closed; a crash between the snapshot and anchor writes leaves a mismatched pair that load() rejects (the crash-consistency contract is documented in the module); NOT the founder-gated managed persistent schema — no DB, no migration), a ``SystemdCredentialProvider`` (``LoadCredential=`` injection — the service user never reads the daemon home), a five-gate readiness evaluator (``ConnectorReadiness``: daemon literal-127.0.0.1 reachability, credential permissions, current policy, bind identity, non-corrupt trust state — **no listener unless ALL pass**), a least-privilege systemd unit renderer (dedicated service user, empty capability bounding set/ambient capabilities, ``ProtectSystem=strict``, ``NoNewPrivileges``, ``LoadCredential=``, ``Type=notify``+``WatchdogSec``+``Restart=on-failure``; user-mode renders omit the directives the user manager cannot apply — ``PrivateDevices``/``ProtectKernelModules``/capability directives — verified on real systemd), an injectable ``SystemdServiceManager`` (install/uninstall/start/stop/restart/enable/disable/status + upgrade with auto-rollback and rollback), a **LAB-ONLY** conformance provider adapter (explicit ``lab_only`` + concrete lab bind address required; wildcard binds refused; runs the full gateway pipeline and forwards to literal loopback with bearer injection on the final hop; 403 category-only denials; never a product/Supported-DIY lane and NOT closure of THR-034), a ``ConnectorSupervisor`` (readiness-gated foreground loop with sd_notify READY/WATCHDOG/STOPPING — ``READY=1`` is emitted ONLY after the provider actually started and the listener is proven bound, never after a bind/start failure; expected operational listener failures — occupied bind port, permission, unavailable address — are normalized from the socket ``OSError`` to the documented ``LabProviderError`` category at the ``LabProviderAdapter.start()`` boundary (category-only message), so a REAL bind conflict keeps the loop retrying with ``STATUS=provider failed to start; no listener`` and no process exit (no systemd restart-throttle; the listener comes up once the conflict clears) while unexpected defects still propagate loudly; fail-closed listener stop on readiness loss; redacted ``diagnose``; ``install`` stages the service config/policy/state into the declared systemd-managed ``StateDirectory`` location accessible to the dedicated service user and the rendered unit points ``--config`` there — never at a ``~/.happyranch`` path the hardened unit cannot read; the source trust-state pair is only an INITIAL SEED when no managed pair exists — once a managed snapshot+anchor pair exists it is AUTHORITATIVE and reinstall never overwrites/rolls it back with a stale operator source pair (stale = refused, same-generation-different-bytes = refused, identical = no-op, strictly newer = adopted) and stages any advance transactionally (fail closed, no usable mixed pair); the service path automatically consumes ``$CREDENTIALS_DIRECTORY``/``LoadCredential=`` with no redundant config and no daemon-home token read; a provider-less ``run`` configuration is rejected at startup (fail closed, never ``READY=1``)), and the ``python -m runtime.remote_access.cli`` operator surface (run/install/uninstall/start/stop/restart/enable/disable/status/readiness/diagnose/upgrade/rollback; ``run`` requires ``--lab-only`` when a lab provider is configured and refuses to run with no provider at all). Real user-systemd conformance tests run under ``-m integration`` gated on an operational probe with explicit skip reasons: one launches the **ACTUAL rendered ``ConnectorSupervisor``** through the real ``Type=notify`` READY contract and proves the lab listener is bound, an end-to-end request reaches the literal-loopback daemon, restart, and stop-with-listener-gone (upgrade/rollback round-trip, enable/disable, daemon-reload also run against the real user manager); unit tests are deterministic with fakes. The hostile tenant-isolation harness (tranche unit B) ships at `labs/tenant_isolation/`. Provisioning/defaults/retirement remain unimplemented and outside any current PR; the capacity spike (tranche unit D) is deferred with no claim. **Supported-DIY customer-owned-network adapter (phase unit 3A) is IMPLEMENTED** (TASK-6032, fix-forward TASK-6039) as the PRODUCTION Supported-DIY lane in the same package: a customer-network address resolver/validator (`network.py` — the ENCRYPTED `tailscale ip -4` mode ONLY; the former plaintext explicit concrete-address mode is REMOVED and fails closed with a migration message, because bare HTTP on an arbitrary LAN/public interface would breach the fixed no-plaintext-service-path invariant — the customer-owned network is the customer's own WireGuard-encrypted Tailscale/headscale tailnet; wildcard/loopback/multicast/link-local/reserved/broadcast refused, fail closed), the local pairing ceremony engine (`pairing.py` — single-use expiring 8-char codes stored as digests only; redemption issues per-device `hrpair_` credentials at a MONOTONIC epoch, re-pairing invalidates old authority, and every ceremony mutation is SERIALIZED in-process AND across processes through the store's owner-only inter-process transaction (an fcntl.flock on `<state>.lock` making load, generation validation, snapshot publication, and anchor publication ONE serialized mutation boundary — the check-then-save race is closed, so concurrent redemption of one code from threads OR separate processes yields EXACTLY ONE credential, concurrent mutations are never lost, and the snapshot+anchor pair is always published consistently and loadable); revocation through the authoritative `RevocationCoordinator` closes live streams before the persisted epoch advance, per-device and all-devices revocation survive restart, `remove-device` REVOKES FIRST (streams close, epoch advances, persisted) and THEN deletes the record — a removed/lost device can never retain an open stream and the revocation survives restart — and removal denies identically to absent — no existence oracle), the production `DiyProviderAdapter` (`diy_provider.py` — binds ONLY the tailscale-resolved customer-owned-network address, serves the inherited THR-034 wire contract `POST /pair` + `X-HappyRanch-Device-Credential`, consumes/strips the credential at the boundary so it never reaches the daemon, runs the full locked gateway pipeline per request, forwards to literal 127.0.0.1 with bearer injection on the final hop), shared secret-free HTTP serving (`httpd.py` — the lab and diy adapters share one serving path; the lab provider is UNCHANGED in role and remains LAB-ONLY), additive OPTIONAL trust-state envelope fields (`credential_digest` on device records, `pending_pairings` in the payload — pre-3A envelopes still load; digests only, never raw credentials), `ConnectorConfig.diy` (mutually exclusive with lab; `run` requires the explicit `--diy` opt-in; provider-less run still rejected, never `READY=1`), a supervisor that owns ONE authoritative live-stream registry and ONE pairing manager per process shared by the gateway ctx factory, the provider, and the ceremony surface (in-process revocation closes the REAL shipping streams, never an unrelated empty registry), a cross-process revocation reconciliation in the `run` loop (a CLI `revoke`/`remove-device` in a separate process persists the epoch; the connector closes its live streams on the next loop pass bounded by `poll_seconds`, fail closed, and — because the registry is ONE-SHOT — ROTATES the authoritative runtime at a fail-closed lifecycle boundary the moment the registry is sealed: the listener is stopped first (no request/stream is admitted during the handoff), the cached registry and pairing manager are dropped, and the provider and every captured ctx-factory reference are rebuilt and restarted only when readiness passes, so a re-paired or unaffected device opens NEW streams in the same process lifetime and a revoked-with-no-live-streams revoke causes no listener gap), and the CLI ceremony surface (`pair`/`list-devices`/`revoke`/`remove-device`/`pairing-status`/`recovery --factory-reset` — truthful secret-free lifecycle states; `revoke` NEVER claims cross-process stream closure it cannot prove — it reports the persisted epoch and the connector's next-reconciliation closure; recovery deletes BOTH snapshot+anchor files per the store's crash-consistency contract). A REAL-network acceptance (`tests/remote_access/test_diy_acceptance.py`, `-m integration`) runs the away-client wire contract over a real network path to the real `cli run --diy` connector and a real loopback daemon — the customer-network address resolved through the REAL shipping tailscale-mode resolver path with a stub `tailscale ip -4` executable (no tailnet on the host) — proving allowed/forbidden routes, direct daemon/bearer attempts, restart-with-persisted-revocation, re-pair invalidation, replayed/removed credentials, outage fail-closed listener stop + supervised recovery, credential/token leakage scans, and (fix-forward) a GENUINE cross-process SSE negative: a live in-flight stream served by the connector process is closed by a `revoke` from a separate CLI process within one poll interval, and the CLI output carries no false success. The signed-macOS-binary and tailnet-transport hops remain honest residual gaps (this Linux host has no macOS build and no Tailscale client/network; THR-034 signed acceptance is NOT closed), and the macOS production app is unchanged by this PR.
-**Daemon-managed workspace cleanup scheduler (THR-195).** Cleanup is a **system-default daemon capability**, independent of all user Schedules (founder ruling THR-195 seq 129; per-agent defaults TASK-6036). `runtime/daemon/workspace_cleanup_scheduler.py` — a sixth daemon-owned loop registered in `runtime/daemon/app.py` — measures EACH AGENT's own workspace on a bounded, fail-open budget (one wall-clock deadline shared across every git subprocess via `min(cap, remaining)` + post-call expiry checks; workspace/repo/worktree caps propagate truncation). A bounded timeout, error, or cap/truncation result that makes measurement unavailable bypasses only numeric threshold evaluation, so otherwise-due spawning continues with honest unavailable advisory context; only an available numeric result below 1 GiB skips. Per agent, when the latest due daily local 03:30 occurrence (org-tz; existing occurrences delimit half-open windows compared as UTC instants, nonexistent spring-forward times are skipped and ambiguous fall-back times use `fold=0`) is unserviced — no marker at/after it, including legacy weekly rows — and no prior cleanup task of that agent anywhere in the complete history is non-terminal, the daemon triggers an ordinary root task ASSIGNED TO THAT OWNING AGENT with a daemon-composed brief carrying the fresh advisory snapshot — never through the repository-refresh prompt seam, never touching `schedules`. The first TWO triggered runs per agent are STRICTLY report-only; from run #3 the brief is the approved TASK-5552 §4 cleanup contract (bounded, Git-aware, non-force, action-time-re-derived eligibility; the advisory block itself never authorizes removal). Both the daemon daily marker and manual dispatch use the ONE shared `workspace-cleanup` TASK system contract (`requires_repo=false`); the exact manual first line is `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` and an unmarked manual request is inventory-only. Its bundled read-only `runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py` implements the approved THR-259 seq171/seq185 observation: an authoritative recorded terminal status plus a fresh complete same-user process scan replaces separate live-session/task-to-process identity; the fixed login/session daemons (sshd-session, systemd --user, (sd-pam), ssh-agent, gpg-agent, gcr-ssh-agent) qualify only by exact readable process name AND exact bounded cgroup role and are deliberately uninspected, while every other unreadable same-user process is unknown and skips. That is a snapshot with accepted later-opener/data-loss residual, never proof of OS-wide absence or executable identity. The shared procedure runs the scanner only through a task-bound host-visible HappyRanch job and accepts only an exact fresh matching receipt, with no direct fallback; candidate-specific task and trigger joins exhaust their keyset pages and fail closed on missing, changing, conflicting, malformed, or incomplete relevant evidence. A clean candidate may prove preservation through the accepted durable ref, an owning origin task branch whose head equals or descends from the candidate, an owning-task merged PR, or a containing any-task merged PR. The any-task route requires complete stable double-read discovery, merged/default-branch confirmation, and an independent complete stable compare; discovery alone and other-task unmerged PRs never count, while owning-branch unmerged evidence still refuses. Merged integration may not preserve original commit topology. Whole dirty worktrees remain protected; only a literal root `.venv` or `node_modules` cache may be removed after every cache gate and the 24-hour floor while tracked source bytes and Git status remain unchanged. Advisory content is aggregate-only and prominently ADVISORY / STALE ON ARRIVAL / not eligibility/candidate/safe-removal guidance; no path is enumerated; no pending jobs or `blocked_on_job_ids` are used as liveness. The agent reports to the founder in ONE durable founder-visible thread PER AGENT (fixed per-agent subject, created on first trigger with the owning agent as composer/participant and @founder as recipient) via the existing participant-authorized, task-bound `happyranch threads send` path — NO minted report token. Kill switch: `workspace_cleanup.enabled` in the org `config.yaml` (default true). Docs: `docs/agent-guides/agent-executors-and-permissions.md`, `docs/agent-guides/orchestrator-contracts.md` §Daemon-managed workspace cleanup scheduler. First-two/thread identities and the exact ordinal persist via existing durable mechanisms only (daemon-marked task rows via the complete read-only `Database.summarize_workspace_cleanup_marker_history` — bounded rowid keyset pages computing the exact all-history count, newest UTC instant and any-unfinished flag with no logical cutoff; lookup failures fail closed for triggering — plus thread composed_from_task_id provenance/subject/participant/open identity, never the subject alone; thread-identity lookup is tri-state and any lookup error fails closed without creating a duplicate); the report thread and cleanup task are created on first trigger in ONE atomic transaction (rollback leaves zero residue; a later retry succeeds exactly once) and the task id is allocated atomically at insertion, never before the awaited measurement; workspaces are enumerated in bounded batches so no agent is starved; no schema/API/CLI/auth change. Disclosed unchanged limitations (daily cadence does not cure them): the selector's 1001-row history refusal and sixth-raw-terminal-row whole-batch refusal, the report-thread-provenance newest-1000 scan, and the selector's bytewise-order refusal.
+**Daemon-managed workspace cleanup scheduler (THR-195).** Cleanup is a **system-default daemon capability**, independent of all user Schedules (founder ruling THR-195 seq 129; per-agent defaults TASK-6036). `runtime/daemon/workspace_cleanup_scheduler.py` — a sixth daemon-owned loop registered in `runtime/daemon/app.py` — measures EACH AGENT's own workspace on a bounded, fail-open budget (one wall-clock deadline shared across every git subprocess via `min(cap, remaining)` + post-call expiry checks; workspace/repo/worktree caps propagate truncation). A bounded timeout, error, or cap/truncation result that makes measurement unavailable bypasses only numeric threshold evaluation, so otherwise-due spawning continues with honest unavailable advisory context; only an available numeric result below 1 GiB skips. Per agent, when the latest due daily local 03:30 occurrence (org-tz; existing occurrences delimit half-open windows compared as UTC instants, nonexistent spring-forward times are skipped and ambiguous fall-back times use `fold=0`) is unserviced — no marker at/after it, including legacy weekly rows — and no prior cleanup task of that agent anywhere in the complete history is non-terminal, the daemon triggers an ordinary root task ASSIGNED TO THAT OWNING AGENT with a daemon-composed brief carrying the fresh advisory snapshot — never through the repository-refresh prompt seam, never touching `schedules`. The first TWO triggered runs per agent are STRICTLY report-only; from run #3 the brief is the approved TASK-5552 §4 cleanup contract (bounded, Git-aware, non-force, action-time-re-derived eligibility; the advisory block itself never authorizes removal). Both the daemon daily marker and manual dispatch use the ONE shared `workspace-cleanup` TASK system contract (`requires_repo=false`); the exact manual first line is `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` and an unmarked manual request is inventory-only. Its bundled read-only `runtime/skills/bundled/workspace-cleanup/scripts/check_path_use.py` implements the approved THR-259 seq171/seq185 observation: an authoritative recorded terminal status plus a fresh complete same-user process scan replaces separate live-session/task-to-process identity; the fixed login/session daemons (sshd-session, systemd --user, (sd-pam), ssh-agent, gpg-agent, gcr-ssh-agent) qualify only by exact readable process name AND exact bounded cgroup role and are deliberately uninspected, while every other unreadable same-user process is unknown and skips. That is a snapshot with accepted later-opener/data-loss residual, never proof of OS-wide absence or executable identity. The shared procedure runs the scanner only through a task-bound host-visible HappyRanch job and accepts only an exact fresh matching receipt, with no direct fallback; candidate-specific task and trigger joins exhaust their keyset pages and fail closed on missing, changing, conflicting, malformed, or incomplete relevant evidence. A clean candidate may prove preservation through the accepted durable ref, an owning origin task branch whose head equals or descends from the candidate, an owning-task merged PR, or a containing any-task merged PR. The any-task route requires complete stable double-read discovery, merged/default-branch confirmation, and an independent complete stable compare; discovery alone and other-task unmerged PRs never count, while owning-branch unmerged evidence still refuses. Merged integration may not preserve original commit topology. Whole dirty worktrees remain protected; only a literal root `.venv` or `node_modules` cache may be removed after every cache gate and the 24-hour floor while tracked source bytes and Git status remain unchanged. Advisory content is aggregate-only and prominently ADVISORY / STALE ON ARRIVAL / not eligibility/candidate/safe-removal guidance; no path is enumerated; no pending jobs or `blocked_on_job_ids` are used as liveness. Routine scheduled and exact-marker manual cleanup reports remain durable on the existing agent page through normal task completion/results (THR-259 seq418). The scheduler creates no cleanup-report thread and workers have no routine thread posting or reuse obligation. Preserve all historical threads, messages, associations, results and audits; explicit founder-requested coordination, truthful anomalies, partial failures, unknown bytes, independent verification gaps and required current-session final report-completion remain. Kill switch: `workspace_cleanup.enabled` in the org `config.yaml` (default true). Docs: `docs/agent-guides/agent-executors-and-permissions.md`, `docs/agent-guides/orchestrator-contracts.md` §Daemon-managed workspace cleanup scheduler. First-two bookkeeping and the exact ordinal persist via existing durable mechanisms only (daemon-marked task rows via the complete read-only `Database.summarize_workspace_cleanup_marker_history` — bounded rowid keyset pages computing the exact all-history count, newest UTC instant and any-unfinished flag with no logical cutoff; lookup failures fail closed for triggering). After awaited measurement, task ID allocation, brief composition and ordinary task insertion run synchronously under existing `org.db_lock`, with no reporting-thread dependency; failed insertion is audited and never enqueued; workspaces are enumerated in bounded batches so no agent is starved; no schema/API/CLI/auth change. Disclosed unchanged limitations (daily cadence does not cure them): the selector's 1001-row history refusal and sixth-raw-terminal-row whole-batch refusal and the selector's bytewise-order refusal.
 
 **Owning-branch cleanup authority.** For daemon-managed workspace cleanup, an existing owning origin task branch is authoritative: if it does not contain the candidate commit, or its containment evidence fails, cleanup refuses without falling through to owning-task or any-task merged-PR proofs.
 
@@ -203,6 +316,17 @@ Sidecar shutdown retains one listener-first teardown owner, closes active connec
 
 **Failure diagnostics (THR-220).** Failed thread-invocation audits retain capped raw stdout/stderr tails as additive payload keys. Task, thread, and dream reports select one bounded human cause from complete stderr before tailing; exact known benign launcher/trust lines do not win, while meaningful stderr (including lookalikes) does. The proven API-error/session-limit envelope separately retains its bounded reset notice on those existing surfaces. This is not a comprehensive redaction guarantee and does not alter raw classifier, rate-limit, exact-eviction, retry-owner, or breaker inputs. Claude's session-limit notice is terminal but is not a short-backoff rate-limit retry signal.
 
+**Cleanup activity performance (issue1019 / THR-295).** The supported schema
+path adds three nonunique indexes after legacy columns exist: tasks(assigned_agent,
+created_at DESC,id DESC), audit_log(task_id,agent) where
+action='workspace_cleanup_triggered', and task_results(task_id,agent,id DESC).
+`CREATE INDEX IF NOT EXISTS` retains existing names without validating definitions.
+The reader SQL is unchanged. Breaker delivery listing and mint use sequential
+`await asyncio.to_thread` calls with the original DB RLock. Synchronized close
+serializes connection access; removal can cause a logged sweep error. Cancellation
+can leave a worker running or a committed pending token for later recovery.
+There is no added orgs_lock hold, worker drain or lifespan guarantee.
+
 ## Workflow authority publication (U2A)
 
 `WorkflowAuthorityCoordinator` owns the org-scoped producer half of the
@@ -235,7 +359,10 @@ remains a read and does not fence or advance the generation.
 
 Multi-stage async writers take the process-local coordinator gate before
 `teams_lock` and retain that gate through their terminal success or
-compensation. Startup migration retains the same process gate for its batch.
+compensation. Request cancellation or SSE disconnect drains started mutating
+workers before releasing the gate; admitted request writes also finish their
+terminal reconciliation before propagating cancellation, including repeated
+cancellation. Startup migration retains the same process gate for its batch.
 The shipped durable publication lease is acquired only for each synchronous
 canonical mutation and released before filesystem scanning, awaited workspace
 bootstrap, cloning, network access, host launch, callbacks, snapshot capture,
@@ -245,16 +372,152 @@ callback` order. Direct same-UID file/DB mutation is outside this cooperative
 guarantee.
 
 U2A provides `verify_admission_ready()` for later workflow units but wires no
-admission, activation, or dispatch consumer. Machine-global executor profiles
-remain U2B-deferred: profile changes do not yet fence orgs, and no workflow
-admission consumer may ship until that coordinator exists.
+admission, activation, or dispatch consumer. U2B now ships the cooperative
+same-host `ProfileCoordinator`: every supported machine-global profile/adapter
+writer acquires the stable owner-only per-profile `flock` before any affected
+org publication gate, pre-fences exactly the orgs with active or outstanding
+consumers, commits through the existing durable-first writer, and republishes
+only a complete coherent closure. The complete acyclic lock order is profile
+lease -> org publication lease -> existing writer lock(s) -> the shared
+`executor_profiles.yaml` store lock as an innermost leaf. Every save/remove
+holds that stable mode-0600 `flock` only around its read/merge/`os.replace`
+critical section; the store-lock holder never acquires another lease, writer
+lock, or SQLite transaction. Publication paths never acquire a profile or
+store lease, and no profile/publication lease or SQLite transaction spans
+filesystem scanning, network, host launch, or callbacks. Active Founder creation,
+Founder approval, manager revision-CAS executor update, dedicated executor
+update, and explicit termination maintain distinct per-agent dependency rows
+inside the canonical fence. Pending enrollment/rejection has no active profile
+membership. Whole-definition repo/model writers also preserve this relation.
+Lifecycle profile leases cover only synchronous canonical mutation and its
+compensation, and release before publication capture or awaited bootstrap.
+Missing dependency rows are never proof of an empty canonical requirement set.
+A profile contender refuses an unfinished ordinary canonical batch before its
+global operation claim; startup authority recovery owns interrupted batches. Removal leaves
+an outstanding consumer unbound and the org fenced until an explicit coherent
+rebind/removal. Cold startup completes interrupted operations once; a
+post-commit republish failure preserves the writer's established response while
+leaving a machine-readable fenced recovery state. Direct same-UID file/DB edits
+remain outside the cooperative guarantee. Dynamic org attachment scans its
+canonical profile requirements and authority inputs before taking the corresponding
+profile leases. Discovery is bracketed by the existing durable authority revision
+and revalidated under the profile-then-org mutation lease; changed captures
+retry boundedly or refuse. Synchronization consumes that captured roster without
+rescanning, publishes only a validated canonical snapshot and current profile
+digest, and joins the shared org map
+before releasing them; a non-terminal operation is therefore retried boundedly
+or refused and cannot be escaped. Closure coherence compares every org mirror's
+profile digest with the current global profile digest before readiness reopens.
+Direct-connect route/sweep retries take the same stable profile lease, re-read
+the durable projection terminal state before creating a U1A operation/fence,
+and only the winner records that existing durable claim and mutates/publishes.
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
+Adapter approval carries its initially selected intended profile (including no
+target) through to the durable registry writer. Under the existing adapter
+writer lock, that selection must still match before approval, an idempotent
+return, or profile binding. A concurrent supported submission changing the
+target refuses with the existing 409 `profile_consumer_changed` conflict before
+adapter/profile mutation; ownership releases before a fresh request selects
+again. A known target under live contention still returns 409
+`profile_coordinator_busy`; ordinary no-target approval succeeds without a
+profile. No new profile lease is acquired beneath the adapter writer lock.
+
+U2B still wires no workflow
+admission, activation, or dispatch consumer; those remain later units.
+
+**Memory reporting core (THR-091).** Backend and CLI use one pure observation-only
+reducer, validate all four audit streams and consume only persisted version1
+exposure metadata. Backend uses one synchronized SELECT; CLI exhausts two sweeps
+of `/audit` at limit5000 and checks roles/content at a fixed UTC cutoff. Acquisition
+failures refuse as `acquisition_unavailable`, with no partial CLI stdout. Tagged
+G1 authority is revalidated through the shared reducer and serving audit view;
+unversioned or damaged evidence remains `insufficient_instrumentation`.
+`session_start` denotes intended invocations. Valid reports exclude synthetic,
+recovery and pre-start tuples; raw sample counts alone cannot enable collection.
+An operational accepted epoch and its independent within48h health duty are
+separate from source tests, review, CI and deployment. See the memory sections in
+`features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
+
+Integration collection and execution use deterministic external CLI stubs through
+`tests/helpers/integration_parent.py` before pytest/runtime imports. Use disposable
+GitHub runners or a separately authorized Mac Linux guest; the live Linux daemon
+host cannot run integration tests, including through jobs. See `docs/local-ci.md`
+for parent isolation, explicit plans, source/callback identity and bounded two-org
+exception observation. General integration remains SKIPPED under THR-243 seq42;
+a focused task authorization does not establish full-suite health.
+For authorized integration-skipped clean-head `scripts/local_ci.sh all`, dispatch
+the existing manual nightly workflow on the exact candidate ref when execution is
+authorized. Its sole input is `all_only` (boolean, default false), with no
+`run_integration` toggle. The receipt-producing extracted runner is
+`uv run python scripts/nightly_local_ci_all.py`; authenticate its actual
+local-ci-all checkout/source/tool provenance, command exit and separate
+integration SKIPPED result. The manual job retains the approved 150-minute cap;
+schedule-only integration retains 30 minutes. While the THR-291 pause applies,
+`all` reports Python SUSPENDED and verifies only the remaining Web checks. The
+extracted runner's fixed guard also suspends G collection, source controls and
+repetitions for every input value. Dormant keeper/proof edits remain unexecuted;
+no manual dispatch or rerun is required for the current merge-forward repair.
+
+### Finite document-review templates and initial drafts (THR-139 seq410)
+
+New `schema_version: 2` / `kind: document-review` definitions compile finite data:
+one agent author, 1–3 independent reviewer slots, at most one existing Founder
+human, immutable-document-revision output/description, all/current reviewer
+membership, approved with optional changes_requested, and either null return or
+return-to-author/new/all-prior-receipts. Submission timing is on-completion or
+while-active-or-completed capability; it never requires an active author to submit.
+Abstract role names are not principals or grants. Actual bindings still require
+current same-org active canonical membership, independence and authority/profile
+leases. No label, count or outcome supplies code or engineering authority.
+
+The exact @2 compiler/validator/operator-input triple accompanies every immutable
+draft/version. Activation request/receipt, authorization, binding and initial-draft
+context use @2 families; the context retains both raw definition and compiled
+contract. Author allocation and input visibility consume that pinned contract.
+Legacy @1 raw bytes, pins, replay digests, task briefs and wire serialization stay
+unchanged. Read by immutable definition/pins, never identity.version or current
+pointer; full DATA/PIN validation checks all drafts and versions. A pre-generic
+reader refuses an org with any @2 data. Such an org needs a compatible reader;
+there is no old-reader downgrade promise or automatic history conversion.
+
+F/E DDL, full layout/reference validation and explicit-only existing-org migration
+remain unchanged; generic Database/runtime-audit remain workflow-free. Existing
+queue, host, callback and recovery owners still produce truthful initial drafts.
+Completion is draft-only: submission, review requests/receipts/joins, revision and
+mounted UI remain later units. Source implementation is not review/QA/CI acceptance,
+operator observation, deployment or Phase1 completion.
+
+The founder suspended Python unit-suite execution in THR-291 seq5
+(TASK-10169). While this pause applies, do not launch Python unit tests,
+including focused tests or duration measurements. The `python-unit` GitHub
+job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
+reports the same suspension before continuing Web CI. This also pauses the
+unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
+exit or an `all` receipt establishes only the remaining checks, never a unit
+PASS. Preserve test sources, selections and coverage definitions. Web,
+canonical validation and integration jobs retain their own existing contracts;
+no hook bypass is authorized. Existing historical workflow reruns and old
+checkouts do not acquire this pause automatically and must not be used to
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The ordinary commands below describe the restored behavior.
 
 ## Commands
 
 ```bash
 uv run python -m pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
-uv run python -m pytest tests/ -v -m integration   # integration tests
-uv run python -m pytest tests/ -v -m ""            # unit + integration
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable venue only
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable venue only
 
 scripts/daemon.sh start
 scripts/daemon.sh status
@@ -290,6 +553,13 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
   re-dispatch an edit-forbidden CI-only brief unchanged after mainline drift.
   The `jobs` skill defines the full gate and the existing external-job terminal
   verdict still controls completion.
+- **Bilingual Web delivery:** Include English and Simplified Chinese for every
+  new or changed app-owned string in the same PR. Provide affected-state evidence
+  in both locales at 390×844 and 1440×900, including draft, focus, selection and
+  original-action preservation with no locale-triggered requests or mutations.
+  Untranslated owned copy or unreadable/unreachable Chinese layout requires
+  `REQUEST_CHANGES`. Automation checks structure and completeness; reviewers
+  assess meaning and usability. Use the PR template and Web guide checklist.
 - **Frontend handoff:** Before review/QA, supply acceptance/spec mapping;
   loading, empty, error, and populated-state coverage; auth/permission
   coverage when applicable; screenshot or deterministic-test evidence; and
@@ -311,6 +581,16 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
 ## Web Contract
 
 Every browser-callable daemon route maps to one TS function in `web/src/lib/api/`.
+
+All new or changed app-owned headings, actions, dialogs, tooltips, accessible
+labels, validation, loading, empty/error states and generated narratives must
+ship English (`en`) and Simplified Chinese (`zh-CN`) together in the same PR.
+Use typed catalogs, named parameters, explicit plurals and locale-aware helpers.
+Pure shared UI receives localized props from its callers. Authored content,
+machine identifiers and raw diagnostics remain verbatim. Preserve drafts, focus,
+selection, navigation and original actions across locale changes; a locale
+change must not trigger a request, mutation or transport restart. See
+`docs/agent-guides/web-and-cli.md` for the affected-state review checklist.
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.

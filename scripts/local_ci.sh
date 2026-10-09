@@ -12,7 +12,7 @@
 #   scripts/local_ci.sh [TARGET]
 #
 # Targets:
-#   python       uv sync --frozen; uv run pytest tests/ -v -n 4
+#   python       Report founder-suspended Python unit suite (no execution)
 #   web          cd web; npm ci; design-system colour gate; npm run lint;
 #                npm run typecheck; npm run build; npm run build-storybook;
 #                npx vitest run
@@ -142,7 +142,11 @@ run_pytest_suite() {
   PYTEST_BASETEMP="$basetemp"
   uv sync --frozen || status=$?
   if [ "$status" -eq 0 ]; then
-    uv run pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
+    if [[ " $* " == *" -m integration "* ]]; then
+      uv run python tests/helpers/integration_parent.py -- pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
+    else
+      uv run pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
+    fi
   fi
   if ! cleanup_pytest_basetemp; then
     if [ "$status" -eq 0 ]; then
@@ -326,8 +330,10 @@ ensure_node_declared() {
 }
 
 run_python() {
-  echo -e "${GREEN}=== Python unit tests ===${NC}"
-  run_pytest_suite tests/ -v -n 4
+  # Founder THR-291 seq5 / TASK-10169: suspend the unit invocation, including
+  # the manual hosted all lane. Restore by reverting this pause.
+  echo "SKIPPED: Python unit suite SUSPENDED by founder THR-291 seq5 (TASK-10169)."
+  echo "No Python unit tests executed; this is not a unit-test PASS."
 }
 
 run_web() {
@@ -369,8 +375,7 @@ show_help() {
   echo "GitHub CI remains authoritative; this is pre-push feedback only."
   echo ""
   echo "Targets:"
-  echo "  python       Run Python unit tests"
-  echo "               (uv sync --frozen + uv run pytest tests/ -v -n 4)"
+  echo "  python       Report Python unit suite SUSPENDED (THR-291 seq5); no tests run"
   echo "  web          Run Web CI"
   echo "               (npm ci + colour gate + lint + typecheck + build + build-storybook + vitest run)"
   echo "  integration  Run Python integration tests"

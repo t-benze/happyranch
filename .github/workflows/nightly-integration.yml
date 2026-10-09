@@ -5,13 +5,59 @@ on:
     # 07:00 UTC nightly — off-peak. Adjust the cron if you prefer another window.
     - cron: '0 7 * * *'
   workflow_dispatch:
+    inputs:
+      all_only:
+        description: Run only the manual exact all and fixed G verification lane
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
+  local-ci-all:
+    name: Manual local CI all (Python 3.14, Node 24)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # Python units alone took 99 minutes in run 37650992085; allow full local CI.
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install zsh (real-zsh cleanup regression)
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: true
+          python-version: '3.14'
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      - name: Run exact local CI all in a clean test environment
+        env:
+          ALL_ONLY: ${{ inputs.all_only }}
+        run: |
+          uv run python scripts/nightly_local_ci_all.py
+      - name: Upload manual local CI evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: local-ci-all-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/local-ci-all/
+          if-no-files-found: warn
+          retention-days: 14
+
   integration:
     name: Python integration (3.12)
+    if: ${{ github.event_name == 'schedule' }}
     runs-on: ubuntu-latest
     # Integration tests spawn a real daemon + fake CLIs; cap the job so a hung
     # daemon can't run for the full 6h default.
@@ -19,6 +65,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -32,7 +80,7 @@ jobs:
           python3 scripts/run_bounded_output.py \
             --output artifacts/nightly-integration.log \
             --max-bytes 1048576 \
-            -- uv run pytest tests/ -v -m integration \
+            -- uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration \
               --junitxml=artifacts/nightly-integration.xml
       - name: Build integration summary
         if: ${{ always() }}

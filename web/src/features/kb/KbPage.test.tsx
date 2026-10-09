@@ -633,7 +633,7 @@ describe('KbPage — candidate review gate', () => {
     await user.click(acceptBtn);
 
     // Error message should appear with retry buttons
-    await screen.findByText('Accept failed — retry');
+    await screen.findByText('Internal error');
     // Accept button should still be available for retry
     expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument();
   });

@@ -31,6 +31,8 @@ import {
   SelectValue,
 } from '@/design-system/primitives/Select';
 import { useUpdateOrgSettings } from '@/hooks/settings';
+import { useTranslation } from '@/hooks/i18n';
+import type { MessageKey } from '@/lib/i18n';
 import type {
   WorkHoursLayer,
   WorkingHoursPatch,
@@ -63,6 +65,15 @@ interface Props {
 
 const UNSET = '__unset__';
 
+const TIER_KIND_KEYS: Record<Tier['kind'], MessageKey> = {
+  org: 'workHours.tier.kind.org',
+  team: 'workHours.tier.kind.team',
+  agent: 'workHours.tier.kind.agent',
+};
+
+/** Where an inherited (lower-tier) leaf value came from — locale-neutral. */
+type InheritedSource = { kind: 'unset' } | { kind: 'org' } | { kind: 'team'; team: string };
+
 function tierLayer(wh: WorkingHoursSettings, tier: Tier): WorkHoursLayer | undefined {
   if (tier.kind === 'org') return wh.default;
   if (tier.kind === 'team') return wh.teams[tier.team];
@@ -82,7 +93,7 @@ function inheritedFor(
   interval: string | null;
   days: string[] | null;
   catchUp: boolean | null;
-  sourceLabel: (leaf: string) => string;
+  sourceOf: (leaf: string) => InheritedSource;
 } {
   // Org tier inherits nothing. Team inherits org. Agent inherits org+team.
   const lower: WorkingHoursSettings = {
@@ -107,11 +118,11 @@ function inheritedFor(
     tier.kind === 'agent' ? teamName : null,
   );
   const get = (leaf: string) => rec.rows.find((r) => r.leaf === leaf)?.cell;
-  const sourceLabel = (leaf: string): string => {
+  const sourceOf = (leaf: string): InheritedSource => {
     const cell = get(leaf);
-    if (!cell || cell.source === 'unset') return 'unset';
-    if (cell.source === 'team') return `Team: ${teamName ?? ''}`;
-    return 'Org default';
+    if (!cell || cell.source === 'unset') return { kind: 'unset' };
+    if (cell.source === 'team') return { kind: 'team', team: teamName ?? '' };
+    return { kind: 'org' };
   };
   return {
     mode: (get('mode')?.effective as string | null) ?? null,
@@ -121,7 +132,7 @@ function inheritedFor(
     interval: (get('interval')?.effective as string | null) ?? null,
     days: (get('days')?.effective as string[] | null) ?? null,
     catchUp: (get('catch_up_on_startup')?.effective as boolean | null) ?? null,
-    sourceLabel,
+    sourceOf,
   };
 }
 
@@ -134,6 +145,7 @@ export function TierEditorDialog({
   allAgents,
   onSaved,
 }: Props): JSX.Element {
+  const { t, render } = useTranslation();
   const mutation = useUpdateOrgSettings();
   const current = tierLayer(wh, tier);
   const showGhosts = tier.kind !== 'org';
@@ -228,54 +240,67 @@ export function TierEditorDialog({
 
   const title =
     tier.kind === 'org'
-      ? 'Edit org default'
+      ? t('workHours.editOrgDefault')
       : tier.kind === 'team'
-        ? `Edit team: ${tier.team}`
-        : `Edit override — ${tier.agent}`;
+        ? t('workHours.editTeam', { team: tier.team })
+        : t('workHours.tier.titleAgent', { agent: tier.agent });
+
+  const sourceLabel = (leaf: string): string => {
+    const src = inherited.sourceOf(leaf);
+    if (src.kind === 'unset') return t('workHours.provenance.unset');
+    if (src.kind === 'team') return t('workHours.provenance.teamNamed', { team: src.team });
+    return t('workHours.provenance.org');
+  };
+  const ghostFor = (leaf: string, value: string): string =>
+    t('workHours.tier.inheritedGhost', { value, source: sourceLabel(leaf) });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            Tier: {tier.kind.toUpperCase()}. The server validates the merged
-            config on save — invalid edits are rejected and never written.
+      <DialogContent className="max-w-xl min-w-0" closeLabel={t('common.close')}>
+        <DialogHeader className="min-w-0 pr-5">
+          <DialogTitle className="min-w-0 break-words">{title}</DialogTitle>
+          <DialogDescription className="min-w-0 break-words">
+            {t('workHours.tier.description', { tier: t(TIER_KIND_KEYS[tier.kind]) })}
           </DialogDescription>
         </DialogHeader>
 
         {errors.length > 0 && <ErrorPanel errors={errors} />}
 
         {confirming ? (
-          <div className="text-sm">
+          <div className="min-w-0 text-sm break-words">
             <p className="text-text-primary">
-              This change alters the effective schedule of{' '}
-              <span className="font-semibold tabular-nums">
-                {impactedAgents.length}
-              </span>{' '}
-              agent{impactedAgents.length !== 1 ? 's' : ''}:
+              {render('workHours.tier.impact', {
+                count: impactedAgents.length,
+                n: (
+                  <span className="font-semibold tabular-nums">
+                    {impactedAgents.length}
+                  </span>
+                ),
+              })}
             </p>
             <p className="text-text-muted mt-1 break-words">
-              {impactedAgents.length > 0 ? impactedAgents.join(', ') : '(none)'}
+              {impactedAgents.length > 0
+                ? impactedAgents.join(', ')
+                : t('workHours.dialog.none')}
             </p>
           </div>
         ) : (
-          <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-3">
             {/* mode */}
             <Row
               label="mode"
-              ghost={showGhosts && mode === null ? `inherited: ${inherited.mode ?? '—'} (${inherited.sourceLabel('mode')})` : undefined}
+              ghost={showGhosts && mode === null ? ghostFor('mode', inherited.mode ?? '—') : undefined}
               onReset={showGhosts && mode !== null ? () => setMode(null) : undefined}
             >
               <Select
                 value={mode ?? UNSET}
                 onValueChange={(v) => setMode(v === UNSET ? null : v)}
               >
-                <SelectTrigger className="w-40">
-                  <SelectValue placeholder="inherited" />
+                <SelectTrigger className="h-auto min-h-6 w-40 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
+                  <SelectValue placeholder={t('workHours.tier.inherited')} />
                 </SelectTrigger>
                 <SelectContent>
-                  {showGhosts && <SelectItem value={UNSET}>inherited</SelectItem>}
+                  {showGhosts && <SelectItem value={UNSET}>{t('workHours.tier.inherited')}</SelectItem>}
                   <SelectItem value="windowed">windowed</SelectItem>
                   <SelectItem value="continuous">continuous</SelectItem>
                 </SelectContent>
@@ -286,34 +311,34 @@ export function TierEditorDialog({
               <>
                 <Row
                   label="window.start"
-                  ghost={showGhosts && start === null ? `inherited: ${inherited.start ?? '—'} (${inherited.sourceLabel('window.start')})` : undefined}
+                  ghost={showGhosts && start === null ? ghostFor('window.start', inherited.start ?? '—') : undefined}
                   onReset={showGhosts && start !== null ? () => setStart(null) : undefined}
                 >
                   <Input
                     type="time"
-                    className="w-32"
+                    className="w-32 min-w-0 max-w-full"
                     value={start ?? ''}
                     onChange={(e) => setStart(e.target.value || null)}
                   />
                 </Row>
                 <Row
                   label="window.end"
-                  ghost={showGhosts && end === null ? `inherited: ${inherited.end ?? '—'} (${inherited.sourceLabel('window.end')})` : undefined}
+                  ghost={showGhosts && end === null ? ghostFor('window.end', inherited.end ?? '—') : undefined}
                   onReset={showGhosts && end !== null ? () => setEnd(null) : undefined}
                 >
                   <Input
                     type="time"
-                    className="w-32"
+                    className="w-32 min-w-0 max-w-full"
                     value={end ?? ''}
                     onChange={(e) => setEnd(e.target.value || null)}
                   />
                 </Row>
                 <Row
                   label="days"
-                  ghost={showGhosts && days === null ? `inherited: ${(inherited.days ?? []).join(',') || '—'} (${inherited.sourceLabel('days')})` : undefined}
+                  ghost={showGhosts && days === null ? ghostFor('days', (inherited.days ?? []).join(',') || '—') : undefined}
                   onReset={showGhosts && days !== null ? () => setDays(null) : undefined}
                 >
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex min-w-0 max-w-full flex-wrap gap-1">
                     {DAYS.map((d) => {
                       const selected = (days ?? []).includes(d);
                       return (
@@ -339,18 +364,18 @@ export function TierEditorDialog({
 
             <Row
               label="window.timezone"
-              ghost={showGhosts && timezone === null ? `inherited: ${inherited.timezone ?? '—'} (${inherited.sourceLabel('window.timezone')})` : undefined}
+              ghost={showGhosts && timezone === null ? ghostFor('window.timezone', inherited.timezone ?? '—') : undefined}
               onReset={showGhosts && timezone !== null ? () => setTimezone(null) : undefined}
             >
               <Select
                 value={timezone ?? UNSET}
                 onValueChange={(v) => setTimezone(v === UNSET ? null : v)}
               >
-                <SelectTrigger className="w-56">
-                  <SelectValue placeholder="inherited" />
+                <SelectTrigger className="h-auto min-h-6 w-56 max-w-full [&>span]:line-clamp-none [&>span]:min-w-0 [&>span]:text-left [&>span]:whitespace-normal [&>span]:break-all [&>svg]:shrink-0">
+                  <SelectValue placeholder={t('workHours.tier.inherited')} />
                 </SelectTrigger>
                 <SelectContent>
-                  {showGhosts && <SelectItem value={UNSET}>inherited</SelectItem>}
+                  {showGhosts && <SelectItem value={UNSET}>{t('workHours.tier.inherited')}</SelectItem>}
                   {timezones.map((tz) => (
                     <SelectItem key={tz} value={tz}>
                       {tz}
@@ -364,10 +389,10 @@ export function TierEditorDialog({
               label="interval"
               hint={
                 isContinuous
-                  ? 'divisor of 24h (server validates)'
-                  : 'format like 2h / 30m (server validates ≤ window length)'
+                  ? t('workHours.tier.intervalHintContinuous')
+                  : t('workHours.tier.intervalHintWindowed')
               }
-              ghost={showGhosts && interval === null ? `inherited: ${inherited.interval ?? '—'} (${inherited.sourceLabel('interval')})` : undefined}
+              ghost={showGhosts && interval === null ? ghostFor('interval', inherited.interval ?? '—') : undefined}
               onReset={showGhosts && interval !== null ? () => setInterval(null) : undefined}
             >
               {/* Free-form in BOTH modes — the server is the sole authority on
@@ -375,7 +400,7 @@ export function TierEditorDialog({
                   the '2h / 30m' shape and surfaces the PUT 422 if it's bad. */}
               <Input
                 type="text"
-                className="w-32"
+                className="w-32 min-w-0 max-w-full"
                 placeholder="2h"
                 value={interval ?? ''}
                 onChange={(e) => setInterval(e.target.value || null)}
@@ -384,7 +409,7 @@ export function TierEditorDialog({
 
             <Row
               label="catch_up_on_startup"
-              ghost={showGhosts && catchUp === null ? `inherited: ${inherited.catchUp === null ? '—' : String(inherited.catchUp)} (${inherited.sourceLabel('catch_up_on_startup')})` : undefined}
+              ghost={showGhosts && catchUp === null ? ghostFor('catch_up_on_startup', inherited.catchUp === null ? '—' : String(inherited.catchUp)) : undefined}
               onReset={showGhosts && catchUp !== null ? () => setCatchUp(null) : undefined}
             >
               <button
@@ -406,27 +431,27 @@ export function TierEditorDialog({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="min-w-0 flex-wrap [&>button]:h-auto [&>button]:min-h-9 [&>button]:max-w-full [&>button]:whitespace-normal">
           {confirming ? (
             <>
               <Button variant="ghost" onClick={() => setConfirming(false)}>
-                Back
+                {t('workHours.dialog.back')}
               </Button>
               <Button onClick={() => void doSave()} disabled={mutation.isPending}>
-                {mutation.isPending ? 'Saving…' : 'Confirm & save'}
+                {mutation.isPending ? t('workHours.dialog.saving') : t('workHours.dialog.confirmSave')}
               </Button>
             </>
           ) : (
             <>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button onClick={handleSaveClick} disabled={mutation.isPending}>
                 {mutation.isPending
-                  ? 'Saving…'
+                  ? t('workHours.dialog.saving')
                   : requiresConfirm
-                    ? 'Review impact…'
-                    : 'Save'}
+                    ? t('workHours.dialog.reviewImpact')
+                    : t('common.save')}
               </Button>
             </>
           )}
@@ -449,24 +474,25 @@ function Row({
   onReset?: () => void;
   children: React.ReactNode;
 }): JSX.Element {
+  const { t } = useTranslation();
   return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="flex min-w-0 flex-col">
+    <div className="flex min-w-0 flex-col items-start justify-between gap-2 sm:flex-row sm:gap-3">
+      <div className="flex min-w-0 max-w-full flex-col break-words">
         <span className="text-text-primary font-mono text-xs">{label}</span>
         {ghost && <span className="text-text-muted text-overline">{ghost}</span>}
         {hint && (
           <span className="text-text-muted text-overline">ⓘ {hint}</span>
         )}
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2 sm:justify-end">
         {children}
         {onReset && (
           <button
             type="button"
             onClick={onReset}
-            className="text-accent-text text-overline hover:underline"
+            className="text-accent-text text-overline max-w-full whitespace-normal break-words hover:underline"
           >
-            reset
+            {t('workHours.tier.reset')}
           </button>
         )}
       </div>

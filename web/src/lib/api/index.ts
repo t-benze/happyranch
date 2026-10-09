@@ -27,3 +27,5 @@ export * as workflowTemplates from './workflowTemplates';
 export { ApiError, request, type RequestOptions } from './client';
 export { subscribeSSE, type SSEOptions } from './sse';
 export type * from './types';
+export * as workflowCutover from './workflowCutover';
+export * as workflowActivations from './workflowActivations';

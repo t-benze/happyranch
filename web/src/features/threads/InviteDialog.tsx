@@ -71,7 +71,7 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('threads.dialog.invite.title')}</DialogTitle>
           <DialogDescription className="sr-only">

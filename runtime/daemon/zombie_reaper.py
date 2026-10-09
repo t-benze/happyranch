@@ -22,6 +22,7 @@ from runtime.models import TaskStatus
 
 if TYPE_CHECKING:
     from runtime.daemon.state import DaemonState
+    from runtime.daemon.queue import TaskQueue
     from runtime.infrastructure.database import Database
     from runtime.orchestrator.orchestrator import Orchestrator
 
@@ -111,6 +112,7 @@ def _sweep_org_zombies(
     uptime: float,
     warm_up_seconds: float,
     orchestrator: Orchestrator | None = None,
+    queue: TaskQueue | None = None,
 ) -> None:
     """Sweep one org for zombie tasks.
 
@@ -128,6 +130,17 @@ def _sweep_org_zombies(
     for task_id in db.get_nonterminal_task_ids():
         t = db.get_task(task_id)
         if t is None:
+            continue
+
+        from runtime.workflows.recovery import classify_task
+        ownership = classify_task(db, task_id, org_slug=getattr(orchestrator, "_slug", None))
+        if ownership.kind != "legacy":
+            # TTL/dead PID are never proof of workflow host quiescence.
+            drafts = getattr(orchestrator, "_workflow_drafts", None)
+            if ownership.kind == "draft" and drafts is not None:
+                drafts.reconcile(task_id)
+                if queue is not None:
+                    drafts.notify_queued(task_id, queue)
             continue
 
         # ── STATE ALLOWLIST (requirement 3) ──
@@ -338,6 +351,7 @@ async def zombie_reaper_loop(
                     uptime=uptime,
                     warm_up_seconds=warm_up_seconds,
                     orchestrator=org.orchestrator,
+                    queue=state.queue,
                 )
             except Exception:
                 logger.exception(

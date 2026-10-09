@@ -29,9 +29,9 @@ evaluation and otherwise-due spawning continues with honest unavailable
 advisory context; the first TWO triggered runs per
 agent are strictly report-only; each triggered ordinary task is assigned to
 its owning agent; suppress while that agent has a non-terminal cleanup task OR
-a marker in the current window; one durable founder-visible report
-thread PER AGENT via the existing participant-authorized thread-send path with
-NO minted report token; one enabled-by-default kill switch (an org config
+a marker in the current window; durable reports on the existing agent page
+through ordinary task completion/results (THR-259 seq418); one
+enabled-by-default kill switch (an org config
 ``workspace_cleanup.enabled`` flag).
 
 Persistence uses only existing durable mechanisms (no schema/API/CLI change):
@@ -41,20 +41,11 @@ marker-history summary (``Database.summarize_workspace_cleanup_marker_history``
 — rowid keyset pages over the SQL-side ``brief`` prefix filter, exact count and
 UTC-maximum with no logical cutoff, so an older unfinished row can never be
 hidden and the ordinal never saturates; a lookup failure is
-represented as indeterminate so triggering fails closed). The per-agent
-durable thread identity is resolved by daemon-cleanup provenance
-(``composed_from_task_id`` → the agent's daemon-marked cleanup task) plus the
-fixed per-agent subject, participant membership of the owning agent, open
-status, and the daemon's distinctive opening message — a fixed subject alone
-is not identity, and a user-created subject collision is never selected. The
-identity lookup is TRI-STATE (found / absent / indeterminate): only an
-authoritative absence may create a thread; any lookup error fails closed —
-no duplicate thread, no task, no enqueue — with an audited reason (TASK-6046
-finding 2). On an agent's first trigger the report thread (row, participant,
-opening message, turn, audits) and the cleanup task are created in ONE
-atomic transaction (``Database.insert_cleanup_report_thread_and_task``) —
-any failure rolls back every durable row (zero residue), nothing is
-enqueued, and a later retry succeeds exactly once (TASK-6046 finding 1).
+represented as indeterminate so triggering fails closed). After awaited
+measurement, task ID allocation, brief composition and ordinary task insertion
+run synchronously under ``org.db_lock``. Admission never depends on reporting
+threads or their configuration/identity. Historical thread data stays intact.
+
 
 Contract-relevant bounds (all documented in the workspace-cleanup behavior tests):
 
@@ -89,14 +80,12 @@ Contract-relevant bounds (all documented in the workspace-cleanup behavior tests
   subprocess caps) and fail-open: every timeout/error/cap hit yields an
   explicit unavailable/truncated status and can never block daemon operation
   or task/session spawning.
-- Reporting: the responsible agent reports to the founder in ONE durable
-  founder-visible thread per agent (fixed per-agent subject; created by the
-  daemon on first trigger with the owning agent as composer/participant and
-  @founder as recipient). The daemon passes only the thread id in the brief —
-  NO minted invocation token. The agent appends its report during the task
-  session via the existing participant-authorized, task-bound
-  ``happyranch threads send`` path (composer + task_id + session_id binding).
-  Silence on that thread is the loop-stopped signal.
+- Reporting: routine scheduled and exact-marker manual results stay durable
+  on the existing agent page through normal completion/results. The scheduler
+  creates no cleanup-report thread; routine workers have no thread posting or
+  reuse obligation. Preserve historical threads/messages/associations/results/
+  audits and explicit founder-requested coordination, anomalies, partial
+  failures, unknown bytes, independent verification gaps and required callbacks.
 - Kill switch: ``workspace_cleanup.enabled`` in the org ``config.yaml``
   (default True). Setting it to false disables the whole capability for that
   org. This is an existing daemon/org config mechanism — no new public
@@ -170,6 +159,8 @@ _WARM_UP_SECONDS = 30.0
 # cleanup task marker").
 _CLEANUP_BRIEF_MARKER = "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)"
 
+# Historical compatibility diagnostics only; trigger_cleanup does not use
+# reporting identity or create/reuse a report thread.
 # Per-agent durable founder-visible report thread. The fixed per-agent subject
 # is one component of the daemon's durable thread identity per agent (no new
 # schema — consultant THR-195 seq 131: "one durable thread, not one per run" —
@@ -1016,32 +1007,19 @@ def _find_report_thread(
 # ── brief composition ─────────────────────────────────────────────────────
 
 _REPORT_INSTRUCTION = (
-    "3. Report to the founder by appending to the durable founder-visible "
-    "thread {thread_id} (\"{subject}\"). You are a participant of that thread "
-    "(the daemon composed it with you as composer and @founder as "
-    "recipient); no invocation token is needed. Use the existing "
-    "participant-authorized, task-bound send path with your current task "
-    "session:\n"
-    "\n"
-    "    happyranch threads send --org {slug} --thread-id {thread_id} "
-    "--task-id {task_id} --session-id <YOUR_CURRENT_SESSION_ID> "
-    "--from-file <payload>\n"
-    "\n"
-    "    payload JSON: {{\"composer\": \"{agent}\", \"body_markdown\": "
-    "\"<report: measured before/after sizes, exact removals, skips, and any "
-    "ambiguity>\"}}\n"
-    "\n"
-    "  Append to that thread — do NOT compose a new thread. If the thread is "
-    "unusable, compose a founder-visible thread titled \"{subject}\" "
-    "(recipient @founder) with the same report content instead."
-)
-
-_FALLBACK_REPORT_INSTRUCTION = (
-    "3. Report to the founder by composing a founder-visible thread titled "
-    "\"{subject}\" (recipient @founder) with the report content: measured "
-    "before/after sizes, exact removals (none in report-only), skips, and any "
-    "ambiguity. (The daemon could not resolve the durable per-agent report "
-    "thread at trigger time; the first successful report establishes it.)"
+    "3. Keep routine cleanup results durable on the existing agent page through "
+    "the normal task completion/results contract. Write output/<task_id>/ "
+    "with inventory.json, final-ledger.jsonl, and report.md; preserve literal "
+    "argv, native receipts, timestamps, exit status, and stop facts. Report "
+    "actual removed/skipped counts and reasons, allocated and apparent bytes "
+    "separately, unknown unique reclaimed bytes, failures, partial outcomes "
+    "and independent verification gaps honestly in summary and risks. "
+    "Use the normal task-owner summary protocol and the current session's "
+    "happyranch report-completion --org {slug} --from-file <ABSOLUTE_PAYLOAD_PATH> "
+    "as the final action. Do not create cleanup-report threads or post routine "
+    "cleanup results to threads. There is no routine thread reuse obligation. Preserve all historical threads, messages, "
+    "associations, results and audits. Explicit founder-requested coordination, "
+    "truthful anomalies and required callbacks remain."
 )
 
 
@@ -1052,7 +1030,7 @@ def compose_cleanup_brief(
     task_id: str,
     run_number: int,
     snapshot: WorkspaceContextSnapshot,
-    thread_id: str | None,
+    thread_id: str | None = None,
 ) -> str:
     """Daemon-composed brief for one triggered cleanup task of ``agent``.
 
@@ -1060,19 +1038,11 @@ def compose_cleanup_brief(
     bookkeeping — TASK-5552 §3). The first ``_REPORT_ONLY_RUN_LIMIT`` runs per
     agent are STRICTLY report-only; later runs carry the approved TASK-5552
     §4 fixed normalized cleanup brief. Both pack the fresh advisory snapshot
-    and the founder-thread reporting instruction. Never a Schedule brief;
+    and the normal completion/results reporting instruction. ``thread_id`` is
+    accepted for compatibility and ignored. Never a Schedule brief;
     nothing is persisted beyond this task row.
     """
-    report = (
-        _REPORT_INSTRUCTION.format(
-            thread_id=thread_id, subject=report_thread_subject(agent),
-            slug=org_slug, task_id=task_id, agent=agent,
-        )
-        if thread_id
-        else _FALLBACK_REPORT_INSTRUCTION.format(
-            subject=report_thread_subject(agent),
-        )
-    )
+    report = _REPORT_INSTRUCTION.format(slug=org_slug)
     header = (
         _CLEANUP_BRIEF_MARKER,
         "",
@@ -1212,41 +1182,16 @@ async def trigger_cleanup(
     enqueue: Callable[[str, str], None],
     now_utc: datetime | None = None,
 ) -> str | None:
-    """Create + enqueue one cleanup task for ``agent`` (the owning agent),
-    packing the fresh advisory measurement and the per-agent report-thread
-    seam into the daemon-composed brief.
+    """Admit an ordinary clean-root cleanup task and enqueue it after insertion.
 
-    Fail-closed skip (returns None, never raises) when: the agent has no team
-    in this org, an available fresh measurement is below the >= 1 GiB trigger
-    threshold, or the agent's
-    daemon-marked cleanup-task history cannot be read authoritatively
-    (lifecycle/identity uncertainty fails closed). Each skip is audited so
-    operators can see why no task was created.
-
-    Atomic producer seam (TASK-6043 finding 3): the task id is allocated only
-    AFTER every awaited step (the bounded measurement is done first), and
-    allocation + thread identity resolution + brief composition + insertion
-    run as one synchronous block under ``org.db_lock`` with no awaits between
-    ``next_task_id`` and the insert — the same producer discipline as
-    ``Orchestrator.create_task``. No id is ever selected before awaited work,
-    so another producer cannot claim it mid-trigger and no collision can
-    leave a report thread falsely linked to an unrelated task.
-
-    Rollback-safe producer (TASK-6046 finding 1): on the FIRST trigger the
-    report thread (row, participant, opening message, turn, audits) and the
-    cleanup task it was composed from are created in ONE atomic
-    transaction (``Database.insert_cleanup_report_thread_and_task``) — any
-    failure rolls back EVERY durable row (zero residue), nothing is
-    enqueued, and a later retry succeeds exactly once. When the thread
-    already exists only the task is inserted, so an insert failure can never
-    leave thread residue either. The inserted task is a clean root (no
-    parent, no thread dispatch); every compensation path is audited.
-
-    Fail-closed thread identity (TASK-6046 finding 2): the per-agent
-    report-thread lookup is tri-state (found / absent / indeterminate). Only
-    an authoritative absence may create the thread; a lookup error is
-    ``indeterminate`` and suppresses the whole trigger — no duplicate
-    thread, no task, no enqueue — with an explicit audited reason.
+    Fresh advisory measurement precedes task ID allocation. Allocation, brief
+    composition and ordinary ``insert_task`` stay synchronous under
+    ``org.db_lock``. Reporting needs no thread configuration, identity, ID or
+    composite writer. Team, threshold and complete-history skips retain their
+    existing audits. A failed insert is audited and never enqueued; this does
+    not claim rollback of an exception after a writer has already committed.
+    Historical reports/associations stay unchanged. New trigger audits retain
+    all six keys with ``report_thread_id`` null.
     """
     if now_utc is None:
         now_utc = datetime.now(timezone.utc)
@@ -1325,97 +1270,24 @@ async def trigger_cleanup(
         return None
     run_number = history.count + 1
 
-    # Read-only thread-config pre-validation OUTSIDE the lock (KB
-    # atomic-multi-table-persistence phase 1): the turn cap is a stable org
-    # setting — never a TOCTOU target — and resolving it here keeps the
-    # producer block purely a write path.
-    from runtime.daemon.routes.threads import FOUNDER_LITERAL
-    from runtime.orchestrator.org_config import (
-        OrgConfig,
-        resolve_org_setting_threads,
-    )
-    turn_cap = resolve_org_setting_threads(
-        org.db, code_default=OrgConfig(),
-    )["default_turn_cap"]
-
-    # Rollback-safe atomic producer block: task-id allocation, tri-state
-    # report-thread identity resolution, brief composition, and insertion all
-    # run synchronously under org.db_lock with no awaits between
-    # ``next_task_id`` and the insert. No minted token: the agent appends via
-    # the participant-authorized, task-bound send path during its session. A
-    # thread is only ever linked to the id this block actually inserts (never
-    # a pre-selected id that another producer could claim).
-    thread_id: str | None = None
+    # Allocate only after awaited measurement. No awaits separate allocation,
+    # composition and ordinary insertion under the existing producer lock.
     async with org.db_lock:
         task_id = org.db.next_task_id()
-        # Tri-state identity: only authoritative absence may create a thread.
-        # A lookup error is indeterminate — fail closed (no duplicate thread,
-        # no task, no enqueue) with an explicit audited reason.
-        resolution = _find_report_thread(org.db, agent)
-        if resolution.state == "indeterminate":
-            org.db.insert_audit_log(
-                task_id="workspace-cleanup:skipped",
-                agent=agent,
-                action="workspace_cleanup_skipped",
-                payload={
-                    "reason": "report_thread_indeterminate",
-                    "agent": agent,
-                    "detail": resolution.reason,
-                },
-            )
-            return None
-        thread_id = resolution.thread_id
-        if thread_id is None:
-            # Allocate the thread id under the same lock the atomic write
-            # uses — no other thread producer can interleave (the compose
-            # routes hold org.db_lock across next_thread_id + insert).
-            thread_id = org.db.next_thread_id()
         brief = compose_cleanup_brief(
-            org_slug=org.slug,
-            agent=agent,
-            task_id=task_id,
-            run_number=run_number,
-            snapshot=snapshot,
-            thread_id=thread_id,
+            org_slug=org.slug, agent=agent, task_id=task_id,
+            run_number=run_number, snapshot=snapshot,
         )
         try:
-            if resolution.state == "absent":
-                # First trigger for this agent: report thread + task in ONE
-                # atomic transaction. On any failure EVERY row (thread,
-                # participant, opening message, turns, audits, task) rolls
-                # back — zero residue, no enqueue; a later retry succeeds
-                # exactly once (TASK-6046 finding 1).
-                org.db.insert_cleanup_report_thread_and_task(
-                    thread_id=thread_id,
-                    subject=report_thread_subject(agent),
-                    composer=agent,
-                    opening_body=_report_thread_opening(task_id, agent),
-                    initial_recipients=[FOUNDER_LITERAL],
-                    turn_cap=turn_cap,
-                    task=TaskRecord(
-                        id=task_id,
-                        brief=brief,
-                        team=team,
-                        assigned_agent=agent,
-                    ),
-                )
-            else:
-                # Thread already exists: insert only the task (no thread work
-                # that could leave residue on failure).
-                org.db.insert_task(TaskRecord(
-                    id=task_id,
-                    brief=brief,
-                    team=team,
-                    assigned_agent=agent,
-                ))
+            org.db.insert_task(TaskRecord(
+                id=task_id, brief=brief, team=team, assigned_agent=agent,
+            ))
         except Exception:
-            # Compensation: the atomic producer rolled back (or the plain
-            # insert failed before any thread work). Zero durable residue, no
-            # enqueue; the skip is audited loudly so operators see why no
-            # task was created and a later retry succeeds cleanly.
+            # Ordinary insertion failed: do not enqueue or fabricate a
+            # successful trigger. Preserve the existing skip/retry behavior.
             logger.exception(
                 "workspace cleanup: task insert failed for org %s agent %s "
-                "(task %s) — atomic producer rolled back, no run enqueued",
+                "(task %s) — insert failed, no run enqueued",
                 org.slug, agent, task_id,
             )
             org.db.insert_audit_log(
@@ -1436,7 +1308,7 @@ async def trigger_cleanup(
         agent=agent,
         action="workspace_cleanup_triggered",
         payload={
-            "report_thread_id": thread_id,
+            "report_thread_id": None,
             "measurement_available": snapshot.available,
             "measurement_reason": snapshot.reason,
             "measurement_truncated": snapshot.truncated,
@@ -1448,9 +1320,8 @@ async def trigger_cleanup(
         },
     )
     logger.info(
-        "workspace cleanup triggered for org %s: agent %s task %s (run #%s, "
-        "thread %s)",
-        org.slug, agent, task_id, run_number, thread_id,
+        "workspace cleanup triggered for org %s: agent %s task %s (run #%s)",
+        org.slug, agent, task_id, run_number,
     )
     return task_id
 

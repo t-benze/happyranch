@@ -1,5 +1,34 @@
 # Web And CLI
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Daemon-managed workspace cleanup
 
 `workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean
@@ -85,15 +114,109 @@ The SPA supports mutations, including task cancellation/revisit and Settings.
 Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the current
 surface. The daemon defaults to loopback; remote access uses the connector.
 
-### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams)
+### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills)
+
+The shipping AppBar offers a compact language selector immediately beside the
+theme toggle (THR-118 seq88). It shows the current native endonym and offers
+English and 简体中文, with each text carrying its own `lang`. Its accessible
+name and tooltip translate with the interface. The existing Select primitive
+provides keyboard selection, Escape dismissal and focus return. It calls the
+same `useI18n` setter as Settings ▸ Preferences ▸ Language, so both controls
+agree immediately and remain usable independently of Settings API availability.
+Existing saved-choice precedence, browser reload persistence and storage-event
+mirroring apply without a second state/persistence owner. Selecting the header
+deliberately moves focus to that control; external tab changes preserve focused
+editors, drafts and selection. Native desktop restart persistence stays deferred.
+Focused ordinary-build evidence uses `w4a-browser-evidence.mjs --slice header-language`
+with `--header-case default|tasks|interaction|draft` and the existing W5 startup
+cases, without widening the accepted whole-console inventory. In quota-limited
+browser venues, `--chrome-temp <short task-owned disk-backed path>` selects
+the temporary font-allocation venue for this header slice.
+
+**Ongoing bilingual delivery rule (THR-118 seq81/82):** every new or changed
+app-owned heading, action, dialog, tooltip, accessible label, validation,
+loading/empty/error state and generated narrative ships en and zh-CN in the
+same PR. Use typed catalogs, named parameters, explicit plurals and locale-aware
+helpers. Pure shared UI takes localized presentation props. Authored content,
+machine identifiers and raw diagnostics stay verbatim.
+
+The focused synthetic browser selections are
+`web/scripts/w4a-browser-evidence.mjs --slice agents-safeguard` and
+`web/scripts/w3b-jobs-browser-evidence.mjs --slice cascade`, against the ordinary
+build with private profiles and ephemeral fixture/CDP ports. They observe
+populated/loading/empty/error states in both locales at 390/1440, original task
+navigation, control/text bounds and clipping ancestors. The Jobs case measures
+every cascade-row descendant's text line boxes on both axes and rejects a row
+label (waiting qualifier, task ID) split across lines. The Agents case scrolls
+each recent-task label and state message into view and captures it, in
+sequential shots when one viewport cannot hold them all, recording the targets
+measured visible just before and after each shot. It also requires each
+recent-task card header's task ID, status pill, waiting qualifier and age to
+read as one line, with every header line box inside the card and viewport on
+both axes, at comfortable and compact density. The Agents case uses a
+valid prompt revision and checks the retained editor before any new lookup,
+authored multiline draft, selection 3:8, focus and request/transport silence in
+both switch directions. The unchanged prompt owner tests retain Save/readback
+and Cancel contracts; actual browser receipts and human usability review remain
+required evidence.
+
+Use this checklist in the existing case record and PR template:
+
+- Exercise both locales and applicable populated/loading/empty/error states at
+  390×844 and 1440×900. Check actual affected text/control bounds against clipping
+  ancestors, readable whole Chinese text after permitted scrolling, and pointer
+  and keyboard reachability; document width alone is insufficient.
+- Switch in both directions while retaining the actual mounted nodes, authored
+  draft, focus and selection. Observe retained DOM references before fresh lookup
+  or refocus, and require zero switch-window HTTP of any method, mutations and
+  transport restarts/messages.
+- Execute the original actions and navigation with unchanged payloads, raw
+  bytes, filters and destinations. Keep existing qualified behavioral tests;
+  screenshots and unrelated requests do not prove an action.
+- Record source/runtime/command/exit evidence and the test-authoring gate's four
+  answers, named tests/producers, attributable RED, byte-exact restoration/GREEN
+  and keeper disposition for changed tests. Preserve historical receipts.
+- Human review checks meaning and usability. Untranslated owned copy or broken
+  Chinese layout requires `REQUEST_CHANGES`; automation establishes only its
+  supported structural/completeness boundaries.
+
+Run ordinary Web lint plus the real-config `lint-owned-copy.test.ts` and actual
+source `coverage.test.ts` guards. The Node-only source inventory validates the
+shipping HTML entry/static aliases and distinguishes declarations/imports from
+supported JSX/render-return mounts. Named/namespace router imports and reexports
+retain route and parent identity. Additional createRoot renders in reachable
+static runtime imports/reexports, including side-effect imports and transitive/
+cyclic module graphs, discover direct JSX or statically bound JSX constants.
+Unhandled arguments refuse with their source. Type-only edges are excluded;
+evaluating an imported module does not mount its unused JSX declarations or
+enter uncalled functions/classes. New mounted owners require
+source-qualified route/dialog classification; index/wildcard cannot borrow another owner's
+status, and full release rejects every english-only namespace. Unsupported
+entry/config/computed shapes and fixture promotion refuse with the source to
+review. Exact path/declaration/slot/literal/reason exceptions preserve reviewed
+raw values and shared defaults; they never exempt neighboring owned copy.
+See `web/ARCHITECTURE.md` for the scanner's finite supported shapes and limits.
+
+Current W5b browser contract: English and Simplified Chinese are available. The
+entry selects full mode synchronously before the first React text and hands its
+one resolution through App/AppShell. AppShell also selects full mode for later
+storage changes, deletion, clear and invalid values. Saved en wins Chinese;
+saved zh-CN wins English; otherwise ordered supported browser languages apply
+(Chinese variants map to zh-CN, with English fallback). There is no startup
+preference write or locale-keyed remount. API preview defaults and native
+authority/acknowledgement sequencing are unchanged. W1–W4 receipts below retain
+their historical builds and preview identities. W5a finite coverage (21 translated/
+3 not-applicable inventory) is accepted with PR993; inventory is not exhaustive
+rendering proof. Native N0/N1 remain deferred, deployment/live verification separate.
 
 The web console has a first-party, typed English/Simplified-Chinese contract in
 `web/src/lib/i18n/` (`locale`, `catalog`, `format`, `coverage`) with the
 `I18nProvider` in `web/src/hooks/i18n.tsx`. The initial locale is resolved
 synchronously before the first React text and applied to `<html lang>`; the one
 resolution is handed through `App`/`AppShell` to the provider so it is never
-resolved twice. Production runs in preview mode, so an unset
-`happyranch.ui.locale` preference renders English regardless of the environment.
+resolved twice. Production explicitly uses full mode at startup and in AppShell. A valid
+`happyranch.ui.locale` choice wins; otherwise ordered supported browser languages
+choose the locale, with English fallback. Startup never writes that preference.
 Storage failures degrade to an in-memory session with an honest persistence
 result, same-origin `storage` events sync other tabs without write loops, and
 sequenced acknowledgements prevent a superseded write from reporting durable
@@ -104,6 +227,10 @@ formatter; `web/src/lib/i18n/format.ts` adds explicit-locale interfaces that
 delegate to it, and `formatCount` takes an optional locale (omitting it keeps
 the legacy host-default behaviour). An unexpected catalog gap renders the
 English message with English plural grammar, never a raw key.
+
+**W5a copy repair:** the mounted Jobs Run/Reject, Settings Assistant/Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads and both Assistant turn variants supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+**W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
+
 
 **W2a** translated the mounted shell — AppBar page titles and controls, Sidebar
 navigation/aria/org-switcher/account copy, the root loading and NotFound
@@ -143,7 +270,7 @@ Capacity section bodies. Raw daemon errors, identifiers, executor and
 agent names, config keys, paths, commands and every capacity number stay
 verbatim; only product-owned surrounding copy is localized. The shared
 `EligibilityEditorDialog` (mounted by Organization but owned by Work Hours)
-stays English until W4. W2c also builds the client-only **Settings ▸
+stayed English until W4; W4b translates it. W2c also builds the client-only **Settings ▸
 Preferences** language selector (`sections/PreferencesSection.tsx`: English /
 简体中文 endonym radios with their own `lang`, immediate apply through the W1
 `setLocale`, `<html lang>` update, honest pending/saved/failed status) and
@@ -155,27 +282,67 @@ request. Until W3b-2 the selector was closed in production by a
 removed — see W3b-2 below). The W2c browser harness
 (`web/scripts/w2c-preferences-browser-evidence.mjs`) originally built a separate
 preview dist with that flag; since W3b-2 both of its dists are ordinary builds
-and its case A asserts the mounted selector (route renders, unset preference
-stays English). It also proves that state-held Settings messages follow a locale
+and its historical case A asserted the mounted selector (route renders, unset
+preference stays English). The W5b ordinary cases own current full-mode defaults. It also proves that state-held Settings messages follow a locale
 switch (the Organization Work Hours banner re-translates in place) while raw
 daemon diagnostics stay verbatim, with causal negatives for a pre-translated
-banner (`--defect-dist`) and a translated diagnostic. There is no browser/system
-language defaulting (unset/invalid stays English).
+banner (`--defect-dist`) and a translated diagnostic. At that historical W2c/W3b-2 stage there was no browser/system
+language defaulting; W5b supersedes the unset/invalid-English default.
 
-**W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist only (storage-event switching, no in-app instrumentation); since W3b-2 its gate case G asserts the ordinary bundle contains the Preferences selector, `/settings/preferences` renders it, and an unset preference on a Chinese navigator stays English (the former preview-dist positive control is gone with the flag).
+**W3a** translated the mounted Dashboard and Threads route families (`features/dashboard/**`, `features/threads/**` list/detail/composer/strips/dialogs and the shared `shared/threads/NewThreadDialog.tsx` it mounts); pure design-system patterns (Composer, ThreadHeader, InboxRow, StatValue, CrescentMoonBadge, RecipientsInput, MentionTextarea, …) take optional localized label props with English defaults, so their other callers are unchanged. Thread errors are held as locale-neutral `ThreadErrorView` descriptors (`lib/threadErrors.ts`: mapped catalog key/params, or `raw` text rendered byte-for-byte even when empty or equal to a catalog string) and rendered at render time. Authored thread titles, message Markdown, names, IDs, filenames/hrefs, raw delivery payloads and machine values stay verbatim; a locale switch keeps drafts, attachments, selection, open dialogs and focus and issues no request. W3a browser evidence runs `scripts/w3a-core-browser-evidence.mjs` against the ORDINARY dist only (storage-event switching, no in-app instrumentation); since W3b-2 its gate case G asserts the ordinary bundle contains the Preferences selector, `/settings/preferences` renders it, and historically an unset Chinese navigator stayed English. W5b ordinary activation cases establish Chinese fallback; the former preview-dist positive control is gone with the flag.
 
 **W3b-1** translated the mounted Tasks route family (`tasks`, `tasks/:task_id`: `features/tasks/**` list/detail panes, filters, group/status/rollup presentation, fan-out band, chain/lineage timeline, recall tree, activity log, property rail and execution-status card, loading/empty/error states, and the owned Cancel/Revisit/ResolveEscalation dialogs). The shared `StatusBadge` takes an optional localized `waitingLabels` prop with an English default, so its Jobs and TaskCard callers are unchanged. Dialog errors are held as locale-neutral `TaskErrorView` descriptors (`features/tasks/strings.ts`: mapped catalog key; an unmapped daemon code or, with no code, a non-empty string diagnostic rendered verbatim; otherwise the localized fallback) and the Revisit validation message is a state-held key, so both re-translate in place. Briefs, summaries, notes, agent names, task/thread/job IDs, status/block-kind/verdict/reason machine values, unknown escalation flavors and work-status states (the daemon label), raw event actions/payloads, hrefs and shortcut keys stay verbatim; group and lineage React keys stay locale-neutral, so a locale switch keeps rows, selection, open dialogs, typed drafts and focus and issues no request. W3b-1 browser evidence runs `scripts/w3b-tasks-browser-evidence.mjs` against the ORDINARY dist.
 
 **W3b-2** translated the mounted Jobs route family (`jobs`, `jobs/:job_id`: `features/jobs/**` list chrome, needs-you callout, status groups, columns and pending relative age; detail states, header actions, command card, If-approved cascade, gated notice, property rail and output panel; the owned Run/Reject dialogs). Daemon values stay verbatim: job/task IDs, titles, script text, rationale, agent names, interpreter/cwd values, job status tokens and `exit <code>`, exit codes, stdout/stderr and their stream names, the live `[done]` log line and rejection/failure reasons. Run/Reject/Stop errors are locale-neutral `JobErrorView` descriptors (`features/jobs/strings.ts` `classifyJobError`, the same F1 boundary as `classifyTaskError`: recognized code -> catalog key; unknown non-empty code -> raw; no/empty code with a non-empty string diagnostic -> verbatim; otherwise the localized fallback), replacing the former English `Error <status>: API <status> (<code>)` text. W3b-2 also **enables the opt-in language preview**: the `languagePreferenceGate.ts` / `VITE_ENABLE_I18N_PREFERENCES` gate is removed, so Settings ▸ Preferences ▸ Language is mounted in ordinary production builds. An unset preference stays English (production resolves in `preview` mode and never reads the browser language), and the selector discloses that secondary, not-yet-translated pages may still appear in English (`settings.preferences.coverageDisclosure`). Browser evidence runs `scripts/w3b-jobs-browser-evidence.mjs` against the ORDINARY dist.
 
-**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by W4a-2 (artifacts) and W4a-3 (usage).
+**W4a-1** translated the mounted Runtime Health and Dreams routes (`features/health/HealthPage.tsx`: header, history-window toggle, stat cards, uptime/relative-age units, loop and HTTP-latency tables, trends; `features/dreams/**`: header eyebrow plural, feed, status pills, counts, quiet state, overview rail and the dream detail drawer with its candidate review gate). Daemon values (loop names, route templates, dream IDs, agent names, local dates, summaries, transcripts, error text, candidate title/slug/topic/rationale/body, KB slugs, unknown status tokens) stay verbatim. Accept/Dismiss errors are `DreamErrorView` descriptors (`features/dreams/strings.ts` `classifyDreamError`, the same F1 boundary as `classifyJobError`); `DREAM_STRINGS` is replaced by `dreams.*` catalog keys. Browser evidence: `scripts/w4a-browser-evidence.mjs` against the ORDINARY dist; its `API_ROUTES`/`VIEW_ROUTES`/`SWITCH_ROUTES` tables are extended by later W4 slices (W4c Agents/Skills and W4d-1 KB/Artifacts shipped; Usage presentation W4d-2).
 
-The rest of the console is still English: **the other route families and the
-assistant dock body are W4**; the opt-in preview selector discloses this. Native preference persistence is N0/N1; full-mode automatic
-environment detection is implemented and unit-tested but not enabled until W5.
-`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1-migrated namespaces
+**W4b** translated the mounted Todos (`features/todos/**`: list, detail, status pills, rows, recurrence/timezone presentation, Confirm/Edit dialogs), Work Hours (`features/work-hours-config/**`: overview, wakes, agent detail, TierEditorDialog; plus the Work Hours-owned `shared/work-hours/EligibilityEditorDialog.tsx` that Settings ▸ Organization mounts and its `ErrorPanel`) and Audit (`features/audit/**`: page, timeline, filters and the narrative, whose sentences are catalog templates with interpolation) route families. Agent names, task/schedule IDs, actions, timezones, cron/recurrence values and raw payload/error values stay verbatim; every visible date/time goes through `lib/i18n/format.ts` (`formatDateShapeFor` named shapes; feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` remains only for timezone-conversion parsing and `<input>` values, enforced by a `format.test.ts` source scan). Count-bearing Todos/Audit copy uses per-locale plural objects selected by a numeric `count`, and the two Work Hours dialogs pass `closeLabel={t('common.close')}`. Error sites use the same F1 boundary through feature-local `strings.ts` classifiers. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
+
+**W4c** translated the mounted Agents (`features/agents/**`: roster list, agent detail pane/drawer, pending enrollments, AddAgentDialog, TeamEscalationPolicyPage/Card) and Skills (`features/skills/**`: catalog, validation, skill detail + assignment panel, custom-skill list/create/detail) route families. User/daemon values (agent names, roles and team identifiers without translation or title-casing, team-policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance values) stay verbatim; visible dates/times, including policy release/activation history and custom-skill purge completion, use named shapes in `lib/i18n/format.ts` (`dateTime` for those timestamps; en/zh-CN rendered-state regressions complement the source scan, which rejects direct locale-formatting calls), count-bearing copy uses plural objects, in-scope dialogs pass `closeLabel={t('common.close')}`, and error sites use the F1 boundary through `classifyAgentError` / `classifySkillError`. Below `md` the Agents roster stacks above the detail pane (height-capped, internally scrolling) instead of a fixed 244px rail, so the detail is not squeezed at 390px. The detail main pane uses `max-md:min-h-0` only below `md`; at `md` and up its base computed min-height remains `auto`. Browser evidence: route-table rows added to `scripts/w4a-browser-evidence.mjs`.
+
+**W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,
+search/filter/breadcrumb/empty/loading/error/Retry, gated KB Compose labels and
+its supported DialogContent close control, and artifact upload/download/delete
+confirmation. `VITE_ENABLE_KB_COMPOSE` remains unchanged. Candidate/Compose and
+artifact action errors are pure F1 category/raw descriptors rendered through the
+current translator, so generated messages retranslate without repeating a
+mutation; unknown codes and nonblank raw diagnostics remain verbatim, while
+absent/blank diagnostics use the localized fallback. KB authored content,
+type/topic/tags/slug/names/IDs and artifact canonical names, path segments,
+file-derived titles/provenance identifiers remain byte-verbatim. Only artifact
+client-derived type LABELS translate; classification/parsing and stored data
+remain unchanged. Counts use explicit-locale display plus plural objects.
+KB card/detail share relative-age rounding and catalog units, with explicit
+unavailable display for invalid dates. Artifact filename calendar dates use the
+existing `monthDayYear` shape in UTC without shifting the day; invalid calendar
+dates render an unavailable label. Modified times use viewer-local `dateTime`
+with explicit locale. The English modified-time shape now zero-pads the hour
+(e.g. `02:05 PM`), and invalid KB age displays `Age unavailable` instead of
+`NaNd`; F1 replaces synthetic HTTP action failures with raw diagnostics or
+localized fallbacks. Artifact bytes use `formatAttachmentSizeFor` with the same
+binary thresholds/rounding; other attachment consumers retain their legacy
+optional-locale behavior. DrawerContent has no closeLabel/control; Compose's
+DialogContent does, and is localized. The KB drawer fits below 640px without
+changing desktop width. At that narrow breakpoint the scrollable filter rail
+stacks above the feed, and the header actions stack below the title so list
+copy stays readable; desktop retains the side rail and header layout. Raw KB
+type badges retain their stored case (for example, `sop` rather than `SOP`)
+in both locales instead of applying a CSS uppercase transform. `kb` and
+`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. W5b supersedes the historical preview default with full browser resolution
+and bilingual availability disclosure; native N0/N1 remain deferred.
+Browser evidence adds representative KB list/detail/candidates and artifact
+list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
+upload filename/selected File/focus/control-preservation switch in both directions
+with zero requests. Final-head evidence is recorded in the task handoff.
+
+The mounted Assistant dock and conversation controls are translated in en/zh-CN.
+W5a finite mounted coverage is accepted with PR993. W5b replaces the historical
+preview default/disclosure with bilingual availability and full browser-language
+resolution. Native preference persistence remains deferred to N0/N1.
+`web/src/lib/i18n/coverage.ts` marks exactly the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2/Assistant-migrated namespaces
 (`root-shell`, `not-found`, `app-shell`, `help-and-palette`, `onboarding`,
-`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`) `translated` and every other mounted route namespace `english-only` (copy-free
+`settings`, `dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`, `work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`, `system-assistant`) `translated` and every other mounted route namespace `english-only` (copy-free
 redirects `not-applicable`), listing the actual mounted dialogs, so English
 fallback is never mistaken for coverage. Foundation browser evidence (isolated
 Storybook probe + the real `main.tsx` startup in headless Chrome) runs via
@@ -348,7 +515,7 @@ fidelity.
 
 ### Settings
 
-The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with exactly four left sub-nav panels, in this order: Capacity · Assistant · Organization · Executors. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
+The Settings surface ships as a full page (`web/src/features/settings/SettingsPage.tsx`) at the `/orgs/:slug/settings/*` route, entered from the footer-pinned **Settings** item in the Sidebar, with five existing sub-nav links, in this order: Capacity · Assistant · Organization · Executors · Preferences. Below640px these links wrap above the panel; at640px and wider the existing left rail remains. Preferences keeps full readable copy and a locally bounded panel. The Settings root, retired `system` and `agents` subroutes, and unknown subroutes resolve to Assistant with replace navigation. (`SettingsDialog` is retained unmounted for direct tests; it is not an application or prototype entry point.) It shows:
 
 - **Capacity** — stages the paired daemon-wide `queue_workers` and
   `host_global_session_cap` values for a future operator-controlled restart.
@@ -494,17 +661,28 @@ The shipped frontend surface is `web/src/features/settings/SettingsPage.tsx` (le
 
 ### Agents page
 
-The Agents page (`web/src/features/agents/`) shows the active agent roster plus pending enrollments. Each agent detail drawer now includes (Phase 2):
+The Agents page (`web/src/features/agents/`) shows the active agent roster plus pending enrollments. The mounted detail pane serves desktop and mobile; the retained drawer component shares the prompt editor without a new mount. Agent details include:
 
 - **Repositories** — `repos` map from org/agents/<name>.md frontmatter (THR-095), shown as badge chips in the detail header.
-- **System prompt** — read-only, collapsible. Sourced from the `system_prompt` field on the existing `GET /agents` response (additive Phase 2 field).
+- **System prompt** — collapsible, with Edit / Save / Cancel. The founder-only `PUT /agents/{agent_name}/system-prompt` accepts exactly `system_prompt` and the matching lowercase 64-hex `expected_revision` from `GET /agents`. Description remains read-only.
 - **Model** — per-agent model string (`model` field in `GET /agents`, additive THR-067 field). Web UI field is PR-2 (separate follow-up).
+
+Prompt saves preserve unrelated definition fields and normalize multiline/Unicode text through the existing parser and protected-input validators. The exact 200 receipt is `{agent, system_prompt, revision}` from one canonical byte snapshot. The editor freezes the draft base and captured org/target, disables typing/Save/Cancel through PUT and an explicit uncached GET, and shows Saved only when both body and revision match. Polling never rebases a dirty draft. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation. Initial loading/error/empty/missing-revision/disappeared-target states refuse editing; close/selection/navigation discard locally and ignore late responses. en/zh-CN switching preserves the mounted draft, focus and selection. Errors retain the draft; inspect an explicit fresh read before deliberate reapply, with no automatic PUT retry. Cancelling the request can leave an admitted save committed: its started renderer and terminal reconciliation finish before the writer gate releases, so inspect fresh canonical state before reapplying.
+
+Missing/malformed revisions return422 `expected_revision_required`; stale bases return409 `stale_agent_revision` with `current_revision`; absent active targets return404 `agent_not_found`. Reconciliation400 includes `system_prompt_reconciliation_failed`, a bounded diagnostic and actual canonical/workspace compensation statuses (`restored`, `not_owned`, `failed`, `not_required`). Audit500 reports `system_prompt_audit_failed` / `possibly_committed`, never an invented rollback. A canonical receipt does not prove workflow readiness or retained-provider adoption. Founder THR-280 seq21 waives C16 empirical genuine Claude/Codex/Pi/OpenCode adoption, including retained sessions and finite genuine Codex recovery episodes: FOUNDER-WAIVED / NOT EXECUTED, never PASS. Prompt delivery across launch/resume, all four adapters, full/delta/hole/fallback and finite callback-recovery orchestration remains required. Deterministic external CLI stubs can establish input transport/orchestration, not model adoption; THR-211 seq371 forbids real test-generated provider sessions in every venue.
 
 Teams membership editing (add/remove workers only — manager reassignment is founder-gated) is available via `PUT /settings/teams`, wrapping `TeamsRegistry` mutators with `validate_team_membership` consistency checks and 409 rollback on drift.
 
 **Backend:** The `GET /agents` response now includes `repos`, `system_prompt`, and `model` fields (additive, `allow_rules` remains excluded). The `PUT /agents/{agent}/model` route sets or clears the per-agent model (see below).
 
-The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct tasks that have the authoritative `workspace_cleanup_triggered` audit marker and are currently assigned to that agent. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
+The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct own-agent tasks eligible by a historical same-agent `workspace_cleanup_triggered` audit or the exact manual first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (alone, LF or CRLF; no substring/prefix matching). Eligibility and deduplication precede the five-row limit. Routine reports stay on this existing agent page through ordinary completion/results, with no cleanup-report thread creation, routine posting or reuse obligation. Historical threads/messages/associations/results/audits and explicit founder-requested coordination remain intact. Manual display does not increment daemon count or grant action authority. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
+
+Three nonunique cleanup indexes support the existing reader SQL and are installed
+with `IF NOT EXISTS` after legacy columns exist, retaining existing definitions.
+The synchronous route already runs in a worker. Breaker delivery listing and mint
+now use sequential `await asyncio.to_thread` calls, so those DB waits run off the
+event loop. Other callers can still wait for their own DB operation; synchronous
+unload prechecks and close can still block the loop.
 
 Build and dev commands:
 
@@ -552,13 +730,28 @@ Founder omits `--session-id`, supplies `team_slug` in the JSON payload, and the
 command uses the existing daemon bearer. The payload contains
 `operation_key`, `template_name`, `expected_current_version`, `definition`,
 and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
-session claims are rejected. `--from-file` must be absolute. The closed
+session claims are rejected. `--from-file` must be absolute. The legacy closed
 definition is `kind=product-design`, with `schema_version` set to the genuine
 JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
 author of an immutable PRD revision, Founder/implementer/tester reviewers, all
 three required on the current revision, and request-changes returning to the
 author. A non-empty description is the only variable descriptive field;
 unknown fields and kinds fail closed.
+
+New definitions use `kind=document-review`, genuine integer `schema_version=2`,
+one agent author and 1–3 reviewers with unique abstract roles matching
+`[a-z][a-z0-9-]{0,62}`, and at most one human reviewer. `output` contains
+`primitive=immutable-document-revision` and a nonblank `description`. `outcomes`
+contains `approved`, optionally `changes_requested`; `approval` is all/current
+with required_roles exactly equal to reviewer order. `request_changes` is null
+for approval-only, otherwise exactly action=return-to-author, revision=new,
+invalidate=all-prior-receipts. `submission.timing` is on-completion or
+while-active-or-completed. These are document capabilities, not execution grants.
+Malformed new policy exits2 before either CLI client or port discovery; legacy
+file/domain failures retain exit1. The server independently validates policy and
+publisher authority. @2 pins are workflow-compiler@2/workflow-validator@2/operator-input@2.
+All immutable versions remain readable by a compatible reader; earlier readers
+refuse orgs containing @2 data, with no downgrade conversion promised.
 
 Founder reads exact immutable versions with:
 
@@ -574,6 +767,52 @@ Responses return canonical JSON, base64 of the same UTF-8 bytes, SHA-256,
 version/pins/timestamp and authenticated publisher provenance. Conflict,
 stale-CAS, duplicate-content and authorization errors retain stable
 machine-readable `detail.code` values; refusals leave no template residue.
+
+### Workflow cutover
+
+Founder bearer and actual org authority apply to all three methods:
+
+```bash
+happyranch workflows cutover show --org <org> [--json]
+happyranch workflows cutover request --org <org> --from-file /absolute/request.json [--json]
+happyranch workflows cutover downgrade-preflight --org <org> [--json]
+```
+
+The only request fields are `action` (`enable` or `disable`), an opaque ASCII
+`operation_key` (1–128 characters from `[A-Za-z0-9._:-]`), and a strict positive
+integer `expected_generation`. No client actor/org/owner/proof/verified/state or
+receipt claim is accepted. Disable reason is fixed `founder_disable_requested`.
+The API prefix is `/api/v1/orgs/{slug}`: GET `/workflows/cutover`, POST
+`/workflows/cutover/requests`, GET `/workflows/cutover/downgrade-preflight`.
+`workflowCutover.ts` mirrors these methods; there is no workflow UI page yet.
+
+Responses expose stored marker/events and derived allowed actions, blockers,
+actual owners, deferred actions, reconciliation_required and the reconstructed
+`workflow-cutover-verifier@1` verification event. Requests add original request
+identity/generation/action and replayed alongside current state. HTTP200 means
+accepted, including truthful pending verification/drain. Retry an ambiguous
+response with the same body/key; exact historical replay works after disable
+and cold reopen. It never creates a new request identity.
+
+Auth/org authority precedes body parsing; identity claims return403, strict
+invalid input422, corrupt layout/history500, operation conflicts/stale CAS/
+illegal edges409, precommit operational failure safe500. Errors expose only a
+machine category. CLI exits0 for accepted reads/requests (including pending) or
+eligible preflight, 1 for denied preflight/domain/input/transport failures, and
+2 for usage. An existing F enable refuses before event/CAS writes with the
+existing500 category `draft_schema_migration_required`; GET's existing blocker
+`required_action` names `python scripts/migrate_workflow_draft_schema.py
+--runtime-root <absolute-root> --org <slug>`. The operator runs that script
+explicitly; `--check` exits3 when needed, 0 ready, 1 refusal, 2 parser. Existing F
+history remains visible without recovery advancement. New `orgs init`/POST /orgs
+creation initializes complete G directly. Preflight is read-only and permits only
+pristine F initial history with no workflow data; every E/G needs a compatible
+reader, including empty new/migrated orgs; even empty drained or template-only stores refuse.
+The faf40744 reader accepts pristine F and refuses E/G; the b0b55e9f
+reader accepts F/E and refuses G; older binaries
+are not claimed to enforce the current cutover decision. Activation, first-draft
+work and cancellation/dispatch remain later units; no live enable or deployment
+is implied by these methods.
 
 Slug resolution for per-org commands: explicit `--org <slug>` > `HAPPYRANCH_ORG_SLUG` > auto-infer only when exactly one org exists > error. Container-level commands take no `--org`.
 
@@ -655,18 +894,98 @@ Full founder-facing CLI docs: `skills/happyranch/SKILL.md`.
 
 ### Memory report guard
 
+The existing `/audit` read surface returns render-observed impression JSON with
+`memory_telemetry_version=1`, `pointer_ids` and `full_body_ids` alongside the old
+agent/session/digest/count/budget fields and unchanged actual task row scope.
+Fit directives are full-body exposure; fallback directives are pointers; IDs
+mentioned only in item text are excluded. No content is logged. Old writer
+calls remain byte-equivalent and unversioned. Read/search routes and CLI hint
+precedence stay unchanged; digest-first source resolution uses accurate item
+IDs, allowing a genuinely nonshown search-result read to be search-sourced.
+Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+A version is exposure metadata, never epoch authority or task eligibility.
+The source-side G3 census records actual bootstrap intent/identity/expectation/
+binding/launch-callback/terminal metadata plus independent seals in ordinary audit
+rows. Existing `/audit` preserves entries/cursors and optionally adds
+`memory_collection_observation` only for `action=memory_collection_seal`, from
+the actual serving OrgState. Other action responses remain unchanged. The
+closed source view and loaded identity are defined in the corrective memory
+spec; absent/busy/moving/failed components are explicit unknown/unavailable.
+GET performs no durable writes, resealing, provider launch or backend probe.
+Epoch references are non-null only after G1 revalidates the original accepted
+boundary and current full health. Missing, damaged, drifting or moving evidence
+withholds those references; reads never append or repair collection state.
+Stored seals checkpoint counters only: `census_integrity` explicitly reports
+`census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
+bounded internal zero-write validation with live semantic bookends; neither a
+stored seal nor a valid source census establishes collection health.
+G1 authority additionally reads exact admitted roles/results, original finite
+plan/tasks, owned jobs/full outputs and operation history at stable bookends.
+Its server admission, locked commit and serving checks use the existing
+recorded-retry verifier; matching briefs or paired public audits cannot replace
+raw supersession and invocation records. Synthetic closure includes every
+verified retry and supporting root and must match the complete job-returned
+set. Failed original probes still cannot supply successful canary evidence.
+The seal view checks those bookends before validating the captured census;
+measured movement returns `observation_moving` with null epoch references.
+Independent installed/provider acceptance and operational health remain
+separate from source implementation and source fixtures.
+
 `happyranch memory report` paginates the existing audit read surface but is
-currently fail-closed: JSON and text both return `insufficient_instrumentation`.
+fail-closed without valid G1 authority: JSON and text return
+`insufficient_instrumentation`. Valid authority exposes the original epoch,
+current health and eligible natural report; short samples remain insufficient.
 There is no CLI flag or input that can override the invalid current/unversioned
-epoch. Existing explicit `--session-id` get/search behavior remains unchanged;
-the report neither begins collection nor recommends push, alias, embedding, or
+epoch. Executor-owned task children receive their runtime session in the private
+`HAPPYRANCH_RUNTIME_SESSION_ID` environment hint, so `memory get`/`search`
+without a flag can preserve validated read-only attribution; a
+nonempty `--session-id` still takes precedence; an explicitly empty flag retains
+the existing environment fallback. Environment assembly with no runtime SID
+sends an empty hint that overrides inherited ambient values. Ordinary/custom
+execution forwards resolved invocation IDs; generated, unregistered IDs remain
+uncredited. Provider resume IDs are never used for this purpose.
+The report neither begins collection nor recommends push, alias, embedding, or
 ranking changes.
-Its cursor pages are exhausted before report calculation; malformed diagnostic
-rows fail closed, with text never presenting the observation thresholds as met.
-The current backend and command use report-local validation, so this guard does
-not assert unchanged shared-helper parity for observation-only malformed
-read/search diagnostics or a full controlled-clock whole-report matrix. Those
-remain frozen obligations of versioned reporting rather than passed guard work.
+The backend and canonical CLI share the pure `memory_telemetry_report` reducer.
+They acquire `session_start`, impressions, reads and searches before any empty or
+short return. Backend acquisition uses one synchronized SELECT statement snapshot;
+CLI exhausts real `/audit` pages at limit5000 in two complete sweeps and compares
+relevant audit identities/content and `/agents` roles at one aware UTC cutoff.
+Events at or after that cutoff are excluded. Backdated/content/role drift,
+cursor/schema errors, HTTP/decoder/timeout or SELECT failures refuse with
+`acquisition_unavailable`; CLI writes only that category to stderr and exits1,
+with no partial JSON. Unavailable `/agents` stays explicitly unknown and allows
+safe descriptive counts; it never supplies functional cohort authority.
+
+Structural returned-data corruption produces the full empty-metrics error object
+(null first event, days0, empty aggregate/by_agent/by_role/read_counts, explicit
+errors). Task-only sources are `digest`, `search`, `explicit_or_other`; unsupported
+strings use `invalid_source`, nonstrings `malformed_read_source_type`, and causal
+or digest-first contradictions `source_contradiction`. Independently identified
+manual/thread/dream/recovery/legacy populations are excluded before task source
+validation. Runtime task credit requires the actual task/agent/runtime-session
+start tuple; prefixes, client claims and SID-only matching cannot establish it.
+
+Version1 observed pointer/full-body lists are validated, disjoint and duplicate
+free, with union matching digest IDs/count. Legacy impressions remain unversioned
+with unavailable mode metrics; no memory-file/body/directive inference occurs.
+Exact tuple+memory pairs deduplicate opportunities and reads; secondary activated
+sessions and per-agent/role/memory operation counts remain descriptive. Search
+ratios use distinct persisted, causally corroborated search-sourced read pairs.
+Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
+complete UTC days exclude partial first/current days. Raw day/session sample
+flags may be true; without authenticated G1 authority, thresholds,
+diagnostics_valid_for_collection and evaluation_candidate remain false,
+decision `insufficient_instrumentation`. Probe freshness is initial/reset final-
+commit admission only; reports authenticate that original boundary and current
+full health. Equivalent replay never starts another day or renews proof.
+`session_start` records audited intended invocations, never a complete process
+launch/expectation census. G1 separately revalidates the full G3 census and
+independent accepted probe/epoch evidence before natural eligibility. Report
+reads never start epochs, perform tuning or ranking writes, or override authority.
+The read-side snapshot/two-sweep contract detects observed drift; it adds no
+writer fence or hostile same-UID guarantee. Actual installed canary acceptance
+and operational H-v1 duties remain separately gated.
 
 ### PR CI wait / guarded merge entrypoints
 
@@ -830,6 +1149,21 @@ emits only current-window agents. Each period's
 `total_consumed` REPLY wakes; a NULL `reply_message_seq` is unknown, does not
 count as a Reply, and withholds only the Replies delta when comparison is on.
 
+
+### Usage presentation locales (THR-118 W4d-2)
+
+The Usage v1 page translates app-owned Workload/Efficiency labels, columns,
+run types, statuses, comparison/coverage explanations, help, retry/stale/empty
+copy, ARIA, counts and units through `usage.*`. Raw agents, CLIs, model names,
+authored values and timezone identifiers remain verbatim. Window `*_local`
+parts already describe org-local wall-clock time and never shift with viewer
+TZ; UTC instants use the response timezone and explicit locale. Invalid-format
+fallbacks keep their original behavior. Compare/cohort/default/manual selection
+and all query/refetch/server metric semantics are unchanged; locale changes
+preserve nodes, focus and selection without new API calls. Usage is translated; the mounted Assistant dock and conversation controls are
+also translated. W5b enables full browser-language defaults; native N0/N1 remain deferred. Browser evidence:
+`web/scripts/w4a-browser-evidence.mjs --slice usage` (ordinary bundle).
+
 The web Usage page (`/orgs/<slug>/usage`, `web/src/features/usage/`) is the
 Usage v1 UI over these two routes and no longer reads `GET /tokens`. It shows
 a fixed "Last 7 days" window taken from the response (with Data through and
@@ -953,3 +1287,106 @@ These are invoked by skills inside agent sessions. Do not invoke them by hand; d
 - `happyranch threads {reply,decline,dispatch}`
 
 Callbacks should use `--from-file <path>` where payloads have multiple fields. **The path MUST be absolute** (e.g. `/tmp/completion.json`). A relative path silently resolves against the agent's cwd and can litter stray files under the runtime orgs root. The CLI rejects relative paths with a clear error in the callback family (`report-completion`, `threads reply/decline/dispatch/compose`). See `docs/agent-guides/agent-executors-and-permissions.md`.
+
+### System Assistant mounted copy (THR-118)
+
+The global `AssistantDockHost` and its mounted `ConversationSwitcher` bind en/zh-CN app-owned visible/accessibility copy, including composer/state/key hints, typing/tool activity and conversation actions/rename/delete confirmation. Shared MessageBubble/TypingBubble copy overrides are reused. Errors retain capture-time provenance: app fallback keys resolve at render time; raw daemon detail/message and caught diagnostic values (including empty or catalog-equal values) stay exact. Executor/tool names, titles, authored content and IDs remain data. Viewer-local timestamp and elapsed semantics remain unchanged.
+
+Locale switches preserve mounted nodes, active conversation, transcript/inflight state, drafts, focus and selection without entering connection-effect dependencies or issuing requests/mutations/reconnects. The detailed boundary is [Assistant Web UI §6.12](../superpowers/specs/2026-06-12-system-assistant-web-ui-design.md#612-mounted-dock-locale-presentation-thr-118). Ordinary-build evidence is `web/scripts/w4a-browser-evidence.mjs --slice assistant`: real HTTP/WS seams and request/socket ledger plus 390/1440 screenshots. Coverage inventory includes both consumers and marks only `system-assistant` translated in this slice, supported by component regressions and ordinary-build mounted-copy evidence. W5b enables full browser-language defaults; native restart acceptance remains deferred.
+
+### Founder initial activation and draft receipts (S2)
+
+The existing human bearer boundary proves the bearer performed the action, not
+that separate humans hold separate credentials. No task/session fallback exists.
+Manager template publication alone does not activate or assign work.
+
+```bash
+happyranch workflows activate --org <org> --from-file /absolute/activation.json [--json]
+happyranch workflows activations list --org <org> [--json]
+happyranch workflows activations show <activation-id> --org <org> [--json]
+```
+
+The API has exactly POST and GET `/api/v1/orgs/{slug}/workflows/activations`
+and GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}`. New creation
+returns201; identical actor/org/key/request replay returns200 with the same
+original root/intent/pins/time. List returns an array; show returns one receipt.
+CLI parser/local malformed-file errors exit2, domain/transport errors exit1,
+and valid receipts, including pending execution, exit0. Retry response loss with
+the same immutable request/key. No reactivation, reassignment or retry mutation
+endpoint is supplied by S2. The typed API mirror is `workflowActivations`. The served
+OpenAPI request discriminator maps both task-attachment and thread-attachment
+inputs to their actual inlined variants in the served document; those pointers
+are part of the contract keeper.
+
+Every request object and nested record is closed; unknown fields, booleans in
+integer fields, identity/provenance claims and `latest` aliases refuse. Legacy untagged requests retain exactly four fixed roles and unchanged wire
+bytes. New requests add `format=workflow-activation-request@2` and bind exactly
+the selected immutable template roles; new receipts add
+`format=workflow-activation-receipt@2`. Human slots bind Founder/founder/null with
+empty replacements, agent slots bind distinct active same-org canonical members.
+Agent-only templates have zero human aliases. Replacement maps have the same
+exact slot keys and at most16 candidates per agent slot. Recipients are1–4 unique
+abstract roles from that template. Unknown format/role syntax/duplicate recipients
+refuse locally; exact template membership remains server-owned. Requests cannot
+add return-to-author to a null-return template. The served request/receipt unions
+and input discriminator pointers cover both formats. Concrete legacy
+request fields are:
+
+| Field | Contract |
+| --- | --- |
+| `operation_key` | Nonempty bounded operation key; never reminted on retry. |
+| `instance_id` | Caller reference, lower-case slug beginning with a letter; never a task ID. Identity is org plus this reference. |
+| `expected_activation_revision` | Integer0; initial admission only. |
+| `template` | Exact `identity_id`, positive integer `version`, 64 lower-case hex `definition_digest`. |
+| `authority` | Current coherent `namespace`, positive integer `generation`, 64 lower-case hex `snapshot_digest`. |
+| `scope` | Nonempty bounded `brief` describing the document task. |
+| `bindings` | Exactly `product-lead`, `founder`, `implementer`, `tester`. Each has `kind` (agent/human), `principal`, and nullable `team`. Founder is human/founder/null; other roles require active same-org canonical agents/teams and independent principals. |
+| `eligible_replacements` | The same four role keys with explicit arrays of bindings; Founder array is empty. These are inspectable candidates, not permission to replace. |
+| `allowed_actions` | Unique closed values: `draft-document`, `submit-immutable-document`, `collect-review`, `approve-planning-input`, `return-to-author`; draft-document is required. Later actions do not enable deferred producers. |
+| `inputs` | Bounded array of same-org source pins. `task-attachment` has `task_id`, `storage_key`, `sha256`, `recipients`; `thread-attachment` has `thread_id`, `attachment_id`, `sha256`, `recipients`. Recipients are explicit role names. Existing visibility owners govern access; private thread inputs cannot expand participation. No host path/URL or mutable-only source reference. |
+
+Server snapshots inputs and bounds total canonical context to1MiB. Source digest
+mismatch/unavailable source returns422 with actual owner and required_action.
+No private context bytes are returned in receipts or errors. No new input
+entitlement follows from being selected for a role.
+
+Each receipt carries immutable original fields `activation_id`, `instance_id`,
+`instance_reference`, `activation_revision`, `root_task_id`, `intent_id`, exact
+`template` (the request pin plus `version_id`, `compiler_pin`, `validator_pin`,
+`source_pin`), `authority`, `bindings`, `eligible_replacements`, `allowed_actions`,
+`scope_digest`, `context_digest`, `activated_by` (principal_kind human,
+principal_id founder, proof_kind founder_bearer), `created_at` and
+`original_request_digest`. `replayed` distinguishes exact POST replay. The separate
+current projection has `state` (queued/claimed/running/uncertain/cancelled/failed/
+completed), `execution_started`, `pending`, `reconciliation_required`,
+`cancellation_requested`, `current_eligibility` (`eligible`, blocker code array),
+and `responsible_owner`. Session registration does not set execution_started;
+a genuine bound host handle does. Missing callback/ack/quiescence remains pending
+uncertainty; successful transport alone is not draft completion. A completed
+draft is not immutable submission or approval. Template v2 publication/reopen
+cannot retarget original v1 pins. No bearer or opaque host-control token is exposed.
+
+Safe errors retain `workflow_activation_operation_conflict`,
+`workflow_activation_cas_stale`, `workflow_activation_authority_stale` (409),
+`role_binding_not_authorized` (403), bounded invalid/unavailable input (422),
+and `workflow_activation_storage_corrupt` (500, no repair). Existing human_only,
+authority/profile and OrgDep errors remain unchanged. Disabled/busy/fenced
+admission creates no activation/task and is distinct from a persisted queued or
+uncertain instance. Independent review/QA/CI, U3-U6, mounted UI and separate
+Founder Request changes/Sign off/operator observations remain acceptance gates.
+
+### Manual local-CI receipt contract
+
+The nightly workflow's sole manual input is `all_only` (boolean, default false);
+there is no `run_integration` toggle. It invokes the extracted receipt-producing
+`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root,
+which records actual checkout/source/tool provenance and the
+`scripts/local_ci.sh all` command exit. The manual cap is the approved 150
+minutes; general integration retains its 30-minute cap and exact schedule-only
+predicate, so all three manual input cases skip it. Under THR291, Python units
+and the runner's G collection/source-control/repetition follow-on remain
+SUSPENDED and unexecuted, including when `all_only` is true. A successful paused
+wrapper verifies only remaining Web checks; dormant keeper/proof edits are not
+behavioral PASS or RED/GREEN evidence. The current merge-forward repair requires
+no manual dispatch or rerun. General integration remains SKIPPED under
+THR243 seq42, never PASS. See `docs/local-ci.md` for the maintained CI contract.

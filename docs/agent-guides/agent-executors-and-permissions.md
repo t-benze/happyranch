@@ -56,6 +56,67 @@ written for executor resolution. The executor is resolved against the
 Four **built-in** profiles ship with the runtime; approved custom-adapter
 profiles are bound in the machine-global runtime store (THR-107 — see below).
 
+Machine-global profile mutations use the U2B same-host cooperative coordinator.
+Each supported adapter/profile writer takes a stable owner-only per-profile
+file lease, pre-fences only orgs with consumers of that profile, commits through
+the existing durable-first writer, and republishes each org only after its full
+profile dependency closure is coherent, including the existing central
+approved/current custom-adapter eligibility check. The lock order is profile
+lease before org publication lease before existing writer locks; the shared
+`executor_profiles.yaml` mutation lock is the innermost leaf and covers only
+read/merge/atomic-replace. Multiple agents using one profile remain distinct
+consumer rows; removing one cannot erase another. Pending enrollment and rejection
+create no active requirement. Each lifecycle canonical segment acquires source
+and target profile leases before the org publisher gate, maintains the exact
+consumer relation, and restores the prior profile mirrors on pre-commit failure.
+These leases release before publication discovery and awaited workspace work.
+Publication compares the dependency projection with the canonical active roster;
+an absent row cannot silently authorize a ready empty closure. Profile contenders
+refuse an unfinished ordinary canonical batch before their global operation claim;
+a later healthy publication/recovery permits the next action. A removed profile leaves its
+remaining consumers unbound and their org fenced until an explicit valid rebind
+or removal. Live contention returns `profile_coordinator_busy`; process death
+releases the kernel lease and startup resumes the durable operation exactly
+once. Existing admitted work is not killed, and U2B adds no workflow admission
+or activation surface.
+
+Approval passes its selected intended profile, or its empty target selection,
+into the existing serialized adapter writer. Before approval, idempotent
+return or binding, the durable target must still match. A supported submission
+that changes it causes the existing 409 `profile_consumer_changed` conflict
+without adapter/profile mutation; a fresh request reselects only after stale
+ownership releases. Stable known-target contention remains 409
+`profile_coordinator_busy`, and ordinary no-target approval creates no profile.
+The adapter writer never acquires a new profile lease.
+
+Prompt-only founder saves reuse the registered profile's text renderer: Claude's instruction renderer for the Claude adapter, the shared Codex renderer for Codex/Pi, and the OpenCode renderer for its adapter. They update regular `AGENTS.md` plus raw `CLAUDE.md -> AGENTS.md` without invoking permission/settings/skills bootstrap. Existing safe pair conversion preserves original files and never writes through external instruction links; unsafe/unreadable inputs refuse. A cancelled prompt request finishes its started renderer and terminal reconciliation under the writer gate before cancellation propagates. Disconnected init streams drain their started worker before releasing that gate. Saving without a workspace persists canonical content only; explicit init later delivers it. Launch pair validation remains read-only and refuses incomplete pairs. Disk preparation and a resume ID do not prove provider adoption. Founder THR-280 seq21 waives only C16 empirical genuine-provider adoption, including retained sessions and finite genuine Codex recovery episodes: FOUNDER-WAIVED / NOT EXECUTED, never PASS. All four adapters' launch/resume, full/delta/hole/fallback and finite callback-recovery input transport/orchestration remains required; deterministic stubs do not establish model adoption, and THR-211 seq371 forbids real test-generated provider sessions in every venue.
+
+Both adapter registration entry points (`register_adapter` and
+`submit_adapter`), approval/bind/removal, executor-profile removal,
+direct-connect projection/retry, active Founder creation and approval, manager
+revision-CAS executor update, dedicated executor update, explicit termination,
+whole-definition repo/model writes, paired profile reads, and daemon startup participate at their existing mutation/read
+boundaries. Conformance probes finish before profile leases. A direct-connect
+projection left durably `planned` by pre-mutation contention is retried by a
+later commit call or the production sweep; it is not treated as a terminal
+successful response. Route and sweep contenders serialize on the profile lease
+and re-read that durable row before creating the U1A operation/fence, so a
+terminal loser performs no adapter/profile mutation or second publication.
+Dynamic org attachment takes all canonically ordered referenced profile leases
+through dependency synchronization and shared-map insertion. Readiness reopens
+only when each org-local profile digest equals the current global digest.
+
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 **Built-in profiles:**
 
 | Executor | Bootstrap doc | Skills dir | Permission surface |
@@ -99,6 +160,61 @@ When `model` is **unset** (the default for all existing agents), the executor la
 Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
 
 Missing values default to `claude`. All executors share `runtime/skills/bundled/`.
+
+For a runtime-owned task invocation, all built-in and approved custom-adapter
+child launch seams receive `HAPPYRANCH_RUNTIME_SESSION_ID` from the actual
+HappyRanch invocation session. It is an environment-only, read-only telemetry
+hint for canonical `happyranch memory get|search`, not a permission rule,
+provider resume id, or task identity. Environment assembly replaces an inherited
+hint with the invocation SID, or an explicit empty value when no SID is supplied,
+so the final platform overlay cannot restore a poisoned ambient value. Ordinary
+and custom-adapter execution forward their resolved SID, including generated
+IDs; an unregistered ID does not earn task credit. The unchanged route validator
+remains authoritative. Shipping tests exercise Claude/Codex root and child
+bootstrap and same-agent overlap; codebuddy, additional contained/custom variants,
+thread/dream population and genuinely nonshown follow-on reads remain separate
+canary obligations.
+
+The ordinary uncontained task launch keeps its registered runtime SID through
+internal 429 process retries, then retires only its own SessionTracker binding
+after the executor's final return or exception. Retired hints remain usable for
+memory get/search with no task/session credit. Generation-safe retirement leaves
+newer same-task generations and other same-agent tasks intact; provider identity
+and retry policy are unchanged. This ordinary source behavior does not establish
+installed, custom or contained acceptance.
+
+The observation-only G3 census is owned by actual `OrgState`/`_run_agent`, not
+executor environment hints or provider resume IDs. Each runtime entry owns one
+boot ordinal and immutable render expectation; actual started callbacks are
+occurrences under that entry, so provider retries do not add invocations.
+Terminal observation never clears another SessionTracker generation. Direct
+executor/manual/thread/dream launches create no task-bootstrap census binding.
+Observation failures do not change executor results, retries or application
+exceptions. Callback sealing performs no history acquisition; diagnostic seals
+remain `census_not_reconciled`. Bounded exhaustive read validation rejects
+moving captures and unresolved authoritative task/parent/type facts without
+changing ordinary launch/refusal behavior. These source facts confer no
+installed/epoch/collection authority.
+The seal-action `/audit` source view fingerprints declared actually loaded
+Python functions at their import origins and compares them to bounded compiled
+source without execution. It records the actual interpreter, registered
+TeamsRegistry cohort, current agent executor/model definitions, registered
+profiles, pinned provider or approved adapter/dependency file identities and
+already cached launch-backend capabilities. GET never constructs an executor,
+launches a provider, refreshes a capability probe or changes profiles. Missing,
+moving or mismatched components are bounded unavailable metadata; matching
+files in another checkout cannot impersonate loaded serving code. Same-UID
+integrity is detective only. See the corrective memory spec for exact nested
+keys and limits; this projection is not installed QA or attestation.
+G1 additionally fingerprints the actually loaded parser, acceptance/transition
+validators, report consumers and their acquisition functions. Independent
+installed QA still requires real owned job execution, measured interpreter/import
+origins/source, complete output/audits and actual finite ROOT/CHILD operations.
+Matching source files or a source provider stand-in never constitute installed
+acceptance. Current drift/loss closes an accepted epoch; elapsed probe age alone
+does not, because freshness is checked against original final admission.
+
+
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system
 contract by `runtime/skills/system_contracts.py`) delivers a stdlib-only guard
@@ -317,6 +433,12 @@ persist provider stdout, stderr, errors, or the canary.
    ``adapter_removed``) is written. The adapter's on-disk executable is never
    touched.
 
+For all profile-changing steps above, a failure after the durable writer but
+before dependent-org publication preserves the route's established success or
+error contract and leaves the affected org pointer fenced with durable recovery
+state. Daemon startup reconciles that operation forward; it never restores a
+stale ready snapshot. Orgs with no dependency on the profile are untouched.
+
 **Per-launch hash verification:** the ``CustomAdapterExecutor`` re-verifies
 path type (exists, regular file, executable) and SHA-256 immediately before
 EACH ``Popen``. The check is inside the per-attempt launch closure, so a
@@ -381,6 +503,18 @@ wrappers must fetch the contract-reference endpoint and follow the returned
 schemas, never a hand-constructed copy. Normative prose is the signed
 architecture §2
 (``docs/superpowers/specs/2026-07-24-unified-adapter-runtime-architecture.md``).
+
+## Deterministic integration executables
+
+All integration selections, including marked daemon/platform/remote-access siblings
+and the hosted Codex callback smoke, enter `tests/helpers/integration_parent.py`
+before importing pytest/runtime. The test-only fence retains production registry
+resolution and checks exact temporary stub paths/hashes, complete registry keys,
+explicit approved plan bytes, and the tested-source callback CLI. Pi/custom providers
+are unavailable until a separately authored deterministic fixture exists. No real
+agent executable, model request, agentic download, production registry/configuration
+or credential inheritance is allowed. This test fence does not modify production
+permissions, resolver policy or `_nested_daemon_env`. See `docs/local-ci.md`.
 
 ## Spawn-Environment Invariant and Worktree Isolation
 

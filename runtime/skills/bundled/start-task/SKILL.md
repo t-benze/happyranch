@@ -42,6 +42,16 @@ Parameters:
       ```
    4. If the brief does not reference prior work, skip step 3. Do not pull history speculatively.
 
+   Memory telemetry reports are observation-only. Valid collection requires
+   independently admitted G1 role/job/probe evidence and current serving health;
+   source fixtures, a summary tag, merge/deploy, or raw sample counts do not start
+   production collection. Probe freshness applies at new initial/reset final
+   admission. Continuing reports/replay preserve the authenticated original
+   boundary and recheck current full health. The root retains any explicitly
+   requested independent durable within48h AFTER-epoch check and production
+   observation follow-through; never infer a renewal, schedule or tuning action.
+
+
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.
 
    Run either:
@@ -231,6 +241,11 @@ Parameters:
      failure cannot be bypassed with a remote historical link. A repeated
      failed slice wakes its owning manager for a revised-work or escalation
      decision; no runtime retry-ceiling successor is created.
+   - `supersede` — root-only replanning; requires `successor_brief`, `rationale`,
+     and the validated recovery attestation. This replanning disposition is
+     root-scoped: if a non-root task owner returns it, the runtime fails that
+     child through the ordinary terminal tail and wakes its parent to decide;
+     no successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
    - `escalate` — the task needs founder intervention; requires `reason`.
      This founder-facing disposition is root-scoped: if a non-root task owner

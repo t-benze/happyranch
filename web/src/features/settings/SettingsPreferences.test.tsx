@@ -2,14 +2,14 @@
  * THR-118 W2c — Settings ▸ Preferences (language) routing/state/error TDD.
  *
  * W3b-2 enables the selector in ordinary production builds: the sub-nav entry
- * and direct URL work without any build flag, an unset preference stays
- * English even on a Chinese browser, and the coverage disclosure is visible.
+ * and direct URL work without any build flag. W5 enables browser-language
+ * fallback in production; explicit preview fixtures below retain their defaults.
  * Also covers API loading/error/no-data independence, both switch
  * directions with DOM identity + focus preservation, honest persistence
  * success/failure, storage-event compatibility, back/forward navigation and a
  * zero-mutation / zero-unrelated-request switch window.
  */
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse, delay } from 'msw';
@@ -149,8 +149,8 @@ function unsetChineseBrowserAdapter(): LocalePreferenceAdapter {
 }
 
 const DISCLOSURE_EN =
-  'Preview: some secondary pages are not translated yet and may still appear in English.';
-const DISCLOSURE_ZH = '预览版：部分次要页面尚未翻译，可能仍以英文显示。';
+  'English and Simplified Chinese are available. Your saved choice comes first; otherwise, we follow your browser language.';
+const DISCLOSURE_ZH = '支持英语和简体中文。优先使用你保存的语言；未保存时使用浏览器语言。';
 
 describe('W3b-2 Preferences — enabled in production (no build flag)', () => {
   beforeEach(() => stubSettings('ok'));
@@ -181,7 +181,7 @@ describe('W3b-2 Preferences — enabled in production (no build flag)', () => {
     );
   });
 
-  test('unset preference on a Chinese browser stays English; the coverage disclosure is visible', async () => {
+  test('explicit preview fixture: unset Chinese stays English; bilingual availability disclosure is visible', async () => {
     mountSettings(`/orgs/${SLUG}/settings/preferences`, unsetChineseBrowserAdapter());
     expect(await screen.findByRole('heading', { name: 'Preferences' })).toBeInTheDocument();
     expect(languageRadio('English')).toBeChecked();
@@ -211,6 +211,108 @@ describe('W3b-2 Preferences — enabled in production (no build flag)', () => {
     expect(document.documentElement.lang).toBe('zh-CN');
     expect(requests.slice(windowStart)).toEqual([]);
   });
+});
+
+describe('shipping header language control', () => {
+  // jsdom lacks these browser APIs used by Radix Select. Browser evidence
+  // separately exercises pointer capture, scrolling and actual geometry.
+  const browserMethods = ['hasPointerCapture', 'setPointerCapture', 'releasePointerCapture', 'scrollIntoView'] as const;
+  const originals = browserMethods.map(name => Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
+  beforeAll(() => {
+    browserMethods.forEach(name => Object.defineProperty(HTMLElement.prototype, name, {
+      configurable: true, value: name === 'hasPointerCapture' ? () => false : () => undefined,
+    }));
+  });
+  afterAll(() => {
+    browserMethods.forEach((name, i) => {
+      const original = originals[i];
+      if (original) Object.defineProperty(HTMLElement.prototype, name, original);
+      else Reflect.deleteProperty(HTMLElement.prototype, name);
+    });
+  });
+  beforeEach(() => {
+    server.use(http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.json({})));
+  });
+  test.each<SettingsMode>(['loading', 'error', 'empty', 'ok'])(
+    'header and Preferences agree in both directions while the settings API is %s',
+    async (mode) => {
+      stubSettings(mode);
+      const requests = recordRequests();
+      sessionStorage.setItem('happyranch.token', 'tok');
+      renderWithProviders(<><AppRoutes /><RouteEvidence /></>, {
+        route: `/orgs/${SLUG}/settings/preferences`,
+        i18n: { adapter: savedLocaleAdapter('en') },
+      });
+      const user = userEvent.setup();
+      const header = await screen.findByRole('combobox', { name: 'Language' });
+      const panel = await screen.findByTestId('settings-preferences');
+      const enRadio = languageRadio('English');
+      const zhRadio = languageRadio('简体中文');
+      await waitFor(() => expect(requests.some(r => r.path === SETTINGS_URL)).toBe(true));
+      const from = requests.length;
+
+      for (const [locale, name, label] of [
+        ['zh-CN', '简体中文', '语言'], ['en', 'English', 'Language'],
+      ] as const) {
+        await user.click(header);
+        expect(screen.getByRole('option', { name: 'English' })).toHaveAttribute('aria-selected', String(locale === 'zh-CN'));
+        expect(screen.getByRole('option', { name: '简体中文' })).toHaveAttribute('aria-selected', String(locale === 'en'));
+        await user.click(screen.getByRole('option', { name }));
+        expect(screen.getByRole('combobox', { name: label })).toBe(header);
+        expect(header).toHaveTextContent(name);
+        expect(header).toHaveAttribute('title', label);
+        expect(within(header).getByText(name)).toHaveAttribute('lang', locale);
+        expect(languageRadio(name)).toBeChecked();
+        expect(document.documentElement.lang).toBe(locale);
+        expect(screen.getByTestId('settings-preferences-status')).toHaveTextContent(
+          locale === 'en' ? 'Saved in this browser.' : '已保存在此浏览器中。',
+        );
+      }
+      for (const [radio, name] of [[zhRadio, '简体中文'], [enRadio, 'English']] as const) {
+        await user.click(radio);
+        expect(header).toHaveTextContent(name);
+      }
+      expect(enRadio.isConnected && zhRadio.isConnected && panel.isConnected).toBe(true);
+      expect(screen.getByTestId('settings-preferences')).toBe(panel);
+      expect(screen.getByTestId('route-evidence')).toHaveTextContent(`POP:/orgs/${SLUG}/settings/preferences`);
+      expect(requests.slice(from)).toEqual([]);
+    },
+  );
+
+  test.each(['en', 'zh-CN'] as const)(
+    '%s header supports keyboard selection, Escape focus return and the adjacent theme control',
+    async (initial) => {
+      stubSettings('ok');
+      localStorage.setItem('happyranch.theme', 'light');
+      sessionStorage.setItem('happyranch.token', 'tok');
+      renderWithProviders(<AppRoutes />, {
+        route: `/orgs/${SLUG}/settings/preferences`,
+        i18n: { adapter: savedLocaleAdapter(initial) },
+      });
+      const user = userEvent.setup();
+      const header = await screen.findByRole('combobox', { name: initial === 'en' ? 'Language' : '语言' });
+      const theme = screen.getByRole('button', { name: initial === 'en' ? 'Switch to dark theme' : '切换到深色主题' });
+      expect(header.nextElementSibling).toBe(theme);
+      header.focus();
+      await user.keyboard('{Enter}');
+      expect(screen.getByRole('option', { name: initial === 'en' ? 'English' : '简体中文' })).toHaveAttribute('aria-selected', 'true');
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+      await waitFor(() => expect(document.activeElement).toBe(header));
+      await user.keyboard(' ');
+      await user.keyboard(initial === 'en' ? '{ArrowDown}{Enter}' : '{ArrowUp}{Enter}');
+      expect(document.documentElement.lang).toBe(initial === 'en' ? 'zh-CN' : 'en');
+      await waitFor(() => expect(document.activeElement).toBe(header));
+      await user.tab();
+      expect(document.activeElement).toBe(theme);
+      await user.keyboard(' ');
+      expect(document.documentElement.dataset.theme).toBe('dark');
+      expect(theme).toHaveAccessibleName(initial === 'en' ? '切换到浅色主题' : 'Switch to light theme');
+      expect(header).toHaveTextContent(initial === 'en' ? '简体中文' : 'English');
+      await user.click(theme);
+      expect(document.documentElement.dataset.theme).toBe('light');
+    },
+  );
 });
 
 describe('W2c Preferences — routing, state and persistence', () => {

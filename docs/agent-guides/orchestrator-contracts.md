@@ -1,5 +1,34 @@
 # Orchestrator Contracts
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Conventions
 
 - Type hints on all function signatures.
@@ -30,6 +59,30 @@ ordinal whose scheduler-created preclaim owner is assigned to a registered
 in-memory `TeamsRegistry` agent and reconciles to the invocation's initial
 successful `0 -> 1` claim (the first two runs stay report-only); disabling the
 key affects later admissions only and cannot revoke an already admitted call.
+
+Routine scheduled and exact-marker manual cleanup reports remain durable on the
+existing agent page via ordinary completion/results (THR-259 seq418). The scheduler
+admits a clean-root task without report-thread configuration, lookup, ID allocation
+or composite creation. Task ID allocation, composition and ordinary insertion stay
+synchronous under `org.db_lock` after awaited measurement; enqueue follows successful
+insertion. Complete marker history, ordinals, cadence and deduplication are unchanged.
+There is no routine thread posting/reuse obligation. Preserve all historical threads,
+messages, associations, results and audits, explicit founder-requested coordination,
+truthful anomalies/partial failures/unknown bytes/independent verification gaps and
+the current-session final `happyranch report-completion` callback. Exact manual
+first-line display eligibility (alone/LF/CRLF) neither creates trigger audits nor
+changes daemon count or action authority. Runtime and canonical bundled-skill
+rollout require separately authorized deployment after merge.
+
+Cleanup activity uses three nonunique indexes installed with `IF NOT EXISTS`
+after legacy columns exist: tasks(assigned_agent,created_at DESC,id DESC),
+audit_log(task_id,agent) where action='workspace_cleanup_triggered', and
+task_results(task_id,agent,id DESC). Existing definitions are not validated;
+reader SQL, history and cleanup authority are unchanged. Breaker listing/mint
+use sequential `await asyncio.to_thread` calls and the original DB RLock, also
+used by close. Removal can log a sweep error; cancellation can leave a worker
+running and a committed pending token for later attached-tick recovery. No
+org lifetime lock, worker drain or new shutdown guarantee is added.
 
 The daily trigger and manual dispatch share the ONE `workspace-cleanup` TASK
 system contract (`requires_repo=false`; source
@@ -128,6 +181,8 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 
 `runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`, `load_terminated_agent`, `list_terminated`, `is_terminated`, and `is_name_unavailable`. Routes and orchestrator code should read through this module against the per-org root.
 
+Founder `PUT /agents/{agent_name}/system-prompt` is a strict prompt-only CAS. It validates through the existing parser/scanners before persistence, uses the same-read canonical SHA256 and short teams/canonical critical section, then refreshes only the existing workspace's selected registered adapter instruction pair. An absent workspace stays absent until explicit init. Reconciliation conditionally restores exact original canonical bytes only while its written revision is current; route-level pair replay also requires owned captured pair state. Detected winners/disappearance are preserved, inner pair compensation is not a global same-UID fence, and incomplete compensation is reported. Audit failure may leave committed bytes; best-effort authority publication may leave readiness fenced. The founder `agent_managed` audit retains scope/actor/source `founder` and `{action:'update',name,source:'founder'}`.
+
 `TeamsRegistry` in `runtime/orchestrator/teams.py` is seeded from `teams.yaml` and auto-persists on `add_worker` and `remove_worker`. There is no `DEFAULT_LAYOUT`; an org without `teams.yaml` is empty.
 
 ## Agent Lifecycle: Enrollment, Approval, and Termination
@@ -140,7 +195,7 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   with 409; after a conflict, the caller must reread and deliberately reapply
   its intended field change. A later roster revision must never bless an
   already-composed stale update.
-- **Freshness and conditional recovery.** Repository changes, founder create,
+- **Freshness and conditional recovery.** Model/repository deltas compose from a fresh definition inside the existing writer gate. Init owns each target lazily through clone/final capture/bootstrap/readiness. Executor preparation, founder create and approval retain one process interval through their final bootstrap and compensation; competing supported saves queue, with stale bases rejected after an unrelated canonical delta. Request cancellation and SSE disconnect retain the gate until every started mutating worker finishes; admitted request writes finish terminal reconciliation before cancellation propagates, even when cancellation repeats. No teams, DB, profile or publication lease spans await/clone/bootstrap/scans. Repository changes, founder create,
   and approval capture the current prompt/provider after their clone work and
   return 404 if that canonical definition disappeared. Executor switching
   rereads after materialization: an executor or model winner returns
@@ -186,10 +241,70 @@ exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
   advances only its roster generation and adds no selector-history churn. Common task,
   thread, dream, wake, and schedule launch resolution is read-only and refuses
   an uninitialized selector rather than mutating authority during launch.
-- **U2A boundary.** The coordinator's readiness verifier is intentionally not
-  consumed by task, chain, fan-out, activation, or dispatch paths yet.
-  Machine-global executor-profile changes remain U2B-deferred and do not yet
-  fence orgs; no workflow admission consumer may ship before U2B.
+- **Cutover request/recovery ownership.** `WorkflowCutoverStore` holds the
+  existing `Database._lock` plus a short `BEGIN IMMEDIATE` for each atomic
+  state/event transition and refuses caller-owned transactions. HTTP holds
+  existing `org.db_lock`; no profile lease, filesystem scan, host/network work
+  or await occurs inside the SQLite reservation. Full canonical layout/version,
+  chain cardinality/edges/keys/digests and marker pointer/time/reason are reread
+  under ownership; event1 retains its shipped identity/digest. Progressed event
+  SHA256 binds canonical UTF8 fields, fixed verifier/Founder request facts,
+  actual org and previous digest. Timestamps must be UTC, not monotonic.
+  The original foundation DDL/event1 remain unchanged. Complete F, E and G
+  are independently constructed release layouts; the legacy authority oracle
+  validates layout/history/data, selects that layout's whole generic+workflow
+  reference, and hashes all non-null SQL without filtering. Current v2 remains
+  observed-only. Existing-org load/enable do not install the draft extension.
+  One cold-load call before teams/settings resumes only authentic requests on validated E/G;
+  F retains history and the explicit migration remedy without advancing; pure
+  reads never advance. Enable verifies real integrity/FKs and absence of
+  contradictory work before compatibility_verified and again before enabled.
+  Disable commits its admission fence before separate drain commits. F5 closure
+  inspection retains actual owners and terminal history; queued cancellation,
+  callbacks and uncertain host reconciliation remain U2D/U4/U5 responsibilities.
+  Future activation must consume this same SQLite marker under its separately
+  accepted profile-to-org lock order; S1 ships only draft schema/validation, explicit operator migration and fresh
+  creation. Activation/dispatch/callback writers remain S2 or later.
+- **U2A/U2B boundary.** The readiness verifier is intentionally not consumed
+  by task, chain, fan-out, activation, or dispatch paths yet. U2B now routes
+  supported machine-global executor-profile and adapter writers through
+  `ProfileCoordinator`: dependent orgs are pre-fenced, the existing durable
+  writer commits, and only a complete profile-and-approved-adapter closure is
+  republished. Adapter approval revalidates its selected intended profile
+  (including no target) under the existing adapter writer lock before
+  approval, idempotent return or binding. A supported submission that changes
+  the target causes the existing 409 `profile_consumer_changed` conflict
+  without adapter/profile mutation; stale ownership releases before fresh
+  selection. Stable known-target contention remains 409
+  `profile_coordinator_busy`, and no-target approval creates no profile.
+  No new profile lease is acquired under the adapter writer lock.
+  Every supported active consumer creation, promotion, executor
+  update and termination maintains its distinct requirement inside the same
+  canonical fence; pending-only enrollment/rejection has no active membership.
+  Dependency publication checks the actual captured active roster, so missing
+  rows cannot prove zero requirements. Canonical discovery is outside all
+  profile/publication leases and transactions, bracketed by the durable
+  authority revision, and revalidated before synchronization/publication.
+  Lifecycle source/target leases release before publication capture and awaited
+  workspace work, including compensation. Startup settles interrupted operations before returning
+  `DaemonState`; direct-connect `planned` rows remain retryable by both the
+  commit route and production sweep, with a terminal re-read under the shared
+  profile lease before any U1A fence or adapter/profile mutation. Dynamic org
+  attachment synchronizes beneath canonically ordered profile leases and joins
+  the shared map before releasing them; closure also binds each local profile
+  digest to the current global digest. No workflow admission consumer ships
+  before its later unit.
+  A genuinely empty default org remains attached with no agents and `teams=[]`
+  when its initial authority publication is fenced by the missing default reviewer.
+  Attachment proves absence of active and pending definitions and canonical/in-memory
+  teams outside leases and transactions, brackets that discovery with the durable
+  revision, and validates it under profile-then-org ownership. It preserves the
+  initial fenced generation and publication journal; `verify_admission_ready()`
+  still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+  operation evidence, unfinished canonical writers, and stale captures refuse this
+  exception before synchronization. Reviewer policy and snapshot validation do not
+  change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 - **Approval.** `POST /agents/{name}/approve` atomically moves the pending file to `org/agents/<name>.md`; when that promotion makes the registered manager eligible, it initializes the team's selector in the same workflow-authority canonical change. It then bootstraps the workspace under `workspaces/<name>/`. Approved agents appear in `GET /agents` and `GET /agents/enrollments?status=approved`.
 - **Termination.** `manage-agent terminate` archives an approved **non-manager worker** on the caller's team. It is refused if the agent is a manager, belongs to another team, or has live work. Live work includes non-terminal tasks assigned to the agent, already-started thread invocations, firing schedules, running work-hours wakes, running dreams, or pending/running jobs attributable to the agent. If the agent is quiescent, the route:
   - archives the active `org/agents/<name>.md` to `org/agents/_terminated/<name>.md`;
@@ -207,6 +322,19 @@ Agents self-report `status="completed"|"blocked"` via `happyranch report-complet
 `block_kind` is the waiting-reason discriminant for an `in_progress` task — *what it is internally waiting on*: `delegated` (waiting on child subtasks) or `blocked_on_job` (waiting on background jobs). `block_kind IS NULL` ⟺ a subprocess is running now. A parent waiting on its children/jobs stays `in_progress` (not `blocked`); the await-founder state is the top-level `escalated`.
 
 `superseded` is a terminal state, peer to `completed`/`failed`. An `escalated` / `in_progress(delegated)` task transitions here when a human-authorized continuation (founder `revisit`, or a founder/manager thread-dispatch) names it in lineage: the predecessor is closed (block_kind cleared, audit cites the continuation root task_id) instead of being re-run. The close never re-enqueues the superseded task; it still wakes a delegated parent via the normal parent-wake path, and the delegated close is gated on all children being terminal so no live sibling is abandoned or SIGTERM'd. It joins every terminal predicate (`TERMINAL_STATES`, `_TERMINAL_TASK_STATUSES`, `_TERMINAL_STATUS_TO_EVENT`) and is completion-class for the thread task-followup: a thread-originated task that is superseded emits its `_maybe_post_thread_followup` system message (`task_completed` kind) just like a normal completion. The thread-dispatch supersede is manager-authorized only — a worker self-dispatch naming `resolves` is rejected (`403 thread_supersede_not_authorized`); the predecessor is never auto-closed by an unauthorized dispatch. Query the backlog with `happyranch tasks --status escalated` or `happyranch tasks --status in_progress --block-kind delegated`.
+
+Manager `supersede` decisions are root-only. The completion consumer identifies a
+non-root from the claimed task's `parent_task_id` before calling the generic root
+supersession writer; it never infers that cause from the writer's `None` result.
+A still-current non-root claim atomically becomes `failed`, clears its own
+chain/fan-out state, retains the durable note `manager supersede refused:
+non-root task <id>`, and uses the existing failed terminal tail plus delegated
+parent wake. Fan-out join context therefore lists the child as failed, and a
+serial parent clears `active_chain` before its one wake. If cancellation or a
+replacement session wins, neither failure nor wake occurs. Unrelated root
+refusals remain silent, while an eligible root still creates and enqueues one
+successor. A crash after the child commit but before enqueue is recovered by
+startup Branch 2 from the terminal-child/delegated-parent state.
 
 ## Derived Work-Status Summary (TASK-5522)
 
@@ -412,7 +540,8 @@ budgets, permission evidence, atomicity, replay, and closed audit evidence
 remain authoritative. K/P retain the real claim-time schema observation (raw
 DDL digest, inventory digest, and object count), but v2 never compares or
 rechecks those values and schema structure cannot refuse continuation. The
-legacy v1 schema clause remains unchanged.
+legacy v1 full-DB comparison remains authoritative, selecting the independently
+constructed S1 F/E release reference after complete validation.
 
 The injected active-policy block shows the exact top-level
 `manager_self_evaluation` object shape beside `decision` and the code-derived
@@ -514,7 +643,7 @@ placeholders, compared, or rechecked, and schema structure never produces a v2
 claim with the existing bounded `claim_failed` outcome. The legacy v1
 `_release_schema_digest`/`_live_schema_digest`/`_server_evidence`/
 `_server_fact_clause`/`_during_attempt_drift_clause` behavior and all callers
-remain unchanged. The checked-in full historical schema fixture
+retain full-DB fail-closed comparison with S1 F/E reference selection. The checked-in full historical schema fixture
 `tests/fixtures/authority_v2_historical_schema.json` and reconstruction support
 in `tests/authority_v2_historical_schema.py` remain real migration-path test
 support; organic `ADD COLUMN` histories, including `agent_enrollments`, require
@@ -1789,3 +1918,168 @@ claim a cancelled task. Queue failure preserves A's pending feedback and release
 the reservation. Queue insertion is not a task claim or an exactly-once crash
 boundary; startup may enqueue PENDING again. Other feedback paths, general chain
 advancement and restart policy are unchanged.
+
+## Task memory render and impression (THR-091)
+
+`_run_agent` retains the structured `MemoryStore.render_memory_digest` result
+through prompt construction. `build_memory_digest` remains a string/None
+wrapper. Selection/rendering occurs once; only appended item blocks contribute
+exposure. Fit directives are full bodies, fallback directives are pointers;
+body/title/header/nudge mentions and nonrendered candidates are not item IDs.
+Text, ranking, character budget, ordering and nudge behavior stay unchanged.
+
+Only appended items with string IDs satisfying the existing `ID_RE.fullmatch` contribute identity metadata. Null, missing, nonstring or malformed IDs remain rendered byte-for-byte under the existing permissive parser, but contribute no identity or ID fragments from their representation, title or body. A malformed-only digest still launches normally and emits no impression; valid neighbors retain exact modes/counts. Strict writer validation still rejects malformed caller-supplied metadata before insertion.
+
+After the existing trusted publication/SessionTracker binding and before
+`session_start` and executor launch, bootstrap emits one existing impression
+for actual items, with `memory_telemetry_version=1`, `pointer_ids`,
+`full_body_ids` plus the old accurate digest fields. A header/nudge-only result
+has no item exposure and emits no impression. Audit task scope/action and
+lifecycle/error handling stay unchanged. No metadata is recomputed from memory
+files after injection. The legacy extractor remains supported but bootstrap no
+longer uses it. The unchanged resolver still prefers digest to search.
+
+The ordinary `host_supervisor=None` launch retires its own SessionTracker
+binding after `executor.run` finally returns or raises, including all internal
+429 attempts. The existing `clear_if_active_session(task_id, agent, session_id)`
+removes only that generation's active context, PID and control; newer same-task
+generations and other tasks survive. The invocation remains usable for callbacks
+and memory attribution until that final exit. A retired SID still permits memory
+get/search but earns no task/session credit. Result identity, task classification,
+scratch/report ordering, one-shot recovery and contained pre-release cleanup
+remain unchanged. Ordinary source tests do not establish installed or contained
+acceptance.
+
+See the feature guide for the exact optional JSON validation/legacy contract.
+Recovery/unattributed launches do not gain task eligibility from a version;
+`session_start` is intended invocation rather than complete launch census.
+The source-side G3 observer records independent intended invocations and frozen
+expectations as described in the feature guide. G1 canary/epoch authority,
+current-serving census acceptance, G4 consistent acquisition,
+full reporting and installed acceptance remain OPEN; both reports stay
+fail-closed. No collection starts here.
+
+The `_run_agent` observation wrapper preserves its caller signature, bootstrap
+body, original registration/impression/start/launch/cleanup order and returns or
+raised exceptions. Intent reservation precedes preparation; SID and immutable
+expectation observations remain at their actual assignment/render boundaries.
+A finally observation retains unknown early phases and the exact invocation's
+terminal outcome without clearing or rewriting any SessionTracker generation.
+Counters/metadata use a short observer lock; persistence takes the observer
+writer before Database, with no Database-held caller entering the observer.
+Concurrent boundary metadata is drained synchronously by an observation boundary,
+without a timer/service and without holding metadata locks across application
+callbacks, rendering, executor/supervisor or task completion.
+Sealing checkpoints counters/digests without querying history on the callback
+path; its diagnostic is `census_not_reconciled`. Only a complete zero-write read
+validation reconciles history, using at most 256 rows per primary-key page and
+100,000 total audit rows. Database write counts/data versions and all semantic
+live observer facts bracket capture; changing, incomplete or exhausted capture
+is unavailable. Unresolved task population, parent knowledge or task type is
+unavailable even when identity, binding and start rows exist.
+
+The seal-action audit GET reads the actual serving OrgState through its
+`memory_collection_observation` accessor. Nonblocking short observer snapshots
+and database-revision reads bracket bounded interpreter/source/registry/file
+identity acquisition; no database-held callback enters the observer, no metadata
+lock spans file reads, and GET never reseals or writes collection history.
+A held metadata/database lock, pending preparation/writer, sticky error, changed
+boot/context or moving bookends withholds `data_through`. Failure is local to
+this read and cannot poison launch/callback/startup outcomes. A stable cutoff is
+source evidence only. G1 epoch references are projected only after complete
+original acceptance and current-health validation, with stable evidence/source
+bookends and zero reader writes. Both successful `_log_step_result` arms
+reconcile their exact admitted row after existing completion logging; failure
+withholds authority without changing the ordinary callback/decision outcome.
+Database publication serializes observer then DB, rechecks records inside
+BEGIN IMMEDIATE and appends only new audit rows. File/output acquisition stays
+outside the DB reservation. New initial/reset checks probe age at final commit;
+equivalent replay authenticates the original committed boundary and preserves
+its ID/time. Invalidations remain append-only; reset requires fresh QA and exact
+predecessor. The exact closed projection is in the corrective memory spec.
+
+
+### S2 initial draft consumers
+
+The document-review @2 compiler supplies the abstract author, role kinds,
+reviewer membership, output, outcomes, return/revision and submission capability.
+Activation binds current authorized actual principals separately and snapshots
+both raw definition and compiled contract. Only declared author inputs appear in
+the task brief; the immutable context retains all authorized pins/bytes. Claim,
+prelaunch and discovery load that exact retained template through the activation
+owner before checking current role membership. The task allocator, host keys,
+receipt-bound callback/result, containment and recovery owners remain unchanged.
+A successful author completes a draft; no submission, reviewer task, signature,
+join or manager decision is produced. Historical @1 closure reconstructs its
+original bytes without adding @2 defaults. New @2 closure matches only @2 requests,
+exact template pins and its original retained authority publication.
+
+
+Current S2 source supersedes the earlier U2A/U2B prerequisite statements that
+activation has no readiness consumer. Admission and prelaunch use captured
+canonical/profile bytes, then async serialization, selected sorted profile
+leases, org publisher/publication ownership and the synchronized DB writer.
+Discovery/file reads/awaits and external host/queue operations stay outside
+durable ownership; changed selected targets refuse before fresh discovery.
+`TasksMixin._insert_task_uncommitted` is consumed by this admission writer;
+ordinary `insert_task` keeps its supplied-ID, all-field and self-commit behavior.
+Admission retains synchronized writer ownership through rollback on commit
+failure, before releasing the publication lease. Its complete canonical context
+includes the actual allocated root, original actor/time, exact template and
+authority pins, binding and intent identities. The 1MiB limit applies to those
+final bytes. Historical receipts verify the full retained closure against its
+original authority publication without reading current source files or
+substituting current eligibility.
+
+The workflow classifier reads genuine draft/F5 bridges before ordinary task
+claim, startup, completion decisions, retry, reaper or portability cancellation.
+Unrelated tasks retain legacy ownership. The attached activation owner verifies
+full canonical semantics before any draft enqueue/dispatch/reconciliation;
+missing attachment or invalid/dual closure remains reconciliation_required.
+Current author occupancy is captured from the real tracker outside durable
+ownership and rechecked against current task bindings and the wake runner's
+running work-hour rows in the writer. Work-hour occupancy does not require a
+task tracker binding. Admission,
+claim and prelaunch refuse a busy author, including another work-hour invocation;
+receipt eligibility reports the same pending blocker separately from immutable
+roles and original pins. The draft's own session does not occupy a second slot.
+No fallback principal or new work-hours scheduling policy follows. Postcommit enqueue is advisory; startup and the live periodic reaper rediscover
+that same authenticated intent. The periodic workflow owner revalidates queued,
+no-launch work and current authority/capacity under the existing admission fences,
+then uses the real queue deduplicator after profile/org/publication/SQLite release.
+Capacity refusal waits for a later periodic tick. Receipt replay remains read-only
+and does not notify. Final claim/prelaunch rechecks prevent a stale notification
+from granting execution; uncertain, foreign, malformed and dual closure never
+become replay permission.
+If the author becomes busy after claim but before launch reservation, the exact
+unlaunched claim requeues its same task/intent. The supervisor receives the
+original refusal and clears that registered session; no failed draft, replacement
+attempt or observed launch is fabricated.
+Claim0 with affirmative no-launch can recover; possible launch is uncertain.
+Orchestrator's existing session, prelaunch, genuine RunningHandle and finalized
+SessionOutcome/Receipt seams supply evidence without changing host/tracker APIs.
+Runtime session, effect key and backend handle remain distinct. Session
+registration is insufficient to establish running. The actual handle's request
+identity must match the durable host effect key. Final quiescence consumes the
+same AdmissionRequest object sent to the supervisor, with its initial attempt;
+a same-valued foreign request or retry-numbered outcome cannot settle the draft.
+The receipt remains supplied by the existing finalized supervisor callback.
+Neither supervisor return
+nor successful callback transport alone completes a draft.
+
+Database's existing INTEGER result writer joins callback and canonical draft
+event atomically; both transport retry seams validate full stored payload/result
+closure. Early callback can await host acknowledgment. Completed event retains
+SQL result_id NULL and joins accepted result in its canonical bytes. Cancellation
+fences before opaque containment outside locks; only affirmative no-launch or
+exact finalized quiescence permits terminal settlement. Missing callback, launch
+identity or quiescence stays owned and blocks drain. No ordinary manager decision,
+parent propagation, retry/delegation or F5 submission/review producer is used.
+
+Complete legacy release references also cover independently pinned v0 and
+historical authority-v2 constructor inputs, including the organic additive
+migration order. Each reference runs current generic migrations and the
+requested F/E/G installer on its own disposable database; the comparison
+includes every SQL object. A candidate never supplies a baseline, and any
+required reference failure or unrelated object still refuses. This changes
+no observed-only authority-v2 claim rule.

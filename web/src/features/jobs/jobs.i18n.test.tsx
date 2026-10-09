@@ -215,6 +215,51 @@ describe('Jobs list i18n', () => {
 });
 
 describe('Job detail i18n', () => {
+  test.each(['en', 'zh-CN'] as const)('C8 %s populated cascade preserves its query, raw task and localized waiting', async (locale) => {
+    stubDetail(JOB);
+    const queries: string[] = [];
+    server.use(http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.json({})));
+    server.use(http.get(`/api/v1/orgs/${SLUG}/tasks`, ({ request }) => {
+      queries.push(new URL(request.url).searchParams.get('blocked_on_job_id') ?? '');
+      return HttpResponse.json({ tasks: [{
+        task_id: 'TASK-CASE-J', status: 'in_progress', block_kind: 'blocked_on_job',
+        brief: 'Raw cascade task / 原文',
+      }], next_cursor: null });
+    }));
+    mount(`/orgs/${SLUG}/jobs/${JOB.id}`, locale);
+    const link = await screen.findByRole('link', { name: 'TASK-CASE-J' });
+    const row = link.closest('li')!;
+    expect(row).toHaveTextContent(locale === 'en' ? '· waiting on jobs' : '· 等待作业');
+    expect(row).toHaveTextContent('in_progress');
+    expect(row).toHaveTextContent('Raw cascade task / 原文');
+    expect(link).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CASE-J`);
+    expect(queries).toEqual([JOB.id]);
+  });
+
+  test.each(['en', 'zh-CN'] as const)('C8 %s cascade loading, empty and error states use owned copy', async (locale) => {
+    stubDetail(JOB);
+    let release!: () => void;
+    let fail = false;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.json({})),
+      http.get(`/api/v1/orgs/${SLUG}/tasks`, async () => {
+        await pending;
+        return fail ? HttpResponse.json({ detail: 'raw fixture failure' }, { status: 500 })
+          : HttpResponse.json({ tasks: [], next_cursor: null });
+      }),
+    );
+    const view = mount(`/orgs/${SLUG}/jobs/${JOB.id}`, locale);
+    const heading = await screen.findByRole('heading', { name: locale === 'en' ? 'If approved' : '若批准' });
+    expect(heading.closest('section')).toHaveTextContent(locale === 'en' ? 'Loading blocked tasks…' : '正在加载被阻塞的任务…');
+    await act(async () => { release(); });
+    expect(await screen.findByText(locale === 'en' ? 'No tasks are currently blocked on this job.' : '当前没有任务被此作业阻塞。')).toBeInTheDocument();
+    view.unmount();
+    fail = true;
+    mount(`/orgs/${SLUG}/jobs/${JOB.id}`, locale);
+    expect(await screen.findByText(locale === 'en' ? 'Could not load blocked tasks.' : '无法加载被阻塞的任务。')).toBeInTheDocument();
+  });
+
   test('pending gated job: zh-CN chrome, verbatim values, same nodes and zero requests across switches', async () => {
     stubDetail(JOB);
     mount(`/orgs/${SLUG}/jobs/JOB-0001`, 'zh-CN');
@@ -301,6 +346,7 @@ describe('Job dialogs i18n', () => {
 
     const cwd = await screen.findByLabelText('覆盖工作目录');
     const dialog = dialogOwning(cwd);
+    const close = within(dialog).getByRole('button', { name: '关闭' });
     expect(within(dialog).getByRole('heading', { name: '批准并运行 JOB-0001' })).toBeInTheDocument();
     expect(within(dialog).getByText('（bash · cwd 提示：repos/app）')).toBeInTheDocument();
     expect(within(dialog).getByLabelText('超时（秒）')).toHaveValue(300);
@@ -311,7 +357,9 @@ describe('Job dialogs i18n', () => {
       await switchLocale('en');
       expect(within(dialog).getByRole('heading', { name: 'Approve & run JOB-0001' })).toBeInTheDocument();
       expect(screen.getByLabelText('Working directory override')).toBe(cwd);
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
       await switchLocale('zh-CN');
+      expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
     });
     expect(requests).toEqual([]);
     expect(screen.getByLabelText('覆盖工作目录')).toBe(cwd);
@@ -389,6 +437,7 @@ describe('Job dialogs i18n', () => {
     await user.click(await screen.findByRole('button', { name: '拒绝' }));
     const reason = await screen.findByLabelText('原因');
     const dialog = dialogOwning(reason);
+    const close = within(dialog).getByRole('button', { name: '关闭' });
     expect(within(dialog).getByRole('heading', { name: '拒绝 JOB-0001' })).toBeInTheDocument();
     expect(reason).toHaveAttribute('placeholder', '原因（必填，最多 1000 个字符）');
     await user.type(reason, 'Too risky');
@@ -396,7 +445,9 @@ describe('Job dialogs i18n', () => {
     const requests = await countRequests(async () => {
       await switchLocale('en');
       expect(screen.getByLabelText('Reason')).toBe(reason);
+      expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
       await switchLocale('zh-CN');
+      expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
     });
     expect(requests).toEqual([]);
     expect(reason).toHaveValue('Too risky');

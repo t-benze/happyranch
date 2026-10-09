@@ -158,10 +158,15 @@ The runtime pins are:
   output must be exactly `uv 0.12.21`, optionally followed by uv's
   ` (<target triple>)` suffix. It is used for `uv sync --frozen`. The venv and uv
   caches live under container-local `/tmp`, never the host-mounted source.
-- The image's Debian repositories supply `bash` and `curl`, which the existing
-  integration fixtures invoke; their resolved package versions and Python's
-  effective version are recorded in `identity.txt`. This changes only the
-  disposable VM and introduces no repository dependency.
+- The exact direct guest apt bundle is `bash curl iproute2 git`, installed with
+  `--no-install-recommends`. `guest-packages.json` records their resolved versions
+  and packages added or changed transitively; `identity.txt` also records the
+  direct tool versions and effective Python. Bounded `git --version` validates
+  the committed parent's Git prerequisite before the workload and records
+  `git_version` in `identity.txt`. This guest tool bundle is separate from
+  top-level repository dependencies. This repairs a setup omission;
+  build #6 did not capture actual `ip` presence or an interface address, so it
+  does not prove that omission caused its failure. No repository dependency changes.
 
 Kernel readiness follows the proven Apple 1.5.0 sequence. If
 `~/Library/Application Support/com.apple.container/kernels/default.kernel-arm64`
@@ -185,19 +190,83 @@ is a container-local `/tmp` directory. Because the Mac currently has
 `machine.homeMount = "rw"`, the VM records `/proc/self/mountinfo` and fails
 unless the complete set of host-backed virtiofs mount destinations is exactly
 those two paths; `/Users/...` exposure therefore cannot pass silently.
+The verifier also requires source `ro` and artifacts `rw`. The definition-owned
+stdlib helper `scripts/jenkins_mac_guest.py` is embedded as bytes in the command
+and exclusively materialized under guest `/tmp`, with a SHA256 identity. There
+is no third mount or source overlay. Source, definition, helper, image and tool
+identities remain separate. Bytecode writes are disabled; before/after source
+tree digests (excluding Git metadata and bytecode caches) must match.
 
 Inside the VM the command mirrors the hosted nightly seam:
 
 ~~~text
-python scripts/run_bounded_output.py --output /workspace/artifacts/integration.log --max-bytes 1048576 -- uv run pytest tests/ -v -m integration --basetemp=/tmp/happyranch-pytest -p no:cacheprovider --junitxml=/workspace/artifacts/integration.xml
+python scripts/run_bounded_output.py --output /workspace/artifacts/integration.log --max-bytes 1048576 -- uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration --basetemp=/tmp/happyranch-pytest -p no:cacheprovider --junitxml=/workspace/artifacts/integration.xml
 ~~~
+
+The definition-owned runner explicitly names the committed source parent inside
+the bounded-output wrapper. The guest's direct `uv run pytest` prefix handling
+does not inspect nested child argv. The parent requires a clean committed source
+and creates the closed temporary environment and authenticated deterministic
+stubs before pytest/conftest collection. A missing parent fails visibly; direct
+integration collection without the parent retains the conftest refusal. The
+wrapper preserves pytest's selection, arguments, status and 1 MiB log tail;
+the guest retains the shared 2,300-second ceiling and 60-second reserve below.
+
+After frozen sync, a bounded `ip -4 -o addr show` probe uses the unchanged
+shipping address validator and a real ephemeral bind. Its receipt distinguishes
+missing executable, command nonzero/timeout/output cap, malformed or loopback
+output, validator refusal and bind failure/success. No fallback address or
+network configuration is supplied. The original full workload selection and
+assertions remain unchanged.
+
+Before guest exit, `guest-diagnostics.json` captures only recognized pytest
+node directories below `/tmp/happyranch-pytest`, in fixed priority order:
+two-org, mixed-fleet, DIY revoke, then DIY acceptance (lexical ties). The mixed
+prefix is exactly `test_mixed_fleet_roundtrip_use` plus one to four digits.
+Limits are four nodes, eight task rows per node, 32 recognized event categories
+per node, 8KiB per text input, two seconds per SQLite read and 30 seconds total
+capture. All new JSON diagnostics combined are capped at 64KiB. Fixed read-only,
+query-only queries correlate alpha/beta `TASK-001` status and result/session-start
+counts. Raw notes/logs/prompts/argv/credentials/DB/WAL are never archived;
+only fixed recognized categories survive, with explicit omitted/unavailable
+fields and unavailable executor evidence. Diagnostic statuses admit the production
+`in_progress`, `escalated` and `superseded` literals plus existing literals,
+including legacy `running`/`blocked`; an unknown status refuses the whole org.
+Known instruction-pair and workspace-readiness refusal stems take priority over
+the generic invocation-failed envelope; other retained compatibility markers
+remain fixed enums. Marker priority is instruction pair, workspace readiness,
+`WorkspaceNotInitialized`, authority selector, `SymlinkMaterializationError`,
+executor missing, `session_mismatch`, then generic invocation failed.
+
+Logs of at most 8192 bytes are scanned contiguously once. Larger logs use only
+4096-byte head and tail windows from the same owned descriptor, without a
+sentinel or middle probe. Only LF delimits physical lines: the head's incomplete
+last fragment and the tail through its first LF are conservatively discarded;
+windows are never joined. UTF-8 replacement occurs after trimming. Successful
+receipts include `log_size_bytes`, `log_read_bytes`, `log_gap_bytes`,
+`log_boundary_discarded_bytes`, `log_scanned_bytes` and `log_omitted_bytes`:
+scanned = read - boundary-discarded, omitted = gap + boundary-discarded.
+`log_truncated` means omitted bytes exist, `log_text_omitted` is always true
+(including empty logs), and `log_event_limit_reached` means a 33rd recognized
+line existed, while only the first 32 enums survive. File or ancestry refusal
+retains no provisional log categories or byte/limit fields. Literal no-follow
+ancestry and file identities are rechecked; symlinks, replacement, unknown schemas and changing
+inputs refuse. A live WAL is unavailable rather than ignored or modified.
+For a closed checkpointed WAL-mode main file, both sidecars must be absent
+before and after its lock-free read; otherwise no task facts are retained.
+Cause stays unknown when the safe evidence cannot resolve it.
 
 It then runs `scripts/nightly_integration_summary.py`. The job archives the
 JUnit XML, bounded log, Markdown summary, mount evidence, identity record,
 cleanup evidence, and any bounded failure record. Cleanup always attempts
 `container rm -f <build-scoped-name>`, records `container ls -a`, and fails with
 distinct exit 90 when pytest passed but absence could not be verified. A real
-nonzero pytest status is preserved even when cleanup also fails. Declarative
+nonzero pytest status is preserved even when capture or cleanup also fails.
+Summary failure keeps its original precedence when workload passed. The host
+checks `guest-result.json` and helper/source identities before removal; with
+workload and summary successful, cleanup failure 90 precedes evidence failure 91.
+An outer hard timeout is 124 with explicitly missing diagnostics, never a claimed
+successful capture. Setup failure does not fabricate a JUnit file. Declarative
 Pipeline `post { always { ... } }` independently repeats that same bounded
 remove-and-absence check and archives `post-cleanup.txt`, so an outer abort does
 not depend on the runner's Python `finally` block.
@@ -212,9 +281,48 @@ The independent Pipeline-post cleanup budget is another 90 seconds, for a
 total bounded requirement of 4,665 seconds (77.75 minutes). The 5,400-second
 outer limit is therefore strictly greater by 735 seconds (12.25 minutes),
 covering Pipeline/definition-checkout overhead while retaining a finite bound.
-The inner container command remains bounded to 42 minutes. macOS has no GNU
+The inner container command remains bounded to 42 minutes. One 2,490-second
+inner deadline covers source hashing, package update/install, pip, frozen sync,
+probe, workload, capture, summary and shutdown; the outer 2,520-second wait
+retains 30 seconds margin. Setup command ceilings are 300 seconds for each apt
+operation, 600 for pip and frozen sync, and 15 for identity operations. Pip retains
+the 60-second capture/summary/shutdown reserve and the helper's 1.5-second
+owned-process teardown allowance. The same pinned 19.8 MB uv wheel took 339.128
+seconds to download and install in build 6, exceeding the previous 300-second
+pip ceiling; 600 seconds covers that observation without guaranteeing future
+transfer success or identifying the cause of the slow download. Every
+command uses the lesser of its ceiling and the same remaining deadline, including
+owned-process-group teardown. Pytest's 2,300 seconds is a maximum conditional on
+remaining time, reserving 30 seconds for capture and 30 for summary/shutdown;
+it is never extra allowance after setup. macOS has no GNU
 `timeout`; all host-side bounds are Python subprocess deadlines and do not leave
 watchdog children holding Jenkins pipes open.
+
+Focused shipping-boundary verification in an authorized disposable runner is
+`uv run python -m pytest tests/scripts/test_jenkins_mac_integration.py tests/scripts/test_jenkins_mac_guest.py -v -m 'not integration'`.
+These include actual emitted wrapper/committed-parent invocation, harmless real
+pytest/conftest success and refusal cases, exit/log limits, owned self-expiring
+children and private SQLite fixtures. The stub-only launch control establishes
+argv/environment/exit composition; it is distinct from real pytest execution.
+The emitted-setup control exposes a selected real Git executable only when
+its external apt stand-in receives the Git install request, then invokes the
+unchanged committed parent. It proves setup/argv composition and refusal on
+omission, not apt installation in the pinned arm64 image. Actual resolved Git
+and transitive versions remain unavailable until the authorized guest run.
+The complete focused command includes socket cases and integration collection
+in child processes, so it must never run on the live Linux daemon host, even
+through a job. On-host checks are restricted to demonstrably pure offline units.
+Clean committed-head `scripts/local_ci.sh all` runs in the existing manually
+dispatched `.github/workflows/nightly-integration.yml` Python 3.14/Node 24 lane.
+Use finite durable task-owned observation and authenticate the workflow head,
+job, command exit and artifacts; required PR CI remains independent. The nightly
+integration lane's natural failure or skips are separate adverse evidence.
+
+Historical first-PR capability observation: IPv4/full-suite results at old pin
+`ebaf6139ef14e67efae841ab2048b91f69b20096` were NOT RUN pending the
+parent-owned post-merge disposable run under THR-211 seq342; that PR did not
+complete TASK-9558. Systemd/dbus, user-manager setup, backend probes and the
+28 systemd gaps remain HELD/UNTESTED for the separately authorized capability unit.
 
 ### Create and run after merge
 

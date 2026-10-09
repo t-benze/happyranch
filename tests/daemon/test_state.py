@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import json
 import os
 
 import pytest
@@ -12,6 +14,7 @@ from runtime.config import Settings
 from runtime.daemon import paths, runtimes
 from runtime.daemon.__main__ import _build_state
 from runtime.daemon.state import DaemonState
+from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 from runtime.orchestrator.executor_registry import (
@@ -104,23 +107,40 @@ async def test_add_org_propagates_consistency_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_org_clears_broken_on_success(tmp_path: Path) -> None:
+async def test_add_org_clears_broken_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """After fixing teams.yaml on disk, a successful add_org clears the broken entry."""
+    daemon_home = tmp_path / "daemon-home"
+    daemon_home.mkdir()
+    monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
     rt = RuntimeDir.init(tmp_path / "rt")
     _seed_drifted_org(rt.orgs_dir / "broken")
     state = DaemonState.from_runtime(rt, Settings())
     assert "broken" in state.broken_orgs
-    # Founder fixes teams.yaml
+    # Complete the canonical roster, including the default reviewer, before
+    # repairing the team and attaching the org through the real coordinator.
+    org_paths = OrgPaths(root=rt.orgs_dir / "broken")
+    manager = prompt_loader.load_agent(org_paths, "solo_manager")
+    assert manager is not None
+    reviewer = replace(manager, name="code_reviewer", role="worker")
+    (org_paths.agents_dir / "code_reviewer.md").write_text(render_agent_text(reviewer))
     (rt.orgs_dir / "broken" / "org" / "teams.yaml").write_text(
         "teams:\n"
         "  missing_team:\n"
         "    manager: solo_manager\n"
-        "    workers: []\n"
+        "    workers: [code_reviewer]\n"
     )
     org = await state.add_org("broken")
     assert org.slug == "broken"
     assert "broken" not in state.broken_orgs
     assert "broken" in state.orgs
+    readiness = org.workflow_authority.verify_admission_ready()
+    snapshot = json.loads(readiness.snapshot_bytes)
+    assert {row["name"] for row in snapshot["agents"]} == {
+        "solo_manager", "code_reviewer",
+    }
+    assert snapshot["reviewer_agents"] == ["code_reviewer"]
 
 
 class TestBuildStateAutoProvision:
@@ -277,3 +297,41 @@ def _agent_with_executor(org_root: Path, executor: str) -> None:
     (OrgPaths(root=org_root).agents_dir / "dev_agent.md").write_text(
         render_agent_text(agent)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prior_database", ["missing", "empty-file", "data-bearing"])
+async def test_existing_database_discovery_and_reload_never_imply_complete_e_creation(
+    tmp_path: Path, prior_database: str,
+) -> None:
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.workflow_schema import validate_workflow_schema
+    from runtime.models import TaskRecord
+    from runtime.workflows.cutover import WorkflowCutoverStore
+
+    runtime = RuntimeDir.init(tmp_path / "runtime")
+    root = runtime.orgs_dir / "alpha"
+    _seed_org(root)
+    path = OrgPaths(root).db_path
+    if prior_database == "empty-file":
+        path.touch()
+    elif prior_database == "data-bearing":
+        database = Database(path)
+        try:
+            database.insert_task(TaskRecord(id="TASK-LEGACY", brief="retained legacy"))
+        finally:
+            database.close()
+    for _ in range(2):
+        state = DaemonState.from_runtime(runtime, Settings())
+        try:
+            for reload in range(2):
+                org = state.get_org("alpha")
+                assert validate_workflow_schema(org.db._conn, expected_org_slug="alpha") == "F"
+                assert WorkflowCutoverStore(org.db, org_slug="alpha").get()["blockers"][0]["code"] == "draft_schema_migration_required"
+                if prior_database == "data-bearing":
+                    assert org.db.get_task("TASK-LEGACY").brief == "retained legacy"
+                if reload == 0:
+                    await state.remove_org("alpha")
+                    await state.add_org("alpha")
+        finally:
+            await state.close_all()

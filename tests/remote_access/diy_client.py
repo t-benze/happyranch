@@ -9,7 +9,9 @@ launch/Keychain/tsnet surface remains a separately reported residual gap).
 
 This script is a TEST HARNESS CLIENT: it prints machine-readable JSON to
 stdout for the acceptance test to assert against, and never logs the pairing
-code or the issued credential.
+code or the issued credential. The default terminal-only stream output is
+unchanged. Opt-in observation emits flushed admission/terminal records; idle
+timeout, unrelated I/O and protocol/deadline failures have nonzero exits.
 """
 from __future__ import annotations
 
@@ -17,6 +19,10 @@ import argparse
 import http.client
 import json
 import sys
+import socket
+import threading
+import time
+from contextlib import contextmanager
 
 
 def _request(host: str, port: int, method: str, path: str, body: bytes | None = None, credential: str | None = None) -> dict:
@@ -33,6 +39,164 @@ def _request(host: str, port: int, method: str, path: str, body: bytes | None = 
     except ValueError:
         payload = raw.decode("utf-8", errors="replace")[:200]
     return {"status": resp.status, "body": payload}
+
+
+class AdmissionError(Exception):
+    def __init__(self, kind: str):
+        self.kind = kind
+        super().__init__(kind)
+
+
+def _remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise AdmissionError("deadline")
+    return left
+
+
+def _read_first_sse_frame(response, deadline: float) -> int:
+    """Read exactly one bounded frame; EOF is never positive admission."""
+    if response.status != 200 or response.getheader("Content-Type", "").split(";", 1)[0] != "text/event-stream":
+        raise AdmissionError("protocol_error")
+    frame = bytearray()
+    while len(frame) < 64:
+        _remaining(deadline)
+        chunk = response.read1(1)
+        _remaining(deadline)
+        if not chunk:
+            raise AdmissionError("truncated")
+        frame.extend(chunk)
+        if frame.endswith(b"\n\n"):
+            if frame != b"data: hello\n\n":
+                raise AdmissionError("protocol_error")
+            return len(frame)
+    raise AdmissionError("oversized")
+
+
+@contextmanager
+def _admission_response(host: str, port: int, path: str, headers: dict):
+    """One connect/header/body budget, including segmented internal reads.
+
+    Capture the socket before Connection: close detaches conn.sock. The
+    watchdog interrupts blocking headers/body and is joined on every exit.
+    """
+    deadline = time.monotonic() + 10
+    conn = http.client.HTTPConnection(host, port, timeout=_remaining(deadline))
+    response = None
+    captured = None
+    expired = threading.Event()
+    def interrupt():
+        expired.set()
+        if captured is not None:
+            try:
+                captured.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+    watchdog = threading.Timer(_remaining(deadline), interrupt)
+    watchdog.daemon = True
+    primary = None
+    try:
+        watchdog.start()
+        conn.connect()
+        captured = conn.sock
+        captured.settimeout(_remaining(deadline))
+        conn.request("GET", path, headers=headers)
+        _remaining(deadline)
+        captured.settimeout(_remaining(deadline))
+        response = conn.getresponse()
+        _remaining(deadline)
+        yield response, captured, deadline, watchdog
+        _remaining(deadline) if expired.is_set() else None
+    except (OSError, http.client.HTTPException) as exc:
+        if expired.is_set() or time.monotonic() >= deadline:
+            primary = AdmissionError("deadline")
+            raise primary from None
+        primary = exc
+        raise
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        cleanup_deadline = time.monotonic() + 1
+        errors = []
+        def finalize(operation, category):
+            for _ in range(2):
+                try:
+                    return operation()
+                except Exception:
+                    errors.append(category)
+            return None
+        finalize(watchdog.cancel, "watchdog")
+        finalize(lambda: watchdog.join(timeout=max(0, cleanup_deadline - time.monotonic())), "watchdog")
+        if response is not None:
+            finalize(response.close, "response")
+        finalize(conn.close, "connection")
+        if captured is not None:
+            finalize(captured.close, "socket")
+        if finalize(watchdog.is_alive, "watchdog") is not False:
+            errors.append("watchdog")
+        if errors:
+            if primary is None:
+                raise AdmissionError("owned_cleanup")
+            try:
+                primary.add_note("admission cleanup categories: " + ",".join(sorted(set(errors))))
+            except BaseException:
+                pass  # Unavailable secondary diagnostics cannot replace the primary.
+
+
+def _emit_lifecycle_record(record: dict) -> None:
+    print(json.dumps(record, ensure_ascii=True, separators=(",", ":")), flush=True)
+
+
+def _observe_stream(args) -> int:
+    status = None
+    received = 0
+    kind = "protocol_error"
+    lifetime = time.monotonic() + 90
+    try:
+        with _admission_response(args.host, args.port, args.path, {
+            "X-HappyRanch-Device-Credential": args.credential,
+            "Accept": "text/event-stream",
+        }) as (response, sock, deadline, watchdog):
+            status = response.status
+            received = _read_first_sse_frame(response, deadline)
+            watchdog.cancel()
+            watchdog.join(timeout=1)
+            _emit_lifecycle_record({"phase": "admitted", "child_id": args.observation_id,
+                                   "status": status, "sse": True, "first_frame_ok": True,
+                                   "first_frame_bytes": 13, "received_bytes": received})
+            while True:
+                remaining = lifetime - time.monotonic()
+                if remaining <= 0:
+                    kind = "budget_exhausted"
+                    break
+                sock.settimeout(min(args.idle_timeout, remaining))
+                try:
+                    chunk = response.read1(4096)
+                except TimeoutError:
+                    kind = "budget_exhausted" if time.monotonic() >= lifetime else "timeout"
+                    break
+                except ConnectionResetError:
+                    kind = "reset"
+                    break
+                except (OSError, http.client.HTTPException):
+                    kind = "read_error"
+                    break
+                if not chunk:
+                    kind = "eof"
+                    break
+                received += len(chunk)
+                if received > 1048576:
+                    received = 1048576
+                    kind = "budget_exhausted"
+                    break
+    except AdmissionError as exc:
+        kind = "deadline" if exc.kind == "deadline" else "protocol_error"
+    except (OSError, http.client.HTTPException):
+        kind = "read_error"
+    _emit_lifecycle_record({"phase": "terminal", "child_id": args.observation_id,
+                           "status": status, "kind": kind, "received_bytes": received})
+    return {"eof": 0, "reset": 0, "timeout": 2, "read_error": 3}.get(kind, 4)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -52,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
     stream = sub.add_parser("stream")
     stream.add_argument("--path", required=True)
     stream.add_argument("--credential", required=True)
+    stream.add_argument("--observe-lifecycle", action="store_true")
+    stream.add_argument("--observation-id", type=int)
+    stream.add_argument("--idle-timeout", type=int, choices=(4, 5), default=5)
 
     connect = sub.add_parser("connect")
     connect.add_argument("--path", default="/api/v1/health")
@@ -64,6 +231,12 @@ def main(argv: list[str] | None = None) -> int:
             args.host, args.port, args.method, args.path, credential=args.credential
         )
     elif args.command == "stream":
+        if args.observe_lifecycle:
+            if args.observation_id is None or not 1 <= args.observation_id <= 8:
+                parser.error("lifecycle requires observation-id 1..8")
+            return _observe_stream(args)
+        if args.observation_id is not None or args.idle_timeout != 5:
+            parser.error("lifecycle options require observe-lifecycle")
         # Open the SSE stream and read until it closes (revocation closes it
         # fail-closed). Prints ONLY the status and received byte count —
         # never the credential or payload content.

@@ -20,7 +20,11 @@ uses owned atomic feedback, and `LostClaim` writes nothing. The failed child
 keeps its original parent and history, and an unresolved local failure cannot
 be bypassed by a remote historical link.
 
-Authority-v2 refusal is also a bounded delegated-failure source (THR-277).
-Non-root refusal records `authority_v2_refusal_task_failed`, terminalizes the
-child as FAILED, and wakes the same owning manager; only structural roots enter
-the founder-escalation lifecycle.
+Authority-v2 refusal and non-root manager `supersede` are also bounded
+delegated-failure sources (THR-277). Non-root authority-v2 refusal records
+`authority_v2_refusal_task_failed`, terminalizes the child as FAILED, and wakes
+the same owning manager; only structural roots enter the founder-escalation
+lifecycle. A still-current non-root owner returning `supersede` likewise fails
+that child through the ordinary terminal tail and wakes its parent, without a
+successor or manager-supersession row. Cancellation or claim replacement before
+the ownership-fenced transition leaves the child and parent untouched.

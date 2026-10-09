@@ -626,8 +626,15 @@ async def task_events(task_id: str, org: OrgDep):
 
 @router.post("/tasks/{task_id}/completion")
 async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
+    from runtime.workflows.recovery import classify_task
+    ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
+    workflow_draft = ownership.kind == "draft"
+    if ownership.kind not in {"legacy", "draft"}:
+        raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
+    draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
-    _require_task_active(task_id, org.db.get_task(task_id))
+    if draft_prior is None:
+        _require_task_active(task_id, org.db.get_task(task_id))
     # Versioned evidence is validated and authenticated against the immutable
     # launch binding BEFORE the session/idempotency branches, so an exact v2
     # transport retry can authenticate its stored attempt instead of returning
@@ -701,6 +708,22 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # unknown / fabricated) session remains unknown_session.
         prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id)
         if prior is not None:
+            if workflow_draft:
+                retry_wait_ids = (sorted(set(body.waiting_on_job_ids)) or None
+                                  if "waiting_on_job_ids" in body.model_fields_set else body.waiting_on_job_ids or None)
+                try:
+                    valid = org.workflow_drafts.callback_replay(
+                        task_id=task_id, agent=body.agent, session_id=body.session_id,
+                        payload=dict(output_summary=body.output_summary, confidence_score=body.confidence,
+                                     status=body.status, risks_flagged=body.risks_flagged, output_dir=body.output_dir,
+                                     decision_json=_json.dumps(decision_payload) if decision_payload is not None else None,
+                                     waiting_on_job_ids=retry_wait_ids, verdict=body.verdict,
+                                     local_ci_json=_json.dumps(body.local_ci) if body.local_ci is not None else None),
+                    )
+                except ValueError:
+                    valid = False
+                if not valid:
+                    raise HTTPException(status_code=409, detail={"code": "workflow_callback_payload_mismatch"})
             if v2_admission is None:
                 return {"ok": True}
             # Narrowed v2 retry seam: an exact transport retry is read-only
@@ -864,7 +887,8 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
         # The pre-await guards above give callers stable error ordering.  They
         # are not admission authority: cancellation or a newer generation can
         # land while this callback waits for the shared DB lock.
-        _require_task_active(task_id, org.db.get_task(task_id))
+        if not workflow_draft or org.db.get_latest_task_result(task_id, body.agent, body.session_id) is None:
+            _require_task_active(task_id, org.db.get_task(task_id))
         # Do not await under this lease.  It bridges get_active() and the
         # synchronized SQLite transaction, closing the old post-get_active
         # generation-replacement gap without inverting the DB RLock.
@@ -904,7 +928,8 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                 )
     # Generation-owned cleanup preserves a newer invocation that may have
     # replaced this callback while the route was awaiting its DB lock.
-    org.sessions.clear_if_active_session(task_id, body.agent, body.session_id)
+    if not workflow_draft:
+        org.sessions.clear_if_active_session(task_id, body.agent, body.session_id)
     # TODO(events): subscribers that connect after this point won't replay
     # `completion_reported`. The terminal task_* event is still synthesized
     # from the DB status, but per-agent completion beats are lost. Acceptable
@@ -1739,6 +1764,14 @@ async def cancel_task(
     root = org.db.get_task(task_id)
     if root is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    from runtime.workflows.recovery import classify_task
+    ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
+    if ownership.kind != "legacy":
+        if ownership.kind != "draft":
+            raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
+        # Initial draft has no ordinary delegated subtree. Its durable fence
+        # precedes containment, whose controls run outside org.db_lock.
+        return org.workflow_drafts.cancel(task_id)
     if root.status in _TERMINAL_TASK_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

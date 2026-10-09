@@ -1,14 +1,19 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { ESLint } from 'eslint';
 import {
   classifyRouteIdentity,
+  classifySourceRoute,
+  fullReleaseIssues,
+  sourceSurfaceIdentity,
+  type SourceInventory,
+  type NamespaceCoverage,
   classifyRouteToken,
   COVERAGE_MANIFEST,
   coverageSummary,
   describeCoverage,
-  extractRouteTokens,
   NOT_APPLICABLE_NAMESPACES,
   unclassifiedRouteIdentities,
   unclassifiedRouteTokens,
@@ -21,21 +26,11 @@ function read(relativePath: string): string {
   return readFileSync(join(webRoot, relativePath), 'utf8');
 }
 
-/**
- * Route modules and (for the modules whose `*`/`index` tokens collide with
- * another module) the qualified identity scope. The scan reads the REAL route
- * sources — it never repeats a hand-written token list.
- */
-const ROUTE_SOURCES: ReadonlyArray<{ file: string; scope?: string }> = [
-  { file: 'src/routes.tsx' },
-  { file: 'src/prototypes/index.tsx' },
-  { file: 'src/features/settings/SettingsPage.tsx', scope: 'SettingsPage.tsx' },
-];
-
+const scriptPath = join(webRoot, 'scripts/i18n-source-inventory.mjs');
+const { inventorySource } = await import(scriptPath) as { inventorySource(root: string): SourceInventory };
+function scannedInventory(): SourceInventory { return inventorySource(webRoot); }
 function scannedIdentities(): string[] {
-  return ROUTE_SOURCES.flatMap(({ file, scope }) =>
-    extractRouteTokens(read(file)).map((token) => (scope ? `${scope}:${token}` : token)),
-  );
+  return scannedInventory().routes.map(({ path, token }) => path === 'src/features/settings/SettingsPage.tsx' ? `SettingsPage.tsx:${token}` : token);
 }
 
 function surfacesFor(namespace: string): readonly string[] {
@@ -48,67 +43,14 @@ function namespaceStatus(namespace: string): string | undefined {
   return COVERAGE_MANIFEST.find((entry) => entry.namespace === namespace)?.status;
 }
 
-/** Actual JSX dialog mounts in a source (ignores generic type arguments). */
-function mountedDialogs(source: string): string[] {
-  const names = new Set<string>();
-  for (const match of source.matchAll(/(?:^|[\s({>])<([A-Z][A-Za-z0-9]*Dialog)\b/g)) {
-    names.add(match[1]);
-  }
-  return [...names];
-}
-
-/** Real dialog component definitions under `src/` (no test files). */
+/** Real mounted definitions: unused imports/declarations never qualify. */
 function definedDialogs(): Set<string> {
-  const found = new Set<string>();
-  const walk = (directory: string): void => {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        walk(path);
-        continue;
-      }
-      if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) continue;
-      const source = readFileSync(path, 'utf8');
-      for (const match of source.matchAll(/(?:export\s+)?function\s+([A-Z][A-Za-z0-9]*Dialog)\b/g)) {
-        found.add(match[1]);
-      }
-      for (const match of source.matchAll(/(?:export\s+)?const\s+([A-Z][A-Za-z0-9]*Dialog)\s*[:=]/g)) {
-        found.add(match[1]);
-      }
-    }
-  };
-  walk(join(webRoot, 'src'));
-  return found;
+  return new Set(scannedInventory().dialogs.map(site => site.symbol));
 }
-
-/**
- * Namespace -> the REAL page sources that mount its dialogs. Anchoring the
- * manifest to these sources (instead of a hand-written list) is what fails an
- * invented dialog name.
- */
-const DIALOG_CONSUMER_SOURCES: Readonly<Record<string, readonly string[]>> = {
-  threads: ['src/features/threads/ThreadsPage.tsx'],
-  tasks: ['src/features/tasks/TaskDetailPage.tsx'],
-  jobs: ['src/features/jobs/JobDetailPage.tsx'],
-  agents: ['src/features/agents/AgentsPage.tsx'],
-  kb: ['src/features/kb/KbPage.tsx'],
-  todos: ['src/features/todos/TodoDetailPage.tsx'],
-  'work-hours': [
-    'src/features/work-hours-config/OverviewPage.tsx',
-    'src/features/work-hours-config/AgentDetailPage.tsx',
-  ],
-  settings: [
-    'src/features/settings/sections/OrganizationSection.tsx',
-    'src/features/settings/sections/AssistantSection.tsx',
-  ],
-  'app-shell': ['src/design-system/layouts/AppShell/Sidebar.tsx'],
-};
 
 describe('coverage manifest (W1 acceptance case 7)', () => {
   it('classifies every route token in the real route modules', () => {
-    const bareTokens = ROUTE_SOURCES.filter(({ scope }) => scope === undefined).flatMap(({ file }) =>
-      extractRouteTokens(read(file)),
-    );
+    const bareTokens = scannedInventory().routes.filter(route => route.path === 'src/routes.tsx').map(route => route.token);
     expect(bareTokens.length).toBeGreaterThan(0);
     expect(unclassifiedRouteTokens(bareTokens)).toEqual([]);
   });
@@ -175,40 +117,38 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks only the W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1-migrated namespaces translated and keeps later slices incomplete', () => {
+  it('marks the migrated route namespaces and proven mounted Assistant translated without changing other classifications', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBe(12);
+    expect(summary.translated).toBeGreaterThanOrEqual(21);
+    expect(summary.notApplicable).toBeGreaterThanOrEqual(3);
+    expect(summary.total).toBe(summary.translated + summary.englishOnly + summary.notApplicable);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
       .map((entry) => entry.namespace)
       .sort();
-    expect(translated).toEqual([
+    expect(translated).toEqual(expect.arrayContaining([
+      'agents',
       'app-shell',
+      'artifacts',
+      'audit',
       'dashboard',
       'dreams',
       'health',
       'help-and-palette',
       'jobs',
+      'kb',
       'not-found',
       'onboarding',
       'root-shell',
       'settings',
+      'skills',
+      'system-assistant',
       'tasks',
       'threads',
-    ]);
-    // W4a-2/W4a-3, W4b/W4c and every other route family remain honest English-only.
-    for (const namespace of [
       'todos',
-      'kb',
-      'audit',
-      'skills',
-      'agents',
       'usage',
       'work-hours',
-      'artifacts',
-      'system-assistant',
-    ]) {
-      expect(namespaceStatus(namespace), namespace).toBe('english-only');
-    }
+    ]));
+    expect(namespaceStatus('system-assistant')).toBe('translated');
     for (const entry of COVERAGE_MANIFEST) {
       expect(['translated', 'english-only', 'not-applicable']).toContain(entry.status);
       if (NOT_APPLICABLE_NAMESPACES.includes(entry.namespace)) {
@@ -224,16 +164,13 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
   });
 
   it('anchors every manifest dialog surface to a real mounted consumer', () => {
-    for (const [namespace, sources] of Object.entries(DIALOG_CONSUMER_SOURCES)) {
-      const declared = surfacesFor(namespace);
-      for (const file of sources) {
-        for (const dialog of mountedDialogs(read(file))) {
-          expect(declared, `${namespace} must declare mounted ${dialog} from ${file}`).toContain(
-            dialog,
-          );
-        }
-      }
-    }
+    expect(fullReleaseIssues(scannedInventory())).toEqual([]);
+  });
+
+  it('anchors the Assistant dock and conversation switcher to actual mounted consumers', () => {
+    expect(read('src/routes.tsx')).toMatch(/<AssistantDockHost\s*\/>/);
+    expect(read('src/features/system-assistant/AssistantDockHost.tsx')).toMatch(/<ConversationSwitcher\b/);
+    expect(surfacesFor('system-assistant')).toEqual(['AssistantDockHost', 'ConversationSwitcher']);
   });
 
   it('contains no invented dialog/overlay names', () => {
@@ -264,4 +201,197 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
       expect(namespaceStatus(namespace)).toBe('not-applicable');
     }
   });
+});
+
+/** Disk fixtures use the final shipping script/config and the worktree's locked
+ * tools via normal parent resolution. No node_modules symlink or mock scanner.
+ */
+async function diskFixture(action: (root: string, put: (file: string, body: string) => void) => void | Promise<void>): Promise<void> {
+  const root = mkdtempSync(join(webRoot, '.i18n-source-fixture-'));
+  const put = (file: string, body: string): void => {
+    mkdirSync(dirname(join(root, file)), { recursive: true });
+    writeFileSync(join(root, file), body);
+  };
+  try {
+    for (const file of ['index.html', 'tsconfig.json', 'vite.config.ts', 'eslint.config.js', 'package.json', 'scripts/i18n-source-inventory.mjs']) {
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      copyFileSync(join(webRoot, file), join(root, file));
+    }
+    put('src/main.tsx', "import { App } from './App'; import { createRoot } from 'react-dom/client'; createRoot(document.getElementById('root')!).render(<App />);");
+    put('src/App.tsx', "export function App() { return <p>{label}</p>; }");
+    await action(root, put);
+  } finally { rmSync(root, { recursive: true }); }
+}
+
+describe('C5-C7 actual disk source discovery and full-release boundary', () => {
+  it('C5 final copied real config rejects disk copy and malformed/overbroad exact exceptions', () => diskFixture(async (root, put) => {
+    put('src/App.tsx', 'export const App = () => <h1>New disk heading</h1>;');
+    const eslint = new ESLint({ cwd: root, allowInlineConfig: false });
+    const [result] = await eslint.lintFiles(['src/App.tsx']);
+    expect(result.messages.filter(message => message.ruleId === 'owned-copy/no-untranslated-copy')).toEqual([
+      expect.objectContaining({ message: expect.stringContaining('New disk heading') }),
+    ]);
+    const script = readFileSync(join(root, 'scripts/i18n-source-inventory.mjs'), 'utf8');
+    put('scripts/i18n-source-inventory.mjs', script.replace("raw('design-system/layouts/AppShell/Sidebar.tsx'", "raw('design-system/layouts/AppShell/*.tsx'"));
+    const path = join(root, 'scripts/i18n-source-inventory.mjs');
+    const { auditCopyExceptions } = await import(path);
+    expect(() => auditCopyExceptions(inventorySource(root))).toThrow(/exact path\/symbol\/slot\/literal\/reason/);
+    const invalidReasonPath = join(root, 'scripts/invalid-reason.mjs');
+    put('scripts/invalid-reason.mjs', script.replace("'Brand wordmark bytes'", "''"));
+    const invalidReason = await import(invalidReasonPath);
+    expect(() => invalidReason.auditCopyExceptions(inventorySource(root))).toThrow(/exact path\/symbol\/slot\/literal\/reason/);
+    const original = await import(scriptPath);
+    expect(original.auditCopyExceptions(inventorySource(root)).stale).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'src/design-system/layouts/AppShell/Sidebar.tsx', symbol: 'Sidebar', slot: 'children', literal: 'Happy' }),
+    ]));
+  }));
+  it('C5a refuses changed and additional shipping entries, restores original control', () => diskFixture((root, put) => {
+    const original = readFileSync(join(root, 'index.html'), 'utf8');
+    put('src/alternate-entry.tsx', 'export const Unclassified = () => <section role="dialog" />;');
+    put('index.html', original.replace('/src/main.tsx', '/src/alternate-entry.tsx'));
+    expect(() => inventorySource(root)).toThrow(/unsupported index.html module entry/);
+    put('index.html', original.replace('</body>', '<script type="module" src="/src/alternate-entry.tsx"></script></body>'));
+    expect(() => inventorySource(root)).toThrow(/one supported external module entry/);
+    put('index.html', original);
+    expect(inventorySource(root).mountedSymbols).toContain('src/App.tsx#App');
+  }));
+
+  it('C5b resolves configured aliases, relative barrels, wildcard reexports and literal lazy mounts; refuses config drift', () => diskFixture((root, put) => {
+    put('src/App.tsx', "import { LazyOwner as Mounted } from '@/host'; export function App() { return <Mounted />; }");
+    put('src/host/index.ts', "export * from './lazy';");
+    put('src/host/lazy.tsx', "import { lazy } from 'react'; export const LazyOwner = lazy(() => import('../shared/dialog').then(m => ({ default: m.ActualDialog })));");
+    put('src/shared/dialog.tsx', "import { forwardRef } from 'react'; export const ActualDialog = forwardRef(() => <p>{label}</p>);");
+    const actual = inventorySource(root);
+    expect(actual.dialogs).toEqual([expect.objectContaining({ path: 'src/shared/dialog.tsx', symbol: 'ActualDialog', consumerPath: 'src/App.tsx', consumerSymbol: 'App' })]);
+    const vite = readFileSync(join(root, 'vite.config.ts'), 'utf8');
+    put('vite.config.ts', vite.replace("path.resolve(__dirname, 'src')", "path.resolve(__dirname, 'alternate')"));
+    expect(() => inventorySource(root)).toThrow(/Vite alias\/root\/input/);
+    put('vite.config.ts', vite);
+    const config = JSON.parse(readFileSync(join(root, 'tsconfig.json'), 'utf8'));
+    config.compilerOptions.paths['@/*'] = ['alternate/*'];
+    put('tsconfig.json', JSON.stringify(config));
+    expect(() => inventorySource(root)).toThrow(/tsconfig.json alias\/root/);
+    config.compilerOptions.paths['@/*'] = ['src/*'];
+    put('tsconfig.json', JSON.stringify(config));
+    put('src/host/lazy.tsx', "import { lazy } from 'react'; export const LazyOwner = lazy(() => import(computed));");
+    expect(() => inventorySource(root)).toThrow(/unsupported computed lazy import/);
+  }));
+
+  it('R1 C5 transitive runtime imports and reexport cycles visit actual roots once while type-only and uncalled roots stay unmounted', () => diskFixture((root, put) => {
+    const main = readFileSync(join(root, 'src/main.tsx'), 'utf8');
+    put('src/main.tsx', `${main}\nimport './host/entry'; import type { Missing } from './never-runtime'; import { type InlineMissing } from './also-never-runtime';`);
+    put('src/host/entry.ts', "export * from './root'; export type { Missing } from './never-runtime'; export { type InlineMissing } from './also-never-runtime';");
+    put('src/host/root.tsx', `import './entry'; import { createRoot } from 'react-dom/client';
+      export const extra = <section role="dialog">Imported owned root heading</section>;
+      export const ImportOnlyDialog = () => <section role="dialog">Unused declaration</section>;
+      function uncalled() { createRoot(document.createElement('div')).render(<section role="dialog" />); }
+      createRoot(document.createElement('div')).render(extra);`);
+    const actual = inventorySource(root);
+    expect(actual.mountedSymbols).toContain('src/host/root.tsx#extra');
+    expect(actual.mountedSymbols).not.toContain('src/host/root.tsx#ImportOnlyDialog');
+    expect(actual.mountedSymbols).not.toContain('src/host/root.tsx#uncalled');
+    expect(actual.dialogs).toEqual([expect.objectContaining({ path: 'src/host/root.tsx', symbol: 'extra', site: 'role:dialog' })]);
+    expect(fullReleaseIssues(actual)).toContain('unclassified mounted surface src/host/root.tsx#extra->src/host/root.tsx#extra:role:dialog (consumer namespace help-and-palette)');
+    put('src/host/root.tsx', "import './entry'; import { createRoot } from 'react-dom/client'; const extra = makeUnknownTree(); createRoot(document.createElement('div')).render(extra);");
+    expect(() => inventorySource(root)).toThrow(/unsupported render root src\/host\/root.tsx.*extra/);
+  }));
+
+  it('C5c refuses promoted fixtures/catalogs and an ungated prototype while import-only stays unmounted', () => diskFixture((root, put) => {
+    for (const file of ['src/example.test.tsx', 'src/Example.stories.tsx', 'src/test/example.tsx', 'src/lib/i18n/locales/example.tsx', 'src/prototypes/example.tsx']) {
+      put(file, 'export function ExampleDialog() { return <h1>Example copy</h1>; }');
+      put('src/App.tsx', `import { ExampleDialog } from './${file.slice(4)}'; export function App() { return <p>{label}</p>; }`);
+      expect(inventorySource(root).dialogs).toEqual([]);
+      put('src/App.tsx', `import { ExampleDialog } from './${file.slice(4)}'; export function App() { return <ExampleDialog />; }`);
+      expect(() => inventorySource(root)).toThrow(/promoted fixture\/catalog\/prototype owner/);
+    }
+    put('src/prototypes/index.tsx', 'export function prototypeRoutes() { return <section role="dialog" />; }');
+    put('src/App.tsx', "import { prototypeRoutes } from './prototypes'; export function App() { return <>{prototypeRoutes()}</>; }");
+    expect(() => inventorySource(root)).toThrow(/promoted fixture/);
+  }));
+
+  it('C6 new route owners cannot borrow bare index/wildcard and computed paths refuse; exact translated identities pass', () => diskFixture((root, put) => {
+    put('src/App.tsx', "import { NewOwner } from './host/new'; export function App() { return <NewOwner />; }");
+    put('src/host/new.tsx', "import { Route as R } from 'react-router-dom'; export const NewOwner = () => <><R index element={<p>{label}</p>} /><R path={'*'} element={<p>{label}</p>} /></>;");
+    const actual = inventorySource(root);
+    expect(actual.routes.map(route => route.token)).toEqual(['index', '*']);
+    expect(fullReleaseIssues(actual)).toEqual(expect.arrayContaining(['unclassified source route src/host/new.tsx:index', 'unclassified source route src/host/new.tsx:*']));
+    const entry: NamespaceCoverage = { namespace: 'new', routeTokens: [], qualifiedRouteTokens: ['src/host/new.tsx:index', 'src/host/new.tsx:*'], surfaces: [], status: 'translated' };
+    expect(fullReleaseIssues(actual, [entry])).toEqual([]);
+    expect(fullReleaseIssues(actual, [{ ...entry, status: 'not-applicable' }])).toEqual(expect.arrayContaining([
+      'not-applicable route has unproved copy-free element src/host/new.tsx:index',
+    ]));
+    expect(classifySourceRoute('src/host/new.tsx', '*')).toBeUndefined();
+    expect(classifySourceRoute('src/routes.tsx', '*')?.status).toBe('translated');
+    expect(classifySourceRoute('src/features/settings/SettingsPage.tsx', '*')?.status).toBe('not-applicable');
+    put('src/host/new.tsx', "import { Route as R } from 'react-router-dom'; export function NewOwner() { return <R path={computed} element={<p>{label}</p>} />; }");
+    expect(() => inventorySource(root)).toThrow(/unsupported computed route path/);
+  }));
+
+  it('E01 namespace and reexported route mounts keep parent paths and qualified index/wildcard ownership', () => diskFixture((root, put) => {
+    for (const [imports, wrapper, parent, child] of [
+      ["import { Routes, Route as R } from 'react-router-dom';", 'Routes', 'R', 'R'],
+      ["import * as Router from 'react-router-dom';", 'Router.Routes', 'Router.Route', 'Router.Route'],
+      ["import { Routes, Route as R } from 'react-router-dom'; import * as Router from 'react-router-dom';", 'Routes', 'R', 'Router.Route'],
+      ["import * as Router from './router';", 'Router.Routes', 'Router.Route', 'Router.Route'],
+      ["import { Routes, R as Alias } from './router';", 'Routes', 'Alias', 'Alias'],
+      ["import { Nested as Router } from './router';", 'Router.Routes', 'Router.Route', 'Router.Route'],
+    ]) {
+      put('src/router.ts', "export { Routes, Route, Route as R } from 'react-router-dom'; export * as Nested from 'react-router-dom';");
+      put('src/App.tsx', `${imports} export function App() { return <${wrapper}><${parent} path="parent"><${child} path="new-unclassified" element={<p>{label}</p>} /><${child} index element={<p>{label}</p>} /><${child} path="*" element={<p>{label}</p>} /></${parent}></${wrapper}>; }`);
+      const actual = inventorySource(root);
+      expect(actual.routes, imports).toEqual([
+        expect.objectContaining({ path: 'src/App.tsx', token: 'parent', parents: [] }),
+        expect.objectContaining({ path: 'src/App.tsx', token: 'new-unclassified', parents: ['parent'] }),
+        expect.objectContaining({ path: 'src/App.tsx', token: 'index', parents: ['parent'] }),
+        expect.objectContaining({ path: 'src/App.tsx', token: '*', parents: ['parent'] }),
+      ]);
+      expect(fullReleaseIssues(actual, [])).toEqual([
+        'unclassified source route src/App.tsx:parent',
+        'unclassified source route src/App.tsx:new-unclassified',
+        'unclassified source route src/App.tsx:index',
+        'unclassified source route src/App.tsx:*',
+      ]);
+      const entry: NamespaceCoverage = { namespace: 'new', routeTokens: [], qualifiedRouteTokens: ['src/App.tsx:parent', 'src/App.tsx:new-unclassified', 'src/App.tsx:index', 'src/App.tsx:*'], surfaces: [], status: 'translated' };
+      expect(fullReleaseIssues(actual, [entry])).toEqual([]);
+      expect(fullReleaseIssues(actual, [{ ...entry, status: 'english-only' }])).toContain('full release refuses english-only namespace new');
+    }
+    put('src/App.tsx', "import * as Router from 'react-router-dom'; export function App() { return <Router.Route path={computed} />; }");
+    expect(() => inventorySource(root)).toThrow(/unsupported computed route path src\/App.tsx#App/);
+  }));
+
+  it('C7 import-only/declaration is not mounting, alias and static render-return call are; invented and undefined owners refuse', () => diskFixture((root, put) => {
+    put('src/shared/Owner.tsx', 'export function ActualDialog() { return <p>{label}</p>; }');
+    put('src/App.tsx', "import { ActualDialog as AliasedDialog } from './shared/Owner'; export function App() { return <p>{label}</p>; }");
+    const declared: NamespaceCoverage = { namespace: 'new', routeTokens: [], surfaces: ['ActualDialog'], status: 'translated' };
+    expect(fullReleaseIssues(inventorySource(root), [declared])).toEqual(['declared but not mounted dialog new:ActualDialog']);
+    for (const mount of ['<AliasedDialog />', '<>{AliasedDialog()}</>']) {
+      put('src/App.tsx', `import { ActualDialog as AliasedDialog } from './shared/Owner'; export function App() { return ${mount}; }`);
+      const actual = inventorySource(root);
+      expect(actual.mountedSymbols).toContain('src/shared/Owner.tsx#ActualDialog');
+      // Static render-return calls still need a declared site, not only a name.
+      expect(actual.dialogs).toHaveLength(1);
+      expect(fullReleaseIssues(actual, [declared])[0]).toMatch(/unclassified mounted surface/);
+      expect(fullReleaseIssues(actual, [{ ...declared, qualifiedSurfaces: actual.dialogs.map(sourceSurfaceIdentity) }])).toEqual([]);
+    }
+    put('src/App.tsx', 'export function App() { return <InventedDialog />; }');
+    expect(() => inventorySource(root)).toThrow(/undefined component/);
+  }));
+
+  it('C7 inline dialog sites and new containers require source ownership; full release rejects every english-only namespace', () => diskFixture((root, put) => {
+    put('src/App.tsx', "import { Container } from './host/Container'; export function App() { return <Container />; }");
+    put('src/host/Container.tsx', 'export const Container = () => <section role="dialog"><h1>{label}</h1></section>;');
+    const actual = inventorySource(root);
+    expect(actual.dialogs).toEqual([expect.objectContaining({ path: 'src/host/Container.tsx', symbol: 'Container', site: 'role:dialog' })]);
+    expect(fullReleaseIssues(actual, [])[0]).toMatch(/unclassified mounted surface/);
+    const entry: NamespaceCoverage = { namespace: 'new', routeTokens: [], surfaces: [], qualifiedSurfaces: actual.dialogs.map(sourceSurfaceIdentity), status: 'english-only' };
+    expect(fullReleaseIssues(actual, [entry])).toEqual(['full release refuses english-only namespace new']);
+    expect(fullReleaseIssues(actual, [{ ...entry, status: 'translated' }])).toEqual([]);
+    expect(fullReleaseIssues(actual, [{ ...entry, qualifiedSurfaces: ['src/host/Ghost.tsx#Ghost->src/shared/Ghost.tsx#GhostDialog:component'] }])).toEqual(expect.arrayContaining([expect.stringContaining('declared but not mounted surface')]));
+    put('src/host/Container.tsx', 'export const Container = () => <><section role="dialog" /><section role="dialog" /></>;');
+    const twoSites = inventorySource(root);
+    expect(twoSites.dialogs.map(site => site.site)).toEqual(['role:dialog', 'role:dialog:2']);
+    expect(fullReleaseIssues(twoSites, [{ ...entry, status: 'translated' }])).toEqual(expect.arrayContaining([
+      expect.stringContaining('role:dialog:2'),
+    ]));
+  }));
 });

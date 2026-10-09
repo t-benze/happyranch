@@ -35,7 +35,7 @@ export function CancelTaskDialog({ taskId, onClose }: Props): JSX.Element {
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('tasks.dialog.cancel.title')}</DialogTitle>
         </DialogHeader>

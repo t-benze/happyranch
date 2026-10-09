@@ -953,19 +953,19 @@ async function main() {
       }
 
       // --- S9 (case 4): real startup, no preference in an asserted Chinese env,
-      //     preview mode (W5 auto-detection stays disabled) --------------------
+      //     full mode at production entry; foundation stories stay preview --------------------
       {
         const page = await openApp({ env: DEV_ENVIRONMENTS.zh, initScript: clearLocaleSource() });
         const snap = await snapshot(page.sessionId);
         const first = snap.firstConsumer;
-        check('S9 app preview-unset-in-zh-env html.lang', snap.lang, 'en');
+        check('S9 app full-unset-in-zh-env html.lang', snap.lang, 'zh-CN');
         checkTruthy('S9 first committed consumer captured', first);
-        check('S9 first committed consumer text is English', first && first.text, EVIDENCE_EN_TEXT);
-        check('S9 first committed consumer locale', first && first.locale, 'en');
-        check('S9 html.lang at the same first commit', first && first.htmlLang, 'en');
-        check('S9 first-text lang probe agrees', snap.langProbe.firstTextLang, 'en');
+        check('S9 first committed consumer text is Chinese', first && first.text, EVIDENCE_ZH_TEXT);
+        check('S9 first committed consumer locale', first && first.locale, 'zh-CN');
+        check('S9 html.lang at the same first commit', first && first.htmlLang, 'zh-CN');
+        check('S9 first-text lang probe agrees', snap.langProbe.firstTextLang, 'zh-CN');
         check('S9 stored preference stays unset', snap.stored, null);
-        await capture(page, 'app-main-startup-preview-zh-env');
+        await capture(page, 'app-main-startup-full-zh-env');
         await closePage(page);
       }
     }

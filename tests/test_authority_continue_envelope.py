@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -954,3 +956,113 @@ def test_continued_turn_prompt_absent_without_active_envelope(runtime, db, monke
     orch.run_step("T-ROOT")
 
     assert "AUTHORITY POLICY CONTINUED SAME ROOT:" not in captured["prompt"]
+
+
+# TASK9987: real reader lock ownership, independently of the unconfirmed hosted
+# InterfaceError cause. Existing fixtures and lifecycle owners above are intact.
+def _reader_lock_case(
+    runtime: OrgPaths, db: Database, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> tuple[str, dict | None]:
+    if state == "missing":
+        return "CONT-MISSING", None
+    _seed_root(db)
+    orch = _make_orch(runtime, db, evaluator=StrictFakeAuthorityEvaluator())
+    _run_escalate_step(orch, "T-ROOT", CONTINUE_REASON, monkeypatch)
+    row = dict(_latest_envelope(db, "T-ROOT"))
+    if state == "consumed":
+        _run_continued_step(orch, "T-ROOT", {"action": "done", "summary": "done"}, monkeypatch)
+    elif state == "violated":
+        assert db.spend_authority_continue_envelope_if_active(
+            "T-ROOT", audit_agent="engineering_head", error="reader regression abort",
+        ) is True
+    selected = dict(_latest_envelope(db, "T-ROOT"))
+    assert selected["state"] == state
+    assert {key: value for key, value in selected.items()
+            if key not in {"state", "consumed_at", "updated_at"}} == {
+                key: value for key, value in row.items()
+                if key not in {"state", "consumed_at", "updated_at"}}
+    return row["id"], selected
+
+
+@pytest.mark.parametrize("reader", ["get_active_authority_continue_envelope", "get_authority_continue_envelope"])
+@pytest.mark.parametrize("state", ["missing", "active", "consumed", "violated"])
+def test_envelope_readers_wait_and_reenter_real_instance_lock(
+    runtime: OrgPaths, db: Database, monkeypatch: pytest.MonkeyPatch,
+    reader: str, state: str,
+) -> None:
+    """1. Both public readers cannot SELECT/return across another thread's real
+    Database RLock; after release they select the genuine row or None and
+    reenter under an existing owner without deadlock, without
+    changing envelope/result/audit bytes (missing/active/consumed/violated).
+    2. Omitting either existing synchronization decorator produces a SELECT
+    while the holder owns the lock. This is lock causation, not reproduction
+    of the hosted InterfaceError. RED: output/TASK-9987/lock-mutation-red.*;
+    exact-restored GREEN: lock-restored-green.* and stability-1..5.* plus
+    sibling-stability-1..5.* in that directory; byte restoration is recorded
+    in lock-byte-exact-restoration.json.
+    3. test_continuation_mints_single_use_envelope and consumption/failure
+    owners above check selection/lifecycle serially; test_database_shared's
+    facade-time owner never calls either reader with a contended lock.
+    4. No production seam. Existing accepted setup mints/spends real rows;
+    per-thread profile observes the ACTUAL RLock acquire and SQLite trace
+    observes real SELECTs. Neither substitutes locking or return values.
+    """
+    envelope_id, row = _reader_lock_case(runtime, db, monkeypatch, state)
+    expected = row if reader == "get_authority_continue_envelope" or state == "active" else None
+    argument = envelope_id if reader == "get_authority_continue_envelope" else "T-ROOT"
+    before_rows = [tuple(r) for r in db.execute("SELECT * FROM authority_continue_envelopes ORDER BY id")]
+    before_audit = db.get_audit_logs("T-ROOT")
+    before_results = db.get_task_results("T-ROOT")
+    reached_boundary = threading.Event()
+    selected = threading.Event()
+    returned = threading.Event()
+    outcomes, errors, trace = [], [], []
+
+    def observe_acquire(frame: object, event: str, callable: object) -> None:
+        if event == "c_call" and getattr(callable, "__name__", None) == "acquire" and getattr(callable, "__self__", None) is db._lock:
+            reached_boundary.set()
+
+    def observe_select(sql: str) -> None:
+        if sql.startswith("SELECT") and "FROM authority_continue_envelopes" in sql:
+            trace.append(db._lock._is_owned())
+            selected.set()
+            reached_boundary.set()
+
+    def read() -> None:
+        sys.setprofile(observe_acquire)
+        try:
+            value = getattr(db, reader)(argument)
+            with db._lock:
+                reentered = getattr(db, reader)(argument)
+            outcomes.append((None if value is None else dict(value),
+                             None if reentered is None else dict(reentered)))
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            sys.setprofile(None)
+            returned.set()
+            reached_boundary.set()
+
+    worker = threading.Thread(target=read, daemon=True)
+    db._conn.set_trace_callback(observe_select)
+    try:
+        with db._lock:
+            worker.start()
+            assert reached_boundary.wait(5), "reader never reached its real acquire/SELECT boundary"
+            assert not selected.is_set(), "SELECT executed while a different thread owned Database RLock"
+            assert not returned.is_set(), "reader returned before the real holder released Database RLock"
+        worker.join(5)
+        assert not worker.is_alive(), "reader failed to finish after lock release"
+        assert errors == []
+        assert outcomes == [(expected, expected)]
+        assert selected.is_set() and returned.is_set()
+        assert trace == [True, True], "real SELECT must execute with the reader owning the same RLock"
+        db._conn.set_trace_callback(None)
+        assert [tuple(r) for r in db.execute("SELECT * FROM authority_continue_envelopes ORDER BY id")] == before_rows
+        assert db.get_audit_logs("T-ROOT") == before_audit
+        assert db.get_task_results("T-ROOT") == before_results
+    finally:
+        worker.join(5)
+        assert not worker.is_alive(), "leaked reader thread"
+        db._conn.set_trace_callback(None)
+        db.close()

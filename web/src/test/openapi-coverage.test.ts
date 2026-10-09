@@ -51,6 +51,10 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  test('prompt-only founder PUT is browser-included', () => {
+    expect(INCLUDED_PATHS.has('PUT /api/v1/orgs/{slug}/agents/{agent_name}/system-prompt')).toBe(true);
+  });
+
   const daemonRoutes = loadDaemonRoutes();
 
   test('every daemon route is either included or excluded', () => {
@@ -92,4 +96,16 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/tasks/{task_id}')).toBe(true);
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/dashboard/summary')).toBe(true);
   });
+  test('all initial activation methods are browser-included', () => {
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/activations')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/activations')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}')).toBe(true);
+  });
+
+  test('all cutover methods are browser-included', () => {
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/cutover')).toBe(true);
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/cutover/requests')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/cutover/downgrade-preflight')).toBe(true);
+  });
+
 });

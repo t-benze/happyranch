@@ -245,41 +245,626 @@ _APPROVED_VERDICTS = frozenset({"APPROVE", "PASS"})
 
 
 # The release-expected ORG DB schema digest: the schema a fresh Database() built
-# from the CURRENT code creates after the canonical org-only workflow installer
-# runs. Generic Database callers remain workflow-free; this isolated reference
+# from CURRENT code constructs from fresh and pinned complete historical inputs
+# after the canonical org-only workflow installer runs. Generic Database callers
+# remain workflow-free; these isolated references
 # mirrors the complete surface that OrgState.load attaches to an orchestrator.
 # Any divergence of the live DB from this release schema is an authoritative
 # schema/migration drift signal, so the attempt must escalate. Computed once per
 # process and cached.
-_release_schema_digest_cache: str | None = None
+# Independent, release-owned generic preimages. They are installed ONLY into
+# disposable references before the actual current Database migrations fill the
+# complete release schema. No candidate SQL/object is copied, ignored or filtered.
+# v0: fb7139a1b69070631e243e86390d683789703693 src/infrastructure/database.py
+# SHA256 cc0a92257ebe8c19f2cc33b0b69705f03acf16d01ff380213da211f43902000b.
+# v2: f39b4934611ca13ab7d8b7fa2d7be983a4bfb7a5, complete historical fixture
+# runtime-source SHA256 976474448092af94fab1ea7514f294be18696fd034fa878581aa54857bfa1c7e.
+# The entire historical constructor object inventory is retained as data;
+# current supported migrations then construct the complete current reference.
+# Organic history additionally exercises the three shipped additive seams.
+_RELEASE_REFERENCE_HISTORIES = ('fresh', 'v0', 'v2', 'v2-organic')
+_RELEASE_REFERENCE_PREIMAGES = (
+"""CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_agent TEXT,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                brief TEXT NOT NULL,
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_summary TEXT,
+                final_artifact_dir TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                action TEXT NOT NULL,
+                payload TEXT,
+                timestamp TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scorecards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent TEXT NOT NULL UNIQUE,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                acceptance_rate REAL NOT NULL,
+                revision_rate REAL NOT NULL,
+                error_count INTEGER NOT NULL,
+                tier TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS task_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'completed',
+                output_summary TEXT,
+                decision_json TEXT,
+                confidence_score INTEGER,
+                learnings TEXT,
+                risks_flagged TEXT,
+                duration_seconds INTEGER,
+                token_count INTEGER,
+                estimated_cost REAL,
+                artifact_dir TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS talks (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                summary TEXT,
+                topic_list_json TEXT,
+                new_learnings_count INTEGER NOT NULL DEFAULT 0,
+                new_kb_slugs_json TEXT,
+                transcript_path TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_talks_agent_status ON talks(agent_name, status);
+            CREATE INDEX IF NOT EXISTS idx_talks_started ON talks(started_at);""",
+    (
+"""CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_agent TEXT,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                brief TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'task',
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                parent_task_id TEXT,
+                final_output_summary TEXT,
+                final_output_dir TEXT,
+                executor_pid INTEGER
+            , block_kind TEXT, note TEXT, orchestration_step_count INTEGER DEFAULT 0, cancelled_at TEXT, revisit_of_task_id TEXT, last_heartbeat TEXT, session_timeout_seconds INTEGER, blocked_on_job_ids TEXT, dispatched_from_thread_id TEXT, active_chain TEXT, active_fanout TEXT, current_session_id TEXT, zombie_flagged_at TEXT)""",
+"""CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                action TEXT NOT NULL,
+                payload TEXT,
+                timestamp TEXT NOT NULL
+            )""",
+"""CREATE TABLE task_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                agent TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'completed',
+                output_summary TEXT,
+                decision_json TEXT,
+                confidence_score INTEGER,
+                learnings TEXT,
+                risks_flagged TEXT,
+                duration_seconds INTEGER,
+                token_count INTEGER,
+                estimated_cost REAL,
+                output_dir TEXT,
+                created_at TEXT NOT NULL
+            , waiting_on_job_ids TEXT, verdict TEXT)""",
+"""CREATE TABLE dreams (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                window_start TEXT,
+                window_end TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                summary TEXT,
+                transcript_path TEXT,
+                new_learnings_count INTEGER NOT NULL DEFAULT 0,
+                kb_candidate_count INTEGER NOT NULL DEFAULT 0,
+                founder_thread_id TEXT,
+                session_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(agent_name, local_date)
+            )""",
+"""CREATE INDEX idx_dreams_agent_date
+                ON dreams(agent_name, local_date)""",
+"""CREATE INDEX idx_dreams_status
+                ON dreams(status)""",
+"""CREATE TABLE dream_kb_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dream_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                title TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                rationale TEXT NOT NULL,
+                body_markdown TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                promoted_kb_slug TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(dream_id, slug),
+                FOREIGN KEY (dream_id) REFERENCES dreams(id)
+            )""",
+"""CREATE INDEX idx_dream_candidates_dream
+                ON dream_kb_candidates(dream_id)""",
+"""CREATE INDEX idx_dream_candidates_status
+                ON dream_kb_candidates(status)""",
+"""CREATE TABLE work_hours (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                local_date TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                scheduled_for TEXT NOT NULL,
+                started_at TEXT,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                routine_count INTEGER NOT NULL DEFAULT 0,
+                dropped_count INTEGER NOT NULL DEFAULT 0,
+                spawned_task_ids TEXT,
+                spawned_task_count INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                transcript_path TEXT,
+                session_id TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(agent_name, local_date, slot)
+            )""",
+"""CREATE INDEX idx_work_hours_agent_date
+                ON work_hours(agent_name, local_date)""",
+"""CREATE INDEX idx_work_hours_status
+                ON work_hours(status)""",
+"""CREATE TABLE schedules (
+                id TEXT PRIMARY KEY,
+                agent_name TEXT NOT NULL,
+                team TEXT NOT NULL DEFAULT 'engineering',
+                kind TEXT NOT NULL,
+                fire_at TEXT NOT NULL,
+                recurrence TEXT,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                normalized_brief TEXT NOT NULL,
+                source_instruction TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'armed',
+                active INTEGER NOT NULL DEFAULT 1,
+                expires_at TEXT,
+                indefinite INTEGER NOT NULL DEFAULT 0,
+                spawned_task_ids TEXT,
+                last_fired_at TEXT,
+                fire_count INTEGER NOT NULL DEFAULT 0,
+                session_id TEXT,
+                error TEXT,
+                transcript_path TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+"""CREATE INDEX idx_schedules_agent_status
+                ON schedules(agent_name, status)""",
+"""CREATE INDEX idx_schedules_status_fire_at
+                ON schedules(status, fire_at)""",
+"""CREATE TABLE session_token_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id    TEXT,
+                agent      TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                executor   TEXT NOT NULL,
+                model      TEXT,
+                input_tokens          INTEGER,
+                output_tokens         INTEGER,
+                cache_read_tokens     INTEGER,
+                cache_creation_tokens INTEGER,
+                reasoning_tokens      INTEGER,
+                usage_raw_json TEXT,
+                scope_type TEXT,
+                scope_id TEXT,
+                thread_id TEXT,
+                invocation_purpose TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE (task_id, agent, session_id)
+            )""",
+"""CREATE TABLE escalation_notifications (
+                feishu_message_id TEXT PRIMARY KEY,
+                org_slug          TEXT NOT NULL,
+                task_id           TEXT NOT NULL,
+                chat_id           TEXT NOT NULL,
+                created_at        TEXT NOT NULL,
+                expires_at        TEXT NOT NULL,
+                consumed_at       TEXT,
+                consumed_by       TEXT,
+                kind              TEXT NOT NULL DEFAULT 'escalation'
+            )""",
+"""CREATE INDEX idx_escalation_notifications_task
+                ON escalation_notifications (task_id)""",
+"""CREATE TABLE processed_event_ids (
+                org_slug          TEXT NOT NULL,
+                feishu_event_id   TEXT NOT NULL,
+                processed_at      TEXT NOT NULL,
+                outcome           TEXT NOT NULL,
+                reason            TEXT,
+                PRIMARY KEY (org_slug, feishu_event_id)
+            )""",
+"""CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                subject TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                archived_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                forwarded_from_id TEXT,
+                forwarded_from_kind TEXT,
+                turn_cap INTEGER NOT NULL DEFAULT 500,
+                turns_used INTEGER NOT NULL DEFAULT 0,
+                summary TEXT,
+                transcript_path TEXT
+            , composed_by TEXT NOT NULL DEFAULT 'founder', composed_from_task_id TEXT, composed_from_dream_id TEXT)""",
+"""CREATE INDEX idx_threads_status ON threads(status)""",
+"""CREATE INDEX idx_threads_started ON threads(started_at)""",
+"""CREATE TABLE thread_participants (
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                added_at TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                agent_session_id TEXT,
+                last_resumed_seq INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (thread_id, agent_name),
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            )""",
+"""CREATE INDEX idx_thread_participants_agent
+                ON thread_participants(agent_name)""",
+"""CREATE TABLE thread_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                speaker TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                body_markdown TEXT,
+                addressed_to_json TEXT,
+                decline_reason TEXT,
+                system_payload_json TEXT,
+                sent_from_task_id TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            )""",
+"""CREATE UNIQUE INDEX idx_thread_messages_thread_seq
+                ON thread_messages(thread_id, seq)""",
+"""CREATE TABLE thread_message_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                message_seq INTEGER NOT NULL,
+                ordinal INTEGER NOT NULL,
+                artifact_name TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL, thread_attachment_id TEXT,
+                FOREIGN KEY (thread_id) REFERENCES threads(id),
+                UNIQUE(thread_id, message_seq, ordinal)
+            )""",
+"""CREATE INDEX idx_thread_message_attachments_message
+                ON thread_message_attachments(thread_id, message_seq)""",
+"""CREATE TABLE thread_scoped_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                attachment_id TEXT NOT NULL UNIQUE,
+                thread_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            )""",
+"""CREATE INDEX idx_thread_scoped_attachments_thread
+                ON thread_scoped_attachments(thread_id)""",
+"""CREATE TABLE task_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL,
+                storage_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                size_bytes INTEGER,
+                content_type TEXT,
+                uploaded_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                legacy_status TEXT,
+                FOREIGN KEY (task_id) REFERENCES tasks(id),
+                UNIQUE(task_id, ordinal),
+                UNIQUE(storage_key)
+            )""",
+"""CREATE INDEX idx_task_attachments_task
+                ON task_attachments(task_id)""",
+"""CREATE TABLE thread_invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id TEXT NOT NULL,
+                agent_name TEXT NOT NULL,
+                invocation_token TEXT NOT NULL UNIQUE,
+                triggering_seq INTEGER NOT NULL,
+                purpose TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                enqueued_at TEXT NOT NULL,
+                started_at TEXT,
+                consumed_at TEXT,
+                session_id TEXT,
+                dispatched_task_id TEXT,
+                decline_reason TEXT,
+                FOREIGN KEY (thread_id) REFERENCES threads(id)
+            )""",
+"""CREATE INDEX idx_thread_invocations_token
+                ON thread_invocations(invocation_token)""",
+"""CREATE INDEX idx_thread_invocations_thread
+                ON thread_invocations(thread_id)""",
+"""CREATE INDEX idx_thread_invocations_pending
+                ON thread_invocations(status) WHERE status = 'pending'""",
+"""CREATE TABLE jobs (
+                id                       TEXT PRIMARY KEY,
+                task_id                  TEXT NOT NULL,
+                agent_name               TEXT NOT NULL,
+                title                    TEXT NOT NULL,
+                rationale                TEXT,
+                script_text              TEXT NOT NULL,
+                interpreter              TEXT NOT NULL,
+                cwd_hint                 TEXT,
+                review_required          INTEGER NOT NULL DEFAULT 0,
+                persistent               INTEGER NOT NULL DEFAULT 0,
+                max_runtime_seconds      INTEGER,
+                max_output_bytes         INTEGER NOT NULL DEFAULT 52428800,
+                status                   TEXT NOT NULL DEFAULT 'pending',
+                exit_code                INTEGER,
+                reason                   TEXT,
+                duration_ms              INTEGER,
+                stdout_head              TEXT,
+                stderr_head              TEXT,
+                stdout_path              TEXT,
+                stderr_path              TEXT,
+                stdout_bytes             INTEGER,
+                stderr_bytes             INTEGER,
+                cwd_resolved             TEXT,
+                started_at               TEXT,
+                finished_at              TEXT,
+                reviewed_at              TEXT,
+                reviewed_by              TEXT,
+                reject_reason            TEXT,
+                created_at               TEXT NOT NULL
+            )""",
+"""CREATE INDEX jobs_task_id_idx ON jobs(task_id)""",
+"""CREATE INDEX jobs_status_idx  ON jobs(status)""",
+"""CREATE TABLE kb_views (
+                slug           TEXT PRIMARY KEY,
+                view_count     INTEGER NOT NULL DEFAULT 0,
+                last_viewed_at TEXT
+            )""",
+"""CREATE TABLE org_settings (
+                section     TEXT NOT NULL PRIMARY KEY,
+                value_json  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                updated_by  TEXT DEFAULT 'founder'
+            )""",
+"""CREATE TABLE skill_validation_events (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id       TEXT NOT NULL,
+                slug           TEXT NOT NULL,
+                agent          TEXT,
+                source         TEXT NOT NULL DEFAULT 'user_authored',
+                severity       TEXT NOT NULL DEFAULT 'info',
+                ok             INTEGER NOT NULL DEFAULT 1,
+                version        TEXT,
+                findings       TEXT,
+                reason_codes   TEXT,
+                created_at     TEXT NOT NULL
+            )""",
+"""CREATE INDEX idx_sve_skill_id
+                ON skill_validation_events(skill_id)""",
+"""CREATE INDEX idx_sve_agent
+                ON skill_validation_events(agent)""",
+"""CREATE TABLE skill_lifecycle_packages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id    TEXT NOT NULL,
+                slug        TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                version     TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                policy_class TEXT NOT NULL DEFAULT 'standard_operational',
+                description TEXT NOT NULL DEFAULT '',
+                skill_md    TEXT NOT NULL DEFAULT '',
+                content_artifact_key TEXT,
+                status      TEXT NOT NULL DEFAULT 'proposed',
+                created_at  TEXT NOT NULL,
+                created_by  TEXT NOT NULL DEFAULT '',
+                proposal_task_id    TEXT,
+                proposal_session_id TEXT,
+                proposer_agent      TEXT,
+                reviewer          TEXT,
+                review_decision   TEXT,
+                review_rationale  TEXT,
+                reviewed_at       TEXT,
+                publisher              TEXT,
+                published_at           TEXT,
+                publication_decision_id INTEGER
+            )""",
+"""CREATE INDEX idx_lifecycle_packages_skill_id
+                ON skill_lifecycle_packages(skill_id)""",
+"""CREATE INDEX idx_lifecycle_packages_status
+                ON skill_lifecycle_packages(status)""",
+"""CREATE UNIQUE INDEX idx_lifecycle_packages_hash
+                ON skill_lifecycle_packages(skill_id, content_hash)""",
+"""CREATE TABLE skill_lifecycle_events (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id            TEXT NOT NULL,
+                package_version_id  INTEGER,
+                event_type          TEXT NOT NULL,
+                actor               TEXT NOT NULL DEFAULT '',
+                actor_role          TEXT NOT NULL DEFAULT '',
+                previous_status     TEXT,
+                new_status          TEXT,
+                content_hash        TEXT,
+                metadata_json       TEXT,
+                created_at          TEXT NOT NULL,
+                task_id             TEXT,
+                session_id          TEXT,
+                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+            )""",
+"""CREATE INDEX idx_lifecycle_events_skill_id
+                ON skill_lifecycle_events(skill_id)""",
+"""CREATE INDEX idx_lifecycle_events_created_at
+                ON skill_lifecycle_events(created_at)""",
+"""CREATE TABLE skill_lifecycle_assignments (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id            TEXT NOT NULL,
+                agent_name          TEXT NOT NULL,
+                package_version_id  INTEGER NOT NULL,
+                version             TEXT NOT NULL,
+                content_hash        TEXT NOT NULL,
+                assigned_by         TEXT NOT NULL DEFAULT '',
+                assigned_at         TEXT NOT NULL,
+                active              INTEGER NOT NULL DEFAULT 1,
+                rolled_back_by            TEXT,
+                rolled_back_at            TEXT,
+                rollback_reason           TEXT,
+                rollback_target_version_id INTEGER,
+                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+            )""",
+"""CREATE INDEX idx_lifecycle_assignments_skill
+                ON skill_lifecycle_assignments(skill_id)""",
+"""CREATE INDEX idx_lifecycle_assignments_agent
+                ON skill_lifecycle_assignments(agent_name)""",
+"""CREATE UNIQUE INDEX idx_lifecycle_assignments_unique_active
+                ON skill_lifecycle_assignments(skill_id, agent_name)
+                WHERE active = 1""",
+"""CREATE TABLE skill_lifecycle_materializations (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_id            TEXT NOT NULL,
+                agent_name          TEXT NOT NULL,
+                package_version_id  INTEGER NOT NULL,
+                version             TEXT NOT NULL,
+                content_hash        TEXT NOT NULL,
+                success             INTEGER NOT NULL DEFAULT 0,
+                error_message       TEXT,
+                session_context     TEXT,
+                created_at          TEXT NOT NULL,
+                FOREIGN KEY (package_version_id) REFERENCES skill_lifecycle_packages(id)
+            )""",
+"""CREATE INDEX idx_lifecycle_materializations_skill_agent
+                ON skill_lifecycle_materializations(skill_id, agent_name)""",
+"""CREATE INDEX idx_session_token_usage_task ON session_token_usage (task_id)""",
+"""CREATE INDEX idx_session_token_usage_agent ON session_token_usage (agent, created_at)""",
+"""CREATE INDEX idx_session_token_usage_scope ON session_token_usage (scope_type, scope_id)""",
+"""CREATE INDEX idx_session_token_usage_thread ON session_token_usage (thread_id) WHERE thread_id IS NOT NULL""",
+"""CREATE UNIQUE INDEX idx_session_token_usage_scope_unique ON session_token_usage (COALESCE(scope_type, 'task'), COALESCE(scope_id, task_id), agent, session_id)""",
+"""CREATE INDEX idx_tasks_parent ON tasks(parent_task_id)""",
+"""CREATE INDEX idx_tasks_revisit_of ON tasks(revisit_of_task_id)""",
+"""CREATE INDEX idx_tasks_dispatched_from_thread_id ON tasks(dispatched_from_thread_id) WHERE dispatched_from_thread_id IS NOT NULL""",
+"""CREATE INDEX idx_threads_composed_from_task ON threads(composed_from_task_id) WHERE composed_from_task_id IS NOT NULL""",
+"""CREATE INDEX idx_threads_composed_from_dream ON threads(composed_from_dream_id) WHERE composed_from_dream_id IS NOT NULL""",
+"""CREATE UNIQUE INDEX idx_task_attachments_storage_key_unique ON task_attachments(storage_key)""",
+"""CREATE TABLE agent_enrollments (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                system_prompt TEXT NOT NULL,
+                repos TEXT NOT NULL DEFAULT '{}',
+                executor TEXT NOT NULL DEFAULT 'claude',
+                allow_rules TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""",
+    ),
+)
 
 
-def _release_schema_digest() -> str:
+_release_schema_digest_cache: dict[tuple[str, str], str] | None = None
+
+
+def _release_schema_digest(layout: str = "F", history: str = "fresh") -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
-    The temporary generic database receives the same canonical workflow
-    installation as ``OrgState.load`` before hashing.  No persistent generic
-    or runtime-audit database is changed.  Cached after first computation;
-    never raises (``"unavailable"`` fails closed as a drift signal).
+    Independent fresh or pinned whole-historical inputs run the actual current
+    generic migrations, then the requested complete workflow installer before
+    hashing every SQL object. No candidate schema is used as an input. No
+    persistent generic or runtime-audit database is changed. Cache identity
+    includes both layout and source history; unavailable construction fails closed.
     """
     global _release_schema_digest_cache
-    if _release_schema_digest_cache is not None:
-        return _release_schema_digest_cache
+    if layout not in ("F", "E", "G") or history not in _RELEASE_REFERENCE_HISTORIES:
+        return "unavailable"
+    if _release_schema_digest_cache is None:
+        _release_schema_digest_cache = {}
+    key = (layout, history)
+    if key in _release_schema_digest_cache:
+        return _release_schema_digest_cache[key]
     try:
         import tempfile
         from pathlib import Path as _Path
         from runtime.infrastructure.database import Database
-        from runtime.infrastructure.workflow_schema import install_or_recover
+        from runtime.infrastructure.workflow_schema import install_or_recover, initialize_complete_org_schema, migrate_draft_schema
         with tempfile.TemporaryDirectory() as td:
-            fresh = Database(_Path(td) / "fresh-authority-schema.db")
+            path = _Path(td) / "fresh-authority-schema.db"
+            if history != 'fresh':
+                import sqlite3
+                with sqlite3.connect(path) as seed:
+                    if history == 'v0':
+                        seed.executescript(_RELEASE_REFERENCE_PREIMAGES[0])
+                    else:
+                        for statement in _RELEASE_REFERENCE_PREIMAGES[1]:
+                            seed.execute(statement)
+                        if history == 'v2-organic':
+                            for table, column in (('tasks', 'note'), ('task_results', 'verdict'), ('thread_participants', 'last_resumed_seq')):
+                                seed.execute(f'ALTER TABLE "{table}" DROP COLUMN "{column}"')
+            fresh = Database(path)
             try:
-                install_or_recover(fresh)
-                _release_schema_digest_cache = _live_schema_digest(fresh)
+                if layout == "F":
+                    install_or_recover(fresh)
+                elif layout == "E":
+                    install_or_recover(fresh)
+                    with fresh.workflow_schema_transaction() as conn:
+                        migrate_draft_schema(conn, expected_org_slug="release-reference")
+                else:
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference")
+                _release_schema_digest_cache[key] = _live_schema_digest(fresh)
             finally:
                 fresh.close()
     except Exception:
-        _release_schema_digest_cache = "unavailable"
-    return _release_schema_digest_cache
+        _release_schema_digest_cache[key] = "unavailable"
+    return _release_schema_digest_cache[key]
 
 
 def _live_schema_digest(db) -> str:
@@ -1668,8 +2253,17 @@ def _server_evidence(
         },
         sort_keys=True,
     )
-    live_schema_digest = _live_schema_digest(db)
-    schema_drift = live_schema_digest != _release_schema_digest()
+    live_schema_digest = "unavailable"
+    try:
+        from runtime.infrastructure.workflow_schema import validate_workflow_schema
+        with db.coherent_read_view() as conn:
+            live_schema_digest = _live_schema_digest(db)
+            layout = validate_workflow_schema(conn, expected_org_slug=orch._slug)
+        references = tuple(_release_schema_digest(layout, history) for history in _RELEASE_REFERENCE_HISTORIES)
+        reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
+    except Exception:
+        reference = "unavailable"
+    schema_drift = reference == "unavailable" or live_schema_digest == "unavailable" or live_schema_digest != reference
     facts["db_schema"] = json.dumps(
         {
             "digest": live_schema_digest,

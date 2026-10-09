@@ -9,10 +9,9 @@
  *
  * Language names are endonyms ("English", "简体中文") and are intentionally not
  * translated; each carries its own `lang` so CJK glyphs render with a CJK font.
- * THR-118 W3b-2 mounts it in ordinary production builds as an opt-in preview:
- * an unset preference stays English (no browser-language detection), and a
- * visible disclosure says secondary, not-yet-translated pages may still appear
- * in English.
+ * THR-118 W5 enables English/zh-CN throughout mounted product presentation.
+ * A saved preference takes priority; otherwise full-mode browser-language
+ * resolution applies. The disclosure explains that choice in both languages.
  */
 import { useId } from 'react';
 import { useI18n } from '@/hooks/i18n';
@@ -37,8 +36,8 @@ export function PreferencesSection(): JSX.Element {
           : '';
 
   return (
-    <div className="space-y-4" data-testid="settings-preferences">
-      <fieldset className="space-y-3" aria-describedby={descriptionId}>
+    <div className="min-w-0 space-y-4 break-words" data-testid="settings-preferences">
+      <fieldset className="min-w-0 space-y-3" aria-describedby={descriptionId}>
         <legend className="text-text-primary text-sm font-semibold">
           {t('common.language')}
         </legend>

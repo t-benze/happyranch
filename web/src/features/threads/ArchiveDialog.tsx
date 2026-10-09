@@ -48,7 +48,7 @@ export function ArchiveDialog({ threadId, open, onClose }: Props): JSX.Element {
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle>{t('threads.dialog.archive.title')}</DialogTitle>
           <DialogDescription className="sr-only">

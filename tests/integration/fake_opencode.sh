@@ -12,6 +12,16 @@
 #   - `--format json` must be present for the NDJSON emission (the runtime
 #     always passes it).
 set -e
+STUB_ARGV=("$@")
+if [[ -z "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" || -z "${HAPPYRANCH_TEST_STUB_GUARD:-}" ]]; then
+    echo 'deterministic stub requires isolated test parent' >&2
+    exit 86
+fi
+
+# uv and daemon startup may prepend other tool directories. This registered
+# stub lives beside the bound Python/callback wrappers; restore that exact
+# test-only route before the unchanged executable/registry/plan identity gate.
+export PATH="${0%/*}:/usr/bin:/bin"
 
 PROMPT="$(cat)"
 SID=""
@@ -55,6 +65,13 @@ if [[ -n "$THREAD_INVOCATION_TOKEN" ]]; then
     PURPOSE_LINE=$(echo "$PROMPT" | awk '/^  Message [0-9]+ addressed/{print "reply"; exit} /^  The founder has added you/{print "bootstrap"; exit} /^  This thread is being archived/{print "close_out"; exit} /^  Task TASK-[0-9]+ that you dispatched/{print "task_followup"; exit}')
     THREAD_PURPOSE="${PURPOSE_LINE:-reply}"
     THREAD_AGENT="${PWD##*/}"
+    if [[ -z "${FAKE_OPENCODE_THREAD_PLAN:-}" || ! -f "$FAKE_OPENCODE_THREAD_PLAN" || ! -x "$FAKE_OPENCODE_THREAD_PLAN" ]]; then
+        echo 'deterministic stub plan missing or unavailable' >&2
+        exit 86
+    fi
+    if [[ -n "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" ]]; then
+        python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" opencode "$FAKE_OPENCODE_THREAD_PLAN" "${STUB_ARGV[@]}"
+    fi
     if [[ -n "${FAKE_OPENCODE_THREAD_PLAN:-}" && -f "$FAKE_OPENCODE_THREAD_PLAN" ]]; then
         bash "$FAKE_OPENCODE_THREAD_PLAN" \
             "$THREAD_ID" "$THREAD_INVOCATION_TOKEN" "$THREAD_AGENT" "$ORG_SLUG" "$THREAD_PURPOSE" "$SID" 1>&2
@@ -70,7 +87,14 @@ fi
 
 # Task path plan (stdout redirected to stderr so the NDJSON below is the
 # ONLY thing on stdout — the parsers scan stdout line-by-line).
-if [[ -n "${FAKE_OPENCODE_PLAN:-}" && -f "$FAKE_OPENCODE_PLAN" ]]; then
+if [[ -z "${FAKE_OPENCODE_PLAN:-}" || ! -f "$FAKE_OPENCODE_PLAN" || ! -x "$FAKE_OPENCODE_PLAN" ]]; then
+        echo 'deterministic stub plan missing or unavailable' >&2
+        exit 86
+    fi
+    if [[ -n "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" ]]; then
+        python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" opencode "$FAKE_OPENCODE_PLAN" "${STUB_ARGV[@]}"
+    fi
+    if [[ -n "${FAKE_OPENCODE_PLAN:-}" && -f "$FAKE_OPENCODE_PLAN" ]]; then
     bash "$FAKE_OPENCODE_PLAN" "$TASK_ID" "$SESSION_ID" "$ORG_SLUG" 1>&2
 fi
 

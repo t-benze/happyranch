@@ -530,6 +530,25 @@ export interface AgentSummary {
   revision?: string | null;
 }
 
+export interface SystemPromptBody {
+  system_prompt: string;
+  expected_revision: string;
+}
+
+export interface SystemPromptReceipt {
+  agent: string;
+  system_prompt: string;
+  revision: string;
+}
+
+export type SystemPromptCompensation = 'restored' | 'not_owned' | 'failed' | 'not_required';
+export type SystemPromptErrorDetail =
+  | { code: 'expected_revision_required' | 'agent_not_found' }
+  | { code: 'stale_agent_revision'; current_revision: string }
+  | { code: 'system_prompt_reconciliation_failed'; error: string;
+      compensation: { canonical: SystemPromptCompensation; workspace: SystemPromptCompensation } }
+  | { code: 'system_prompt_audit_failed'; commit_state: 'possibly_committed' };
+
 export interface AgentEnrollment {
   name: string;
   team: string;
@@ -1042,3 +1061,157 @@ export interface ScheduleEditFields {
 export interface ScheduleRenewBody {
   indefinite?: boolean;
 }
+
+// Existing-schema THR-139 cutover. No activation, dispatch or launch receipt.
+export type WorkflowCutoverState = 'installed_legacy_only' | 'enable_requested'
+  | 'compatibility_verified' | 'enabled' | 'disable_requested' | 'draining' | 'drained';
+export interface WorkflowCutoverEvent {
+  id: string;
+  event_seq: number;
+  state_before: WorkflowCutoverState | null;
+  state_after: WorkflowCutoverState;
+  operation_key: string | null;
+  event_digest: string;
+  created_at: string;
+}
+export interface WorkflowCutoverBlocker {
+  code: string;
+  record_id?: string | null;
+  state?: string | null;
+  owner: string;
+  required_action: string;
+  deferred_to?: string | null;
+}
+export interface WorkflowCutoverProjection {
+  org_slug: string;
+  schema_version: number;
+  state: WorkflowCutoverState;
+  recovery_owner: 'workflow_cutover_reconciler';
+  generation: number;
+  operation_key: string | null;
+  disable_reason: 'founder_disable_requested' | null;
+  updated_at: string;
+  events: WorkflowCutoverEvent[];
+  allowed_actions: ('enable' | 'disable')[];
+  blockers: WorkflowCutoverBlocker[];
+  reconciliation_required: boolean;
+  verification: { event_id: string; policy: 'workflow-cutover-verifier@1' } | null;
+}
+export interface WorkflowCutoverRequestInput {
+  action: 'enable' | 'disable';
+  operation_key: string;
+  expected_generation: number;
+}
+export interface WorkflowCutoverRequestResponse extends WorkflowCutoverProjection {
+  request_event_id: string;
+  request_generation: number;
+  request_action: 'enable' | 'disable';
+  replayed: boolean;
+}
+export interface WorkflowCutoverDowngradePreflight {
+  eligible: boolean;
+  blockers: WorkflowCutoverBlocker[];
+  projection: WorkflowCutoverProjection;
+}
+
+/** Exact-version Founder activation; no caller actor/task/session/result claims. */
+export type WorkflowActivationRole = 'product-lead' | 'founder' | 'implementer' | 'tester';
+export type WorkflowActivationAction = 'draft-document' | 'submit-immutable-document' | 'collect-review' |
+  'approve-planning-input' | 'return-to-author';
+export interface WorkflowActivationRoleBinding {
+  kind: 'agent' | 'human';
+  principal: string;
+  team: string | null;
+}
+export type WorkflowActivationBindings = Record<WorkflowActivationRole, WorkflowActivationRoleBinding>;
+export type WorkflowActivationReplacements = Record<WorkflowActivationRole, WorkflowActivationRoleBinding[]>;
+export interface WorkflowActivationAuthority {
+  namespace: string;
+  generation: number;
+  snapshot_digest: string;
+}
+export interface WorkflowActivationTemplatePin {
+  identity_id: string;
+  version: number;
+  definition_digest: string;
+}
+export type WorkflowActivationInput = {
+  kind: 'task-attachment'; task_id: string; storage_key: string;
+  sha256: string; recipients: WorkflowActivationRole[];
+} | {
+  kind: 'thread-attachment'; thread_id: string; attachment_id: string;
+  sha256: string; recipients: WorkflowActivationRole[];
+};
+export interface LegacyWorkflowActivationRequest {
+  operation_key: string;
+  instance_id: string;
+  expected_activation_revision: 0;
+  template: WorkflowActivationTemplatePin;
+  authority: WorkflowActivationAuthority;
+  scope: { brief: string };
+  bindings: WorkflowActivationBindings;
+  eligible_replacements: WorkflowActivationReplacements;
+  allowed_actions: WorkflowActivationAction[];
+  inputs: WorkflowActivationInput[];
+}
+export interface LegacyWorkflowActivationReceipt {
+  activation_id: string;
+  instance_id: string;
+  instance_reference: string;
+  activation_revision: number;
+  root_task_id: string;
+  intent_id: string;
+  template: WorkflowActivationTemplatePin & {
+    version_id: string; compiler_pin: string; validator_pin: string; source_pin: string;
+  };
+  authority: WorkflowActivationAuthority;
+  bindings: WorkflowActivationBindings;
+  eligible_replacements: WorkflowActivationReplacements;
+  allowed_actions: WorkflowActivationAction[];
+  scope_digest: string;
+  context_digest: string;
+  activated_by: { principal_kind: 'human'; principal_id: 'founder'; proof_kind: 'founder_bearer' };
+  created_at: string;
+  original_request_digest: string;
+  replayed: boolean;
+  state: 'queued' | 'claimed' | 'running' | 'uncertain' | 'cancelled' | 'failed' | 'completed';
+  execution_started: boolean;
+  pending: boolean;
+  reconciliation_required: boolean;
+  cancellation_requested: boolean;
+  current_eligibility: { eligible: boolean; blockers: string[] };
+  responsible_owner: string;
+}
+
+export type WorkflowDocumentReturnRule = {
+  action: 'return-to-author'; revision: 'new'; invalidate: 'all-prior-receipts';
+};
+export type WorkflowDocumentReviewDefinition = {
+  kind: 'document-review'; schema_version: 2; description: string;
+  author: { role: string; kind: 'agent' };
+  output: { primitive: 'immutable-document-revision'; description: string };
+  reviewers: { role: string; kind: 'agent' | 'human' }[];
+  approval: { mode: 'all'; revision: 'current'; required_roles: string[] };
+  submission: { timing: 'on-completion' | 'while-active-or-completed' };
+} & ({ outcomes: ['approved']; request_changes: null } | {
+  outcomes: ['approved', 'changes_requested'] | ['changes_requested', 'approved'];
+  request_changes: WorkflowDocumentReturnRule;
+});
+export type DocumentWorkflowActivationInput =
+  Omit<Extract<WorkflowActivationInput, { kind: 'task-attachment' }>, 'recipients'> & { recipients: string[] }
+  | Omit<Extract<WorkflowActivationInput, { kind: 'thread-attachment' }>, 'recipients'> & { recipients: string[] };
+export interface DocumentWorkflowActivationRequest extends Omit<LegacyWorkflowActivationRequest,
+  'bindings' | 'eligible_replacements' | 'inputs'> {
+  format: 'workflow-activation-request@2';
+  bindings: Record<string, WorkflowActivationRoleBinding>;
+  eligible_replacements: Record<string, WorkflowActivationRoleBinding[]>;
+  inputs: DocumentWorkflowActivationInput[];
+}
+export interface DocumentWorkflowActivationReceipt extends Omit<LegacyWorkflowActivationReceipt,
+  'bindings' | 'eligible_replacements'> {
+  format: 'workflow-activation-receipt@2';
+  bindings: Record<string, WorkflowActivationRoleBinding>;
+  eligible_replacements: Record<string, WorkflowActivationRoleBinding[]>;
+}
+export type WorkflowActivationRequest = LegacyWorkflowActivationRequest | DocumentWorkflowActivationRequest;
+export type WorkflowActivationReceipt = LegacyWorkflowActivationReceipt | DocumentWorkflowActivationReceipt;

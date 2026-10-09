@@ -1,6 +1,6 @@
-# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams contract
+# Web i18n — foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills + W4d-1 KB/Artifacts + W4d-2 Usage + W5b full browser activation contract
 
-> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview + W4a-1 Health/Dreams)
+> Status: current (W1 foundation + W2a mounted-shell + W2b onboarding + W2c Settings/Preferences + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs migration and opt-in preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills + W4d-1 KB/Artifacts + W4d-2 Usage)
 > Current Source: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, the mounted
 > shell/onboarding consumers, this spec.
 > Supersedes: the `Internationalization layer` non-goal in
@@ -15,13 +15,106 @@
 > **W3b-1** translated the mounted Tasks route family;
 > **W3b-2** translated the mounted Jobs route family and enabled the opt-in
 > preview (Preferences ▸ Language in production, English when unset, with a
-> secondary-pages coverage disclosure).
-> Later slices (W4 remaining
-> surfaces, W5 full coverage/default resolution) and native preference
-> persistence (N0/N1) are still open. The W1 sections below are retained as the historical W1 contract
+> secondary-pages coverage disclosure; historical default superseded by W5b).
+> **W4a-1** translated Runtime Health and Dreams; **W4b** translated the
+> mounted Todos, Work Hours (incl. the shared `EligibilityEditorDialog`) and
+> Audit route families. **W4c** translated the mounted Agents
+> (`agents`, `agents/:agent_name`, `agents/:agent_name/team-escalation-policy`)
+> and Skills (every `skills*` token) route families; KB/Artifacts are translated by **W4d-1**; Usage presentation is translated by **W4d-2**.
+> The mounted Assistant dock/conversation controls are translated. W5a finite
+> mounted coverage is accepted (PR993); W5b enables full browser resolution at
+> the entry and AppShell and replaces the obsolete secondary-page disclosure.
+> Native preference persistence (N0/N1) remains deferred; deployment/live
+> verification is separate. The W1 sections below are retained as the historical W1 contract
 > and updated per phase.
 
+The THR280 prompt editor reuses the mounted Agents pane at desktop/mobile and the retained drawer component without mounting changes. Prompt-local en/zh-CN actions, initial states, pending/readback/conflict/failure guidance use catalog keys; authored multiline bodies and raw daemon diagnostics stay verbatim. Locale switching must preserve the same draft node, body, focus and selection without a request. Draft bases are frozen, controls remain disabled through PUT plus owned fresh readback, and Saved requires receipt body/revision agreement. Recoverable drafts and local navigation/discard semantics remain; no automatic retry or locale-triggered mutation. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation.
+
 ## 1. Scope
+
+### Header language selector (THR-118 seq88)
+
+The shipping AppBar places a compact controlled Select immediately before its
+theme toggle, in both default and tasks presentations. English and 简体中文
+remain native endonyms in both catalogs and carry their own `lang`; the active
+endonym stays visible and the open options indicate the current choice.
+The accessible name/tooltip translate. Keyboard selection, Escape dismissal
+and focus return come from the existing Select primitive. Selection applies
+immediately through the shared locale setter; Settings ▸ Preferences remains
+available and synchronized in both directions, even when its API has no data,
+is pending or has failed. There is no additional locale state, persistence or
+storage listener, route remount, request or transport behavior. Header use
+deliberately moves focus; other-tab language changes preserve focused editors.
+Browser reload, explicit saved-choice precedence and full-mode missing/invalid
+Chinese browser defaults retain their existing contracts. Native restart
+persistence remains deferred under seq39; deployment is separate.
+
+Focused acceptance uses the existing Settings component tests and the W4a
+ordinary-build `header-language` selection (default/tasks header geometry,
+pointer/keyboard/theme/agreement/reload/tabs, retained multiline Agent editor
+and original Cancel/navigation), plus existing W5 startup and provider/locale
+keepers. Both languages, 390×844/1440×900 and comfortable/compact density require
+real control/text/clipping bounds and individually inspected screenshots.
+
+### Ongoing bilingual development safeguards (THR-118 seq81/82)
+
+Every new or changed app-owned heading, action, dialog, tooltip, accessible
+label, validation, loading/empty/error state and generated narrative ships
+English and Simplified Chinese together in the same PR. Typed catalogs, named
+parameters, explicit plurals and locale-aware helpers own presentation. Pure
+shared UI receives localized props; authored content, machine identifiers and
+raw diagnostics remain verbatim.
+
+The maintained Web guide and PR template require both locales for applicable
+affected populated/loading/empty/error states at 390×844 and 1440×900. Acceptance
+includes actual text/control bounds against clipping ancestors, whole Chinese
+readability after permitted scrolling, pointer/keyboard reachability and original
+navigation/actions. Both locale switch directions preserve mounted nodes, drafts,
+focus and selection with zero switch-window HTTP of any method, mutations and
+transport restarts/messages. Retained DOM references are observed before fresh
+lookup or refocus. Untranslated owned copy or broken Chinese layout requires
+`REQUEST_CHANGES`; automation checks supported structure/completeness while human
+review owns meaning and usability. Historical phase receipts retain their scope,
+and finite namespace inventory never claims exhaustive rendering or dataflow
+proof. Native persistence and live deployment remain separate.
+
+The bounded TaskCard repair supplies existing age/lineage/waiting catalog values
+from the mounted Agents pane; standalone pattern defaults and chained rounding
+remain unchanged. The Jobs cascade supplies existing waiting labels and retains
+its blocked-on-job filter, raw statuses and task destinations. Focused ordinary
+browser selections are `w4a-browser-evidence.mjs --slice agents-safeguard` and
+`w3b-jobs-browser-evidence.mjs --slice cascade`. They cover applicable task states
+and en/zh-CN at 390/1440 without the historical whole-console run. The named
+`C9 Agents SystemPromptEditor locale preservation` case uses a valid revision,
+authored multiline draft and selection 3:8; observes retained-DOM connectedness
+before lookup/refocus/reopen; checks both directions and HTTP/WS/SSE silence;
+and retains original Cancel/navigation. Save receipt/readback contracts remain
+owned by the unchanged SystemPromptEditor tests. A temporary shipping Pane
+locale-key remount is the causal RED control; every mutated production byte is
+restored and the ordinary build rebuilt before GREEN. Receipts determine actual
+execution status; source bindings and screenshots alone are not acceptance.
+
+The locked ESLint/TypeScript source guard covers literal JSX/static branches,
+visible text attributes and known direct default-bearing shared UI mounts.
+Raw/default exceptions require exact path, declaration, slot, literal and reason;
+stale/overbroad exceptions fail the authoritative real-config test with inline
+configuration disabled. The Node-only inventory reads shipping HTML and static
+Vite/TS aliases, resolves supported relative/reexport/literal-lazy owners and
+finds JSX/render-return route/dialog sites rather than counting imports. Router
+named/namespace imports and reexports retain route identity and parent paths.
+Additional createRoot renders in reachable static runtime imports/reexports
+(including side-effect imports and transitive/cyclic module graphs) discover
+direct JSX or statically bound JSX constants (including aliases and bound root
+handles), or refuse unhandled arguments with their source. Type-only edges are
+excluded; evaluating an imported module does not mount unused JSX declarations
+or enter uncalled functions/classes. Changes
+outside those supported static shapes and fixture/prototype promotion refuse.
+New source owners require qualified classification; the outer Settings wildcard
+is translated loading/error chrome and its nested wildcard is the existing
+copy-free redirect. Full release refuses english-only namespaces while preserving
+the historical 21 translated/3 not-applicable subset and truthful bilingual
+coverage markers. These are finite source completeness gates, not rendering,
+dataflow, bundler completeness or translation-quality proof.
 
 THR-118 implements a first-party, typed English (`en`) / Simplified Chinese
 (`zh-CN`) contract for the web console. **W1** covered the foundation,
@@ -56,8 +149,8 @@ the generated copy-paste CLI prompt (raw step ids, tokens, route targets) stay
 byte-for-byte verbatim; mapped categories re-translate on a switch with no
 resubmission. Neither phase
 translates the assistant dock body (W4) or any route family (W3/W4); neither
-adds a public language selector; W3b-2 later opens the selector, and an unset
-preference still renders English (no browser-language detection).
+adds a public language selector; W3b-2 later opens the selector, and at that historical stage an unset
+preference rendered English (superseded by W5b full mode).
 
 Delivery status at W1 (keep separate from later phases):
 
@@ -73,15 +166,20 @@ Delivery status at W1 (keep separate from later phases):
 | Mounted shell translation (W2a: AppBar/Sidebar/root/not-found/ErrorBoundary/AddOrgDialog/help/palette) | **shipped — W2a** |
 | CJK-capable system font fallbacks (no download) | **shipped — W2a** |
 | Onboarding translation (W2b: OnboardingPage/ConnectRuntimeStep/shared ConnectFlow) | **shipped — W2b** |
-| Settings translation (W2c: page chrome + Assistant/Organization/Executors/Capacity sections) | **shipped — W2c** (Work Hours-owned `EligibilityEditorDialog` stays English until W4) |
+| Settings translation (W2c: page chrome + Assistant/Organization/Executors/Capacity sections) | **shipped — W2c** (Work Hours-owned `EligibilityEditorDialog` stayed English until W4; translated by W4b) |
 | Settings ▸ Preferences language selector (W2c) | **shipped — enabled in production by W3b-2** (the W2c `VITE_ENABLE_I18N_PREFERENCES` gate is removed) |
 | Dashboard + Threads route families (W3a: DashboardPage, ThreadsPage list/detail/composer/strips, Archive/Invite/RemoveParticipant dialogs, shared NewThreadDialog) | **shipped — W3a** |
 | Tasks route family (W3b-1: TasksPage/TaskListRow, TaskDetailPage incl. recall/events/fan-out/rail, Cancel/Revisit/ResolveEscalation dialogs) | **shipped — W3b-1** |
 | Jobs route family (W3b-2: JobsPage, JobDetailPage incl. cascade/gated notice/rail/output, Run/Reject dialogs) | **shipped — W3b-2** |
 | Runtime Health + Dreams (W4a-1: HealthPage; DreamsPage feed/rail + DreamDetailPane drawer) | **shipped — W4a-1** |
-| Other route/page translation | **W4** — not shipped (artifacts = W4a-2, usage = W4a-3, other route families and the assistant dock body) |
-| Public language selector / opt-in preview | **shipped — W3b-2** (English when unset; secondary-pages coverage disclosure) |
-| Full-mode automatic environment detection | implemented + unit-tested, **not enabled** in production (W5) |
+| Todos + Work Hours + Audit (W4b: TodosPage/TodoDetailPage/TodoRow/StatusPill + Confirm/Edit dialogs; Work Hours OverviewPage/WakesView/AgentDetailPage + TierEditorDialog + shared EligibilityEditorDialog; AuditPage/AuditTimeline/filters + catalog-templated narrative) | **shipped — W4b** |
+| Agents + Skills (W4c: AgentsPage/AgentDetailPane/AgentDetailDrawer/PendingEnrollmentsTab + AddAgentDialog; TeamEscalationPolicyPage/Card; SkillsPage/SkillValidationPage/SkillDetailPage/SkillAssignmentPanel and the custom-skill list/create/detail pages) | **shipped — W4c** |
+| KB + Artifacts chrome (W4d-1) | **shipped — W4d-1** |
+| Usage chrome (W4d-2) | **shipped — W4d-2** |
+| Mounted Assistant dock + conversation controls | en/zh-CN app-owned visible and accessible copy; component and ordinary-build browser evidence in the task handoff |
+| Final mounted-console audit | **W5a accepted — PR993**; W5b enables full-mode browser-language defaults |
+| Public language selector / opt-in preview | **W3b-2 historical preview; superseded by W5b** (bilingual availability and browser fallback) |
+| Full-mode automatic environment detection | **enabled — W5b** at the production entry and AppShell; API preview defaults remain |
 | Native preference persistence (Swift/message handler) | **N0/N1** — not shipped |
 
 **W3a** translates the mounted Dashboard and Threads route
@@ -105,7 +203,7 @@ byte-for-byte; display-only dates/counts use the explicit-locale formatters.
 A locale switch never keys/remounts the page, never loses selection, drafts,
 attachments, open dialogs or focus, and issues no request. The CLAUDE.md
 thread rename/pin invariants are untouched. At W3a the Preferences gate stayed
-closed (opened by W3b-2) and unset stays English.
+closed (opened by W3b-2) and unset stayed English; W5b supersedes that default.
 
 **W3b-1** (this phase) translates the mounted Tasks route family (`tasks`,
 `tasks/:task_id`): the list heading/eyebrow, group-by and filter form, status
@@ -164,14 +262,15 @@ messages are state-held keys. A locale switch keeps the same cards, dialogs,
 typed drafts and focus and issues no request; display dates use the explicit
 display locale.
 
-W3b-2 also **enables the opt-in language preview** in ordinary production
+Historically, W3b-2 **enabled the opt-in language preview** in ordinary production
 builds: `languagePreferenceGate.ts` and the `VITE_ENABLE_I18N_PREFERENCES`
 flag are removed and Settings ▸ Preferences ▸ Language is always mounted. With
 no saved choice the UI stays English — production resolves in `preview` mode,
 so the browser/system language is never consulted (automatic detection remains
 W5 `full` mode). The selector shows a localized coverage disclosure
 (`settings.preferences.coverageDisclosure`: secondary, not-yet-translated pages
-may still appear in English).
+may still appear in English). W5b supersedes this historical default and disclosure
+with full browser resolution and bilingual availability copy.
 
 **W2c** translates the Settings surface and prepares the W3b-2
 selector:
@@ -215,13 +314,85 @@ selector:
   gate after its acceptance and adds the secondary-pages disclosure; W2c adds
   neither the disclosure nor any browser/system-language defaulting.
 
+
+**W4d-1** translates KB and Artifacts chrome, including list/detail/candidates,
+search/filter/breadcrumb/empty/loading/error/Retry, gated KB Compose labels and
+its supported DialogContent close control, and artifact upload/download/delete
+confirmation. `VITE_ENABLE_KB_COMPOSE` remains unchanged. Candidate/Compose and
+artifact action errors are pure F1 category/raw descriptors rendered through the
+current translator, so generated messages retranslate without repeating a
+mutation; unknown codes and nonblank raw diagnostics remain verbatim, while
+absent/blank diagnostics use the localized fallback. KB authored content,
+type/topic/tags/slug/names/IDs and artifact canonical names, path segments,
+file-derived titles/provenance identifiers remain byte-verbatim. Only artifact
+client-derived type LABELS translate; classification/parsing and stored data
+remain unchanged. Counts use explicit-locale display plus plural objects.
+KB card/detail share relative-age rounding and catalog units, with explicit
+unavailable display for invalid dates. Artifact filename calendar dates use the
+existing `monthDayYear` shape in UTC without shifting the day; invalid calendar
+dates render an unavailable label. Modified times use viewer-local `dateTime`
+with explicit locale. The English modified-time shape now zero-pads the hour
+(e.g. `02:05 PM`), and invalid KB age displays `Age unavailable` instead of
+`NaNd`; F1 replaces synthetic HTTP action failures with raw diagnostics or
+localized fallbacks. Artifact bytes use `formatAttachmentSizeFor` with the same
+binary thresholds/rounding; other attachment consumers retain their legacy
+optional-locale behavior. DrawerContent has no closeLabel/control; Compose's
+DialogContent does, and is localized. The KB drawer fits below 640px without
+changing desktop width. At that narrow breakpoint the scrollable filter rail
+stacks above the feed, and the header actions stack below the title so list
+copy stays readable; desktop retains the side rail and header layout. Raw KB
+type badges retain their stored case (for example, `sop` rather than `SOP`)
+in both locales instead of applying a CSS uppercase transform. `kb` and
+`artifacts` coverage is translated; `usage` is translated by W4d-2; `system-assistant` is translated by the mounted dock/conversation slice. W5b supersedes the historical preview default with full browser resolution
+and bilingual availability disclosure; native N0/N1 remain deferred.
+Browser evidence adds representative KB list/detail/candidates and artifact
+list/folder/upload rows to `web/scripts/w4a-browser-evidence.mjs`, plus one
+upload filename/selected File/focus/control-preservation switch in both directions
+with zero requests. Final-head evidence is recorded in the task handoff.
+
+**W4d-2** translates the app-owned Usage v1 Workload/Efficiency presentation,
+including column/run-type labels, CLI default (not pinned), comparison/coverage/
+withholding/partial/unknown copy, help, statuses, errors/retry/stale states,
+scroll hints, ARIA, exact-token titles, counts, units and timestamps. Raw agent,
+CLI/model identities, authored values, timezone IDs and diagnostics remain
+verbatim. `useUsagePresentation` binds existing i18n context to pure Usage
+formatters; it owns no queries, selection, state or effects. The five run types,
+six-column tables, null/zero distinctions, selection/refetch recovery and all
+server metrics remain the existing Usage v1 contract.
+
+`*_local` window strings already contain org-local wall-clock parts: read those
+parts without converting through the viewer timezone. UTC instants use the
+response timezone with the central `monthDayClock24` shape (24-hour time in
+both locales); `monthShort` supplies localized month names for wall-clock
+parts. Malformed local/instant/timezone fallback behavior remains unchanged.
+English compact token suffixes retain the canonical K/M shape; Chinese uses
+万/亿. Switching en→zh-CN→en re-renders presentation without remounting
+controls, losing focus/cohort/Compare, or issuing API requests. Usage is translated; the mounted Assistant dock and conversation controls are
+also translated. W5b enables full browser-language defaults. Desktop N0/N1 remain deferred. Ordinary browser evidence uses the narrow `--slice usage` rows in
+`web/scripts/w4a-browser-evidence.mjs`, including 390/1440 geometry and
+same-origin preference switching. Actual final-head receipts live in task
+output/attachments.
+
+### W5a modal and Markdown loading-copy boundary
+
+**W5a copy repair:** the mounted Jobs Run/Reject, Settings Assistant/Capacity/Organization, Tasks Cancel/Revisit/Resolve, Threads Archive/Invite/RemoveParticipant and shared NewThread dialogs pass the existing `common.close` label to their built-in close control. Their actions and focus-return behavior are unchanged. `Markdown` accepts optional `mermaidLoadingLabel`, and `MessageBubble.labels.mermaidLoading` forwards it. KB, Task detail/recall, Threads and both Assistant turn variants supply `common.mermaidLoading`; omitted props retain “Rendering diagram…”. A private Markdown-local context carries only that string to the stable code renderer. Suspense remains per Mermaid block, and changing locale preserves loaded diagrams without another render. Authored Markdown/code and raw Mermaid failure source stay verbatim, including text equal to either loading label. Coverage markers remain inventory; W5a rendering acceptance requires the finite mounted-state/browser evidence. W5a finite mounted coverage is accepted (PR993); W5b enables full browser resolution and bilingual availability copy. Desktop N0/N1 remain deferred. Pending-import assertions live in the isolated Markdown.loading.test.tsx file; Markdown.test.tsx SVG/error cases use an independent lazy-module instance so filters and file order do not depend on releasing another test’s import.
+**W5a Work Hours reachability:** the agent-detail reconciliation heading and local edit controls wrap within the page, including long raw agent/team names. The reconciliation and overview roster tables keep every column, value and provenance cell in a localized, named, keyboard-focusable horizontal scroll region; focus the region and use the arrow keys to reach the rightmost columns. Shared Button/AppShell and editor/action semantics are unchanged. The earlier 390px document-width checks did not establish child/control or column reachability: historical clipping captures remain failed evidence. The affected ordinary-build browser case is `web/scripts/w4a-browser-evidence.mjs --slice work-hours-reachability`, checking actual control bounds, readable headings and keyboard access to the final column in en/zh-CN at 390/1440, with mounted editor/draft/focus/navigation preservation. W5a finite coverage was independently reviewed, QA-verified and manager-accepted with PR993; W5b enables full browser locale resolution. Historical evidence keeps its original source/build identity. The tier editor now stacks field rows below the small-screen breakpoint, bounds grid children and field/control groups, wraps resets/day controls and full raw title/provenance/selected-timezone text, and allows the existing dialog to scroll vertically. Desktop retains the row hierarchy. Editor child and text-range bounds must be measured against actual dialog content and viewport after scrolling, with pointer hit testing and a real Tab cycle; page/table bounds alone do not establish editor readability. The affected browser cases include all three tiers, windowed/continuous and impact stages, long raw values, both locales at390/1440, and both-direction node/focus/selection/draft preservation with zero locale HTTP. Actual Save/PUT, reset-null and verbatim422 contracts remain owned by TierEditorDialog.test.tsx and work-hours.i18n.test.tsx; screenshots alone do not prove writes.
+
+
+W5b responsive Settings preserves the five existing links and their order, labels,
+icons and active state. Below640px the links wrap above the panel; at640px and
+wider the rail/panel layout remains. Local Preferences min-size/wrapping and
+padding keep full disclosure, endonyms and status readable without truncation.
+Settings loading/error/data gates, Preferences API independence and user
+handlers/state/focus are unchanged.
+
 ## 2. Exports
 
 | Module | Contract |
 | --- | --- |
 | `@/lib/i18n/locale` | `Locale`, `LocaleMode`, `LocaleSource`, `LocaleAuthority`, `LOCALE_STORAGE_KEY`, `SUPPORTED_LOCALES`, `isLocale`, `matchSystemLocale`, `resolveLocale`, `LocalePreferenceAdapter`, `LocaleSnapshot`, `LocaleWriteOutcome`, `browserLocalePreferenceAdapter`, `adapterAuthority`, `readAdapterSnapshot`, `getLocalStorage`, `applyDocumentLocale`, `bootstrapDocumentLocale` |
 | `@/lib/i18n/catalog` | `MessageKey`, `MessageValue`, `PluralForms`, `Catalog`, `catalogs`, `PLURAL_FORMS_BY_LOCALE`, `translate`, `renderTranslated`, `lookupMessage`, `resolveMessage`, `selectPluralCategory`, `interpolate`, `extractPlaceholders`, `validateCatalogParity`, `assertCatalogParity` |
-| `@/lib/i18n/format` | `formatTokensFor`, `formatCountFor`, `formatDateTimeFor` |
+| `@/lib/i18n/format` | `formatTokensFor`, `formatCountFor`, `formatDateTimeFor`, `formatDateShapeFor`, `LocaleDateShape` |
 | `@/lib/i18n/coverage` | `COVERAGE_MANIFEST`, `NOT_APPLICABLE_NAMESPACES`, `classifyRouteToken`, `classifyRouteIdentity`, `unclassifiedRouteTokens`, `unclassifiedRouteIdentities`, `coverageSummary`, `describeCoverage`, `extractRouteTokens` |
 | `@/hooks/i18n` | `I18nProvider` (`adapter`, `mode`, `initialResolution`), `useI18n`, `useLocale`, `useTranslation` |
 | `@/App` | `App`, `AppShell` (production provider/route composition) |
@@ -247,11 +418,12 @@ Rules:
   authority the native snapshot always wins.
 - Any `zh*` tag maps to `zh-CN`; `en*` maps to `en`; the first recognized tag
   wins in full mode; unknown tags are skipped.
-- **Production stays in preview mode**: there is no auto-detection, so an unset
-  preference renders English even with a Chinese environment.
-- Full-mode resolution exists and is unit-tested for W5 but is not enabled by
-  the W1 production wiring.
-- `bootstrapDocumentLocale()` is called from `web/src/main.tsx` before the first
+- **Production selects full mode** at both `main.tsx` and `AppShell`. A valid
+  saved choice wins; absent/invalid values follow the existing ordered supported
+  browser languages, then English. Startup never writes a preference.
+- Resolver/bootstrap/provider API defaults remain preview for foundation fixtures.
+  Production storage change/delete/clear uses full resolution without write echo.
+- `bootstrapDocumentLocale({ mode: 'full' })` is called from `web/src/main.tsx` before the first
   React text, applies `<html lang>`, and returns the one resolution; `main.tsx`
   hands it to `<App initialLocale>` → `<AppShell>` → `<I18nProvider
   initialResolution>`, so the provider never resolves a second, possibly
@@ -325,15 +497,16 @@ anchors them to the real consumer sources (e.g. `ThreadsPage.tsx` mounts
 `TaskDetailPage.tsx` mounts `CancelTaskDialog`/`RevisitTaskDialog`/
 `ResolveEscalationDialog`; `JobDetailPage.tsx` mounts
 `RunJobDialog`/`RejectJobDialog`), so an invented or unreachable name fails the
-test. After W4a-1 exactly twelve namespaces are `translated` (`root-shell`,
+test. After W4d-2 exactly twenty namespaces are `translated` (`root-shell`,
 `not-found`, `onboarding`, `app-shell`, `help-and-palette`, `settings`,
-`dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`); every
+`dashboard`, `threads`, `tasks`, `jobs`, `health`, `dreams`, `todos`,
+`work-hours`, `audit`, `agents`, `skills`, `kb`, `artifacts`, `usage`); every
 later slice and route family is still visibly `english-only`, so English
 fallback is never mistaken for coverage. The `settings` namespace includes the
 (production-enabled since W3b-2) `preferences` token and `PreferencesSection`; the shared
-`EligibilityEditorDialog` it lists is owned by Work Hours and remains English
-until W4. The `system-assistant` namespace records only
-`AssistantDockHost` (the W4 dock body); the help/palette hosts moved to the
+`EligibilityEditorDialog` it lists is owned by Work Hours and is translated by
+W4b. The `system-assistant` namespace records both
+`AssistantDockHost` and its mounted `ConversationSwitcher`; the help/palette hosts moved to the
 `help-and-palette` namespace.
 
 ## 7. Formatting contract
@@ -349,6 +522,20 @@ until W4. The `system-assistant` namespace records only
   (`1,000` is never compacted).
 - `formatDateTimeFor` requires an explicit locale and IANA timezone and is
   deterministic across hosts.
+- `formatDateShapeFor(locale, value, shape, timeZone?)` (W4b) renders a named,
+  centrally owned date/time shape (`weekdayDate`, `weekdayMonthDay`,
+  `monthDay`, `monthDayYear`, `weekdayLong`, `clock24`, `clock24Seconds`,
+  `monthDayTime`, `dateTime`) with an explicit locale. `timeZone` is an IANA
+  id; it is omitted only where a surface deliberately shows the viewer's local
+  time (Audit row clock, Work Hours wake times, Todo review dates). Features add
+  a shape here rather than hand-assembling `Intl` options. In the W4b route
+  families (`features/todos`, `features/work-hours-config`, `features/audit`,
+  `shared/work-hours`) every visible date/time goes through this module;
+  `format.test.ts` scans those directories and fails on any
+  `toLocale*String(` or a non-machine-locale `Intl.DateTimeFormat(`. The only
+  remaining feature-local `Intl.DateTimeFormat('en-US' | 'en-CA')` calls are
+  timezone-conversion `formatToParts` parsing and `<input>` values, which are
+  not presentation.
 - Exact identifiers/config values/machine inputs keep their literal form;
   schedule-timezone calculations are untouched. Broad caller migration is
   W2/W4.
@@ -408,7 +595,7 @@ handoff, provider and router are never rewritten, and the transform returns
 environment renders the Chinese catalog string with `html.lang=zh-CN` at the
 same first commit; saved `en` under an asserted Chinese environment renders
 English with `html.lang=en`; unset preview under an asserted Chinese environment
-renders English with `html.lang=en` (W5 detection stays disabled). An isolated
+renders English with `html.lang=en` (historical W1 preview fixture; production full mode is enabled by W5b). An isolated
 `I18N_BROWSER_EVIDENCE=negative` build feeds a deliberately mismatched provider
 locale while the document locale stays correct and repairs it from a passive
 effect; its genuine first-commit assertion fails as designed (recorded expected
@@ -508,32 +695,33 @@ raw-`Error.message` and prompt-byte negatives deterministically.
 
 Frontend readiness map (actual evidence):
 
-| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1 |
+| Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2 |
 | --- | --- | --- |
-| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2) and Health/Dreams (W4a-1); other route families and the assistant dock body (W4) still `english-only` |
-| Public language selector | N/A — W3b-2 | W3b-2: Settings ▸ Preferences mounted in ordinary builds; Vitest proves sub-nav + direct URL without a flag, unset-on-Chinese-browser stays English, disclosure visible, zh-CN switch keeps nodes/focus with zero requests; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist |
+| Route-wide Chinese rendering | N/A — no route translated in W1 (manifest marks every namespace `english-only`) | mounted shell + onboarding (W2a/W2b), Settings (W2c), Dashboard/Threads (W3a), Tasks (W3b-1), Jobs (W3b-2), Health/Dreams (W4a-1), Todos/Work Hours/Audit (W4b), Agents/Skills (W4c) and KB/Artifacts (W4d-1); Usage presentation (W4d-2); the mounted Assistant dock and conversation controls are translated with component and ordinary-build browser evidence |
+| Public language selector | N/A — W3b-2 | Historical W3b-2: Settings ▸ Preferences mounted in ordinary builds; Vitest proves sub-nav + direct URL without a flag, unset-on-Chinese-browser stays English, disclosure visible, zh-CN switch keeps nodes/focus with zero requests; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist |
 | Browser two-tab live evidence | covered by unit/integration storage-event tests AND captured same-origin two-tab change/delete/clear/no-echo browser evidence at the head SHA | W1 behavior retained (no native adapter added) |
 | Bilingual foundation browser capture | captured: real-browser story screenshots for saved-en-in-Chinese-env, saved `zh-CN` (CJK font glyphs) and preview-unset English | W2a/W2b add real-app shell/dialog and onboarding captures across en/zh, 1440x900/390x844 and light/dark (exact count bound to the pushed `receipt.json`) |
 | Production startup first-paint | captured: real `main.tsx`/`createBrowserRouter` startup with synthetic API stub; first COMMITTED bilingual consumer text and `<html lang>` asserted together | W2a reads the ACTUAL first committed Sidebar/AppBar DOM (frozen on first connection, never overwritten by a later correction) with `<html lang>` and the real navigator read-back; a causal `I18N_W2A_EVIDENCE=negative` control proves the same predicate rejects an initially-wrong shell |
 | Mounted-shell switching state | N/A (foundation) | captured: help non-default tab (S16), AddOrg typed slug + mapped error (S12 wide-light; S17 zh-narrow-light/en-narrow-dark/zh-wide-dark) and palette query + non-default selected row (S13 wide-light; S18 zh-narrow-light/en-narrow-dark/zh-wide-dark) preserved across storage-path locale switches with the actual `document.activeElement`, retained DOM node identity, open state and selection/value observed before AND after each direction; each help/AddOrg switch window asserts no `PUT /settings/org` and no `POST /api/v1/orgs`, and each palette switch window asserts zero `/api/` requests (cache-only), per direction |
 | Onboarding switching state (W2b) | N/A | captured: S4 mapped error, S5 raw `API 500`, S6 success, S8 built-in waiting, S9 custom form and S10 prereq/create state each run en→zh-CN→en with actual focus, stable test-only node identity where applicable, open phase/mode and state-specific raw bytes retained; a separate per-direction window proves zero settings/org/connect/mint mutation and zero `/api/` requests; PNGs and `receipt.json` are bound to the head SHA |
-| Settings + Preferences (W2c) | N/A | Vitest: since W3b-2 no gate — sub-nav lists Preferences and a direct URL renders it (unit and real `AppRoutes`), index/redirect/back/forward, Preferences under settings API loading/error/empty/ok, both switch directions with radio/sub-nav node identity + focus + route, zero requests in the switch window, keyboard Space selection, honest durable/failed persistence, storage-event sync without write-back, per-section zh-CN copy with raw detail verbatim, an already-visible Work Hours banner and executor product fallbacks re-translating in both directions with no resave/remount/request while raw diagnostics (incl. catalog-equal and empty) stay verbatim; browser: `web/scripts/w2c-preferences-browser-evidence.mjs` against two ordinary builds of the head (case A: the ordinary dist mounts Preferences and an unset preference stays English; cases B–I on `--preview-dist`, now flag-free) plus a `--defect-dist` causal negative (Organization banner and Executors raw-diagnostic cases included; receipt/PNG hashes bound to the pushed head) |
-| Dashboard + Threads (W3a) | N/A | Vitest: Dashboard loading/error+Retry/first-run/populated in both locales with entity values verbatim; Threads list/detail states, composer and NewThreadDialog draft/attachment/focus/node identity across both switch directions with zero requests then exactly one create/reply; dialogs open across switches; mapped errors re-translate while raw (catalog-equal/empty/`HTTP <status>`) diagnostics stay verbatim; browser: `web/scripts/w3a-core-browser-evidence.mjs` against the ordinary dist only (gate case G: the bundle mounts Preferences, `/settings/preferences` renders, unset on a Chinese navigator stays English) with receipt/PNG hashes bound to the pushed head |
+| Settings + Preferences (W2c) | N/A | Historical phase evidence (defaults superseded by W5b): Vitest: since W3b-2 no gate — sub-nav lists Preferences and a direct URL renders it (unit and real `AppRoutes`), index/redirect/back/forward, Preferences under settings API loading/error/empty/ok, both switch directions with radio/sub-nav node identity + focus + route, zero requests in the switch window, keyboard Space selection, honest durable/failed persistence, storage-event sync without write-back, per-section zh-CN copy with raw detail verbatim, an already-visible Work Hours banner and executor product fallbacks re-translating in both directions with no resave/remount/request while raw diagnostics (incl. catalog-equal and empty) stay verbatim; browser: `web/scripts/w2c-preferences-browser-evidence.mjs` against two ordinary builds of the head (case A: the ordinary dist mounts Preferences and an unset preference stays English; cases B–I on `--preview-dist`, now flag-free) plus a `--defect-dist` causal negative (Organization banner and Executors raw-diagnostic cases included; receipt/PNG hashes bound to the pushed head) |
+| Dashboard + Threads (W3a) | N/A | Historical phase evidence (defaults superseded by W5b): Vitest: Dashboard loading/error+Retry/first-run/populated in both locales with entity values verbatim; Threads list/detail states, composer and NewThreadDialog draft/attachment/focus/node identity across both switch directions with zero requests then exactly one create/reply; dialogs open across switches; mapped errors re-translate while raw (catalog-equal/empty/`HTTP <status>`) diagnostics stay verbatim; browser: `web/scripts/w3a-core-browser-evidence.mjs` against the ordinary dist only (gate case G: the bundle mounts Preferences, `/settings/preferences` renders, unset on a Chinese navigator stays English) with receipt/PNG hashes bound to the pushed head |
 | Tasks (W3b-1) | N/A | Vitest (`features/tasks/tasks.i18n.test.tsx`, `TaskEventsLog.test.tsx`, `fanout.test.ts`): routed list populated/grouping/filter/empty/error and detail header/lineage/rail/execution-status/fan-out/chain in both locales with authored and machine values verbatim; same row/heading/dialog/field nodes, draft value and focus across both switch directions with zero requests; mapped dialog errors and the Revisit validation re-translate while unmapped (incl. catalog-equal) codes stay verbatim; StatusBadge English default; browser: `web/scripts/w3b-tasks-browser-evidence.mjs` against the ordinary dist (Tasks list + detail, en/zh-CN, 1440/390, one dialog-draft switch check, ordinary-bundle Preferences markers present since W3b-2) |
-| Jobs (W3b-2) | N/A | Vitest (`features/jobs/jobs.i18n.test.tsx`): routed list populated/empty/error and detail pending/completed/load-error in both locales with daemon values verbatim; same card/button/field nodes, Run/Reject draft value and focus across both switch directions with zero requests; the F1 diagnostic boundary through the routed Run dialog (recognized code re-translates in place, unknown code and code-less string detail verbatim, empty code / blank detail fall back), Reject mapped code and Stop mapped code; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist (Jobs list + detail + Run dialog draft switch, Preferences unset-English + disclosure + zero-request switch) |
+| Jobs (W3b-2) | N/A | Historical phase evidence (defaults superseded by W5b): Vitest (`features/jobs/jobs.i18n.test.tsx`): routed list populated/empty/error and detail pending/completed/load-error in both locales with daemon values verbatim; same card/button/field nodes, Run/Reject draft value and focus across both switch directions with zero requests; the F1 diagnostic boundary through the routed Run dialog (recognized code re-translates in place, unknown code and code-less string detail verbatim, empty code / blank detail fall back), Reject mapped code and Stop mapped code; browser: `web/scripts/w3b-jobs-browser-evidence.mjs` against the ordinary dist (Jobs list + detail + Run dialog draft switch, Preferences unset-English + disclosure + zero-request switch) |
 | Health + Dreams (W4a-1) | N/A | Vitest (`features/health/health.i18n.test.tsx`, `features/dreams/dreams.i18n.test.tsx`; `HealthPage.test.tsx`/`DreamsPage.test.tsx` now assert through the catalog): routed Health populated/empty-history/live-error/history-error and Dreams feed populated/empty/error + rail + detail drawer in both locales with daemon values verbatim; same loop-cell/window-button/card/drawer/Accept nodes and focus across both switch directions with zero requests; the F1 boundary through the routed Accept action (recognized `candidate_*` code re-translates in place, unknown code and code-less string detail verbatim, empty code falls back to the localized failure copy); browser: `web/scripts/w4a-browser-evidence.mjs` against the ordinary dist (G ordinary-bundle zh-CN copy, V health/dreams/dream-drawer en+zh-CN at 1440/390, S drawer Accept-focus switch with zero /api requests) |
+| Todos + Work Hours + Audit (W4b) | N/A | Vitest (`features/todos/todos.i18n.test.tsx`, `features/work-hours-config/work-hours.i18n.test.tsx`, `features/audit/audit.i18n.test.tsx`; `TodosPage.test.tsx`, the Work Hours page/dialog tests and the Audit page/narrative/filter tests now assert through the catalog): routed Todos list/detail, Work Hours overview/wakes/agent detail and Audit timeline/filters in both locales with daemon values (agent names, schedule/task ids, actions, timezones, raw payload values) verbatim; recurrence/timezone and every visible date/time through `lib/i18n/format.ts` (`formatDateShapeFor`, guarded by the `format.test.ts` source scan); count-bearing Todos/Audit copy as plural objects (English `one` + `other`, Chinese `other`) selected by a numeric `count`; TierEditorDialog and EligibilityEditorDialog pass `closeLabel={t('common.close')}` so the close control is `关闭` under zh-CN; narrative sentences from catalog templates with interpolation; Todo EditDialog, TierEditorDialog and the shared EligibilityEditorDialog keep draft, nodes and focus across both switch directions with zero requests; the F1 boundary through `features/<x>/strings.ts` classifiers; browser: `web/scripts/w4a-browser-evidence.mjs` route-table rows (G ordinary-bundle zh-CN copy, V todos/work-hours/audit en+zh-CN at 1440/390, with todos also asserting every row card holds its rows (`scrollWidth <= clientWidth`; the TodoRow metadata group wraps instead of clipping), S Todo EditDialog + TierEditor + EligibilityEditor draft/focus switch with zero /api requests) |
+| Agents + Skills (W4c) | N/A | Vitest (`features/agents/agents.i18n.test.tsx`, `features/skills/skills.i18n.test.tsx`; the existing Agents/Skills page, dialog and helper tests now assert through the catalog): routed agents list/detail/team-escalation-policy and every `skills*` route in both locales with user/daemon values (agent names, roles and team identifiers without translation or title-casing, policy bodies, contract ids, digests, skill names/slugs/descriptions/SKILL.md bodies, versions, provenance) verbatim; every visible date/time through named `lib/i18n/format.ts` shapes, including policy release/activation history and purged custom-skill completion via `dateTime` (en/zh-CN rendered-state regressions plus the direct-formatting source scan); count-bearing copy as plural objects selected by a numeric `count`; in-scope dialogs pass `closeLabel={t('common.close')}` (`关闭` under zh-CN); the F1 boundary through `classifyAgentError`/`classifySkillError` (`features/<x>/strings.ts`); browser: `web/scripts/w4a-browser-evidence.mjs` route-table rows (G, V agents/skills routes en+zh-CN at 1440/390 with a non-vacuous container `scrollWidth <= clientWidth` check, exact daemon roster-role bytes, and below-`md` main min-height `0px` / unchanged `md`+ `auto` with stacked/row layout respectively; S in-scope dialogs keep draft, nodes and focus with zero /api requests) |
 | Native Mac persistence receipt | N/A — N0/N1 (Linux host; not claimed) | NOT RUN — N0/N1 still open |
 
 ## 10. Exclusions
 
 No new dependency, daemon/API/schema/auth/permission/transport change, theme or
 draft migration, native chrome, CLI/manual translation, route-family
-translation campaign beyond W3a/W3b-1/W3b-2/W4a-1 (W4a-1 translated Health
-and Dreams; W4a-2 artifacts, W4a-3 usage and the remaining W4 surfaces stay
-open), browser-language
-default resolution (W5), deployment, or caller migration of display
+translation campaign beyond W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2 (W4a-1 translated Health
+and Dreams; W4b translated Todos, Work Hours and Audit; W4c translated Agents
+and Skills; W4d-1 translates KB and Artifacts; W4d-2 translates Usage presentation; the mounted Assistant dock and conversation controls are translated), deployment, or caller migration of display
 formatters beyond the translated shell, onboarding and the W3a Dashboard/Threads,
-W3b-1 Tasks, W3b-2 Jobs and W4a-1 Health/Dreams route families. Existing query/data/auth
+W3b-1 Tasks, W3b-2 Jobs, W4a-1 Health/Dreams, W4b Todos/Work Hours/Audit, W4c Agents/Skills W4d-1 KB/Artifacts, W4d-2 Usage route families and mounted Assistant presentation. Existing query/data/auth
 bootstrap
 semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no
@@ -543,5 +731,15 @@ the generated copy-paste CLI prompt bytes verbatim; the shared ConnectFlow is
 the single implementation for onboarding and Settings ▸ Executors. The
 `settings` namespace is `translated` (W2c: ordinary Settings chrome and the
 Assistant/Organization/Executors/Capacity sections; the Work Hours-owned
-`EligibilityEditorDialog` stays English until W4); the Preferences
+`EligibilityEditorDialog` stayed English until W4 and is translated by W4b); the Preferences
 route/selector is mounted in ordinary builds since W3b-2.
+
+## Mounted System Assistant copy (THR-118)
+
+The mounted `AssistantDockHost` and its `ConversationSwitcher` resolve app-owned visible and accessible copy through `assistantDock.*` in en/zh-CN. This includes configuration/loading/empty states, header/composer/key hints, conversation list/actions/rename/delete confirmation, tool activity and fallback speaker labels. The existing MessageBubble speaker/timestamp and TypingBubble caption/ariaLabel overrides are reused; timestamps retain the viewer-local full date/time display and elapsed values retain the existing seconds/minutes calculation.
+
+Errors capture provenance when they arrive: `{ key }` is an app fallback, `{ raw }` is daemon detail/message, and `{ connectionDetail }` preserves `String(caughtValue)` under a localized wrapper. Rendering resolves keys with the current locale, including an already-visible fallback. A raw empty value or one equal to an English catalog string remains raw. Supplied executor/tool names, conversation titles/IDs, authored prompts/replies/Markdown and timestamps as data remain verbatim. Missing tool-name presentation has its own provenance flag; tool matching keeps the existing raw/default name semantics.
+
+Locale changes do not key/remount the dock or enter its connection-effect dependencies. They preserve the active conversation, history/inflight state, composer/rename draft, selection/focus and open delete confirmation, and issue no HTTP/session/socket activity. Existing A-mode parsing/order/hydration, query/polling keys, activation/new/rename/delete callbacks, reconnect triggers, optimistic send/trim/clear semantics, hotkeys, focus trap/restore and SPA navigation remain unchanged. Help and Command Palette chrome already use the shared locale context and retain their current interaction ownership.
+
+Ordinary-build evidence uses `web/scripts/w4a-browser-evidence.mjs --slice assistant` and the narrow `assistant-dock-browser-cases.mjs` fixture/cases: real shipping HTTP/WS seams, server request/socket ledger, mounted-node/focus assertions and 390/1440 captures. The coverage inventory includes both actual mounted consumers. The `system-assistant` marker is translated after complete mounted-copy coverage is established by component regressions and ordinary-build browser evidence; catalog binding alone does not prove coverage. W5a accepted the finite mounted audit and resolved the Settings Organization disable-confirm close label (PR993). W5b enables full browser-language defaults while preserving the state/transport contract. Desktop restart persistence remains deferred; deployment/live acceptance is separate.

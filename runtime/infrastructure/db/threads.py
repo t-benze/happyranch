@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from runtime.infrastructure.db._shared import _synchronized
+from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
 from runtime.models import (
     ThreadAttachment,
     ThreadInvocation,
@@ -477,6 +477,23 @@ class ThreadsMixin:
         )
 
     @_synchronized
+    def mark_invocation_declined(
+        self, token: str, *, decline_reason: str | None = None
+    ) -> bool:
+        """Set invocation status to 'declined' with an optional reason.
+
+        Returns True if the row was updated (was pending), False otherwise.
+        """
+        cursor = self._conn.execute(
+            "UPDATE thread_invocations SET status = 'declined', "
+            "consumed_at = ?, decline_reason = ? "
+            "WHERE invocation_token = ? AND status = 'pending'",
+            (_now().isoformat(), decline_reason, token),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    @_synchronized
     def get_pending_invocation(self, token: str) -> ThreadInvocation | None:
         cursor = self._conn.execute(
             "SELECT * FROM thread_invocations "
@@ -883,3 +900,35 @@ class ThreadsMixin:
         # own @_synchronized acquisition. The cap UPDATE above is committed by
         # mint_thread_invocation's commit (SQLite commits all pending changes).
         return inv, new_cap
+
+    @_synchronized
+    def set_thread_pinned_uncommitted(self, thread_id: str, *, pinned: bool) -> None:
+        """Set/clear thread pin state WITHOUT committing (THR-209).
+
+        Same contract as ``set_thread_subject_uncommitted``: the caller owns
+        the surrounding transaction so the pin transition and its audit row
+        are atomic.
+        """
+        if pinned:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = ? WHERE id = ?",
+                (_now().isoformat(), thread_id),
+            )
+        else:
+            self._conn.execute(
+                "UPDATE threads SET pinned_at = NULL WHERE id = ?",
+                (thread_id,),
+            )
+    @_synchronized
+    def _set_thread_status_archived_uncommitted(
+        self, thread_id: str, *, summary: str | None = None,
+    ) -> None:
+        """Flip one thread to ARCHIVED (summary/archived_at preserved) WITHOUT
+        committing. Callers own the transaction
+        (``set_thread_status``, ``archive_thread_and_reset_sessions``)."""
+        now = _now().isoformat()
+        self._conn.execute(
+            "UPDATE threads SET status = ?, summary = COALESCE(?, summary), "
+            "archived_at = COALESCE(archived_at, ?) WHERE id = ?",
+            (ThreadStatus.ARCHIVED.value, summary, now, thread_id),
+        )

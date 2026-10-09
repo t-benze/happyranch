@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * W3b-2 Jobs + opt-in preview browser-evidence harness (THR-118).
+ * W3b-2 Jobs + current full-mode Preferences browser-evidence harness (THR-118).
  *
  * Same mechanism as `w3b-tasks-browser-evidence.mjs` (no new dependency): ONE
  * isolated headless Chrome driven over the DevTools Protocol against the
  * ORDINARY production SPA bundle (no build flag), served same-origin next to a
  * synthetic `/api/v1` stub whose every request lands in a server-side ledger.
  * Chrome runs with `--lang=zh-CN` plus a Chinese `navigator.languages`
- * override, so an English result for an unset preference proves the preview
- * never auto-detects. Expected copy is read from the shipped typed catalogs.
+ * override, so an unset preference must follow the Chinese environment
+ * in full mode. Historical W3b-2 receipts retain their preview identity. Expected copy is read from the shipped typed catalogs.
  *
  * Cases (receipt.json; exit 1 if any fails):
  *   G  the ordinary bundle now CONTAINS the Preferences selector markers;
@@ -19,8 +19,8 @@
  *      the storage-event path; the SAME dialog and input nodes, the same value
  *      and focus, localized title/label, ZERO /api requests per switch window;
  *   P  Settings > Preferences in the ordinary build, preference UNSET on a
- *      Chinese browser: English, English radio checked, disclosure visible;
- *      a real CDP click on 简体中文 switches in place (same radio/panel nodes,
+ *      Chinese browser: Chinese, Chinese radio checked, bilingual disclosure visible;
+ *      real CDP clicks on English then 简体中文 switch in place (same radio/panel nodes,
  *      focus, zh disclosure, <html lang>) with ZERO /api requests.
  *
  * Build + run (from web/):
@@ -59,6 +59,7 @@ const dist = arg('dist') && resolve(arg('dist'));
 const outDir = resolve(arg('out', '.w3b-jobs-evidence'));
 const head = arg('head', 'unknown');
 const chromeBin = arg('chrome', process.env.CHROME_BIN || 'google-chrome');
+const focusedCascade = arg('slice', 'all') === 'cascade';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
@@ -164,6 +165,7 @@ const now = Date.now();
 const iso = (msAgo) => new Date(now - msAgo).toISOString();
 const LEDGER = [];
 const HUNG = [];
+const CASCADE_TASK = { task_id: 'TASK-CASE-J', brief: 'Raw cascade task / 原文', status: 'in_progress', block_kind: 'blocked_on_job' };
 
 function job(id, extra = {}) {
   return {
@@ -203,6 +205,13 @@ function startServer(root) {
         const p = url.pathname;
         if (p.startsWith('/api/')) {
           LEDGER.push({ method: request.method, path: p, search: url.search, t: Date.now() });
+          if (focusedCascade && p === `/api/v1/orgs/${ORG}/tasks`) {
+            const ref = new URL(request.headers.referer || 'http://127.0.0.1');
+            const state = ref.searchParams.get('cascadeFixture') || 'populated';
+            if (state === 'loading') { HUNG.push(response); return; }
+            response.writeHead(state === 'error' ? 500 : 200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+            response.end(JSON.stringify(state === 'error' ? { detail: 'Raw diagnostic' } : { tasks: state === 'empty' ? [] : [CASCADE_TASK], next_cursor: null })); return;
+          }
           if (p.endsWith('/events') || p.includes('/stream') || p.endsWith('/tail')) {
             response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
             HUNG.push(response);
@@ -273,7 +282,7 @@ async function main() {
       '--no-sandbox', '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-extensions', '--disable-background-networking', '--hide-scrollbars', '--disable-crash-reporter',
       '--disable-background-timer-throttling', '--disable-renderer-backgrounding', 'about:blank',
-    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, HOME: userDataDir, TMPDIR: userDataDir } });
+    ], { stdio: ['ignore', 'ignore', 'ignore'], env: { ...process.env, TMPDIR: userDataDir } });
     const devtools = await waitForDevTools(userDataDir);
     chromeVersion = (await (await fetch(`http://127.0.0.1:${devtools.port}/json/version`)).json()).Browser;
     cdp = new CDP(`ws://127.0.0.1:${devtools.port}${devtools.path}`);
@@ -334,6 +343,60 @@ async function main() {
       await sleep(600); // quiescence: any switch-caused request lands in the ledger
     }
 
+    if (focusedCascade) {
+      beginCase('C9-Jobs', 'C9 Jobs cascade populated/loading/empty/error en/zh-CN 390/1440');
+      for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[390, 844], [1440, 900]]) for (const state of ['populated', 'loading', 'empty', 'error']) {
+        const from = LEDGER.length;
+        const page = await openPage(`${base}/orgs/${ORG}/jobs/JOB-901?cascadeFixture=${state}`, { init: `${seedLocale(locale)}\n${CHINESE_NAVIGATOR}`, width, height });
+        const text = state === 'populated' ? 'Raw cascade task / 原文' : tr(locale, `jobs.cascade.${state === 'error' ? 'loadError' : state}`);
+        check(`C9 Jobs ${locale} ${width} ${state} copy`, await waitTrue(page, bodyHas(text), 'actual cascade state'), true);
+        check(`C9 Jobs ${locale} ${width} ${state} html lang`, await evaluate(page, langIs(locale)), true);
+        check(`C9 Jobs ${locale} ${width} ${state} original query filter`, LEDGER.slice(from).some(row => row.path.endsWith('/tasks') && new URLSearchParams(row.search).get('blocked_on_job_id') === 'JOB-901'), true);
+        check(`C9 Jobs ${locale} ${width} ${state} document bounds`, await evaluate(page, noOverflow), true);
+        const card = `[...document.querySelectorAll('section')].find(s => s.textContent.includes(${JSON.stringify(text)}))`;
+        check(`C9 Jobs ${locale} ${width} ${state} card text/control clipping and readability`, await evaluate(page, `(() => {
+          const card = ${card}; if (!card) return { found: false };
+          card.scrollIntoView({ block: 'center' });
+          const errors = [];
+          // Every row descendant (badge, waiting qualifier, ID link), not just the
+          // row's direct children: text line boxes on BOTH axes, and a row label
+          // must read as one line rather than a phrase stacked glyph by glyph.
+          for (const el of card.querySelectorAll('h3,p,li span:not([aria-hidden]),a')) {
+            const r = el.getBoundingClientRect(), css = getComputedStyle(el);
+            if (!r.width || !r.height || r.left < 0 || r.right > innerWidth + 1 || Number.parseFloat(css.fontSize) < 10 || css.visibility !== 'visible' || css.opacity === '0') errors.push(el.tagName + ':bounds/readability');
+            if (!el.classList.contains('truncate')) {
+              const text = document.createRange(); text.selectNodeContents(el);
+              const boxes = [...text.getClientRects()].filter(b => b.width > 0);
+              if (boxes.some(b => b.left < r.left - 1 || b.right > r.right + 1 || b.left < 0 || b.right > innerWidth + 1)) errors.push(el.tagName + ':text bounds');
+              if (boxes.some(b => b.top < r.top - 1 || b.bottom > r.bottom + 1 || b.top < 0 || b.bottom > innerHeight + 1)) errors.push(el.tagName + ':text vertical bounds');
+              let lines = 0, lineBottom = -Infinity;
+              for (const b of boxes.sort((x, y) => x.top - y.top)) {
+                if (b.top >= lineBottom - 1) { lines += 1; lineBottom = b.bottom; } else lineBottom = Math.max(lineBottom, b.bottom);
+              }
+              if (el.closest('li') && lines > 1) errors.push(el.tagName + ':' + JSON.stringify(el.textContent) + ' split across ' + lines + ' lines');
+            }
+            for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
+              const a = ancestor.getBoundingClientRect(), style = getComputedStyle(ancestor);
+              if (/(hidden|clip|auto|scroll)/.test(style.overflowX) && (r.left < a.left - 1 || r.right > a.right + 1)) errors.push(el.tagName + ':clipping ancestor');
+              if (/(hidden|clip|auto|scroll)/.test(style.overflowY) && (r.top < a.top - 1 || r.bottom > a.bottom + 1)) errors.push(el.tagName + ':vertical clipping ancestor');
+            }
+            if (el.matches('a')) { const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (hit !== el && !el.contains(hit)) errors.push('link:unreachable'); }
+          }
+          return { found: true, errors };
+        })()`), { found: true, errors: [] });
+        if (state === 'populated') {
+          check(`C9 Jobs ${locale} ${width} owned waiting qualifier`, await evaluate(page, bodyHas(tr(locale, 'tasks.waiting.jobs'))), true);
+          check(`C9 Jobs ${locale} ${width} raw status/brief`, await evaluate(page, `${bodyHas('in_progress')} && ${bodyHas('Raw cascade task / 原文')}`), true);
+          const link = `document.querySelector('a[href="/orgs/${ORG}/tasks/TASK-CASE-J"]')`;
+          check(`C9 Jobs ${locale} ${width} original task destination`, await evaluate(page, `Boolean(${link}) && ${link}.textContent === 'TASK-CASE-J'`), true);
+          await capture(page, `c9-jobs-${locale}-${state}-${width}`, { locale, state, viewport: `${width}x${height}` });
+          await clickSrc(page, link);
+          check(`C9 Jobs ${locale} ${width} original navigation action`, await waitTrue(page, `location.pathname === '/orgs/${ORG}/tasks/TASK-CASE-J'`, 'task navigation'), true);
+        } else await capture(page, `c9-jobs-${locale}-${state}-${width}`, { locale, state, viewport: `${width}x${height}` });
+        await closePage(page);
+      }
+      endCase();
+    } else {
     // ============================================================ G
     beginCase('G', 'ordinary bundle contains the Preferences selector (preview enabled, no build flag)');
     for (const s of PREFERENCE_MARKERS) check(`G ordinary JS contains "${s}"`, fingerprint.preferenceMarkers[s], true);
@@ -426,7 +489,7 @@ async function main() {
     endCase();
 
     // ============================================================ P
-    beginCase('P', 'Preferences in the ordinary build: unset stays English on a Chinese browser; disclosure; zh-CN switch in place with zero /api');
+    beginCase('P', 'Preferences in the ordinary build: unset follows Chinese browser fallback; disclosure; zh-CN switch in place with zero /api');
     {
       // Earlier cases share this profile's localStorage: remove the saved
       // preference before the app boots so this page starts genuinely UNSET.
@@ -437,11 +500,13 @@ async function main() {
       const radio = (value) => `document.querySelector('input[name="happyranch-ui-language"][value="${value}"]')`;
       check('P unset: stored preference absent', await evaluate(page, `localStorage.getItem(${JSON.stringify(LOCALE_KEY)})`), null);
       check('P unset: navigator is Chinese', await evaluate(page, `navigator.languages.join(',')`), 'zh-CN,zh');
-      check('P unset: <html lang> en', await evaluate(page, langIs('en')), true);
-      check('P unset: English radio checked', await evaluate(page, `${radio('en')}.checked`), true);
+      check('P unset: <html lang> zh-CN', await evaluate(page, langIs('zh-CN')), true);
+      check('P unset: Chinese radio checked', await evaluate(page, `${radio('zh-CN')}.checked`), true);
       check('P unset: route stays /settings/preferences', await evaluate(page, `location.pathname`), `/orgs/${ORG}/settings/preferences`);
-      check('P unset: disclosure (en) visible', await evaluate(page, `(() => { const p = [...document.querySelectorAll('[data-testid="settings-preferences"] p')].find((n) => n.textContent === ${JSON.stringify(tr('en', 'settings.preferences.coverageDisclosure'))}); return Boolean(p && p.getBoundingClientRect().height > 0); })()`), true);
-      await capture(page, 'en-preferences-unset-1440', { viewport: '1440x900', locale: 'en', state: 'unset preference on zh-CN browser' });
+      check('P unset: disclosure (zh-CN) visible', await evaluate(page, `(() => { const p = [...document.querySelectorAll('[data-testid="settings-preferences"] p')].find((n) => n.textContent === ${JSON.stringify(tr('zh-CN', 'settings.preferences.coverageDisclosure'))}); return Boolean(p && p.getBoundingClientRect().height > 0); })()`), true);
+      await capture(page, 'zh-preferences-unset-1440', { viewport: '1440x900', locale: 'zh-CN', state: 'unset preference on zh-CN browser' });
+      await clickSrc(page, radio('en'));
+      check('P explicit English prepares original Chinese switch', await waitTrue(page, `${langIs('en')} && ${radio('en')}.checked`, 'explicit English before Chinese switch'), true);
       await evaluate(page, `(() => { window.__w3bRadio = new WeakRef(${radio('zh-CN')}); window.__w3bPanel = new WeakRef(document.querySelector('[data-testid="settings-preferences"]')); return true; })()`);
       const from = LEDGER.length;
       await clickSrc(page, radio('zh-CN'));
@@ -458,6 +523,7 @@ async function main() {
       await closePage(page);
     }
     endCase();
+    }
   } finally {
     for (const response of HUNG) { try { response.destroy(); } catch { /* gone */ } }
     if (cdp) cdp.close();
@@ -470,7 +536,7 @@ async function main() {
   const failed = cases.filter((c) => !c.pass);
   const receipt = {
     head, generatedAt: new Date().toISOString(), node: process.version,
-    chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + navigator override: environment never defaults the locale)' },
+    chrome: { path: chromeBin, version: chromeVersion, lang: 'zh-CN (Chrome --lang + actual navigator override; full-mode fallback)' },
     externalRequestsBlocked: EXTERNAL_BLOCK,
     dist: fingerprint,
     summary: cases.map((c) => ({ id: c.id, title: c.title, pass: c.pass, checks: c.checks.length, failedChecks: c.checks.filter((x) => !x.ok).map((x) => x.name) })),

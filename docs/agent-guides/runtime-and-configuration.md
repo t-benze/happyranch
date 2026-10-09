@@ -1,5 +1,34 @@
 # Runtime And Configuration
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Settings
 
 Bundled skill sources resolve under the selected package root at
@@ -337,6 +366,90 @@ record keyed by the profile name. No ``shutil.which`` or PATH discovery is
 used for any profile. See
 [agent-executors-and-permissions.md](./agent-executors-and-permissions.md).
 
+Supported active roster creation, approval, revision-CAS executor updates,
+dedicated executor updates and termination maintain exact per-agent profile
+requirements inside their canonical fence; pending enrollments do not bind.
+Prompt/model/repo updates preserve the current profile while composing only their intended delta inside the process writer gate. Init and active create/approval retain that gate through final current capture and bootstrap; executor switching retains a single gate through materialization, synchronous bootstrap, final mutation and compensation. Request cancellation and SSE disconnect drain started workers while retaining the gate; admitted request writes finish terminal reconciliation before propagating cancellation, including repeated cancellation. The short teams/canonical sections end before awaited host work.
+Their profile leases release before ordinary publication capture and awaited
+bootstrap, including compensation exits. At daemon state construction, U2B rebuilds exact per-agent custom-profile
+dependencies for every loaded org and reconciles any interrupted coordinated
+profile operation before the state is exposed to routes. It uses the U1A
+org-local profile relations plus an owner-only same-host `flock`; there is no
+new machine-global database or schema. A coherent dependency change publishes
+a new org authority generation, while an absent, removed, or otherwise
+unpublished required profile or a profile whose custom adapter is not currently
+approved and resolvable keeps the org fenced. The shared profile YAML's
+read/merge/replace writers additionally take one store-scoped leaf `flock`, so
+different profile leases cannot lose each other's entries. Direct-connect
+`planned` projections are production-sweep eligible after transient profile
+contention. Independent route/sweep contenders re-read the durable terminal row
+under the profile lease before any mutation or fence. Dynamic org attachment
+captures canonical authority/roster inputs outside profile/publication leases
+and SQLite transactions, brackets discovery with the existing durable authority
+revision, and validates that revision under profile-then-org mutation ownership.
+Changed captures retry boundedly or refuse; synchronization consumes the captured
+roster without another directory scan. It holds every canonically ordered
+referenced profile lease through coherent synchronization/publication and
+shared-map insertion; its mirror
+digest must equal the current global digest before readiness is exposed.
+Startup does not dispatch, activate, or admit workflow work.
+
+THR139 S1 separates existing and new databases. Existing `OrgState.load` retains
+foundation installation where required, validates full F/E/G before workflow
+recovery, and never adds the draft extension. F remains usable for legacy work;
+its cutover projection/log names the operator migration and recovery waits for validated E/G.
+POST /orgs creates a fresh skeleton, initializes complete G before attachment,
+and retains its existing cleanup/error ownership. Empty files/missing tables or
+startup discovery are not proof of new creation. Generic Database/runtime-audit
+construction remains workflow-free.
+
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
+
+Explicit existing-org migration (operator authorization required):
+
+```bash
+python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> --check
+python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug>
+```
+
+The script validates the schema-v2 runtime and actual org path, full F/E SQL,
+markers/history/integrity and stored source/draft closure without running generic
+migrations. One bounded SQLite writer transaction installs only the exact three
+draft tables/six indexes and version1 marker, validates E, then commits. Partial,
+unknown/corrupt layouts and nonorg/missing/symlink targets refuse; complete E/G
+replay preserves existing data and labels its actual layout. `--check` performs no migration, exits0 for ready
+E/G or3 for migration-needed F; refusal1, parser2. Pristine F retains preceding-reader
+compatibility until migration. **Every E/G requires a compatible reader**, including
+new empty orgs; no downgrade stripping or live migration is implied by shipping
+this script. Read-only WAL inspection can use SQLite sidecars; crash rollback may
+leave a non-hot journal, while original data/schema/files remain intact.
+
+
+Adapter approval propagates the profile target selected before lease
+acquisition into its existing serialized registry writer, including an empty
+selection. It revalidates that target before approval, idempotent return or
+binding. A concurrent supported submission changing the target returns the
+existing 409 `profile_consumer_changed` conflict without adapter/profile
+mutation; retry selects afresh after ownership releases. Known-target live
+contention remains 409 `profile_coordinator_busy`. No-target approval still
+succeeds without a profile, and no new lease is taken under the writer lock.
+
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
 ## Org Config: Timezone and `current_time` Prompt Injection
 
 Top-level `timezone:` in `<runtime>/orgs/<slug>/org/config.yaml` is the org-wide
@@ -404,6 +517,30 @@ admissions with at most five best-effort consumer calls and no refill or
 recovery. `false` prevents those action admissions and affects later admissions
 only; it cannot revoke an already admitted call. Malformed values retain the
 shared loader's existing error behavior.
+
+Routine scheduled and exact-marker manual cleanup reports remain durable on the
+existing agent page via ordinary completion/results (THR-259 seq418). The scheduler
+admits a clean-root task without report-thread configuration, lookup, ID allocation
+or composite creation. Task ID allocation, composition and ordinary insertion stay
+synchronous under `org.db_lock` after awaited measurement; enqueue follows successful
+insertion. Complete marker history, ordinals, cadence and deduplication are unchanged.
+There is no routine thread posting/reuse obligation. Preserve all historical threads,
+messages, associations, results and audits, explicit founder-requested coordination,
+truthful anomalies/partial failures/unknown bytes/independent verification gaps and
+the current-session final `happyranch report-completion` callback. Exact manual
+first-line display eligibility (alone/LF/CRLF) neither creates trigger audits nor
+changes daemon count or action authority. Runtime and canonical bundled-skill
+rollout require separately authorized deployment after merge.
+
+Cleanup activity uses three nonunique indexes installed with `IF NOT EXISTS`
+after legacy columns exist: tasks(assigned_agent,created_at DESC,id DESC),
+audit_log(task_id,agent) where action='workspace_cleanup_triggered', and
+task_results(task_id,agent,id DESC). Existing definitions are not validated;
+reader SQL, history and cleanup authority are unchanged. Breaker listing/mint
+use sequential `await asyncio.to_thread` calls and the original DB RLock, also
+used by close. Removal can log a sweep error; cancellation can leave a worker
+running and a committed pending token for later attached-tick recovery. No
+org lifetime lock, worker drain or new shutdown guarantee is added.
 
 The daemon-composed daily brief and manual dispatch both follow the ONE shared
 `workspace-cleanup` TASK system contract (`requires_repo=false`; source
@@ -672,6 +809,14 @@ scripts/build_web.sh
 happyranch web [--no-open]
 ```
 
+`scripts/daemon.sh start` removes a stale port file, launches the daemon, and
+waits up to `HAPPYRANCH_DAEMON_START_TIMEOUT` seconds (default `30`, positive
+integers only) for `GET /api/v1/health` to answer on the configured bind host.
+Wildcard bind addresses are probed through their loopback equivalent. If the
+background process exits or readiness times out, startup exits 1 and prints
+the last 20 lines of `daemon.log`; if `curl` is unavailable, it announces a
+fallback to the fresh `daemon.port` file.
+
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
 ## Running Tests
@@ -679,12 +824,96 @@ The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 For where new test files belong, see the forward-only
 [test-placement rule](project-layout.md#test-placement).
 
+The founder suspended Python unit-suite execution in THR-291 seq5
+(TASK-10169). While this pause applies, do not launch Python unit tests,
+including focused tests or duration measurements. The `python-unit` GitHub
+job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
+reports the same suspension before continuing Web CI. This also pauses the
+unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
+exit or an `all` receipt establishes only the remaining checks, never a unit
+PASS. Preserve test sources, selections and coverage definitions. Web,
+canonical validation and integration jobs retain their own existing contracts;
+no hook bypass is authorized. Existing historical workflow reruns and old
+checkouts do not acquire this pause automatically and must not be used to
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The ordinary commands below describe the restored behavior.
+
+The manual `local-ci-all` workflow step invokes the fixed
+`uv run python scripts/nightly_local_ci_all.py` entry from the checkout root.
+Its G follow-on retains the fixed unit-suspension guard and zero-child receipt;
+source provenance authenticates both this script and the workflow YAML.
+Source-copy keepers read the script from their own archived checkout. See
+[Local CI](../local-ci.md) for the retained dormant plan and source controls.
+
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
-uv run pytest tests/ -v -m integration   # integration tests
-uv run pytest tests/ -v -m ""            # unit + integration
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only
+uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable only
 ```
 
-Integration tests spawn a real daemon and fake CLIs. They are isolated from `~/.happyranch/` via `HAPPYRANCH_DAEMON_HOME`. Run integration tests locally before changes touching daemon lifespan, `SessionTracker`, callback routes, queue recovery, or executor callback behavior.
+Direct pytest uses `tmp_path_retention_policy = "failed"`: passing `tmp_path`
+and `tmpdir` fixture directories are removed best effort; ordinary failed-call
+diagnostics are retained. This does not cover arbitrary tempfile writes or
+guarantee retention after setup/teardown errors or interrupts. Use the frozen
+uv environment (currently pytest 9.0.3); the option requires pytest 7.3+, while
+the declared `pytest>=7.0` range also admits unsupported 7.0–7.2. See
+[pytest scratch scope and limits](../local-ci.md#per-run-pytest-scratch-lifecycle)
+for factory directories, explicit basetemp, version compatibility and cleanup
+limits. Full unit selections containing real daemon/socket tests also belong
+in the documented disposable CI venue.
 
-`tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures.
+Integration tests run real production orchestration with deterministic external
+CLI stubs in disposable GitHub runners or a separately authorized Mac Linux guest.
+The test parent is sanitized before pytest/runtime imports, with temporary homes,
+configuration, registries and runtime data plus exact source/callback/stub identity.
+Direct integration collection without that parent refuses. Never run integration
+on the live Linux daemon host, including through jobs. See `docs/local-ci.md`.
+The disposable default roster exists before startup/registration so the real
+lifecycle initializes eligible manager selectors. Example-based two-org creation
+likewise supplies the declared roster, including the default `code_reviewer`,
+before POST so canonical reviewer discovery is coherent; the Codex bootstrap case uses
+the supported pending-manager approval path. Explicit task plans write bound JSON
+payloads and invoke the tested-source CLI on one line with an absolute `--from-file`.
+Registered shell stubs restore their own temporary bin directory before identity
+admission, so uv or daemon PATH normalization cannot shadow that callback.
+`_nested_daemon_env` still copies the sanitized test parent and removes exactly
+its two outer containment markers; it does not sanitize a production environment.
+
+`tests/integration/fake_claude.sh` routes task invocations through `$FAKE_CLAUDE_PLAN` and thread invocations through `$FAKE_CLAUDE_THREAD_PLAN`. Tests that exercise both flows must set both fixtures and write explicit
+`DeterministicPlan` bytes. Missing, changed or unavailable plans refuse before
+execution; an intentional no-op is an explicit plan. The original two-org fixture
+opts into a bounded, source-authenticated pre-session exception observer without
+changing launch, return or exception behavior. Historical two-org cause remains
+UNKNOWN; the offline missing-agent control is not a historical diagnosis.
+
+### S2 activation attachment and recovery
+
+Compatible readers dispatch schema1/@1 and document-review schema2/@2 by exact
+immutable definition plus compiler/validator/source pins across every draft and
+version, including noncurrent rows. Publication version numbers do not denote
+format. Earlier readers refuse any @2 template data; retained @1 history is never
+rewritten to upgrade it. No old-reader downgrade compatibility is promised for
+mixed/new data. These formats use existing immutable JSON/BLOB storage meanings
+and leave F/E DDL/layout/reference, foundation markers, fresh-org initialization
+and explicit-only existing-org migration unchanged. Startup/reopen/enable installs
+no extension or format conversion. Recovery continues through its shipping owner
+with pinned template-driven role checks; possible launch remains uncertain.
+
+
+Actual OrgState attachment installs the consumed activation/draft services before
+workers; the generic Database constructor and runtime-audit remain workflow-free.
+The S1 explicit migration/new-org contract remains unchanged: existing F startup,
+reopen and enable never install E. Empty orgs stay fenced until real coherent
+roster/team/profile publication makes them ready. Initial activation requires
+ready E/G and the actual Founder cutover chain. A queued committed intent survives
+lost enqueue notification; startup and periodic sweeps rediscover its existing
+eligible task. Live author-capacity refusal, including a claim requeued before
+launch, waits for a later sweep; deduplicated queue notification runs after every
+profile/org/publication/SQLite lease releases. Missing/malformed
+workflow evidence fences legacy effects. Possible host launch cannot be recovered
+from PID absence, TTL expiration or session registration: it remains uncertain
+under workflow_recovery and blocks drain until genuine containment evidence exists.
+Disable fences new admission/prelaunch and preserves ownership of already admitted
+work. No startup deployment, live migration, enable, assignment or restart follows
+from publishing S2 source.

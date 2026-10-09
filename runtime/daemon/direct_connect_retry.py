@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Literal
 
 from runtime.daemon.direct_connect_store import DirectConnectAuthorityStore, DirectConnectReceiptArtifacts
 from runtime.daemon.routes.direct_connect import _artifact_facts
+from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
 
 _CONCURRENT_RETRY_POLL_INTERVAL_SECONDS = 0.02
 # The concurrent caller waits for the winner's REAL terminal outcome instead
@@ -140,7 +142,11 @@ def _bind_persisted_snapshot(artifacts: DirectConnectReceiptArtifacts, probe_out
 
 
 def retry_validate(
-    store: DirectConnectAuthorityStore, operation_id: str, *, now: float | None = None,
+    store: DirectConnectAuthorityStore,
+    operation_id: str,
+    *,
+    now: float | None = None,
+    profile_coordinator=None,
 ) -> RetryValidationOutcome:
     """Probe and bind only a terminal-failed receipt's exact stored snapshot."""
     from runtime.orchestrator import custom_adapter_registry
@@ -174,10 +180,30 @@ def retry_validate(
         return RetryValidationOutcome(
             state="failed", adapter_id=None, profile_name=None, reason="conformance_probe_failed",
         )
+    profile_span = (
+        profile_coordinator.operation(
+            [artifacts.intended_profile_name],
+            operation_kind=(
+                "rebind"
+                if artifacts.intended_profile_name in load_runtime_profiles()
+                else "register"
+            ),
+            publisher="direct_connect_retry",
+        )
+        if profile_coordinator is not None
+        else nullcontext()
+    )
     try:
-        adapter_id, profile_name = _bind_persisted_snapshot(artifacts, probe_output)
-    except Exception:
+        with profile_span:
+            adapter_id, profile_name = _bind_persisted_snapshot(
+                artifacts, probe_output,
+            )
+    except Exception as exc:
         store.finish_retry_attempt(attempt.attempt_id, state="failed", reason="profile_binding_failed", now=now)
+        from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+
+        if isinstance(exc, ProfileCoordinatorError):
+            raise
         return RetryValidationOutcome(
             state="failed", adapter_id=None, profile_name=None, reason="profile_binding_failed",
         )

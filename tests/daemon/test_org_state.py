@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -190,7 +191,7 @@ def test_org_state_load_closes_new_database_when_workflow_install_fails(
     monkeypatch.setattr(
         org_state,
         "install_or_recover",
-        lambda _db: (_ for _ in ()).throw(ValueError("workflow-layout-invalid")),
+        lambda _db, *, expected_org_slug: (_ for _ in ()).throw(ValueError("workflow-layout-invalid")),
     )
 
     with pytest.raises(ValueError, match="workflow-layout-invalid"):
@@ -405,3 +406,105 @@ def test_org_state_load_succeeds_when_custom_profile_unregistered_and_agent_decl
     finally:
         org.close()
         reset_registry()
+
+
+@pytest.mark.parametrize("requested", [False, True])
+def test_cutover_cold_attachment_preserves_initial_or_recovers_authentic_request_twice(
+    tmp_path: Path, requested: bool,
+) -> None:
+    from runtime.workflows.cutover import WorkflowCutoverStore
+    from tests.workflows.test_cutover import _CommitObservation, _legacy_snapshot
+
+    runtime = RuntimeDir.init(tmp_path / "runtime")
+    root = runtime.orgs_dir / "alpha"
+    _seed_org(root)
+    state = DaemonState.from_runtime(runtime, Settings())
+    org = state.get_org("alpha")
+    path = OrgPaths(root=root).db_path
+    original = org.db._conn
+    if requested:
+        from runtime.infrastructure.workflow_schema import migrate_draft_schema
+        with org.db.workflow_schema_transaction() as conn:
+            migrate_draft_schema(conn, expected_org_slug="alpha")
+        def response_loss() -> None:
+            raise RuntimeError("committed request response lost")
+
+        org.db._conn = _CommitObservation(original, generation=2, observe=response_loss)
+        try:
+            with pytest.raises(RuntimeError, match="response lost"):
+                WorkflowCutoverStore(org.db, org_slug="alpha").request(
+                    action="enable", operation_key="cold-request", expected_generation=1,
+                )
+        finally:
+            org.db._conn = original
+    before = _legacy_snapshot(path)
+    org.close()
+    for _ in range(2):
+        loaded = DaemonState.from_runtime(runtime, Settings())
+        attached = loaded.get_org("alpha")
+        try:
+            projection = WorkflowCutoverStore(attached.db, org_slug="alpha").get()
+            assert projection["state"] == ("enabled" if requested else "installed_legacy_only")
+            assert projection["generation"] == (4 if requested else 1)
+            assert attached.workflow_authority is not None
+            assert loaded.profile_coordinator is not None
+            assert _legacy_snapshot(path) == before
+        finally:
+            attached.close()
+
+
+@pytest.mark.parametrize('layout', ['F', 'E', 'G'])
+@pytest.mark.parametrize('populated', [False, True], ids=['empty', 'retained-history'])
+def test_g_existing_f_e_and_g_cold_load_preserve_workflow_histories(tmp_path: Path, layout: str, populated: bool) -> None:
+    from runtime.infrastructure import workflow_schema as schema
+    from tests.workflows.test_submission_schema import _legacy_graph
+    runtime = RuntimeDir.init(tmp_path / 'runtime')
+    root = runtime.orgs_dir / 'alpha'
+    _seed_org(root)
+    # A migration source needs an actually closed authority owner. An empty
+    # roster with the default code_reviewer remains legitimately fenced.
+    (root / 'org/teams.yaml').write_text(
+        'teams:\n  engineering:\n    manager: engineering_manager\n    workers: [code_reviewer]\n'
+    )
+    for name, role in (('engineering_manager', 'manager'), ('code_reviewer', 'worker')):
+        definition = AgentDef(name=name, team='engineering', role=role,
+            executor='claude', allow_rules=(), repos={}, enrolled_by='founder',
+            enrolled_at_task=None, enrolled_at=None, system_prompt='Bounded cold-reader fixture.',
+            description='Canonical source owner', model=None)
+        (OrgPaths(root=root).agents_dir / f'{name}.md').write_text(render_agent_text(definition))
+    # Complete the same containing lifecycle used by the two cold reopens.
+    # Standalone OrgState.load leaves the eligible selector uninitialized;
+    # its first DaemonState attachment legitimately publishes that selector.
+    # Freeze history only after this existing setup contract has completed.
+    initial_state = DaemonState.from_runtime(runtime, Settings())
+    org = initial_state.get_org('alpha')
+    try:
+        org.workflow_authority.verify_admission_ready()
+        assert not org.db.execute("SELECT 1 FROM workflow_publication_journals WHERE state NOT IN ('cache_installed','aborted')").fetchone()
+        if populated:
+            _legacy_graph(org.db, 'E' if layout in ('E', 'G') else 'F', joined=True)
+        elif layout in ('E', 'G'):
+            with org.db.workflow_schema_transaction() as writer:
+                schema.migrate_draft_schema(writer, expected_org_slug='alpha')
+    finally:
+        for owner in initial_state.orgs.values():
+            owner.close()
+    if layout == 'G':
+        with closing(sqlite3.connect(root / 'happyranch.db')) as writer:
+            writer.execute('PRAGMA foreign_keys=ON')
+            schema.migrate_submission_schema(writer, expected_org_slug='alpha')
+    def workflow_history():
+        with closing(sqlite3.connect(root / 'happyranch.db')) as observer:
+            objects = tuple(observer.execute("SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name LIKE 'workflow_%' ORDER BY name"))
+            tables = [r[0] for r in observer.execute("SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'workflow_%' ORDER BY name")]
+            return objects, tuple((table, tuple(observer.execute(f'SELECT rowid,* FROM "{table}" ORDER BY rowid'))) for table in tables)
+    before = workflow_history()
+    for _ in range(2):
+        state = DaemonState.from_runtime(runtime, Settings())
+        try:
+            assert 'alpha' in state.orgs and 'alpha' not in state.broken_orgs
+            assert schema.validate_workflow_schema(state.orgs['alpha'].db._conn, expected_org_slug='alpha') == layout
+            assert workflow_history() == before
+        finally:
+            for owner in state.orgs.values(): owner.close()
+        assert workflow_history() == before

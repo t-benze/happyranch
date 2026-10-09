@@ -316,3 +316,7 @@ Integration tests should use fake PTY-capable CLIs, similar to existing fake exe
 - Exact interactive argv per executor must be verified during implementation.
 - Whether `happyranch init <runtime>` should always run the assistant setup flow or ask first can be decided in implementation. `happyranch assistant init` is the required idempotent path either way.
 - Web UI/xterm.js attach surface shipped (THR-024 reading #1) — the web attach (SystemAssistantPage / AssistantTerminal, xterm.js) and Settings config now exist; the daemon API should avoid CLI-only assumptions.
+
+### Current web presentation companion
+
+The mounted A-mode dock and conversation-control locale contract is maintained in [System Assistant Web UI §6.12](2026-06-12-system-assistant-web-ui-design.md#612-mounted-dock-locale-presentation-thr-118). It changes app-owned presentation only; historical probe/PTY implementation snapshots above remain historical.

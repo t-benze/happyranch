@@ -952,6 +952,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/agents/{agent_name}/system-prompt": {
+      "PUT": {
+        "params": [
+          [
+            "agent_name",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "400",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/agents/{agent_name}/team-escalation-policy": {
       "GET": {
         "params": [
@@ -4008,6 +4034,151 @@
         "responses": [
           "200",
           "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/activations": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "422",
+          "500"
+        ]
+      },
+      "POST": {
+        "input_discriminators": [
+          {
+            "mapping": {
+              "task-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/0/properties/inputs/items/oneOf/0",
+              "thread-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/0/properties/inputs/items/oneOf/1"
+            },
+            "propertyName": "kind"
+          },
+          {
+            "mapping": {
+              "task-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/1/properties/inputs/items/oneOf/0",
+              "thread-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/1/properties/inputs/items/oneOf/1"
+            },
+            "propertyName": "kind"
+          }
+        ],
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
+          "403",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/activations/{activation_id}": {
+      "GET": {
+        "params": [
+          [
+            "activation_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/cutover": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/cutover/downgrade-preflight": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/cutover/requests": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
         ]
       }
     },

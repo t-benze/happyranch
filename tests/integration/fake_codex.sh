@@ -2,6 +2,16 @@
 # Fake Codex binary — reads scripted behavior from $FAKE_CODEX_PLAN
 # and optionally calls happyranch to simulate an agent session.
 set -e
+STUB_ARGV=("$@")
+if [[ -z "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" || -z "${HAPPYRANCH_TEST_STUB_GUARD:-}" ]]; then
+    echo 'deterministic stub requires isolated test parent' >&2
+    exit 86
+fi
+
+# uv and daemon startup may prepend other tool directories. This registered
+# stub lives beside the bound Python/callback wrappers; restore that exact
+# test-only route before the unchanged executable/registry/plan identity gate.
+export PATH="${0%/*}:/usr/bin:/bin"
 
 PROMPT=""
 JSON_OUTPUT=0
@@ -30,7 +40,14 @@ ORG_SLUG="${ORG_PARENT##*/}"
 # is the ONLY thing on stdout — _parse_codex_usage scans stdout line-by-line
 # for `{"type":"turn.completed",...}`, and any extra non-NDJSON text from
 # plans would either break the scan or pollute usage_raw_json.
-if [[ -n "${FAKE_CODEX_PLAN:-}" && -f "$FAKE_CODEX_PLAN" ]]; then
+if [[ -z "${FAKE_CODEX_PLAN:-}" || ! -f "$FAKE_CODEX_PLAN" || ! -x "$FAKE_CODEX_PLAN" ]]; then
+        echo 'deterministic stub plan missing or unavailable' >&2
+        exit 86
+    fi
+    if [[ -n "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" ]]; then
+        python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" codex "$FAKE_CODEX_PLAN" "${STUB_ARGV[@]}"
+    fi
+    if [[ -n "${FAKE_CODEX_PLAN:-}" && -f "$FAKE_CODEX_PLAN" ]]; then
     bash "$FAKE_CODEX_PLAN" "$TASK_ID" "$SESSION_ID" "$ORG_SLUG" 1>&2
 fi
 

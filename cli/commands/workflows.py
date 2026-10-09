@@ -62,6 +62,15 @@ def _founder_client() -> OpcClient:
 
 def cmd_workflow_templates_publish(args: argparse.Namespace) -> None:
     body = _read_payload(args.from_file)
+    definition = body.get("definition")
+    if isinstance(definition, dict) and (definition.get("kind") == "document-review"
+            or definition.get("schema_version") == 2):
+        from runtime.workflows.templates import WorkflowTemplateError, _compile_document_definition
+        try:
+            _compile_document_definition(definition)
+        except WorkflowTemplateError as exc:
+            print("error: invalid document-review template", file=sys.stderr)
+            raise SystemExit(2) from exc
     if args.session_id:
         slug = resolve_org_slug(args_org=args.org, available=[])
         port_path = port_file()
@@ -136,9 +145,124 @@ def cmd_workflow_templates_show(args: argparse.Namespace) -> None:
     print(f"publisher: {json.dumps(result['publisher'], sort_keys=True)}")
 
 
+
+def cmd_workflow_cutover(args: argparse.Namespace) -> None:
+    body = None
+    if args.cutover_command == "request":
+        absolute = require_absolute_payload_path(args.from_file, kind="workflow-cutover")
+        try:
+            body = json.loads(Path(absolute).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            print("error: cannot read workflow cutover JSON payload", file=sys.stderr)
+            raise SystemExit(1) from exc
+        if not isinstance(body, dict):
+            print("error: workflow cutover payload must be a JSON object", file=sys.stderr)
+            raise SystemExit(1)
+    try:
+        client = _founder_client()
+        slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+        base = f"/api/v1/orgs/{slug}/workflows/cutover"
+        if args.cutover_command == "request":
+            response = client.post(base + "/requests", json=body)
+        elif args.cutover_command == "downgrade-preflight":
+            response = client.get(base + "/downgrade-preflight")
+        else:
+            response = client.get(base)
+    except httpx.HTTPError as exc:
+        print("error: workflow cutover transport failed; retry requests with the same body/key", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code != 200:
+        _print_error(response)
+    result = response.json()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        projection = result.get("projection", result)
+        print(f"{projection['org_slug']}: {projection['state']} generation={projection['generation']}")
+        if "eligible" in result:
+            print(f"downgrade eligible: {str(result['eligible']).lower()}")
+        for blocker in result.get("blockers", []):
+            print(f"{blocker['code']}: {blocker['owner']} — {blocker['required_action']}")
+    if args.cutover_command == "downgrade-preflight" and not result["eligible"]:
+        raise SystemExit(1)
+
+def _activation_payload(path: str) -> dict:
+    from runtime.workflows.activation import WorkflowActivationError, parse_request
+
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            raise ValueError("absolute path required")
+        with absolute.open("rb") as source:
+            raw = source.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("payload too large")
+        body = json.loads(raw.decode("utf-8"))
+        parse_request(body)
+    except (OSError, UnicodeError, ValueError, WorkflowActivationError) as exc:
+        print("error: activation requires an absolute --from-file path containing a valid closed JSON request", file=sys.stderr)
+        raise SystemExit(2) from exc
+    return body
+
+
+def cmd_workflow_activation(args: argparse.Namespace) -> None:
+    body = _activation_payload(args.from_file) if args.activation_command == "activate" else None
+    try:
+        client = _founder_client()
+        slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+        base = f"/api/v1/orgs/{slug}/workflows/activations"
+        if args.activation_command == "activate":
+            response = client.post(base, json=body)
+            valid_statuses = {200, 201}
+        else:
+            from urllib.parse import quote
+            target = base if args.activation_command == "list" else base + "/" + quote(args.activation_id, safe="")
+            response = client.get(target)
+            valid_statuses = {200}
+    except httpx.HTTPError as exc:
+        print("error: workflow activation transport failed; retry activation with the same body/key", file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code not in valid_statuses:
+        _print_error(response)
+    result = response.json()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+        return
+    for receipt in result if isinstance(result, list) else [result]:
+        print(f"{receipt['activation_id']}: {receipt['state']} root={receipt['root_task_id']} "
+              f"execution_started={str(receipt['execution_started']).lower()} "
+              f"pending={str(receipt['pending']).lower()} "
+              f"reconciliation_required={str(receipt['reconciliation_required']).lower()}")
+        for blocker in receipt['current_eligibility']['blockers']:
+            print(f"{blocker}: responsible owner {receipt['responsible_owner']}")
+
+
 def register(sub: argparse._SubParsersAction) -> None:
-    workflows = sub.add_parser("workflows", help="Manage inert workflow definitions")
+    workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    activation = workflow_sub.add_parser("activate", help="Founder activation of an exact template version")
+    activation.add_argument("--org", required=True)
+    activation.add_argument("--from-file", required=True)
+    activation.add_argument("--json", action="store_true")
+    activation.set_defaults(func=cmd_workflow_activation, activation_command="activate")
+    activations = workflow_sub.add_parser("activations", help="Read original activation receipts and current eligibility")
+    activation_sub = activations.add_subparsers(dest="activation_command", required=True)
+    for form in ("list", "show"):
+        command = activation_sub.add_parser(form)
+        command.add_argument("--org", required=True)
+        command.add_argument("--json", action="store_true")
+        if form == "show":
+            command.add_argument("activation_id")
+        command.set_defaults(func=cmd_workflow_activation)
+    cutover = workflow_sub.add_parser("cutover", help="Request and inspect workflow cutover")
+    cutover_sub = cutover.add_subparsers(dest="cutover_command", required=True)
+    for form in ("show", "request", "downgrade-preflight"):
+        command = cutover_sub.add_parser(form)
+        command.add_argument("--org", required=True)
+        command.add_argument("--json", action="store_true")
+        if form == "request":
+            command.add_argument("--from-file", required=True)
+        command.set_defaults(func=cmd_workflow_cutover)
     templates = workflow_sub.add_parser("templates", help="Publish and read workflow templates")
     template_sub = templates.add_subparsers(dest="templates_command", required=True)
 

@@ -42,7 +42,7 @@ interface MessageBubbleProps {
    * Optional localized product copy (THR-118 W3a). Omitted fields keep the
    * historical English copy.
    */
-  labels?: { declined?: string; systemEvent?: string };
+  labels?: { declined?: string; systemEvent?: string; mermaidLoading?: string };
   /**
    * Optional display formatter for `timestamp` (e.g. an explicit-locale
    * formatter). Defaults to the historical host-locale `toLocaleString()`.
@@ -112,7 +112,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
           <strong>{props.labels?.declined ?? 'Declined:'}</strong> {declineReason}
         </p>
       ) : (
-        <Markdown body={body ?? ''} />
+        <Markdown body={body ?? ''} mermaidLoadingLabel={props.labels?.mermaidLoading} />
       )}
       {variant !== 'decline' && attachments && attachments.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">

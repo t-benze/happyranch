@@ -5,14 +5,16 @@ import logging
 import os
 import time
 import uuid
+from contextvars import ContextVar
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
+    from runtime.infrastructure.memory_collection import CollectionObserver, InvocationObservation
     from runtime.daemon.queue import TaskQueue
     from runtime.daemon.sessions import SessionTracker
 
@@ -58,6 +60,7 @@ from runtime.orchestrator.workspace_adapters import (
 from runtime.orchestrator.teams import TeamsRegistry
 
 logger = logging.getLogger(__name__)
+_memory_collection_invocation: ContextVar[InvocationObservation | None] = ContextVar("memory_collection_invocation", default=None)
 
 
 def completion_report_from_result_row(
@@ -741,7 +744,71 @@ class Orchestrator:
                 reason=f"Malformed task-owner decision: {exc}",
             )
 
+    def attach_memory_collection(self, observer: CollectionObserver) -> None:
+        """Attach once from OrgState before workers; no launch/authority change."""
+        if observer.db is not self._db or observer.org != self._slug or observer.root != str(self._paths.root.resolve()):
+            raise ValueError("memory observer org mismatch")
+        self._memory_collection = observer
+
+    def _observe_memory_collection(self, phase: str, *, invocation: InvocationObservation | None = None, **facts: Any) -> None:
+        invocation = invocation or _memory_collection_invocation.get()
+        if invocation is None:
+            return
+        try:
+            if phase == "expectation":
+                invocation.observer.expectation(invocation, **facts)
+            else:
+                invocation.observer.observe(invocation, phase, **facts)
+        except Exception:
+            invocation.observer.unavailable(f"{phase}_observation_failed")
+
     def _run_agent(
+        self,
+        task_id: str,
+        agent: str,
+        prompt: str,
+        on_session_started: Callable[[str, str, str], None] | None = None,
+        *,
+        runtime_session_id: str | None = None,
+        resume_session_id: str | None = None,
+        origin_runtime_session_id: str | None = None,
+        timeout_seconds_override: int | None = None,
+        recovery_deadline_monotonic: float | None = None,
+        recovery: bool = False,
+    ) -> tuple[ExecutorResult, CompletionReport | None]:
+        # Direct Orchestrator construction stays unobserved. Only the real
+        # OrgState attachment supplies an independent per-org census owner.
+        observer = getattr(self, "_memory_collection", None)
+        invocation = None
+        if observer is not None:
+            try:
+                invocation = observer.begin(task_id, agent, recovery=recovery)
+            except Exception:
+                observer.unavailable("intent_observation_failed")
+        token = _memory_collection_invocation.set(invocation)
+        result = None
+        outcome = "raised"
+        try:
+            result, report = self._run_agent_impl(
+                task_id, agent, prompt, on_session_started,
+                runtime_session_id=runtime_session_id, resume_session_id=resume_session_id,
+                origin_runtime_session_id=origin_runtime_session_id,
+                timeout_seconds_override=timeout_seconds_override,
+                recovery_deadline_monotonic=recovery_deadline_monotonic, recovery=recovery,
+            )
+            outcome = "returned"
+            return result, report
+        finally:
+            try:
+                self._observe_memory_collection(
+                    "terminal", outcome=outcome,
+                    success=result.success if result is not None else None,
+                    returncode=result.returncode if result is not None else None,
+                )
+            finally:
+                _memory_collection_invocation.reset(token)
+
+    def _run_agent_impl(
         self,
         task_id: str,
         agent: str,
@@ -790,6 +857,17 @@ class Orchestrator:
         # A recovery has a new daemon invocation identity.  The provider's
         # opaque conversation identity is deliberately passed separately.
         session_id = runtime_session_id or self._build_session_id()
+        self._observe_memory_collection(
+            "identity", session_id=session_id, executor=provider, model=model_name,
+            parent_task_id=task.parent_task_id if task is not None else None,
+            task_type=task.task_type if task is not None else None,
+            population=("recovery" if recovery else "unknown" if task is None else
+                        "child" if task.parent_task_id else "root"),
+            parent_known=task is not None,
+            invocation_purpose=("unattributed" if recovery or task is None else
+                                "manager_decision" if task.task_type == "task" else
+                                "worker_execution" if task.task_type == "subtask" else "unattributed"),
+        )
 
         # Issue #536: serialize the complete pre-spawn skill materialization
         # transaction under a process-local workspace lock so concurrent
@@ -942,11 +1020,14 @@ class Orchestrator:
         # MemoryStore. Ancestor task ids boost memories authored in the same
         # task lineage. Budget is org-configurable; 0 disables the digest.
         memory_digest: str | None = None
+        memory_render = None
+        memory_directory_present = None
         org_config = load_org_config(self._paths)
         budget = org_config.memory_digest_budget
         if budget > 0:
             memory_dir = workspace / "memory"
-            if memory_dir.exists():
+            memory_directory_present = memory_dir.exists()
+            if memory_directory_present:
                 from runtime.infrastructure.learnings_store import MemoryStore
                 store = MemoryStore(memory_dir)
                 # Walk ancestor chain for source_task boost.
@@ -955,12 +1036,17 @@ class Orchestrator:
                 except Exception:
                     ancestors = []
                 ancestor_ids = {a.id for a in ancestors} if ancestors else None
-                memory_digest = store.build_memory_digest(
+                memory_render = store.render_memory_digest(
                     brief=brief,
                     budget=budget,
                     ancestor_task_ids=ancestor_ids,
                     scope="agent",
                 )
+                memory_digest = memory_render.text
+        self._observe_memory_collection(
+            "expectation", budget=budget, directory_present=memory_directory_present,
+            render=memory_render,
+        )
 
         managed_skills_index = resolve_managed_skills_index(
             paths=self._paths, agent_name=agent_name,
@@ -1062,12 +1148,21 @@ class Orchestrator:
                     error="completion recovery ownership lost before publication",
                 ), None
         else:
-            self._db.update_task(
-                task_id, assigned_agent=agent_name, current_session_id=session_id,
-            )
+            drafts = getattr(self, "_workflow_drafts", None)
+            from runtime.workflows.recovery import classify_task
+            ownership = classify_task(self._db, task_id, org_slug=self._slug)
+            if ownership.kind == "draft" and drafts is not None:
+                drafts.bind_session(task_id, agent_name, session_id)
+            elif ownership.kind != "legacy":
+                raise ValueError("workflow_reconciliation_required")
+            else:
+                self._db.update_task(
+                    task_id, assigned_agent=agent_name, current_session_id=session_id,
+                )
         if self._sessions is not None:
             if not recovery:
                 self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
+        self._observe_memory_collection("binding")
         if on_session_started is not None:
             on_session_started(task_id, agent_name, session_id)
 
@@ -1077,8 +1172,8 @@ class Orchestrator:
         # The impression carries the shown digest's memory IDs plus agent,
         # task_id, and session_id.  No digest text, titles, or bodies.
         # Empty/None digest => no impression event.
-        if memory_digest:
-            digest_ids = AuditLogger._extract_digest_ids(memory_digest)
+        if memory_digest and memory_render is not None:
+            digest_ids = list(memory_render.digest_ids)
             if digest_ids:
                 self._audit.log_memory_digest_impression(
                     agent=agent_name,
@@ -1086,6 +1181,9 @@ class Orchestrator:
                     session_id=session_id,
                     digest_ids=digest_ids,
                     budget=budget,
+                    memory_telemetry_version=1,
+                    pointer_ids=list(memory_render.pointer_ids),
+                    full_body_ids=list(memory_render.full_body_ids),
                 )
 
         if recovery:
@@ -1115,6 +1213,8 @@ class Orchestrator:
         # sessions the supervisor binds the RunningHandle BEFORE invoking this
         # hook (``running.root_pid``), so the PID is diagnostic/restart
         # evidence only — cancellation goes through the opaque control.
+        launch_observation = _memory_collection_invocation.get()
+
         def _on_started(pid: int) -> None:
             if self._sessions is not None:
                 self._sessions.set_pid(task_id, agent_name, session_id, pid)
@@ -1122,6 +1222,7 @@ class Orchestrator:
             self._db.set_task_executor_pid_if_current(
                 task_id=task_id, agent=agent_name, session_id=session_id, pid=pid,
             )
+            self._observe_memory_collection("launched", invocation=launch_observation)
 
         # Layer-1 throttle audit surfacing (issue #85): the per-provider throttle
         # in executors._run_command calls this on a slot wait or a 429 backoff.
@@ -1228,6 +1329,19 @@ class Orchestrator:
                 recovery=recovery,
             )
         else:
+            from runtime.workflows.recovery import classify_task
+            # The lower host method also serves callers without a task store.
+            # Actual persisted tasks are always classified, even when the
+            # dispatcher or org identity is unavailable (which fences owners).
+            task_db = getattr(self, "_db", None)
+            if ((task_db is not None and classify_task(
+                    task_db, task_id, org_slug=getattr(self, "_slug", None),
+                ).kind != "legacy") or (task_db is None
+                                       and getattr(self, "_workflow_drafts", None) is not None)):
+                # Workflow-owned work cannot silently self-launch without
+                # actual supervisor identity/terminal evidence.
+                return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
+                                      error="workflow_host_unavailable")
             # Legacy uncontained path (tests / idle state): executor
             # self-launches exactly as before.
             try:
@@ -1258,12 +1372,11 @@ class Orchestrator:
                        if recovery and provider == "codex" else {}),
                 )
             finally:
-                # The contained supervisor invokes its terminal hook before
-                # release.  The legacy fallback preserves its ordinary
-                # lifecycle behavior, but the one-shot recovery has no later
-                # owner and must clear only its own generation after terminal
-                # failure so its PID/control cannot survive as stale authority.
-                if recovery and self._sessions is not None:
+                # Retire only this invocation after the executor's final
+                # return/exception, including any internal 429 attempts.
+                # Generation-safe cleanup preserves newer bindings and other
+                # tasks; the contained supervisor owns its pre-release hook.
+                if self._sessions is not None:
                     self._sessions.clear_if_active_session(
                         task_id, agent_name, session_id
                     )
@@ -1318,6 +1431,17 @@ class Orchestrator:
             LaunchResult,
         )
         from runtime.platform.session_backend import RunningHandle
+
+        from runtime.workflows.recovery import WorkflowTaskOwnership, classify_task
+        task_db = getattr(self, "_db", None)
+        ownership = (classify_task(task_db, task_id, org_slug=getattr(self, "_slug", None))
+                     if task_db is not None else WorkflowTaskOwnership(
+                         "reconciliation_required" if getattr(self, "_workflow_drafts", None) is not None
+                         else "legacy"))
+        drafts = getattr(self, "_workflow_drafts", None) if ownership.kind == "draft" else None
+        if ownership.kind != "legacy" and drafts is None:
+            return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
+                                  error="workflow_reconciliation_required")
 
         token = CancellationToken()
         # Opaque cancellation/cleanup control registered BEFORE admission so
@@ -1388,7 +1512,22 @@ class Orchestrator:
         def _pre_launch_validator() -> None:
             pre_launch_integrity_validator()
 
+        def _final_prelaunch_validator() -> None:
+            if recovery:
+                recovery_launch_validator()
+            if drafts is not None:
+                drafts.reserve_launch(task_id, agent_name, session_id)
+
+        def _on_terminal(outcome: Any) -> None:
+            try:
+                if drafts is not None:
+                    drafts.terminal(task_id, agent_name, session_id, outcome, expected_request=host_request)
+            finally:
+                _clear_tracker()
+
         def _launch_body(running: RunningHandle) -> LaunchResult:
+            if drafts is not None:
+                drafts.observed_handle(task_id, agent_name, session_id, running)
             # Real backend: the subprocess is already launched into
             # containment — the executor communicates + parses only (no
             # self-Popen, no on_started — the supervisor bound the PID).
@@ -1427,19 +1566,21 @@ class Orchestrator:
                 payload=result,
             )
 
+        host_request = AdmissionRequest(
+            org=self._slug,
+            invocation_kind="task",
+            logical_id=(drafts.host_request_key(task_id, agent_name, session_id)
+                        if drafts is not None else task_id),
+            executor_profile=provider,
+            enqueued_at=time.monotonic(),
+            # The supervisor binds the RunningHandle before this fires;
+            # the passthrough backend has no real PID (root_pid=0) and the
+            # launch body's uncontained branch exposes the real one.
+            on_started=(lambda pid: on_started(pid) if pid > 0 else None),
+            cancellation=token,
+        )
         outcome = self._host_supervisor.run(
-            AdmissionRequest(
-                org=self._slug,
-                invocation_kind="task",
-                logical_id=task_id,
-                executor_profile=provider,
-                enqueued_at=time.monotonic(),
-                # The supervisor binds the RunningHandle before this fires;
-                # the passthrough backend has no real PID (root_pid=0) and the
-                # launch body's uncontained branch exposes the real one.
-                on_started=(lambda pid: on_started(pid) if pid > 0 else None),
-                cancellation=token,
-            ),
+            host_request,
             launch_spec=launch_spec,
             launch_body=_launch_body,
             pre_launch_validator=_pre_launch_validator,
@@ -1447,13 +1588,13 @@ class Orchestrator:
             # prepare. Ordinary task integrity validation keeps its existing
             # single pre-prepare timing/count.
             final_prelaunch_validator=(
-                recovery_launch_validator if recovery else None
+                _final_prelaunch_validator if recovery or drafts is not None else None
             ),
-            on_terminal=lambda _outcome: _clear_tracker(),
+            on_terminal=_on_terminal,
             # The one-shot Codex completion recovery is one provider
             # opportunity: a 429 remains its honest terminal result rather
             # than consuming the ordinary supervisor backoff/re-admission.
-            allow_retries=not recovery,
+            allow_retries=not recovery and drafts is None,
         )
         launch = outcome.payload
         if launch is None:
@@ -1557,8 +1698,20 @@ class Orchestrator:
                 action="completion_report",
                 payload={**report.model_dump(), **attribution},
             )
+            try:
+                observer = getattr(self, "_memory_collection", None)
+                if observer is not None and type(result_row_id) is int and result_row_id > 0:
+                    observer.reconcile_acceptance(result_row_id)
+            except Exception:
+                logger.debug("memory collection reconciliation unavailable")
             return
         self._audit.log_completion_report(report=report)
+        try:
+            observer = getattr(self, "_memory_collection", None)
+            if observer is not None and type(result_row_id) is int and result_row_id > 0:
+                observer.reconcile_acceptance(result_row_id)
+        except Exception:
+            logger.debug("memory collection reconciliation unavailable")
 
 
 # ── Module-level helpers ──────────────────────────────────────────────────────

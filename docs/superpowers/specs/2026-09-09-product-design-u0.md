@@ -1,12 +1,51 @@
 # Product-design workflow U0 feasibility evidence
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 This document began as deliberately non-production U0 evidence: it added isolated proposed-schema
 and authority-limitation tests plus unexecuted study-manifest evidence. The
 study is **NOT RUN** and no detached lock has been issued. No route, daemon
 workflow, UI/CLI, migration, authority coordinator, or compatibility behavior
 was installed by U0 itself. U1A later shipped the inert layout, U1B shipped
 template authoring/versioning, and U2A now ships only the org-scoped production
-authority publisher described in the status note below. The study remains
+authority publisher described in the status note below. U2B adds profile
+coordination; the cutover prerequisite implements only the existing-schema
+Founder request/verification/drain marker described in active F6 below.
+Activation, dispatch and operator acceptance remain deferred. The study remains
 **NOT RUN**.
 
 The executable fixture calls the actual `RuntimeDir.init -> DaemonState.from_runtime
@@ -401,9 +440,25 @@ retained as provenance; its "proposed, unimplemented" labels are historical
 for those org-scoped writer rows and are superseded by this status note. The
 readiness verifier exists for later units, but U2A wires no admission,
 activation, dispatch, callback or legacy task/chain/fan-out consumer.
-Machine-global `ProfileCoordinator` work remains U2B-deferred: profile changes
-do not yet fence orgs and no admission consumer may ship before U2B. Direct
+Machine-global `ProfileCoordinator` work shipped in U2B: supported profile and
+adapter writers now fence dependent orgs and publish a coherent profile closure.
+No workflow admission consumer ships in U2B. Direct
 same-UID file/DB edits remain outside the cooperative guarantee.
+
+The following U2B overlay is the current supported-operation map for the
+machine-global rows later in this historical census; it replaces their old
+`proposed, unimplemented` cells without changing the still-deferred consumer
+rows:
+
+| Production symbols | Shipped coordination status |
+|---|---|
+| `DaemonState.from_runtime`; `ProfileCoordinator.reconcile_startup` | Recovers interrupted profile operations exactly once, reconciles durable dependencies, and fences or publishes each attached org before admission. |
+| `runtime_executor_store.save_runtime_profile` / `remove_runtime_profile` | Participating writers. Per-profile lease then org publication lease; the shared `executor_profiles.yaml` flock is the innermost leaf around read/merge/replace. |
+| executor register/remove routes and registry register/unregister | Participating writers. Dependents are pre-fenced and a coherent closure is published only while every referenced profile and custom adapter is currently resolvable. |
+| `register_custom_adapter`, approve/bind/remove adapter routes | Participating writers. The coordinator spans the adapter-store mutation and dependent-org publication; existing adapter/profile store locks remain inner leaves. |
+| direct-connect projection route and sweep | Participating writers. A durable `planned` projection is retryable after pre-mutation lease contention and terminalizes under the profile lease. |
+| list/read-only profile and adapter routes | Read-only; no mutation span. They expose durable/current state and do not establish admission readiness. |
+
 Multi-stage route writers retain a process-local coordinator gate through
 terminal success or compensation, ordered before their existing `teams_lock`;
 the startup AgentDef migration retains it across the batch. A durable lease is
@@ -498,7 +553,7 @@ org pointer alone.
 | `runtime/orchestrator/run_step.py:431 _consume_accepted_completion_recovery` / `runtime/daemon/__main__.py:47 _sweep_on_startup` | boot (`__main__.py:454` after `from_runtime`); recovery route paths | `task_completion_recovery` ledger + task rows in org DB | in-memory registry | none (restart recovery of receipts/final-join) | recovery owners; `_enqueue_parent_if_waiting` | owner-predicate recheck; `org.db_lock`; keeps failed history | proposed workflow recovery reader must verify authority generation before resume (proposed, unimplemented) | explicitly unsupported/fenced: current startup/recovery sweep remains legacy-owned and does not consult a workflow authority generation |
 | `runtime/daemon/sessions.py:28 SessionTracker` (`:135 set_active`, `:226 set_pid`, `:282 set_cancel_control`, `:354 clear`, `:370 clear_if_active_session`) | direct callers `run_step`/`exercises`/`cancel_task`/`submit_completion` | none (in-memory only) | in-process `SessionTracker` maps + per-(task,agent) `binding_lease` | none (session ownership / cancellation controls) | `get_active`, `get_pid`, `iter_task_cancel_controls` | `binding_lease` locks; generation-versioned by session_id | none required for authority eligibility; keep as containment owner | explicitly unsupported/fenced: in-memory session/containment cache, not an authority-eligibility writer; it is not fenced by the proposed contract |
 | `runtime/daemon/routes/tasks.py:1540 cancel_task` | `POST /api/v1/orgs/{slug}/tasks/{task_id}/cancel`; CLI `happyranch cancel` | `tasks` status/`cancelled_at` + `task_cancelled` audit | reads/invokes `SessionTracker` cancel controls | none (task lifecycle; does not change roster/policy/executor eligibility) | `iter_task_cancel_controls`; `_maybe_post_thread_followup` | `async with org.db_lock` for DB+audit; controls invoked outside lock | none; must not be blocked by template/authority publish | explicitly unsupported/fenced: cancellation is task-lifecycle, not an authority-eligibility writer, so gating it on the workflow generation would be incorrect |
-| `runtime/infrastructure/database.py:4054 try_delegate` / `:3399 try_delegate_many` / `:4157 try_advance_chain` | direct callers `run_step`/`_consume_completion_report` | `tasks`, `chain_state`, delegation rows in org DB | in-memory chain/fanout re-derived | none (delegation/chain transitions) | `_advance_chain_for_completed_child`; parent enqueue | SQLite transactions under `org.db_lock` | none; keep legacy owner | explicitly unsupported/fenced: legacy delegation/chain durable transitions remain separately owned |
+| `runtime/infrastructure/db/tasks.py:1390 try_delegate` / `:1248 try_delegate_many` / `runtime/infrastructure/db/tasks.py:1842 try_advance_chain` | direct callers `run_step`/`_consume_completion_report` | `tasks`, `chain_state`, delegation rows in org DB | in-memory chain/fanout re-derived | none (delegation/chain transitions) | `_advance_chain_for_completed_child`; parent enqueue | SQLite transactions under `org.db_lock` | none; keep legacy owner | explicitly unsupported/fenced: legacy delegation/chain durable transitions remain separately owned |
 | `runtime/skills/custom/service.py:93 current_rules` / `:97 replace_rules` | direct callers skill eligibility routes (`runtime/daemon/routes/custom_skills.py`) | `custom_skill_eligibility_rules` rows (org DB) | resolver policy cache | **skill** eligibility only, not agent/team/policy/executor authority | `runtime/skills/eligibility.py`; `resolver.py` | supersession update + eligibility event insert | none for Phase1 authority | irrelevant: custom-skill eligibility is a separate policy domain and does not change the Phase1 org authority/input contract |
 | `runtime/skills/skill_md.py:83 skill_md_contract_violations` | direct callers skill create/validate paths | none (validation only) | none | none | skill authoring | pure validation | none | irrelevant: static SKILL.md contract validation only |
 | `runtime/skills/canonical_store.py` / `symlink_materializer.py` / `exposure.py` (skill delivery) | session launch materialization (`routes/agents.py` executor switch, task launch seams) | canonical package files + workspace symlinks; ledger | process/resolver caches | none for agent/team/policy authority; may affect delivered skill set | launch materialization; `validate_workspace_skills_integrity` | verify/refuse fail-closed; no authority generation | none unless a skill input changes agent eligibility, which none currently does | irrelevant: skill delivery/materialization is not an org authority-eligibility input in Phase1 |
@@ -794,22 +849,66 @@ the terminal reverse `journal[:6]` is derived from the prior admitted prestate
 and the independently captured publisher invocation. No new schedule was added
 and no row is compared to itself.
 
-**Proposed D2 global profile protocol (concrete).** The proposal selects a
-machine-global coordinator that cannot be represented by the org-scoped pointer
-alone. Proposed (unimplemented) symbols live in
-`runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.register`,
-`.rebind`, `.remove`, `.reconcile`, `.compensate`, `.republish_dependents`) over
-coordinator-owned durable relations in the machine-global store:
+**D2 global profile protocol (concrete; shipped by U2B).** The selected
+machine-global coordinator cannot be represented by the org-scoped pointer
+alone. Production symbols live in
+`runtime/workflows/profile_coordinator.py` (`ProfileCoordinator.operation`,
+`.claimed_operation`, `.dependency_writer`, `.dynamic_org_attachment`,
+`.rebind_consumer`, `.reconcile_startup`) over
+the U1A relations installed in each org database:
 `workflow_profile_store(profile_name, generation, profile_digest, state)`,
 `workflow_profile_registry(profile_name, published_generation)`,
 `workflow_profile_dependencies(org_namespace, profile_name, consumer_identity,
 bound_generation, state)`, `workflow_profile_operations(id, profile_name, operation_kind,
 captured_members, target_generation, state, profile_digest,
 coordinator_invocation, compensation_generation, created_at)`, and
-`workflow_profile_leases(profile_name, owner_token, owner_pid)`. The isolated
-model uses a separate machine-global SQLite file carrying the same proposed
-schema; the dependent-organization authority itself remains exactly the existing
-per-org pointer/journal/lease/canonical-file/cache relations above.
+`workflow_profile_leases(profile_name, owner_token, owner_pid)`. Unlike the
+earlier isolated model's separate SQLite file, production reuses those shipped
+org-local relations and serializes the machine-global edge with stable
+owner-only `fcntl.flock` files under daemon home. Because different profiles
+take different leases but rewrite the same `executor_profiles.yaml`, every
+`save_runtime_profile`/`remove_runtime_profile` mutation also takes one stable
+mode-0600 store-scoped `flock` only around read/merge/`os.replace`. It is an
+innermost leaf: its holder acquires no profile/publication/adapter lock or
+SQLite transaction. No U2B DDL, store file, or authority-layout change is required; the dependent-organization authority
+remains the existing per-org pointer/journal/lease/canonical-file/cache
+relations above.
+
+Approval binds the durable registry target to the profile set selected before
+coordination, including an empty selection for no intended profile. The
+existing adapter writer lock serializes revalidation with supported
+submissions before any approval transition, idempotent return or bind. A
+changed target refuses through existing 409 `profile_consumer_changed`, with
+no adapter/profile mutation and ownership released before fresh selection;
+the writer never acquires another profile lease. A known target under live
+contention remains 409 `profile_coordinator_busy`; stable intended approval
+binds normally, while ordinary no-target approval creates no profile.
+
+The org-local placement replaces the isolated model's single-transaction
+machine-global capture mechanically without weakening fence-before-write: exact
+agent consumers are mirrored at startup and maintained by active Founder
+creation, Founder approval, manager revision-CAS executor update, the dedicated
+executor route and explicit termination. Pending enrollment/rejection is not
+active membership; whole-definition repo/model writers preserve the canonical
+relation as well. Lifecycle leases cover only synchronous canonical changes and
+compensation, releasing before discovery/publication capture or awaited work.
+Startup/dynamic attachment capture canonical roster and authority inputs outside
+leases/transactions, bracket discovery with the existing durable authority
+revision, and revalidate under profile-then-org mutation ownership. Changed
+captures retry boundedly or refuse; synchronization consumes captured inputs
+without rescanning. Publication verifies the complete active requirement set
+against its captured canonical snapshot rather than treating absent dependency
+rows as proof of no requirements. An unfinished ordinary roster batch is refused
+before a global profile claim rather than republished from its predecessor;
+startup authority recovery owns interrupted ordinary batches. The
+`flock` serializes membership
+capture for the selected profile, the same immutable member list and operation
+identity are installed in every captured org before the first fence, and no
+profile-store mutation begins until every captured org is fenced. A crash during
+the per-org row fanout or fence pass leaves enough identical operation data for
+cold reconciliation to complete missing mirrors and fences. The kernel lock is
+the live-owner authority; org-local `workflow_profile_leases` rows are durable
+diagnostics and cannot override kernel-proven dead-owner release.
 
 Operation identity is `id`; the affected-org set's identity is
 `(org_namespace, profile_name)` while the consumer-requirement identity is
@@ -824,11 +923,24 @@ reclaim only) -> short SQLite operation transactions -> per-org
 `workflow_publication_leases` one at a time during the pre-fence pass -> store
 commit -> registry commit -> per-org republish, each under its own publication
 lease **taken while the coordinator lease is still held** -> coordinator
-release. The graph is acyclic: profile lease -> org publication lease; no path
-takes the profile lease while holding an org publication lease, and the
-publication path never acquires the profile lease; the existing callback order
+release. The graph is acyclic: profile lease -> org publication lease ->
+existing writer lock(s) -> executor-profile store lock leaf; no path takes the
+profile lease while holding an org publication lease, and neither publication
+nor store-lock paths acquire a profile lease; the existing callback order
 `org.db_lock -> binding_lease -> synchronized DB callback` is untouched and no
-coordinator spans clone/network/host-launch/callback.
+coordinator spans clone/network/host-launch/callback. Adapter conformance probes
+complete before coordinator entry. Complete-closure publication reuses
+`ExecutorRegistry._resolve_custom_adapter_eligibility`, so registry-object
+presence cannot publish a pending, missing, non-executable, or hash-mismatched
+adapter as ready. A direct-connect projection left `planned` by pre-mutation
+profile contention remains eligible for both a later commit and the production
+sweep. Independent route/sweep contenders acquire the same profile lease and
+re-read the durable projection terminal state before creating a U1A operation
+claim or any fence/mutation; the loser returns that terminal result with zero
+mutation, fence, generation advance, publication, or second committed event.
+The winner's U1A operation/diagnostic-lease rows are durable before adapter or
+profile mutation, and its checked terminal committed transition occurs before
+profile-lease release.
 
 Pre-fencing reuses the proved machinery: for every captured org,
 `fence_authority_namespace` sets the pointer `fenced`, increments the monotonic
@@ -842,7 +954,12 @@ A new-org activation or a rebind/removal is refused with
 `profile_operation_in_progress:<state>` while any non-terminal operation exists
 for either profile; after publication a stale `expected_generation` is refused
 with `profile_generation_stale`, so a late activation can neither escape the
-captured set nor admit stale authority.
+captured set nor admit stale authority. Dynamic attachment scans desired and
+outstanding profiles before taking their canonically ordered leases, retries
+boundedly behind a live owner, synchronizes and publishes while holding those
+leases, and enters the shared org map before release. Complete-closure
+coherence additionally compares every org-local `profile_digest` with the
+current global profile digest before readiness reopens.
 
 Failure handling is forward-only and cold-recoverable. A failure after only some
 org fences leaves `state='fenced'`; a crash after the durable store commit but
@@ -894,19 +1011,17 @@ by construction); the service owns membership truthfulness, capture immutability
 the admission barrier, fence-before-store ordering, forward-only compensation and
 cold reconciliation semantics that SQL alone cannot express.
 
-**Remaining ledger (F4 D, for F6 consolidation).** F4-A effective map: delivered
+**Shipped ledger (F4 D, for F6 consolidation).** F4-A effective map: delivered
 here; owner dev_agent; dependency = current pinned source; verification =
 targeted `rg` citations. F4-B protocol: delivered here; owner dev_agent;
 dependency = D5 protected-choice disposition; verification = independent review.
 F4-C isolated proof: delivered here; owner dev_agent; dependency = ten-path
 evidence radius; verification = focused + all-three-U0 + required local CI.
-F4-D per-delta implementation needs: (1) additive `runtime/workflows/` schema and
-coordinator (production schema/ownership decision); (2) per-org pre-fence wiring
-from the coordinator to real supported writers (needs the supported-writer
-boundary decision); (3) barrier enforcement at every supported activation/rebind
-route (needs route-level implementation review); (4) republish/recovery wiring
-into startup reconciliation (needs old-reader/disable-new-runs decisions). These
-remain unimplemented and are owned by the later protected D5 disposition; F5
+F4-D is implemented by U2A/U2B: the org-scoped authority publisher, org-local
+profile dependency/operation mirrors, same-host profile lease, supported writer
+participation, exact dependent-org pre-fence, coherent republish, and cold
+startup reconciliation now ship. The implementation adds no schema and no
+machine-global SQLite store. F5
 (atomic request/outbox/uncertain launch) and F6 (historical cutover/old-reader,
 disable-new-runs/drain, template namespace/name/version/CAS) remain explicitly
 pending, together with the U1--U6 ledger.
@@ -927,11 +1042,11 @@ acceptance. Evidence remains UNACCEPTED / D5 NOT READY; the study is NOT RUN.
 
 ### 2026-09-21 F4 consolidated correction: membership, validity and stale recovery (TASK-8691)
 
-This subsection is the current normative correction of the proposed D2 global
-profile protocol and supersedes the earlier F4 outline wherever the two differ.
-It remains an unimplemented cooperative proposal plus isolated executable
-evidence; current shipping routes gain none of these guarantees and D5 is not
-approved.
+This subsection is the normative correction of the D2 global profile protocol
+and supersedes the earlier F4 outline wherever the two differ. U2B carries the
+corrected consumer identity, complete-closure, same-host lease, fencing and
+cold-recovery rules into production; the isolated schedules remain provenance
+for those shipped choices. This does not itself approve or ship D5 admission.
 
 **Consumer-requirement identity and honest state.** The isolated fixture's
 `workflow_profile_dependencies` primary key is the tuple `(org_namespace,
@@ -1248,9 +1363,11 @@ compatibility marker/event, and full-layout reopen validator are implemented
 in `runtime/infrastructure/workflow_schema.py` and invoked only by
 `OrgState.load`. U1A does not enable workflow behavior. U1B implements only
 inert immutable template authoring/versioning through the existing U1A tables,
-verified manager-session or Founder-bearer route, and CLI/API reads. Every
-later delta below — activation, authority coordination, dispatch/recovery,
-cutover transitions and workflow execution/operator UI — remains unimplemented.
+verified manager-session or Founder-bearer route, and CLI/API reads. U2A/U2B now supply authority/profile coordination. The cutover prerequisite
+implements `WorkflowCutoverStore` and Founder-only HTTP/CLI/TS methods over the
+unchanged U1A layout. Activation, first-draft persistence/dispatch, callback and
+recovery routing, workflow execution/operator UI and acceptance remain later
+units; this prerequisite is not feature completion.
 No old binary has been changed and no later production compatibility approval
 follows from U1A.
 
@@ -1314,10 +1431,12 @@ after `Database(paths.db_path)` completes all required generic
 preflight/migration owners and before teams/settings/orchestrator loading or
 org attachment. It is never called by `Database.__init__`; therefore
 `runtime-audit.db` and every other generic Database instance remain untouched.
-The legacy authority hook's org-release reference is the sole isolated
-exception: it creates a private temporary generic Database, applies this same
-canonical installer, and hashes the complete resulting `sqlite_master`
-surface. The live-org comparison remains full and fail-closed; no workflow
+The legacy authority hook's complete org-release reference is an isolated
+consumer: it creates a private temporary generic Database, applies this same
+independently constructed canonical F or E layout selected only after
+full live layout/discriminator/history/data validation, and hashes every non-null
+SQL object in the complete resulting `sqlite_master` surface. References cache
+per layout; no candidate-derived baseline is permitted. The live-org comparison remains full and fail-closed; no workflow
 object is filtered, substituted or whitelisted, and no persistent generic or
 runtime-audit store is modified.
 The Database-owned workflow transaction holds the existing RLock and one
@@ -1341,11 +1460,24 @@ event sequence records every transition. The later accepted state vocabulary is:
 
 `installed_legacy_only -> enable_requested -> compatibility_verified -> enabled`
 
-U1A installs and accepts only `installed_legacy_only` generation 1. It neither
-implements nor accepts a cutover transition. Future `enable_requested`
-requires a separately authorized implementation and operation. That later
-cold recovery may advance only an already-authorized request,
-committing compatibility verification before enabled. Reopen and repeated
+U1A installation still writes only `installed_legacy_only` generation1/event1.
+The accepted production cutover chain continues through `disable_requested ->
+draining -> drained` after enabled. `WorkflowCutoverStore.request` authenticates
+at the existing Founder route boundary and commits enable_requested before
+separate short compatibility_verified/enabled commits. Disable similarly commits
+the admission fence before drain. Cold recovery advances an authentic
+committed request only with ready E/G; existing F retains actual history and
+migration guidance without advancement. GET/preflight never advance. Every authoritative reread keeps
+complete canonical layout equality and validates exact contiguous events,
+request operation groups/unique keys, org-bound deterministic canonical UTF8
+SHA256 preimages (fixed Founder request facts and verifier policy plus previous
+digest), marker pointer/time/reason and valid UTC timestamps without monotonic
+wall-clock assumptions. Initial event ID/digest remain shipped bytes; progressed
+histories require actual expected_org_slug, while initial-only release references
+still validate without it. SQLite integrity/FKs and contradictory activation,
+instance, dispatch or recovery-owned work block compatibility before each enable
+transition; inert template/authority/profile foundations are permitted. Failed
+verification leaves the authentic request pending with safe blockers. Reopen and repeated
 recovery are state-idempotent. Interruption before the install commit leaves no
 workflow tables; interruption after any committed enable stage resumes forward
 under the same operation/owner and preserves every template/version/activation/
@@ -1380,8 +1512,10 @@ old binary cannot observe `workflow_cutover_state`, the bridge, activation pins
 or `uncertain`; therefore it cannot be made fail closed by this new protocol.
 The supported operator sequence is: while the current binary still owns the
 store, call the downgrade preflight; proceed only in
-`installed_legacy_only` when no enable history, template version, activation or
-dispatch exists. Once enable was requested or workflow data exists, downgrade
+`installed_legacy_only` on pristine F when no enable history, template version,
+activation or dispatch exists. Every E (migrated or deliberately created) requires
+a compatible reader, even when its business tables are empty. The preceding
+faf40744 reader accepts pristine F and refuses E without workflow mutation. Once enable was requested or workflow data exists, downgrade
 is explicitly unsupported. The operator must retain/start a compatible binary;
 running an old binary anyway is outside the guarantee and may mutate legacy
 tables without understanding workflow ownership.
@@ -1414,24 +1548,27 @@ Disable uses the same marker and begins with an admission fence:
 `request_workflow_disable` commits `disable_requested` before drain work.
 Template activation/template-start and F5 request admission then reject with
 zero residue. Existing history and immutable versions remain readable;
-publication alone remains allowed. During `draining`:
+publication alone remains allowed. During `draining`, the production store reads consistent F5 outbox plus
+operation/request/bridge closure and projects incomplete/uncertain work as
+reconciliation_required. Cancellation effects in retained U0 helpers are
+isolated evidence and deferred U2D/U4/U5 work, not production cutover effects:
 
 | F5 durable state | Allowed action | Owner / drain effect |
 | --- | --- | --- |
-| `queued` | cancel before launch | cutover reconciler; terminal history retained |
-| `claimed`, `host_launch_started=0` | cancel before launch | cutover reconciler; no effect row |
+| `queued` | cancel before launch | actual dispatch/recovery owner; cancellation deferred U2D/U4 |
+| `claimed`, `host_launch_started=0` | cancel before launch | actual dispatch/recovery owner; cancellation deferred U2D/U4 |
 | `claimed`, `host_launch_started=1` | reconcile possible host effect | operator; blocks drained |
 | `running` | exact callback reconciliation or supervised cancellation | callback/cancellation owner; blocks drained |
 | `uncertain` | explicit supported host reconciliation or `confirmed_no_launch` disposition | operator; never retryable; blocks drained |
 | `cancelled` / `completed` | history/read only | terminal; does not block drained |
 
-`project_workflow_drain` reports exact outbox state, responsible owner, stored
-owner and required action. It never calls `running`/`uncertain` complete or
-retryable. `advance_workflow_drain` cancels only queued and provably prelaunch
-claimed work; it declares `drained` only when no nonterminal outbox remains.
-Restart/reopen preserves the marker and projection. Legacy startup and workflow
-recovery cannot both launch one work item because the bridge-derived claim is
-exclusive before enqueue/effect.
+The retained isolated `project_workflow_drain`/`advance_workflow_drain` helpers
+model later cancellation and recovery. Production `WorkflowCutoverStore` never
+cancels, launches or settles tasks/outboxes, and never repairs a closure. Empty
+validated work can drain; nonterminal/incomplete work retains actual owner and
+required deferred action. Restart/reopen preserves authentic marker/history.
+Actual bridge-derived legacy/workflow startup exclusion remains U2D/U5 work,
+not a shipping claim from the isolated helper.
 
 ### Executable requirement map
 
@@ -1487,16 +1624,143 @@ concurrent publishers/recovery claimants, activation pinning, every drain state,
 downgrade refusal and public pending/error behavior. Exact current production
 symbols and hashes are recorded in TASK-8859 Native Impact Evidence.
 
-U1A additive schema/initial compatibility installation is implemented as a
-candidate; it does not implement the F4 coordinator. F4-D remains pending for
-supported-writer pre-fences, route barriers and startup republish. F5 remains delivered only as
+U1A additive schema/initial compatibility installation and U2A/U2B coordinated
+authority/profile foundations are implemented. Their accepted independent
+evidence remains historical; it is not cutover acceptance. F5 remains delivered only as
 an isolated request/task/outbox/uncertain-launch contract; its six production
 deltas remain protected. F6 now supplies the recommended compatibility/cutover
-decision and proof. U1B ships D1 authoring only; every post-install cutover
-transition, D2 activation authority, naming-reservation policy, U2-U6 production
-implementation, and the applicable independent review/QA/CI gates remain
-pending. Comparative study
+decision and proof. U1B ships D1 authoring. The existing-schema cutover prerequisite now supplies
+request/replay/verification, truthful deferred drain and pristine-only downgrade
+preflight. S1 now supplies the explicit org-only draft migration, complete E fresh creation
+and F/E readiness/closure validation. D2 activation, initial-draft production, U2D-U6 execution and separate actual
+Founder Request changes/Sign off/operator acceptance remain pending, as do this
+cutover head's independent FULL review/executable QA/exact-head CI gates. Comparative study
 is **NOT RUN** and off the critical path; exhaustive Phase2 fanout, general
 fork/join, pipeline carriers and coding migration remain out of scope. Evidence
 remains **UNACCEPTED / D5 NOT READY** until independent gates and Founder
 disposition.
+
+A genuinely empty default org remains attached with no agents and `teams=[]`
+when its initial authority publication is fenced by the missing default reviewer.
+Attachment proves absence of active and pending definitions and canonical/in-memory
+teams outside leases and transactions, brackets that discovery with the durable
+revision, and validates it under profile-then-org ownership. It preserves the
+initial fenced generation and publication journal; `verify_admission_ready()`
+still refuses `authority_pointer_not_ready`. Outstanding dependency or profile
+operation evidence, unfinished canonical writers, and stale captures refuse this
+exception before synchronization. Reviewer policy and snapshot validation do not
+change; subsequent coherent canonical setup uses ordinary publication/recovery.
+
+
+### 2026-10-05 S1 manual migration amendment (THR139 seq372/374, manager375)
+
+F is the unchanged U1A foundation; E is F plus the exact reviewed TASK9655
+three-table/six-explicit-index draft extension (SQL SHA256
+078706fa690f72038c8fedcc3b46331e6fc6cc61705f3f2054bc70f9e411cc62), its automatic
+constraint indexes and version1 marker. The original foundation DDL, versions,
+column meanings and initial cutover event are preserved. Complete F/E validation
+compares independently constructed whole layouts and retained history/data;
+partial/unknown objects are never adopted or repaired. The draft marker alone
+is structural metadata; retained intents/events and result closure are work.
+Queued attempts must cancel before retirement; running/uncertain/cancel-pending
+history cannot be hidden by a current/terminal pointer. S1 validators and
+SQL-seeded cases are not activation, host execution, callback or S2 acceptance.
+
+Existing databases never acquire E on startup/reopen/enable. An operator uses
+`python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root>
+--org <slug> [--check]` against the validated actual org DB. It does not instantiate
+generic Database merely to inspect/migrate. Full validation precedes DDL; one
+writer transaction installs only the extension/marker and validates E before
+commit. Replay on populated E is a no-op. Check is read-only: ready0,
+migration-needed3, refusal1, parser2. Contention is bounded and refusal/rollback
+preserves original data and files; crash journals/SQLite WAL sidecars are not
+workflow schema. No live execution is authorized by script publication.
+
+Deliberate POST /orgs creation now proves its newly created skeleton before complete
+G initialization and attachment (the G ruling supersedes the S1 fresh-E target only), using existing cleanup ownership. Generic
+Database/runtime-audit remain workflow-free. F legacy work remains loadable with
+actual script guidance; missing readiness never mints enable/reconciliation
+events. E requires a compatible reader in all cases; no extension stripping or
+old-reader compatibility claim applies to E. Full independent review, executable
+QA and exact-head CI remain required; activation/dispatch and U3-U6/operator
+acceptance remain later units.
+
+### S2 current source — Founder activation and authentic first draft
+
+This current source disposition supersedes older dependency statements above
+that activation is inert/zero-task, that root IDs can be arbitrary, or that
+existing-org enable installs E. Accepted earlier design/evidence remains history.
+S1 manual migration, whole-layout oracle/validation and cutover meanings are
+unchanged. `WorkflowActivationStore` is directly attached and consumed by the
+three Founder activation methods and CLI documented in web-and-cli.md; strict
+closed request/response fields are also in OpenAPI and the TS mirror.
+
+The instance is org plus caller reference. Initial revision/attempt/assignment
+is1, with the real unchanged MAX-allocated author task inserted in the same
+writer as authorization/binding/context, immutable activation/current pointer,
+actor/org/key operation, intent and admitted event. Admission has no session,
+result or host identity. Historical replay authenticates the original closure
+before mutable eligibility/CAS/cutover gates and preserves root/pins/time; current
+eligibility is separate. New admission notifies only after commit; historical
+replay does not notify. Startup and periodic live discovery may re-notify the same
+authenticated queued/no-launch task after lost notification or author-capacity
+refusal. Periodic eligibility checks use the existing authority fences, with
+queue deduplication after every lease releases. Claim/prelaunch remain final
+arbitration; no new task, assignment generation, attempt or busy retry loop is
+created. Publication
+of another template version grants neither assignment nor retargeting.
+
+The bounded author, including a manager, has document responsibility only.
+Exclusive draft/F5 classification precedes legacy startup/run_step/completion/
+cancel/reaper/portability effects; malformed/dual ownership requires reconciliation.
+Actual existing orchestrator host seams supply session, possible-launch reservation,
+genuine bound RunningHandle, and finalized outcome/receipt evidence. Session alone
+is not observed launch. Callback/result/event commits atomically using the actual
+INTEGER result owner and both full-payload retry seams. Draft completion requires
+that authentic result plus finalized host quiescence; SQL completed-event result_id
+stays NULL with result closure retained in canonical event bytes. Cancellation
+fences before containment; no PID/TTL-based quiescence or blind possible-launch
+retry is permitted. Missing acknowledgment/callback/quiescence stays owned
+uncertain and blocks drain. No host exactly-once claim follows.
+
+S2 source implementation is not acceptance or deployment. Independent full review,
+focused executable QA, exact-head local/hosted CI and selected hosted callback
+remain mandatory. U3 immutable submission/concurrent reviews, U4/U5 revision/
+replacement operations and U6 mounted UI/operator acceptance remain separate,
+including distinct actual Founder Request changes and Sign off observations.
+
+
+### THR-139 seq410: generic finite templates through initial drafting
+
+The first bounded generic correction supports document-review schema2 with an
+abstract agent author and 1–3 reviewers, at most one existing Founder human,
+immutable-document-revision/output description, exact all/current membership,
+approved and optional changes_requested, null return or the exact
+return-to-author/new/all-prior-receipts rule, and on-completion or
+while-active-or-completed submission capability. Product-three retains the
+Founder395 behavior as immutable template policy. A differently named proposal
+with one human reviewer, approval-only null return, and agent-only zero-human
+review use the same compiler, activation and draft owners. Labels and counts
+provide no principal, grant, code authority or engineering-gate exception.
+
+Every new format uses exactly workflow-compiler@2/workflow-validator@2/operator-input@2.
+New activation request/receipt, authorization, binding and draft context use @2;
+context freezes raw definition and normalized document contract. Author allocation,
+input-recipient filtering, admission and prelaunch consume that immutable policy.
+Current canonical membership, independence, authority/profile/capacity and lease
+fences still apply. Read/replay retains exact historical version/pins/publication,
+never the current pointer or numerical identity version as format selector.
+Legacy @1 bytes, brief, digests, serialization and completed interpretation remain.
+All-draft/all-version DATA/PIN validation is format-aware without DDL/layout/reference
+or marker changes. A pre-generic reader refuses any @2 data; compatible readers
+are required and no earlier-reader downgrade promise/history rewriting follows.
+Existing-org migration remains explicit and fresh-org initialization unchanged.
+
+The endpoint is authentic initial author draft completion with a genuine bound
+session, INTEGER result and finalized host quiescence through existing owners.
+The contract grants future submission timing capability; active product submission
+is never an unconditional current author obligation. No immutable submission,
+request/receipt/join/finalizer, revision, mounted UI or whole-Phase1 acceptance
+is delivered by this boundary. Independent full-diff review, executable QA,
+exact-head local/hosted checks and callback remain gates; source is not deployment,
+operator person-action evidence or feature completion.

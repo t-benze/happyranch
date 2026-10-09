@@ -102,11 +102,19 @@ describe('AssistantSection i18n (W2c)', () => {
 
     await user.click(await screen.findByRole('button', { name: '重新配置…' }));
     const dialog = await screen.findByRole('dialog', { name: '要重新配置助手吗？' });
+    const close = within(dialog).getByRole('button', { name: '关闭' });
     expect(
       within(dialog).getByText('这会关闭所有打开的助手会话并清除已保存的配置。你需要重新注册执行器。'),
     ).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '取消' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '重新配置' })).toBeInTheDocument();
+    close.focus();
+    act(() => setLocaleRef?.('en'));
+    expect(within(dialog).getByRole('button', { name: 'Close' })).toBe(close);
+    expect(close).toHaveFocus();
+    act(() => setLocaleRef?.('zh-CN'));
+    expect(within(dialog).getByRole('button', { name: '关闭' })).toBe(close);
+    expect(close).toHaveFocus();
   });
 
   test('zh-CN stale: raw daemon detail is preserved verbatim next to translated copy', async () => {

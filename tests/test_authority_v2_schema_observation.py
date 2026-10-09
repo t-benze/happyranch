@@ -328,3 +328,57 @@ def test_permission_surface_drift_still_refuses_historical_claim_audit(tmp_path)
 
     assert outcome.status == "refused"
     assert outcome.refusal_code == "evidence_drift"
+
+
+@pytest.mark.parametrize('layout', ['E', 'G'])
+def test_complete_e_real_v2_claim_continues_and_keeps_observation_diagnostic(tmp_path, monkeypatch, layout) -> None:
+    from runtime.infrastructure.workflow_schema import install_or_recover, migrate_draft_schema
+    store, _, _, row, attempt = _admit_historical(tmp_path)
+    db = store._db
+    try:
+        install_or_recover(db,expected_org_slug='test-org')
+        with db.workflow_schema_transaction() as conn:
+            migrate_draft_schema(conn,expected_org_slug='test-org')
+        if layout == 'G':
+            import sqlite3
+            from runtime.infrastructure.workflow_schema import migrate_submission_schema
+            with sqlite3.connect(db.path) as writer:
+                writer.execute('PRAGMA foreign_keys=ON')
+                migrate_submission_schema(writer, expected_org_slug='test-org')
+        observed = authority.capture_authority_policy_v2_schema_observation(db)
+        assert observed is not None
+        db.bind_authority_policy_v2_process_boot_id(attempt.origin_boot_id)
+        _log_ordinary_completion(db,row['id'])
+        def forbidden_reference(*args, **kwargs):
+            raise AssertionError('observed-only v2 cannot compare legacy release references')
+        monkeypatch.setattr(authority,'_release_schema_digest',forbidden_reference)
+        real_claim = db.claim_authority_policy_v2_candidate
+        claims = []
+
+        def observe_real_claim(**kwargs):
+            # Observe a committed production claim; the hook supplies its own
+            # permission and fact identities for the subsequent real audit.
+            outcome = real_claim(**kwargs)
+            claims.append(outcome)
+            assert outcome.status == 'claimed'
+            candidate = store.get_v2_candidate_for_result(row['id'])
+            assert candidate.schema_raw_digest == observed.raw_digest
+            assert candidate.schema_inventory_digest == observed.inventory_digest
+            assert candidate.schema_object_count == observed.object_count
+            db.execute('CREATE TABLE observed_after_e_claim (id INTEGER)')
+            db._conn.commit()
+            return outcome
+
+        monkeypatch.setattr(db, 'claim_authority_policy_v2_candidate', observe_real_claim)
+        outcome,_ = _run_hook(store,row,queue=_RecordingQueue())
+        assert outcome == HOOK_V2_CONTINUED, _refusal_snapshot(db, row['id'])
+        assert len(claims) == 1
+        persisted = store.get_v2_candidate_for_result(row['id'])
+        assert persisted.schema_raw_digest == observed.raw_digest
+        assert persisted.schema_inventory_digest == observed.inventory_digest
+        assert persisted.schema_object_count == observed.object_count
+        final = db.get_authority_policy_v2_attempt_for_result(row['id'])
+        assert final.stage == 'consumed_audited' and final.finalization_state == 'continued'
+        assert db.get_task(TASK_ID).status is TaskStatus.PENDING
+    finally:
+        db.close()

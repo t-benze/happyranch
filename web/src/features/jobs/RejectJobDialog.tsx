@@ -57,7 +57,7 @@ export function RejectJobDialog({ jobId, open, onClose, onSuccess }: Props): JSX
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent>
+      <DialogContent closeLabel={t('common.close')}>
         <DialogHeader>
           <DialogTitle className="font-display">{t('jobs.reject.title', { jobId })}</DialogTitle>
           <DialogDescription className="sr-only">

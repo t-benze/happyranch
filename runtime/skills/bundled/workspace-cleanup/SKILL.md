@@ -386,8 +386,25 @@ the same action-time gates.
 ## Reporting
 
 Complete through the normal task contract, creating `output/<task_id>/` with
-`inventory.json`, `final-ledger.jsonl`, and `report.md` (measured sizes, exact
-removals or zero removals, skips and reasons, and any ambiguity), and report to
-the founder in the per-agent cleanup thread. The durable batch journal is the
-ordered source for `final-ledger.jsonl`; preserve each literal argv, timestamps,
-exit status, parsed receipt or malformed raw output, and stop reason.
+`inventory.json`, `final-ledger.jsonl`, and `report.md`. Routine scheduled and
+exact-marker manual cleanup results remain durable on the existing agent page
+through normal task completion/results. Do not create cleanup-report threads or
+post routine cleanup results to threads. There is no routine thread reuse obligation. Preserve all historical threads,
+messages, associations, results and audits. Explicit founder-requested coordination
+and required callbacks remain.
+
+Three supporting indexes accelerate the existing read-only cleanup projection.
+They do not backfill history, increment daemon count or grant cleanup authority.
+
+Report actual removed/skipped counts and reasons, measured sizes, allocated and
+apparent bytes separately, unknown unique reclaimed bytes, failures, partial
+outcomes and independent verification gaps honestly in summary and risks. Never
+turn unavailable measurement or an unverified outcome into zero or success.
+The durable batch journal is the ordered source for `final-ledger.jsonl`;
+preserve each literal argv, timestamps, exit status, native parsed receipt or
+malformed raw output, and stop reason/stop facts.
+
+Use the normal task-owner or subtask summary protocol and submit
+`happyranch report-completion --org <slug> --from-file <ABSOLUTE_PAYLOAD_PATH>`
+with the current session binding as the final action. Artifact writing alone is
+not completion. Truthful anomalies and required escalations remain.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 from unittest.mock import patch
 
@@ -48,27 +49,38 @@ def test_list_agents_returns_names(tmp_home, app, org_state, auth_headers) -> No
 def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     app, daemon_state, org_state, auth_headers,
 ) -> None:
-    """The activity read uses trigger audits, before its five-row limit."""
+    """Audited history and exact manual rows union before the five-row limit."""
     _seed_active_agent(org_state, "dev_agent")
     _seed_active_agent(org_state, "qa_engineer")
+    _authority_generation(org_state)
     db = org_state.db
+    def read_twice(path, *, headers):
+        first = TestClient(app).get(path, headers=headers)
+        second = TestClient(app).get(path, headers=headers)
+        assert first.status_code == second.status_code == 200
+        assert first.json() == second.json()
+        return first
     # Seed directly so this test exercises the projection without invoking a
     # lifecycle writer.  The same trigger twice must not displace TASK-4.
     for index in range(1, 7):
         task_id = f"TASK-{index}"
         db._conn.execute(
             "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, "dev_agent", "failed", "cleanup", f"2026-01-0{index}T00:00:00+00:00", f"2026-01-0{index}T00:00:00+00:00"),
+            (task_id, "dev_agent", "failed", "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\nmanual report" if index == 5 else "cleanup", f"2026-01-0{index}T00:00:00+00:00", f"2026-01-0{index}T00:00:00+00:00"),
         )
-        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+        if index != 5:
+            db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+    # TASK-6 qualifies both ways; duplicate audit rows still cannot displace peers.
+    db._conn.execute("UPDATE tasks SET brief=? WHERE id='TASK-6'", ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\nmanual report",))
     db.insert_audit_log("TASK-6", "dev_agent", "workspace_cleanup_triggered", None)
     # Equal run dates use immutable task ID as the stable descending tie-breaker.
     for task_id in ("TASK-TIE-A", "TASK-TIE-B"):
         db._conn.execute(
             "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (task_id, "dev_agent", "completed", "cleanup", "2026-03-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00"),
+            (task_id, "dev_agent", "completed", "HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\r\nmanual report" if task_id == "TASK-TIE-A" else "cleanup", "2026-03-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00"),
         )
-        db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
+        if task_id != "TASK-TIE-A":
+            db.insert_audit_log(task_id, "dev_agent", "workspace_cleanup_triggered", None)
     db._conn.execute(
         "INSERT INTO tasks (id, assigned_agent, status, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         ("TASK-wrong", "qa_engineer", "completed", "cleanup", "2026-02-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00"),
@@ -103,7 +115,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     )
     db._conn.execute(
         "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        ("TASK-6", "dev_agent", "sess-6-new", "blocked", "latest matching summary", "2026-01-07T00:00:00+00:00"),
+        ("TASK-6", "dev_agent", "sess-6-new", "blocked", "latest matching summary", "2025-01-07T00:00:00+00:00"),
     )
     db._conn.execute(
         "INSERT INTO task_results (task_id, agent, session_id, status, output_summary, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -119,7 +131,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     )
     db._conn.commit()
     before = db._conn.total_changes
-    response = TestClient(app).get(
+    response = read_twice(
         "/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers,
     )
     assert response.status_code == 200
@@ -137,7 +149,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     assert response.json()["activities"][4]["result_status"] == "failed"
     assert response.json()["activities"][4]["output_summary"] == ""
     assert db._conn.total_changes == before
-    alpha_qa_response = TestClient(app).get(
+    alpha_qa_response = read_twice(
         "/api/v1/orgs/alpha/agents/qa_engineer/cleanup-activity", headers=auth_headers,
     )
     assert alpha_qa_response.status_code == 200
@@ -152,8 +164,24 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     # database, rather than merely filtering foreign rows in alpha.
     beta_root = daemon_state.runtime.orgs_dir / "beta"
     (beta_root / "org" / "agents").mkdir(parents=True)
-    (beta_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    # Dynamic attachment validates the complete canonical roster before ready
+    # publication. Give beta real managers/workers/reviewers, as alpha has.
+    alpha_paths = _paths(org_state)
+    (beta_root / "org" / "teams.yaml").write_bytes(
+        alpha_paths.teams_config_path.read_bytes()
+    )
+    for agent_file in alpha_paths.agents_dir.glob("*.md"):
+        (beta_root / "org" / "agents" / agent_file.name).write_bytes(
+            agent_file.read_bytes()
+        )
     beta = asyncio.run(daemon_state.add_org("beta"))
+    attached_snapshot = json.loads(
+        beta.workflow_authority.verify_admission_ready().snapshot_bytes
+    )
+    assert {agent["name"] for agent in attached_snapshot["agents"]} >= {
+        "dev_agent", "qa_engineer", "code_reviewer", "senior_dev",
+    }
+    assert attached_snapshot["org_slug"] == "beta"
     _seed_active_agent(beta, "dev_agent")
     _seed_active_agent(beta, "qa_engineer")
     beta.db._conn.execute(
@@ -168,7 +196,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
     beta.db.insert_audit_log("TASK-BETA-DEV", "dev_agent", "workspace_cleanup_triggered", None)
     beta.db._conn.commit()
     beta_before = beta.db._conn.total_changes
-    beta_response = TestClient(app).get(
+    beta_response = read_twice(
         "/api/v1/orgs/beta/agents/qa_engineer/cleanup-activity", headers=auth_headers,
     )
     assert beta_response.status_code == 200
@@ -178,7 +206,7 @@ def test_cleanup_activity_is_agent_scoped_deduplicated_and_read_only(
         "result_status": None, "output_summary": None,
     }]
     assert beta.db._conn.total_changes == beta_before
-    beta_dev_response = TestClient(app).get(
+    beta_dev_response = read_twice(
         "/api/v1/orgs/beta/agents/dev_agent/cleanup-activity", headers=auth_headers,
     )
     assert beta_dev_response.status_code == 200
@@ -699,7 +727,7 @@ def test_manage_repo_add_passes_provider_from_agent_def(
 def test_manage_repo_refreshes_bootstrap_inputs_after_clone_winner(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """A real accepted update wins while the shipping clone is suspended."""
+    """A queued accepted update wins after the retained clone/bootstrap interval."""
     from runtime.daemon.routes import agents as agents_mod
     from runtime.orchestrator import prompt_loader
 
@@ -733,15 +761,16 @@ def test_manage_repo_refreshes_bootstrap_inputs_after_clone_winner(
             await asyncio.wait_for(arrived.wait(), timeout=1)
             revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
             assert revision is not None
-            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+            winner_request = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
                 action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
                 expected_revision=revision, system_prompt="winner prompt\n",
                 description="winner", executor="codex", model="winner-model",
                 repos={"winner": "/winner"},
-            ), org_state) == {"ok": True}
-            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
+            ), org_state))
             release.set()
-            assert await asyncio.wait_for(repo_task, timeout=1) == {"ok": True}
+            assert await asyncio.wait_for(repo_task, timeout=10) == {"ok": True}
+            assert await asyncio.wait_for(winner_request, timeout=10) == {"ok": True}
+            winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
             assert (_paths(org_state).agents_dir / "dev_agent.md").read_bytes() == winning_bytes
 
         _activate_eh_session(org_state)
@@ -1698,6 +1727,19 @@ def test_manage_agent_update_executor_regenerates_bootstrap(
         )
     )
 
+    from runtime.orchestrator.adapter_store import AdapterEntry, save_adapter
+    executable = tmp_home / "testcustom-adapter"
+    executable.write_text("#!/bin/sh\ncat\n")
+    executable.chmod(0o700)
+    save_adapter(AdapterEntry(
+        id="testcustom", name="testcustom", executable=str(executable),
+        executable_hash=hashlib.sha256(executable.read_bytes()).hexdigest(),
+        version="1.0.0", capabilities=[], contract_version=1,
+        workspace_adapter="pi", status="approved",
+        registered_at="2026-10-03T00:00:00+00:00", registered_by="test",
+        approved_at="2026-10-03T00:00:00+00:00", approved_by="test",
+    ))
+
     with patch("runtime.daemon.routes.agents.ContextBuilder") as MockCB:
         mock_ctx = MockCB.return_value
         mock_ctx.ensure_workspace_ready.return_value = None
@@ -1858,7 +1900,7 @@ def test_approve_agent_bootstraps_workspace(
 def test_approve_agent_refreshes_bootstrap_inputs_after_clone_winner(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """A real accepted update wins after exact pending-to-active promotion."""
+    """A queued accepted update wins after promotion and retained bootstrap."""
     from datetime import datetime, timezone
     from runtime.daemon.routes import agents as agents_mod
     from runtime.orchestrator.agent_def import AgentDef
@@ -1899,15 +1941,16 @@ def test_approve_agent_refreshes_bootstrap_inputs_after_clone_winner(
             _activate_eh_session(org_state)
             revision = prompt_loader.agent_revision(paths, "fresh_approval")
             assert revision is not None
-            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+            winner_request = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
                 action="update", name="fresh_approval", task_id=_EH_TASK,
                 session_id=_EH_SESSION, expected_revision=revision,
                 system_prompt="winner prompt\n", executor="codex",
                 description="winner", repos={"winner": "/winner"},
-            ), org_state) == {"ok": True}
-            winning_bytes = (paths.agents_dir / "fresh_approval.md").read_bytes()
+            ), org_state))
             release.set()
-            assert await asyncio.wait_for(approve, timeout=1) == {"ok": True}
+            assert await asyncio.wait_for(approve, timeout=10) == {"ok": True}
+            assert await asyncio.wait_for(winner_request, timeout=10) == {"ok": True}
+            winning_bytes = (paths.agents_dir / "fresh_approval.md").read_bytes()
             assert (paths.agents_dir / "fresh_approval.md").read_bytes() == winning_bytes
 
         asyncio.run(exercise())
@@ -3028,7 +3071,29 @@ def test_set_executor_accepts_registered_custom_profile_via_route(
     """A registered custom executor profile must be accepted by the real
     PUT /agents/{agent}/executor route end-to-end — authentication, body
     handling, validation, and persistence included."""
+    from runtime.orchestrator.adapter_store import AdapterEntry, save_adapter
     from runtime.orchestrator.executor_registry import ExecutorProfile, get_registry
+
+    executable = tmp_home / "testcustom-adapter"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    save_adapter(
+        AdapterEntry(
+            id="testcustom",
+            name="testcustom",
+            executable=str(executable),
+            executable_hash=hashlib.sha256(executable.read_bytes()).hexdigest(),
+            version="1.0.0",
+            capabilities=[],
+            contract_version=1,
+            workspace_adapter="pi",
+            status="approved",
+            registered_at="2026-10-01T00:00:00+00:00",
+            registered_by="test",
+            approved_at="2026-10-01T00:00:00+00:00",
+            approved_by="test",
+        )
+    )
 
     registry = get_registry()
     registry.register_custom_profile(
@@ -3106,7 +3171,7 @@ def test_set_executor_switches_org_and_workspace(
 def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """A real accepted update wins while the shipping switch is suspended."""
+    """Queued CAS refuses its stale base; explicit fresh reapply preserves the executor winner."""
     from fastapi import HTTPException
     from runtime.daemon.routes import agents as agents_mod
     from runtime.orchestrator import prompt_loader
@@ -3134,14 +3199,23 @@ def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields
             await arrived.wait()
             revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
             assert revision is not None
-            winner = await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+            winner_request = asyncio.create_task(agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
                 action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
                 expected_revision=revision, system_prompt="winner prompt\n",
                 repos={"happyranch": "/winner"}, description="winner description",
-            ), org_state)
-            assert winner == {"ok": True}
+            ), org_state))
             release.set()
-            assert (await switch)["after"]["org_executor"] == "pi"
+            assert (await asyncio.wait_for(switch, 10))["after"]["org_executor"] == "pi"
+            with pytest.raises(HTTPException) as conflict:
+                await asyncio.wait_for(winner_request, 10)
+            assert conflict.value.status_code == 409
+            assert conflict.value.detail["code"] == "stale_agent_revision"
+            fresh_revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
+            assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
+                action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
+                expected_revision=fresh_revision, system_prompt="winner prompt\n",
+                repos={"happyranch": "/winner"}, description="winner description",
+            ), org_state) == {"ok": True}
         _activate_eh_session(org_state)
         asyncio.run(exercise())
     updated = prompt_loader.load_agent(_paths(org_state), "dev_agent")
@@ -3160,7 +3234,7 @@ def test_set_executor_refreshes_after_materialization_and_preserves_newer_fields
 def test_set_executor_rejects_competing_executor_after_materialization(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """A competing accepted executor update wins; stale switch has no audit."""
+    """An externally detected executor winner survives; stale switch has no audit."""
     from fastapi import HTTPException
     from runtime.daemon.routes import agents as agents_mod
     from runtime.orchestrator import prompt_loader
@@ -3183,9 +3257,15 @@ def test_set_executor_rejects_competing_executor_after_materialization(
         await arrived.wait()
         revision = prompt_loader.agent_revision(_paths(org_state), "dev_agent")
         assert revision is not None
-        assert await agents_mod.manage_agent("alpha", agents_mod.ManageAgentBody(
-            action="update", name="dev_agent", task_id=_EH_TASK, session_id=_EH_SESSION,
-            expected_revision=revision, executor="codex"), org_state) == {"ok": True}
+        # External mutation is a controlled fault injection, not a supported
+        # writer permitted to enter the held process interval.
+        from dataclasses import replace
+        from runtime.orchestrator.agent_def import render_agent_text
+        current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+        assert current is not None
+        (_paths(org_state).agents_dir / "dev_agent.md").write_text(
+            render_agent_text(replace(current, executor='codex')), encoding="utf-8",
+        )
         winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
         release.set()
         with pytest.raises(HTTPException) as raised:
@@ -3197,22 +3277,20 @@ def test_set_executor_rejects_competing_executor_after_materialization(
         MockCB.return_value.ensure_workspace_ready.return_value = None
         asyncio.run(exercise())
         calls = MockCB.return_value.ensure_workspace_ready.call_args_list
-        assert len(calls) == 1
-        assert calls[0].args[2] == "prompt\n"
-        assert calls[0].kwargs["provider"] == "codex"
+        assert calls == []
     winner_def = prompt_loader.load_agent(_paths(org_state), "dev_agent")
     assert winner_def is not None and winner_def.executor == "codex"
-    assert len([r for r in org_state.db.get_audit_logs(_EH_TASK) if r["action"] == "agent_managed"]) == 1
+    assert not org_state.db.get_audit_logs(_EH_TASK)
     assert not org_state.db.get_audit_logs("founder")
-    # The only bootstrap is the accepted winner's update; the rejected loser
-    # must not materialize its stale executor profile.
+    # The external winner has no route audit/bootstrap; the rejected switch
+    # must not write its stale executor workspace.
     assert not (workspace / "AGENTS.md").exists()
 
 
 def test_set_executor_rejects_model_only_winner_after_materialization(
     tmp_home, app, org_state, auth_headers, monkeypatch,
 ) -> None:
-    """A model-only shipping update fences a suspended executor switch."""
+    """An externally detected model winner fences a suspended executor switch."""
     from fastapi import HTTPException
     from runtime.daemon.routes import agents as agents_mod
     from runtime.orchestrator import prompt_loader
@@ -3237,9 +3315,15 @@ def test_set_executor_rejects_model_only_winner_after_materialization(
                 "alpha", "dev_agent", agents_mod.SetExecutorBody(executor="pi"), org_state,
             ))
             await arrived.wait()
-            assert await agents_mod.set_agent_model(
-                "alpha", "dev_agent", agents_mod.SetModelBody(model="winner-model"), org_state,
-            ) == {"agent": "dev_agent", "before": "old-model", "after": "winner-model"}
+            # External mutation is a controlled fault injection, not a supported
+            # writer permitted to enter the held process interval.
+            from dataclasses import replace
+            from runtime.orchestrator.agent_def import render_agent_text
+            current = prompt_loader.load_agent(_paths(org_state), "dev_agent")
+            assert current is not None
+            (_paths(org_state).agents_dir / "dev_agent.md").write_text(
+                render_agent_text(replace(current, model='winner-model')), encoding="utf-8",
+            )
             winning_bytes = (_paths(org_state).agents_dir / "dev_agent.md").read_bytes()
             release.set()
             with pytest.raises(HTTPException) as raised:
@@ -3255,7 +3339,7 @@ def test_set_executor_rejects_model_only_winner_after_materialization(
     assert winner.executor == "claude"
     assert winner.model == "winner-model"
     audits = org_state.db.get_audit_logs("founder")
-    assert len([row for row in audits if row["action"] == "agent_managed"]) == 1
+    assert not audits
 
 
 def test_set_executor_rejects_disappeared_agent_after_materialization(
@@ -8598,3 +8682,51 @@ def test_executor_switch_inner_pair_compensation_failure_is_caller_safe(
     _assert_exact_skill_root(
         org_state, workspace, ".agents/skills", present=True,
     )
+
+
+@pytest.mark.parametrize("brief,visible", [
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", True),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\nbody", True),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\r\nbody", True),
+    ("body\nHAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", False),
+    (" HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch) \nbody", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch) suffix", False),
+    ("happyranch system workspace cleanup run (manual-dispatch)", False),
+    ("\nHAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (daemon-triggered)", False),
+    ("HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)\rbody", False),
+])
+def test_cleanup_activity_exact_manual_first_line(app, org_state, auth_headers, brief, visible):
+    from runtime.models import TaskRecord
+    _seed_active_agent(org_state, "dev_agent")
+    _authority_generation(org_state)
+    db = org_state.db
+    db.insert_task(TaskRecord(id="TASK-1", brief=brief, team="engineering", assigned_agent="dev_agent"))
+    before = db._conn.total_changes
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers)
+    assert r.status_code == 200
+    assert [a["task_id"] for a in r.json()["activities"]] == (["TASK-1"] if visible else [])
+    assert db._conn.total_changes == before
+    assert db.get_audit_logs("TASK-1") == []
+
+
+@pytest.mark.parametrize("result_status,summary", [(None, None), ("completed", None), ("failed", ""), ("blocked", "   ")])
+def test_cleanup_activity_preserves_missing_null_blank_and_failure(app, org_state, auth_headers, result_status, summary):
+    from runtime.models import TaskRecord
+    _seed_active_agent(org_state, "dev_agent")
+    _authority_generation(org_state)
+    db = org_state.db
+    db.insert_task(TaskRecord(id="TASK-1", brief="HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)", team="engineering", assigned_agent="dev_agent"))
+    if result_status:
+        db.insert_task_result("TASK-1", "dev_agent", "older-session", "older nonblank report", 80)
+        db._conn.execute("INSERT INTO task_results (task_id,agent,session_id,status,output_summary,created_at) VALUES ('TASK-1','dev_agent','sess-1',?,?,'2026-01-01T00:00:00+00:00')", (result_status, summary))
+        db._conn.commit()
+    before = db._conn.total_changes
+    r = TestClient(app).get("/api/v1/orgs/alpha/agents/dev_agent/cleanup-activity", headers=auth_headers)
+    assert r.status_code == 200
+    assert len(r.json()["activities"]) == 1
+    row = r.json()["activities"][0]
+    assert row["result_status"] == result_status
+    assert row["output_summary"] == summary
+    assert db._conn.total_changes == before

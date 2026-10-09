@@ -24,6 +24,8 @@ Proven scenarios (each is asserted, not inferred):
    connector PROCESS within one ``poll_seconds`` interval after a SEPARATE
    CLI ``revoke``, and the CLI never reports false stream closure.
 
+That is the intended reconciliation contract. The process acceptance checks use a 15-second closure wait and do not measure or prove a one-poll latency bound.
+
 The residual gap (reported, never fabricated): this host has no macOS binary
 and no Tailscale/headscale client, so the genuine macOS-client launch and the
 WireGuard/tailnet transport hop remain unproven here (THR-034 signed-device
@@ -37,6 +39,8 @@ from __future__ import annotations
 import json
 import os
 import signal
+import selectors
+import threading
 import socket
 import subprocess
 import sys
@@ -51,6 +55,7 @@ from runtime.remote_access.state_store import AtomicFileTrustStateStore
 
 from .conftest import load_fixture, make_policy_envelope
 from .fake_daemon import FakeDaemon
+from .diy_client import _admission_response, _read_first_sse_frame, AdmissionError
 
 BEARER = "diy-acceptance-bearer-42"
 HERE = Path(__file__).resolve().parent
@@ -101,8 +106,118 @@ def _run_client(host: str, port: int, args: list[str], timeout: int = 20) -> dic
         text=True,
         timeout=timeout,
     )
-    assert proc.returncode == 0, f"client failed: {proc.stderr}"
+    assert proc.returncode == 0, "client_exit_nonzero"
     return json.loads(proc.stdout)
+
+
+# Only the shipping readiness CLI's closed categories are admitted for failure evidence.
+_DIY_GATE_CATEGORIES = {
+    "daemon_loopback": {"daemon_loopback_ok", "daemon_unavailable"},
+    "credential_permissions": {"credential_ok", "credential_unreadable"},
+    "current_policy": {"policy_current", "policy_missing", "policy_malformed",
+                       "policy_compile_failed", "policy_apply_failed", "policy_denied",
+                       "policy_rollback", "policy_stale", "policy_future"},
+    "bind_identity": {"identity_ok", "identity_denied", "identity_mismatch"},
+    "trust_state": {"state_ok", "state_unavailable", "state_corrupt"},
+}
+
+
+def _admit_readiness_report(data: bytes, status: int) -> dict:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("readiness_unavailable")
+            result[key] = value
+        return result
+    if len(data) > 8192 or status not in (0, 1):
+        raise ValueError("readiness_unavailable")
+    report = json.loads(data, object_pairs_hook=unique)
+    if (not isinstance(report, dict) or set(report) != {"ready", "gates"}
+            or type(report["ready"]) is not bool or not isinstance(report["gates"], dict)
+            or set(report["gates"]) != set(_DIY_GATE_CATEGORIES)):
+        raise ValueError("readiness_unavailable")
+    for name, gate in report["gates"].items():
+        if (not isinstance(gate, dict) or set(gate) != {"ok", "category"}
+                or type(gate["ok"]) is not bool or not isinstance(gate["category"], str)
+                or gate["category"] not in _DIY_GATE_CATEGORIES[name]):
+            raise ValueError("readiness_unavailable")
+    if (report["ready"] != all(gate["ok"] for gate in report["gates"].values())
+            or status != (0 if report["ready"] else 1)):
+        raise ValueError("readiness_unavailable")
+    return report
+
+
+def _bounded_readiness_command(config_path: Path) -> tuple[bytes, int]:
+    deadline = time.monotonic() + 5
+    proc = None
+    selector = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "runtime.remote_access.cli", "readiness", "--config", str(config_path)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        selector = selectors.DefaultSelector()
+        os.set_blocking(proc.stdout.fileno(), False)
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        data = bytearray()
+        while time.monotonic() < deadline:
+            events = selector.select(timeout=max(0, deadline - time.monotonic()))
+            if not events:
+                break
+            chunk = os.read(proc.stdout.fileno(), 8193 - len(data))
+            if not chunk:
+                return bytes(data), proc.wait(timeout=max(0, deadline - time.monotonic()))
+            data.extend(chunk)
+            if len(data) > 8192:
+                raise ValueError("readiness_unavailable")
+        raise ValueError("readiness_unavailable")
+    finally:
+        # Observation owns its command, selector and pipe. Attempt every finalizer.
+        failures = False
+        for action in (
+            lambda: proc.kill() if proc is not None and proc.poll() is None else None,
+            lambda: proc.wait(timeout=1) if proc is not None else None,
+            lambda: proc.stdout.close() if proc is not None and proc.stdout is not None else None,
+            lambda: selector.close() if selector is not None else None,
+        ):
+            try:
+                action()
+            except BaseException:
+                failures = True
+        if failures:
+            raise ValueError("readiness_unavailable")
+
+
+def _diy_failure_facts(config_path: Path, proc, daemon) -> dict:
+    facts = {"readiness": "unavailable", "connector": "unavailable", "daemon": "unavailable"}
+    try:
+        status = proc.poll() if proc is not None else None
+        if proc is not None and (status is None or (type(status) is int and -128 <= status <= 255)):
+            facts["connector"] = {"state": "running" if status is None else "exited", "status": status}
+    except BaseException:
+        pass
+    try:
+        facts["daemon"] = {"thread_alive": bool(daemon._thread.is_alive()),
+                           "server_open": daemon._server.fileno() >= 0,
+                           "released": bool(daemon.release.is_set())}
+    except BaseException:
+        pass
+    try:
+        data, status = _bounded_readiness_command(config_path)
+        report = _admit_readiness_report(data, status)
+        facts.update(readiness="observed", ready=report["ready"], gates=report["gates"])
+    except BaseException:
+        pass
+    return facts
+
+
+def _record_diy_failure(primary: BaseException, observe) -> None:
+    try:
+        primary.add_note("DIY_FAILURE_FACTS " + json.dumps(observe(), sort_keys=True, separators=(",", ":")))
+    except BaseException:
+        # Neither observations nor note/finalizer failures replace the primary.
+        pass
 
 
 def _wait_until(predicate, timeout: float = 30.0, interval: float = 0.2, what: str = "condition") -> None:
@@ -133,6 +248,7 @@ def test_real_diy_acceptance(tmp_path) -> None:
     # ── 1. the loopback daemon (real TCP on 127.0.0.1) ────────────────────
     daemon = FakeDaemon(BEARER)
     daemon.start()
+    primary_failure = None
     try:
         # ── 2. hermetic connector config ───────────────────────────────────
         token_path = tmp_path / "daemon.token"
@@ -368,15 +484,49 @@ def test_real_diy_acceptance(tmp_path) -> None:
             transcript_path = tmp_path / "acceptance-transcript.txt"
             transcript_path.write_text("\n".join(transcript) + "\n")
             print(f"\n=== ACCEPTANCE TRANSCRIPT ===\n{chr(10).join(transcript)}\n=== END TRANSCRIPT ===")
+        except BaseException as primary:
+            primary_failure = primary
+            _record_diy_failure(primary, lambda: _diy_failure_facts(config_path, proc, daemon))
+            raise
         finally:
-            if proc is not None and proc.poll() is None:
-                proc.send_signal(signal.SIGTERM)
+            if proc is not None:
+                # Attempt each owned operation even when an earlier one fails.
+                # Cleanup errors remain failures on success, but cannot replace
+                # the original acceptance failure. Never export their text.
+                cleanup_failure = None
+                running = True
                 try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+                    running = proc.poll() is None
+                except BaseException as exc:
+                    cleanup_failure = exc
+                if running:
+                    try:
+                        proc.send_signal(signal.SIGTERM)
+                    except BaseException as exc:
+                        cleanup_failure = cleanup_failure or exc
+                    try:
+                        proc.wait(timeout=10)
+                    except BaseException as exc:
+                        cleanup_failure = cleanup_failure or exc
+                        try:
+                            proc.kill()
+                        except BaseException as kill_error:
+                            cleanup_failure = cleanup_failure or kill_error
+                        try:
+                            proc.wait(timeout=10)
+                        except BaseException as reap_error:
+                            cleanup_failure = cleanup_failure or reap_error
+                if cleanup_failure is not None and primary_failure is None:
+                    raise cleanup_failure
+    except BaseException as primary:
+        primary_failure = primary_failure or primary
+        raise
     finally:
-        daemon.stop()
+        try:
+            daemon.stop()
+        except BaseException:
+            if primary_failure is None:
+                raise
 
 
 @pytest.mark.skipif(
@@ -536,17 +686,22 @@ def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) ->
     credential both open NEW SSE streams in the same connector lifetime,
     while old/revoked credentials and WebSocket upgrades remain denied.
 
-    This fails on the reviewed head f46a83bc (the one-shot registry is
+    Fresh per-child heartbeat admission and 16s no-action controls precede
+    each separate CLI action; closure is observed within 15s. First-frame
+    probes prove reopening without draining a held response.
+
+    Historically this failed on the reviewed head f46a83bc (the one-shot registry is
     sealed and never rotated) and passes after the rotation fix.
     """
     import http.client
 
     host = NETWORK_IPV4
     connector_port = _free_port(host)
-    daemon = FakeDaemon(BEARER, hold_open=True)
-    daemon.start()
+    daemon = FakeDaemon(BEARER, held_sse_mode="heartbeat")
+    owner = _OwnedDiyProcesses()
     proc = None
     try:
+        daemon.start()
         token_path = tmp_path / "daemon.token"
         token_path.write_text(BEARER)
         token_path.chmod(0o600)
@@ -582,99 +737,77 @@ def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) ->
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(config))
         def pair_device(device: str) -> str:
-            pair_proc = subprocess.run(
-                [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", device],
-                capture_output=True,
-                text=True,
-                timeout=20,
-            )
+            pair_proc = _run_owned_command(owner, [sys.executable, "-m", "runtime.remote_access.cli", "pair", "--config", str(config_path), "--device", device])
             assert pair_proc.returncode == 0, pair_proc.stderr
-            line = [l for l in pair_proc.stdout.splitlines() if "pairing code for device" in l][0]
-            return line.split(": ")[-1].strip()
+            lines = [line for line in pair_proc.stdout.splitlines() if "pairing code for device" in line]
+            assert len(lines) == 1, "[D-cleanup] pairing output"
+            code = lines[0].split(": ")[-1].strip()
+            owner.forbidden.append(code.encode())
+            return code
 
         # Only initial setup is ordered before listener startup. Re-pair,
         # revoke, remove and unaffected reopening stay in this process lifetime.
         initial_code = pair_device("macbook-pro")
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "runtime.remote_access.cli",
-                "run",
-                "--diy",
-                "--config",
-                str(config_path),
-            ],
-            cwd=Path(__file__).resolve().parents[3],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        )
-        _wait_until(lambda: _connector_reachable(host, connector_port), what="connector listener")
+        connector = owner.spawn([sys.executable, "-m", "runtime.remote_access.cli", "run", "--diy", "--config", str(config_path)], role="connector")
+        proc = connector["proc"]
+        owner.wait(lambda: _connector_reachable(host, connector_port), 30, "[D-cleanup] connector listener")
 
         def redeem(code: str) -> str:
-            result = _run_client(host, connector_port, ["redeem", "--code", code])
+            raw = _run_owned_command(owner, [sys.executable, str(CLIENT), "--host", host, "--port", str(connector_port), "redeem", "--code", code])
+            result = json.loads(raw.stdout)
+            assert result["status"] == 200, "[D-cleanup] redeem status"
             assert result["status"] == 200, result
+            owner.forbidden.append(result["body"]["credential"].encode())
             return result["body"]["credential"]
 
+        next_child = 0
         def open_stream(credential: str):
-            """Open a real in-flight SSE in a SEPARATE client process; returns
-            (proc, status_line) once the daemon has flushed the headers."""
-            stream = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(CLIENT),
-                    "--host",
-                    host,
-                    "--port",
-                    str(connector_port),
-                    "stream",
-                    "--path",
-                    "/api/v1/orgs/acme/threads/T-1/tail",
-                    "--credential",
-                    credential,
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            nonlocal next_child
+            next_child += 1
+            before = set(daemon._held_snapshot())
+            stream = owner.spawn([sys.executable, str(CLIENT), "--host", host, "--port", str(connector_port), "stream", "--path", "/api/v1/orgs/acme/threads/T-1/tail", "--credential", credential, "--observe-lifecycle", "--observation-id", str(next_child)], child_id=next_child)
+            owner.wait(lambda: len(stream["records"]) >= 1, 10, "[D-record] fresh admission required")
             assert daemon.started.wait(timeout=15), "stream must reach the daemon"
+            assert stream["proc"].poll() is None, "[D-held] live admitted child"
+            added = set(daemon._held_snapshot()) - before
+            assert len(added) == 1, "[D-held] one fresh request per child"
+            ordinal = added.pop()
+            _healthy_held(daemon, ordinal)
+            print("DIY_ADMITTED", flush=True)
+            _no_action(owner, stream, daemon, ordinal)
+            stream["ordinal"] = ordinal
             return stream
 
-        def close_stream(stream) -> dict:
-            out, err = stream.communicate(timeout=15)
+        def close_stream(owned_stream) -> dict:
+            owner.wait(lambda: owned_stream["proc"].poll() is not None and len(owned_stream["eof"]) == 2, 15, "[D-held] CLI closure within 15s")
+            assert owned_stream["proc"].wait(timeout=0) == 0, "[D-strict] closure exit"
+            stream = owned_stream["proc"]
+            err = bytes(owned_stream["stderr"]).decode()
             assert stream.returncode == 0, err
-            return json.loads(out)
+            assert len(owned_stream["records"]) == 2, "[D-record] exact terminal record"
+            assert not owned_stream["stderr"], "[D-record] normal stderr must be empty"
+            result = owned_stream["records"][1]
+            assert result["kind"] in ("eof", "reset") and result["received_bytes"] > 13, "[D-strict] closure category/continuation"
+            assert not daemon.release.is_set() and not daemon._held_snapshot()[owned_stream["ordinal"]]["failure"], "[D-held] fixture cannot supply closure"
+            return result
 
         def sse_status(credential: str) -> int:
-            """Open an SSE from the test process and return its status code
-            (200 = admitted by the CURRENT registry; 403 = denied)."""
-            conn = http.client.HTTPConnection(host, connector_port, timeout=10)
-            conn.request(
-                "GET",
-                "/api/v1/orgs/acme/threads/T-1/tail",
-                headers={
-                    "X-HappyRanch-Device-Credential": credential,
-                    "Accept": "text/event-stream",
-                },
-            )
-            resp = conn.getresponse()
-            resp.read()
-            status = resp.status
-            conn.close()
-            return status
+            with _admission_response(host, connector_port, "/api/v1/orgs/acme/threads/T-1/tail", {"X-HappyRanch-Device-Credential": credential, "Accept": "text/event-stream"}) as (resp, sock, deadline, watchdog):
+                status = resp.status
+                if status == 200:
+                    assert _read_first_sse_frame(resp, deadline) == 13, "[D-reader] admitted first frame"
+                    print("DIY_ADMITTED", flush=True)
+                else:
+                    assert len(resp.read(1025)) <= 1024, "[D-reader] bounded denial"
+                return status
 
         # ── revoke path ───────────────────────────────────────────────────
         cred_a = redeem(initial_code)
         stream_a = open_stream(cred_a)
-        revoke_proc = subprocess.run(
-            [sys.executable, "-m", "runtime.remote_access.cli", "revoke", "--config", str(config_path), "--device", "macbook-pro"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
+        _healthy_held(daemon, stream_a["ordinal"])
+        revoke_proc = _run_owned_command(owner, [sys.executable, "-m", "runtime.remote_access.cli", "revoke", "--config", str(config_path), "--device", "macbook-pro"])
         assert revoke_proc.returncode == 0, revoke_proc.stderr
+
         result = close_stream(stream_a)
         assert result["status"] == 200  # headers flushed before the revoke closed it
         # RE-PAIR opens a NEW SSE in the same connector lifetime.
@@ -688,13 +821,10 @@ def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) ->
         # ── remove path ───────────────────────────────────────────────────
         cred_b = redeem(pair_device("phone"))
         stream_b = open_stream(cred_b)
-        remove_proc = subprocess.run(
-            [sys.executable, "-m", "runtime.remote_access.cli", "remove-device", "--config", str(config_path), "--device", "phone"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
+        _healthy_held(daemon, stream_b["ordinal"])
+        remove_proc = _run_owned_command(owner, [sys.executable, "-m", "runtime.remote_access.cli", "remove-device", "--config", str(config_path), "--device", "phone"])
         assert remove_proc.returncode == 0, remove_proc.stderr
+
         result = close_stream(stream_b)
         assert result["status"] == 200
         cred_b2 = redeem(pair_device("phone"))
@@ -710,29 +840,813 @@ def test_acceptance_cross_process_revoke_remove_then_reopen_streams(tmp_path) ->
         assert sse_status(cred_b) == 403, "removed credential must stay denied"
 
         # ── WebSocket denial retained ─────────────────────────────────────
-        conn = http.client.HTTPConnection(host, connector_port, timeout=10)
-        conn.request(
-            "GET",
-            "/api/v1/orgs/acme/threads/T-1/tail",
-            headers={
-                "X-HappyRanch-Device-Credential": cred_b2,
-                "Upgrade": "websocket",
-                "Connection": "Upgrade",
-            },
-        )
-        ws_resp = conn.getresponse()
-        ws_resp.read()
-        conn.close()
+        with _admission_response(host, connector_port, "/api/v1/orgs/acme/threads/T-1/tail", {"X-HappyRanch-Device-Credential": cred_b2, "Upgrade": "websocket", "Connection": "Upgrade"}) as (ws_resp, sock, deadline, watchdog):
+            assert len(ws_resp.read(1025)) <= 1024, "[D-reader] bounded WebSocket denial"
         assert ws_resp.status == 403
 
         # ── the connector process survived the whole lifecycle ────────────
+        assert not owner.expired.is_set() and time.monotonic() <= owner.deadline, "[D-cleanup] whole-case 240s deadline"
         assert proc.poll() is None, "the shipping connector process must stay alive"
         assert _connector_reachable(host, connector_port)
     finally:
-        if proc is not None and proc.poll() is None:
-            proc.send_signal(signal.SIGTERM)
+        _cleanup_owned(owner, daemon, sys.exception())
+        if sys.exception() is None:
+            assert not _connector_reachable(host, connector_port), "[D-cleanup] connector listener absence"
+
+
+def _validate_lifecycle_record(raw: bytes, child_id: int, index: int) -> dict:
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            assert key not in result, "[D-record] duplicate key"
+            result[key] = value
+        return result
+    assert len(raw) <= 512 and raw.endswith(b"\n"), "[D-record] framing"
+    try:
+        row = json.loads(raw.decode("ascii"), object_pairs_hook=pairs)
+    except (ValueError, UnicodeError):
+        raise AssertionError("[D-record] malformed") from None
+    assert isinstance(row, dict), "[D-record] object"
+    phase = "admitted" if index == 0 else "terminal"
+    keys = {"phase", "child_id", "status", "received_bytes"}
+    keys |= {"sse", "first_frame_ok", "first_frame_bytes"} if index == 0 else {"kind"}
+    assert set(row) == keys and row["phase"] == phase, "[D-record] keys/order"
+    assert type(row["child_id"]) is int and row["child_id"] == child_id, "[D-record] fresh child"
+    assert type(row["status"]) is int and row["status"] == 200, "[D-record] status"
+    assert type(row["received_bytes"]) is int and 13 <= row["received_bytes"] <= 1048576, "[D-record] count"
+    if index == 0:
+        assert row["sse"] is True and row["first_frame_ok"] is True, "[D-record] first frame"
+        assert type(row["first_frame_bytes"]) is int and row["first_frame_bytes"] == 13, "[D-record] first frame"
+        assert row["received_bytes"] == 13, "[D-record] admission count"
+    else:
+        assert row["kind"] in {"eof", "reset", "timeout", "read_error", "protocol_error", "deadline", "budget_exhausted"}, "[D-record] kind"
+    return row
+
+
+class _OwnedDiyProcesses:
+    """One stdout/stderr owner, immediate registration, finite cleanup."""
+    def __init__(self, seconds=240):
+        self.deadline = time.monotonic() + seconds
+        self.expired = threading.Event()
+        self.watchdog = threading.Timer(seconds, self.expired.set)
+        self.watchdog.daemon = True
+        self.selector = selectors.DefaultSelector()
+        self.children = []
+        self.forbidden = [BEARER.encode(), b"data: hello", b"data: world", b"Bearer ", b"DIY_SECRET_CANARY"]
+        self.watchdog.start()
+
+    def spawn(self, argv, *, role="client", child_id=None):
+        proc = subprocess.Popen(argv, cwd=HERE.parents[1], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=False, bufsize=0,
+                                env={**os.environ, "PYTHONUNBUFFERED": "1"})
+        row = dict(proc=proc, role=role, child_id=child_id, stdout=bytearray(),
+                   stderr=bytearray(), pending=bytearray(), records=[], eof=set(), total=0)
+        self.children.append(row)  # Register before the first read or wait.
+        for label in ("stdout", "stderr"):
+            pipe = getattr(proc, label)
+            os.set_blocking(pipe.fileno(), False)
+            self.selector.register(pipe, selectors.EVENT_READ, (row, label))
+        return row
+
+    def _privacy(self, raw):
+        assert not any(value and value in raw for value in self.forbidden), "[D-record] privacy"
+
+    def pump(self, timeout=0.1, *, cleanup=False):
+        if not cleanup:
+            assert not self.expired.is_set() and time.monotonic() < self.deadline, "[D-cleanup] case watchdog"
+        failure = None
+        for key, _ in self.selector.select(timeout):
+            row, label = key.data
             try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                chunk = os.read(key.fileobj.fileno(), 4096)
+                if not chunk:
+                    self.selector.unregister(key.fileobj)
+                    row["eof"].add(label)
+                    if row["child_id"] is not None and row["pending"]:
+                        raise AssertionError("[D-record] truncated")
+                    continue
+                if row.get("fault"):
+                    continue
+                cap = (1024 if label == "stdout" else 4096) if row["child_id"] else 65536
+                row["total"] += len(chunk) if label == "stdout" else 0
+                assert len(row[label]) + len(chunk) <= cap, "[D-record] overflow"
+                row[label].extend(chunk)
+                if row["child_id"] is not None:
+                    self._privacy(bytes(row[label]))
+                    if label == "stdout":
+                        row["pending"].extend(chunk)
+                        while b"\n" in row["pending"]:
+                            line, _, rest = row["pending"].partition(b"\n")
+                            row["pending"] = bytearray(rest)
+                            assert len(row["records"]) < 2, "[D-record] extra record"
+                            row["records"].append(_validate_lifecycle_record(bytes(line) + b"\n", row["child_id"], len(row["records"])))
+                        assert len(row["pending"]) <= 512, "[D-record] line overflow"
+            except (AssertionError, OSError) as exc:
+                failure = failure or exc
+                row["fault"] = True
+                row["pending"].clear()
+                # Keep draining during teardown; bounded buffers never grow.
+        if failure is not None:
+            raise failure
+
+    def wait(self, predicate, seconds, message):
+        stop = min(self.deadline, time.monotonic() + seconds)
+        while time.monotonic() < stop:
+            self.pump()
+            if predicate():
+                return
+        raise AssertionError(message)
+
+    def command(self, argv):
+        row = self.spawn(argv, role="cli")
+        self.wait(lambda: row["proc"].poll() is not None and len(row["eof"]) == 2,
+                  20, "[D-cleanup] CLI timeout")
+        assert row["proc"].wait(timeout=0) == 0, "[D-cleanup] CLI exit"
+        return subprocess.CompletedProcess(argv, row["proc"].returncode, bytes(row["stdout"]).decode(), bytes(row["stderr"]).decode())
+
+    def cleanup(self):
+        deadline = time.monotonic() + 25  # Remaining 5s belongs to the fixture.
+        errors = []
+        unknown = object()
+
+        def attempt(operation, category):
+            try:
+                return operation()
+            except Exception:
+                errors.append(category)
+                return unknown
+
+        def remaining(cap):
+            return max(0, min(cap, deadline - time.monotonic()))
+
+        def finalizer(operation, category):
+            # A one-shot refusal must not abandon this or later resources.
+            if attempt(operation, category) is unknown:
+                attempt(operation, category)
+
+        finalizer(self.watchdog.cancel, "watchdog")
+        finalizer(lambda: self.watchdog.join(timeout=remaining(1)), "watchdog")
+        # All client/CLI children before the connector.
+        for roles in ({"client", "cli"}, {"connector"}):
+            rows = [row for row in self.children if row["role"] in roles]
+            delivered = []
+            for row in rows:
+                proc = row["proc"]
+                state = attempt(proc.poll, "process_cleanup")
+                if state is None or state is unknown:
+                    term = attempt(proc.terminate, "process_cleanup")
+                    if term is unknown:
+                        attempt(proc.kill, "process_cleanup")
+                    else:
+                        delivered.append(row)
+            term_end = min(deadline, time.monotonic() + 10)
+            while delivered and time.monotonic() < term_end:
+                pending = []
+                for row in delivered:
+                    state = attempt(row["proc"].poll, "process_cleanup")
+                    if state is None:
+                        pending.append(row)
+                    elif state is unknown:
+                        # Unavailable polling cannot justify a grace wait or absence.
+                        attempt(row["proc"].kill, "process_cleanup")
+                delivered = pending
+                if delivered:
+                    attempt(lambda: self.pump(timeout=min(0.1, remaining(0.1)), cleanup=True), "pipe")
+            for row in rows:
+                proc = row["proc"]
+                state = attempt(proc.poll, "process_cleanup")
+                if state is None or state is unknown:
+                    attempt(proc.kill, "process_cleanup")
+            for row in rows:
+                proc = row["proc"]
+                reaped = False
+                # Retry a refused observation once, always inside the same deadline.
+                for _ in range(2):
+                    try:
+                        proc.wait(timeout=remaining(5))
+                        reaped = True
+                        break
+                    except subprocess.TimeoutExpired:
+                        state = attempt(proc.poll, "process_cleanup")
+                        if state is None:
+                            errors.append("survivor")
+                        break
+                    except Exception:
+                        errors.append("process_cleanup")
+                if not reaped:
+                    state = attempt(proc.poll, "process_cleanup")
+                    if state is None:
+                        errors.append("survivor")
+                    elif state is unknown:
+                        errors.append("process_cleanup")
+        # Drain EOF before closing every descriptor, including failure paths.
+        stop = min(deadline, time.monotonic() + 1)
+        while time.monotonic() < stop:
+            mapping = attempt(self.selector.get_map, "descriptor")
+            if mapping is unknown:
+                break
+            if not mapping:
+                break
+            attempt(lambda: self.pump(timeout=min(0.1, remaining(0.1)), cleanup=True), "pipe")
+        for row in self.children:
+            for label in ("stdout", "stderr"):
+                pipe = attempt(lambda: getattr(row["proc"], label), "descriptor")
+                if pipe is unknown:
+                    pipe = attempt(lambda: getattr(row["proc"], label), "descriptor")
+                if pipe is unknown:
+                    continue
+                finalizer(pipe.fileno, "descriptor")
+                # EOF may already have unregistered this descriptor.
+                try:
+                    self.selector.unregister(pipe)
+                except KeyError:
+                    pass
+                except Exception:
+                    errors.append("descriptor")
+                finalizer(pipe.close, "descriptor")
+        finalizer(self.selector.close, "descriptor")
+        alive = attempt(self.watchdog.is_alive, "watchdog")
+        if alive is True or alive is unknown:
+            errors.append("watchdog")
+        return sorted(set(errors))
+
+
+def _cleanup_owned(owner, daemon, primary):
+    errors = []
+    try:
+        errors.extend(owner.cleanup())
+    except Exception:
+        errors.append("process_cleanup")
+    try:
         daemon.stop()
+    except Exception:
+        errors.append("fixture_cleanup")
+    if primary is not None:
+        if errors:
+            try:
+                primary.add_note("owned cleanup categories: " + ",".join(sorted(set(errors))))
+            except BaseException:
+                pass  # Preserve the primary even when secondary diagnostics refuse.
+    elif errors:
+        raise AssertionError("[D-cleanup] cleanup incomplete: " + ",".join(sorted(set(errors))))
+
+
+def _run_owned_command(owner, argv):
+    return owner.command(argv)
+
+
+def _pump_owned_pipes(owner):
+    owner.pump()
+
+
+def _healthy_held(daemon, ordinal):
+    row = daemon._held_snapshot()[ordinal]
+    assert row["alive"] and row["first_frame_flushed"] and not row["release"] and not row["failure"], "[D-held] healthy unreleased stream"
+    if daemon.held_sse_mode == "heartbeat":
+        assert time.monotonic() - row["last_flush"] <= 3, "[D-held] successful heartbeat gap"
+    return row
+
+
+def _no_action(owner, stream, daemon, ordinal):
+    start = time.monotonic()
+    count = _healthy_held(daemon, ordinal)["heartbeat_count"]
+    while time.monotonic() - start < 16:
+        owner.pump()
+        assert stream["proc"].poll() is None and len(stream["records"]) == 1, "[D-held] no-action transport must remain alive for 16s"
+        _healthy_held(daemon, ordinal)
+    assert _healthy_held(daemon, ordinal)["heartbeat_count"] > count, "[D-held] successful continuation writes"
+
+
+class _DiyWirePeer:
+    """Owned miniature wire peer for admission/classification fault rows."""
+    def __init__(self, chunks, *, header_delay=0, interval=0, ending="hold", content_type="text/event-stream"):
+        self.chunks = chunks
+        self.content_type = content_type
+        self.header_delay = header_delay
+        self.interval = interval
+        self.ending = ending
+        self.release = threading.Event()
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen()
+        self.listener.settimeout(1)
+        self.port = self.listener.getsockname()[1]
+        self.connection = None
+        self.failure = False
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+
+    def serve(self):
+        try:
+            while not self.release.is_set():
+                try:
+                    self.connection, _ = self.listener.accept()
+                    break
+                except TimeoutError:
+                    continue
+            if self.connection is None:
+                return
+            self.connection.settimeout(2)
+            request = bytearray()
+            while b"\r\n\r\n" not in request and len(request) < 4096:
+                chunk = self.connection.recv(1024)
+                if not chunk:
+                    return
+                request.extend(chunk)
+            if self.release.wait(self.header_delay):
+                return
+            self.connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: " + self.content_type.encode() + b"\r\nConnection: close\r\n\r\n")
+            for chunk in self.chunks:
+                self.connection.sendall(chunk)
+                if self.release.wait(self.interval):
+                    break
+            if self.ending == "hold":
+                self.release.wait(30)
+            elif self.ending == "reset":
+                self.release.wait(10)
+                import struct
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        except OSError:
+            if not self.release.is_set():
+                self.failure = True
+        finally:
+            if self.connection is not None:
+                self.connection.close()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self.release.set()
+        if self.connection is not None:
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        self.listener.close()
+        self.thread.join(3)
+        assert not self.thread.is_alive(), "[D-cleanup] peer thread absence"
+
+
+@pytest.mark.parametrize("case", ["short", "segmented", "split_terminator", "truncated", "oversize", "wrong_frame", "deadline", "header_deadline", "read_error"])
+def test_diy_first_frame_reader(case):
+    chunks = {
+        "short": [b"data: hello\n\n"],
+        "segmented": [bytes([b]) for b in b"data: hello\n\n"],
+        "split_terminator": [b"data: hello\n", b"\n"],
+        "truncated": [b"data: hello\n"],
+        "oversize": [b"x" * 64],
+        "wrong_frame": [b"data: wrong\n\n"],
+        "deadline": [b"data: hello\n", b"\n"],
+        "header_deadline": [b"data: hello\n\n"],
+        "read_error": [b"data: hello\n\n"],
+    }[case]
+    # Independent bounded wire precondition: parser mutations cannot fabricate
+    # admission, and this fixed-length read never waits for SSE EOF.
+    with _DiyWirePeer([b"data: hello\n\n"]) as control:
+        with _admission_response("127.0.0.1", control.port, "/tail", {}) as (resp, sock, deadline, watchdog):
+            assert resp.status == 200 and resp.getheader("Content-Type") == "text/event-stream"
+            assert resp.read(13) == b"data: hello\n\n", "[D-reader] independent literal first frame"
+            print("DIY_ADMITTED", flush=True)
+    began = time.monotonic()
+    expected = {"truncated": "truncated", "oversize": "oversized", "wrong_frame": "protocol_error",
+                "deadline": "deadline", "header_deadline": "deadline"}.get(case)
+    with _DiyWirePeer(chunks, header_delay=10.2 if case == "header_deadline" else 8 if case == "deadline" else 0,
+                      interval=3 if case == "deadline" else (0.01 if case == "segmented" else 0),
+                      ending="eof" if case == "truncated" else "hold") as peer:
+        def observe():
+            with _admission_response("127.0.0.1", peer.port, "/tail", {}) as (resp, sock, deadline, watchdog):
+                if case == "read_error":
+                    def broken(_):
+                        raise OSError(5, "DIY_SECRET_CANARY")
+                    resp.read1 = broken
+                try:
+                    result = _read_first_sse_frame(resp, deadline)
+                except AdmissionError:
+                    assert expected is not None, "[D-reader] positive admission within 10s"
+                    raise
+                assert result == 13, "[D-reader] exact frame size"
+                print("DIY_ADMITTED", flush=True)
+        if expected:
+            with pytest.raises(AdmissionError) as exc:
+                observe()
+            assert exc.value.kind == expected, "[D-reader] failure category"
+            if case in ("deadline", "header_deadline"):
+                assert time.monotonic() - began < 10.5, "[D-reader] one 10s budget"
+        elif case == "read_error":
+            with pytest.raises(OSError):
+                observe()
+        else:
+            observe()
+
+
+def _support_client(owner, port, *, child_id=1, idle=5, inject=None, default=False, auth=False):
+    argv = ["--host", "127.0.0.1", "--port", str(port), "stream", "--path", "/tail", "--credential", "test-side-credential"]
+    if not default:
+        argv += ["--observe-lifecycle", "--observation-id", str(child_id), "--idle-timeout", str(idle)]
+    # Owned test-side child drivers exercise the actual client read boundary.
+    source = "from tests.remote_access import diy_client as c\nimport http.client,time,os\n"
+    if auth:
+        source += "original=http.client.HTTPConnection.request\ndef request(self,*a,**kw):\n kw.setdefault('headers',{})['Authorization']='Bearer '+" + repr(BEARER) + "\n return original(self,*a,**kw)\nhttp.client.HTTPConnection.request=request\n"
+    if inject == "read_error":
+        source += "original_read=http.client.HTTPResponse.read1\ndef read(self,n=-1):\n if n==4096: raise OSError(5,'DIY_SECRET_CANARY')\n return original_read(self,n)\nhttp.client.HTTPResponse.read1=read\n"
+    if inject == "buffer_stdout":
+        source += "import io,sys\nsys.stdout=io.TextIOWrapper(io.BufferedWriter(io.FileIO(1,mode='w',closefd=False)),encoding='ascii')\nemit=c._emit_lifecycle_record\ndef witness(row):\n if row['phase']=='admitted':\n  assert row['status']==200 and row['first_frame_ok'] is True and row['first_frame_bytes']==13\n  os.write(2,b'CLIENT_FIRST_FRAME_OK')\n return emit(row)\nc._emit_lifecycle_record=witness\n"
+    if inject == "delay_ack":
+        source += "emit=c._emit_lifecycle_record\ndef delayed(row):\n if row['phase']=='admitted':\n  assert row['status']==200 and row['first_frame_bytes']==13 and row['first_frame_ok'] is True\n  os.write(2,b'CLIENT_FIRST_FRAME_OK')\n  time.sleep(1)\n return emit(row)\nc._emit_lifecycle_record=delayed\n"
+    source += "raise SystemExit(c.main(" + repr(argv) + "))\n"
+    return owner.spawn([sys.executable, "-c", source], child_id=None if default else child_id)
+
+
+@pytest.mark.parametrize("case", ["heartbeat_no_action", "two_children", "silent_timeout", "eof", "reset", "read_error", "default_output", "malformed", "truncated_record", "oversize_record", "extra_record", "unflushed_record", "secret_canary", "stderr_canary", "backpressure", 'flushed_admission', 'duplicate_keys', 'non_ascii', 'wrong_child', 'wrong_bool', 'out_of_order', 'invalid_terminal'])
+def test_diy_lifecycle_records(case):
+    owner = _OwnedDiyProcesses(60)
+    daemon = FakeDaemon(BEARER, held_sse_mode="silent" if case == "silent_timeout" else "heartbeat")
+    try:
+        if case in {"heartbeat_no_action", "two_children", "silent_timeout", "default_output", "flushed_admission"}:
+            if case == "default_output":
+                daemon = FakeDaemon(BEARER)
+            daemon.start()
+            start = time.monotonic()
+            row = _support_client(owner, daemon.port, inject="buffer_stdout" if case == "flushed_admission" else None, idle=4 if case == "silent_timeout" else 5,
+                                  default=case == "default_output", auth=True)
+            if case == "default_output":
+                owner.wait(lambda: row["proc"].poll() is not None and len(row["eof"]) == 2, 6, "[D-strict] default completion")
+                result = json.loads(row["stdout"])
+                assert result == {"status": 200, "received_bytes": 26}, "[D-strict] default output"
+                assert row["proc"].returncode == 0
+            else:
+                if case == "flushed_admission":
+                    owner.wait(lambda: b"CLIENT_FIRST_FRAME_OK" in row["stderr"], 2, "[D-record] independent client frame witness")
+                    print("DIY_ADMITTED", flush=True)
+                    owner.wait(lambda: len(row["records"]) == 1, 2, "[D-record] flushed admission required")
+                owner.wait(lambda: len(row["records"]) == 1, 10, "[D-record] fresh admission required")
+                print("DIY_ADMITTED", flush=True)
+                if case == "silent_timeout":
+                    start = time.monotonic()
+                    owner.wait(lambda: row["proc"].poll() is not None and len(row["eof"]) == 2, 6, "[D-strict] silent timeout bound")
+                    assert row["records"][1]["kind"] == "timeout" and row["proc"].returncode == 2, "[D-strict] timeout must be nonzero"
+                    assert time.monotonic() - start < 6 and not daemon.release.is_set(), "[D-strict] before upstream idle timeout"
+                elif case != "flushed_admission":
+                    _no_action(owner, row, daemon, 1)
+                    if case == "heartbeat_no_action":
+                        with _admission_response("127.0.0.1", daemon.port, "/tail", {"Authorization": "Bearer " + BEARER}) as (resp, sock, deadline, watchdog):
+                            assert _read_first_sse_frame(resp, deadline) == 13
+                            assert resp.read1(3) == b":\n\n", "[D-held] actual comment frame"
+                    if case == "two_children":
+                        start2 = time.monotonic()
+                        row2 = _support_client(owner, daemon.port, child_id=2, inject="delay_ack", auth=True)
+                        owner.wait(lambda: b"CLIENT_FIRST_FRAME_OK" in row2["stderr"], 10, "[D-record] actual second-child frame")
+                        owner.wait(lambda: len(row2["records"]) == 1, 10, "[D-record] second fresh admission required")
+                        assert time.monotonic() - start2 >= 1 and row2["records"][0]["child_id"] == 2, "[D-record] sticky event cannot admit child2"
+                        _healthy_held(daemon, 2)
+        elif case in {"eof", "reset", "read_error"}:
+            with _DiyWirePeer([b"data: hello\n\n"], ending="reset" if case == "reset" else "hold") as peer:
+                row = _support_client(owner, peer.port, inject="read_error" if case == "read_error" else None)
+                owner.wait(lambda: len(row["records"]) >= 1, 10, "[D-record] fresh admission required")
+                print("DIY_ADMITTED", flush=True)
+                if case == "reset":
+                    peer.release.set()
+                elif case == "eof":
+                    peer.connection.shutdown(socket.SHUT_WR)
+                owner.wait(lambda: row["proc"].poll() is not None and len(row["eof"]) == 2, 6, "[D-strict] terminal completion")
+                assert row["records"][1]["kind"] == case, "[D-strict] exact terminal category"
+                assert row["proc"].returncode == (3 if case == "read_error" else 0), "[D-strict] category exit"
+                assert b"DIY_SECRET_CANARY" not in row["stdout"] + row["stderr"], "[D-record] exception privacy"
+        else:
+            admitted = b'{"phase":"admitted","child_id":1,"status":200,"sse":true,"first_frame_ok":true,"first_frame_bytes":13,"received_bytes":13}\n'
+            terminal = b'{"phase":"terminal","child_id":1,"status":200,"kind":"eof","received_bytes":13}\n'
+            raw = {"malformed": b"bad\n", "truncated_record": admitted[:-1], "oversize_record": b"x" * 513 + b"\n",
+                   "extra_record": admitted + terminal + terminal, "secret_canary": admitted.replace(b"true", b'"DIY_SECRET_CANARY"', 1),
+                   "stderr_canary": admitted, "backpressure": admitted}.get(case, admitted)
+            source = "import os,time\n"
+            if case == "unflushed_record":
+                source += "out=os.fdopen(os.dup(1),'wb',buffering=8192)\nout.write(" + repr(raw) + ")\ntime.sleep(5)\n"
+            else:
+                source += "os.write(1," + repr(raw) + ")\n"
+                if case == "stderr_canary":
+                    source += "os.write(2,b'DIY_SECRET_CANARY')\n"
+                if case == "backpressure":
+                    source += "os.write(2,b'x'*65536)\n"
+            if case == "duplicate_keys":
+                raw = admitted.replace(b'"child_id":1', b'"child_id":1,"child_id":1')
+            elif case == "non_ascii":
+                raw = admitted.replace(b'"admitted"', b'"admitt\xffed"')
+            elif case == "wrong_child":
+                raw = admitted.replace(b'"child_id":1', b'"child_id":2')
+            elif case == "wrong_bool":
+                raw = admitted.replace(b'"sse":true', b'"sse":1')
+            elif case == "out_of_order":
+                raw = terminal + admitted
+            elif case == "invalid_terminal":
+                raw = admitted + terminal.replace(b'"eof"', b'"unknown"')
+            if case in {"duplicate_keys", "non_ascii", "wrong_child", "wrong_bool", "out_of_order", "invalid_terminal"}:
+                source = "import os\nos.write(1," + repr(raw) + ")\n"
+            row = owner.spawn([sys.executable, "-c", source], child_id=1)
+            expected_category = {"malformed": "malformed", "truncated_record": "truncated", "oversize_record": "framing", "extra_record": "extra record", "secret_canary": "privacy", "stderr_canary": "privacy", "backpressure": "overflow", "unflushed_record": "deadline", "duplicate_keys": "duplicate key", "non_ascii": "malformed", "wrong_child": "fresh child", "wrong_bool": "first frame", "out_of_order": "keys/order", "invalid_terminal": "kind"}[case]
+            assert _validate_lifecycle_record(admitted, 1, 0)["first_frame_bytes"] == 13
+            print("DRIVER_ADMITTED", flush=True)
+            observed = None
+            try:
+                owner.wait(lambda: row["proc"].poll() is not None and len(row["eof"]) == 2 and len(row["records"]) == 2,
+                           1, "[D-record] protocol admission/completion deadline")
+            except AssertionError as exc:
+                observed = str(exc)
+            assert observed is not None and expected_category in observed, "[D-record] expected " + expected_category
+    finally:
+        # Fixture may never have started in pure pipe rows.
+        errors = owner.cleanup()
+        if daemon._thread.is_alive():
+            daemon.stop()
+        else:
+            daemon._server.server_close()
+        assert all(row["proc"].poll() is not None and row["proc"].stdout.closed and row["proc"].stderr.closed for row in owner.children), "[D-cleanup] reaped pipes"
+        assert not owner.watchdog.is_alive(), "[D-cleanup] watchdog joined"
+        if sys.exception() is None:
+            assert not errors, "[D-cleanup] unexpected cleanup failure"
+
+
+@pytest.mark.parametrize("case", ["success", "admission_failure", "frame_read_failure", "cli_timeout", "close_wait_timeout", "cleanup_failure", "kill_survivor",
+    "terminate_error", "kill_error", "wait_poll_error_wait_once", "wait_poll_error_poll_once", "wait_poll_error_poll_unknown",
+    "shared_deadline_expired", "shared_deadline_allowance_exhausted", "finalizer_error_pump_read", "finalizer_error_pipe_close",
+    "finalizer_error_selector_unregister", "finalizer_error_selector_get_map", "finalizer_error_selector_close",
+    "finalizer_error_watchdog_cancel", "finalizer_error_watchdog_join", "finalizer_error_descriptor_access", "no_primary",
+    "empty_exited_empty", "empty_exited_already_exited", "primary_note_error"])
+def test_diy_owned_cleanup(case, monkeypatch):
+    if case == "success" or case not in {"admission_failure", "frame_read_failure", "cli_timeout", "close_wait_timeout", "cleanup_failure", "kill_survivor"}:
+        # Faults wrap real operations. Snapshots precede independent containment;
+        # an oracle poll/wait is never credited as an owner-initiated reap.
+        owner = _OwnedDiyProcesses(60)
+        daemon = FakeDaemon(BEARER, held_sse_mode="silent")
+        original_stop = daemon.stop
+        original_pump = owner.pump
+        original_selector_close = owner.selector.close
+        original_cancel, original_join = owner.watchdog.cancel, owner.watchdog.join
+        children, events, reaped, faults, waits, fixture = [], [], set(), [], [], []
+        sentinel = None
+        primary = AssertionError("[D-cleanup] primary retained")
+        canary = "DIY_SECRET_CANARY operation details"
+        if case == "primary_note_error":
+            class Primary(AssertionError):
+                def add_note(self, value):
+                    raise OSError(canary)
+            primary = Primary("[D-cleanup] primary retained")
+        marker = {
+            "success": "[D5-role-order] clients before connector before fixture",
+            "terminate_error": "[D5-terminate] later roles reaped",
+            "primary_note_error": "[D5-note] failed diagnostic preserves primary and finalization",
+            "kill_error": "[D5-kill] later roles attempted; survivor truthful",
+            "wait_poll_error_wait_once": "[D5-wait-once] finalizers completed",
+            "wait_poll_error_poll_once": "[D5-poll-once] later roles attempted",
+            "wait_poll_error_poll_unknown": "[D5-poll-unknown] unobserved is not absent",
+            "shared_deadline_expired": "[D5-expired] live resources attempted",
+            "shared_deadline_allowance_exhausted": "[D5-shared] no renewed or positive expired wait",
+            "finalizer_error_pump_read": "[D5-pump-read] independent finalizers attempted",
+            "finalizer_error_pipe_close": "[D5-pipe-close] remaining pipes attempted",
+            "finalizer_error_selector_unregister": "[D5-unregister] remaining descriptors attempted",
+            "finalizer_error_selector_get_map": "[D5-get-map] finalization continues",
+            "finalizer_error_selector_close": "[D5-selector-close] closure truthful; fixture attempted",
+            "finalizer_error_watchdog_cancel": "[D5-watchdog-cancel] later operations attempted",
+            "finalizer_error_watchdog_join": "[D5-watchdog-join] liveness truthful; later operations attempted",
+            "finalizer_error_descriptor_access": "[D5-descriptor-access] remaining descriptors attempted",
+            "no_primary": "[D5-no-primary] cleanup error must fail",
+            "empty_exited_empty": "[D5-empty] no owned resources succeeds",
+            "empty_exited_already_exited": "[D5-exited] exited descriptors closed without signal",
+        }[case]
+
+        pumping = [False]
+
+        def intercept(name, operation, *, refuse=False, persistent=False, allow_fault=lambda: True):
+            calls = 0
+            def observed(*args, **kwargs):
+                nonlocal calls
+                events.append(name)
+                if allow_fault():
+                    calls += 1
+                if refuse and allow_fault() and (persistent or calls == 1):
+                    faults.append(name)
+                    raise OSError(canary)
+                return operation(*args, **kwargs)
+            return observed
+
+        class ObservedPipe:
+            def __init__(self, pipe, label, fault):
+                self.pipe = pipe
+                self.fileno = intercept(label + ":fileno", pipe.fileno, refuse=fault == "descriptor_access")
+                self.close = intercept(label + ":close", pipe.close, refuse=fault == "pipe_close")
+            def __getattr__(self, name):
+                return getattr(self.pipe, name)
+
+        def snapshot_stop():
+            fixture.append(dict(reaped=set(reaped), events=list(events),
+                exits={item["proc"].pid: item["proc"].returncode for item in children},
+                pipes=all(pipe.closed for item in children for pipe in item["pipes"]),
+                selector=owner.selector._selector.fileno() if not owner.selector._selector.closed else -1,
+                watchdog=owner.watchdog.is_alive(), at=time.monotonic()))
+            events.append("fixture")
+            return original_stop()
+
+        try:
+            daemon.start()
+            if case != "empty_exited_empty":
+                roles = ("connector", "cli", "client") if case != "empty_exited_already_exited" else ("cli",)
+                for role in roles:
+                    resistant = case == "kill_error" and role == "cli"
+                    source = "import signal,time; " + ("signal.signal(signal.SIGTERM,signal.SIG_IGN); " if resistant else "") + "print('ready',flush=True); " + ("" if case == "empty_exited_already_exited" else "time.sleep(60)")
+                    row = owner.spawn([sys.executable, "-c", source], role=role)
+                    proc = row["proc"]
+                    children.append(dict(row=row, proc=proc, poll=proc.poll, wait=proc.wait, kill=proc.kill,
+                                         terminate=proc.terminate, pipes=(proc.stdout, proc.stderr)))
+                for item in children:
+                    owner.wait(lambda item=item: b"ready" in item["row"]["stdout"], 2, "[D-cleanup] owned child ready")
+                if case == "empty_exited_already_exited":
+                    children[0]["wait"](timeout=2)
+                if case == "success":
+                    sentinel = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+            with _admission_response("127.0.0.1", daemon.port, "/tail", {"Authorization": "Bearer " + BEARER}) as (positive, positive_sock, positive_deadline, positive_watchdog):
+                assert _read_first_sse_frame(positive, positive_deadline) == 13, "[D-cleanup] independent first frame"
+                print("DIY_ADMITTED", flush=True)
+            assert positive.closed and not positive_watchdog.is_alive(), "[D-cleanup] positive response closed"
+            cleanup_start = None
+            with monkeypatch.context() as patch:
+                patch.setattr(daemon, "stop", snapshot_stop)
+                for item in children:
+                    proc, role = item["proc"], item["row"]["role"]
+                    first = role == "cli"
+                    for method in ("terminate", "kill"):
+                        refuse = first and ((method == "terminate" and case in {"terminate_error", "no_primary", "primary_note_error"}) or
+                            (method == "kill" and case == "kill_error") or
+                            (method == "poll" and case in {"wait_poll_error_poll_once", "wait_poll_error_poll_unknown"}))
+                        persistent = case in {"kill_error", "wait_poll_error_poll_unknown"}
+                        patch.setattr(proc, method, intercept(role + ":" + method, item[method], refuse=refuse, persistent=persistent))
+                    observed_poll = intercept(role + ":poll", item["poll"], refuse=first and case in {"wait_poll_error_poll_once", "wait_poll_error_poll_unknown"}, persistent=case == "wait_poll_error_poll_unknown")
+                    def recorded_poll(item=item, observed_poll=observed_poll):
+                        result = observed_poll()
+                        if result is not None:
+                            reaped.add(item["proc"].pid)
+                        return result
+                    patch.setattr(proc, "poll", recorded_poll)
+                    calls = [0]
+                    def observed_wait(*args, item=item, first=first, calls=calls, **kwargs):
+                        calls[0] += 1
+                        at = time.monotonic()
+                        waits.append((at, kwargs.get("timeout")))
+                        events.append(item["row"]["role"] + ":wait")
+                        if first and case == "shared_deadline_allowance_exhausted" and calls[0] == 1:
+                            faults.append("shared_wait")
+                            # Consume the actual allowance, without a fake clock.
+                            time.sleep(max(0, cleanup_start + 25 - time.monotonic()))
+                            raise subprocess.TimeoutExpired("owned", kwargs.get("timeout"))
+                        if first and ((case == "wait_poll_error_wait_once" and calls[0] == 1) or case == "wait_poll_error_poll_unknown"):
+                            faults.append("wait")
+                            raise OSError(canary)
+                        result = item["wait"](*args, **kwargs)
+                        reaped.add(item["proc"].pid)
+                        return result
+                    patch.setattr(proc, "wait", observed_wait)
+                    for label, pipe in zip(("stdout", "stderr"), item["pipes"]):
+                        fault = case.removeprefix("finalizer_error_") if first and label == "stdout" else ""
+                        patch.setattr(proc, label, ObservedPipe(pipe, role + ":" + label, fault))
+                for name in ("get_map", "unregister", "close"):
+                    patch.setattr(owner.selector, name, intercept("selector:" + name, getattr(owner.selector, name),
+                        refuse=case == "finalizer_error_selector_" + name, persistent=case == "finalizer_error_selector_close", allow_fault=lambda: not pumping[0]))
+                for name in ("cancel", "join"):
+                    patch.setattr(owner.watchdog, name, intercept("watchdog:" + name, getattr(owner.watchdog, name),
+                        refuse=case == "finalizer_error_watchdog_" + name))
+                pump_fault = intercept("pump", original_pump, refuse=case == "finalizer_error_pump_read")
+                def observed_pump(*args, **kwargs):
+                    pumping[0] = True
+                    try:
+                        return pump_fault(*args, **kwargs)
+                    finally:
+                        pumping[0] = False
+                patch.setattr(owner, "pump", observed_pump)
+                if case == "shared_deadline_expired":
+                    owner.deadline = time.monotonic() - 1
+                    owner.expired.set()
+                cleanup_start = time.monotonic()
+                secondary = None
+                traceback_before = None
+                try:
+                    if case not in {"success", "no_primary", "empty_exited_empty", "empty_exited_already_exited"}:
+                        raise primary
+                    _cleanup_owned(owner, daemon, None)
+                except AssertionError as exc:
+                    if exc is primary:
+                        traceback_before = exc.__traceback__
+                        _cleanup_owned(owner, daemon, exc)
+                        assert exc is primary and exc.__traceback__ is traceback_before, "[D-cleanup] same primary failure"
+                    else:
+                        secondary = exc
+                elapsed = time.monotonic() - cleanup_start
+                # Capture before restoring faults or any independent poll/wait.
+                owned_reaped = set(reaped)
+                captured_events = list(events)
+                all_closed = all(pipe.closed for item in children for pipe in item["pipes"])
+                selector_closed = owner.selector._selector.closed
+                watchdog_live = owner.watchdog.is_alive()
+                notes = str(getattr(primary, "__notes__", []))
+            live = {item["proc"].pid: item["poll"]() is None for item in children}
+            expected_reaped = {item["proc"].pid for item in children if case != "shared_deadline_allowance_exhausted" and not (item["row"]["role"] == "cli" and case in {"kill_error", "wait_poll_error_poll_unknown"})}
+            later_reaped = expected_reaped <= owned_reaped
+            expected_selector_closed = case != "finalizer_error_selector_close"
+            assert fixture and later_reaped and all_closed and selector_closed == expected_selector_closed and not watchdog_live, f"{marker}: observed={(bool(fixture), later_reaped, all_closed, selector_closed, watchdog_live)} expected={(True,True,True,expected_selector_closed,False)}"
+            assert fixture[0]["reaped"] == owned_reaped and fixture[0]["pipes"] and not fixture[0]["watchdog"], f"{marker}: fixture observed={fixture} expected=completed owned attempts"
+            signal_roles = [event.split(":")[0] for event in captured_events if event.endswith((":terminate", ":kill", ":wait"))]
+            connector_at = signal_roles.index("connector") if "connector" in signal_roles else len(signal_roles)
+            assert not any(role in {"cli", "client"} for role in signal_roles[connector_at:]), f"[D5-role-order] clients before connector before fixture: observed={signal_roles} expected=client/cli,connector"
+            if case == "kill_error":
+                pid = next(item["proc"].pid for item in children if item["row"]["role"] == "cli")
+                assert live[pid] and pid not in owned_reaped and "survivor" in notes and faults, f"{marker}: observed={(live[pid],pid in owned_reaped,notes,faults)} expected=live unreaped survivor"
+            elif case == "wait_poll_error_poll_unknown":
+                pid = next(item["proc"].pid for item in children if item["row"]["role"] == "cli")
+                assert pid not in owned_reaped and "process_cleanup" in notes and "survivor" not in notes and any(event == "cli:wait" for event in captured_events), f"{marker}: observed={(pid in owned_reaped,notes,captured_events)} expected=unknown, attempted reap"
+            elif case == "shared_deadline_allowance_exhausted":
+                assert faults and all(role + ":wait" in captured_events for role in ("cli", "client", "connector")) and elapsed <= 30.5 and fixture[0]["at"] - cleanup_start <= 25.5 and all(timeout <= max(0, cleanup_start + 25 - at) + 0.01 for at, timeout in waits), f"{marker}: observed={(elapsed,waits,captured_events)} expected=one25s allowance, zero expired waits, all roles attempted"
+            else:
+                assert not any(live.values()), f"{marker}: observed={live} expected=actual absence"
+            if case == "no_primary":
+                assert secondary is not None and "process_cleanup" in str(secondary), f"{marker}: observed={secondary} expected=cleanup failure"
+            else:
+                assert secondary is None, f"{marker}: observed={secondary} expected=no replacement failure"
+            if case.startswith("finalizer_error_") or case in {"terminate_error", "kill_error", "wait_poll_error_wait_once", "wait_poll_error_poll_once", "wait_poll_error_poll_unknown", "no_primary", "primary_note_error"}:
+                assert faults, f"{marker}: observed={faults} expected=reached fault boundary"
+            if case == "finalizer_error_selector_close":
+                assert "descriptor" in notes and "selector:close" in captured_events, f"{marker}: observed={(notes,captured_events)} expected=attempted refused close, incomplete"
+            assert canary not in notes and canary not in str(secondary), f"[D5-category] category-only note without canary: observed={notes} expected=closed categories"
+            if case == "empty_exited_already_exited":
+                assert not any(event.endswith((":terminate", ":kill")) for event in captured_events), f"{marker}: observed={captured_events} expected=no signal"
+            if sentinel is not None:
+                assert sentinel.poll() is None, "[D5-role-order] unowned sentinel remains live"
+            assert not daemon._thread.is_alive() and not owner.watchdog.is_alive(), "[D-cleanup] fixture/watchdog joined"
+            assert not _connector_reachable("127.0.0.1", daemon.port), "[D-cleanup] listener absence"
+        finally:
+            # No successful cleanup credit may come from this outer containment.
+            for item in children:
+                proc = item["proc"]
+                if item["poll"]() is None:
+                    item["kill"]()
+                item["wait"](timeout=5)
+                for pipe in item["pipes"]:
+                    pipe.close()
+            if sentinel is not None:
+                sentinel.kill()
+                sentinel.wait(timeout=5)
+            original_selector_close()
+            original_cancel()
+            original_join(timeout=1)
+            original_stop()
+        return
+    owner = _OwnedDiyProcesses(60)
+    daemon = FakeDaemon(BEARER, held_sse_mode="silent")
+    daemon.start()
+    primary = AssertionError("[D-cleanup] primary retained")
+    row = owner.spawn([sys.executable, "-c", "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ready',flush=True); time.sleep(30)" if case == "kill_survivor" else "import time; print('ready',flush=True); time.sleep(30)"], role="cli")
+    owner.wait(lambda: b"ready" in row["stdout"], 2, "[D-cleanup] owned child ready")
+    original = owner.cleanup
+    if case == "cleanup_failure":
+        def failure():
+            original()
+            return ["injected"]
+        owner.cleanup = failure
+    try:
+        with _admission_response("127.0.0.1", daemon.port, "/tail", {"Authorization": "Bearer " + BEARER}) as (positive, positive_sock, positive_deadline, positive_watchdog):
+            assert _read_first_sse_frame(positive, positive_deadline) == 13, "[D-cleanup] independent first frame"
+            print("DIY_ADMITTED", flush=True)
+        assert positive.closed and not positive_watchdog.is_alive(), "[D-cleanup] positive response closed"
+        if case in {"admission_failure", "frame_read_failure"}:
+            with _DiyWirePeer([b"bad\n\n"], content_type="application/json" if case == "admission_failure" else "text/event-stream") as peer:
+                with pytest.raises(AdmissionError):
+                    with _admission_response("127.0.0.1", peer.port, "/tail", {}) as (resp, sock, deadline, watchdog):
+                        assert resp.status == 200
+                        _read_first_sse_frame(resp, deadline)
+                assert resp.closed and sock.fileno() == -1 and not watchdog.is_alive(), "[D-cleanup] connection/response/watchdog closed"
+        elif case in {"cli_timeout", "close_wait_timeout"}:
+            with pytest.raises(AssertionError, match=r"\[D-cleanup\]"):
+                owner.wait(lambda: row["proc"].poll() is not None, 0.2, "[D-cleanup] injected wait timeout")
+        if case != "success":
+            raise primary
+    except AssertionError as exc:
+        secondary = None
+        try:
+            _cleanup_owned(owner, daemon, exc)
+        except AssertionError as cleanup_exc:
+            secondary = cleanup_exc
+        assert secondary is None, "[D-cleanup] primary must survive cleanup failure"
+        assert exc is primary, "[D-cleanup] same primary failure"
+        if case == "cleanup_failure":
+            assert "injected" in exc.__notes__[0], "[D-cleanup] secondary diagnostic retained"
+    else:
+        _cleanup_owned(owner, daemon, None)
+    try:
+        assert row["proc"].poll() is not None and row["proc"].stdout.closed and row["proc"].stderr.closed, "[D-cleanup] process and pipe absence"
+        assert not daemon._thread.is_alive() and not owner.watchdog.is_alive(), "[D-cleanup] fixture/watchdog joined"
+        assert not _connector_reachable("127.0.0.1", daemon.port), "[D-cleanup] listener absence"
+    finally:
+        # The test-created identity is independently contained after observing
+        # the deliberately broken registry. This cannot satisfy the assertion.
+        if row["proc"].poll() is None:
+            row["proc"].kill()
+        row["proc"].wait(timeout=5)
+        row["proc"].stdout.close()
+        row["proc"].stderr.close()

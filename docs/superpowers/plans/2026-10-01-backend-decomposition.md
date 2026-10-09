@@ -1,6 +1,7 @@
 # Backend decomposition program (THR-273 step 5)
 
 Status: approved for execution by founder THR-273 seq 37 ("start step 5"); owner engineering_manager root TASK-9346.
+Continuation: founder THR-273 seq45; current engineering_manager owner TASK-9515.
 Baseline: `main` `e5c60964` (2026-10-01).
 
 | Module | Lines @ e5c60964 | Shape |
@@ -66,15 +67,785 @@ Serial, one slice in flight per hot file, each its own PR from fresh `origin/mai
 | S5 | Workspace-cleanup selection (erratum: the moved module-level set also includes the ISO-awareness helpers, marker constants, history-page constant, shared stale-pending SQL constant, direct-WAL helper, and all three cleanup dataclasses; every name is re-exported) | `db/workspace_cleanup.py` | MEDIUM |
 | S6 | Threads core (erratum: the moved set is the 38 clock-independent thread, participant, message, and invocation methods; clock-resolving helpers and reply/task-tied methods remain for later slices) | `db/threads.py` | HIGH |
 | S7a/b | Reply delivery; reply exchange (erratum: S7a and S7b merge into one PR; the two exchange constants move and are facade-re-exported, while a shared late `_now` helper preserves patched-global rule 3) | `db/reply_delivery.py`, `db/reply_exchange.py` | HIGH |
-| S8 | Tasks lifecycle (insert/update/list/subtree/delegate/escalate, completion-callback admission) | `db/tasks.py` | HIGH |
+| S8a | Task core CRUD, queries, severity, lineage and recall: the exact 22-method set below, `_SEVERITY_RANK` and identity-re-exported `LineageTooDeep` | `db/tasks.py` | HIGH |
+| S8b | Verified retry lineage, atomic single/fanout child spawn, retry feedback and no-write admission: exact 13-method/eight-module-node set below | existing `db/tasks.py`; identity re-exports in `database.py`, MRO unchanged | HIGH |
+| S8c | Ordinary claim/budget failure, manager supersession/refusal, transactional chain advance and task state queries: exact twelve-method set below | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
+| S8d | Completion-recovery ledger lifecycle and receipt-owned parent handoff: exact 21-method set below | existing `db/tasks.py`; only standard-library `Callable` import added, bindings and MRO unchanged | HIGH/CRITICAL |
+| S8e | Completion-result readers and projection: exact five-method set below, 163 decorated-source lines | existing `db/tasks.py`; imports, bindings and MRO unchanged | HIGH/CRITICAL |
+| S8f | Atomic task/attachment admission and causal task-followup replacement: exact two-method set below, 283 decorated-source lines | existing `db/tasks.py`; only sqlite3, ThreadMessageKind and existing late clock helper imports added, facade bindings and MRO unchanged | HIGH |
+| S8 remaining | Callback admission, result writers, logger-dependent escalation and cross-domain methods stay in the facade pending separate slices and collision checks | targets determined per later slice | HIGH |
 | S9 | Schema bootstrap and migrations (DDL byte-identical; erratum: S9 lands before S8 while active PR #955 edits task code; moves the exact 15-method schema/bootstrap set plus the closed five-name module set `AuthorityAuditMigrationRefusal`, `_AUTHORITY_LIFECYCLE_GUARD_TRIGGER_SQL`, `_AUTHORITY_POLICY_V2_CONTROL_SCHEMA_SQL`, `_AUTHORITY_POLICY_ACTIVATIONS_VALIDATE_INSERT_SQL`, `_rebuild_indexes_for`; repoints only the source-text path in `tests/test_thread_mention_routing_store.py`) | `db/schema.py` | HIGH |
 | S10 | Authority policy v1 claims/fences/continue envelopes (erratum: the exact 17-method block from `get_authority_candidate_policy_pin` through `list_authority_audit` plus the seven module definitions `_authority_claim_key`, `_parse_authority_fence_results`, `_validate_authority_class`, `_serialize_authority_fence_results`, `_serialize_authority_audit_payload`, `_AUTHORITY_TERMINAL_STATUSES`, and `_AUTHORITY_APPROVED_VERDICTS`; v1 selector/activation/release remain for S13) | `db/authority_v1.py` | HIGH |
-| S11–S13 | Authority policy: v2 attempts/finalisation; v2 continuation/publication; selector/activation/release | `db/authority_*.py` | HIGH/CRITICAL — only when no open authority PR is in flight |
+| S11 | Authority policy v2 attempts/finalisation (erratum: the exact contiguous 67-method `_authenticate_v2_attempt_admission_uncommitted` through `get_authority_policy_v2_housekeeping_target` block plus `_AUTHORITY_POLICY_V2_STAGE_REFUSAL_TO_HOUSEKEEPING`) | `db/authority_v2_attempts.py` | HIGH |
+| S12 | Authority policy v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption (erratum: the exact contiguous 119-method `_authority_policy_v2_envelope_from_row` through `cancel_zombie_without_fingerprint` block plus `_V2_MALFORMED_DECISION`, `_canonical_completion_json`, `_V2_ATTEMPT_RESULT_STAGE_KEYS`, `_V2_ATTEMPT_AUDIT_RESULT_STAGE_KEYS`, `_V2_REFUSAL_RESULT_STAGE_KEYS`, `_V2_REFUSAL_RESULT_STAGE_KEYS_WITH_CANDIDATE`, `_V2_CONTINUED_RESULT_STAGE_KEYS`, `_V2_ADMISSION_RESULT_STAGE_KEYS`, `_V2_PUBLICATION_RESULT_STAGE_KEYS`, `_V2_INVALIDATION_RESULT_STAGE_KEYS`, `_V2_DECISION_RESULT_STAGE_KEYS`, `_V2_SPEND_RESULT_STAGE_KEYS`, `_V2_SPEND_OTHER_RESULT_STAGE_KEY_SETS`, `_V2_ALL_RESULT_STAGE_KEY_SETS`, and its following subscript assignment) | `db/authority_v2_continuation.py` | CRITICAL — only when no open authority PR is in flight |
+| S13 | Authority policy selector/activation/release (erratum: landed before S11/S12 because it was the only contiguous authority block, moving the exact 59-method `_authority_policy_release_from_row` through `reactivate_authority_policy_legacy` block plus `_AUTHORITY_POLICY_SESSION_BINDING_ACTION` and `_AUTHORITY_POLICY_SELECTOR_SESSION_BINDING_ACTION`) | `db/authority_policy.py` | HIGH/CRITICAL |
 | R1–R5 | `run_step.py`: terminal-worktree reclaim; decision validation; prompt/header builders; chain/carrier/fanout; thread posting | `runtime/orchestrator/<capability>.py`, functions re-exported from `run_step` under the patched-global rule | HIGH |
 | R6 | `run_step.py` completion consumption / v2 dispatch gate | as above | CRITICAL — last |
 | M/E | `models.py`, `executors.py` | re-planned after S/R slices; not committed here (`executors.subprocess` is patched 75× in tests) | — |
 
 Re-evaluation point: after S5 the EM re-measures and may re-order; the plan is updated in the next slice PR.
+
+### S8a exact ownership and remaining holds
+
+S1–S7 and S9–S13 are already on main at the S8a base
+`7c4a3f39eeb5cd026d3bb27b5754c71bd32f3fd4`; none is rebuilt. S8a moves only
+these 22 definitions, in existing order, to `TasksMixin` in `db/tasks.py`:
+
+```text
+insert_task, get_task, list_tasks, get_children, get_descendant_task_ids,
+get_subtree_statuses, _worst_subtree_status, _get_subtree_tasks,
+_current_failed_contributions, _current_severity_rollup, list_roots,
+list_tasks_by_brief_prefix, list_tasks_by_thread, get_direct_revisits,
+batch_get_direct_revisits, walk_ancestors, walk_revisit_chain,
+get_recall_payload, list_agent_tasks, update_task,
+update_task_active_chain, update_task_active_fanout
+```
+
+Their decorated source totals 733 lines. The identical class-body annotated
+`_SEVERITY_RANK` assignment and module-level `LineageTooDeep` class move with
+their consumers; `database.py` re-exports the same exception object. Closure is
+`TaskRecord`, `TaskStatus`, `BlockKind`, `datetime`, `timezone`, the identical
+shared `_synchronized`, and `LineageTooDeep` (plus builtin `Exception`). All
+inter-method/severity lookups use `self`; no moved body resolves a facade-only
+global. The shared decorator retains its existing late facade `_time` lookup.
+All other facade definitions and class assignments remain unchanged.
+
+The fresh S8 inventory has 82 remaining task-domain definitions, including
+PR #955's added `try_fail_nonroot_manager_supersede`, which remains in
+`database.py` for a later transition slice. Remaining work includes task
+transitions, verified retry/delegation, completion admission/recovery/results,
+and task/attachment, thread-followup replacement and termination writers;
+this list grants no wider relocation radius. OPEN PR #840 at
+`aa3e1f7005ffb99a15036b5e698572ab80dd570c` actually modifies
+`insert_task_result` and adds result/cleanup receipt helpers, so that later-S8
+result-write relocation remains held. Its hunks do not overlap S8a.
+
+R2 is exactly **eleven functions**, not twelve, and has not landed. OPEN PR
+#682 at `ff53f85098648e993ce3ca1f2b8a50e406644f97` is an actual collision:
+it modifies `_validate_delegate` and adds `_reviewer_downstream_omission_error`,
+as well as completion consumption, `_advance_chain_for_completed_child`,
+`_carrier_fail_on_verdict_mismatch`, `_enqueue_parent_if_waiting`,
+`_spawn_fanout_children` and chain ownership serialization. R2 and the actual
+overlapping R4/R6 symbols remain held; idle status does not free them.
+Engineering_manager owns this historical PR. Founder THR-175 seq36 approved
+splitting its incident fix into the separate merged PR #686, while ownership/CAS
+hardening remains deferred under its existing trigger. Keep #682 unchanged;
+decomposition does not authorize closing, merging, rewriting, cherry-picking
+or implementing its hardening. Re-audit all open PR hunks at each slice's
+edit/publication/handoff gates, including newly listed historical PRs.
+
+### S8b exact ownership and remaining holds
+
+S8a PR #968 is merged at `ead3bf0494cdfde93a44de99756384645ca75676`.
+S8b adds exactly these 13 existing definitions, verbatim and in source order,
+to the existing `TasksMixin`; its 22 S8a methods and `_SEVERITY_RANK` remain
+unchanged:
+
+```text
+_retry_object, _retry_audits, _retry_require_audit, _retry_manager_edge,
+_retry_dispatch_edge, _retry_escalation_edge, verify_retry_link,
+_retry_claim_matches, _retry_spawn_check, try_retry_feedback,
+admit_retry_feedback, try_delegate_many, try_delegate
+```
+
+The methods total 601 decorated definition lines at this base. The seven
+module classes `VerifiedRetry`, `InvalidLineage`, `RetryClaim` (including
+`from_task`), `Committed`, `LostClaim`, `PendingRetry`, `_RetryEvidenceRefusal`
+and the one `SpawnOutcome = Committed | InvalidLineage | LostClaim` assignment
+move verbatim (46 decorated lines total). `database.py` identity-reimports all
+eight bindings, including the private exception and the exact union object.
+`LineageTooDeep` stays unchanged in `tasks.py`; `Database` stays at its old
+path with identical MRO. All retained definitions/assignments stay unchanged.
+
+Complete global closure is `json`, `hashlib`, `dataclass`, `replace`,
+`datetime`, `timezone`, shared `_synchronized`, `BlockKind`, `TaskRecord`,
+`TaskStatus`, `ThreadInvocationPurpose`, `ThreadInvocationStatus`, and those
+eight module bindings. Selected bodies resolve no bare facade `_now`, `_time`,
+`logger` or `sqlite3`; no facade import or new late-global bridge is needed.
+The shared decorator retains its late whole-facade `_time` lookup. Calls to
+`self.get_task`, retry helpers/verifier, `_insert_task_result` and
+`_insert_task_attachments_txn` remain dynamic on `Database`, preserving real
+instance/class patch seams. Original claim/refusal priority, provenance,
+transactions, rollback, revision accounting and queue-admission behavior do
+not change.
+
+The remaining task-domain count goes from 60 after S8a to 47; direct facade
+methods go from 103 to 90. Task transitions, completion admission/recovery,
+`_insert_task_result`/`insert_task_result`, cross-domain writers and PR #955's
+`try_fail_nonroot_manager_supersede` remain in `database.py`. PR #840's result
+writer overlap, the eleven-function R2 hold and actual R4/R6 collisions with
+PR #682 remain held as described above. Fresh S8b audit found 33 open PRs;
+the six database hunks (#840, #684, #595, #587, #585, #547) and #682 do not
+change the selected S8b nodes or `tasks.py`. Re-audit before publication and
+handoff; this inventory does not authorize any foreign behavioral change.
+
+### S8c exact ownership and remaining holds
+
+S8b PR #969 is merged at `f7a8ba5b4cf73b34c8921cc292c2c47d94b53baf`.
+S8c moves exactly these twelve existing definitions, verbatim and in source
+order, into the existing `TasksMixin`:
+
+```text
+try_claim_for_step, try_fail_over_budget,
+_has_live_manager_supersession_family_work_uncommitted,
+try_fail_nonroot_manager_supersede, try_manager_supersede,
+try_reject_thread_origin_manager_supersede, try_advance_chain,
+increment_revision_count, next_task_id, get_nonterminal_task_ids,
+list_blocked_with_kind, list_tasks_blocked_on_jobs
+```
+
+Their decorated source totals 489 lines. The family-work helper remains
+undecorated; PR #955's non-root failure writer is unchanged. Complete closure
+is `json`, `hashlib`, `datetime`, `timezone`, shared `_synchronized`,
+`BlockKind`, `TaskStatus` and `TaskRecord`, including the string forward
+annotation on `try_advance_chain`; all are already imported by `tasks.py`.
+No import or module binding moves. The existing 35 mixin methods, severity
+assignment, `LineageTooDeep`, eight S8b bindings and all retained facade/module
+nodes remain unchanged. Dynamic `self` calls stay patchable, and the shared
+decorator retains its late whole-facade `_time` lookup and reentrant lock.
+`Database` keeps its original path, MRO and complete public/private attributes.
+
+Direct facade methods go from 90 to 78; the remaining task-domain inventory
+goes from 47 to 35. Logger-dependent `try_escalate`, `try_escalate_runtime`
+and `try_escalate_over_budget`, completion/recovery/results (including
+`_insert_task_result`, `insert_task_result` and
+`completion_result_payload_matches`), attachment/thread/cleanup/termination/
+notification cross-domain writers and shared/facade infrastructure remain
+for later bounded slices. The S8a/S8b paragraphs above preserve their
+historical inventories; their remaining-work descriptions are superseded
+only by this exact S8c relocation.
+
+Fresh S8c audit found 33 open PRs with unchanged heads/file sets after #969
+merged. None touches `tasks.py`; actual #840/#684/#595/#587/#585/#547
+Database hunks do not modify the twelve selected methods or their closure.
+PR #840 result-write relocation remains held. PR #682 still has no Database
+or tasks hunk, while its eleven-function R2 and actual R4/R6 collisions stay
+held under the THR-175 seq33/36 split/deferred ownership disposition above.
+No close/merge/rewrite/transplant of foreign behavior is authorized. Re-audit
+all open PRs and actual changed hunks before publication and handoff.
+S1–S7/S9–S13 and S8a/S8b are shipped foundations, not rebuilt by S8c;
+remaining S8, R1–R6 and later M/E work is not claimed complete.
+
+### S8d exact ownership and remaining holds
+
+S8c PR #971 is merged at `91fac365452612bcd1a2a62d22b955d9a8df5634`.
+S8d appends exactly these 21 existing definitions, verbatim and in source
+order, to the existing `TasksMixin`:
+
+```text
+claim_task_completion_recovery
+publish_task_completion_recovery_binding
+task_completion_recovery_launch_allowed
+set_task_executor_pid_if_current
+completion_recovery_callback_allowed
+mark_task_completion_recovery_callback_consumed
+reconcile_accepted_recovery_continued_same_root
+complete_task_if_current_recovery_owner
+consume_accepted_blocked_task_completion_recovery
+consume_accepted_completed_task_completion_recovery
+consume_accepted_nonroot_escalation_recovery
+get_consumed_completed_task_completion_recovery_task_ids
+get_consumed_nonroot_escalation_recovery_task_ids
+get_consumed_task_completion_recovery_owners
+consumed_task_completion_recovery_owner_is_current
+settle_expired_task_completion_recovery
+settle_interrupted_task_completion_recovery
+get_claimed_task_completion_recovery
+get_accepted_task_completion_recovery_result
+get_accepted_task_completion_recovery_task_ids
+handoff_consumed_task_completion_recovery_parent_effect
+```
+
+Their decorated source totals 692 lines: the first twenty are the contiguous
+recovery block, followed by the receipt-owned parent-effect handoff. Complete
+closure is `json`, `TaskStatus`, `BlockKind`, identical shared `_synchronized`,
+and annotation `Callable`; only `from typing import Callable` is newly needed.
+No module binding, facade-only global or MRO moves. All 47 existing mixin
+methods, severity assignment, nine facade identity re-exports and every
+retained facade/module node remain unchanged. Dynamic `self` lookups,
+particularly `consumed_task_completion_recovery_owner_is_current` and
+`insert_audit_log_uncommitted`, stay patchable. The shared decorator still
+observes late whole-facade `_time` replacement and the same instance RLock;
+the synchronous parent effect remains inside the receipt-owned critical
+section, after captured-job cleanup and before notification delivery.
+
+Direct facade methods go from 78 to 57, mixin methods from 47 to 68, and the
+remaining task-domain inventory from 35 to 14. Retained task methods are:
+`try_escalate`, `try_escalate_runtime`, `try_escalate_over_budget`,
+`insert_task_result`, `_insert_task_result`, `admit_task_completion_callback`,
+`get_task_results`, `get_agent_task_results`, `get_latest_task_result`,
+`get_latest_completion_report`, `_row_to_completion_report`,
+`insert_task_with_attachments`, `dispatch_task_followup_replacement`, and
+`terminate_agent_cleanups`. Result projection helpers and cross-domain/module
+infrastructure remain in the facade. The S8a–c paragraphs preserve historical
+receipts; only their remaining-work descriptions are superseded by this move.
+The U0 recovery inventory names unchanged run_step/startup callers and needs
+no edit.
+
+Fresh S8d audit found 34 foreign open PRs with heads/file sets equal to the
+previous audit minus merged #971. None touches `tasks.py`; actual
+#840/#684/#595/#587/#585/#547 Database hunks do not intersect the selected
+nodes or closure. PR #840's actual result writers/cleanup helpers remain held.
+PR #682's eleven-function R2 and actual R4/R6 validator/completion/chain/
+carrier/fanout/CAS collisions remain HELD under THR-175 seq33/36's incident
+split and deferred-hardening disposition. #970 is web/i18n, outside this
+radius. Re-audit actual hunks before publication and handoff; no foreign
+close/merge/rewrite/transplant or hardening is authorized. All landed
+S1–S7/S9–S13/S8a–c remain foundations. Remaining S8, R1–R6 and later M/E
+work is not claimed complete.
+
+### S8e exact ownership and remaining holds
+
+S8d PR #972 is merged at `f9654f029643d970a8cf456d7afed10ccba0d433`.
+S8e appends exactly these five existing definitions, verbatim and in source
+order, to the existing `TasksMixin`:
+
+```text
+get_task_results
+get_agent_task_results
+get_latest_task_result
+get_latest_completion_report
+_row_to_completion_report
+```
+
+Their decorated source totals 163 lines. The first four keep their shared
+`_synchronized` decorator; the projection helper remains undecorated.
+Complete module closure is only `json` and the identical shared
+`_synchronized`, already bound in `tasks.py`; no import or binding is added.
+`get_latest_completion_report` retains its local `pydantic.ValidationError`
+import, and `_row_to_completion_report` retains its local `CompletionReport`
+and `LocalCiEvidence` imports. The quoted `CompletionReport` annotation
+remains unchanged; it had no facade module binding and gains none. No bare
+`_now`, `_time`, logger, sqlite3 or other facade-only global moves. The shared
+decorator still observes late whole-facade `_time` replacement and the same
+instance RLock. Dynamic `self._row_to_completion_report` remains patchable.
+
+All 68 existing mixin methods, severity assignment, nine facade identity
+re-exports and every retained facade/module node remain unchanged. Direct
+facade methods go from 57 to 52, mixin methods from 68 to 73, and the remaining
+task-domain inventory from 14 to nine: `try_escalate`, `try_escalate_runtime`,
+`try_escalate_over_budget`, `insert_task_result`, `_insert_task_result`,
+`admit_task_completion_callback`, `insert_task_with_attachments`,
+`dispatch_task_followup_replacement`, and `terminate_agent_cleanups`.
+`completion_result_payload_matches`, `_canonical_completion_json` and all
+infrastructure/cross-domain keepers stay in the facade. S8a–d count and
+ownership paragraphs are historical receipts; their remaining-work
+descriptions are superseded only for these five readers/projection.
+
+Fresh S8e audit found 34 foreign open PRs, with heads/file sets unchanged
+after merged #972. None touches `tasks.py`; actual
+#840/#684/#595/#587/#585/#547 Database hunks do not intersect the selected
+nodes or closure. #840's `get_task_results` line is context, while its result
+writers/cleanup helpers remain HELD. #682's eleven-function R2 and actual
+R4/R6 validator/completion/chain/carrier/fanout/CAS collisions remain HELD
+under THR-175 seq33/36's incident split and deferred-hardening disposition.
+#970 is web/i18n, outside this radius. Re-audit heads/file sets and actual
+hunks before publication and handoff; no foreign close/merge/rewrite/transplant
+or hardening is authorized. All landed S1–S7/S9–S13/S8a–d remain foundations;
+remaining S8, R1–R6 and later M/E work is not claimed complete.
+
+### S8f exact ownership and remaining holds
+
+S8e PR #973 is merged at `414f3185109c3782fdd2f287cd48648b9f49b612`.
+S8f appends exactly `insert_task_with_attachments` (99 decorated lines) then
+`dispatch_task_followup_replacement` (184), verbatim and in source order, to
+the existing `TasksMixin`. The 283 lines retain every body, annotation,
+default, decorator, SQL string and literal. Complete closure is `TaskRecord`,
+`ThreadMessageKind`, `json`, `sqlite3`, shared `_synchronized` and `_now`.
+Only `sqlite3`, `ThreadMessageKind` and the existing shared
+`_late_database_now as _now` import are added; `json`, `TaskRecord` and
+`_synchronized` already have identical bindings. Original `_now` and its
+`datetime`/`timezone` closure stay facade-owned. The late helper resolves
+the whole facade `_now` after both modules import, while the shared decorator
+continues resolving whole facade `_time` and the same reentrant instance lock.
+Dynamic `self._append_thread_message_uncommitted` remains patchable.
+
+Direct facade methods go from 52 to 50, mixin methods from 73 to 75, and
+remaining task keepers from nine to seven: `try_escalate`,
+`try_escalate_runtime`, `try_escalate_over_budget`, `insert_task_result`,
+`_insert_task_result`, `admit_task_completion_callback`, and
+`terminate_agent_cleanups`. All retained definitions, module assignments,
+facade bindings, nine task identity re-exports and the MRO remain unchanged.
+Earlier S8 paragraphs retain historical counts; their remaining-work
+descriptions are superseded only for these two writers.
+
+Fresh S8f audit found 34 foreign open PRs with unchanged heads/file sets and
+eight complete diff hashes (#840, #684, #595, #587, #585, #547, #682, #970).
+None touches `db/tasks.py` or the selected Database definitions/clock
+definitions. **Caller-overlap erratum:** PR #684 actually wraps attachment
+`submit_task`'s selected insert and enqueue in `transfer_fence.admission()`,
+preserving the selected definition and arguments. Earlier blanket
+no-caller-overlap evidence is superseded. Refresh actual wrapper hunks before
+edits, publication, handoff and manager merge; if it lands, require exact
+main-overlap/trial-merge/focused compatibility or fresh mechanical extraction.
+PR #840's actual result writers and PR #682's eleven-function R2 and actual
+R4/R6 validator/completion/chain/carrier/fanout/CAS collisions remain HELD
+under the existing THR-175 split/deferred-hardening disposition. No foreign
+close/merge/rewrite/transplant or hardening is authorized. All landed slices
+remain foundations; later S8/R/M/E units remain separate work.
+
+### S8g exact ownership and remaining holds
+
+S8f PR #974 is merged at `7a6511db41933b5fbe512807e415a0de26f6db56`.
+S8g starts from fresh main `6a3e4044054293d2a93aee6360a0e8a2cc4881b4`,
+whose sole intervening PR #965 daemon-launch change leaves the selected source,
+closure, caller and source-map blobs byte-identical. The twelve predecessor
+slices and S8a–f remain shipped foundations.
+
+S8g appends exactly the decorated `terminate_agent_cleanups` definition
+(122 lines), verbatim, into existing `TasksMixin`. Only `ScheduleStatus`,
+`WorkHourStatus` and `DreamStatus` imports are added; `ThreadInvocationStatus`,
+the shared `_synchronized` and `_late_database_now as _now` already exist.
+Complete body closure is those four enums, `_now` and builtin `Exception`,
+with postponed `str`/`None` annotations and `None` defaults. No helper, binding,
+class, module state, logger capture, nested definition or local import moves.
+Every retained facade/mixin definition, original facade import, nine task
+identity re-exports and the MRO remain unchanged.
+
+Risk remains HIGH/load-bearing: one multi-table cleanup/audit/provider-session
+transaction with shipping route archive/team compensation. The existing late
+clock resolves whole-facade `_now` after import; the shared decorator resolves
+whole-facade `_time` and acquires the same instance RLock. Session reset and
+uncommitted audit calls remain dynamic. Preserve clock/BEGIN-before-try,
+Exception-only rollback, SQL/literals, audit scopes and operation order exactly.
+Cleanup timestamps and AuditMixin's own clock remain distinct. A present empty
+audit scope is distinct from `None`; a supplied null audit agent with participant
+rows retains the existing audit-column integrity error and complete rollback.
+No semantic strengthening or repair is part of this relocation.
+
+Base facade inventory is 2,290 lines/50 direct methods and tasks.py is
+3,141 lines/75 methods; the exact move yields 49 facade methods, 76 mixin
+methods and six task keepers: `try_escalate`, `try_escalate_runtime`,
+`try_escalate_over_budget`, `insert_task_result`, `_insert_task_result` and
+`admit_task_completion_callback`. Earlier S8 counts and remaining-work lists
+are historical receipts, superseded only for this termination method.
+
+The sole shipping caller remains `agents.py::manage_agent`. All four selected
+existing termination patch records remain meaningful through that route.
+Fresh complete 33 foreign open heads/file sets and pinned full diff hashes
+remain unchanged after PR #965 merged; actual relevant hunks do not modify
+termination, its selected dependencies or its shipping caller. PR #939 changes
+executor/profile owners in the same route file, outside `manage_agent`.
+PR #684 really wraps attachment `submit_task`'s insert AND enqueue inside
+`transfer_fence.admission`; this prior caller overlap remains acknowledged
+and no foreign behavior is incorporated. PR #840's result writers/admission
+caller, PR #682's eleven-function R2 and actual R4/R6 validator/completion/
+carrier/chain/fanout work remain HELD under the existing THR-175 incident-split
+and deferred-hardening disposition. R1 late-state/cache/lock consumers stay
+put. Re-audit actual main/PR drift before publication, handoff and manager
+merge; same-file unrelated hunks require exact owner assessment. No later
+S/R/M/E unit, foreign PR close/merge/hardening or whole-program completion is
+authorized by S8g.
+
+Finite acceptance retains successful target/unrelated/zero-row matrices,
+exact timestamp/audit columns and provider reset count/scope/payload; real
+cleanup DML/nth-audit/reset-then-raise/invalidation-insert-then-raise rollback
+with full-table and route-compensation observations; class AND instance
+shipping helper patches, late facade clocks, both fresh import orders, nested
+shared RLock and restored healthy actions; and all moved/retained source,
+AST, ordered SQL/literal and runtime identity proofs. Repository tests and
+fixtures stay unchanged; necessary executable task-output probes supplement
+the fourteen inherited assertion rows. Static inventories are requirements,
+not executable QA. All independent exact-head delivery gates below remain.
+
+## R3 prompt-reader ownership (TASK-9711)
+
+`runtime/orchestrator/task_prompt_headers.py` owns exactly seven unchanged
+functions: `_list_candidate_agents`, `_revisit_header_if_applicable`,
+`_auto_revisit_header`, `_resolved_escalation_header_if_applicable`,
+`_build_prior_steps_from_db`, `_summarize_recent_chain`, and
+`_fanout_join_header_if_applicable`, plus their single mutable
+`_REVISIT_DISCIPLINE_LINES` list. `run_step.py` re-exports the identical objects.
+The retained `_build_agent_prompt` composes them; its logger-dependent
+`_blocked_jobs_resume_header_if_applicable` stays in the facade. TaskStatus is
+imported at runtime; StepRecord/JSON stay local and Orchestrator stays a
+postponed, TYPE_CHECKING-only dependency. Database owns the dynamic readers,
+row-decoding errors, shared RLock and clocks. No writer or rendered behavior
+changes ownership in this slice.
+
+S8g PR #975 is a merged foundation (`74c2b0cca117445a4db2fa162242c12e94859903`);
+its successful delivery is preserved rather than rebuilt. Database escalation
+logger keepers remain retained, and result/admission writers and their actual
+callback caller remain held for #840. R1 state/cache/shared lock/__file__/whole
+clock/helper consumers remain retained. #682's **eleven-function R2** and actual
+R4/R6 completion/chain/carrier/parent/fanout collisions remain held. #684's real
+attachment insertion **and enqueue** admission overlap remains acknowledged.
+Remaining R5 callers, R4/R6, models and executors are later serial work. R3 ownership
+does not claim those units complete or authorize foreign PR repair or merge.
+TASK-9704 accepts TASK-9708's C1–C8 case design after independent DESIGN-ONLY
+TASK-9710 PASS; executable maker verification, independent full-diff review,
+executable QA and exact-head CI retain the per-slice gates below. Integration
+SUITE remains SKIPPED under Founder THR-243 seq42; selected hosted callback
+smoke remains separate and required.
+
+## R5 append/decoder ownership (TASK-9793)
+
+`runtime/orchestrator/task_thread_posting.py` owns only the unchanged
+`_append_followup_system_and_reinvoke` (113 definition lines) and
+`_payload_dict` (9 lines). `run_step.py` re-exports the same callable objects
+at their original binding sites. Local model, asyncio, ThreadJob and JSON
+imports remain local; Orchestrator remains a postponed TYPE_CHECKING-only
+dependency. Database retains cap/mint transactions, clocks, shared RLock and
+all audit/store ownership. This is a two-definition, 122-line R5 subset.
+
+The prospective `_maybe_post_thread_escalation` (119 lines) and
+`_maybe_post_thread_followup` (169 lines) stay byte-identical in `run_step.py`.
+The four-definition disposable candidate bypassed actual old-facade append
+and payload replacements through shipping completion/root-escalation and
+malformed-payload consumers after both import orders. Under patched-global
+rule 3 those two callers retain their facade globals; no bridge, wrapper or
+body change forces extraction. Retention of their 288 lines is not completed
+extraction of the original four-definition/410-line proposal.
+
+TASK-9785 explicitly accepted TASK-9736/R5/P1-P8/revision2 after independent
+DESIGN-ONLY TASK-9789 PASS. Native Impact, untouched-base observables,
+selected-only mutation/restoration receipts and subset replay live in
+dev_agent/output/TASK-9793. Existing tests and earlier landed slices remain
+unchanged. #682's eleven-function R2 and actual completion/chain/carrier/
+parent/fanout plus added followup-caller overlaps, #684's attachment insertion
+and enqueue/revisit admission, and #840's result/admission writers including
+insert_task_result remain held. R1 state/cache/lock/path/whole-clock/helper,
+R3 compositor/logger headers, Database logger, formatter/store/authority/
+routing and R4/R6/model/executor owners remain retained.
+
+Independent full-diff review, executable QA and exact-head delivery gates
+below remain required; this ownership record does not assert their verdicts
+or authorize maker merge/deployment. Integration SUITE remains SKIPPED
+Founder THR-243 seq42, including followup E2E; selected hosted Codex callback
+smoke remains a distinct requirement.
+
+## Terminal-reader ownership (TASK-9829)
+
+`runtime/orchestrator/task_terminal_readers.py` owns exactly four unchanged
+definitions in their original source order: `_verdict_for_delegated` (15 lines),
+`_is_carrier` (24), `_child_has_modern_fingerprint` (9), and
+`_child_landed_terminal_report` (30): FOUR/78 definition lines. `run_step.py`
+re-exports the identical callable objects at their original binding sites.
+The local FanoutState import and postponed TYPE_CHECKING TaskRecord/Orchestrator
+dependencies remain local/type-only. No selected runtime state changes owner.
+
+All 73 recursive retained facade definitions remain unchanged, including
+`_log_verdict_if_delegated`, `_child_has_landed_terminal_result`, every chain,
+carrier, parent, fanout and dispatch consumer, and the sentinel class/object.
+They still resolve the old facade reader names, including the actual dotted
+fingerprint replacement in the THR-211 shipping keeper. TaskStatus, clocks,
+logger, cache/path/lock and Database readers/decoder/synchronized wrapper/RLock
+retain their owners. There is no bridge, wrapper, copied state or new seam.
+
+TASK-9785 explicitly accepted TASK-9826/terminal-readers/T1–T5/revision1
+(SHA256 `0e05c33aec654e3e5bb7dd289b1fbe5e6953ca12384547d121e4e2707d3ba7ee`)
+and independent TASK-9828 DESIGN-ONLY PASS before this move. The accepted
+18-case map governs the finite forward-only supplements in
+`tests/test_task_terminal_readers.py`; existing tests/fixtures remain unchanged.
+Extraction replay, full AST/decorated-source/ordered-literal proofs, pristine
+literal oracles, Native Impact and selected-only mutation/restoration receipts
+live in `dev_agent/output/TASK-9829`.
+
+At immutable base `af311314d193a2466a9c37ca339639ce4cf54d24`, rederived file
+counts are database2168/run_step4812/models4711/executors2624. This slice leaves
+database2168/run_step4738/models4711/executors2624; the new reader module has
+97 total lines (78 moved definition lines plus 19 import/context/separator
+lines). All21 landed slices, steps1–4 and the R5 two-definition/122-line subset
+remain foundations. The independently accepted formatter STOP/RETAIN stays
+retained; no full17-case formatter or wholeR4/R6 completion is claimed.
+
+PR #682's 173 actual retained run_step changes include an added `_is_carrier`
+caller: selected-body equality does not remove that caller overlap. Its
+eleven-function R2 and actual R4/R6 completion/chain/carrier/fanout/followup
+work remains held, as do #684 attachment insertion AND enqueue/revisit
+admission and #840 result/admission/insert_task_result. R1 state/clock/lock,
+R3 compositor/logger, Database logger, models/executors and remaining R4/R6
+stay separate scopes. No foreign behavior is transplanted or cleared.
+
+Independent full-diff reviewer APPROVE then executable QA PASS at the same
+final SHA, task-owned terminal local-CI JOB EXIT0, four exact-head PR checks,
+distinct selected hosted Codex callback smoke, and manager moving-main
+composition/guarded merge remain mandatory. This ownership record asserts no
+review/QA/CI verdict or merge authority. Integration SUITE, including followup
+E2E, remains SKIPPED Founder THR-243 seq42, never PASS.
+
+## S6 pin-helper ownership (TASK-9869)
+
+This unit moves exactly the decorated 18-line
+`Database.set_thread_pinned_uncommitted` into the existing `ThreadsMixin`,
+unchanged: source SHA256
+`917fe4f6ae43a5f230bbc33e2fbe33e89c1717d8b2375a28e39c408b0395c2bc`.
+The only new import is the already-shipped `_shared._late_database_now as
+_now`; pin timestamps still resolve the whole facade clock at call time.
+The shared `_synchronized` decorator still resolves the whole facade `_time`
+and uses the same Database-owned RLock, threshold and lock logger.
+
+The committed setter stays in `database.py`. The real pin HTTP endpoint,
+strict body and guards, `ThreadsMixin.set_thread_pinned_with_audit`, its
+BEGIN IMMEDIATE/commit/rollback ownership, and
+`AuditMixin.insert_audit_log_uncommitted` with its separate datetime clock
+remain unchanged. The inherited old Database class-method patch path and
+old qualified pickle lookups remain usable; natural defining module and
+qualname belong to ThreadsMixin, with no metadata rebinding or new seam.
+
+TASK-9785 explicitly accepted TASK-9867/S6-PIN/P1-P4/revision2, case-design
+SHA256 `308bd851b7680ce1d5378b46921ae7af083d1f3014413be526b89e2d019e8537`,
+and BOTH F1/P4.4 and F2/P1.2 dispositions after independent TASK-9868
+DESIGN-ONLY PASS, before this implementation. The eight accepted finite IDs
+govern `tests/daemon/test_thread_pin_decomposition.py` supplements and
+unchanged keepers. P1.2 keeps the actual narrower HTTP404/422 and repeatedTrue
+HTTP field/audit assertions, plus repeatedFalse DB result/audit assertions;
+P3.1 keeps the real direct-route True/True and True/False overlap checks.
+Complete persisted success/failure/recovery frames, two distinct clocks,
+selected-only mutation/restoration receipts, full source/owner extraction
+proof and complete pristine app/served OpenAPI freeze/replay live in
+`dev_agent/output/TASK-9869`. Existing projected/semantic OpenAPI keepers
+remain separate from complete cross-source byte equality.
+
+At immutable base `61319854238e07da67947549bb452c5f1324477e`, counts are
+database2214/run_step4747/models4711/executors2624/readers97/threads885.
+This move leaves database2196/threads904 (18 definition lines, the existing
+import line adjusted and one separating line); other counts remain
+4747/4711/2624/readers97. All22 landed slices and steps1–4, the R5 exactly
+two-definition/122-line subset, and four terminal readers/78 lines remain
+foundations. Formatter F8's independently executable STOP/RETAIN remains;
+there is no wholeS6/R4/R6/models/executors completion claim.
+
+PR #682's ELEVEN R2 and actual completion/chain/carrier/fanout/followup/R4R6,
+#684's attachment insertion AND enqueue/revisit, and #840's
+result/admission/insert_task_result remain held. Merged997 routing and
+Database/TasksMixin consumers and983 fixture/callback/release,996 route/docs/
+OpenAPI interactions retain their owners. Selected-body equality does not
+clear these callers, shared state or concurrent THR139/228/211/091 work.
+
+Same-final-SHA independent full-diff reviewer APPROVE, executable QA PASS,
+strict terminal task-owned local-CI JOB EXIT0, four exact-head pull_request
+successes and the distinct actual hosted Codex callback smoke remain required.
+Every push renews gates; composition, head-matched guarded squash and
+independent parent/tree/ancestry checks remain manager-owned. Integration
+SUITE, including followup E2E, is SKIPPED Founder THR-243 seq42, never PASS.
+
+## S6 archive-helper ownership (TASK-9912)
+
+This unit moves only `Database._set_thread_status_archived_uncommitted` into
+the existing `ThreadsMixin`: exactly 13 decorated lines, source SHA256
+`83eeb10706baccbf6503738db0037c27035ac5341b0a418fd127818fad727685`.
+No import, helper, body, SQL, default, decorator, annotation or metadata repair
+is added. The already-shipped late `_now` and shared `_synchronized` retain
+whole-facade `_now`/`_time` patches and the same instance RLock and lock logger.
+The helper naturally has the mixin's defining module/qualname; Database class,
+exports, bases/MRO, method signatures and old attribute dispatch stay intact.
+
+`ThreadsMixin.archive_thread_and_reset_sessions` retains BEGIN IMMEDIATE,
+participant reset, action-specific invalidation audit, commit and rollback.
+Its other direct caller `set_thread_status`, the committed archive setters,
+POST archive, preparatory delivery discard/reap, message/audit writers,
+ThreadStore/transcript renderer, all clocks and shared lock owners stay verbatim.
+The separately committed discard boundary is not compensated on later failure.
+Existing archived_at/summary history, including resumed OPEN threads, survives.
+
+Engineering_manager TASK-9785 accepted
+TASK-9909/S6-ARCHIVE/A1-A4/revision2 (47,769 bytes, design SHA256
+`f2b74a51023d718c3e36b125c14fcf373d383e159d17096fdb963174845259c7`)
+and ALL TASK-9904 F1-F3 dispositions after independent TASK-9910 DESIGN-ONLY
+PASS, before implementation. The exact HIGH five-file brief and Founder
+THR-273 seq37/45/80 satisfy current DEV-G03. Design PASS is not executable QA,
+code approval, CI or merge evidence.
+
+All six accepted finite IDs remain: A1.1[first_archive,resumed_history],
+A1.2[reset,audit], A2.1 unchanged keeper reuse,
+A3.1[facade_first,mixin_first], A4.1 source/ownership proof and A4.2 full
+unfiltered app/served OpenAPI. The supplements live in
+`tests/daemon/test_thread_archive_decomposition.py`; literal complete HTTP,
+all-table/all-column/schema/index/trigger/allocator/history/transcript/file-mode/
+temp-residue/transaction/dormant-queue frames, selected-original-only
+RED/restoration/GREEN, repetitions and extraction evidence live in
+`dev_agent/output/TASK-9912`. Existing tests, fixtures and projected/semantic
+OpenAPI keepers remain frozen. Full OpenAPI uses original pristine documents,
+the SAME guarded root and SAME unchanged interpreter through final comparison.
+
+At immutable base `227fde9591baaefbe6a94933f6c872a8ee6c14ee`, counts are
+database2196/threads904/run_step4747/models4711/executors2624/readers97.
+This exact 13-line relocation leaves database2183/threads917; all other counts
+remain unchanged, and direct remaining facade definitions/properties go 48→47.
+ALL23 landed slices, steps1–4, R5 TWO122 moved/TWO288 retained, FOUR terminal
+readers78 and pin18 remain foundations. This leaf's candidate does not claim
+landed completion, wholeS6/R4/R6, models/executors or program completion.
+Formatter remains independently verified F8 STOP/RETAIN. R1 state/cache/lock/
+__file__/whole-clock/helpers, R3 compositor/logger header and facade logger stay
+retained. Other S6 message/participant/invocation closures require separate units.
+
+PR682 ELEVEN R2 and actual R4/R6/completion/chain/carrier/parent/fanout/followup/
+added caller, PR684 attachment insertion AND enqueue/revisit/admission, and
+PR840 result/admission/insert_task_result remain HELD. Merged997 routing/admission/
+Database/TasksMixin and983 callback/PATH/roster/nightly/finalizer ownership,
+current996 route/docs/OpenAPI and1000 coherent-read/RLock/audit/observer owners,
+and concurrent THR139/228/091/280 (plus any current THR118) remain acknowledged.
+Selected-body equality does not clear callers or shared owners. Fresh paginated
+head/base/file sets and full actual changed hunks are required at each boundary.
+
+Independent full-original-base code_reviewer APPROVE then independent executable
+qa_engineer PASS at the SAME FINAL SHA, strict task-owned terminal local-CI JOB
+script/wrapper/final-provenance EXIT0, all FOUR exact-head hosted pull_request
+successes and the distinct actual selected Codex callback smoke remain required.
+Every push renews gates. Moving-main composition, guarded head-matched squash,
+independent parent/tree/ancestry and per-slice reporting remain manager-owned.
+Integration SUITE including followup E2E is SKIPPED Founder THR-243 seq42,
+NEVER PASS. No deployment or feature-completion authority follows.
+
+## S2 KB-view writer ownership (TASK-9937, OPEN)
+
+This candidate relocates only the unchanged 19-line `Database.record_kb_view`
+definition into the existing `KnowledgeMixin`, immediately before
+`kb_view_stats`. Decorated source SHA256 is
+`7987b2829a015e7681ab7e1f94f5e52a4de2c50c61f21f4f884abd57f1bc434a`.
+The only import delta extends the existing shared import with the shipped
+`_late_database_now as _now`. SQL, annotations, defaults, decorator and body
+stay verbatim. No helper, copied state, wrapper or natural metadata repair is
+introduced. Database exports, method signatures, bases/MRO and old attribute
+patch/dispatch stay intact; the method naturally has its mixin's qualname.
+
+The direct shipping `get_kb` caller retains entry-read-first ordering, the
+exact descriptive `cli` header condition, original nonfatal warning/200
+boundary and response. The stats reader, KBStore, actual CLI header/read paths,
+audit/schema, real single connection/RLock/threshold, whole facade `_time`,
+late facade `_now` and shared lock logger retain their owners.
+
+Engineering_manager TASK-9785 step25 accepted
+TASK-9930/S2-KBVIEW/K1-K4/revision1 (44,032 bytes, SHA256
+`42e37a5f693db272da419c19746a0fa49e2db6b8ec3e3a80032500c9e2c453e9`),
+ALL six finite groups and EMPTY consolidated findings after independent
+TASK-9934 DESIGN-ONLY PASS. The exact HIGH five-file brief and Founder
+THR-273 seq37/45/80 satisfy current DEV-G03; design PASS proves no executable
+QA, code approval, CI or merge gate.
+
+The finite set is K1.1[first_view,repeat_view], K1.2 unchanged existing
+no-surface/tracking-failure/404 keepers, K2.1[facade_clock_error,
+sqlite_insert_denied], K3.1[facade_first,knowledge_first], K4.1 complete
+source/inverse proof and K4.2 full unfiltered app/served OpenAPI.
+Forward-only supplements live in `tests/daemon/test_kb_view_decomposition.py`;
+pristine complete HTTP/raw-all-table/column/schema/index/trigger/allocator/
+audit/transaction/readonly/reopen/dormant-queue/session/KB-file-mode frames,
+original warning/error residue and task-owned controls live in
+`dev_agent/output/TASK-9937`. Existing tests/fixtures/OpenAPI snapshots remain
+unchanged. Full documents use the SAME guarded root and SAME interpreter,
+with exclusive pristine expectations frozen before relocation or controls.
+
+At immutable base `6d6b9be55fdb36be0ef69101708c68d6fa136067`, counts are
+database2183/knowledge202/threads917/run_step4747/models4711/executors2624/
+readers97; this exact relocation leaves database2164/knowledge221 and 46
+direct facade definitions/properties. Other counts remain unchanged.
+ALL24 LANDED foundations and steps1–4, R5 TWO122 moved/TWO288 retained,
+FOUR terminal readers78, pin18 and archive13 remain foundations. This
+KBVIEW unit is OPEN candidate work, not another landed foundation or whole
+S2/S6/R4R6/models/executors/program completion. Formatter F8 remains
+independently verified STOP/RETAIN, not full17-case PASS. R1 state/cache/lock/
+__file__/whole-clock/helper owners, R3 compositor/logger header and Database
+logger-dependent keepers remain retained; other closures need separate units.
+
+PR682 ELEVEN R2 plus actual R4/R6/completion/chain/carrier/parent/fanout/
+followup/added caller, PR684 attachment insertion AND enqueue/revisit, and
+PR840 result/admission/insert_task_result remain HELD. Merged997 routing/
+admission/Database/TasksMixin,983 callback/PATH/roster/nightly/finalizer and
+996 agent writer/audit/drain/publication retain their owners. OPEN1000
+coherent-read/RLock/audit/observer and1002 OrgState/reference guidance retain
+their owners. PR1004 is merged at `45d0cc0a39a989b8e1cf586b79daf2c9905178ff`;
+its22-file web/doc delta leaves every Python/CLI/test/fixture/dependency and
+selected closure unchanged. Current THR139/228/091 roots and completed
+THR118/TASK9920 web-only ownership stay acknowledged.
+Selected equality never clears caller/shared-owner overlap. Fresh complete
+head/base/file sets and actual intervening changed hunks remain required.
+M/E remains deferred while a useful leaf exists; retained is not infeasible.
+
+Independent FULL-original-base code_reviewer APPROVE then independent
+EXECUTABLE qa_engineer PASS at SAME FINAL SHA, clean final task-owned durable
+local-CI script/wrapper/provenance EXIT0, FOUR exact-head completedSUCCESS
+pull_request checks and distinct actual selected hosted Codex callback remain
+required. Every push renews gates. Composition, head-matched guarded squash,
+independent parent/tree/ancestry and per-slice reporting remain manager-owned.
+Integration SUITE INCLUDING followup E2E is SKIPPED Founder THR-243 seq42,
+NEVER PASS. No deployment or feature-completion authority follows.
+
+## S2 dream candidate updater ownership (TASK-9961, OPEN)
+
+This candidate moves only the unchanged decorated 25-line/964-byte
+`Database.update_dream_kb_candidate` into the existing `DreamsMixin`, after
+`list_dream_kb_candidates`. Source SHA256 is
+`46746730eecdaa0467debb38efc4c9f578d4ac9b79dac1840c92ffc479ed3b89`.
+The sole production import delta extends the existing shared import with the
+shipped `_late_database_now as _now`. Status validation, SQL, errors, commit,
+defaults, annotations, decorator, body and every retained byte stay unchanged,
+including the historical double decorator. Natural defining metadata changes
+are not repaired; old facade/instance dispatch, exports and MRO remain intact.
+
+The real accept route writes KB before updating the candidate; later failure
+retains that residue. Dismiss preserves an omitted promoted slug. Both shipping
+routes, list/model readers, KBStore, browser consumers, original missing-row
+transaction, facade clocks, actual RLock and shared logger retain their owners.
+Manager TASK-9785 step29 accepted TASK-9959/D1-D4/revision2 after independent
+DESIGN-ONLY TASK-9960 PASS under Founder THR-273 seq37/45/80 and DEV-G03.
+The finite14 cases, four answers, pristine full frames, selected-only controls,
+source replay and verification receipts live in `dev_agent/output/TASK-9961`;
+supplements are in `tests/daemon/test_dream_candidate_decomposition.py`.
+Existing tests, fixtures and snapshots remain unchanged. Complete app/served
+OpenAPI uses the exclusive pristine freeze, same root and unchanged interpreter.
+
+At base `cb7f227207833e09885804236a02560572e65ab6`, this move takes
+database2164→2139 and dreams243→269. ALL25 landed slices, steps1–4,
+R5 TWO122 moved/TWO288 retained, FOUR readers78, pin18, archive13 and KBview19
+remain foundations. Formatter TASK-9825 F8 stays STOP/RETAIN, not full17 PASS.
+R1 state/cache/lock/file/clock/helper, R3 compositor/logger and Database logger
+stay retained. PR682 ELEVEN R2/R4R6/completion/chain/carrier/parent/fanout/
+followup/addedcaller, PR684 insertion AND enqueue/revisit/admission, and PR840
+result/admission/insert_task_result stay HELD. Shared PR1000 coherent-read/RLock/
+audit/observer and PR1002 OrgState/reference owners require fresh composition;
+selected equality never clears caller overlap. M/E replan remains deferred.
+
+This unit is OPEN, with independent full-original-base reviewer APPROVE,
+executable QA PASS, clean final-head durable local CI, four hosted PR checks
+and distinct actual hosted Codex callback still required. Every push renews
+gates; composition, guarded merge and six main checks remain manager-owned.
+Integration including followup E2E is SKIPPED Founder THR-243 seq42, never PASS.
+No whole S2/program/feature completion, deployment or live activation follows.
+
+## S6 legacy invocation decline ownership (TASK-9981, OPEN)
+
+Under TASK-9785 and Founder THR-273 seq37/45/80, move only
+`Database.mark_invocation_declined` into existing `ThreadsMixin`, immediately
+before `get_pending_invocation`: original decorated lines1817–1832 at
+`e2780012fcba9bb0e995772f11cf1a86316485f6`, 16 lines/642 bytes, SHA256
+`a62af1f05067050487e1db00bda94598ca629a59f640464c42c0b5a5dd6032de`.
+SQL, commit, rowcount, defaults, annotations, decorator and retained bytes stay
+unchanged; no production import is added. Existing `_now` resolves the late
+facade clock, and shared `_synchronized` retains the same instance connection,
+native RLock, whole facade `_time`, logger and finally behavior. Natural
+method metadata follows the move without repair; old Database patches remain.
+
+TASK-9785 step32 accepted TASK-9977/S6-DECLINE/C1–C4/revision2 after independent
+TASK-9979 DESIGN-ONLY PASS. The forward-only test adds fifteen finite shipping
+parameters: six legacy/bootstrap/followup text/null declines with second-request
+outer refusal; whitespace; genuine inner CAS miss; facade-clock and real SQLite
+UPDATE faults; old-class patch/late clock, causal held native lock, whole-clock
+warning; and both fresh import orders. The inner CAS case uses unchanged public
+`fail_invocation` on the same token, with separate pending-predicate and zero-row
+false-success controls. Held-lock observation witnesses the actual selected
+acquire attempt or same-connection commit/return before the held durable read.
+Complete original-source HTTP/readers/persistence/audit/SSE/queue/files/cleanup
+frames and facade/OpenAPI proofs preserve NULL versus empty reason and failed
+evidence. Design PASS supplies no executable QA or release gate.
+
+Database2139→2123 and threads917→934; all26 landed foundations and steps1–4,
+R5 TWO122 moved/TWO288 retained, FOUR readers78, pin18/archive13/KBview19/
+updater25 remain. Retained `fail_invocation`, other invocation families, route
+validation/modern settlement, CLI/browser and shared owners are not extracted.
+The CLI `resp['seq']` mismatch remains an unchanged static risk. R1/R3/logger,
+PR682 ELEVEN R2/R4R6/completion-chain-carrier-parent-fanout-followup, PR684
+attachment insertion AND enqueue/revisit/admission, PR840 result admission and
+PR541 skill validation stay HELD/owned. Formatter F8 remains STOP/RETAIN, not
+full17 PASS. Shared owners require fresh manager composition; selected-source
+equality never clears caller overlap, and M/E replan remains deferred.
+
+This unit remains OPEN. Independent full-original-base code review APPROVE,
+then executable QA PASS, clean final-head durable local CI, four exact-head
+hosted pull_request successes and distinct actual hosted Codex callback remain
+required. Every push renews gates; guarded merge and six main checks belong to
+the manager. Integration including followup E2E is SKIPPED under Founder
+THR-243 seq42, never PASS. No whole S6/program/feature completion or deployment.
 
 ## Per-slice gates
 

@@ -9,6 +9,7 @@ import { AppRoutes } from '@/routes';
 import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import type { JobRecord } from '@/lib/api/types';
+import { en } from '@/lib/i18n/catalog';
 
 const SLUG = 'hk-macau-tourism';
 const NativeRequest = globalThis.Request;
@@ -125,6 +126,34 @@ function policyCacheEntries(client: QueryClient) {
 }
 
 describe('AgentsPage — two-pane roster list', () => {
+  test('W4c 390: roster stacks above the detail below md instead of squeezing it beside a fixed rail', async () => {
+    // At 390x844 the fixed 244px roster rail left the detail pane ~90px wide and
+    // the zh-CN policy entry card clipped (harness V agent-detail zh-CN 390).
+    stubBaseHandlers();
+    stubDetailHandlers();
+    mountAt(`/orgs/${SLUG}/agents`);
+    await waitFor(() => expect(screen.getByText('support_agent')).toBeInTheDocument());
+    const rosterAside = document.querySelectorAll('aside')[1]!;
+    const body = rosterAside.parentElement!;
+    // Column below md, side by side from md up.
+    expect(body.classList.contains('flex-col')).toBe(true);
+    expect(body.classList.contains('md:flex-row')).toBe(true);
+    // Full-width, height-capped roster below md; the 244px rail only from md up.
+    expect(rosterAside.classList.contains('w-full')).toBe(true);
+    expect(rosterAside.classList.contains('max-h-48')).toBe(true);
+    expect(rosterAside.classList.contains('md:w-rail')).toBe(true);
+    expect(rosterAside.classList.contains('md:max-h-none')).toBe(true);
+    expect(rosterAside.classList.contains('w-rail')).toBe(false);
+    // Detail pane: min-h-0 lets it shrink in the stacked column below md only.
+    // From md up it must keep the base min-height (auto), so no ungated
+    // min-h-0 and no other md+ min-height token.
+    const detailMain = body.querySelector(':scope > main')!;
+    expect(detailMain).not.toBeNull();
+    expect(detailMain.classList.contains('max-md:min-h-0')).toBe(true);
+    expect(detailMain.classList.contains('min-h-0')).toBe(false);
+    expect([...detailMain.classList].filter((token) => token.includes('min-h-'))).toEqual(['max-md:min-h-0']);
+  });
+
   test('renders the agent roster with role meta + description in left pane', async () => {
     stubBaseHandlers();
     // The first agent auto-selects on mount (AGENTS-01), so the detail pane
@@ -147,11 +176,13 @@ describe('AgentsPage — two-pane roster list', () => {
     expect(within(rosterAside!).getByText('engineering_head')).toBeInTheDocument();
     expect(within(rosterAside!).getByText('support_agent')).toBeInTheDocument();
     // AGENTS-02: meta line reconciled toward the Direction-A 'role · status'
-    // form. `role` is on the roster payload (→ Manager / Worker); `status` is
-    // NOT, so it is omitted rather than fabricated. The old 'team · executor'
-    // meta is gone — support_agent's executor ('codex') no longer appears.
-    expect(within(rosterAside!).getByText('Manager')).toBeInTheDocument();
-    expect(within(rosterAside!).getByText('Worker')).toBeInTheDocument();
+    // form. `role` is on the roster payload and renders byte-verbatim (THR-118
+    // W4c ruling: no translation, no title-casing); `status` is NOT, so it is
+    // omitted rather than fabricated. The old 'team · executor' meta is gone —
+    // support_agent's executor ('codex') no longer appears.
+    expect(within(rosterAside!).getByText('manager')).toBeInTheDocument();
+    expect(within(rosterAside!).getByText('worker')).toBeInTheDocument();
+    expect(within(rosterAside!).queryByText(en['agents.role.manager'])).not.toBeInTheDocument();
     expect(within(rosterAside!).queryByText(/codex/)).not.toBeInTheDocument();
     expect(within(rosterAside!).getByText('Owns engineering.')).toBeInTheDocument();
     expect(within(rosterAside!).getByText('Handles support.')).toBeInTheDocument();
@@ -194,7 +225,7 @@ describe('AgentsPage — two-pane roster list', () => {
 
     // Detail pane renders with agent metadata — role pill + team name
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     expect(
       screen.getByText(/No tasks where this agent was the assigned manager/),
@@ -211,7 +242,7 @@ describe('AgentsPage — two-pane roster list', () => {
     // (support_agent) is a worker, so the detail-pane "manager" role pill
     // uniquely proves the first agent's detail pane rendered by default.
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     // Detail pane is rendered, so no empty "Select an agent" pane appears.
     expect(screen.queryByText(/Select an agent/)).not.toBeInTheDocument();
@@ -229,9 +260,9 @@ describe('AgentsPage — two-pane roster list', () => {
     // Left pane: roster empty state. Right pane: calm "No agents yet" state.
     // Nothing is auto-selected, so the page renders without error.
     await waitFor(() => {
-      expect(screen.getByText('No agents enrolled')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.empty.title'])).toBeInTheDocument();
     });
-    expect(screen.getByText('No agents yet')).toBeInTheDocument();
+    expect(screen.getByText(en['agents.noAgents.title'])).toBeInTheDocument();
   });
 
   test('AGENTS-03: roster header primary action reads "New agent" (Direction-A label)', async () => {
@@ -246,10 +277,10 @@ describe('AgentsPage — two-pane roster list', () => {
     // Direction-A `a-agents` reference label "New agent" (was "Add agent").
     // The dialog is closed here, so the trigger is the only "New agent" button.
     expect(
-      screen.getByRole('button', { name: 'New agent' }),
+      screen.getByRole('button', { name: en['agents.page.newAgent'] }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Add agent' }),
+      screen.queryByRole('button', { name: en['agents.empty.cta'] }),
     ).not.toBeInTheDocument();
   });
 
@@ -260,11 +291,11 @@ describe('AgentsPage — two-pane roster list', () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/agents`);
 
-    await user.click(screen.getByRole('button', { name: 'New agent' }));
+    await user.click(screen.getByRole('button', { name: en['agents.page.newAgent'] }));
     const dialog = await screen.findByRole('dialog');
     // The dialog title is also "New agent"; scope to the dialog so it does not
     // collide with the (now identically-labeled) trigger button.
-    expect(within(dialog).getByText('New agent')).toBeInTheDocument();
+    expect(within(dialog).getByText(en['agents.page.newAgent'])).toBeInTheDocument();
   });
 });
 
@@ -297,7 +328,7 @@ describe('AgentDetailPane — editable fields', () => {
     );
     mountAt(`/orgs/${SLUG}/agents/engineering_manager`);
     expect(await screen.findByText(/Active legacy v2 · epoch 4 · abcdef123456/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open team escalation policy' })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`);
+    expect(screen.getByRole('link', { name: en['agents.policy.open'] })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`);
     expect(screen.queryByLabelText('Title')).not.toBeInTheDocument();
     expect(screen.queryByText('Immutable release history')).not.toBeInTheDocument();
   });
@@ -317,7 +348,7 @@ describe('AgentDetailPane — editable fields', () => {
 
     // Wait for both agent data and executor data to load.
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     // Wait for the executor select to render with the agent's current executor.
     await waitFor(() => {
@@ -335,7 +366,7 @@ describe('AgentDetailPane — editable fields', () => {
     await waitFor(() => {
       expect(screen.getByText('happyranch')).toBeInTheDocument();
     });
-    expect(screen.getByText('Add repository')).toBeInTheDocument();
+    expect(screen.getByText(en['agents.detail.addRepo'])).toBeInTheDocument();
   });
 
   test('shows system prompt collapsible', async () => {
@@ -345,9 +376,9 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('System prompt')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.field.systemPrompt'])).toBeInTheDocument();
     });
-    await user.click(screen.getByText('System prompt'));
+    await user.click(screen.getByText(en['agents.field.systemPrompt']));
     await waitFor(() => {
       expect(screen.getByText(/You are the engineering head/)).toBeInTheDocument();
     });
@@ -390,7 +421,7 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('Accountability')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.accountability'])).toBeInTheDocument();
       expect(screen.getByText('done')).toBeInTheDocument();
       expect(screen.getByText('tasks')).toBeInTheDocument();
     });
@@ -403,7 +434,7 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     // Click the Start Thread button in the detail pane header
@@ -475,7 +506,7 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     // Click Start Thread to open dialog
@@ -564,7 +595,7 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole('button', { name: /Start Thread/i }));
@@ -643,7 +674,7 @@ describe('AgentDetailPane — editable fields', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     // Click Start Thread
@@ -696,7 +727,7 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
 
     // Wait for detail pane to render.
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     // Wait for the executor select to render with the agent's current executor.
     let executorSelect: HTMLSelectElement | null = null;
@@ -712,11 +743,11 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
     await waitFor(() => {
       expect(screen.getByText(/unsaved changes/)).toBeInTheDocument();
     });
-    expect(screen.getByText('Save agent')).toBeInTheDocument();
-    expect(screen.getByText('Reset')).toBeInTheDocument();
+    expect(screen.getByText(en['agents.detail.save'])).toBeInTheDocument();
+    expect(screen.getByText(en['agents.detail.reset'])).toBeInTheDocument();
 
     // Click Save
-    await user.click(screen.getByText('Save agent'));
+    await user.click(screen.getByText(en['agents.detail.save']));
 
     await waitFor(() => {
       expect(executorPutCalled).toBe(true);
@@ -730,7 +761,7 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     // Wait for the executor select to render.
     let executorSelect: HTMLSelectElement | null = null;
@@ -743,15 +774,15 @@ describe('AgentDetailPane — save flow (executor switch)', () => {
 
     // Save bar visible
     await waitFor(() => {
-      expect(screen.getByText('Reset')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.reset'])).toBeInTheDocument();
     });
 
     // Click Reset
-    await user.click(screen.getByText('Reset'));
+    await user.click(screen.getByText(en['agents.detail.reset']));
 
     // Save bar hidden — executor back to claude
     await waitFor(() => {
-      expect(screen.queryByText('Reset')).not.toBeInTheDocument();
+      expect(screen.queryByText(en['agents.detail.reset'])).not.toBeInTheDocument();
     });
   });
 });
@@ -785,11 +816,11 @@ describe('AgentDetailPane — save flow (repo management)', () => {
 
     // Save bar should appear
     await waitFor(() => {
-      expect(screen.getByText('Save agent')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.save'])).toBeInTheDocument();
     });
 
     // Click Save
-    await user.click(screen.getByText('Save agent'));
+    await user.click(screen.getByText(en['agents.detail.save']));
 
     await waitFor(() => {
       expect(repoRemoveCalled).toBe(true);
@@ -844,7 +875,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     let executorSelect: HTMLSelectElement | null = null;
     await waitFor(() => {
@@ -855,11 +886,11 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     // Select the custom profile openclaw (not the built-in codex).
     await user.selectOptions(executorSelect!, 'openclaw');
     await waitFor(() => {
-      expect(screen.getByText('Save agent')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.save'])).toBeInTheDocument();
     });
 
     // Click Save — it fails.
-    await user.click(screen.getByText('Save agent'));
+    await user.click(screen.getByText(en['agents.detail.save']));
 
     // Assert error is visible.
     await waitFor(() => {
@@ -921,7 +952,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     // Wait for the executor select to render.
     let executorSelect: HTMLSelectElement | null = null;
@@ -937,11 +968,11 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     // Select the custom profile.
     await user.selectOptions(executorSelect!, 'openclaw');
     await waitFor(() => {
-      expect(screen.getByText('Save agent')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.save'])).toBeInTheDocument();
     });
 
     // Click Save.
-    await user.click(screen.getByText('Save agent'));
+    await user.click(screen.getByText(en['agents.detail.save']));
     await waitFor(() => {
       expect(executorPutBody).toEqual({ executor: 'openclaw' });
     });
@@ -987,7 +1018,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
     // Wait for the executor select to render.
     await waitFor(() => {
@@ -1050,7 +1081,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('worker')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('worker')).toBeInTheDocument();
     });
     // Wait for the executor select to render.
     await waitFor(() => {
@@ -1128,7 +1159,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText('worker')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('worker')).toBeInTheDocument();
     });
     // Phase A: openclaw is present and selectable.
     await waitFor(() => {
@@ -1147,11 +1178,11 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     );
 
     // Re-render at the same route to trigger fresh query fetches.
-    const { unmount } = renderWithProviders(<AppRoutes />, {
+    const { container: refetchedView, unmount } = renderWithProviders(<AppRoutes />, {
       route: `/orgs/${SLUG}/agents/custom_exec_agent`,
     });
     await waitFor(() => {
-      expect(screen.getByText('worker')).toBeInTheDocument();
+      expect(within(refetchedView.querySelector('main main')!).getByText('worker')).toBeInTheDocument();
     });
 
     // Phase B: openclaw is now stale — visible, disabled, and no Save bar.
@@ -1166,7 +1197,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     const sel = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
     expect(sel.value).toBe('openclaw');
     // No Save bar — nothing is dirty.
-    expect(screen.queryByText('Save agent')).not.toBeInTheDocument();
+    expect(screen.queryByText(en['agents.detail.save'])).not.toBeInTheDocument();
     // No PUT was emitted.
     expect(putCalled).toBe(false);
 
@@ -1245,7 +1276,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('worker')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('worker')).toBeInTheDocument();
     });
     // Wait for the executor select to render.
     let execSelect!: HTMLSelectElement;
@@ -1261,7 +1292,7 @@ describe('AgentDetailPane — save flow (repo management)', () => {
     // Select the custom profile — makes dirty.executor = 'openclaw'.
     await user.selectOptions(execSelect, 'openclaw');
     await waitFor(() => {
-      expect(screen.getByText('Save agent')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.save'])).toBeInTheDocument();
     });
     // Confirm the select now shows openclaw.
     execSelect = document.querySelector('select[aria-label="Executor"]') as HTMLSelectElement;
@@ -1290,12 +1321,12 @@ describe('AgentDetailPane — save flow (repo management)', () => {
       expect((disabledOpt as HTMLOptionElement).disabled).toBe(true);
     });
     // Save bar is still visible — the dirty selection is preserved.
-    expect(screen.getByText('Save agent')).toBeInTheDocument();
+    expect(screen.getByText(en['agents.detail.save'])).toBeInTheDocument();
 
     // Click Save — the dirty-selection guard at AgentDetailPane.onSave
     // must detect that the selected executor is no longer selectable
     // and error WITHOUT issuing a PUT.
-    await user.click(screen.getByText('Save agent'));
+    await user.click(screen.getByText(en['agents.detail.save']));
 
     // Guard error: "Executor "openclaw" is no longer available."
     await waitFor(() => {
@@ -1335,11 +1366,11 @@ describe('AgentDetailPane — save flow (model editing)', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     // Find the Model text input
-    const modelInput = screen.getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
+    const modelInput = screen.getByRole('textbox', { name: en['agents.detail.model'] }) as HTMLInputElement;
     expect(modelInput.value).toBe('claude-sonnet-4-20250514');
 
     // Edit the model
@@ -1352,7 +1383,7 @@ describe('AgentDetailPane — save flow (model editing)', () => {
     });
 
     // Click Save
-    await user.click(screen.getByText('Save agent'));
+    await user.click(screen.getByText(en['agents.detail.save']));
 
     await waitFor(() => {
       expect(modelPutCalled).toBe(true);
@@ -1378,17 +1409,17 @@ describe('AgentDetailPane — save flow (model editing)', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
-    const modelInput = screen.getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
+    const modelInput = screen.getByRole('textbox', { name: en['agents.detail.model'] }) as HTMLInputElement;
     await user.clear(modelInput);
 
     await waitFor(() => {
-      expect(screen.getByText('Save agent')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.save'])).toBeInTheDocument();
     });
 
-    await user.click(screen.getByText('Save agent'));
+    await user.click(screen.getByText(en['agents.detail.save']));
 
     await waitFor(() => {
       expect(modelPutBody).toEqual({ model: null });
@@ -1402,16 +1433,16 @@ describe('AgentDetailPane — save flow (model editing)', () => {
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
-    const modelInput = screen.getByRole('textbox', { name: 'Model' }) as HTMLInputElement;
+    const modelInput = screen.getByRole('textbox', { name: en['agents.detail.model'] }) as HTMLInputElement;
     // change to something else
     await user.clear(modelInput);
     await user.type(modelInput, 'gpt-5');
 
     await waitFor(() => {
-      expect(screen.getByText('Reset')).toBeInTheDocument();
+      expect(screen.getByText(en['agents.detail.reset'])).toBeInTheDocument();
     });
 
     // restore original value
@@ -1419,7 +1450,7 @@ describe('AgentDetailPane — save flow (model editing)', () => {
     await user.type(modelInput, 'claude-sonnet-4-20250514');
 
     await waitFor(() => {
-      expect(screen.queryByText('Reset')).not.toBeInTheDocument();
+      expect(screen.queryByText(en['agents.detail.reset'])).not.toBeInTheDocument();
     });
   });
 });
@@ -1460,7 +1491,7 @@ describe('AgentsPage — route collision regression', () => {
 
     // Detail pane shows the "pending" agent's metadata, not the enrollments tab
     await waitFor(() =>
-      expect(screen.getByText('worker')).toBeInTheDocument(),
+      expect(within(document.querySelector('main main')!).getByText('worker')).toBeInTheDocument(),
     );
   });
 });
@@ -1498,12 +1529,12 @@ describe('Team escalation policy dedicated route', () => {
       http.get(`/api/v1/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy/outcomes`, () => HttpResponse.json({ items: [], next_cursor: null })),
     );
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 1, name: en['agents.policy.title'] })).toBeInTheDocument();
     expect(screen.getAllByRole('main')).toHaveLength(1);
-    expect(screen.getByText('Engineering · Engineering Manager')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Back to Engineering Manager/ })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager`);
-    expect(await screen.findByLabelText('What to escalate')).toBeInTheDocument();
-    expect(screen.getByLabelText('What not to escalate')).toBeInTheDocument();
+    expect(screen.getByText('engineering · engineering_manager')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '← Back to engineering_manager' })).toHaveAttribute('href', `/orgs/${SLUG}/agents/engineering_manager`);
+    expect(await screen.findByLabelText(en['agents.policy.whatTo'])).toBeInTheDocument();
+    expect(screen.getByLabelText(en['agents.policy.whatNot'])).toBeInTheDocument();
   });
 
   test('registered Content manager gets the same direct route with dynamic copy and server starter', async () => {
@@ -1536,14 +1567,14 @@ describe('Team escalation policy dedicated route', () => {
 
     mountPolicyRoute([`/orgs/${SLUG}/agents/content_manager/team-escalation-policy`]);
 
-    expect(await screen.findByText('Content · Content Manager')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Back to Content Manager/ })).toHaveAttribute(
+    expect(await screen.findByText('content · content_manager')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '← Back to content_manager' })).toHaveAttribute(
       'href', `/orgs/${SLUG}/agents/content_manager`,
     );
-    expect(await screen.findByLabelText('What to escalate')).toHaveValue(
+    expect(await screen.findByLabelText(en['agents.policy.whatTo'])).toHaveValue(
       contentPolicy.v2_starter.what_to_escalate,
     );
-    expect(screen.getByLabelText('What not to escalate')).toHaveValue(
+    expect(screen.getByLabelText(en['agents.policy.whatNot'])).toHaveValue(
       contentPolicy.v2_starter.what_not_to_escalate,
     );
     expect(policyRequests).toBe(1);
@@ -1579,7 +1610,7 @@ describe('Team escalation policy dedicated route', () => {
       }),
     );
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    expect(await screen.findByText('Immutable dual-text history')).toBeInTheDocument();
+    expect(await screen.findByText(en['agents.policy.history.title'])).toBeInTheDocument();
     await waitFor(() => expect(v2HistoryRequests).toBe(1));
     expect(legacyHistoryRequests).toBe(0);
     expect(outcomeRequests).toBe(0);
@@ -1606,7 +1637,7 @@ describe('Team escalation policy dedicated route', () => {
     );
     const user = userEvent.setup();
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    expect((await screen.findByLabelText('What to escalate') as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
+    expect((await screen.findByLabelText(en['agents.policy.whatTo']) as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
     expect(rosterRequests).toBe(1);
     expect(policyRequests).toBe(1);
 
@@ -1617,8 +1648,8 @@ describe('Team escalation policy dedicated route', () => {
     // refresh call path without substituting an unmount or replacement router.
     expect(rosterRequests).toBe(1);
     expect(policyRequests).toBe(1);
-    expect(screen.getByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
-    expect((screen.getByLabelText('What to escalate') as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
+    expect(screen.getByRole('heading', { level: 1, name: en['agents.policy.title'] })).toBeInTheDocument();
+    expect((screen.getByLabelText(en['agents.policy.whatTo']) as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
   });
 
   test('shipping back Link cancel preserves the exact dirty draft; confirm discards and navigates', async () => {
@@ -1627,18 +1658,18 @@ describe('Team escalation policy dedicated route', () => {
     stubPolicy();
     const user = userEvent.setup();
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    const whatTo = await screen.findByRole('textbox', { name: en['agents.policy.whatTo'] });
     await user.clear(whatTo);
     await user.type(whatTo, 'Exact retained draft');
-    await user.click(screen.getByRole('link', { name: /Back to Engineering Manager/ }));
-    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved policy changes?' });
-    await user.click(within(dialog).getByRole('button', { name: 'Stay on page' }));
-    expect(screen.getByRole('textbox', { name: 'What to escalate' })).toHaveValue('Exact retained draft');
-    expect(screen.getByRole('heading', { level: 1, name: 'Team escalation policy' })).toBeInTheDocument();
+    await user.click(screen.getByRole('link', { name: '← Back to engineering_manager' }));
+    const dialog = await screen.findByRole('dialog', { name: en['agents.policy.discardTitle'] });
+    await user.click(within(dialog).getByRole('button', { name: en['agents.policy.stay'] }));
+    expect(screen.getByRole('textbox', { name: en['agents.policy.whatTo'] })).toHaveValue('Exact retained draft');
+    expect(screen.getByRole('heading', { level: 1, name: en['agents.policy.title'] })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('link', { name: /Back to Engineering Manager/ }));
-    await user.click(await screen.findByRole('button', { name: 'Discard and continue' }));
-    await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: 'Team escalation policy' })).not.toBeInTheDocument());
+    await user.click(screen.getByRole('link', { name: '← Back to engineering_manager' }));
+    await user.click(await screen.findByRole('button', { name: en['agents.policy.discard'] }));
+    await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: en['agents.policy.title'] })).not.toBeInTheDocument());
     expect(screen.queryByDisplayValue('Exact retained draft')).not.toBeInTheDocument();
   });
 
@@ -1652,17 +1683,17 @@ describe('Team escalation policy dedicated route', () => {
       `/orgs/${SLUG}/agents/engineering_manager`,
       `/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`,
     ]);
-    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    const whatTo = await screen.findByRole('textbox', { name: en['agents.policy.whatTo'] });
     await user.clear(whatTo);
     await user.type(whatTo, 'History-retained draft');
     await user.click(screen.getByRole('button', { name: 'Test browser back' }));
-    await user.click(await screen.findByRole('button', { name: 'Stay on page' }));
-    expect(screen.getByRole('textbox', { name: 'What to escalate' })).toHaveValue('History-retained draft');
+    await user.click(await screen.findByRole('button', { name: en['agents.policy.stay'] }));
+    expect(screen.getByRole('textbox', { name: en['agents.policy.whatTo'] })).toHaveValue('History-retained draft');
     await user.click(screen.getByRole('button', { name: 'Test browser back' }));
-    await user.click(await screen.findByRole('button', { name: 'Discard and continue' }));
-    await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: 'Team escalation policy' })).not.toBeInTheDocument());
+    await user.click(await screen.findByRole('button', { name: en['agents.policy.discard'] }));
+    await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: en['agents.policy.title'] })).not.toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Test browser forward' }));
-    expect((await screen.findByRole('textbox', { name: 'What to escalate' }) as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
+    expect((await screen.findByRole('textbox', { name: en['agents.policy.whatTo'] }) as HTMLTextAreaElement).value).toBe(policyResponse.v2_starter.what_to_escalate);
   });
 
   test('refresh/hard unload is guarded separately while dirty', async () => {
@@ -1671,7 +1702,7 @@ describe('Team escalation policy dedicated route', () => {
     stubPolicy();
     const user = userEvent.setup();
     mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    const whatTo = await screen.findByRole('textbox', { name: 'What to escalate' });
+    const whatTo = await screen.findByRole('textbox', { name: en['agents.policy.whatTo'] });
     await user.type(whatTo, ' dirty');
     const unload = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(unload);
@@ -1723,7 +1754,7 @@ describe('Team escalation policy dedicated route', () => {
       }),
     );
     const first = mountPolicyRoute([`/orgs/${SLUG}/agents/engineering_manager/team-escalation-policy`]);
-    expect(await screen.findByText('Loading agent…')).toBeInTheDocument();
+    expect(await screen.findByText(en['agents.policy.loadingAgent'])).toBeInTheDocument();
     expect(policyRequests).toBe(0);
     expect(policyCacheEntries(first.client)).toEqual([]);
     expect(document.body).not.toHaveTextContent(/team escalation policy|canonical policy|shared local operator|save immutable|activate/i);
@@ -1910,7 +1941,7 @@ describe('AgentDetailPane — recent jobs cross-link', () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByText('manager')).toBeInTheDocument(),
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument(),
     );
     expect(screen.queryByText(/Recent jobs/i)).not.toBeInTheDocument();
   });
@@ -1934,7 +1965,7 @@ describe('AgentDetailPane — cleanup activity', () => {
     const link = await screen.findByRole('link', { name: 'TASK-CLEANUP-6' });
     expect(link).toHaveAttribute('href', `/orgs/${SLUG}/tasks/TASK-CLEANUP-6`);
     expect(screen.getByText(/Task: failed.*Result: blocked/)).toBeInTheDocument();
-    expect(screen.getByText('Summary unavailable')).toBeInTheDocument();
+    expect(screen.getByText(en['agents.detail.summaryUnavailable'])).toBeInTheDocument();
   });
 
   test('renders a populated hostile, long summary literally after loading', async () => {
@@ -1974,9 +2005,11 @@ describe('AgentDetailPane — cleanup activity', () => {
     const user = userEvent.setup();
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
-    await screen.findByText('Failed to load cleanup activity.');
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
-    await screen.findByText('No cleanup activity for this agent.');
+    // THR-118 W4c: the load error goes through classifyAgentError, so the
+    // daemon's code-less string `detail` renders verbatim.
+    await screen.findByText('unavailable');
+    await user.click(screen.getByRole('button', { name: en['common.retry'] }));
+    await screen.findByText(en['agents.detail.noCleanup']);
     expect(attempts).toBe(2);
   });
 
@@ -2081,7 +2114,7 @@ describe('AgentDetailPane — Start Thread Reflection affordance (THR-106)', () 
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     // Click the Start Thread button
@@ -2140,7 +2173,7 @@ describe('AgentDetailPane — Start Thread Reflection affordance (THR-106)', () 
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole('button', { name: /Start Thread/i }));
@@ -2216,7 +2249,7 @@ describe('AgentDetailPane — Start Thread Reflection affordance (THR-106)', () 
     mountAt(`/orgs/${SLUG}/agents/engineering_head`);
 
     await waitFor(() => {
-      expect(screen.getByText('manager')).toBeInTheDocument();
+      expect(within(document.querySelector('main main')!).getByText('manager')).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole('button', { name: /Start Thread/i }));

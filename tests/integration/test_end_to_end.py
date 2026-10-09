@@ -10,6 +10,8 @@ import pytest
 
 from runtime.infrastructure.database import Database
 from tests.integration.conftest import seed_workspace
+from tests.helpers.completion_plan import completion_prelude
+from tests.helpers.integration_stub_guard.guard import assert_launch_witness
 
 
 pytestmark = pytest.mark.integration
@@ -64,7 +66,7 @@ def _write_agent_config(
 
 
 def _write_plan(path: Path, body: str) -> None:
-    path.write_text("#!/usr/bin/env bash\nset -e\n" + dedent(body).lstrip())
+    path.write_text("#!/usr/bin/env bash\nset -e\n" + completion_prelude() + dedent(body).lstrip())
     path.chmod(0o755)
 
 
@@ -150,12 +152,9 @@ def test_register_and_run_completes_via_callback(
     base = f"http://127.0.0.1:{port}/api/v1/orgs/test"
 
     fake_plan_env.write_text(
-        '#!/usr/bin/env bash\n'
+        '#!/usr/bin/env bash\n' + completion_prelude() +
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'happyranch report-completion --org "$org_slug" \\\n'
-        '  --task-id "$task_id" --session-id "$session_id" \\\n'
-        '  --agent engineering_head --status completed --confidence 90 \\\n'
-        '  --summary \'{"action":"done","summary":"ok"}\'\n'
+        'report_completion engineering_head \'{"action":"done","summary":"ok"}\'\n'
     )
     fake_plan_env.chmod(0o755)
 
@@ -169,6 +168,7 @@ def test_register_and_run_completes_via_callback(
     assert body["task"]["status"] == "completed"
     assert any(res["session_id"] for res in body["results"])
     assert body["task"].get("note") != "agent session failed"
+    assert_launch_witness("claude")
 
 
 def test_completion_callback_rejected_when_session_unknown(
@@ -213,7 +213,7 @@ def test_delegate_and_resume_roundtrip(
 
     marker = fake_plan_env.parent / "eh_called_once"
     fake_plan_env.write_text(
-        '#!/usr/bin/env bash\n'
+        '#!/usr/bin/env bash\n' + completion_prelude() +
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
         f'marker="{marker}"\n'
@@ -227,10 +227,7 @@ def test_delegate_and_resume_roundtrip(
         'else\n'
         '  summary="dev_agent finished"\n'
         'fi\n'
-        'happyranch report-completion --org "$org_slug" \\\n'
-        '  --task-id "$task_id" --session-id "$session_id" \\\n'
-        '  --agent "$agent" --status completed --confidence 90 \\\n'
-        '  --summary "$summary"\n'
+        'report_completion "$agent" "$summary"\n'
     )
     fake_plan_env.chmod(0o755)
 
@@ -270,12 +267,9 @@ def test_idle_daemon_starts_workers_after_register(
     base = f"{global_base}/orgs/test"
 
     fake_plan_env.write_text(
-        '#!/usr/bin/env bash\n'
+        '#!/usr/bin/env bash\n' + completion_prelude() +
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
-        'happyranch report-completion --org "$org_slug" \\\n'
-        '  --task-id "$task_id" --session-id "$session_id" \\\n'
-        '  --agent engineering_head --status completed --confidence 80 \\\n'
-        '  --summary \'{"action":"done","summary":"ok"}\'\n'
+        'report_completion engineering_head \'{"action":"done","summary":"ok"}\'\n'
     )
     fake_plan_env.chmod(0o755)
 
@@ -313,10 +307,7 @@ def test_register_and_run_completes_via_codex_callback(
         task_id=$1
         session_id=$2
         org_slug=$3
-        happyranch report-completion --org "$org_slug" \
-          --task-id "$task_id" --session-id "$session_id" \
-          --agent engineering_head --status completed --confidence 90 \
-          --summary '{"action":"done","summary":"codex ok"}'
+        report_completion engineering_head '{"action":"done","summary":"codex ok"}'
         """,
     )
 
@@ -329,6 +320,7 @@ def test_register_and_run_completes_via_codex_callback(
     assert body["task"]["status"] == "completed"
     assert body["task"]["assigned_agent"] == "engineering_head"
     assert any(res["session_id"] for res in body["results"])
+    assert_launch_witness("codex")
 
 
 def test_mixed_fleet_roundtrip_uses_claude_and_codex(
@@ -356,15 +348,9 @@ def test_mixed_fleet_roundtrip_uses_claude_and_codex(
         state_file="${FAKE_CLAUDE_PLAN}.seen.${task_id}"
         if [[ ! -f "$state_file" ]]; then
             touch "$state_file"
-            happyranch report-completion --org "$org_slug" \
-              --task-id "$task_id" --session-id "$session_id" \
-              --agent engineering_head --status completed --confidence 90 \
-              --summary '{"action":"delegate","agent":"dev_agent","prompt":"build the follow-up"}'
+            report_completion engineering_head '{"action":"delegate","agent":"dev_agent","prompt":"build the follow-up"}'
         else
-            happyranch report-completion --org "$org_slug" \
-              --task-id "$task_id" --session-id "$session_id" \
-              --agent engineering_head --status completed --confidence 90 \
-              --summary '{"action":"done","summary":"parent done"}'
+            report_completion engineering_head '{"action":"done","summary":"parent done"}'
         fi
         """,
     )
@@ -374,10 +360,7 @@ def test_mixed_fleet_roundtrip_uses_claude_and_codex(
         task_id=$1
         session_id=$2
         org_slug=$3
-        happyranch report-completion --org "$org_slug" \
-          --task-id "$task_id" --session-id "$session_id" \
-          --agent dev_agent --status completed --confidence 90 \
-          --summary '{"action":"done","summary":"child done"}'
+        report_completion dev_agent '{"action":"done","summary":"child done"}'
         """,
     )
 
@@ -507,7 +490,7 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
     # every subsequent EH call (new root) returns done.
     marker = fake_plan_env.parent / "eh_revisit_marker"
     fake_plan_env.write_text(
-        '#!/usr/bin/env bash\n'
+        '#!/usr/bin/env bash\n' + completion_prelude() +
         'set -e\n'
         'task_id=$1; session_id=$2; agent=$3; org_slug=$4\n'
         f'marker="{marker}"\n'
@@ -517,10 +500,7 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
         '  touch "$marker"\n'
         '  summary=\'{"action":"escalate","reason":"need founder call"}\'\n'
         'fi\n'
-        'happyranch report-completion --org "$org_slug" \\\n'
-        '  --task-id "$task_id" --session-id "$session_id" \\\n'
-        '  --agent "$agent" --status completed --confidence 90 \\\n'
-        '  --summary "$summary"\n'
+        'report_completion "$agent" "$summary"\n'
     )
     fake_plan_env.chmod(0o755)
 
@@ -551,3 +531,16 @@ def test_revisit_roundtrip_creates_new_root_and_completes(
     pre_task = r_pre.json()["task"]
     assert pre_task["status"] == "superseded"
     assert pre_task["block_kind"] is None
+
+
+def test_deterministic_provider_nonzero_is_real_launch_failure(live_daemon, runtime, fake_plan_env):
+    """An explicit failing executable plan exercises real orchestration failure."""
+    fake_plan_env.write_text("#!/bin/sh\nexit 7\n")
+    seed_workspace(runtime, "engineering_head")
+    base = f"http://127.0.0.1:{live_daemon}/api/v1/orgs/test"
+    task_id = _submit_task(base, brief="explicit deterministic failure")
+    assert _wait_for_terminal_status(base, task_id, timeout=20) == "failed"
+    audit = httpx.get(f"{base}/audit", params={"task_id": task_id},
+                     headers=_auth_headers(), timeout=5).json()["entries"]
+    assert any(row["action"] == "session_start" for row in audit), "failure occurred before executable launch"
+    assert_launch_witness("claude", callbacks=0)

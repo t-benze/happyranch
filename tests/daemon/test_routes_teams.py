@@ -42,3 +42,10 @@ def test_list_teams_empty_for_fresh_org(tmp_home, app, auth_headers) -> None:
     r = client.get("/api/v1/orgs/fresh/teams", headers=auth_headers)
     assert r.status_code == 200, r.text
     assert r.json() == {"teams": []}
+    from runtime.workflows.authority import WorkflowAuthorityError
+    import pytest
+
+    org = app.state.daemon.orgs["fresh"]
+    assert org.teams.teams() == []
+    with pytest.raises(WorkflowAuthorityError, match="authority_pointer_not_ready"):
+        org.workflow_authority.verify_admission_ready()

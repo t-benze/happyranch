@@ -11,6 +11,7 @@
  * display output is localized.
  */
 import { formatCount, formatTokens } from '@/lib/format';
+import { formatAttachmentSize } from '@/lib/threadAttachments';
 import type { Locale } from './locale';
 
 function trimCompact(value: number): string {
@@ -61,4 +62,62 @@ export function formatDateTimeFor(
     timeStyle: options.timeStyle ?? 'short',
     timeZone: options.timeZone,
   }).format(date);
+}
+
+/**
+ * Centrally owned date/time display shapes (THR-118 W4b). Feature code picks a
+ * named shape instead of hand-assembling `Intl` options, so every visible
+ * date/time on a translated surface goes through this module.
+ */
+const DATE_SHAPES = {
+  /** Locale month name, for already-resolved org wall-clock parts. */
+  monthShort: { month: 'short' },
+  /** Usage UTC instants in the response timezone: Sep 29, 14:03 / 9月29日 14:03. */
+  monthDayClock24: { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' },
+  /** `Wed, Jun 10, 2026` / `2026年6月10日周三` */
+  weekdayDate: { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' },
+  /** `Wed, Jun 10` / `6月10日周三` */
+  weekdayMonthDay: { weekday: 'short', month: 'short', day: 'numeric' },
+  /** `Jun 10` / `6月10日` */
+  monthDay: { month: 'short', day: 'numeric' },
+  /** `Jun 10, 2026` / `2026年6月10日` */
+  monthDayYear: { month: 'short', day: 'numeric', year: 'numeric' },
+  /** `Wednesday` / `星期三` */
+  weekdayLong: { weekday: 'long' },
+  /** 24-hour `14:05` */
+  clock24: { hour: '2-digit', minute: '2-digit', hour12: false },
+  /** 24-hour `14:05:09` */
+  clock24Seconds: { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false },
+  /** `Jun 10, 02:05 PM` / `6月10日 14:05` */
+  monthDayTime: { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' },
+  /** `Jun 10, 2026, 02:05 PM` / `2026年6月10日 14:05` */
+  dateTime: { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' },
+} as const satisfies Record<string, Intl.DateTimeFormatOptions>;
+
+export type LocaleDateShape = keyof typeof DATE_SHAPES;
+
+/**
+ * Format `value` in a named display shape with an explicit locale. `timeZone`
+ * is an IANA id; omit it only where the surface deliberately shows the
+ * viewer's local time. An invalid date renders `Invalid Date` (the
+ * `Date#toLocaleString` behaviour) rather than throwing; an invalid timezone
+ * still throws `RangeError`, as `Intl` does.
+ */
+export function formatDateShapeFor(
+  locale: Locale,
+  value: Date | number,
+  shape: LocaleDateShape,
+  timeZone?: string,
+): string {
+  const date = typeof value === 'number' ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) return 'Invalid Date';
+  return new Intl.DateTimeFormat(locale === 'en' ? 'en-US' : locale, {
+    ...DATE_SHAPES[shape],
+    ...(timeZone ? { timeZone } : {}),
+  }).format(date);
+}
+
+/** Binary byte units and canonical rounding; only number display receives the locale. */
+export function formatAttachmentSizeFor(locale: Locale, sizeBytes: number | null | undefined): string | null {
+  return formatAttachmentSize(sizeBytes, locale);
 }

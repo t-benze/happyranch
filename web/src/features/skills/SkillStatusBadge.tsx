@@ -8,6 +8,7 @@
  * validation, never an approval/admission gate.
  */
 import { BadgeCheck, CircleDashed, Trash2, TriangleAlert } from 'lucide-react';
+import { useTranslation } from '@/hooks/i18n';
 import { validationLabel, type ValidationTone } from './skills-catalog';
 
 const TONE_STYLE: Record<ValidationTone, string> = {
@@ -27,11 +28,12 @@ export function SkillStatusBadge({
 }: {
   state: string;
 }): JSX.Element {
+  const { t } = useTranslation();
   if (state === 'permanently_removed') {
     return (
       <span className={`text-mono-sm inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TONE_STYLE.neutral}`}>
         <Trash2 size={11} aria-hidden="true" className="shrink-0" />
-        Permanently removed
+        {t('skills.status.permanentlyRemoved')}
       </span>
     );
   }
@@ -39,19 +41,19 @@ export function SkillStatusBadge({
     return (
       <span className={`text-mono-sm inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TONE_STYLE.attention}`}>
         <TriangleAlert size={11} aria-hidden="true" className="shrink-0" />
-        Hidden — eligibility not configured
+        {t('skills.status.hiddenNoEligibility')}
       </span>
     );
   }
   const knownState = state === 'valid' ? 'validated' : state === 'invalid' ? 'failed_validation' : state;
-  const { text, tone } = validationLabel(knownState as 'in_catalog' | 'validated' | 'failed_validation');
+  const { key, tone } = validationLabel(knownState as 'in_catalog' | 'validated' | 'failed_validation');
   const Icon = TONE_ICON[tone];
   return (
     <span
       className={`text-mono-sm inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${TONE_STYLE[tone]}`}
     >
       <Icon size={11} aria-hidden="true" className="shrink-0" />
-      {text}
+      {t(key)}
     </span>
   );
 }
