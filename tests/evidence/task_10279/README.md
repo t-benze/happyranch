@@ -4,8 +4,8 @@ The current push selects the remaining audit's environment prerequisite in the
 existing native macOS15 venue. The coordinator uses unchanged pinned native
 admission, official CPython3.14.4/uv tools and locked source setup, then acquires
 installed Python/startup/metadata sources and pytest11 entry-point identities
-without importing pytest, plugins or candidate code. This closes the absence
-of actual disposable installed sources for review; it does not close their
+without importing pytest, plugins or candidate code. Successful authenticated
+acquisition supplies actual disposable installed sources for review; it does not close their
 semantic/startup/hook audit or admit collection. Acquisition exit0 is neither
 collection PASS nor behavioral QA. Full parent-driven all-tests collect-only,
 counts/deselections/errors/exit, zero body/provider/unclassified launch and
