@@ -87,7 +87,27 @@ async function wait(session, expression) {
 }
 async function keyState(session) {
   return evaluate(session, `({focused:document.hasFocus(), tag:document.activeElement?.tagName || '',
-    href:document.activeElement?.getAttribute('href') || '', location:location.pathname, hash:location.hash})`);
+    href:document.activeElement?.getAttribute('href') || '', location:location.pathname, hash:location.hash,
+    visibility:document.visibilityState, role:document.activeElement?.getAttribute('role') || ''})`);
+}
+async function nativeClick(session, selector, label = null) {
+  // Observe geometry and hit target; activation itself is real browser input.
+  const point = await evaluate(session, `(() => {
+    const matches=[...document.querySelectorAll(${JSON.stringify(selector)})]
+      .filter(e=>${JSON.stringify(label)}===null || e.textContent.trim()===${JSON.stringify(label)});
+    if(matches.length!==1)throw new Error('ambiguous native click target');
+    const e=matches[0], r=e.getBoundingClientRect(), x=r.left+r.width/2, y=r.top+r.height/2;
+    const hit=document.elementFromPoint(x,y);
+    return {x,y,width:r.width,height:r.height,inside:x>=0&&y>=0&&x<innerWidth&&y<innerHeight,
+      reachable:!!hit&&(hit===e||e.contains(hit)),disabled:!!e.disabled};
+  })()`);
+  assert.ok(point.width > 0 && point.height > 0 && point.inside && point.reachable && !point.disabled,
+    'native click requires a visible unobscured enabled target');
+  for (const type of ['mousePressed', 'mouseReleased'])
+    await cdp.send('Input.dispatchMouseEvent', { type, x:point.x, y:point.y, button:'left',
+      buttons:type === 'mousePressed' ? 1 : 0, clickCount:1, modifiers:0 }, session);
+  await sleep(50);
+  return { ...point, after: await keyState(session) };
 }
 async function key(session, name, code, diagnostics) {
   assert.ok(['Enter', 'Tab', 'Escape'].includes(name));
@@ -198,8 +218,9 @@ async function fixedShortcut(session, name) {
   return { name, params, after: await keyState(session) };
 }
 
-async function shellPaletteHelp(session, locale) {
-  const observation = { unbound: [], helpTabs: [] };
+async function shellPaletteHelp(session, locale, observation) {
+  await cdp.send('Page.bringToFront', {}, session);
+  await wait(session, 'document.hasFocus()');
   const editable = `!!document.activeElement?.closest('input,textarea,[contenteditable="true"],[role="textbox"]')`;
   observation.focusTabs = [];
   for (let attempt = 0; attempt < 60 && await evaluate(session, editable); attempt++) {
@@ -224,11 +245,12 @@ async function shellPaletteHelp(session, locale) {
   await wait(session, `(() => { const d=document.querySelector('[role="dialog"]');
     return !!d && [...d.querySelectorAll('h2')].some(e=>e.textContent.trim()===${JSON.stringify(title)}); })()`);
   const labels = await evaluate(session, `[...document.querySelectorAll('[role="dialog"] [role="tab"]')].map(e=>e.textContent.trim())`);
+  observation.labels = labels;
   assert.equal(labels.length, 7, 'all surviving help sections are present');
   for (const label of labels) {
-    await evaluate(session, `(() => { const t=[...document.querySelectorAll('[role="dialog"] [role="tab"]')]
-      .filter(e=>e.textContent.trim()===${JSON.stringify(label)}); if(t.length!==1)throw new Error('ambiguous help tab');
-      t[0].click(); return true; })()`);
+    const tabObservation = { label, status:'failed' };
+    observation.helpTabs.push(tabObservation);
+    tabObservation.input = await nativeClick(session, '[role="dialog"] [role="tab"]', label);
     await wait(session, `!![...document.querySelectorAll('[role="dialog"] [role="tab"]')]
       .find(e=>e.textContent.trim()===${JSON.stringify(label)} && e.getAttribute('aria-selected')==='true')`);
     const tab = await evaluate(session, `(() => { const d=document.querySelector('[role="dialog"]');
@@ -237,7 +259,8 @@ async function shellPaletteHelp(session, locale) {
     assert.ok(!/assistant|助手|a-mode/i.test(tab.text), 'help contains no retired entry');
     assert.deepEqual(tab.absence.forbidden, []);
     assert.equal(tab.absence.dockCount, 0);
-    observation.helpTabs.push({ label, ...tab });
+    Object.assign(tabObservation, tab, { status:'passed' });
+    writeFileSync(join(binding.out, 'browser-cases.json'), JSON.stringify(results, null, 2) + '\n', { mode:0o600 });
   }
   await key(session, 'Escape', 27);
   await wait(session, '!document.querySelector("[role=dialog]")');
@@ -254,7 +277,11 @@ const layoutObservation = String.raw`(() => {
     .filter(e=>{const r=e.getBoundingClientRect();return r.width>0 && (r.left<0 || r.right>innerWidth);})
     .slice(0,30).map(e=>({tag:e.tagName,text:(e.innerText||e.getAttribute('aria-label')||'').slice(0,80),
       left:e.getBoundingClientRect().left,right:e.getBoundingClientRect().right}));
-  return {viewport:innerWidth,scrollWidth:root.scrollWidth,overflow:root.scrollWidth>innerWidth,
+  const internalScrollers=[...document.querySelectorAll('main *,aside *')]
+    .filter(e=>e.clientWidth>0 && e.scrollWidth>e.clientWidth+1)
+    .slice(0,30).map(e=>({tag:e.tagName,role:e.getAttribute('role')||'',
+      width:e.clientWidth,scrollWidth:e.scrollWidth,overflowX:getComputedStyle(e).overflowX}));
+  return {viewport:innerWidth,scrollWidth:root.scrollWidth,overflow:root.scrollWidth>innerWidth,internalScrollers,
     outside,alerts,knownRawDiagnostics:(document.body.innerText.match(/(?:authority_reviewer_incoherent|profile_dependency_incoherent|Traceback|[a-z_]+_not_registered)/g)||[]).slice(0,20)};
 })()`;
 
@@ -348,7 +375,7 @@ try {
       row.phase = 'tasks-navigation';
       try {
         row.tasksBeforeClick = await keyState(session);
-        await evaluate(session, `(() => { const a=document.querySelector('a[href="/orgs/test/tasks"]'); if(!a)throw new Error('Tasks navigation absent'); a.click(); return true; })()`);
+        row.tasksNativeClick = await nativeClick(session, 'a[href="/orgs/test/tasks"]');
         row.tasksAfterClick = await keyState(session);
         row.tasksCapacityNavigation = await discardCapacityNavigation(session, locale, '/orgs/test/tasks');
         await wait(session, `location.pathname==='/orgs/test/tasks' && !!document.querySelector('aside')`);
@@ -362,10 +389,20 @@ try {
       assert.deepEqual(row.navigation.forbidden, []);
       assert.equal(row.navigation.dockCount, 0);
       row.screenshots.push(await screenshot(session, `${locale}-${width}-${row.navigationError ? 'navigation-failed' : 'tasks'}.png`));
+      row.shellPaletteHelp = { unbound: [], helpTabs: [] };
       try {
-        row.shellPaletteHelp = await shellPaletteHelp(session, locale);
+        await shellPaletteHelp(session, locale, row.shellPaletteHelp);
       } catch (error) {
         row.shellPaletteHelpError = { type: error.name, message: error.message };
+        row.shellPaletteHelp.failureState = await evaluate(session, `({
+          focus:{tag:document.activeElement?.tagName||'',role:document.activeElement?.getAttribute('role')||'',
+            editable:!!document.activeElement?.closest('input,textarea,[contenteditable="true"],[role="textbox"]')},
+          focused:document.hasFocus(),visibility:document.visibilityState,location:location.pathname,
+          dialogs:[...document.querySelectorAll('[role="dialog"]')].slice(0,3).map(d=>({
+            titles:[...d.querySelectorAll('h2')].map(e=>e.textContent.slice(0,120)),
+            tabs:[...d.querySelectorAll('[role="tab"]')].slice(0,10).map(e=>({
+              label:e.textContent.slice(0,120),selected:e.getAttribute('aria-selected')}))}))
+        })`);
       }
       row.phase = 'http-observation';
       row.http = cdp.events.filter(event => event.session === session).map(({ session: _session, ...event }) => event);

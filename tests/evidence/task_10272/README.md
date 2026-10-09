@@ -1,3 +1,18 @@
+# TASK10318 browser-only recovery
+
+The latest task10279 evidence push executes only existing native macOS15
+browser work at candidate294beab8. Original run37898089226 source cases are
+retained by exact candidate/baseline/evidence/manifest reference: different-root
+held/retry exit0 and same-root candidate/baseline exit1 on both venues. Source
+tests and baseline overlay are not repeated. Fresh before/after source manifests,
+native admission, official tools, constrained browser wheel provenance, complete
+browser cleanup and lossless sealing remain mandatory. Result status describes
+browser-only execution, never a whole-retirement or historical-failure PASS.
+See task_10279/README.md for the concrete native-input repair and remaining
+collection/review/QA/proof gates. All previous receipts retain original scopes.
+
+## Historical coordinator revisions (original scopes only)
+
 # Current TASK-10279 browser-only continuation
 
 Current-head artifact renewal after authenticated source run37887632538:

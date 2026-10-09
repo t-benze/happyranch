@@ -784,7 +784,7 @@ def main():
     assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
     assert os.environ.get('GITHUB_EVENT_NAME') == 'push'
     assert os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'no autonomous or manual reruns'
-    assert platform.system() in ('Linux', 'Darwin')
+    assert platform.system() == 'Darwin', 'this renewal is macOS browser only'
     assert platform.machine() in ('x86_64', 'arm64')
     if sys.platform == 'linux':
         assert platform.machine() == 'x86_64'
@@ -803,7 +803,7 @@ def main():
                   'general_integration': 'SKIPPED',
                   'wheel_and_frozen_behavior': 'historical37890296572 pinned c6dcefa2; not rerun or relabeled',
                   'real_daemon_browser': 'current-head macOS4cases required; Linux sandbox refusal retained, not rerun',
-                  'source_shipping': 'candidate4 affected cases + baseline2 same-root characterizations; actual failures retained',
+                  'source_shipping': 'historical37898089226 at current candidate; no source execution in this browser renewal',
                   'whole_repo_discovery': 'held for audit',
                   'independent_code_review_and_qa': 'pending'}}
     env = clean_env(root / 'bootstrap')
@@ -949,27 +949,28 @@ def main():
                 'driver_sha256': 'ad73f37e0d23b6bdc0c2f9c7759afebc8d789a3937fcd3f6dad34be358841ce8',
                 'chrome_log_sha256': 'f7ae2d59d26259590eb9848d7974d5ce8983a793a0a5c4c3198b72b1458dcccb'}})
         save('latest-authenticated-artifact-reference.json', {'run': '37890296572', 'evidence': '148135061a6ea49d2f1bb2d76e4bd85cdcaa6280', 'candidate': 'c6dcefa2a933443504f9e36e854bca9cf020ce78', 'baseline': '8378064e9933d5b3af4247eca55750ac427a564f', 'execution_this_run': 'not-executed', 'is_behavioral_pass': False, 'scope': 'Authenticated original wheel/frozen tool/RECORD/TOC/bundle/source and actual scenario/cleanup scopes only; failures retained; no new-head execution/no-read claim', 'manifests': {'task-10279-native-macos-15-1': {'archive_sha256': '5e8dbfa9cc70fb862e8d1f82b950018219cac1d805e1514184852dc964a27452', 'manifest_sha256': '98829cada436f7d9ddd9a4404bcede5b0efbaa967a85b0048855faaf40122e2d', 'original_files': 1742}, 'task-10279-native-ubuntu-latest-1': {'archive_sha256': '93faa1b410284499477ecb1f5072f5491b752cf5955e4d620f4ca141568d0e65', 'manifest_sha256': '0e043bf80340532fee16117917ee35296b1b44ff165707120b69698a7cbae3c7', 'original_files': 1805}}})
-        overlay, baseline_test_head = overlay_characterization(commands, candidate, baseline, env, before_baseline)
-        expected_baseline = json.loads((RECEIPTS / 'baseline-overlay-source-manifest.json').read_text())
-        candidate_exit = source_stage(commands, 'candidate', candidate, candidate,
-            root, env, uv, python, descriptor, observer)
-        baseline_exit = source_stage(commands, 'baseline', baseline, candidate,
-            root, env, uv, python, descriptor, observer)
-        result['source_execution_this_run'] = 'candidate4 affected cases and separate immutable baseline2; authentic failures retained'
-        result['source'] = {'candidate_exit': candidate_exit, 'baseline_exit': baseline_exit,
-            'candidate': CANDIDATE, 'baseline': BASELINE, 'baseline_test_head': baseline_test_head,
-            'baseline_overlay': list(overlay), 'whole_collection': False,
+        save('latest-authenticated-source-reference.json', {
+            'run_id': '37898089226',
+            'evidence_sha': 'c1a16c087c6deb1b10b79fc385139b5e8fa73bb5',
+            'candidate': CANDIDATE, 'baseline': BASELINE,
+            'execution_this_run': 'not-executed', 'is_overall_pass': False,
+            'scope': 'per venue candidate held/retry different-root exit0; candidate and baseline same-root held/retry exit1; original failures and cleanup retained',
+            'original_manifests': {
+                'macos-15': 'e6061dc3e946e4fe930787c372f7a9dec2b573400b3531251fe2f7ccd68c9720',
+                'ubuntu-latest': '9de9349c76146b4a36d613c97917cf74b112bf55dfa72b9abe6626c1faaa9efa'}})
+        result['source_execution_this_run'] = 'not-executed; immutable original run37898089226 retained'
+        result['source'] = {'reference': 'latest-authenticated-source-reference.json',
+            'candidate': CANDIDATE, 'baseline': BASELINE, 'whole_collection': False,
             'same_root_characterization_failures_are_failures': True}
         for role, source in (('candidate', candidate), ('baseline', baseline)):
             after = source_manifest(commands, role + '-after', source, env,
-                CANDIDATE if role == 'candidate' else BASELINE,
-                None if role == 'candidate' else baseline_test_head)
-            original = before_candidate if role == 'candidate' else expected_baseline
+                CANDIDATE if role == 'candidate' else BASELINE)
+            original = before_candidate if role == 'candidate' else before_baseline
             assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        # A failed characterization does not prevent independent macOS browser
-        # observations once native source cleanup and byte preservation pass.
+        # Source characterization is already retained at this exact candidate.
+        # Only the remaining browser gap executes in this renewal.
         browser_passed = True
         if sys.platform == 'darwin':
             assert sha(HERE.parent / 'task_10279/artifacts.py') == ARTIFACT_HELPER_SHA256, 'immutable browser wheel coordinator drift'
@@ -983,8 +984,8 @@ def main():
         else:
             result['browser'] = {'execution_this_run': 'not-executed',
                 'original_failure': 'historical-browser-reference.json', 'status': 'Linux sandbox refusal retained'}
-        passed = candidate_exit == baseline_exit == 0 and browser_passed
-        result['status'] = 'renewal-stage-passed' if passed else 'renewal-stage-failed-actual-failures-retained'
+        passed = browser_passed
+        result['status'] = 'browser-only-passed' if passed else 'browser-only-failed'
         return 0 if passed else 1
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}

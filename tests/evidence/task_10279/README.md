@@ -1,3 +1,48 @@
+# TASK10318 direct-root browser-only renewal
+
+Source pin remains294beab846efbceecc3fa5dbfb77ff40c95fa5af. Original
+run37898089226/evidencec1a16c087 is FAILURE, with fully acquired original
+macOS/Linux archives. Per venue the different-root held/retry cases exit0,
+including real logical child1/native0 backoff and completed CLI/result/audit
+logical0/native0 tails. Candidate and baseline same-root cases remain exit1.
+The original detailed comparison/cleanup obligations remain; no rerun is needed
+for unchanged source selections. Older wheel/frozen receipts keep their actual
+tool/RECORD/TOC/bundle/source scope and are not renewed here.
+
+All four original browser cases failed: three awaited selected Global/全局,
+one zh390 awaited the help title. Eight readable Settings/Tasks images show
+retirement absence; English mobile internal overflow and Chinese raw capacity
+diagnostic remain observed limitations, not disproved by document-width flags.
+The installed Radix Tabs trigger selects on mouse-down, focus or Enter; DOM
+click alone does not drive that input contract. The fixed driver now observes
+unique target geometry/hit-testing and sends actual CDP mouse press/release for
+help tabs and Tasks navigation. Preferences keeps native Tab/Enter. Existing
+shortcut/title/seven-tab/absence/HTTP/WS/image assertions remain required.
+Partial shell/help observations survive failure and retain bounded focus,
+visibility, title and selected-tab state. Native focus is reacquired before
+shortcuts. The zh390 help-open cause remains unknown until new evidence;
+preparation does not establish a fix or browser PASS. Layout observations now
+include internal scroll containers, still not a complete readability proof.
+
+The same never-merge push-only workflow narrows to existing macos-15 and executes
+only the missing browser evidence. It retains fresh native observer admission,
+ordinary workload UID, official tool/provisioning and constrained browser wheel,
+immutable candidate/baseline manifests, owned cleanup, sealing and finite limits.
+It records original source run/manifests instead of executing source cases or
+overlaying baseline. Linux sandbox refusal and all failed historical runs remain.
+No Linux browser, source cases, frozen project, whole collection, Python units
+or keeper proofs execute in this renewal. Browser-only success is not whole
+retirement PASS, independent QA, source characterization PASS or collection.
+
+Root10318 performs this bounded work directly after runtime refusal of its
+cross-root10305 retry link (no verified supersession). No lineage, permissions,
+configuration, model, auth or production code changes. Collection audit and
+same-root disposition remain unfinished; independent full-diff APPROVE/PASS and
+guarded merge/postmain are still required. Python units/proofs stay SUSPENDED
+and keepers UNFULFILLED; general integration SKIPPED. Never merge this branch.
+
+## Historical coordinator revisions (original scopes only)
+
 # TASK-10305 bounded renewal on the existing NEVER-MERGE coordinator
 
 Parent TASK10245 step8 admits the test-only R4.5 logical1/native0 correction.
