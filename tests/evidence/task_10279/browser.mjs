@@ -135,6 +135,7 @@ try {
       await cdp.send('Page.enable', {}, session);
       await cdp.send('Runtime.enable', {}, session);
       await cdp.send('Network.enable', {}, session);
+      await cdp.send('Page.bringToFront', {}, session);
       await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, session);
       await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source:
         `if (location.origin===${JSON.stringify(origin.origin)}) localStorage.setItem('happyranch.ui.locale', ${JSON.stringify(locale)});` }, session);
@@ -151,6 +152,10 @@ try {
       // Focus via native Tab events, then activate the actual Preferences link with Enter.
       let reached = false;
       row.phase = 'keyboard-navigation';
+      row.keyboardDiagnostics = { beforeTab: await evaluate(session, `({focused:document.hasFocus(),
+        tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
+        location:location.pathname})`) };
+      await wait(session, `document.hasFocus()`);
       for (let attempt = 0; attempt < 60; attempt++) {
         await key(session, 'Tab', 9);
         if (await evaluate(session, `document.activeElement?.getAttribute('href')==='/orgs/test/settings/preferences'`)) {
@@ -158,7 +163,13 @@ try {
         }
       }
       assert.ok(reached, 'Preferences link must be reachable by Tab');
+      row.keyboardDiagnostics.beforeEnter = await evaluate(session, `({focused:document.hasFocus(),
+        tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
+        location:location.pathname})`);
       await key(session, 'Enter', 13);
+      row.keyboardDiagnostics.afterEnter = await evaluate(session, `({focused:document.hasFocus(),
+        tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
+        location:location.pathname})`);
       await wait(session, `location.pathname==='/orgs/test/settings/preferences'`);
       row.keyboard = { tabReachedPreferences: reached, enterNavigated: true };
       await key(session, 'Escape', 27);

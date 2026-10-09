@@ -1,5 +1,24 @@
 # TASK-10279 native admission, never merge
 
+Run37877711425/evidence63084aec6 still failed the four macOS Preferences
+keyboard location assertions after the Enter serialization repair. All198 dual
+archive members and18 complete native snapshots authenticate; four genuine
+Settings images were directly viewed. No Tasks images or keyboard/WS/navigation/
+HTTP-tail PASS follows. Linux remains held before provisioning on its original
+ordinary Chrome sandbox refusal; no new Linux browser execution is claimed.
+
+The fixed four-case driver now activates each actual tab with
+[`Page.bringToFront`](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-bringToFront),
+as existing repository browser drivers do. It requires actual document focus
+before native Tab/Enter and records only focus, active tag/href and location
+before Tab, before Enter and after Enter. Background-tab focus is a diagnosis
+to verify on the next authentic runner, not an established cause or PASS.
+No DOM focus/click replaces Enter, focus emulation, app handler instrumentation,
+backend mocking or product change is added. Every previous case assertion stays
+mandatory. Candidate/workflow/pins/observer/tools and Linux hold are unchanged;
+fresh dual cheap native admission precedes costly macOS provisioning. Original
+failures remain retained. Never merge this evidence branch.
+
 Run37876709497/evidence834e7fef retained complete fresh native admission on both
 venues. Ubuntu stopped at the explicit original sandbox-prerequisite refusal
 before provisioning. The macOS archive authenticates162 original files and16
