@@ -11,6 +11,8 @@ from typing import Awaitable, Callable
 from runtime.config import Settings, settings as global_settings
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.identities.presentation import prompt_name_context
+from runtime.identities.registry import read_name_metadata
 from runtime.orchestrator.executors import _meaningful_stderr
 from runtime.orchestrator.executor_registry import get_registry
 from runtime.models import DreamRecord, DreamStatus

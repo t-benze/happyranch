@@ -184,7 +184,7 @@ naming_call 3 65536 artifacts-create.txt docker volume create --driver local --o
 # /dev/shm pages charge the active cgroup and are already within its memory cap.
 naming_limits=(--cpus=1.95 --memory=2560m --memory-swap=2560m --pids-limit=496 --read-only \
   --cap-drop=ALL --security-opt=no-new-privileges --shm-size=256m \
-  --log-driver=local --log-opt max-size=2m --log-opt max-file=1)
+  --log-driver=local --log-opt max-size=2m --log-opt max-file=1 --log-opt compress=false)
 naming_remaining=$((naming_deadline-$(date +%s)))
 (( naming_remaining > 120 ))
 cat > "$naming_dir/export.cjs" <<'EXPORT'
@@ -222,7 +222,7 @@ EXPORT
 naming_call 5 65536 holder-start.txt docker run -d --name "$naming_holder" \
   --cpus=0.05 --memory=64m --memory-swap=64m --pids-limit=16 --read-only \
   --cap-drop=ALL --security-opt=no-new-privileges --network=none --user=1000:1000 \
-  --log-driver=local --log-opt max-size=64k --log-opt max-file=1 \
+  --log-driver=local --log-opt max-size=64k --log-opt max-file=1 --log-opt compress=false \
   --mount "type=volume,src=$naming_scratch,dst=/scratch" \
   --mount "type=volume,src=$naming_artifacts,dst=/evidence" \
   --mount "type=bind,src=$naming_dir/export.cjs,dst=/naming-export.cjs,readonly" \

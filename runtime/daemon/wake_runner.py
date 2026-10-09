@@ -23,6 +23,8 @@ from runtime.config import Settings, settings as global_settings
 from runtime.daemon.dream_runner import _executor_name, _is_timeout
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.identities.presentation import prompt_name_context
+from runtime.identities.registry import read_name_metadata
 from runtime.models import WorkHourStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
