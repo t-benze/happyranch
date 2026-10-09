@@ -96,7 +96,7 @@ async function screenshot(session, name) {
   writeFileSync(join(binding.out, name), data, { mode: 0o600 });
   return { name, bytes: data.length, width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
 }
-const absence = `(() => {
+const absence = String.raw`(() => {
   const controls = [...document.querySelectorAll('a,button,[role="button"],[role="tab"]')]
     .map(e => ({ text:(e.innerText || '').trim(), label:e.getAttribute('aria-label') || '', href:e.getAttribute('href') || '' }));
   const forbidden = controls.filter(e => /assistant|助手|a-mode/i.test(e.text+' '+e.label) || /\/assistant(?:\/|$)/.test(e.href));

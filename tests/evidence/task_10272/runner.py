@@ -830,6 +830,26 @@ def main():
         # Its fresh UID/run/image/source/descriptor binds every later census.
         # Never replay the old unprivileged diagnostic or omit opaque rows.
         descriptor, observer, census_code = admitted_census(commands, root, env, candidate)
+        if sys.platform == 'linux':
+            # Fresh native admission is still required on both venues. The
+            # original ordinary Chrome launch failed before DevTools with no
+            # usable default sandbox; do not repeat costly provisioning or
+            # silently disable a control. Preserve the exact historical failure
+            # separately from this unexecuted browser stage.
+            result['status'] = 'browser-prerequisite-unavailable-original-linux-failure-retained'
+            result['source_execution_this_run'] = 'not-executed; prior source/artifact receipts retained'
+            result['browser'] = {'exit': None, 'execution_this_run': 'not-executed',
+                'error': {'type': 'HostedBrowserSandboxUnavailable',
+                    'message': 'Original ordinary Chrome exited No usable sandbox! before DevTools; no admitted workaround'},
+                'original_failure': {'run_id': '37874844097',
+                    'evidence_sha': 'd2e8697696806bc12ea4ee5a3f291ba276454c19',
+                    'candidate': CANDIDATE, 'baseline': BASELINE,
+                    'archive_sha256': '4dfe43307436542f356d74235b0513590592d2e90fc00c61011abebc3e487686',
+                    'manifest_sha256': '3645379473b0dbbd1020210c330b00dd93fd02d63165bd6a68a4856d5add9bec',
+                    'driver_sha256': 'ad73f37e0d23b6bdc0c2f9c7759afebc8d789a3937fcd3f6dad34be358841ce8',
+                    'chrome_log_sha256': 'f7ae2d59d26259590eb9848d7974d5ce8983a793a0a5c4c3198b72b1458dcccb'},
+                'scope': 'Linux browser readiness held; zero cases/images, no behavioral PASS'}
+            return 1
         pins = json.loads((HERE / 'tool-pins.json').read_text())
         archive = root / 'downloads/Python-3.14.4.tar.xz'
         save('official-python-archive.json', {'upstream': pins['python'],

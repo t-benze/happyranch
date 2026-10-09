@@ -1,5 +1,39 @@
 # TASK-10279 native admission, never merge
 
+Actual run37874844097/evidenced2e869769 passed fresh native preflight on both
+venues, then failed the browser stage. Its retained macOS archive verifies all
+158 original files and 16 complete native snapshots including preflight. Four
+ordinary browser cases reached settings-observation and failed with SyntaxError line4 column2;
+no screenshots were produced. Ordinary daemon/browser launches and both scoped
+daemon cleanup exits0 remain recorded. JOB3991 acquired that archive but its
+Ubuntu download failed with a TLS handshake timeout. JOB3993 recovered only
+that missing archive; all 202 original Ubuntu files and 15 complete native
+snapshots including preflight now verify. Original archives remain preserved.
+
+Ubuntu's ordinary UID1001 Chrome PID17873 exited with the actual fatal
+`No usable sandbox!` before DevTools readiness. Zero Linux browser cases or
+images exist; both daemon cleanup exits0 and empty scoped residue are retained.
+This error is distinct from successful native observer admission. Its Chrome
+message mentions AppArmor conditionally; a kernel cause has not been proven.
+The finite coordinator now returns exit1 on Linux immediately after fresh
+authenticated native admission, before costly provisioning, and binds the
+original run/evidence/archive/member hashes in `shipping-result.json`.
+The macOS browser stage continues with the corrected expression. No host
+settings/profile changes, sandbox disabling, privileged helper/browser, or
+origin/assertion weakening is admitted. Linux readiness remains unresolved;
+neither the held stage nor a macOS result establishes Linux browser PASS.
+Chromium's official explanation is available at
+https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md .
+
+The fixed `absence` expression now uses `String.raw` to preserve its regex
+escapes when passed to CDP. A normal template stripped the escaped slashes and
+produced invalid JavaScript. This changes only expression serialization; all
+absence/navigation/HTTP/sandbox assertions and ordinary workload boundaries
+remain required. Static expression compilation is preparation, not browser
+evidence. Retain the actual failed cases; new real cases and directly viewed
+screenshots are still required. Candidate and immutable workflow pins stay
+unchanged. Do not merge this evidence branch.
+
 Run37871722986/evidence859df87e passed native preflight on both fresh venues,
 but did not produce browser cases or screenshots. Linux refused the image's
 fixed Chrome executable at the strict file-permission check before web build.
@@ -31,7 +65,7 @@ explains that relocated binaries can encounter Ubuntu namespace restrictions;
 documentation does not prove readiness on the next actual runner. New receipts
 are required. This evidence-only preparation changes no candidate or workflow.
 
-Current prepared stage: finite real-daemon browser evidence from an installed
+Current prepared macOS15 stage: finite real-daemon browser evidence from an installed
 candidate wheel and an ordinary Vite distribution, with en/zh-CN at 390x844 and
 1440x900. The fixed browser driver authenticates the wheel/RECORD, default web
 copy and distribution hashes, Node24.19.0, npm, native Chrome and ordinary UID.
@@ -42,8 +76,10 @@ The only init script sets the ordinary browser locale preference; no app
 instrumentation or evidence build flag is used. Full native launch identities,
 bounded ordinary cleanup, direct-child reaping and source/stage before/after
 attribution remain mandatory. Both fresh runners repeat native admission before
-Node selection or CPython/Hatchling/npm provisioning. This preparation is not
-executed browser evidence, QA PASS or delivery.
+Node selection; the Linux coordinator then retains the original browser
+prerequisite refusal before CPython/Hatchling/npm provisioning. Only macOS15
+continues that provisioning and browser stage. This preparation is not executed
+browser evidence, QA PASS or delivery.
 
 Actual source run37868783544/evidence0542d92d completed every fixed selection
 at candidate0d498d535: each venue29candidate cases passed, including all23legacy
@@ -61,7 +97,8 @@ Whole collection remains held for the complete side-effect audit and observed
 closed-stub admission. Suspended units/keeper proofs remain UNFULFILLED.
 
 The older paragraphs below record previous coordinator stages and actual runs.
-The current workflow runs the browser-only stage described above.
+The current workflow runs the macOS browser-only stage and explicit Linux
+prerequisite refusal described above.
 
 This continues TASK-10272 evidence recovery for the same draft PR1017. The
 previous workflow and its actual failures are retained; this new exact-branch
