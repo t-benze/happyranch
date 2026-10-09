@@ -671,17 +671,19 @@ def _rewrite_record(root: Path, mutate) -> dict:
 
 
 def _preparing_root(tmp_path: Path, name: str) -> tuple[Path, Path]:
-    """A real preparing record: stage allocated, no prior OLD byte mutated."""
+    """First durable preparing record: allocated stage, no OLD byte mutated."""
     package = _distinct_package(tmp_path, name, b"new")
     root = tmp_path / name / "root"
     root.mkdir(parents=True)
     guard = _InstallerGuard(
-        operation="stage_payload:bin/happyranch-connector",
-        stage="before",
+        operation="record_replace",
+        stage="after",
+        occurrence=1,
         exception=_Interrupted,
     )
     with pytest.raises(_Interrupted):
         install_linux_package(package, root, guard=guard)
+    assert guard.receipts() == [("after", "record_replace", str(root / TRANSACTION_MARKER))]
     assert (root / TRANSACTION_MARKER).exists()
     assert json.loads((root / TRANSACTION_MARKER).read_text())["phase"] == "preparing"
     return root, package
@@ -871,24 +873,98 @@ def test_fresh_rollback_persistent_removal_fault_refuses_then_recovers(
 # H. Disjoint ownership negatives: two-call unchanged oracles (finding 2)
 # ---------------------------------------------------------------------------
 
-def test_foreign_stage_sentinel_attempt_identity_is_refused_unchanged(tmp_path: Path) -> None:
-    """M4: a plausible attempt/stage name may not redirect to foreign content."""
-    root, _package = _preparing_root(tmp_path, "foreign-stage")
-    foreign = root / ".happyranch-stage-foreign-sentinel"
+@pytest.mark.parametrize(("identity", "ending"), [
+    pytest.param("foreign-attempt", "", id="foreign-attempt"),
+    pytest.param("stage", "\n", id="stage-lf"),
+    pytest.param("stage", "\r", id="stage-cr"),
+    pytest.param("stage", "\r\n", id="stage-crlf"),
+    pytest.param("stage", "\t", id="stage-tab"),
+    pytest.param("attempt", "\n", id="attempt-lf"),
+    pytest.param("attempt", "\r", id="attempt-cr"),
+    pytest.param("attempt", "\r\n", id="attempt-crlf"),
+    pytest.param("attempt", "\t", id="attempt-tab"),
+    pytest.param("stage-path", "/", id="stage-trailing-separator"),
+    pytest.param("stage-path", "/./", id="stage-dot-component"),
+    pytest.param("stage-path", "//", id="stage-double-separator"),
+])
+def test_foreign_stage_sentinel_attempt_identity_is_refused_unchanged(
+    tmp_path: Path, identity: str, ending: str,
+) -> None:
+    """M4/R05-E02: only complete writer identities authorize stage cleanup."""
+    root, package = _preparing_root(tmp_path, "foreign-stage")
+    marker = root / TRANSACTION_MARKER
+    original = json.loads(marker.read_text(encoding="utf-8"))
+    owned_stage = Path(original["stage"])
+    assert owned_stage.is_dir()
+    owned_before = _full_snapshot(owned_stage)
+    attempt = original["attempt_id"]
+    if identity == "foreign-attempt":
+        attempt = "foreign"
+        foreign = root / ".happyranch-stage-foreign-sentinel"
+    elif identity == "attempt":
+        attempt += ending
+        # Keep the entire prefix bound to the malformed attempt.  An unrelated
+        # prefix mismatch must not mask acceptance by the attempt validator.
+        suffix = owned_stage.name.rsplit("-", 1)[1]
+        foreign = root / f".happyranch-stage-{attempt}-{suffix}"
+    elif identity == "stage":
+        foreign = root / (owned_stage.name + ending)
+    else:
+        # These strings normalize to a different real, plausibly named stage.
+        # Validate the recorded spelling before normalization can turn a
+        # non-writer identity into cleanup authority.
+        suffix = "aaaaaaaa" if not owned_stage.name.endswith("-aaaaaaaa") else "bbbbbbbb"
+        foreign = root / f".happyranch-stage-{attempt}-{suffix}"
+    assert foreign != owned_stage
     foreign.mkdir(mode=0o750)
-    sentinel = foreign / "sentinel"
+    sentinel = foreign / "operator-data"
     sentinel.write_bytes(b"FOREIGN")
     sentinel.chmod(0o640)
+    claimed_stage = str(foreign) + (ending if identity == "stage-path" else "")
     _rewrite_record(root, lambda record: record.update(
-        {"attempt_id": "foreign", "stage": str(foreign)}
+        {"attempt_id": attempt, "stage": claimed_stage}
     ))
     before = _full_snapshot(root)
-    for _ in range(2):
-        with pytest.raises(PackageError, match="transaction_state_invalid"):
-            _recover_interrupted(root)
-    assert _full_snapshot(root) == before
-    assert sentinel.read_bytes() == b"FOREIGN"
-    assert stat.S_IMODE(foreign.lstat().st_mode) == 0o750
+    parent_before = _full_snapshot(root.parent)
+    marker_before = marker.read_bytes()
+    for action in (_recover_interrupted, lambda path: install_linux_package(package, path)):
+        for _ in range(2):
+            with pytest.raises(PackageError) as exc:
+                action(root)
+            assert type(exc.value) is PackageError
+            assert str(exc.value) == "transaction_state_invalid"
+            assert _full_snapshot(root) == before
+            assert _full_snapshot(root.parent) == parent_before
+            assert sentinel.read_bytes() == b"FOREIGN"
+            assert stat.S_IMODE(sentinel.lstat().st_mode) == 0o640
+            assert stat.S_IMODE(foreign.lstat().st_mode) == 0o750
+            assert marker.read_bytes() == marker_before
+            assert stat.S_IMODE(marker.lstat().st_mode) == 0o600
+            assert _full_snapshot(owned_stage) == owned_before
+
+
+@pytest.mark.parametrize("route", ["recovery", "install-reentry"])
+def test_genuine_preparing_control_is_accepted_and_reinstalls(
+    tmp_path: Path, route: str,
+) -> None:
+    """The same first-record writer state remains recoverable through both APIs."""
+    root, package = _preparing_root(tmp_path, "genuine-preparing")
+    record = json.loads((root / TRANSACTION_MARKER).read_text(encoding="utf-8"))
+    owned_stage = Path(record["stage"])
+    assert owned_stage.is_dir()
+    if route == "recovery":
+        _recover_interrupted(root)
+        assert not list(root.iterdir())
+    else:
+        install_linux_package(package, root)
+    assert not owned_stage.exists()
+    assert not (root / TRANSACTION_MARKER).exists()
+    install_linux_package(package, root)
+    assert (root / "opt/happyranch/bin/happyranch-tsnet-sidecar").read_bytes() == b"sidecar-new"
+    installed = _full_snapshot(root)
+    install_linux_package(package, root)
+    assert _full_snapshot(root) == installed
+    assert not list(root.glob(".happyranch-*"))
 
 
 def test_arbitrary_created_parent_is_refused_unchanged(tmp_path: Path) -> None:

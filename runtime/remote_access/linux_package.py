@@ -928,7 +928,7 @@ def _load_record(root: Path, marker: Path) -> dict:
     if type(record["schema_version"]) is not int or record["schema_version"] != TRANSACTION_SCHEMA_VERSION:
         raise PackageError("transaction_state_invalid")
     attempt = record["attempt_id"]
-    if not isinstance(attempt, str) or _ATTEMPT_ID_PATTERN.match(attempt) is None:
+    if not isinstance(attempt, str) or _ATTEMPT_ID_PATTERN.fullmatch(attempt) is None:
         raise PackageError("transaction_state_invalid")
     if record["root"] != str(root):
         raise PackageError("transaction_state_invalid")
@@ -969,12 +969,12 @@ def _load_record(root: Path, marker: Path) -> dict:
     if not isinstance(stage, str) or not stage:
         raise PackageError("transaction_state_invalid")
     stage_path = Path(stage)
-    if stage_path.parent != Path(root):
+    if stage != str(stage_path) or stage_path.parent != Path(root):
         raise PackageError("transaction_state_invalid")
     prefix = f"{_STAGE_PREFIX}{attempt}-"
     if not stage_path.name.startswith(prefix):
         raise PackageError("transaction_state_invalid")
-    if _STAGE_SUFFIX_PATTERN.match(stage_path.name[len(prefix):]) is None:
+    if _STAGE_SUFFIX_PATTERN.fullmatch(stage_path.name[len(prefix):]) is None:
         raise PackageError("transaction_state_invalid")
     if not _valid_inventory(record["new_payload"]):
         raise PackageError("transaction_state_invalid")
