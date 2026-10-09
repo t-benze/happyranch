@@ -254,3 +254,17 @@ Only the existing fixed five evidence files change pins/reference/docs. Native C
 source hash and tool recipe, exact branch push, contents:read, pinned actions,
 no persisted credentials/secrets/OIDC/self-hosted/main/schedule/ref inputs,
 finite75min/concurrency/caps/retention and NEVERMERGE status are unchanged.
+
+Current coordinator CANDIDATE is the authenticated published readiness repair
+0d498d535b779853470d007da4f9d4e4d0b2962b. JOB3979's supported active Web/manual
+checks completed exit0 at that exact head before normal PR1017 publication.
+Run37862443466 retains authentic failed artifact callback/nonrunning reopen
+cases and separate baseline/same-root failures. New dual native admission and
+ordinary artifact execution must establish the repaired tails; pin renewal
+alone establishes no behavior. No source selection is repeated by this fixed
+coordinator, and its historical source reference retains the original head.
+Current-head source, real browser, audited collection, independent verdicts
+and suspended UNFULFILLED keeper obligations remain pending. Only the existing
+candidate literals and scoped evidence documentation change in this recovery;
+observer C, tool recipe, assertions, transport bounds and venue restrictions
+remain unchanged. Never merge either evidence branch.

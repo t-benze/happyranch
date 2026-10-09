@@ -22,7 +22,7 @@ import time
 HERE = Path(__file__).resolve().parent
 EVIDENCE = HERE.parents[2]
 SUPPORT = runpy.run_path(str(HERE.parent / 'task_10272/runner.py'), run_name='preflight_support')
-CANDIDATE = 'b2a9e565c940249703cb52aee3258317416ea477'
+CANDIDATE = '0d498d535b779853470d007da4f9d4e4d0b2962b'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
 # Source hash is renewed from the final immutable C bytes before publication.
 SOURCE_SHA256 = 'f70f92756cc057b289b863f972d097ccc47b16551b5b18de4c83f968da313984'

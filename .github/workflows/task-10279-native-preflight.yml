@@ -31,7 +31,7 @@ jobs:
       - name: Checkout immutable candidate
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: b2a9e565c940249703cb52aee3258317416ea477
+          ref: 0d498d535b779853470d007da4f9d4e4d0b2962b
           persist-credentials: false
           path: candidate
       - name: Checkout immutable baseline

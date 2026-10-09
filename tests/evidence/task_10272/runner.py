@@ -23,7 +23,7 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-CANDIDATE = 'b2a9e565c940249703cb52aee3258317416ea477'
+CANDIDATE = '0d498d535b779853470d007da4f9d4e4d0b2962b'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
 OBSERVED_MAIN = '970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c'
 HATCH = ('hatchling', 'packaging', 'pathspec', 'pluggy', 'tomlkit', 'trove-classifiers')

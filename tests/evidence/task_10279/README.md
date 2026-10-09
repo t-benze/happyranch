@@ -12,7 +12,7 @@ selection. Submission or native readiness alone establishes no source behavior.
 The artifact recovery below requires new actual wheel/frozen receipts;
 it runs no browser, whole collection or suspended unit/proof body.
 
-Candidate b2a9e565c940249703cb52aee3258317416ea477 and original baseline
+Candidate 0d498d535b779853470d007da4f9d4e4d0b2962b and original baseline
 8378064e9933d5b3af4247eca55750ac427a564f remain immutable product source pins.
 The new C source is independent test evidence, copied byte-for-byte from the
 published same-PR helper change, and authenticated by its literal SHA256 before
@@ -235,3 +235,24 @@ seal byte/count diagnostics are also emitted to Actions logs so a sealing
 failure cannot obscure its own boundary. These are diagnostics, never PASS.
 A new exact evidence push and fresh dual native admissions must precede renewed
 ordinary provisioning; original zero-artifact failure remains authentic.
+
+The current pin renews the published test-side readiness repair at
+0d498d535b779853470d007da4f9d4e4d0b2962b. JOB3979 authenticated supported
+active Web/manual renewal at that exact head, exit0, before normal PR1017
+publication and remote readback. The driver waits for all three regular owned
+lifecycle files and the actual current child PID before native executable and
+HTTP health validation, within the existing15s deadline. Old lifecycle files
+are preserved; no daemon, auth, session or executor production behavior changed.
+
+Run37862443466 at evidence4326a45ca71ee084d36e59663d9b9166bf1a07c2
+retained complete dual native admissions and wheel/frozen parser/lifecycle
+receipts. Complete archive verification recovered3507 original files totaling
+169648074bytes. Actual callback/nonrunning cases still failed on reopen after
+successful callbacks, durable history preservation and empty terminal census;
+those observations informed the test-side readiness repair and remain failed
+case results. Separate baseline and candidate same-root failures stay unchanged.
+Fresh native admission and actual new artifact tails are required before any
+readiness claim. This pin-only recovery preserves observer/tool/action/cap
+contracts and historical source origins. Current-head source, real browser,
+audited collection and independent review/QA remain pending; suspended keepers
+remain UNFULFILLED. The evidence branch must never merge.
