@@ -534,7 +534,10 @@ rerun entitlement. Complete ordered compressed merged child streams, separate
 wrapper stderr, pre-removal JUnit, source/tool/environment/timing/exit and actual
 owned process adoption/census/wait/reaping evidence are required. Wrapper wait
 or scratch absence alone never proves quiescence. Incomplete capture, abrupt
-loss, uncertain child exit or cleanup is inconclusive. Existing 10-second
+loss, uncertain child exit or cleanup is inconclusive. Actual wrapper exit is
+separate; every nonzero wrapper result leaves signed child exit unknown.
+Complete zero with empty wrapper stderr still requires all JUnit, source/tool
+postcheck, cleanup and other success gates. Existing 10-second
 TERM/KILL waits, 1MiB tail, 8MiB segments, 128MiB member and 512MiB archive limits
 remain. See `docs/local-ci.md` for admission and evidence attribution.
 

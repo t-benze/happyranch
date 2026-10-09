@@ -322,7 +322,15 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     step = next(step for step in document['jobs']['local-ci-all']['steps'] if step.get('name') == 'Run exact local CI all in a clean test environment')
     assert step['env']['ALL_ONLY'] == '${{ inputs.all_only }}'
     assert document['jobs']['local-ci-all']['if'] == "${{ github.event_name == 'workflow_dispatch' }}"
-    assert step['run'] == 'uv run python scripts/nightly_local_ci_all.py\n'
+    assert step['run'] == (
+        'if [ "$GITHUB_REPOSITORY" = "t-benze/happyranch" ] && '
+        '[ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && '
+        '[ "$GITHUB_REF" = "refs/heads/task/TASK-10034" ]; then\n'
+        '  uv run --frozen --no-sync python scripts/nightly_local_ci_all.py\n'
+        'else\n'
+        '  uv run python scripts/nightly_local_ci_all.py\n'
+        'fi\n'
+    )
     assert all(len(actual_step['run']) < 21000
                for actual_job in document['jobs'].values()
                for actual_step in actual_job['steps'] if 'run' in actual_step)

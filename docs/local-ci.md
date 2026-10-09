@@ -420,11 +420,16 @@ Full merged child stdout/stderr and separate wrapper stderr use ordered compress
 members with raw/stored byte totals and SHA256; JUnit is captured before scratch
 removal, including available partial XML on failure. Linux driver subreaper
 readback and complete owned `/proc` parent closure include session-escaping
-orphans; pidfd signals and actual adopted-child waits record cleanup. Normal child
-exit is explicitly attributed to the unchanged wrapper `process.wait`/return
-contract and observed child leader, not a direct driver wait on that leader.
-Wrapper exceptions/signals leave child exit unknown. Wrapper wait and directory
-absence alone never prove complete reaping. Source, tools and terminal evidence
+orphans; pidfd signals and actual adopted-child waits record cleanup. The actual
+`wrapper_exit` is retained separately. Only complete zero with empty wrapper
+stderr supports `child_exit: 0` through the unchanged `process.wait`/`SystemExit`
+contract and observed child leader; this is not a direct driver wait on that
+leader. Every nonzero wrapper result leaves signed child exit unknown and the
+result inconclusive: wrapper247 can encode child SIGKILL -9. Exceptions/signals
+and incomplete capture/reaping also leave child exit unknown. Wrapper0 alone
+does not satisfy the JUnit, source/tool postcheck, cleanup and other success gates.
+Wrapper wait and directory absence alone never prove complete reaping.
+Source, tools and terminal evidence
 must remain consistent after the child. Unproven reaping defers scratch removal.
 
 Existing 10-second TERM/KILL waits, 1MiB tail, 8MiB raw segments, 128MiB stored

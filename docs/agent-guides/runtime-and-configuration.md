@@ -908,7 +908,11 @@ rerun entitlement. Complete ordered compressed merged child streams, separate
 wrapper stderr, pre-removal JUnit, full source/tool/argv/environment/time/process
 and actual adopted-child waits/reaping evidence are required; wrapper wait or
 scratch absence alone proves no quiescence. Abrupt loss/incomplete evidence is
-inconclusive. Existing 10s TERM/KILL waits,150-minute cap,1MiB tail,8MiB segments,
+inconclusive. Actual wrapper exit is separate; every nonzero wrapper result leaves
+signed child exit unknown, including encoded child signals such as wrapper247.
+Complete zero with empty wrapper stderr still requires all JUnit, source/tool
+postcheck, cleanup and other success gates. Existing 10s TERM/KILL waits,
+150-minute cap,1MiB tail,8MiB segments,
 128MiB member/512MiB archive bounds stay. See Local CI for the precise child-exit
 attribution and conservative cleanup contract. No execution occurs in source-only
 prepublication work. Final independent FULL review/executable QA/current CI/

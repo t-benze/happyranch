@@ -290,8 +290,9 @@ def pr1011_run(argv, env, receipt, persist):
            'signals': [], 'tree_reaped': False,
            'stdout_contract': 'complete merged child stdout/stderr via wrapper stdout',
            'stderr_contract': 'separately captured wrapper stderr',
-           'child_wait_contract': 'unchanged run_bounded_output.run returns process.wait status; '
-                                  'wrapper exceptions/signals do not authenticate child exit'}
+           'child_wait_contract': 'unchanged run_bounded_output.run returns process.wait through SystemExit; '
+                                  'only complete zero with empty wrapper stderr supports child exit zero; '
+                                  'nonzero wrapper status leaves signed child exit unknown'}
     receipt['run'] = run
     persist()  # Persist uncertainty BEFORE Popen; loss never authorizes retry.
     process, futures, readers = None, {}, []
@@ -442,11 +443,11 @@ def pr1011_run(argv, env, receipt, persist):
                            and len(run['streams']) == 2
                            and all(v['complete'] for v in run['streams'].values())
                            and 'error' not in run and 'capture_errors' not in run)
-        # A normal wrapper return with no diagnostic authenticates the source's
-        # delegated child wait. Signals/tracebacks retain child_exit unknown.
-        if run['complete'] and run['wrapper_exit'] is not None and run['wrapper_exit'] >= 0 and run['streams']['stderr']['raw_bytes'] == 0:
-            run['child_exit'] = run['wrapper_exit']
-            run['child_exit_evidence'] = 'normal wrapper return / pinned process.wait contract'
+        # SystemExit can encode child -9 as wrapper 247; nonzero wrapper status
+        # cannot authenticate signed child exit, even with empty stderr.
+        if run['complete'] and run['wrapper_exit'] == 0 and run['streams']['stderr']['raw_bytes'] == 0:
+            run['child_exit'] = 0
+            run['child_exit_evidence'] = 'complete zero wrapper return / pinned process.wait and SystemExit contract'
         pr1011_write(evidence / 'full-log.json', run)
         persist()
 
@@ -574,6 +575,8 @@ def pr1011_entry():
         for sig, handler in previous.items():
             signal.signal(sig, handler)
         run = receipt.get('run', {})
+        # Unknown child status (including every nonzero wrapper result) stays
+        # INCONCLUSIVE; complete zero still needs all terminal evidence below.
         conclusive = (run.get('complete') and run.get('child_exit') is not None
                       and receipt.get('junit', {}).get('complete') and receipt.get('junit_suites')
                       and receipt.get('cleanup_exit') == 0 and not interrupted
