@@ -100,10 +100,29 @@ def parent(config_path):
             interpreter_observations.append(row)
             assert all(not any((root / name).iterdir())
                        for name in ('home', 'config', 'tmp', 'cache'))
+            # uv's identity check leaves an ordinary lock in TMPDIR. Keep its
+            # temporary files separate from the still-pristine collection tmp;
+            # do not delete evidence or relax the child's emptiness assertion.
+            identity_tmp = root / 'cache' / 'uv' / 'identity-tmp'
+            identity_tmp.parent.mkdir(mode=0o700)
+            identity_tmp.mkdir(mode=0o700)
+            identity_env = dict(env)
+            row['identity_environment_delta'] = {
+                name: {'before': env[name], 'after': str(identity_tmp)}
+                for name in ('TMPDIR', 'TMP', 'TEMP')}
+            for name in row['identity_environment_delta']:
+                identity_env[name] = str(identity_tmp)
+            assert {key for key in env if env[key] != identity_env[key]} == {
+                'TMPDIR', 'TMP', 'TEMP'}
+            assert not any(identity_tmp.iterdir())
             try:
-                return original_verify(env, python, uv, source, revision)
+                return original_verify(identity_env, python, uv, source, revision)
             finally:
                 row['after'] = isolated_directories(root)
+                row['collection_empty_directories_after_identity'] = {
+                    name: not any((root / name).iterdir())
+                    for name in ('home', 'config', 'tmp')}
+                assert all(row['collection_empty_directories_after_identity'].values())
 
         module['main'].__globals__['verify_interpreter_binding'] = verify
         code = module['main'](['--', 'pytest', *ARGS])

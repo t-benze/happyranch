@@ -53,6 +53,20 @@ It follows no symlink, caps128 entries/1MiB regular-file bytes, and keeps the
 strict empty-directory refusal. Tool-owned contents are not automatically
 admitted; actual refusal receipts must be inspected before any further retry.
 
+Original run37919923652 at evidenced59c27b7 retained that refusal: the before/after
+snapshots attribute a single ordinary UID501 zero-byte uv lock in the new tmp
+directory to the source parent's interpreter identity operation. Pytest never
+started, so counts/plugins/probes and active launch/body controls remain unknown.
+The evidence wrapper now gives ONLY that unchanged uv identity operation a copy
+of the closed environment with TMPDIR/TMP/TEMP pointing to a fresh owner-only
+cache/uv/identity-tmp directory. It records that exact three-key delta and all
+bounded snapshots. The original environment goes unchanged to the collection
+child; home/config/tmp must still be empty after identity and before site/pytest.
+No lock deletion, ambient state admission, production-parent/provider change or
+relaxed child assertion follows. Existing parent-owned directory cleanup includes
+the identity temp files. Only authentic fresh collection receipts can establish
+discovery; both earlier failures remain failures.
+
 ## Historical TASK10318 direct-root browser-only renewal
 
 Source pin remains294beab846efbceecc3fa5dbfb77ff40c95fa5af. Original
