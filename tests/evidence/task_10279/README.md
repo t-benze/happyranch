@@ -86,6 +86,23 @@ and every launch/body/provider refusal stay excluded. No native observer,
 permission, production-parent or source change is made. Actual fresh execution
 and its full tail remain required; all prior failures remain failures.
 
+Original run37922245795 at evidencec12d78f8 passed the preceding site boundary,
+then refused the ordinary `execnet/rsync_remote.py` import with parent exit87.
+There is no final child tail; collected/deselected/errors, effective loaded
+plugins and actual ip outcomes remain unknown. Native tables446 before/445 after
+attribute no owned survivors, UID501; complete source manifests remain equal.
+Acquisition success and early controls do not supply discovery or QA PASS.
+
+The installed audit now hash-binds exactly that ordinary module. Autoloaded
+xdist.looponfail imports execnet, whose RSync import unconditionally imports
+rsync_remote. Its future annotations and definitions perform no transfer;
+`serve_rsync` runs only behind the alternate `__channelexec__` entry. The
+evidence profile explicitly refuses that alternate module name and every
+serve_rsync entry. Socket/worker/remote scripts and all existing origin, launch,
+network, fixture/body/provider controls stay denied. The source parent and
+production enforcement remain unchanged. Fresh complete actual child closure
+and counts are still required; original failures remain failures.
+
 ## Historical TASK10318 direct-root browser-only renewal
 
 Source pin remains294beab846efbceecc3fa5dbfb77ff40c95fa5af. Original

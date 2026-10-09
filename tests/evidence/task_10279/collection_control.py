@@ -240,6 +240,13 @@ def child(config_path):
             refuse('execution-closure-cap', len(call_counts))
         if path == str(HERE) and name == 'profile_control_sentinel':
             counts['profile_control_calls'] += 1
+        if path.endswith('/site-packages/execnet/rsync_remote.py'):
+            # execnet.rsync imports this ordinary module at plugin startup.
+            # Its remote transfer body and alternate entry name stay denied.
+            if ((name == '<module>' and frame.f_globals.get('__name__') != 'execnet.rsync_remote')
+                    or name == 'serve_rsync'):
+                refuse('deferred-execnet-transfer-entry', {'file': path, 'function': qualname,
+                                                         'module': frame.f_globals.get('__name__')})
         if path.startswith(str(source / 'tests') + '/'):
             if name.startswith('test'):
                 counts['test_body_entries'] += 1
