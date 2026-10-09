@@ -1,5 +1,41 @@
 # Product-design workflow U0 feasibility evidence
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+Compatible cold reopen preserves the complete durable schema, every table's
+data and row identities, and the file set, modes and non-database bytes.
+Ordinary authority recovery can commit and release an ephemeral lease, changing
+SQLite physical pages; closed owners leave no lease or database sidecar residue.
+Validator-only and unsupported-reader refusal checks separately retain exact
+entire file-byte and mode preservation on a closed database.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 This document began as deliberately non-production U0 evidence: it added isolated proposed-schema
 and authority-limitation tests plus unexecuted study-manifest evidence. The
 study is **NOT RUN** and no detached lock has been issued. No route, daemon
@@ -1430,7 +1466,7 @@ draining -> drained` after enabled. `WorkflowCutoverStore.request` authenticates
 at the existing Founder route boundary and commits enable_requested before
 separate short compatibility_verified/enabled commits. Disable similarly commits
 the admission fence before drain. Cold recovery advances an authentic
-committed request only with ready E; existing F retains actual history and
+committed request only with ready E/G; existing F retains actual history and
 migration guidance without advancement. GET/preflight never advance. Every authoritative reread keeps
 complete canonical layout equality and validates exact contiguous events,
 request operation groups/unique keys, org-bound deterministic canonical UTF8
@@ -1640,8 +1676,8 @@ migration-needed3, refusal1, parser2. Contention is bounded and refusal/rollback
 preserves original data and files; crash journals/SQLite WAL sidecars are not
 workflow schema. No live execution is authorized by script publication.
 
-Deliberate POST /orgs creation proves its newly created skeleton before complete
-E initialization and attachment, using existing cleanup ownership. Generic
+Deliberate POST /orgs creation now proves its newly created skeleton before complete
+G initialization and attachment (the G ruling supersedes the S1 fresh-E target only), using existing cleanup ownership. Generic
 Database/runtime-audit remain workflow-free. F legacy work remains loadable with
 actual script guidance; missing readiness never mints enable/reconciliation
 events. E requires a compatible reader in all cases; no extension stripping or
@@ -1692,3 +1728,39 @@ focused executable QA, exact-head local/hosted CI and selected hosted callback
 remain mandatory. U3 immutable submission/concurrent reviews, U4/U5 revision/
 replacement operations and U6 mounted UI/operator acceptance remain separate,
 including distinct actual Founder Request changes and Sign off observations.
+
+
+### THR-139 seq410: generic finite templates through initial drafting
+
+The first bounded generic correction supports document-review schema2 with an
+abstract agent author and 1–3 reviewers, at most one existing Founder human,
+immutable-document-revision/output description, exact all/current membership,
+approved and optional changes_requested, null return or the exact
+return-to-author/new/all-prior-receipts rule, and on-completion or
+while-active-or-completed submission capability. Product-three retains the
+Founder395 behavior as immutable template policy. A differently named proposal
+with one human reviewer, approval-only null return, and agent-only zero-human
+review use the same compiler, activation and draft owners. Labels and counts
+provide no principal, grant, code authority or engineering-gate exception.
+
+Every new format uses exactly workflow-compiler@2/workflow-validator@2/operator-input@2.
+New activation request/receipt, authorization, binding and draft context use @2;
+context freezes raw definition and normalized document contract. Author allocation,
+input-recipient filtering, admission and prelaunch consume that immutable policy.
+Current canonical membership, independence, authority/profile/capacity and lease
+fences still apply. Read/replay retains exact historical version/pins/publication,
+never the current pointer or numerical identity version as format selector.
+Legacy @1 bytes, brief, digests, serialization and completed interpretation remain.
+All-draft/all-version DATA/PIN validation is format-aware without DDL/layout/reference
+or marker changes. A pre-generic reader refuses any @2 data; compatible readers
+are required and no earlier-reader downgrade promise/history rewriting follows.
+Existing-org migration remains explicit and fresh-org initialization unchanged.
+
+The endpoint is authentic initial author draft completion with a genuine bound
+session, INTEGER result and finalized host quiescence through existing owners.
+The contract grants future submission timing capability; active product submission
+is never an unconditional current author obligation. No immutable submission,
+request/receipt/join/finalizer, revision, mounted UI or whole-Phase1 acceptance
+is delivered by this boundary. Independent full-diff review, executable QA,
+exact-head local/hosted checks and callback remain gates; source is not deployment,
+operator person-action evidence or feature completion.

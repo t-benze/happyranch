@@ -736,6 +736,7 @@ class AuthorityV1Mixin:
             self._conn.rollback()
             raise
 
+    @_synchronized
     def get_active_authority_continue_envelope(self, root_task_id: str):
         """Return the single ACTIVE continuation envelope for ``root_task_id``
         (the continuation window that restricts the continued turn), or None.
@@ -752,6 +753,7 @@ class AuthorityV1Mixin:
             (root_task_id,),
         ).fetchone()
 
+    @_synchronized
     def get_authority_continue_envelope(self, envelope_id: str):
         """Return the envelope row by id (any state), or None."""
         return self._conn.execute(

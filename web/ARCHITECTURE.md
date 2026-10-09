@@ -57,6 +57,57 @@ typecheck, build, and tests still cover their syntax and resolution.
 
 ## Internationalization (i18n)
 
+The AppBar language selector beside the theme toggle is a controlled consumer
+of `useI18n` (THR-118 seq88). It uses the existing Select primitive and catalog
+endonyms English/简体中文 with native `lang` attributes; owned accessible names
+and tooltips translate. Settings ▸ Preferences uses the same locale/setter.
+No new state, adapter, storage listener or request path is introduced. Header
+interaction moves focus to the selector; external changes preserve editable
+focus/selection. Existing browser precedence/persistence/tab synchronization
+and deferred native restart acceptance remain. The focused ordinary-build
+header evidence extends the existing W4a CDP fixture and reuses W5 startup cases.
+
+Ongoing delivery requires every new or changed app-owned string to ship en and
+zh-CN in the same PR, including headings, actions, dialogs, tooltips, accessible
+labels, validation, loading/empty/error states and generated narratives. Use
+typed catalogs, named parameters, explicit plurals and locale-aware helpers;
+pure shared UI receives localized props. Authored content, machine identifiers
+and raw diagnostics remain verbatim. Both locale switch directions preserve
+mounted nodes, drafts, focus, selection and original actions with zero
+locale-triggered requests, mutations or transport restarts/messages.
+
+The Web guide and PR template require affected-state evidence in both locales
+at 390×844 and 1440×900, actual clipping-ancestor/text/control bounds and readable,
+reachable Chinese layout. Untranslated owned copy or broken Chinese layout
+requires `REQUEST_CHANGES`. Structural automation cannot assess translation
+meaning or usability. Historical W1–W5 receipts and the finite accepted coverage
+inventory retain their original scope; inventory is not rendering proof.
+
+`owned-copy/no-untranslated-copy` uses the locked TypeScript AST to check JSX
+children/static branches and visible text attributes, and known direct shared
+UI mounts must pass their localized presentation props. Exceptions identify an
+exact source path, declaration, slot, literal and reviewed raw/default reason;
+the authoritative real-config test disables inline configuration and refuses
+stale or overbroad exceptions while ordinary lint preserves other rules.
+
+`scripts/i18n-source-inventory.mjs` reads shipping HTML and static configuration
+without executing Vite's daemon reader. It supports the current single main
+entry and aligned @/relative imports, reexports, literal lazy imports and static
+JSX/render-return mounts. Route identity follows named and namespace imports and
+reexports from `react-router-dom`, including parent paths across aliases. Root
+`createRoot(...).render(...)` calls accept direct JSX or statically bound JSX
+constants (including aliases and bound root handles); other arguments refuse
+with their source before release. Uncalled declarations remain unmounted.
+Entry/root/alias changes, computed route/lazy inputs and promoted test/story/catalog/prototype owners require explicit resolution.
+Imports alone never qualify a dialog. `coverage.test.ts` feeds these actual
+source sites into the pure full-release guard: new owners need exact qualified
+identities, including index/wildcard collisions; every english-only namespace
+refuses full release. Settings' outer wildcard owns loading/error copy while
+its nested wildcard remains a copy-free redirect. Historical 21 translated/3
+not-applicable namespaces remain an accepted subset with dynamic totals. The
+scanner stays outside the browser barrel and makes no rendering/dataflow,
+general bundler completeness, or translation-quality claim.
+
 Current W5b browser contract: English and Simplified Chinese are available. The
 entry selects full mode synchronously before the first React text and hands its
 one resolution through App/AppShell. AppShell also selects full mode for later

@@ -13,9 +13,31 @@ The HappyRanch Linux daemon host is a special operational boundary: founder
 THR-211 seq270/271 prohibits every integration-marked test there, including
 direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
 Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
-on the candidate branch instead. The other local commands in this guide remain
-available; Mac integration verification uses the separately authorized
-disposable container-VM path.
+on the exact candidate ref when execution is authorized. Manual dispatch exposes
+only `all_only` (boolean, default false), with no `run_integration` toggle. The
+existing manual `local-ci-all` job invokes the receipt-producing extracted
+`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root.
+It runs the exact `scripts/local_ci.sh all` command on
+Python 3.14/Node 24, while the separate general integration job is SKIPPED.
+The manual lane has a finite 150-minute cap: the Python unit step alone took
+99 minutes in hosted run 37650992085, exceeding the former 60-minute cap.
+The separate nightly integration job retains its 30-minute cap.
+Record its actual checkout SHA, source/tool provenance and command exit from
+the uploaded receipt; submission or publication alone is not a pass. General
+integration runs only on scheduled events; manual dispatch skips it and the
+scheduled failure reporter. General integration remains SKIPPED under THR-243
+seq42 for tasks governed by that exception, never PASS. While the THR-291 pause
+applies, the manual `all` command reports Python SUSPENDED and runs only the
+remaining Web checks; an exit0 does not establish a Python unit PASS. The
+extracted runner's fixed suspension guard also prevents G collection, source
+controls and repetitions for every `all_only` value; their dormant definitions
+remain retained and unexecuted. No manual dispatch or rerun is required for the
+current merge-forward repair.
+Commands whose unit selection includes real
+socket/daemon cases, including `scripts/local_ci.sh all`, also require that
+disposable venue. On-host verification is limited to demonstrably pure offline
+units; Mac integration verification uses the separately authorized disposable
+container-VM path.
 
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
@@ -27,6 +49,19 @@ nonexecutable identities fail visibly before execution. Intentional no-ops requi
 explicit plans. Stub argv witnesses retain only fixed flags/counts and digests;
 callback witnesses bind the actual CLI source. No provider PATH fallback or model
 network request is permitted. The unit/Web targets keep their existing selections.
+The Mac definition-owned launcher names this parent explicitly inside its
+`run_bounded_output.py` child command, preserving the pytest arguments, exit and
+1 MiB log tail under the guest's shared deadline. The guest's direct pytest
+prefix handling does not rewrite nested wrapper argv. The committed parent
+requires Git for real HEAD and source-cleanliness validation. The Mac guest
+installs `bash curl iproute2 git` with no recommends, validates Git through
+the existing bounded command, and records its version and resolved package
+identities. External installer stand-ins prove command composition only;
+actual apt/Git installation in the pinned arm64 image requires the authorized
+guest run. Focused launcher units
+include harmless real pytest/conftest subprocess collection and socket cases;
+run their complete files in the disposable manual lane. Stub-only launch controls
+are separate evidence and do not establish real pytest/conftest execution.
 Registered stubs restore the temporary callback/Python bin directory before the
 unchanged identity gate, including after uv prepends the project environment.
 
@@ -63,6 +98,21 @@ Safe controls execute the unchanged acceptance owner body with external callouts
 doubled, checking primary identity and independent connector/daemon finalization
 attempts, including kill/reap on wait failure. These controls establish invocation
 and error preservation; actual resource absence requires disposable execution.
+
+The founder suspended Python unit-suite execution in THR-291 seq5
+(TASK-10169). While this pause applies, do not launch Python unit tests,
+including focused tests or duration measurements. The `python-unit` GitHub
+job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
+reports the same suspension before continuing Web CI. This also pauses the
+unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
+exit or an `all` receipt establishes only the remaining checks, never a unit
+PASS. Preserve test sources, selections and coverage definitions. Web,
+canonical validation and integration jobs retain their own existing contracts;
+no hook bypass is authorized. Existing historical workflow reruns and old
+checkouts do not acquire this pause automatically and must not be used to
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The ordinary commands below describe the restored behavior.
 
 ## Prerequisites
 
@@ -221,19 +271,24 @@ run opens or comments on the single open issue labelled
 that issue. This repository-local issue flow uses only the workflow token and
 does not send email, Feishu, Slack, webhook, or other external notifications.
 
-Manual dispatch of the same workflow also runs the exact `scripts/local_ci.sh all`
+Manual dispatch of the same workflow runs only the exact `scripts/local_ci.sh all`
 command on its clean immutable checkout with Python 3.14 and Node 24. This
 lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
 Its closed build-tool PATH includes the standard `/usr/local/bin` directory used
 by the ordinary unit lane; integration keeps its separate restricted PATH.
 The disposable lane clears inherited environment variables before test imports,
 uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
-tools, and preserves the default unit/Web selections. It uploads the command's
+tools, and preserves the default unit/Web selection definitions. During the
+THR-291 pause, units are SUSPENDED and only the remaining Web checks execute.
+The manual lane retains its finite 150-minute cap; scheduled integration retains
+its separate 30-minute cap. It uploads the command's
 actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
 a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
-the actual command receipt. Scheduled integration and the PR/main matrix remain
-unchanged. The live Linux daemon host must also avoid `python`/`all` when their
-selection includes real socket or daemon tests; use this disposable manual lane.
+the actual command receipt. The integration job runs only on `schedule` events;
+manual dispatch skips it and the scheduled failure reporter. Scheduled integration
+and the PR/main matrix remain unchanged. The live Linux daemon host must also
+avoid `python`/`all` when their selection includes real socket or daemon tests;
+use this disposable manual lane.
 
 ## Git hooks
 
@@ -297,3 +352,115 @@ publication-process requirements.
 - **Clean vs. dirty repo.** The script does not check for uncommitted
   changes. The GitHub CI always runs on a clean checkout of the pushed
   commit.
+
+
+The manual input `all_only` remains a boolean with default false. Founder
+THR139 seq420 limits `jobs.integration` to `github.event_name == 'schedule'`:
+schedule selects integration; manual default, explicit false and explicit true
+all skip it. The four event/input cases stay retained. Historical manual-default
+integration expectations and the old all-only predicate are superseded.
+General integration SUITE remains SKIPPED under THR139seq77/THR243seq42, never PASS.
+No manual dispatch or rerun is part of the current G source-delivery unit.
+
+Python units remain SUSPENDED under THR291 seq5/16. In addition to the inherited
+`scripts/local_ci.sh all` pause, the G follow-on block in
+`scripts/nightly_local_ci_all.py` has a fixed local
+`PYTHON_UNIT_SUSPENDED = True` guard, with no operator override or input. It emits
+SUSPENDED / SKIPPED, NOT RUN and zero-child metadata before any G follow-on launch.
+The 101 selectors, 15 sibling files, 40 source controls and 580 repetition
+definitions remain source data; collection, proof and repetition invocations
+cannot fall through a successful Web-only all wrapper. Restore execution only
+after a new Founder release through ordinary review. For TASK10062 descendants,
+new test execution is also SKIPPED / FOUNDER-WAIVED THR139seq429. Inspection does
+not verify behavior. The following describes the retained dormant plan.
+
+The manual lane invokes exactly `uv run python scripts/nightly_local_ci_all.py`
+from the checkout root, keeping the workflow run scalar below GitHub's observed
+21,000-character limit. The source manifest authenticates both the workflow YAML
+and this fixed script. Source-copy controls mutate and restore each declared path
+in their own archived checkout; the selection and preservation-plan controls
+reference the script, while input and integration-predicate controls reference YAML.
+The copied keeper reads that same checkout's script.
+
+The true lane runs the unchanged `scripts/local_ci.sh all` first and preserves
+its exit separately. Successful all is followed by the closed literal 101-node
+collection and five ordered fresh isolated and sibling rounds: 505 node processes
+plus 75 complete-file processes. No selector input or timeout increase is
+provided; all commands share the approved 150-minute manual job cap. The
+retained dormant phase and per-child bounds are unchanged. Every invocation
+owns a unique absolute basetemp, HOME/config/cache/daemon registry, JUnit,
+command/source/head/tree/runtime/status receipt and 1MiB output tail. Complete
+lossless gzip streams retain raw and stored byte counts and SHA256 in the same
+artifact, split into ordered 8MiB raw segments when needed. The merged child
+stdout/stderr on runner stdout is labeled honestly; runner stderr is captured
+separately. JUnit is captured losslessly before checking the command exit; its
+raw duplicate stays in owned temporary scratch. Compact per-case receipts name
+the authenticated JUnit manifest, ordinal and diagnostic byte/hash identity
+rather than copying entire tracebacks. Bounded errors reference retained evidence
+once. The unchanged acquisition limits are 128MiB per member and 512MiB expanded
+archive; bound refusals retain partial capture with complete=false and never PASS; short console receipts identify phase/node/round/exit. At most four
+independent children run concurrently. Each isolated phase completes before its
+sibling phase, and each entire round completes before the next. All started
+children are reaped and failures aggregated before another phase is admitted.
+Follow-on commands prohibit dependency sync and shared bytecode/pytest caches;
+each records actual imports from its intended source, with installed dependencies
+read-only. Failed, interrupted and unstarted commands
+are not passes. The seven selected keepers alone pair real existing E with
+fresh POST G; other 64 existing fixture consumers keep their original bodies
+and run fresh G. Collection records complete native parameter IDs. Separate
+causal controls must restore exact source bytes and modes before GREEN; source
+copies never mutate the immutable all checkout. No live-host platform probe or
+job submission substitutes for actual hosted evidence. Required PR checks and
+the selected actual hosted Codex callback remain separate gates.
+
+The fixed source controls run only after successful all and before repetitions,
+in separate archives of the authenticated committed head. The complete-object
+control accepts a differing layout before attempting row validation, so missing
+objects reach the unchanged refusal assertion (`DID NOT RAISE`) rather than an
+unrelated missing-table exception. The intact-layout path still validates rows.
+Fixed pytest commands use short tracebacks and assertion verbosity zero to avoid
+repeating entire nested layout diffs for every origin error. They retain the
+named assertion, observed/expected difference, JUnit cases and actual exits;
+all selectors and parameter dimensions remain unchanged. Each control records
+its exact source patch, original and restored SHA256 and modes, named-node RED
+JUnit and the identical-command restored GREEN. The 64 unchanged consumers use
+explicitly labeled origin-regression RED at their full-layout observer; setup or
+import errors never count as business RED. Controls refuse absent attribution,
+syntax errors, missing receipts, or failed restoration. After exact restoration
+and successful identical-command GREEN, an attribution failure is retained while
+the remaining independent controls run. Any such failure prevents the completion
+receipt and repetitions; a failed restored GREEN fails its control. Every started control is reaped and
+accounted for before the aggregated failure blocks repetitions. Each control
+owns a separate committed source archive, scratch, environment and logs within
+the same four-child bound. Actual source-control
+completion is recorded separately from all and from the 580-process repetitions.
+
+The G07 keeper distinguishes authentic compatible cold reopens from physical
+no-write validation/refusal boundaries. Successful old E and current G reopens
+compare independently observed complete SQL, all tables, rowids, storage types,
+raw values, file set/modes and non-database bytes after every closed reader.
+Validator-only success and intended schema-mismatch refusal retain entire
+file-byte/mode equality. The current-validator refusal keeper adds an unexpected
+workflow index on a workflow table and independently observes that object before
+validation, so it reaches the same workflow object-set mismatch boundary as
+the pinned readers. Fixed causal controls separately corrupt current G
+reopen identity, validator page preservation and refusal page preservation in
+owned source copies; each must reach its named assertion, restore exact source
+bytes AND modes, then pass the same command. The archives remain unchanged,
+and these additional controls do not trim the original 580 repeated processes
+or increase the approved 150-minute manual job cap. Their control-plan keeper is
+also mutated and restored. Submitted or statically inspected controls are not
+executed RED/GREEN evidence.
+
+The lost-notification control mutates only the first queued-draft
+`recover_owned_task` enqueue in a disposable source copy. Its retained cold
+`_sweep_on_startup` keeper requires queue size one and attributes observed zero
+to that exact business assertion, across both E/G origins. Published recovery
+and daemon sources stay unchanged. The event-revision control binds the exact
+collected keeper/source assertion and observed `{9}` versus expected `{4}`;
+pytest's rendered assertion does not need a literal `AssertionError`, while
+setup/import/unrelated failures remain refused. The manual-predicate control
+mutates the actual schedule comparison, retaining all four event/input cases.
+Prior over-bound artifacts, exit120 and four error objects remain failed
+evidence. The Jenkins inner-identity timing cause remains UNKNOWN; neither its
+keeper nor capture/production deadline is changed by this source correction.

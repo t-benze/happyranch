@@ -33,7 +33,7 @@ INPUT_BYTES = 8192
 _LOG_HEAD_BYTES = 4096
 _LOG_TAIL_BYTES = 4096
 SQL_SECONDS = 2
-PACKAGES = ("bash", "curl", "iproute2")
+PACKAGES = ("bash", "curl", "iproute2", "git")
 _NODES = (
     ("test_two_orgs_run_tasks_concur", "two_orgs"),
     ("test_mixed_fleet_roundtrip_use", "mixed_fleet"),

@@ -27,7 +27,7 @@ from runtime.daemon.thread_queue import ThreadQueue
 from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import (
-    draft_migration_guidance, install_or_recover, validate_workflow_schema,
+    draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
 )
 from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
@@ -105,6 +105,8 @@ class OrgState:
         try:
             from runtime.infrastructure.memory_collection import CollectionObserver
             self.memory_collection = CollectionObserver(org=self.slug, root=self.root, db=self.db)
+            self.memory_collection.context = self
+            self.db._memory_collection_context = self
             self.orchestrator.attach_memory_collection(self.memory_collection)
         except Exception:
             self.memory_collection_unavailable = "observer_initialization_failed"
@@ -161,8 +163,8 @@ class OrgState:
     def memory_collection_observation(self) -> dict:
         """Read this serving org; observation failure never changes launch state."""
         try:
-            from runtime.infrastructure.memory_collection import serving_observation
-            return serving_observation(self)
+            from runtime.infrastructure.memory_collection import serving_observation, current_epoch_references
+            return current_epoch_references(self, serving_observation(self))
         except Exception:
             # Module/constructor acquisition can itself be unavailable. Keep the
             # ordinary audit route usable without importing a second observer.
@@ -248,6 +250,10 @@ class OrgState:
                 layout = validate_workflow_schema(db._conn, expected_org_slug=slug)
             if layout == "F":
                 logger.warning("org %r: %s", slug, draft_migration_guidance(
+                    org_slug=slug, runtime_root=str(root.parent.parent),
+                ))
+            if layout in ("F", "E"):
+                logger.warning("org %r: %s", slug, submission_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
                 ))
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()

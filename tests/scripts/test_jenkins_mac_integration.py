@@ -6,9 +6,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -17,6 +19,233 @@ from scripts import jenkins_mac_integration as job
 
 ROOT = Path(__file__).resolve().parents[2]
 JENKINSFILE = ROOT / "ci" / "jenkins" / "mac-integration" / "Jenkinsfile"
+
+
+def _wrapped_launch(
+    tmp_path: Path, *, real_pytest: bool = False, case: str = "success",
+    guest_setup: bool = False,
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    """Run the emitted workload line, real wrapper and embedded guest/parent.
+
+    The uv double only selects the installed Python; it never rewrites pytest
+    through the parent. Source is a private clean committed clone. Real pytest
+    cases belong in disposable runners; the spy cases invoke no pytest/runtime
+    collection or daemon in the child.
+    """
+    source = tmp_path / "source"
+    subprocess.run(["git", "clone", "--shared", "--quiet", str(ROOT), str(source)], check=True)
+    workload = '''import json, os, sys
+from pathlib import Path
+from tests.helpers.integration_stub_guard.guard import require_parent_environment
+
+def observe():
+    require_parent_environment()
+    binding = json.loads(Path(os.environ["HAPPYRANCH_TEST_PARENT_MANIFEST"]).read_text())
+    assert Path(binding["source"]) == Path(__file__).resolve().parents[2]
+    assert binding["python"] == sys.executable
+    assert "ANTHROPIC_API_KEY" not in os.environ
+    print("\\nlauncher-contract=" + json.dumps({"revision": binding["revision"],
+          "home": os.environ["HOME"], "argv": sys.argv[1:]}), flush=True)
+
+def test_success():
+    observe()
+
+def test_failure():
+    observe()
+    assert False, "harmless launcher child failure"
+
+def test_overflow():
+    observe()
+    print("x" * 1100000, flush=True)
+    print("launcher-tail-kept", flush=True)
+'''
+    fixture = source / "tests/helpers/launcher_workload.py"
+    fixture.write_text("import pytest\npytestmark = pytest.mark.integration\n" + workload)
+    if not real_pytest:
+        # Stub-only launch control, explicitly not real pytest/conftest evidence.
+        (source / "pytest.py").write_text(
+            "import json, os, sys\nfrom pathlib import Path\n"
+            "from tests.helpers.integration_stub_guard.guard import require_parent_environment\n"
+            "require_parent_environment()\n"
+            "binding = json.loads(Path(os.environ['HAPPYRANCH_TEST_PARENT_MANIFEST']).read_text())\n"
+            "assert 'ANTHROPIC_API_KEY' not in os.environ\n"
+            "print('launcher-contract=' + json.dumps({'revision': binding['revision'], "
+            "'home': os.environ['HOME'], 'argv': sys.argv[1:]}), flush=True)\n"
+            + ("print('launcher-environment=' + json.dumps(dict(os.environ)), flush=True)\n"
+               if guest_setup else "")
+            + ("print('x' * 1100000, flush=True)\nprint('launcher-tail-kept', flush=True)\n"
+               if case == "overflow" else "")
+            + f"raise SystemExit({23 if case == 'failure' else 0})\n"
+        )
+    if case == "missing_parent":
+        (source / "tests/helpers/integration_parent.py").unlink()
+    subprocess.run(["git", "-C", str(source), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(source), "-c", "user.name=Launcher regression",
+                    "-c", "user.email=launcher@example.invalid", "commit", "--quiet",
+                    "-m", "Add harmless private launcher workload"], check=True)
+    assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"])
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python").symlink_to(sys.executable)
+    uv = bin_dir / "uv"
+    uv.write_text(
+        f"#!{sys.executable}\nimport os, sys\nargs = sys.argv[1:]\n"
+        "assert args[:1] == ['run']\nargs = args[1:]\n"
+        "if args[:1] == ['python']:\n    args = args[1:]\n"
+        "elif args[:1] == ['pytest']:\n    args = ['-m', 'pytest', *args[1:]]\n"
+        "else:\n    raise SystemExit(64)\n"
+        f"os.execv({sys.executable!r}, [{sys.executable!r}, *args])\n"
+    )
+    uv.chmod(0o700)
+    helper = tmp_path / "guest.py"
+    helper.write_bytes(job._GUEST_BYTES)
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"source": str(source), "artifacts": str(artifacts),
+                                 "deadline": time.monotonic() + 90}))
+    lines = job._INNER_SCRIPT.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("  bounded 2300 60 "))
+    end = lines.index("  workload_status=$?", start)
+    fragment = "\n".join(lines[start:end])
+    fragment = fragment.replace("/workspace/artifacts", str(artifacts))
+    fragment = fragment.replace("--basetemp=/tmp/happyranch-pytest",
+                                f"--basetemp={tmp_path / 'basetemp'}")
+    if real_pytest:
+        fragment = fragment.replace("pytest tests/ -v -m integration",
+                                    "pytest tests/helpers/launcher_workload.py -v -m integration")
+        selected = case if case in {"success", "failure", "overflow"} else "success"
+        fragment += f" -s -k {selected}"
+    if case == "bypassed_parent":
+        fragment = fragment.replace("python tests/helpers/integration_parent.py -- pytest", "pytest")
+    setup_fragment = ""
+    if guest_setup:
+        # No ambient Git: only the emitted package request exposes the selected
+        # real executable. This proves setup composition, not apt/image installation.
+        git = shutil.which("git")
+        assert git is not None
+        apt = bin_dir / "apt-get"
+        apt.write_text(
+            f"#!{sys.executable}\nimport json, sys\nfrom pathlib import Path\n"
+            f"bin_dir = Path({str(bin_dir)!r})\n"
+            f"with Path({str(artifacts / 'install-argv.jsonl')!r}).open('a') as stream:\n"
+            "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1:2] == ['install'] and 'git' in sys.argv[2:]:\n"
+            f"    (bin_dir / 'git').symlink_to({git!r})\n"
+        )
+        apt.chmod(0o700)
+        install = next(i for i, line in enumerate(lines) if 'apt-get update &&' in line)
+        setup_fragment = "\n".join(lines[install - 1:lines.index("fi", install) + 1])
+        # Include the actual post-install validation when present; pre-fix code
+        # instead reaches the parent's real missing-Git refusal.
+        validation = next((i for i, line in enumerate(lines) if 'observed_git=' in line), None)
+        if validation is not None:
+            setup_fragment += "\n" + "\n".join(
+                lines[validation - 1:lines.index("fi", validation) + 1])
+        setup_fragment = setup_fragment.replace("/workspace/artifacts", str(artifacts))
+        fragment = ("workload_status=0\n" + setup_fragment
+                    + '\nif [ "$workload_status" -eq 0 ]; then\n' + fragment
+                    + '\n  workload_status=$?\nfi\nexit "$workload_status"')
+    shell = (f"guest() {{ {shlex.quote(sys.executable)} {shlex.quote(str(helper))} "
+             f"--state {shlex.quote(str(state))} \"$@\"; }}\n"
+             "bounded() { seconds=$1; reserve=$2; shift 2; "
+             "guest command --seconds \"$seconds\" --reserve \"$reserve\" -- \"$@\"; }\n"
+             + fragment)
+    env = {"PATH": str(bin_dir) if guest_setup else f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path / "ambient"),
+           "PYTHONPATH": str(source), "PYTHONDONTWRITEBYTECODE": "1",
+           "ANTHROPIC_API_KEY": "harmless-canary"}
+    if case == "bypassed_parent":
+        env["PYTHONPROFILEIMPORTTIME"] = "1"
+    result = subprocess.run([shutil.which("sh"), "-c", shell], cwd=source, capture_output=True,
+                            text=True, timeout=25, env=env)
+    assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"])
+    return result, artifacts, source
+
+
+@pytest.mark.parametrize("case,expected", [("success", 0), ("failure", 23), ("overflow", 0)])
+def test_wrapped_stub_launch_executes_parent_preserves_argv_exit_and_tail(
+    tmp_path: Path, case: str, expected: int,
+) -> None:
+    result, artifacts, source = _wrapped_launch(tmp_path, case=case)
+    assert result.returncode == expected, result.stdout + result.stderr
+    contract = json.loads(next(line.removeprefix("launcher-contract=")
+                               for line in result.stdout.splitlines() if line.startswith("launcher-contract=")))
+    assert contract["revision"] == subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    assert contract["home"] != str(tmp_path / "ambient")
+    assert contract["argv"] == ["tests/", "-v", "-m", "integration",
+                                f"--basetemp={tmp_path / 'basetemp'}", "-p", "no:cacheprovider",
+                                f"--junitxml={artifacts / 'integration.xml'}"]
+    log = (artifacts / "integration.log").read_bytes()
+    assert len(log) <= 1048576
+    if case == "overflow":
+        assert log.startswith(b"[nightly log truncated; showing final output bytes]\n")
+        assert log.endswith(b"launcher-tail-kept\n")
+    else:
+        assert log.decode() == result.stdout
+
+
+def test_emitted_guest_git_setup_reaches_wrapped_committed_parent(tmp_path: Path) -> None:
+    result, artifacts, source = _wrapped_launch(tmp_path, guest_setup=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    contract = json.loads(next(line.removeprefix("launcher-contract=")
+                               for line in result.stdout.splitlines() if line.startswith("launcher-contract=")))
+    assert contract["revision"] == subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    assert contract["home"] != str(tmp_path / "ambient")
+    assert contract["argv"] == ["tests/", "-v", "-m", "integration",
+                                f"--basetemp={tmp_path / 'basetemp'}", "-p", "no:cacheprovider",
+                                f"--junitxml={artifacts / 'integration.xml'}"]
+    install_argv = [json.loads(line) for line in
+                    (artifacts / "install-argv.jsonl").read_text().splitlines()]
+    assert install_argv == [["update"], ["install", "-y", "--no-install-recommends",
+                                        "bash", "curl", "iproute2", "git"]]
+    git = tmp_path / "bin/git"
+    assert git.resolve() == Path(shutil.which("git")).resolve()
+    version = subprocess.check_output([str(git), "--version"], text=True).strip()
+    assert f"git_version={version}\n" in (artifacts / "identity.txt").read_text()
+    assert (artifacts / "integration.log").read_text() == result.stdout
+    assert not (artifacts / "integration.xml").exists(), "spy is not real pytest"
+    parent_env = json.loads(next(line.removeprefix("launcher-environment=") for line
+                                 in result.stdout.splitlines() if line.startswith("launcher-environment=")))
+    assert "ANTHROPIC_API_KEY" not in parent_env
+    assert parent_env["EXPECTED_SOURCE"] == str(source)
+    assert parent_env["EXPECTED_SHA"] == contract["revision"]
+    print(json.dumps({"setup_argv": install_argv, "setup_path": str(tmp_path / "bin"),
+                      "git_executable": str(git.resolve()), "git_version": version,
+                      "python": sys.executable, "source": str(source), "parent": contract, "parent_environment": parent_env,
+                      "exit": result.returncode}, sort_keys=True))
+
+
+@pytest.mark.parametrize("case", ["success", "failure", "overflow", "missing_parent", "bypassed_parent"])
+def test_wrapped_real_pytest_parent_and_conftest_contract(tmp_path: Path, case: str) -> None:
+    # Normal unit-lane subprocess regression; run ONLY in a disposable runner.
+    result, artifacts, source = _wrapped_launch(tmp_path, real_pytest=True, case=case)
+    assert result.returncode == {"success": 0, "failure": 1, "overflow": 0,
+                                "missing_parent": 2, "bypassed_parent": 4}[case], result.stdout + result.stderr
+    log = (artifacts / "integration.log").read_bytes()
+    assert len(log) <= 1048576
+    if case == "missing_parent":
+        assert b"can't open file" in log and b"integration_parent.py" in log
+        assert not (artifacts / "integration.xml").exists()
+    elif case == "bypassed_parent":
+        assert b"use tests/helpers/integration_parent.py before integration collection" in log
+        assert b"import time:" in log
+        assert not re.search(rb"import time:.*\|\s+runtime(?:\.|\s|$)", log)
+        assert b"launcher-contract=" not in log
+        assert not (artifacts / "integration.xml").exists()
+    else:
+        assert (artifacts / "integration.xml").is_file()
+        contract = json.loads(next(line.removeprefix("launcher-contract=")
+                                   for line in result.stdout.splitlines() if line.startswith("launcher-contract=")))
+        assert contract["revision"] == subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+        expected_summary = "1 failed" if case == "failure" else "1 passed"
+        assert expected_summary in result.stdout
+        if case == "overflow":
+            assert log.startswith(b"[nightly log truncated; showing final output bytes]\n")
+            assert b"launcher-tail-kept" in log
 
 
 def _run_emitted_uv_check(
@@ -238,10 +467,10 @@ def test_container_argv_has_only_two_host_mounts_and_no_forbidden_mode(
     assert not any(value == "HOME" or value == f"HOME={Path.home()}" for value in inherited_env)
     payload = argv[-1]
     assert f"uv=={job.UV_VERSION}" in payload
-    assert "apt-get install -y --no-install-recommends bash curl iproute2\n" in payload
+    assert "apt-get install -y --no-install-recommends bash curl iproute2 git\n" in payload
     assert "uv sync --frozen" in payload
     assert "scripts/run_bounded_output.py" in payload
-    assert "uv run pytest tests/ -v -m integration" in payload
+    assert "uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration" in payload
     assert "scripts/nightly_integration_summary.py" in payload
     assert "/proc/self/mountinfo" in payload
     assert 'replace("\\\\040", " ")' in payload
@@ -551,7 +780,8 @@ def _emitted_guest(tmp_path: Path, *, setup_status: int = 0, workload_status: in
     )
     for name, body in {
         "apt-get": f"if [ \"$1\" = install ]; then touch {tmp_path / 'installed'}; fi\nexit {setup_status}",
-        "dpkg-query": f"printf 'bash 1\\ncurl 2\\niproute2 3\\n'\nif [ -f {tmp_path / 'installed'} ]; then printf 'libbpf1 4\\n'; fi",
+        "dpkg-query": f"printf 'bash 1\\ncurl 2\\niproute2 3\\n'\nif [ -f {tmp_path / 'installed'} ]; then printf 'libbpf1 4\\ngit 5\\ngit-man 6\\n'; fi",
+        "git": "printf 'git version external-stand-in\\n'",
         "ip": "printf '1: lo inet 127.0.0.1/8 scope host lo\\n'",
     }.items():
         path = bin_dir / name
@@ -683,8 +913,8 @@ def test_emitted_guest_captures_before_exit_preserving_primary_status(
             else:
                 assert not pid_path.exists(), "exhausted reserve must prevent child launch"
         packages = json.loads((artifacts / "guest-packages.json").read_text())
-        assert packages == {"direct": {"bash": "1", "curl": "2", "iproute2": "3"},
-                            "transitive_added_or_changed": {"libbpf1": "4"}}
+        assert packages == {"direct": {"bash": "1", "curl": "2", "iproute2": "3", "git": "5"},
+                            "transitive_added_or_changed": {"libbpf1": "4", "git-man": "6"}}
 
 
 @pytest.mark.parametrize("nested_basetemp", [False, True], ids=["ordinary", "nested-happyranch"])

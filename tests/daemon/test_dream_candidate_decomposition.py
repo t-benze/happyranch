@@ -34,7 +34,16 @@ OLD = "2026-01-02T00:00:00+00:00"
 NOW = "2026-10-07T00:01:02+00:00"
 KB_NOW = "2026-10-07T00:03:04Z"
 URL = "/api/v1/orgs/alpha/dreams/candidates/1/"
-_PRISTINE_SHAPE_SHA256 = "7c76756d62c43c4778b1942ab39ca8b18a8acd35edaae488f9368eb091b3ce19"
+# TASK9987 / test_d4_complete_relocation_contract (both actual import orders):
+# 1. Complete unfiltered facade members/MRO/exports and real shipping frames stay
+#    pinned; exactly two already-approved memory APIs extend the baseline.
+# 2. Old pin RED is ONLY shape_sha256 (dream-old-pin-red.* / dream-old-pin/);
+#    corrected pin GREEN: dream-owner-green.* / dream-new-pin/ in output/TASK-9987.
+# 3. D1-D3 do not own fresh import orders or the complete facade frame; retained
+#    KB/archive import owners protect their own shipping consumers independently.
+# 4. No production seam or filter. Whole587-member frame9d2ba533; diagnostic-only
+#    removal of the two approved APIs restores whole585-member7c76756d EXACTLY.
+_PRISTINE_SHAPE_SHA256 = "9d2ba5332b6800c6ed004c2f20f52458d376d3d4c32ca084ac9e95f21df2ee7d"
 # Six named wait/hold records and twelve clock calls observed on pristine cb7f2272.
 _PRISTINE_WARNING_FRAME = {'warnings': [{'args': [2.0, 1.0, 'Database', 'list_dream_kb_candidates'],
                'exception': None,

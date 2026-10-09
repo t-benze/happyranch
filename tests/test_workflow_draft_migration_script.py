@@ -274,3 +274,20 @@ def test_actual_script_on_source_pinned_historical_initialization_preserves_lega
     assert result.returncode == 0, result.stderr
     assert _legacy_snapshot(path) == before
     assert _snapshot(historical) == original
+
+
+
+def test_draft_script_populated_g_check_and_noop_label_actual_layout(tmp_path: Path) -> None:
+    from tests.test_workflow_submission_migration_script import _org as org_g
+    from runtime.models import TaskRecord
+    runtime, path, _ = org_g(tmp_path, 'G')
+    db = Database(path)
+    db.insert_task(TaskRecord(id='TASK-001', brief='retained ordinary result', assigned_agent='maker', team='engineering'))
+    db.close()
+    with sqlite3.connect(path) as c: c.execute('PRAGMA journal_mode=DELETE')
+    c.close()
+    before, rows = _snapshot(runtime), _logical(path)
+    for options in (('--check',), ()):
+        result = _run(runtime, *options)
+        assert result.returncode == 0 and 'ready:' in result.stdout and 'layout G' in result.stdout, result.stderr
+        assert _snapshot(runtime) == before and _logical(path) == rows

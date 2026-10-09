@@ -14,6 +14,7 @@ import inspect
 import json
 import marshal
 import os
+import re
 import stat
 import sys
 from importlib.metadata import distribution
@@ -47,6 +48,249 @@ EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 # limit is an unavailable observation, never permission to validate a prefix.
 CENSUS_READ_PAGE_ROWS = 256
 MAX_CENSUS_READ_ROWS = 100_000
+
+COLLECTION_TAG = "MemoryCollectionV1: "
+MAX_ACCEPTANCE_BYTES = 1_048_576
+
+
+class AcceptanceUnavailable(ValueError):
+    """Category-only refusal; neither parsing nor a receipt grants authority."""
+
+
+def _closed(value: Any, required: set[str], optional: set[str] = frozenset()) -> dict:
+    if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - optional:
+        raise AcceptanceUnavailable("acceptance_schema")
+    return value
+
+
+def _strict_json(text: str) -> Any:
+    def members(pairs: list[tuple[str, Any]]) -> dict:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise AcceptanceUnavailable("acceptance_duplicate_key")
+            result[key] = value
+        return result
+    try:
+        return json.loads(text, object_pairs_hook=members,
+                          parse_constant=lambda _: (_ for _ in ()).throw(AcceptanceUnavailable("acceptance_nonfinite")))
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise AcceptanceUnavailable("acceptance_json") from exc
+
+
+def _identifier(value: Any, prefix: str) -> None:
+    if not isinstance(value, str) or re.fullmatch(prefix + r"-[0-9]{3,}", value) is None:
+        raise AcceptanceUnavailable("acceptance_identifier")
+
+
+def _sha256(value: Any) -> None:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise AcceptanceUnavailable("acceptance_digest")
+
+
+def _reference(value: Any, *, own: bool = False) -> dict:
+    _closed(value, {"task_id", "agent", "runtime_session_id"} | (set() if own else {"result_id"}),
+            {"result_id"} if own else set())
+    _identifier(value["task_id"], "TASK")
+    for key in ("agent", "runtime_session_id"):
+        if not isinstance(value[key], str) or not value[key].strip() or len(value[key]) > 256:
+            raise AcceptanceUnavailable("acceptance_reference")
+    if "result_id" in value and (type(value["result_id"]) is not int or value["result_id"] <= 0):
+        raise AcceptanceUnavailable("acceptance_result_id")
+    return value
+
+
+def _identity_schema(value: Any) -> None:
+    """Closed metadata shape; shape validity supplies no installed authority."""
+    _closed(value, {"source_root", "runtime_root", "org_root", "package_version", "python", "loaded_code",
+                    "files", "teams_sha256", "cohort", "profiles", "backend"})
+    def text(item: Any, *, absolute: bool = False) -> None:
+        if (not isinstance(item, str) or not item or len(item) > 4096
+                or (absolute and not Path(item).is_absolute())):
+            raise AcceptanceUnavailable("acceptance_identity_value")
+    def rows(items: Any, maximum: int) -> list:
+        if not isinstance(items, list) or not items or len(items) > maximum:
+            raise AcceptanceUnavailable("acceptance_identity_array")
+        return items
+    for key in ("source_root", "runtime_root", "org_root"):
+        text(value[key], absolute=True)
+    text(value["package_version"])
+    _sha256(value["teams_sha256"])
+    _closed(value["python"], {"executable", "version", "implementation", "cache_tag"})
+    for key, item in value["python"].items():
+        text(item, absolute=key == "executable")
+    files = rows(value["files"], MAX_IDENTITY_FILES)
+    for row in files:
+        _closed(row, {"path", "sha256"})
+        text(row["path"], absolute=True)
+        _sha256(row["sha256"])
+    if [row["path"] for row in files] != sorted({row["path"] for row in files}):
+        raise AcceptanceUnavailable("acceptance_identity_files")
+    code = rows(value["loaded_code"], 256)
+    for row in code:
+        _closed(row, {"module", "qualname", "origin", "loaded_sha256", "source_code_sha256"})
+        for key in ("module", "qualname", "origin"):
+            text(row[key], absolute=key == "origin")
+        for key in ("loaded_sha256", "source_code_sha256"):
+            _sha256(row[key])
+        if row["loaded_sha256"] != row["source_code_sha256"]:
+            raise AcceptanceUnavailable("acceptance_identity_loaded_code")
+    if [(r["module"], r["qualname"]) for r in code] != sorted({(r["module"], r["qualname"]) for r in code}):
+        raise AcceptanceUnavailable("acceptance_identity_code")
+    cohort = rows(value["cohort"], MAX_IDENTITY_AGENTS)
+    for row in cohort:
+        _closed(row, {"agent", "team", "role", "executor", "model"})
+        for key in ("agent", "team", "role", "executor"):
+            text(row[key])
+        if row["role"] not in {"manager", "worker"}:
+            raise AcceptanceUnavailable("acceptance_identity_role")
+        if row["model"] is not None:
+            text(row["model"])
+    if [r["agent"] for r in cohort] != sorted({r["agent"] for r in cohort}):
+        raise AcceptanceUnavailable("acceptance_identity_cohort")
+    profiles = rows(value["profiles"], MAX_IDENTITY_AGENTS)
+    for row in profiles:
+        _closed(row, {"name", "kind", "workspace_adapter_id", "command_adapter_id", "readiness_marker_fragment",
+                      "model_arg_sha256", "provider", "adapter"})
+        for key in ("name", "kind", "workspace_adapter_id"):
+            text(row[key])
+        if row["command_adapter_id"] is not None:
+            text(row["command_adapter_id"])
+        if row["readiness_marker_fragment"] is not None:
+            text(row["readiness_marker_fragment"])
+        _sha256(row["model_arg_sha256"])
+        if row["kind"] == "builtin":
+            if row["adapter"] is not None:
+                raise AcceptanceUnavailable("acceptance_identity_adapter")
+            _closed(row["provider"], {"path", "sha256"})
+            text(row["provider"]["path"], absolute=True)
+            _sha256(row["provider"]["sha256"])
+        elif row["kind"] == "custom":
+            if row["provider"] is not None:
+                raise AcceptanceUnavailable("acceptance_identity_provider")
+            adapter = _closed(row["adapter"], {"id", "version", "contract_version", "dependency_manifest_version", "dependencies"})
+            text(adapter["id"])
+            text(adapter["version"])
+            if (type(adapter["contract_version"]) is not int or adapter["contract_version"] != 1
+                    or (adapter["dependency_manifest_version"] is not None and
+                        (type(adapter["dependency_manifest_version"]) is not int or adapter["dependency_manifest_version"] <= 0))):
+                raise AcceptanceUnavailable("acceptance_identity_adapter_version")
+            for dependency in rows(adapter["dependencies"], 17):
+                _closed(dependency, {"path", "sha256"})
+                text(dependency["path"], absolute=True)
+                _sha256(dependency["sha256"])
+        else:
+            raise AcceptanceUnavailable("acceptance_identity_profile_kind")
+    if ([r["name"] for r in profiles] != sorted({r["name"] for r in profiles})
+            or {r["executor"] for r in cohort} != {r["name"] for r in profiles}):
+        raise AcceptanceUnavailable("acceptance_identity_profiles")
+    backend = _closed(value["backend"], {"mode", "name", "version", "capabilities"})
+    if backend["mode"] == "legacy":
+        if any(backend[key] is not None for key in ("name", "version", "capabilities")):
+            raise AcceptanceUnavailable("acceptance_identity_backend")
+    elif backend["mode"] == "supervised":
+        text(backend["name"])
+        if backend["version"] is not None:
+            text(backend["version"])
+        if not isinstance(backend["capabilities"], dict) or not backend["capabilities"] or len(backend["capabilities"]) > 64:
+            raise AcceptanceUnavailable("acceptance_identity_capabilities")
+        for key, item in backend["capabilities"].items():
+            text(key)
+            text(item)
+    else:
+        raise AcceptanceUnavailable("acceptance_identity_backend")
+
+
+def parse_acceptance(summary: str) -> dict | None:
+    """Parse the closed opt-in carrier only; untagged history is unchanged."""
+    if not isinstance(summary, str):
+        raise AcceptanceUnavailable("acceptance_summary")
+    if "MemoryCollectionV1:" not in summary:
+        return None
+    try:
+        if len(summary.encode("utf-8")) > MAX_ACCEPTANCE_BYTES:
+            raise AcceptanceUnavailable("acceptance_work_limit")
+        lines = [line for line in summary.splitlines() if "MemoryCollectionV1:" in line]
+        if len(lines) != 1 or not lines[0].startswith(COLLECTION_TAG):
+            raise AcceptanceUnavailable("acceptance_tag")
+        raw = lines[0][len(COLLECTION_TAG):]
+        value = _strict_json(raw)
+        common = {"contract_version", "kind", "org", "operational_root_task_id",
+                  "health_definition_sha256", "release_manifest_sha256", "installed_identity",
+                  "cohort", "applicable_paths", "synthetic_task_ids", "probe_receipts", "result_ref"}
+        kind = value.get("kind") if isinstance(value, dict) else None
+        extra = {"venue"} if kind == "installed_qa" else {"action", "qa_ref", "predecessor_epoch_id", "reason"}
+        _closed(value, common | extra)
+        if type(value["contract_version"]) is not int or value["contract_version"] != 1:
+            raise AcceptanceUnavailable("acceptance_version")
+        if kind not in {"installed_qa", "manager_acceptance"}:
+            raise AcceptanceUnavailable("acceptance_kind")
+        if not isinstance(value["org"], str) or not value["org"].strip():
+            raise AcceptanceUnavailable("acceptance_org")
+        _identifier(value["operational_root_task_id"], "TASK")
+        for key in ("health_definition_sha256", "release_manifest_sha256"):
+            _sha256(value[key])
+        _reference(value["result_ref"], own=True)
+        if kind == "installed_qa":
+            if value["venue"] != "installed":
+                raise AcceptanceUnavailable("acceptance_venue")
+        else:
+            _reference(value["qa_ref"])
+            if value["action"] not in {"accept", "invalidate"}:
+                raise AcceptanceUnavailable("acceptance_action")
+            if value["predecessor_epoch_id"] is not None:
+                _sha256(value["predecessor_epoch_id"])
+            if not isinstance(value["reason"], str) or not value["reason"].strip() or len(value["reason"]) > 2048:
+                raise AcceptanceUnavailable("acceptance_reason")
+        _identity_schema(value["installed_identity"])
+        if value["cohort"] != value["installed_identity"]["cohort"]:
+            raise AcceptanceUnavailable("acceptance_cohort")
+        for key in ("cohort", "applicable_paths", "synthetic_task_ids", "probe_receipts"):
+            items = value[key]
+            if not isinstance(items, list) or not items or len(items) > MAX_IDENTITY_AGENTS:
+                raise AcceptanceUnavailable("acceptance_array")
+            encoded = [json.dumps(item, sort_keys=True, separators=(",", ":"), allow_nan=False) for item in items]
+            if encoded != sorted(set(encoded)):
+                raise AcceptanceUnavailable("acceptance_array_order")
+        if any(not isinstance(path, str) or not path or len(path) > 512 for path in value["applicable_paths"]):
+            raise AcceptanceUnavailable("acceptance_path")
+        for task_id in value["synthetic_task_ids"]:
+            _identifier(task_id, "TASK")
+        for receipt in value["probe_receipts"]:
+            _closed(receipt, {"path", "root", "child", "job_id", "script_sha256", "output_sha256"})
+            if not isinstance(receipt["path"], str) or receipt["path"] not in value["applicable_paths"]:
+                raise AcceptanceUnavailable("acceptance_probe_path")
+            _identifier(receipt["job_id"], "JOB")
+            for key in ("script_sha256", "output_sha256"):
+                _sha256(receipt[key])
+            for key in ("root", "child"):
+                _closed(receipt[key], {"org", "agent", "task_id", "runtime_session_id"})
+                _identifier(receipt[key]["task_id"], "TASK")
+                if any(not isinstance(receipt[key][field], str) or not receipt[key][field]
+                       or len(receipt[key][field]) > 256 for field in ("org", "agent", "runtime_session_id")):
+                    raise AcceptanceUnavailable("acceptance_probe_tuple")
+        if raw != json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False):
+            raise AcceptanceUnavailable("acceptance_not_canonical")
+        return value
+    except (UnicodeError, TypeError, ValueError, RecursionError) as exc:
+        raise AcceptanceUnavailable("acceptance_schema") from exc
+
+
+def normalize_own_reference(candidate: dict, admitted_row: dict) -> dict:
+    """Derive only the own ID/time from the explicitly selected immutable row."""
+    own = _reference(candidate["result_ref"], own=True)
+    if (type(admitted_row.get("id")) is not int or admitted_row["id"] <= 0
+            or admitted_row.get("status") != "completed"
+            or own["task_id"] != admitted_row.get("task_id")
+            or own["agent"] != admitted_row.get("agent")
+            or own["runtime_session_id"] != admitted_row.get("session_id")
+            or ("result_id" in own and own["result_id"] != admitted_row["id"])
+            or parse_acceptance(admitted_row.get("output_summary")) != candidate):
+        raise AcceptanceUnavailable("acceptance_own_row")
+    normalized = copy.deepcopy(candidate)
+    normalized["result_ref"]["result_id"] = admitted_row["id"]
+    normalized["published_at"] = admitted_row["created_at"]
+    return normalized
 
 
 class CensusReadUnavailable(Exception):
@@ -101,6 +345,7 @@ class CollectionObserver:
         self.boot_id = str(uuid.uuid4())
         self._lock = threading.RLock()
         self._writer = threading.Lock()
+        self._transition_lock = threading.Lock()
         self._pending: deque[tuple[InvocationObservation, str, dict]] = deque()
         self._assigned = 0
         self._generation = 0
@@ -113,6 +358,12 @@ class CollectionObserver:
         self._seal_persisted = 0
         self._seal_digest = EMPTY_DIGEST
         self._latest_seal: int | None = None
+
+    def reconcile_acceptance(self, result_row_id: int) -> dict | None:
+        context = getattr(self, "context", None)
+        if context is None or context.db is not self.db or context.memory_collection is not self:
+            return None
+        return reconcile_acceptance(context, result_row_id)
 
     def unavailable(self, reason: str) -> None:
         """Sticky category-only failure; successful later writes cannot clear it."""
@@ -583,12 +834,29 @@ def loaded_identity(org: Any) -> dict:
                  org.orchestrator._launch_agent_with_scratch,
                  org.orchestrator._run_agent_launch_contained,
                  org.orchestrator._resolve_executor_name, org.orchestrator._resolve_model_name,
-                 org.orchestrator._build_executor, MemoryStore.render_memory_digest, CollectionObserver.begin,
+                 org.orchestrator._build_executor, MemoryStore.render_memory_digest, CollectionObserver.__init__, CollectionObserver.begin,
                  CollectionObserver.observe, CollectionObserver.expectation,
                  CollectionObserver.snapshot, CollectionObserver._snapshot,
                  CollectionObserver._record, CollectionObserver._persist, CollectionObserver._seal,
                  _identity_bytes, _identity_file_hash, _hash_metadata, _code_projection, _find_code, _serving_snapshot,
                  _serving_revision, _check_serving_snapshot, _now, serving_observation, loaded_identity]
+    from runtime.infrastructure.memory_telemetry_report import reduce_report, reduce_collection_report
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from cli.commands.learning import cmd_memory_report, _compute_report, _print_report
+    functions.extend([org.orchestrator._log_step_result, org.memory_collection.reconcile_acceptance,
+                      org.memory_collection.context.memory_collection_observation,
+                      inspect.unwrap(Database.read_memory_collection_evidence), Database.append_memory_collection_transition,
+                      inspect.unwrap(Database.verify_retry_link), Database._retry_object, Database._retry_audits,
+                      Database._retry_require_audit, Database._retry_manager_edge,
+                      Database._retry_escalation_edge, Database._retry_dispatch_edge,
+                      parse_acceptance, normalize_own_reference, _identity_schema, _closed, _strict_json, _identifier, _sha256, _reference,
+                      collection_record_projection, collection_control_head, collection_logical_key, equivalent_collection_control, _decoded_tables,
+                      _one, _decision, _exact_role_result, _approved_probe_plan, _validate_job, _resolve_probe_slots,
+                      _validate_probe_operations, _census_from_view, validate_acceptance_evidence, _view_projection,
+                      _referenced_probe_jobs, _local_job_outputs, _registered_cohort, validate_epoch_candidate, prepare_acceptance, reconcile_acceptance, acquire_collection_report,
+                      _collection_pages, _http_collection_capture, acquire_http_collection_report,
+                      current_epoch_references, reduce_report, reduce_collection_report, AuditLogger.compute_memory_telemetry_report,
+                      cmd_memory_report, _compute_report, _print_report])
     code_rows = []
     compiled: dict[str, CodeType] = {}
     def fingerprint(function: Any) -> None:
@@ -820,3 +1088,763 @@ def serving_observation(org: Any) -> dict:
     except Exception:
         view["observation_error"] = view["observation_error"] or "observation_unavailable"
     return view
+
+
+CONTROL_ACTIONS = frozenset({"memory_collection_epoch_started", "memory_collection_invalidated"})
+
+
+def collection_record_projection(tables: dict) -> str:
+    """Immutable comparison includes originals, jobs and exact admitted results."""
+    return json.dumps({key: [row for row in rows if key != "audit_log" or row["action"] not in CONTROL_ACTIONS]
+                       for key, rows in tables.items()}, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def collection_logical_key(candidate: dict) -> str:
+    return _hash_metadata({key: value for key, value in candidate.items()
+                           if key not in {"result_ref", "published_at", "reason"}})
+
+
+def equivalent_collection_control(tables: dict, candidate: dict) -> dict | None:
+    """Authenticate the chain before selecting an immutable replay boundary.
+
+    Equivalence cannot revive a withdrawn or superseded start. Each proposed
+    manager row is still validated separately against the original admission.
+    """
+    controls = [row for row in tables["audit_log"] if row["action"] in CONTROL_ACTIONS]
+    head = collection_control_head(controls, candidate["org"], candidate["operational_root_task_id"])
+    key = collection_logical_key(candidate)
+    matches = [row for row in controls if
+               (_strict_json(row["payload"]) if isinstance(row["payload"], str) else row["payload"])["logical_key"] == key]
+    if not matches:
+        return None
+    original = _one(matches, "acceptance_equivalent_ambiguous")
+    if head is None or head["id"] != original["id"]:
+        raise AcceptanceUnavailable("acceptance_equivalent_inactive")
+    return head
+
+
+def collection_control_head(rows: list[dict], org: str, root: str) -> dict | None:
+    """Never fall back across a malformed, branched or foreign-root control."""
+    head = None
+    for raw in sorted(rows, key=lambda row: row["id"]):
+        body = _strict_json(raw["payload"]) if isinstance(raw["payload"], str) else raw["payload"]
+        _closed(body, {"contract_version", "org", "operational_root_task_id", "epoch_id",
+                       "predecessor_epoch_id", "logical_key", "manager_ref", "qa_ref",
+                       "boot_id", "base_assigned_intents", "accepted_at", "projection"})
+        if type(body["contract_version"]) is not int or body["contract_version"] != 1 or body["org"] != org or body["operational_root_task_id"] != root:
+            raise AcceptanceUnavailable("acceptance_control_context")
+        for key in ("epoch_id", "logical_key"):
+            _sha256(body[key])
+        _reference(body["manager_ref"])
+        _reference(body["qa_ref"])
+        if (body["manager_ref"]["task_id"] != raw["task_id"] or body["manager_ref"]["agent"] != raw["agent"]
+                or body["predecessor_epoch_id"] != (head["payload"]["epoch_id"] if head else None)):
+            raise AcceptanceUnavailable("acceptance_control_chain")
+        if raw["action"] == "memory_collection_invalidated":
+            if head is None or body["epoch_id"] != head["payload"]["epoch_id"]:
+                raise AcceptanceUnavailable("acceptance_control_invalidation")
+        elif raw["action"] != "memory_collection_epoch_started":
+            raise AcceptanceUnavailable("acceptance_control_action")
+        head = {**raw, "payload": body}
+    return head
+
+
+def _decoded_tables(tables: dict) -> dict:
+    value = copy.deepcopy(tables)
+    for row in value["audit_log"]:
+        if isinstance(row["payload"], str):
+            row["payload"] = _strict_json(row["payload"])
+    return value
+
+
+def _one(rows: list[dict], category: str) -> dict:
+    if len(rows) != 1:
+        raise AcceptanceUnavailable(category)
+    return rows[0]
+
+
+def _decision(row: dict) -> dict:
+    from runtime.models import NextStep
+    body = _strict_json(row["decision_json"])
+    if not isinstance(body, dict):
+        raise AcceptanceUnavailable("acceptance_decision")
+    body = {key: value for key, value in body.items() if key != "_manager_self_evaluation"}
+    return NextStep.model_validate(body).model_dump(exclude_none=True)
+
+
+def _exact_role_result(data: dict, ref: dict, view: dict, *, role: str, root: str, withdrawal: bool = False) -> tuple[dict, dict]:
+    _reference(ref)
+    result = _one([row for row in data["task_results"] if row["id"] == ref["result_id"]], "acceptance_result_missing")
+    task = _one([row for row in data["tasks"] if row["id"] == ref["task_id"]], "acceptance_task_missing")
+    member = _one([row for row in view["installed_identity"]["cohort"] if row["agent"] == ref["agent"]], "acceptance_role_missing")
+    if (result["task_id"] != ref["task_id"] or result["agent"] != ref["agent"] or result["session_id"] != ref["runtime_session_id"]
+            or result["status"] != "completed" or task["assigned_agent"] != ref["agent"] or member["role"] != role
+            or task["team"] != member["team"] or task["cancelled_at"] is not None
+            or (task["status"] == "failed" and not withdrawal)):
+        raise AcceptanceUnavailable("acceptance_role_binding")
+    cursor, seen = task, set()
+    while cursor["id"] != root:
+        if cursor["id"] in seen or len(seen) >= MAX_IDENTITY_AGENTS or cursor["parent_task_id"] is None:
+            raise AcceptanceUnavailable("acceptance_lineage")
+        seen.add(cursor["id"])
+        cursor = _one([row for row in data["tasks"] if row["id"] == cursor["parent_task_id"]], "acceptance_lineage")
+    if role == "manager" and (cursor["assigned_agent"] != ref["agent"] or cursor["parent_task_id"] is not None
+            or len([m for m in view["installed_identity"]["cohort"] if m["team"] == member["team"] and m["role"] == "manager"]) != 1):
+        raise AcceptanceUnavailable("acceptance_manager")
+    identities = [row for row in data["audit_log"] if row["action"] == "memory_runtime_identity"
+                  and row["task_id"] == ref["task_id"] and row["agent"] == ref["agent"]
+                  and row["payload"].get("session_id") == ref["runtime_session_id"]]
+    identity = _one(identities, "acceptance_admission_identity")
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    start = _one([row for row in data["audit_log"] if row["action"] == "session_start"
+                  and row["task_id"] == ref["task_id"] and row["agent"] == ref["agent"]
+                  and row["payload"].get("session_id") == ref["runtime_session_id"]], "acceptance_admission_start")
+    facts = identity["payload"]
+    if (facts.get("population") == "recovery" or facts.get("parent_known") is not True
+            or facts.get("parent_task_id") != task["parent_task_id"]
+            or facts.get("task_type") != task["task_type"]
+            or facts.get("executor") != member["executor"] or facts.get("model") != member["model"]
+            or any(start["payload"].get(key) != facts.get(key) for key in ("executor", "model", "invocation_purpose"))
+            or not (aware_utc(task["created_at"]) <= aware_utc(identity["timestamp"])
+                    <= aware_utc(start["timestamp"]) <= aware_utc(result["created_at"]))):
+        raise AcceptanceUnavailable("acceptance_admission_binding")
+    return result, task
+
+
+def _approved_probe_plan(data: dict, candidate: dict, qa_task: dict, qa_result: dict, view: dict) -> dict:
+    """Whole original prompt plus unique prior real delegation approves intent."""
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    root = candidate["operational_root_task_id"]
+    matches = []
+    for result in data["task_results"]:
+        if result["task_id"] != root or not result["decision_json"]:
+            continue
+        decision = _decision(result)
+        if decision.get("action") == "delegate" and decision.get("agent") == qa_result["agent"] and decision.get("prompt") == qa_task["brief"]:
+            matches.append((result, decision))
+    if len(matches) != 1:
+        raise AcceptanceUnavailable("acceptance_prior_plan")
+    prior, decision = matches[0]
+    _exact_role_result(data, {"task_id": prior["task_id"], "result_id": prior["id"], "agent": prior["agent"],
+                             "runtime_session_id": prior["session_id"]}, view, role="manager", root=root)
+    step = _one([row for row in data["audit_log"] if row["action"] == "orchestration_step" and row["task_id"] == root
+                 and row["payload"].get("decision") == decision], "acceptance_prior_step")
+    if qa_task["parent_task_id"] != root or not (aware_utc(prior["created_at"]) <= aware_utc(step["timestamp"]) <= aware_utc(qa_task["created_at"])):
+        raise AcceptanceUnavailable("acceptance_prior_order")
+    plan = _strict_json(qa_task["brief"])
+    _closed(plan, {"run_id", "command", "slots"})
+    _closed(plan["command"], {"script_text", "interpreter", "cwd_resolved"})
+    if not isinstance(plan["run_id"], str) or not plan["run_id"] or not isinstance(plan["slots"], list) or not plan["slots"] or len(plan["slots"]) > MAX_IDENTITY_AGENTS:
+        raise AcceptanceUnavailable("acceptance_plan_schema")
+    command = plan["command"]
+    if (any(not isinstance(item, str) or not item for item in command.values())
+            or len(command["script_text"].encode()) > 65536 or not Path(command["cwd_resolved"]).is_absolute()
+            or len({slot.get("path") for slot in plan["slots"]}) != len(plan["slots"])):
+        raise AcceptanceUnavailable("acceptance_plan_command")
+    for slot in plan["slots"]:
+        _closed(slot, {"path", "root", "child"})
+        for kind in ("root", "child"):
+            _closed(slot[kind], {"agent", "team", "brief"})
+            if any(not isinstance(value, str) or not value for value in slot[kind].values()):
+                raise AcceptanceUnavailable("acceptance_plan_slot")
+    return plan
+
+
+HEALTH_DEFINITION_SHA256 = hashlib.sha256(
+    b'H-v1:complete-intent-and-expectation-census;zero-false-credit;per-path-root-child:2/4/2;admission-age<=48h-at-final-commit;original-epoch-current-health;installed-identity;no-stitching'
+).hexdigest()
+
+
+def _validate_job(data: dict, receipt: dict, qa_result: dict, qa_task: dict, plan: dict, output: dict) -> tuple[dict, dict]:
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    job = _one([row for row in data["jobs"] if row["id"] == receipt["job_id"]], "acceptance_job_missing")
+    command = plan["command"]
+    if (job["task_id"] != qa_task["id"] or job["agent_name"] != qa_result["agent"]
+            or job["status"] != "completed" or type(job["exit_code"]) is not int or job["exit_code"] != 0
+            or job["reason"] is not None or job["script_text"] != command["script_text"]
+            or job["interpreter"] != command["interpreter"] or job["cwd_resolved"] != command["cwd_resolved"]
+            or hashlib.sha256(job["script_text"].encode()).hexdigest() != receipt["script_sha256"]):
+        raise AcceptanceUnavailable("acceptance_job_identity")
+    if not (aware_utc(qa_task["created_at"]) <= aware_utc(job["created_at"]) <= aware_utc(job["started_at"])
+            <= aware_utc(job["finished_at"]) <= aware_utc(qa_result["created_at"])):
+        raise AcceptanceUnavailable("acceptance_job_order")
+    events = [row for row in data["audit_log"] if isinstance(row["payload"], dict)
+              and row["payload"].get("script_request_id") == job["id"]]
+    submitted = _one([row for row in events if row["action"] == "job_submitted"], "acceptance_job_submit")
+    started = _one([row for row in events if row["action"] in {"job_auto_started", "job_run_started"}], "acceptance_job_start")
+    finished = _one([row for row in events if row["action"] == "job_run_completed"], "acceptance_job_finish")
+    sessions = [row for row in data["audit_log"] if row["action"] == "memory_runtime_identity"
+                and row["task_id"] == qa_task["id"] and row["agent"] == qa_result["agent"]
+                and aware_utc(row["timestamp"]) <= aware_utc(submitted["timestamp"])]
+    if not sessions:
+        raise AcceptanceUnavailable("acceptance_job_session")
+    latest_session = max(sessions, key=lambda row: row["id"])
+    if (latest_session["payload"].get("session_id") != qa_result["session_id"]
+            or any(row["action"] == "memory_runtime_identity" and row["task_id"] == qa_task["id"]
+                   and row["agent"] == qa_result["agent"] and row["payload"].get("session_id") != qa_result["session_id"]
+                   and aware_utc(submitted["timestamp"]) <= aware_utc(row["timestamp"]) <= aware_utc(qa_result["created_at"])
+                   for row in data["audit_log"])):
+        raise AcceptanceUnavailable("acceptance_job_session")
+    if any(row["task_id"] != qa_task["id"] for row in (submitted, started, finished)) or submitted["agent"] != qa_result["agent"]:
+        raise AcceptanceUnavailable("acceptance_job_owner")
+    if (submitted["payload"].get("interpreter") != job["interpreter"]
+            or submitted["payload"].get("byte_size") != len(job["script_text"].encode())
+            or started["payload"].get("interpreter") != job["interpreter"]
+            or started["payload"].get("cwd_resolved") != job["cwd_resolved"]
+            or finished["payload"].get("exit_code") != 0
+            or not (aware_utc(submitted["timestamp"]) <= aware_utc(started["timestamp"])
+                    <= aware_utc(finished["timestamp"]) <= aware_utc(qa_result["created_at"]))):
+        raise AcceptanceUnavailable("acceptance_job_audit")
+    _closed(output, {"stdout", "stderr", "truncated_stdout", "truncated_stderr", "total_stdout_bytes", "total_stderr_bytes"})
+    for stream in ("stdout", "stderr"):
+        text, total = output[stream], output[f"total_{stream}_bytes"]
+        if (not isinstance(text, str) or "\ufffd" in text or type(total) is not int or total <= 0
+                or len(text.encode("utf-8")) != total or output[f"truncated_{stream}"] is not False
+                or finished["payload"].get(f"{stream}_bytes") != total
+                or finished["payload"].get(f"truncated_{stream}") is not False):
+            raise AcceptanceUnavailable("acceptance_job_output")
+    if not output["stdout"] or _hash_metadata(output) != receipt["output_sha256"]:
+        raise AcceptanceUnavailable("acceptance_job_output_digest")
+    transcript = _strict_json(output["stdout"])
+    _closed(transcript, {"run_id", "returned_task_ids", "operation_audit_ids", "serving_observation", "cli_identity"})
+    if transcript["run_id"] != plan["run_id"]:
+        raise AcceptanceUnavailable("acceptance_job_plan")
+    return job, transcript
+
+
+def _resolve_probe_slots(data: dict, plan: dict, receipts: list[dict], jobs: dict, transcripts: dict,
+                         *, retry_verifier: Any = None) -> set[str]:
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    designated, per_job = set(), {}
+    if len(plan["slots"]) != len(receipts) or len({slot["path"] for slot in plan["slots"]}) != len(plan["slots"]):
+        raise AcceptanceUnavailable("acceptance_slot_count")
+    for slot in plan["slots"]:
+        receipt = _one([row for row in receipts if row["path"] == slot["path"]], "acceptance_slot_path")
+        job, transcript = jobs[receipt["job_id"]], transcripts[receipt["job_id"]]
+        original = slot["root"]
+        roots = [row for row in data["tasks"] if row["parent_task_id"] is None
+                 and row["brief"] == original["brief"] and row["assigned_agent"] == original["agent"]
+                 and row["team"] == original["team"]
+                 and aware_utc(job["started_at"]) <= aware_utc(row["created_at"]) <= aware_utc(job["finished_at"])]
+        root = _one(roots, "acceptance_root_slot_ambiguous")
+        child_template = slot["child"]
+        child = _one([row for row in data["tasks"] if row["parent_task_id"] == root["id"]
+                      and row["brief"] == child_template["brief"] and row["assigned_agent"] == child_template["agent"]
+                      and row["team"] == child_template["team"]], "acceptance_child_slot_ambiguous")
+        parent_decisions = []
+        for result in data["task_results"]:
+            if result["task_id"] != root["id"] or not result["decision_json"]:
+                continue
+            decision = _decision(result)
+            if decision.get("action") == "delegate" and decision.get("agent") == child["assigned_agent"] and decision.get("prompt") == child["brief"]:
+                parent_decisions.append((result, decision))
+        if len(parent_decisions) != 1:
+            raise AcceptanceUnavailable("acceptance_child_delegation")
+        parent_result, decision = parent_decisions[0]
+        if (parent_result["status"] != "completed" or parent_result["agent"] != root["assigned_agent"]
+                or parent_result["session_id"] != receipt["root"]["runtime_session_id"]):
+            raise AcceptanceUnavailable("acceptance_child_parent_result")
+        parent_identity = _one([row for row in data["audit_log"] if row["action"] == "memory_runtime_identity"
+                               and row["task_id"] == root["id"] and row["agent"] == parent_result["agent"]
+                               and row["payload"].get("session_id") == parent_result["session_id"]], "acceptance_child_parent_identity")
+        if parent_identity["payload"].get("population") != "root":
+            raise AcceptanceUnavailable("acceptance_child_parent_identity")
+        step = _one([row for row in data["audit_log"] if row["action"] == "orchestration_step" and row["task_id"] == root["id"]
+                     and row["payload"].get("decision") == decision], "acceptance_child_step")
+        if not (aware_utc(parent_result["created_at"]) <= aware_utc(step["timestamp"]) <= aware_utc(child["created_at"]) <= aware_utc(job["finished_at"])):
+            raise AcceptanceUnavailable("acceptance_child_order")
+        for kind, task in (("root", root), ("child", child)):
+            claimed = receipt[kind]
+            if (task["id"] in designated or claimed["task_id"] != task["id"] or claimed["agent"] != task["assigned_agent"]
+                    or claimed["task_id"] not in transcript["returned_task_ids"]):
+                raise AcceptanceUnavailable("acceptance_slot_mapping")
+            designated.add(task["id"])
+            per_job.setdefault(receipt["job_id"], set()).add(task["id"])
+    # A cross-root closure requires the existing server verifier, including
+    # its raw manager/escalation/thread joins. Public audit text is not a
+    # replacement for those records. Supporting roots are excluded too.
+    while True:
+        extra = set()
+        for task in data["tasks"]:
+            predecessor = task["revisit_of_task_id"]
+            if predecessor not in designated or task["id"] in designated:
+                continue
+            previous = _one([row for row in data["tasks"] if row["id"] == predecessor], "acceptance_retry_missing")
+            if previous["status"] != "failed" or task["assigned_agent"] != previous["assigned_agent"]:
+                raise AcceptanceUnavailable("acceptance_retry_lineage")
+            roots = ()
+            if retry_verifier is not None:
+                from runtime.infrastructure.db.tasks import VerifiedRetry
+                verified = retry_verifier(task["parent_task_id"], task["assigned_agent"], predecessor)
+                if not isinstance(verified, VerifiedRetry):
+                    raise AcceptanceUnavailable("acceptance_retry_lineage")
+                roots = verified.path
+                if (not roots or len(roots) > 20 or len(set(roots)) != len(roots)
+                        or roots[0] != task["parent_task_id"] or roots[-1] != previous["parent_task_id"]):
+                    raise AcceptanceUnavailable("acceptance_retry_lineage")
+                for root_id in roots:
+                    _one([row for row in data["tasks"] if row["id"] == root_id], "acceptance_retry_missing")
+            elif task["parent_task_id"] != previous["parent_task_id"]:
+                raise AcceptanceUnavailable("acceptance_retry_lineage")
+            extra.update((task["id"], *roots))
+            for expected in per_job.values():
+                if predecessor in expected:
+                    expected.update((task["id"], *roots))
+        if not extra:
+            break
+        designated.update(extra)
+        if len(designated) > MAX_IDENTITY_AGENTS:
+            raise AcceptanceUnavailable("acceptance_retry_limit")
+    for job_id, expected in per_job.items():
+        returned = transcripts[job_id]["returned_task_ids"]
+        if (not isinstance(returned, list) or any(not isinstance(task, str) for task in returned)
+                or len(returned) != len(set(returned)) or set(returned) != expected):
+            raise AcceptanceUnavailable("acceptance_returned_task_set")
+    return designated
+
+
+def _validate_probe_operations(data: dict, receipt: dict, transcript: dict, view: dict) -> set[int]:
+    selected = []
+    for kind in ("root", "child"):
+        claim = receipt[kind]
+        if claim["org"] != view["org"]:
+            raise AcceptanceUnavailable("acceptance_probe_org")
+        key = (claim["task_id"], claim["agent"], claim["runtime_session_id"])
+        own = [row for row in data["audit_log"] if isinstance(row["payload"], dict)
+               and row["payload"].get("session_id") == key[2]]
+        # Scope is operation-specific. Redundant payload fields may never
+        # rescue a wrong row scope or disagree with the admitted task tuple.
+        for row in own:
+            if row["action"] not in {"memory_runtime_identity", "memory_runtime_terminal",
+                                     "memory_digest_impression", "memory_read", "memory_search"}:
+                continue
+            payload = row["payload"]
+            scope = f"AGENT-{key[1]}" if row["action"] == "memory_read" else key[0]
+            if (row["task_id"] != scope or row["agent"] != key[1]
+                    or ("agent" in payload and payload["agent"] != key[1])
+                    or ("task_id" in payload and payload["task_id"] != key[0])
+                    or (row["action"] in {"memory_read", "memory_search"} and payload.get("task_id") != key[0])):
+                raise AcceptanceUnavailable("acceptance_probe_binding")
+        identity = _one([row for row in own if row["action"] == "memory_runtime_identity"], "acceptance_probe_identity")
+        terminal = _one([row for row in own if row["action"] == "memory_runtime_terminal"], "acceptance_probe_terminal")
+        member = _one([row for row in view["installed_identity"]["cohort"] if row["agent"] == key[1]], "acceptance_probe_member")
+        task = _one([row for row in data["tasks"] if row["id"] == key[0]], "acceptance_probe_task")
+        if (task["status"] != "completed" or task["cancelled_at"] is not None
+                or task["assigned_agent"] != key[1] or task["team"] != member["team"]):
+            raise AcceptanceUnavailable("acceptance_probe_task")
+        expected_path = f"{member['executor']}:{view['installed_identity']['backend']['mode']}:{view['installed_identity']['backend']['name'] or 'none'}"
+        if (identity["payload"].get("boot_id") != view["boot_id"] or terminal["payload"].get("success") is not True
+                or identity["payload"].get("executor") != member["executor"]
+                or identity["payload"].get("model") != member["model"] or receipt["path"] != expected_path
+                or identity["payload"].get("population") != kind
+                or identity["payload"].get("parent_known") is not True):
+            raise AcceptanceUnavailable("acceptance_probe_success")
+        impression = _one([row for row in own if row["action"] == "memory_digest_impression"], "acceptance_probe_impression")
+        reads = [row for row in own if row["action"] == "memory_read"]
+        searches = [row for row in own if row["action"] == "memory_search"]
+        if len(reads) != 2 or len(searches) != 1:
+            raise AcceptanceUnavailable("acceptance_probe_operations")
+        shown = set(impression["payload"]["digest_ids"])
+        digest_read = _one([row for row in reads if row["payload"].get("source") == "digest"], "acceptance_probe_shown")
+        searched_read = _one([row for row in reads if row["payload"].get("source") == "search"], "acceptance_probe_nonshown")
+        if (digest_read["payload"].get("id") not in shown or searched_read["payload"].get("id") in shown
+                or searched_read["payload"].get("id") not in searches[0]["payload"]["memory_ids"]
+                or not identity["id"] < impression["id"] < digest_read["id"] < searches[0]["id"] < searched_read["id"] < terminal["id"]):
+            raise AcceptanceUnavailable("acceptance_probe_source_order")
+        from runtime.infrastructure.memory_telemetry_report import aware_utc
+        ordered = (identity, impression, digest_read, searches[0], searched_read, terminal)
+        if any(aware_utc(before["timestamp"]) > aware_utc(after["timestamp"])
+               for before, after in zip(ordered, ordered[1:])):
+            raise AcceptanceUnavailable("acceptance_probe_source_order")
+        selected.extend([impression["id"], digest_read["id"], searches[0]["id"], searched_read["id"]])
+    claimed_ids = transcript["operation_audit_ids"]
+    if (not isinstance(claimed_ids, list) or any(type(item) is not int or item <= 0 for item in claimed_ids)
+            or len(set(claimed_ids)) != len(claimed_ids) or not set(selected) <= set(claimed_ids)):
+        raise AcceptanceUnavailable("acceptance_probe_output_refs")
+    return set(selected)
+
+
+def _census_from_view(view: dict, rows: list[dict]) -> dict:
+    own = [row for row in rows if isinstance(row["payload"], dict) and row["payload"].get("boot_id") == view["boot_id"]]
+    seals = [row for row in own if row["action"] == "memory_collection_seal"]
+    last = _one([row for row in seals if row["id"] == view["latest_seal_audit_id"]], "acceptance_current_seal")
+    digest = EMPTY_DIGEST
+    for index, row in enumerate(seals):
+        body = row["payload"]
+        if body["seal_attempts"] != index + 1 or body["seal_persisted"] != index or body["seal_digest"] != digest:
+            raise AcceptanceUnavailable("acceptance_seal_history")
+        digest = _advance(digest, _projection(row))
+    snapshot = {**last["payload"], **{key: view[key] for key in (
+        "org", "boot_id", "generation", "assigned_intents", "intent_digest", "phase_counts",
+        "phase_digests", "active_preparations", "observation_error", "latest_seal_audit_id")},
+        "seal_attempts": len(seals), "seal_persisted": len(seals), "seal_digest": digest}
+    identities = {(row["task_id"], row["agent"], row["payload"].get("session_id")) for row in own if row["action"] == "memory_runtime_identity"}
+    census_rows = own + [row for row in rows if row["action"] in {"session_start", "memory_digest_impression"}
+                        and (row["task_id"], row["agent"], row["payload"].get("session_id")) in identities]
+    if not validate_census(snapshot, census_rows)["census_valid"]:
+        raise AcceptanceUnavailable("acceptance_census")
+    return snapshot
+
+
+def validate_acceptance_evidence(tables: dict, result_id: int, view: dict, outputs: dict, *, current_time: datetime,
+                                 publication: bool = False, registered_cohort: list[dict] | None = None,
+                                 retry_verifier: Any = None) -> dict:
+    """All record/source/role/job/intent predicates are conjunctive, never flags."""
+    from datetime import timedelta
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    data = _decoded_tables(tables)
+    raw = _one([row for row in data["task_results"] if row["id"] == result_id], "acceptance_manager_result")
+    parsed = parse_acceptance(raw["output_summary"])
+    if parsed is None or parsed["kind"] != "manager_acceptance":
+        raise AcceptanceUnavailable("acceptance_manager_carrier")
+    candidate = normalize_own_reference(parsed, raw)
+    root = candidate["operational_root_task_id"]
+    if candidate["org"] != view["org"]:
+        raise AcceptanceUnavailable("acceptance_serving_context")
+    if candidate["action"] == "invalidate" and registered_cohort is not None:
+        view = {**view, "installed_identity": {"cohort": registered_cohort}}
+    if not isinstance(view.get("installed_identity"), dict):
+        raise AcceptanceUnavailable("acceptance_serving_context")
+    manager_result, manager_task = _exact_role_result(data, candidate["result_ref"], view, role="manager", root=root,
+                                                         withdrawal=candidate["action"] == "invalidate")
+    _decision(manager_result)
+    qa_result, qa_task = _exact_role_result(data, candidate["qa_ref"], view, role="worker", root=root,
+                                               withdrawal=candidate["action"] == "invalidate")
+    verdicts = re.findall(r"(?m)^Verdict:\s*(PASS|FAIL|BLOCK|REVISE|APPROVE|REQUEST_CHANGES)\b", qa_result["output_summary"])
+    if qa_result["agent"] == manager_result["agent"] or qa_result["verdict"] != "PASS" or any(value != "PASS" for value in verdicts):
+        raise AcceptanceUnavailable("acceptance_independent_qa")
+    qa_parsed = parse_acceptance(qa_result["output_summary"])
+    if qa_parsed is None or qa_parsed["kind"] != "installed_qa":
+        raise AcceptanceUnavailable("acceptance_qa_carrier")
+    qa = normalize_own_reference(qa_parsed, qa_result)
+    common = {"contract_version", "org", "operational_root_task_id", "health_definition_sha256", "release_manifest_sha256",
+              "installed_identity", "cohort", "applicable_paths", "synthetic_task_ids", "probe_receipts"}
+    if any(qa[key] != candidate[key] for key in common) or aware_utc(qa_result["created_at"]) > aware_utc(manager_result["created_at"]):
+        raise AcceptanceUnavailable("acceptance_qa_projection")
+    if candidate["action"] == "invalidate":
+        return {"candidate": candidate, "snapshot": None, "synthetic_task_ids": set(candidate["synthetic_task_ids"])}
+    if view["observation_error"] is not None or view["data_through"] is None or view["active_preparations"]:
+        raise AcceptanceUnavailable("acceptance_observation_unavailable")
+    if (candidate["health_definition_sha256"] != HEALTH_DEFINITION_SHA256 or candidate["installed_identity"] != view["installed_identity"]
+            or candidate["cohort"] != view["installed_identity"]["cohort"]
+            or candidate["release_manifest_sha256"] != _hash_metadata(view["installed_identity"]["files"])):
+        raise AcceptanceUnavailable("acceptance_installed_identity")
+    snapshot = _census_from_view(view, data["audit_log"])
+    plan = _approved_probe_plan(data, candidate, qa_task, qa_result, view)
+    if any(slot[kind]["agent"] == qa_result["agent"] for slot in plan["slots"] for kind in ("root", "child")):
+        raise AcceptanceUnavailable("acceptance_maker_independence")
+    jobs, transcripts, operation_ids = {}, {}, {}
+    for receipt in candidate["probe_receipts"]:
+        job, transcript = _validate_job(data, receipt, qa_result, qa_task, plan, outputs[receipt["job_id"]])
+        recorded = transcript["serving_observation"]
+        if (recorded.get("installed_identity") != view["installed_identity"] or recorded.get("boot_id") != view["boot_id"]
+                or recorded.get("org") != view["org"] or transcript["cli_identity"] != {
+                    key: view["installed_identity"][key] for key in ("source_root", "python", "package_version", "files")}):
+            raise AcceptanceUnavailable("acceptance_probe_installed_source")
+        if receipt["job_id"] in jobs and (jobs[receipt["job_id"]] != job or transcripts[receipt["job_id"]] != transcript):
+            raise AcceptanceUnavailable("acceptance_probe_job_conflict")
+        jobs[receipt["job_id"]], transcripts[receipt["job_id"]] = job, transcript
+        operation_ids.setdefault(receipt["job_id"], set()).update(_validate_probe_operations(data, receipt, transcript, view))
+        for kind in ("root", "child"):
+            claim = receipt[kind]
+            terminal = _one([row for row in data["audit_log"] if row["action"] == "memory_runtime_terminal"
+                             and row["task_id"] == claim["task_id"] and row["agent"] == claim["agent"]
+                             and row["payload"].get("session_id") == claim["runtime_session_id"]], "acceptance_probe_finished")
+            if not (aware_utc(job["started_at"]) <= aware_utc(terminal["timestamp"]) <= aware_utc(job["finished_at"])):
+                raise AcceptanceUnavailable("acceptance_probe_job_order")
+            # This instant is the final new-admission boundary, or the
+            # authenticated original boundary for reports/equivalent replay.
+            age = aware_utc(current_time) - aware_utc(terminal["timestamp"])
+            if age < timedelta(0) or age > timedelta(hours=48):
+                raise AcceptanceUnavailable("acceptance_probe_stale")
+    for job_id, transcript in transcripts.items():
+        if operation_ids[job_id] != set(transcript["operation_audit_ids"]):
+            raise AcceptanceUnavailable("acceptance_probe_output_refs")
+    designated = _resolve_probe_slots(data, plan, candidate["probe_receipts"], jobs, transcripts,
+                                     retry_verifier=retry_verifier)
+    if designated != set(candidate["synthetic_task_ids"]):
+        raise AcceptanceUnavailable("acceptance_synthetic_set")
+    paths = sorted(f"{profile['name']}:{view['installed_identity']['backend']['mode']}:{view['installed_identity']['backend']['name'] or 'none'}"
+                   for profile in view["installed_identity"]["profiles"])
+    if candidate["applicable_paths"] != paths or sorted(row["path"] for row in candidate["probe_receipts"]) != paths:
+        raise AcceptanceUnavailable("acceptance_applicability")
+    return {"candidate": candidate, "snapshot": snapshot, "synthetic_task_ids": designated}
+
+
+def validate_epoch_candidate(tables: dict, head: dict, view: dict, outputs: dict, *, current_time: datetime,
+                             retry_verifier: Any = None) -> dict:
+    """Shared read authority, including newer malformed or conflicting results."""
+    data = _decoded_tables(tables)
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    body = head["payload"]
+    admitted_at = aware_utc(head["timestamp"])
+    if (body["boot_id"] != view["boot_id"] or admitted_at > aware_utc(current_time)
+            or aware_utc(body["accepted_at"]) > admitted_at):
+        raise AcceptanceUnavailable("epoch_admission_boundary")
+    prepared = validate_acceptance_evidence(tables, body["manager_ref"]["result_id"], view, outputs, current_time=admitted_at,
+                                            retry_verifier=retry_verifier)
+    candidate = prepared["candidate"]
+    if (candidate != body["projection"] or collection_logical_key(candidate) != body["logical_key"]
+            or candidate["published_at"] != body["accepted_at"] or candidate["qa_ref"] != body["qa_ref"]
+            or candidate["result_ref"] != body["manager_ref"]):
+        raise AcceptanceUnavailable("epoch_projection_changed")
+    expected_id = hashlib.sha256(json.dumps([candidate["org"], body["manager_ref"]["result_id"], body["logical_key"]], separators=(",", ":")).encode()).hexdigest()
+    base_intents = [row for row in data["audit_log"] if row["action"] == "memory_runtime_intent"
+                    and row["payload"].get("boot_id") == body["boot_id"] and row["id"] < head["id"]]
+    if (body["epoch_id"] != expected_id or type(body["base_assigned_intents"]) is not int
+            or body["base_assigned_intents"] != len(base_intents)):
+        raise AcceptanceUnavailable("epoch_boundary_changed")
+    root = candidate["operational_root_task_id"]
+    for result in data["task_results"]:
+        if result["task_id"] == root and result["id"] > body["manager_ref"]["result_id"] and "MemoryCollectionV1:" in result["output_summary"]:
+            later = validate_acceptance_evidence(tables, result["id"], view, outputs, current_time=admitted_at,
+                                                 retry_verifier=retry_verifier)["candidate"]
+            if collection_logical_key(later) != body["logical_key"]:
+                raise AcceptanceUnavailable("epoch_newer_control_candidate")
+    return prepared
+
+
+def _view_projection(view: dict) -> str:
+    return _hash_metadata({key: value for key, value in view.items() if key not in {"sampled_at", "data_through", "epoch_id", "epoch_audit_id"}})
+
+
+def _referenced_probe_jobs(results: list[dict]) -> set[str]:
+    """Only closed tagged positive carriers select original probe output."""
+    job_ids = set()
+    for result in results:
+        try:
+            candidate = parse_acceptance(result["output_summary"])
+        except AcceptanceUnavailable:
+            continue  # Exact selected malformed controls fail in the validator.
+        if candidate is not None and candidate.get("action") != "invalidate":
+            job_ids.update(receipt["job_id"] for receipt in candidate["probe_receipts"])
+    return job_ids
+
+
+def _local_job_outputs(org: Any, tables: dict) -> dict:
+    outputs = {}
+    budget = [0, 0]
+    referenced_jobs = _referenced_probe_jobs(tables["task_results"])
+    for job in tables["jobs"]:
+        if job["status"] != "completed":
+            continue
+        paths = {stream: org.root / "jobs" / (job["id"] + suffix) for stream, suffix in (("stdout", ".out"), ("stderr", ".err"))}
+        # Read only exact owned outputs referenced by tagged acceptance rows.
+        if job["id"] not in referenced_jobs:
+            continue
+        output = {}
+        for stream, path in paths.items():
+            if job[f"{stream}_path"] != str(path):
+                raise AcceptanceUnavailable("acceptance_output_path")
+            content = _identity_bytes(path, budget, limit=10 * 1_048_576)
+            output[stream] = content.decode("utf-8", errors="strict")
+            output[f"total_{stream}_bytes"] = len(content)
+            output[f"truncated_{stream}"] = False
+        outputs[job["id"]] = output
+    return outputs
+
+
+def _registered_cohort(org: Any) -> list[dict]:
+    """Acquire current role registrations independently of probe/source health."""
+    budget, cohort = [0, 0], []
+    names = sorted(org.teams.all_agents())
+    if not names or len(names) != len(set(names)) or len(names) > MAX_IDENTITY_AGENTS:
+        raise AcceptanceUnavailable("acceptance_role_registration")
+    disk = yaml.safe_load(_identity_bytes(org.root / "org" / "teams.yaml", budget))
+    expected = {team: {"manager": org.teams.manager_for_team(team).name,
+                       "workers": sorted(org.teams.manager_for_team(team).workers)} for team in org.teams.teams()}
+    if {team: {"manager": body["manager"], "workers": sorted(body.get("workers") or [])}
+            for team, body in disk["teams"].items()} != expected:
+        raise AcceptanceUnavailable("acceptance_role_registration_drift")
+    for name in names:
+        definition = parse_agent_text(_identity_bytes(org.root / "org" / "agents" / f"{name}.md", budget).decode(), expected_name=name)
+        if (definition.team not in expected or org.teams.is_team_manager(name) != (definition.role == "manager")
+                or name not in [expected[definition.team]["manager"], *expected[definition.team]["workers"]]):
+            raise AcceptanceUnavailable("acceptance_role_registration")
+        cohort.append({"agent": name, "team": definition.team, "role": definition.role,
+                       "executor": definition.executor, "model": definition.model})
+    return cohort
+
+
+def prepare_acceptance(org: Any, result_id: int) -> dict:
+    opening = serving_observation(org)
+    tables = org.db.read_memory_collection_evidence()
+    selected = _one([row for row in tables["task_results"] if row["id"] == result_id], "acceptance_manager_result")
+    parsed = parse_acceptance(selected["output_summary"])
+    invalidation = parsed is not None and parsed.get("action") == "invalidate"
+    roles = _registered_cohort(org) if invalidation else None
+    outputs = {} if invalidation else _local_job_outputs(org, tables)
+    candidate = normalize_own_reference(parsed, selected) if parsed is not None else None
+    original = equivalent_collection_control(tables, candidate) if candidate is not None else None
+    from runtime.infrastructure.memory_telemetry_report import aware_utc
+    admission_time = aware_utc(original["timestamp"]) if original is not None else datetime.now(timezone.utc)
+    if original is not None and not invalidation:
+        validate_epoch_candidate(tables, original, opening, outputs, current_time=datetime.now(timezone.utc),
+                                 retry_verifier=org.db.verify_retry_link)
+    prepared = validate_acceptance_evidence(tables, result_id, opening, outputs,
+                                            current_time=admission_time, registered_cohort=roles,
+                                            retry_verifier=org.db.verify_retry_link)
+    closing = serving_observation(org)
+    if (_view_projection(opening) != _view_projection(closing)
+            or (invalidation and roles != _registered_cohort(org))
+            or (not invalidation and outputs != _local_job_outputs(org, tables))):
+        raise AcceptanceUnavailable("acceptance_acquisition_moving")
+    return {**prepared, "view": opening, "tables": tables, "outputs": outputs, "registered_cohort": roles}
+
+
+def reconcile_acceptance(org: Any, result_id: int) -> dict | None:
+    """Best-effort post-log observation; completion is never changed."""
+    try:
+        return org.db.append_memory_collection_transition(result_row_id=result_id)
+    except Exception:
+        return None
+
+
+def acquire_collection_report(org: Any, *, current_time: datetime | None = None) -> tuple[dict, dict, dict, datetime]:
+    from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
+    try:
+        opening = serving_observation(org)
+        tables = org.db.read_memory_collection_evidence()
+        outputs = _local_job_outputs(org, tables)
+        closing_tables = org.db.read_memory_collection_evidence()
+        closing = serving_observation(org)
+        if tables != closing_tables or _view_projection(opening) != _view_projection(closing) or outputs != _local_job_outputs(org, tables):
+            raise ReportAcquisitionUnavailable()
+        cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening["data_through"] or opening["sampled_at"])
+        return tables, opening, outputs, cutoff
+    except Exception as exc:
+        raise ReportAcquisitionUnavailable() from exc
+
+
+def _collection_pages(client: Any, org: str, *, tasks: bool = False) -> list[dict]:
+    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable
+    items, seen, cursors, cursor = [], set(), set(), None
+    while True:
+        params = {"limit": 200 if tasks else 5000}
+        if cursor is not None:
+            params["before" if tasks else "cursor"] = cursor
+        response = client.get(f"/api/v1/orgs/{org}/{'tasks' if tasks else 'audit'}", params=params)
+        if response.status_code != 200:
+            raise ReportAcquisitionUnavailable()
+        page = response.json()
+        _closed(page, {"tasks" if tasks else "entries", "next_cursor"})
+        rows = page["tasks" if tasks else "entries"]
+        if not isinstance(rows, list) or len(items) + len(rows) > MAX_CENSUS_READ_ROWS:
+            raise ReportAcquisitionUnavailable()
+        for index, row in enumerate(rows):
+            if tasks and isinstance(row, dict):
+                row = dict(row)
+                row["id"] = row.pop("task_id")
+                rows[index] = row
+            if not isinstance(row, dict) or row.get("id") in seen:
+                raise ReportAcquisitionUnavailable()
+            seen.add(row["id"])
+        items.extend(rows)
+        next_cursor = page["next_cursor"]
+        if next_cursor is None:
+            break
+        if not rows or not isinstance(next_cursor, str) or not next_cursor or next_cursor in cursors:
+            raise ReportAcquisitionUnavailable()
+        if tasks:
+            if next_cursor != rows[-1]["id"] or (cursor is not None and next_cursor >= cursor):
+                raise ReportAcquisitionUnavailable()
+        else:
+            from runtime.infrastructure.database import _decode_cursor
+            anchor = _decode_cursor(next_cursor)
+            if not any((row.get("timestamp"), row["id"]) == anchor for row in rows):
+                raise ReportAcquisitionUnavailable()
+            if cursor is not None and anchor >= _decode_cursor(cursor):
+                raise ReportAcquisitionUnavailable()
+        cursors.add(next_cursor)
+        cursor = next_cursor
+    return sorted(items, key=lambda row: row["id"])
+
+
+def _http_collection_capture(client: Any, org: str) -> tuple[dict, dict, dict]:
+    from runtime.infrastructure.memory_telemetry_report import ReportAcquisitionUnavailable
+    def get(path: str, params: dict | None = None) -> dict:
+        response = client.get(f"/api/v1/orgs/{org}/" + path, params=params)
+        if response.status_code != 200:
+            raise ReportAcquisitionUnavailable()
+        body = response.json()
+        if not isinstance(body, dict):
+            raise ReportAcquisitionUnavailable()
+        return body
+    view = get("audit", {"action": "memory_collection_seal", "limit": 1})["memory_collection_observation"]
+    audit_rows, tasks = _collection_pages(client, org), _collection_pages(client, org, tasks=True)
+    results, jobs, outputs = [], [], {}
+    # All original parent/plan results participate in prior-delegation and
+    # retry validation; accepting only final references would omit evidence.
+    for task_id in sorted(row["id"] for row in tasks):
+        _identifier(task_id, "TASK")
+        detail = get(f"tasks/{task_id}")
+        if not isinstance(detail.get("results"), list):
+            raise ReportAcquisitionUnavailable()
+        results.extend(detail["results"])
+    job_ids = _referenced_probe_jobs(results)
+    for job_id in sorted(job_ids):
+        jobs.append(get(f"jobs/{job_id}"))
+        outputs[job_id] = get(f"jobs/{job_id}/output", {"stream": "both", "max_bytes": 10 * 1_048_576})
+        # The job route reports a missing on-disk stream as an empty stream.
+        # A referenced canary requires both original complete output streams;
+        # refuse acquisition instead of rendering a partial evidence report.
+        output = outputs[job_id]
+        _closed(output, {"stdout", "stderr", "truncated_stdout", "truncated_stderr", "total_stdout_bytes", "total_stderr_bytes"})
+        for stream in ("stdout", "stderr"):
+            text, total = output[stream], output[f"total_{stream}_bytes"]
+            if (not isinstance(text, str) or "\ufffd" in text or type(total) is not int or total <= 0
+                    or len(text.encode("utf-8")) != total or output[f"truncated_{stream}"] is not False):
+                raise ReportAcquisitionUnavailable()
+    return {"tasks": tasks, "task_results": results, "jobs": jobs, "audit_log": audit_rows}, view, outputs
+
+
+def acquire_http_collection_report(client: Any, org: str, *, current_time: datetime | None = None) -> tuple[dict, dict, dict, datetime]:
+    from runtime.infrastructure.memory_telemetry_report import aware_utc, ReportAcquisitionUnavailable
+    try:
+        opening = _http_collection_capture(client, org)
+        closing = _http_collection_capture(client, org)
+        if opening[0] != closing[0] or opening[2] != closing[2] or _view_projection(opening[1]) != _view_projection(closing[1]):
+            raise ReportAcquisitionUnavailable()
+        cutoff = aware_utc(current_time) if current_time is not None else aware_utc(opening[1]["data_through"] or opening[1]["sampled_at"])
+        return *opening, cutoff
+    except Exception as exc:
+        raise ReportAcquisitionUnavailable() from exc
+
+
+def current_epoch_references(org: Any, view: dict) -> dict:
+    """Project references only after actual current evidence validation; zero writes."""
+    try:
+        controls = [dict(row) for row in org.db.fetch_all_readonly(
+            "SELECT * FROM audit_log WHERE action IN (?, ?) ORDER BY id LIMIT ?",
+            (*sorted(CONTROL_ACTIONS), MAX_CENSUS_READ_ROWS + 1),
+        )]
+        if not controls:
+            return view
+        if len(controls) > MAX_CENSUS_READ_ROWS:
+            raise AcceptanceUnavailable("acceptance_control_limit")
+        last = _strict_json(controls[-1]["payload"])
+        head = collection_control_head(controls, org.slug, last["operational_root_task_id"])
+        if head["action"] != "memory_collection_epoch_started" or head["payload"]["boot_id"] != view["boot_id"]:
+            raise AcceptanceUnavailable("acceptance_epoch_inactive")
+        tables = org.db.read_memory_collection_evidence()
+        outputs = _local_job_outputs(org, tables)
+        # The serving view was acquired before this separate evidence SELECT.
+        # Detect a terminal/seal arriving between them before validating an
+        # opening census against later rows. Actual evidence damage remains a
+        # validation failure; only measured bookend movement is transient.
+        closing = serving_observation(org)
+        if (_view_projection(closing) != _view_projection(view)
+                or tables != org.db.read_memory_collection_evidence() or outputs != _local_job_outputs(org, tables)):
+            return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
+        candidate = validate_epoch_candidate(tables, head, view, outputs,
+                                             current_time=datetime.now(timezone.utc),
+                                             retry_verifier=org.db.verify_retry_link)["candidate"]
+        closing = serving_observation(org)
+        if candidate != head["payload"]["projection"]:
+            raise AcceptanceUnavailable("epoch_projection_changed")
+        if (_view_projection(closing) != _view_projection(view)
+                or tables != org.db.read_memory_collection_evidence() or outputs != _local_job_outputs(org, tables)):
+            return {**view, "observation_error": view["observation_error"] or "observation_moving", "data_through": None}
+        return {**view, "epoch_id": head["payload"]["epoch_id"], "epoch_audit_id": head["id"]}
+    except Exception:
+        return {**view, "observation_error": view["observation_error"] or "epoch_validation_unavailable", "data_through": None}

@@ -1,5 +1,34 @@
 # Web And CLI
 
+**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
+initializes the complete G layout before attachment. Existing F/E startup,
+reopen and enable retain their installed layout; S2 remains available on E.
+The explicit org-only operator command is
+`python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
+Check returns migration-needed (3) for valid F/E, ready (0) for complete G,
+refused (1) for invalid source/ownership, and parser errors return 2. Actual
+migration atomically replaces only submissions/events and adds the approved
+three tables/two explicit indexes. Event revisions come from an unambiguous
+retained submission/round/event/replay closure; ambiguity refuses without
+rewriting history. Every G database, including an empty one, needs a compatible
+reader. The original F/E definitions and pristine-F downgrade contract remain.
+The older draft script still upgrades F to E and reports a validated G as a
+no-write G replay. Legacy authority comparison uses independent complete
+F/E/G whole-database references; authority-v2 remains observed-only.
+
+An authorized upgrade requires the daemon to be stopped with its configured
+home/registration observable and source owners/hosts reconciled. The command
+reads bounded existing PID/port/registry evidence and reserves one SQLite
+writer; it stops no process and provides no exclusion against an arbitrary
+concurrent daemon start. Operator cooperation is a precondition. Active-origin
+submissions retain NULL legacy result identity; separate authenticated operation
+and INTEGER ordinary-result links preserve the actual result evidence.
+Submission/review/link/finalizer producers, U3-U6, independent operator
+acceptance, and the separate real Founder UI Request changes and Sign off are
+still pending. This implementation work does not authorize live migration,
+enablement, deployment or a Phase1-completion claim.
+
+
 ## Daemon-managed workspace cleanup
 
 `workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean
@@ -86,6 +115,87 @@ Use `web/src/routes.tsx`, API functions, and the OpenAPI snapshot for the curren
 surface. The daemon defaults to loopback; remote access uses the connector.
 
 ### Internationalization (W1 foundation + W2a shell + W2b onboarding + W2c Settings + W3a Dashboard/Threads + W3b-1 Tasks + W3b-2 Jobs/preview + W4a-1 Health/Dreams + W4b Todos/Work Hours/Audit + W4c Agents/Skills)
+
+The shipping AppBar offers a compact language selector immediately beside the
+theme toggle (THR-118 seq88). It shows the current native endonym and offers
+English and 简体中文, with each text carrying its own `lang`. Its accessible
+name and tooltip translate with the interface. The existing Select primitive
+provides keyboard selection, Escape dismissal and focus return. It calls the
+same `useI18n` setter as Settings ▸ Preferences ▸ Language, so both controls
+agree immediately and remain usable independently of Settings API availability.
+Existing saved-choice precedence, browser reload persistence and storage-event
+mirroring apply without a second state/persistence owner. Selecting the header
+deliberately moves focus to that control; external tab changes preserve focused
+editors, drafts and selection. Native desktop restart persistence stays deferred.
+Focused ordinary-build evidence uses `w4a-browser-evidence.mjs --slice header-language`
+with `--header-case default|tasks|interaction|draft` and the existing W5 startup
+cases, without widening the accepted whole-console inventory. In quota-limited
+browser venues, `--chrome-temp <short task-owned disk-backed path>` selects
+the temporary font-allocation venue for this header slice.
+
+**Ongoing bilingual delivery rule (THR-118 seq81/82):** every new or changed
+app-owned heading, action, dialog, tooltip, accessible label, validation,
+loading/empty/error state and generated narrative ships en and zh-CN in the
+same PR. Use typed catalogs, named parameters, explicit plurals and locale-aware
+helpers. Pure shared UI takes localized presentation props. Authored content,
+machine identifiers and raw diagnostics stay verbatim.
+
+The focused synthetic browser selections are
+`web/scripts/w4a-browser-evidence.mjs --slice agents-safeguard` and
+`web/scripts/w3b-jobs-browser-evidence.mjs --slice cascade`, against the ordinary
+build with private profiles and ephemeral fixture/CDP ports. They observe
+populated/loading/empty/error states in both locales at 390/1440, original task
+navigation, control/text bounds and clipping ancestors. The Jobs case measures
+every cascade-row descendant's text line boxes on both axes and rejects a row
+label (waiting qualifier, task ID) split across lines. The Agents case scrolls
+each recent-task label and state message into view and captures it, in
+sequential shots when one viewport cannot hold them all, recording the targets
+measured visible just before and after each shot. It also requires each
+recent-task card header's task ID, status pill, waiting qualifier and age to
+read as one line, with every header line box inside the card and viewport on
+both axes, at comfortable and compact density. The Agents case uses a
+valid prompt revision and checks the retained editor before any new lookup,
+authored multiline draft, selection 3:8, focus and request/transport silence in
+both switch directions. The unchanged prompt owner tests retain Save/readback
+and Cancel contracts; actual browser receipts and human usability review remain
+required evidence.
+
+Use this checklist in the existing case record and PR template:
+
+- Exercise both locales and applicable populated/loading/empty/error states at
+  390×844 and 1440×900. Check actual affected text/control bounds against clipping
+  ancestors, readable whole Chinese text after permitted scrolling, and pointer
+  and keyboard reachability; document width alone is insufficient.
+- Switch in both directions while retaining the actual mounted nodes, authored
+  draft, focus and selection. Observe retained DOM references before fresh lookup
+  or refocus, and require zero switch-window HTTP of any method, mutations and
+  transport restarts/messages.
+- Execute the original actions and navigation with unchanged payloads, raw
+  bytes, filters and destinations. Keep existing qualified behavioral tests;
+  screenshots and unrelated requests do not prove an action.
+- Record source/runtime/command/exit evidence and the test-authoring gate's four
+  answers, named tests/producers, attributable RED, byte-exact restoration/GREEN
+  and keeper disposition for changed tests. Preserve historical receipts.
+- Human review checks meaning and usability. Untranslated owned copy or broken
+  Chinese layout requires `REQUEST_CHANGES`; automation establishes only its
+  supported structural/completeness boundaries.
+
+Run ordinary Web lint plus the real-config `lint-owned-copy.test.ts` and actual
+source `coverage.test.ts` guards. The Node-only source inventory validates the
+shipping HTML entry/static aliases and distinguishes declarations/imports from
+supported JSX/render-return mounts. Named/namespace router imports and reexports
+retain route and parent identity. Additional createRoot renders in reachable
+static runtime imports/reexports, including side-effect imports and transitive/
+cyclic module graphs, discover direct JSX or statically bound JSX constants.
+Unhandled arguments refuse with their source. Type-only edges are excluded;
+evaluating an imported module does not mount its unused JSX declarations or
+enter uncalled functions/classes. New mounted owners require
+source-qualified route/dialog classification; index/wildcard cannot borrow another owner's
+status, and full release rejects every english-only namespace. Unsupported
+entry/config/computed shapes and fixture promotion refuse with the source to
+review. Exact path/declaration/slot/literal/reason exceptions preserve reviewed
+raw values and shared defaults; they never exempt neighboring owned copy.
+See `web/ARCHITECTURE.md` for the scanner's finite supported shapes and limits.
 
 Current W5b browser contract: English and Simplified Chinese are available. The
 entry selects full mode synchronously before the first React text and hands its
@@ -613,13 +723,28 @@ Founder omits `--session-id`, supplies `team_slug` in the JSON payload, and the
 command uses the existing daemon bearer. The payload contains
 `operation_key`, `template_name`, `expected_current_version`, `definition`,
 and (Founder only) `team_slug`; publisher, principal, namespace, org, task and
-session claims are rejected. `--from-file` must be absolute. The closed
+session claims are rejected. `--from-file` must be absolute. The legacy closed
 definition is `kind=product-design`, with `schema_version` set to the genuine
 JSON integer `1` (not a boolean, float, string or null), a Product Lead agent
 author of an immutable PRD revision, Founder/implementer/tester reviewers, all
 three required on the current revision, and request-changes returning to the
 author. A non-empty description is the only variable descriptive field;
 unknown fields and kinds fail closed.
+
+New definitions use `kind=document-review`, genuine integer `schema_version=2`,
+one agent author and 1–3 reviewers with unique abstract roles matching
+`[a-z][a-z0-9-]{0,62}`, and at most one human reviewer. `output` contains
+`primitive=immutable-document-revision` and a nonblank `description`. `outcomes`
+contains `approved`, optionally `changes_requested`; `approval` is all/current
+with required_roles exactly equal to reviewer order. `request_changes` is null
+for approval-only, otherwise exactly action=return-to-author, revision=new,
+invalidate=all-prior-receipts. `submission.timing` is on-completion or
+while-active-or-completed. These are document capabilities, not execution grants.
+Malformed new policy exits2 before either CLI client or port discovery; legacy
+file/domain failures retain exit1. The server independently validates policy and
+publisher authority. @2 pins are workflow-compiler@2/workflow-validator@2/operator-input@2.
+All immutable versions remain readable by a compatible reader; earlier readers
+refuse orgs containing @2 data, with no downgrade conversion promised.
 
 Founder reads exact immutable versions with:
 
@@ -673,10 +798,11 @@ existing500 category `draft_schema_migration_required`; GET's existing blocker
 --runtime-root <absolute-root> --org <slug>`. The operator runs that script
 explicitly; `--check` exits3 when needed, 0 ready, 1 refusal, 2 parser. Existing F
 history remains visible without recovery advancement. New `orgs init`/POST /orgs
-creation initializes complete E directly. Preflight is read-only and permits only
-pristine F initial history with no workflow data; every E needs a compatible
+creation initializes complete G directly. Preflight is read-only and permits only
+pristine F initial history with no workflow data; every E/G needs a compatible
 reader, including empty new/migrated orgs; even empty drained or template-only stores refuse.
-The pinned preceding reader accepts pristine F and refuses E; older binaries
+The faf40744 reader accepts pristine F and refuses E/G; the b0b55e9f
+reader accepts F/E and refuses G; older binaries
 are not claimed to enforce the current cutover decision. Activation, first-draft
 work and cancellation/dispatch remain later units; no live enable or deployment
 is implied by these methods.
@@ -779,17 +905,29 @@ the actual serving OrgState. Other action responses remain unchanged. The
 closed source view and loaded identity are defined in the corrective memory
 spec; absent/busy/moving/failed components are explicit unknown/unavailable.
 GET performs no durable writes, resealing, provider launch or backend probe.
-Both epoch refs remain null; the CLI gains no collection authority.
+Epoch references are non-null only after G1 revalidates the original accepted
+boundary and current full health. Missing, damaged, drifting or moving evidence
+withholds those references; reads never append or repair collection state.
 Stored seals checkpoint counters only: `census_integrity` explicitly reports
 `census_not_reconciled` with `census_valid=false`. Exhaustive integrity is a
 bounded internal zero-write validation with live semantic bookends; neither a
 stored seal nor a valid source census establishes collection health.
-G1 independent canary/epoch acceptance and current-serving census acceptance
-remain OPEN.
-Read-side G4 acquisition is implemented below; full eligibility reporting and installed health remain OPEN.
+G1 authority additionally reads exact admitted roles/results, original finite
+plan/tasks, owned jobs/full outputs and operation history at stable bookends.
+Its server admission, locked commit and serving checks use the existing
+recorded-retry verifier; matching briefs or paired public audits cannot replace
+raw supersession and invocation records. Synthetic closure includes every
+verified retry and supporting root and must match the complete job-returned
+set. Failed original probes still cannot supply successful canary evidence.
+The seal view checks those bookends before validating the captured census;
+measured movement returns `observation_moving` with null epoch references.
+Independent installed/provider acceptance and operational health remain
+separate from source implementation and source fixtures.
 
 `happyranch memory report` paginates the existing audit read surface but is
-currently fail-closed: JSON and text both return `insufficient_instrumentation`.
+fail-closed without valid G1 authority: JSON and text return
+`insufficient_instrumentation`. Valid authority exposes the original epoch,
+current health and eligible natural report; short samples remain insufficient.
 There is no CLI flag or input that can override the invalid current/unversioned
 epoch. Executor-owned task children receive their runtime session in the private
 `HAPPYRANCH_RUNTIME_SESSION_ID` environment hint, so `memory get`/`search`
@@ -829,16 +967,18 @@ sessions and per-agent/role/memory operation counts remain descriptive. Search
 ratios use distinct persisted, causally corroborated search-sourced read pairs.
 Earliest qualifying impression is a deterministic aware-UTC minimum. Elapsed
 complete UTC days exclude partial first/current days. Raw day/session sample
-flags may be true; thresholds, diagnostics_valid_for_collection and
-evaluation_candidate remain false, decision `insufficient_instrumentation`.
+flags may be true; without authenticated G1 authority, thresholds,
+diagnostics_valid_for_collection and evaluation_candidate remain false,
+decision `insufficient_instrumentation`. Probe freshness is initial/reset final-
+commit admission only; reports authenticate that original boundary and current
+full health. Equivalent replay never starts another day or renews proof.
 `session_start` records audited intended invocations, never a complete process
-launch/expectation census. G3 source observation is shipped separately; the report does not acquire its
-current-serving census authority. Trusted canary/epoch, census and probe
-health remain UNKNOWN/unavailable in the report. There is no collection/tuning, ranking write,
-synthetic/natural eligibility claim, authority override or epoch start.
+launch/expectation census. G1 separately revalidates the full G3 census and
+independent accepted probe/epoch evidence before natural eligibility. Report
+reads never start epochs, perform tuning or ranking writes, or override authority.
 The read-side snapshot/two-sweep contract detects observed drift; it adds no
-writer fence or hostile same-UID guarantee. Full eligibility, operational H-v1
-and actual shipping/installed canary cases remain separately gated.
+writer fence or hostile same-UID guarantee. Actual installed canary acceptance
+and operational H-v1 duties remain separately gated.
 
 ### PR CI wait / guarded merge entrypoints
 
@@ -1172,7 +1312,17 @@ inputs to their actual inlined variants in the served document; those pointers
 are part of the contract keeper.
 
 Every request object and nested record is closed; unknown fields, booleans in
-integer fields, identity/provenance claims and `latest` aliases refuse. Concrete
+integer fields, identity/provenance claims and `latest` aliases refuse. Legacy untagged requests retain exactly four fixed roles and unchanged wire
+bytes. New requests add `format=workflow-activation-request@2` and bind exactly
+the selected immutable template roles; new receipts add
+`format=workflow-activation-receipt@2`. Human slots bind Founder/founder/null with
+empty replacements, agent slots bind distinct active same-org canonical members.
+Agent-only templates have zero human aliases. Replacement maps have the same
+exact slot keys and at most16 candidates per agent slot. Recipients are1–4 unique
+abstract roles from that template. Unknown format/role syntax/duplicate recipients
+refuse locally; exact template membership remains server-owned. Requests cannot
+add return-to-author to a null-return template. The served request/receipt unions
+and input discriminator pointers cover both formats. Concrete legacy
 request fields are:
 
 | Field | Contract |
@@ -1217,3 +1367,19 @@ authority/profile and OrgDep errors remain unchanged. Disabled/busy/fenced
 admission creates no activation/task and is distinct from a persisted queued or
 uncertain instance. Independent review/QA/CI, U3-U6, mounted UI and separate
 Founder Request changes/Sign off/operator observations remain acceptance gates.
+
+### Manual local-CI receipt contract
+
+The nightly workflow's sole manual input is `all_only` (boolean, default false);
+there is no `run_integration` toggle. It invokes the extracted receipt-producing
+`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root,
+which records actual checkout/source/tool provenance and the
+`scripts/local_ci.sh all` command exit. The manual cap is the approved 150
+minutes; general integration retains its 30-minute cap and exact schedule-only
+predicate, so all three manual input cases skip it. Under THR291, Python units
+and the runner's G collection/source-control/repetition follow-on remain
+SUSPENDED and unexecuted, including when `all_only` is true. A successful paused
+wrapper verifies only remaining Web checks; dormant keeper/proof edits are not
+behavioral PASS or RED/GREEN evidence. The current merge-forward repair requires
+no manual dispatch or rerun. General integration remains SKIPPED under
+THR243 seq42, never PASS. See `docs/local-ci.md` for the maintained CI contract.

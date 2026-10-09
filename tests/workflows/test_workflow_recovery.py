@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from runtime.daemon.__main__ import _sweep_on_startup
 from runtime.models import TaskStatus
-from tests.daemon.test_workflow_activation_routes import BASE, activation_org, _snapshot
+from tests.daemon.test_workflow_activation_routes import BASE, activation_org, generic_activation_org, _snapshot
 from tests.workflows.test_activation_store import _rewrite_canonical_document
 
 
@@ -48,6 +48,7 @@ def test_draft_root_never_enters_ordinary_manager_run_step(activation_org):
     ('context', 'extra', 'private-corrupt-member'),
 ], ids=['authorization-pin', 'binding-authority', 'context-envelope'])
 @pytest.mark.parametrize('consumer', ['enqueue', 'startup', 'run-step', 'reaper', 'cancel', 'portability'])
+@pytest.mark.parametrize('activation_org', ['E', 'G'], indirect=True, ids=['existing-E', 'fresh-G'])
 def test_semantic_corruption_fences_every_owned_consumer_before_effects(
     activation_org, monkeypatch, target, field, value, consumer,
 ):
@@ -173,3 +174,42 @@ def test_task_name_type_and_corrupt_unrelated_workflow_do_not_claim_ordinary_tas
     assert recover_owned_task(org.db, state.queue, org.slug, ordinary.id,
                               orchestrator=org.orchestrator) is False
     assert _snapshot(org) == before
+
+
+@pytest.mark.parametrize("format_row", ["product", "proposal", "A", "Z"])
+def test_generic_cold_queued_recovery_uses_actual_owner(generic_activation_org, format_row):
+    from runtime.daemon.org_state import OrgState
+    from runtime.daemon.queue import TaskQueue
+    from runtime.workflows.recovery import classify_task, recover_owned_task
+
+    client, org, state, cases = generic_activation_org
+    body = cases[format_row][0]
+    admitted = client.post(BASE, json=body)
+    assert admitted.status_code == 201, admitted.text
+    receipt = admitted.json()
+    task_id = receipt["root_task_id"]
+    task = org.db.get_task(task_id)
+    assert task.status == TaskStatus.PENDING and task.current_session_id is None
+    before_close = _snapshot(org)
+    org.close()
+    reopened = OrgState.load(root=org.root, slug="alpha", settings=org.settings)
+    try:
+        with state.profile_coordinator.dynamic_org_attachment(reopened):
+            state.orgs["alpha"] = reopened
+        queue = TaskQueue()
+        before = _snapshot(reopened)
+        for name in ("tasks", "workflow_contexts", "workflow_binding_snapshots", "workflow_activations",
+                     "workflow_activation_operations", "workflow_draft_dispatch_intents", "workflow_draft_dispatch_events"):
+            assert before[name] == before_close[name], name
+        ownership = classify_task(reopened.db, task_id, org_slug="alpha")
+        assert (ownership.kind, ownership.state, ownership.intent_id) == ("draft", "queued", receipt["intent_id"])
+        for _ in range(2):
+            assert recover_owned_task(reopened.db, queue, "alpha", task_id, orchestrator=reopened.orchestrator)
+        assert queue._queue.qsize() == 1
+        assert queue._queue.get_nowait() == ("alpha", task_id, None)
+        assert queue._queue.empty()
+        assert _snapshot(reopened) == before
+        assert reopened.db.get_task(task_id).status == TaskStatus.PENDING
+        assert not reopened.db.execute("SELECT 1 FROM task_results").fetchone()
+    finally:
+        reopened.close()

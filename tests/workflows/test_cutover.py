@@ -655,3 +655,78 @@ def test_terminal_outbox_cannot_hide_nonterminal_operation_or_bridge(tmp_path: P
         assert any(b["code"] == "cutover_dispatch_closure" for b in result["blockers"])
     finally:
         db.close()
+
+
+@pytest.mark.parametrize('work', ['metadata-only', 'pending-operation', 'failed-link', 'open-round', 'human-request'])
+def test_g_metadata_and_pending_work_are_distinct_and_never_auto_drained(tmp_path: Path, work: str) -> None:
+    """Explicit SQL validator/projection graph, never a submission producer."""
+    from runtime.infrastructure import workflow_schema as schema
+    from tests.workflows.test_submission_schema import _seed_active_source, _seed_active_submission, _seed_result_link
+    from tests.workflows.test_draft_schema import _seed_event, _projection
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        schema.initialize_complete_org_schema(db, expected_org_slug='alpha')
+        store = WorkflowCutoverStore(db, org_slug='alpha')
+        assert store.request(action='enable', operation_key='enable', expected_generation=1)['state'] == 'enabled'
+        if work != 'metadata-only':
+            intent = _seed_active_source(db, callback=work == 'failed-link')
+            operation = _seed_active_submission(db, intent_id=intent)
+            if work == 'failed-link':
+                result = _seed_result_link(db, operation)
+                db.execute("UPDATE tasks SET status='failed' WHERE id='TASK-001'")
+                _seed_event(db, intent, 'failed', before=_projection(db, intent), state='failed', terminal=True)
+            if work in ('open-round', 'human-request'):
+                db.execute("INSERT INTO workflow_rounds VALUES ('pending-round','instance','active-1',1,'reviewing')")
+                if work == 'human-request':
+                    raw = b'{}'
+                    db.execute('INSERT INTO workflow_review_requests VALUES (?,?,?,?,?,?,?,?)',
+                               ('human-request', 'pending-round', 'founder', 1, raw, hashlib.sha256(raw).hexdigest(), 'pending', None))
+            db._conn.commit()
+            assert schema.validate_workflow_schema(db._conn, expected_org_slug='alpha') == 'G'
+        before = tuple(db._conn.iterdump())
+        shown = store.get()
+        preflight = store.downgrade_preflight()
+        assert tuple(db._conn.iterdump()) == before
+        assert not preflight['eligible']
+        result = store.request(action='disable', operation_key='disable', expected_generation=4)
+        if work == 'metadata-only':
+            assert result['state'] == 'drained' and result['blockers'] == []
+        else:
+            assert result['state'] == 'draining' and result['reconciliation_required']
+            assert any(b['record_id'] == 'active-1' and b['code'] == 'cutover_submission_pending' for b in result['blockers'])
+            if work == 'human-request':
+                assert any(b['record_id'] == 'human-request' for b in result['blockers'])
+            assert db.execute('SELECT source_result_id FROM workflow_submissions').fetchone()[0] is None
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize('layout', ['F', 'E', 'G'])
+def test_g_existing_s2_f_e_g_readiness_and_downgrade_are_truthful(tmp_path: Path, layout: str) -> None:
+    from runtime.infrastructure import workflow_schema as schema
+    db = Database(tmp_path / 'happyranch.db')
+    try:
+        if layout == 'G': schema.initialize_complete_org_schema(db, expected_org_slug='alpha')
+        else:
+            schema.install_or_recover(db, expected_org_slug='alpha')
+            if layout == 'E': _migrate(db)
+        store = WorkflowCutoverStore(db, org_slug='alpha')
+        before = tuple(db._conn.iterdump())
+        result = store.get()
+        downgrade = store.downgrade_preflight()
+        assert tuple(db._conn.iterdump()) == before
+        if layout == 'F':
+            assert downgrade['eligible']
+            assert result['blockers'][0]['code'] == 'draft_schema_migration_required'
+            with pytest.raises(WorkflowCutoverError, match='draft_schema_migration_required'):
+                store.request(action='enable', operation_key='enable', expected_generation=1)
+            assert tuple(db._conn.iterdump()) == before
+        else:
+            assert not downgrade['eligible']
+            expected = 'submission_schema_requires_compatible_reader' if layout == 'G' else 'draft_schema_requires_compatible_reader'
+            assert [b['code'] for b in downgrade['blockers']] == [expected]
+            assert result['blockers'] == []
+            assert store.request(action='enable', operation_key='enable', expected_generation=1)['state'] == 'enabled'
+            assert schema.validate_workflow_schema(db._conn, expected_org_slug='alpha') == layout
+    finally:
+        db.close()

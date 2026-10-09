@@ -20,6 +20,7 @@ from runtime.infrastructure.workflow_schema import (
     _validate_installed,
     draft_migration_guidance,
     _validate_draft_data,
+    _validate_submission_data,
 )
 
 
@@ -95,7 +96,7 @@ class WorkflowCutoverStore:
                 layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
                 original = next((e for e in events if e["event_seq"] in (2, 5)
                                  and e["operation_key"] == operation_key), None)
-                if layout == "E" and self._draft_readiness_blockers(conn):
+                if layout in ("E", "G") and self._draft_readiness_blockers(conn):
                     raise WorkflowCutoverError("cutover_storage_corrupt")
                 replayed = original is not None
                 if original is not None:
@@ -205,9 +206,11 @@ class WorkflowCutoverStore:
         return []
 
     def _draft_readiness_blockers(self, conn: sqlite3.Connection) -> list[dict]:
-        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "E":
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G"):
             try:
                 _validate_draft_data(conn, expected_org_slug=self._org_slug)
+                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "G":
+                    _validate_submission_data(conn, expected_org_slug=self._org_slug)
             except (ValueError, sqlite3.DatabaseError):
                 return [self._blocker("cutover_draft_closure", owner="workflow_recovery",
                                      required_action="reconcile_draft_closure", deferred_to="U2D/U5")]
@@ -225,7 +228,7 @@ class WorkflowCutoverStore:
         # Inert template and coordinated authority/profile foundations are
         # permitted. Every other workflow work relation must still be empty.
         for table in self._workflow_tables(conn):
-            if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events", "workflow_draft_adapter_versions"):
+            if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events", "workflow_draft_adapter_versions", "workflow_submission_schema_versions"):
                 continue
             if table.startswith(("workflow_template_", "workflow_authority_",
                                  "workflow_publication_", "workflow_profile_")):
@@ -313,7 +316,7 @@ class WorkflowCutoverStore:
                     "cutover_recovery_owned_work", record_id=row[0], state=row[2], owner=row[1],
                     required_action="reconcile_owned_work", deferred_to="U5",
                 ))
-        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "E":
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G"):
             for row in conn.execute("SELECT * FROM workflow_draft_dispatch_intents ORDER BY id"):
                 intent = dict(row)
                 if intent["state"] in ("cancelled", "failed", "completed"):
@@ -327,6 +330,20 @@ class WorkflowCutoverStore:
                 blockers.append(self._blocker(code, record_id=intent["id"], state=intent["state"],
                                               owner=intent["claim_owner"] or intent["recovery_owner"],
                                               required_action=action, deferred_to="U2D/U4/U5"))
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "G":
+            for row in conn.execute("SELECT o.submission_id FROM workflow_submission_operations o "
+                                    "LEFT JOIN workflow_submission_result_links l ON l.submission_id=o.submission_id "
+                                    "LEFT JOIN task_results r ON r.id=l.task_result_id "
+                                    "LEFT JOIN workflow_draft_dispatch_intents d ON d.instance_id=o.instance_id "
+                                    "AND d.task_id=o.source_task_id AND d.session_id=o.source_session_id "
+                                    "WHERE l.submission_id IS NULL OR r.status!='completed' OR d.state!='completed'"):
+                blockers.append(self._blocker("cutover_submission_pending", record_id=row[0],
+                                              owner="workflow_recovery", required_action="reconcile_submission_source"))
+            for table, predicate in (("workflow_rounds", "state='reviewing'"),
+                                     ("workflow_review_requests", "status='pending'")):
+                for row in conn.execute(f"SELECT id FROM {table} WHERE {predicate}"):
+                    blockers.append(self._blocker("cutover_review_pending", record_id=row[0],
+                                                  owner="workflow_recovery", required_action="resolve_pending_review"))
         return blockers
 
     def downgrade_preflight(self) -> dict:
@@ -334,8 +351,9 @@ class WorkflowCutoverStore:
             with self._transaction(write=False) as conn:
                 marker, events = self._read(conn)
                 blockers = self._integrity_blockers(conn)
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "E":
-                    blockers.append(self._blocker("draft_schema_requires_compatible_reader", owner="operator",
+                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G"):
+                    layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
+                    blockers.append(self._blocker("submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",
                                                   required_action="retain_compatible_runtime"))
                 if marker["generation"] != 1:
                     blockers.append(self._blocker(
@@ -343,7 +361,7 @@ class WorkflowCutoverStore:
                         required_action="retain_current_runtime",
                     ))
                 for table in self._workflow_tables(conn):
-                    if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events", "workflow_draft_adapter_versions"):
+                    if table in ("workflow_adapter_versions", "workflow_cutover_state", "workflow_cutover_events", "workflow_draft_adapter_versions", "workflow_submission_schema_versions"):
                         continue
                     if conn.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone() is not None:
                         blockers.append(self._blocker(

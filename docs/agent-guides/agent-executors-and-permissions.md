@@ -206,6 +206,14 @@ moving or mismatched components are bounded unavailable metadata; matching
 files in another checkout cannot impersonate loaded serving code. Same-UID
 integrity is detective only. See the corrective memory spec for exact nested
 keys and limits; this projection is not installed QA or attestation.
+G1 additionally fingerprints the actually loaded parser, acceptance/transition
+validators, report consumers and their acquisition functions. Independent
+installed QA still requires real owned job execution, measured interpreter/import
+origins/source, complete output/audits and actual finite ROOT/CHILD operations.
+Matching source files or a source provider stand-in never constitute installed
+acceptance. Current drift/loss closes an accepted epoch; elapsed probe age alone
+does not, because freshness is checked against original final admission.
+
 
 
 **Worktree-root guard.** The ``make-worktree`` skill (injected as a system

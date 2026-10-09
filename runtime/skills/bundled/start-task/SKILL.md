@@ -42,6 +42,16 @@ Parameters:
       ```
    4. If the brief does not reference prior work, skip step 3. Do not pull history speculatively.
 
+   Memory telemetry reports are observation-only. Valid collection requires
+   independently admitted G1 role/job/probe evidence and current serving health;
+   source fixtures, a summary tag, merge/deploy, or raw sample counts do not start
+   production collection. Probe freshness applies at new initial/reset final
+   admission. Continuing reports/replay preserve the authenticated original
+   boundary and recheck current full health. The root retains any explicitly
+   requested independent durable within48h AFTER-epoch check and production
+   observation follow-through; never infer a renewal, schedule or tuning action.
+
+
 3. **Consult the knowledge base.** Before planning, check for durable knowledge relevant to this task.
 
    Run either:
