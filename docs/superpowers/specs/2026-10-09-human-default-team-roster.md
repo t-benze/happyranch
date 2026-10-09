@@ -56,6 +56,12 @@ exact output images, native materialization event shapes, pre-edit publication/
 profile rows and prior audit prefixes. Earlier rows/packages remain intact;
 foreign control history and unknown global residue require operator resolution.
 Source closure and readback alone do not establish the required crash/VM proof.
+Recovery authenticates the namespace, invocation and snapshot of operation-owned
+publication residue before the existing coordinator resumes a reserved phase.
+Live/foreign leases refuse; native ownership rules perform any lease reclamation.
+Runtime marker and registry before-images remain checked. Closed checkpointed
+readbacks use SQLite immutable reads; committed crash WAL must still be read.
+Both workers use the unchanged six-context skill union and integrity validator.
 
 C1–C10 and v24 evidence remain the accepted case record. Python units and U9
 localization are SUSPENDED THR291 seq5/16; general integration is SKIPPED

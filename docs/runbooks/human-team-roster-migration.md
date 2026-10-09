@@ -35,6 +35,13 @@ Use an actual authorized disposable M venue before maintenance readiness:
    Check captures old publication/profile row hashes and audit/materialization
    prefixes; initial apply rechecks exact closed DB bytes and all those controls.
    Recovery refuses foreign journals, profile operations or new audit actors.
+   It checks native namespace/invocation/snapshot and leftover lease ownership
+   before recovering a reserved publication phase through its existing owner.
+   Live lease owners and foreign profile leases refuse. Runtime marker and
+   registry images remain exact; schedule quiescence includes firing/session
+   ownership even when a schedule has been deactivated. Native refresh previews
+   must cover the existing six-context skill union and integrity validator for
+   both workers, plus the actual file/directory durability boundary.
    Existing executor dependency rows remain exact. Resolve unfinished journals,
    profile operations, stale leases and incoherent bindings through their existing
    owners before checking. Native provider directories and relative skill links
@@ -109,3 +116,41 @@ reconstruction from actual native evidence. Partial prefixes require explicit
 recover. Only the exact declared native package staging bytes and metadata are
 recognized as an owned prefix. Unknown global residue is refused, never swept
 or adopted. Native creation-mask provenance is rechecked before materialization.
+
+The source-bound admission probe is now authored at
+`tests/helpers/human_team_incompatible_reader_probe.py`. Actual old-source
+execution remains HELD. The concrete negative uses the accepted b317 checkout,
+an independently prepared closed **agent-managed** schema2 control with a genuine
+ready journal/pointer, and its independently recorded snapshot digest:
+
+```sh
+/venue/old-b317/.venv/bin/python -I /venue/candidate/tests/helpers/human_team_incompatible_reader_probe.py --source /venue/old-b317 --source-sha b3179b123fddbb0f0f604ed9e0d148f1b23455f3 --root /venue/reader-case --org reader-case --operation capture-admission --expect workflow_activation_authority_stale --snapshot-digest ACTUAL_SCHEMA2_DIGEST
+```
+
+Bind an isolated mode-0700 reader daemon home and Python3.14. The helper uses
+actual reader constructors, unfenced public profile binding and native recovery
+before measurement; it verifies module origins and input digest. It does not
+republish schema1, replace a validator or manufacture a graph/receipt. Its exact
+row/file readback assertion alone does not prove zero syscalls. Candidate/schema2
+and b317/schema1 positive graph/admission controls, the external observers,
+causal control/restoration and five specified repetitions remain required under
+the manager's concrete held-source execution disposition.
+
+The accepted test-side frame/syscall helper files are authored, not executed or
+capability-approved. Frame input is a closed JSON object with `source_sha` and
+`sites`; each site has relative `file`, whole-file `sha256`, exact compiled
+`qualname`, and `events: ["call", "return"]`. Both native reset entries in
+`runtime/infrastructure/db/sessions.py` (`SessionsMixin.reset_thread_sessions_for_agent`
+and `SessionsMixin._reset_thread_sessions_for_agent_uncommitted`) are mandatory.
+The helper records actual calls/returns against independently compiled code.
+It does not locate interior SQL commits or prove descendant coverage alone.
+
+The paired Linux x86_64 syscall helper follows its own child threads/descendants,
+records actual entry/exit/path/fd/inode facts, and refuses unsupported descriptor
+transfers, shared mappings, unresolved writers or incomplete tracking. Its
+currently authored finite cuts cover manifest-indexed canonical/generated
+stage-write/file-flush/rename/directory-flush paths. Authority/receipt-specific
+cuts, logical-line localization and full capability/loss/kill controls still
+require closure; an unsupported cut or observation is UNAVAILABLE, never PASS.
+No helper was run on this host. Zero-row/already-null replay and M reboot proof
+remain outstanding even when final file hashes or audit counts agree.

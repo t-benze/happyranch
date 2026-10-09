@@ -8,7 +8,10 @@ workspaces, runtime/provider memory, Git registrations and history remain in
 place. Founder is not an executor. Ordinary workers keep self-only delegation
 and acquire no manager/admin/policy/template powers. Existing supported
 materializers refresh declared generated instructions/skill links; their
-permission and authentication algorithms are unchanged. Operator migration
+permission and authentication algorithms are unchanged. The bounded operator
+uses the existing task/thread/wake/dream/schedule/bootstrap union materializer
+for both workers and its normal package/both-root integrity validator, then
+flushes the verified output before readiness. Operator migration
 clears both agents' provider resume IDs/watermarks using the native atomic
 reset/audit helper, while preserving thread delivery and breaker continuity.
 

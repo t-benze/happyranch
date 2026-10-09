@@ -111,6 +111,25 @@ def verify_preserved_paths(root: Path, manifest: dict) -> None:
     expected = manifest["preservation_inventory"]
     actual = preservation_inventory(root)
     mutable = set(manifest["before"]) | {"happyranch.db", "happyranch.db-wal", "happyranch.db-shm", "org/.workflow-authority.json"}
+    # Only a source-owned journal can explain the native authority staging
+    # file. Its name, full bytes and creation metadata must agree; an arbitrary
+    # similarly named file is never an automatic repair candidate.
+    with read_db(root / "happyranch.db") as conn:
+        verify_owned_publication(conn, manifest)
+        prefix = f"THR296:{manifest['operation_id']}"
+        for row in conn.execute("SELECT * FROM workflow_publication_journals WHERE namespace=?", (f"org/{manifest['org']}",)):
+            if row["publisher"] != prefix and not row["publisher"].startswith(prefix + ":"):
+                continue
+            rel = f"org/.workflow-authority.json.{row['id']}.staging"
+            if rel not in actual:
+                continue
+            value = image(root / rel)
+            if (row["state"] != "file_phase_reserved" or value["kind"] != "file"
+                    or value["mode"] != 0o666 & ~manifest["native_creation_mask"]
+                    or value["uid"] != os.getuid() or value["gid"] != os.getgid()
+                    or base64.b64decode(value["bytes"]) != bytes(row["snapshot_bytes"])):
+                raise ValueError("unknown_authority_staging_prefix")
+            mutable.add(rel)
     # New containing directories are part of the declared generated closure.
     directories = {str(parent) for rel in manifest["before"] for parent in Path(rel).parents if str(parent) != "."}
     for rel in set(expected) | set(actual):
@@ -340,7 +359,12 @@ def containment(plan: dict, runtime: Path) -> dict:
 def read_db(path: Path) -> Iterator[sqlite3.Connection]:
     if path.is_symlink() or path.stat().st_nlink != 1:
         raise ValueError("database_identity_invalid")
-    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    # A proven closed/checkpointed image needs no SQLite shared-memory writer.
+    # Read committed WAL through SQLite during owned crash recovery; never
+    # ignore it using immutable=1. Containment is checked before these readers.
+    has_journal = any(Path(str(path) + suffix).exists() and Path(str(path) + suffix).stat().st_size
+                      for suffix in ("-wal", "-journal"))
+    conn = sqlite3.connect(path.as_uri() + ("?mode=ro" if has_journal else "?mode=ro&immutable=1"), uri=True)
     conn.row_factory = sqlite3.Row
     if conn.execute("PRAGMA integrity_check").fetchall()[0][0] != "ok" or conn.execute("PRAGMA foreign_key_check").fetchall():
         conn.close()
@@ -389,6 +413,64 @@ def row_hashes(conn: sqlite3.Connection, table: str) -> list[str]:
     return sorted(digest(repr(tuple(row)).encode()) for row in conn.execute(f'SELECT * FROM "{table}"'))
 
 
+def verify_owned_publication(conn: sqlite3.Connection, manifest: dict) -> None:
+    """Authenticate crash residue before letting the native owner recover it.
+
+    This reader never clears a lease or edits a journal. A dead PID alone is
+    insufficient: its complete token must belong to this manifest's journal.
+    The native coordinator remains the only lease/journal mutation owner.
+    """
+    namespace = f"org/{manifest['org']}"
+    prefix = f"THR296:{manifest['operation_id']}"
+    original = set(manifest["control_row_hashes"]["workflow_publication_journals"])
+    owned = []
+    for row in conn.execute("SELECT * FROM workflow_publication_journals"):
+        if digest(repr(tuple(row)).encode()) in original:
+            continue
+        publisher = row["publisher"]
+        invocation = row["publisher_invocation"]
+        if (row["namespace"] != namespace
+                or publisher != prefix and not publisher.startswith(prefix + ":")
+                or not invocation.startswith(f"workflow-writer:{prefix}:")
+                or re.fullmatch(r"[a-f0-9]{32}", invocation.rsplit(":", 1)[-1]) is None
+                or row["generation"] != row["expected_generation"] + 1
+                or digest(bytes(row["snapshot_bytes"])) != row["snapshot_digest"]
+                or row["recovery_owner"] != "workflow-recovery"):
+            raise ValueError("unowned_publication_residue")
+        owned.append(row)
+    active = [row for row in owned if row["state"] not in ("cache_installed", "aborted")]
+    if len(active) > 1:
+        raise ValueError("ambiguous_operation_publication_residue")
+    for lease in conn.execute("SELECT * FROM workflow_publication_leases"):
+        token = lease["owner_token"]
+        if (lease["namespace"] != namespace or len(active) != 1
+                or not (token in (active[0]["publisher_invocation"], active[0]["file_phase_owner"])
+                        or token.startswith(prefix + ":") and re.fullmatch(r"[a-f0-9]{32}", token.rsplit(":", 1)[-1])
+                        or re.fullmatch(r"workflow-recovery:[a-f0-9]{32}", token))):
+            raise ValueError("foreign_publication_lease")
+        try:
+            os.kill(lease["owner_pid"], 0)
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            raise ValueError("publication_lease_liveness_unknown") from exc
+        else:
+            raise ValueError("live_publication_lease_owner")
+    # Both accepted executors are builtin; this move creates no profile
+    # operation/diagnostic lease. Never adopt a dead foreign profile owner.
+    if conn.execute("SELECT 1 FROM workflow_profile_leases LIMIT 1").fetchone():
+        raise ValueError("foreign_profile_lease")
+    pointer = conn.execute("SELECT * FROM workflow_authority_pointers WHERE namespace=?", (namespace,)).fetchone()
+    if pointer is None:
+        raise ValueError("checked_authority_pointer_missing")
+    if pointer["journal_id"] is not None:
+        journal = conn.execute("SELECT * FROM workflow_publication_journals WHERE id=?", (pointer["journal_id"],)).fetchone()
+        if (journal is None or journal["namespace"] != namespace
+                or journal["generation"] != pointer["current_generation"]
+                or journal["snapshot_digest"] != pointer["snapshot_digest"]):
+            raise ValueError("operation_authority_pointer_conflict")
+
+
 def verify_control_history(conn: sqlite3.Connection, manifest: dict) -> None:
     """Retained publication/profile/audit rows cannot be borrowed or rewritten."""
     original = manifest["control_row_hashes"]
@@ -413,6 +495,7 @@ def verify_control_history(conn: sqlite3.Connection, manifest: dict) -> None:
         "SELECT * FROM workflow_authority_pointers WHERE namespace!=?", (f"org/{manifest['org']}",)))
     if other != manifest["other_pointer_hashes"]:
         raise ValueError("foreign_authority_pointer_changed")
+    verify_owned_publication(conn, manifest)
     for row in conn.execute("SELECT * FROM audit_log WHERE id>? ORDER BY id", (manifest["baseline_audit"],)):
         agent = next((agent for agent in AGENTS if row["task_id"] == f"config:THR296:{manifest['operation_id']}:{agent}"), None)
         if (agent is None or row["agent"] != "founder" or row["action"] != "thread_session_invalidated"
@@ -445,11 +528,11 @@ def require_quiescence(conn: sqlite3.Connection, root: Path, org: str) -> str:
     _validate_submission_source_ownership(conn, layout)
     predicates = {
         "tasks": "status NOT IN ('completed','failed','cancelled','superseded') OR active_chain IS NOT NULL OR active_fanout IS NOT NULL",
-        "jobs": "status IN ('pending','running')",
-        "thread_invocations": "status IN ('pending','running')",
-        "dreams": "status IN ('pending','running')",
-        "work_hours": "status IN ('pending','running')",
-        "schedules": "active=1 OR status='running'",
+        "jobs": "status NOT IN ('completed','failed','rejected')",
+        "thread_invocations": "status NOT IN ('consumed','declined','timeout','failed')",
+        "dreams": "status NOT IN ('completed','failed','timeout','skipped')",
+        "work_hours": "status NOT IN ('completed','failed','timeout','skipped')",
+        "schedules": "active=1 OR session_id IS NOT NULL OR status NOT IN ('fired','paused','cancelled','expired','failed','timeout')",
         "task_completion_recoveries": "state IN ('claimed','callback_accepted')",
         "thread_reply_delivery_state": "queued_invocation_token IS NOT NULL OR running_invocation_token IS NOT NULL OR required_through_seq>acknowledged_through_seq",
         "thread_reply_breaker_episodes": "state='probe' OR probe_lease_id IS NOT NULL",
@@ -578,6 +661,17 @@ def check(args: argparse.Namespace) -> dict:
         if (current.execute("SELECT 1 FROM workflow_publication_leases LIMIT 1").fetchone()
                 or current.execute("SELECT 1 FROM workflow_profile_leases LIMIT 1").fetchone()):
             raise ValueError("preexisting_durable_lease_requires_existing_owner_reconciliation")
+        pointer = current.execute("SELECT * FROM workflow_authority_pointers WHERE namespace=?", (f"org/{args.org}",)).fetchone()
+        journal = None if pointer is None else current.execute("SELECT * FROM workflow_publication_journals WHERE id=?", (pointer["journal_id"],)).fetchone()
+        if (pointer is None or pointer["state"] != "ready" or journal is None
+                or journal["namespace"] != f"org/{args.org}" or journal["state"] != "cache_installed"
+                or journal["generation"] != pointer["current_generation"]
+                or journal["snapshot_digest"] != pointer["snapshot_digest"]
+                or digest(bytes(journal["snapshot_bytes"])) != pointer["snapshot_digest"]
+                or (root / "org/.workflow-authority.json").read_bytes() != bytes(journal["snapshot_bytes"])):
+            raise ValueError("preceding_authority_not_coherent_and_ready")
+        from runtime.workflows.authority import validate_authority_snapshot
+        validate_authority_snapshot(json.loads(bytes(journal["snapshot_bytes"])))
         if current.execute("""SELECT 1 FROM workflow_profile_dependencies d
                 LEFT JOIN workflow_profile_store s ON s.profile_name=d.profile_name
                 LEFT JOIN workflow_profile_registry r ON r.profile_name=d.profile_name
@@ -685,6 +779,8 @@ def check(args: argparse.Namespace) -> dict:
     return dict(kind="THR296-checked-manifest-v1", operation_id=operation,
                 operation_dir=str(operation_dir), runtime_root=str(runtime), org=args.org,
                 source_sha=source, plan_sha=digest(args.plan.read_bytes()), containment=plan["containment"],
+                runtime_marker=image(runtime / "happyranch.yaml"),
+                registry_images={value: image(Path(value)) for value in plan["containment"]["registry_paths"]},
                 containment_observation=observation, before=before, after=after,
                 domain_signature=before_domain, reset_before=resets, baseline_audit=baseline_audit,
                 control_signature=before_control, audit_prefix_signature=audit_prefix, workflow_layout=layout,
@@ -749,6 +845,9 @@ def finished_state(root: Path, manifest: dict, *, direction: str) -> dict | None
             raise ValueError("owned_ready_snapshot_mismatch")
         from runtime.workflows.authority import validate_authority_snapshot
         validate_authority_snapshot(json.loads(raw))
+        if (conn.execute("SELECT 1 FROM workflow_publication_leases LIMIT 1").fetchone()
+                or conn.execute("SELECT 1 FROM workflow_profile_leases LIMIT 1").fetchone()):
+            return None
         if conn.execute("SELECT 1 FROM workflow_profile_dependencies WHERE org_namespace=? AND state='unbound'", (f"org/{manifest['org']}",)).fetchone():
             raise ValueError("profile_closure_not_ready")
         return dict(operation_id=manifest["operation_id"], direction=direction,
@@ -768,7 +867,11 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         raise ValueError("real_checked_manifest_and_exact_candidate_required")
     if manifest["runtime_root"] != str(runtime) or manifest["org"] != args.org:
         raise ValueError("manifest_owner_mismatch")
-    containment(manifest, runtime)
+    if containment(manifest, runtime) != manifest["containment_observation"]:
+        raise ValueError("persistent_containment_observation_changed")
+    if (image(runtime / "happyranch.yaml") != manifest["runtime_marker"]
+            or any(image(Path(value)) != expected for value, expected in manifest["registry_images"].items())):
+        raise ValueError("runtime_registration_before_image_CAS_lost")
     if native_creation_mask() != manifest["native_creation_mask"]:
         raise ValueError("native_materializer_creation_mask_changed")
     if set(manifest["before"]) != set(manifest["after"]):
@@ -846,7 +949,7 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
     from runtime.orchestrator.context_builder import ContextBuilder
     from runtime.orchestrator.org_validation import validate_team_membership
     from runtime.orchestrator.prompt_loader import load_agent
-    from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
+    from runtime.orchestrator.workspace_adapters import materialize_workspace_skills_union, validate_workspace_skills_integrity
     from runtime.workflows.profile_coordinator import ProfileCoordinator, _ConsumerWriterInterval
     settings = Settings(project_root=SOURCE)
     db = Database(root / "happyranch.db")
@@ -862,25 +965,34 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         org = OrgState(slug=args.org, root=root, db=db, teams=teams, settings=settings, orchestrator=orch)
         profiles = ProfileCoordinator(daemon_home=settings.daemon_home, orgs={args.org: org})
         org.workflow_authority._profile_coordinator = profiles
+        if args.recover:
+            # Reserved file/publication phases cannot be superseded by a new
+            # writer. Reconcile the authenticated OP's native phase first.
+            # Prepared canonical prefixes remain fenced and are completed by
+            # the bounded writer below, after all partial-file CAS checks.
+            with db._lock:
+                active = db._conn.execute("SELECT state FROM workflow_publication_journals WHERE namespace=? AND state NOT IN ('cache_installed','aborted')", (f"org/{args.org}",)).fetchall()
+            if active and active[0]["state"] != "prepared":
+                org.workflow_authority.recover()
         # Resume reset + native audit is atomic per consultant; retain cleared
         # resumes on compensation. Actual reset state/audit owns recovery.
         for agent in AGENTS:
             scope = f"config:THR296:{operation_id}:{agent}"
-            audits = db.get_audit_logs(scope)
             with db._lock:
+                audits = db.get_audit_logs(scope)
                 rows = [dict(row) for row in db._conn.execute("SELECT * FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent,))]
-            before_rows = manifest["reset_before"][agent]
-            cleared = [{**row, "agent_session_id": None, "last_resumed_seq": 0} for row in before_rows]
-            if audits:
-                if (len(audits) != 1 or audits[0]["action"] != "thread_session_invalidated" or rows != cleared
-                        or audits[0]["agent"] != "founder" or audits[0]["id"] <= manifest["baseline_audit"]
-                        or audits[0]["payload"] != {"reason": f"THR296 roster operation {operation_id}", "rows": len(cleared), "name": agent}):
-                    raise ValueError("reset_ownership_or_third_state_refusal")
-                continue
-            if rows != before_rows:
-                raise ValueError("reset_before_image_changed")
-            if rows:
-                db.reset_thread_sessions_for_agent(agent, audit_scope_id=scope, audit_agent="founder", audit_reason=f"THR296 roster operation {operation_id}")
+                before_rows = manifest["reset_before"][agent]
+                cleared = [{**row, "agent_session_id": None, "last_resumed_seq": 0} for row in before_rows]
+                if audits:
+                    if (len(audits) != 1 or audits[0]["action"] != "thread_session_invalidated" or rows != cleared
+                            or audits[0]["agent"] != "founder" or audits[0]["id"] <= manifest["baseline_audit"]
+                            or audits[0]["payload"] != {"reason": f"THR296 roster operation {operation_id}", "rows": len(cleared), "name": agent}):
+                        raise ValueError("reset_ownership_or_third_state_refusal")
+                    continue
+                if rows != before_rows:
+                    raise ValueError("reset_before_image_changed")
+                if rows:
+                    db.reset_thread_sessions_for_agent(agent, audit_scope_id=scope, audit_agent="founder", audit_reason=f"THR296 roster operation {operation_id}")
         async def replace_roster() -> _ConsumerWriterInterval:
             # Existing consumer_writer captures outside leases and releases
             # profile ownership before publication discovery. Both first-party
@@ -915,11 +1027,26 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
             if not workspace.is_dir() or workspace.is_symlink():
                 raise ValueError("original_workspace_required")
             ContextBuilder(settings, paths_obj, slug=args.org).ensure_workspace_ready(workspace, agent, definition.system_prompt, provider=definition.executor)
-            materialize_workspace_skills(workspace, settings, slug=args.org, context="bootstrap", provider=definition.executor,
+            expected_specs = materialize_workspace_skills_union(workspace, settings, slug=args.org,
+                contexts=["task", "thread", "wake", "dream", "schedule", "bootstrap"], provider=definition.executor,
                 agent_name=agent, team=definition.team, skills_root=SOURCE / "runtime/skills", org_root=root, db=db)
+            validate_workspace_skills_integrity(workspace, expected_specs=expected_specs,
+                settings=settings, db=db, agent_name=agent)
         for rel, expected in desired.items():
             if image(root / rel) != expected:
                 raise ValueError(f"materializer_closed_output_mismatch:{rel}")
+            # The unchanged native materializers use several write strategies.
+            # Establish durability of their verified complete output before
+            # returning readiness; no same-byte replacement is needed.
+            target = root / rel
+            if expected["kind"] == "file":
+                with target.open("rb") as installed:
+                    os.fsync(installed.fileno())
+            fd = os.open(target if expected["kind"] == "directory" else target.parent, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         verify_global_assets(manifest)
         global_desired = manifest["global_before"] if compensating else manifest["global_after"]
         for rel, expected in global_desired.items():
