@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import sys
 import time
+from urllib.parse import quote, urlencode
 
 import httpx
 import pytest
@@ -207,6 +208,85 @@ def assert_terminal(shipping,task,launches,container,seconds=40):
     return result
 
 
+def observe_all_runtime_ownership(shipping,container,launches,parent,child):
+    """Read every attached org/task scope; never substitute HTTP409 for zero executors."""
+    runtime=request(shipping,'GET','/runtime')
+    assert runtime.status_code==200 and runtime.json()['runtime']==str(container)
+    org_response=request(shipping,'GET','/orgs')
+    assert org_response.status_code==200
+    orgs=org_response.json()
+    assert set(orgs)=={'orgs','broken'} and not orgs['broken']
+    assert 0<len(orgs['orgs'])<=16
+    inventory={}
+    for org in orgs['orgs']:
+        assert set(org)=={'slug','root'} and org['slug'] not in inventory
+        assert Path(org['root']).parent==container/'orgs'
+        tasks=[];cursor=None;seen=set()
+        for _ in range(8):
+            query={'limit':100}
+            if cursor is not None:query['before']=cursor
+            response=request(shipping,'GET','/orgs/'+quote(org['slug'],safe='')+'/tasks?'+urlencode(query))
+            assert response.status_code==200
+            page=response.json()
+            assert set(page)=={'tasks','next_cursor'} and len(page['tasks'])<=100
+            for task in page['tasks']:
+                assert task['task_id'] not in seen
+                seen.add(task['task_id'])
+                tasks.append({key:task[key] for key in
+                              ('task_id','parent_task_id','assigned_agent','status','block_kind')})
+            cursor=page['next_cursor']
+            if cursor is None:break
+            assert page['tasks'] and cursor==page['tasks'][-1]['task_id']
+        else:raise AssertionError('all-org task inventory page cap; incomplete observation')
+        inventory[org['slug']]={'root':org['root'],'tasks':tasks,'complete':True}
+    records=[task for org in inventory.values() for task in org['tasks']]
+    assert any(task['task_id']==parent and task['block_kind']=='delegated' for task in records)
+    assert any(task['task_id']==child and task['parent_task_id']==parent for task in records)
+    metrics_response=request(shipping,'GET','/metrics')
+    assert metrics_response.status_code==200
+    metrics=metrics_response.json();host=metrics['host_sessions']
+    native=process_table()
+    remaining=owned_processes(shipping['pid'],container,launches,rows=native)
+    observation={'runtime':str(container),'orgs':inventory,'parent':parent,'child':child,
+                 'executor_sessions_active':metrics['executor_sessions_active'],
+                 'host_admission':host['admission'],'host_residue':host['residue'],
+                 'host_receipts':host['receipts']['recent'],'native':native,'remaining':remaining}
+    encoded=json.dumps(observation,sort_keys=True)
+    assert len(encoded.encode())<=1024*1024,'bounded complete ownership receipt; no trimming'
+    print('R4.5 ALL-RUNTIME OWNERSHIP '+encoded,flush=True)
+    assert metrics['executor_sessions_active']==0
+    assert host['admission']['active']==host['admission']['queue_depth']==0
+    assert host['residue']['survivors_count']==0
+    assert host['receipts']['recent'] and all(row['quiescent'] for row in host['receipts']['recent'])
+    assert not remaining
+    return observation
+
+
+def observe_callback_tail(shipping,parent,child,callbacks,container,launches):
+    """Persist only genuine CLI observations and their independently read durable tails."""
+    observed=[json.loads(line) for line in callbacks.read_text().splitlines()]
+    parent_body=detail(shipping,parent)
+    child_body=detail(shipping,child) if child is not None else None
+    metrics=request(shipping,'GET','/metrics')
+    assert metrics.status_code==200
+    census=owned_processes(shipping['pid'],container,launches)
+    receipt={'callbacks':observed,'parent':parent_body,'child':child_body,
+             'metrics':metrics.json(),'remaining':census}
+    encoded=json.dumps(receipt,sort_keys=True)
+    assert len(encoded.encode())<=1024*1024,'bounded complete callback receipt; no trimming'
+    print('R4.6 AUTHENTIC CALLBACK TAIL '+encoded,flush=True)
+    assert observed and all(row['exit']==0 for row in observed)
+    assert parent_body['task']['status']=='completed' and parent_body['results']
+    assert any(row['task']==parent and row['session']==result['session_id']
+               for row in observed for result in parent_body['results'])
+    if child is not None:
+        assert child_body['task']['status']=='completed' and child_body['results']
+        assert any(row['task']==child and row['session']==result['session_id']
+                   for row in observed for result in child_body['results'])
+    assert receipt['metrics']['executor_sessions_active']==0 and not census
+    return receipt
+
+
 @pytest.mark.parametrize('same_root_register',[False,True])
 def test_held_owner_swap_and_same_root_characterization(shipping,runtime_container,fake_codex_plan_env,tmp_path,same_root_register):
     release=tmp_path/'release';started=tmp_path/'started.json';callbacks=tmp_path/'callbacks.jsonl'
@@ -258,6 +338,7 @@ OBSERVE
         assert request(shipping,'POST','/runtime/use',{'path':str(b)}).status_code==200
         assert request(shipping,'POST','/runtime',{'path':str(runtime_container)}).status_code==200
         assert detail(shipping,parent)['results']==history['results']
+        observe_callback_tail(shipping,parent,None,callbacks,runtime_container,[marker['process']])
 
 
 @pytest.mark.parametrize('same_root_register',[False,True])
@@ -300,9 +381,13 @@ OBSERVE
     operations=[('',runtime_container)] if same_root_register else [('/use',runtime_container),('',b),('/use',b)]
     for suffix,target in operations:
         assert time.monotonic()<deadline
+        if not same_root_register:
+            observe_all_runtime_ownership(shipping,runtime_container,[witness['process']],parent,child)
         before=owned_processes(shipping['pid'],runtime_container,[witness['process']]);assert not before
         response=request(shipping,'POST','/runtime'+suffix,{'path':str(target)})
         after=owned_processes(shipping['pid'],runtime_container,[witness['process']]);assert not after
+        if not same_root_register:
+            observe_all_runtime_ownership(shipping,runtime_container,[witness['process']],parent,child)
         print('R4.5 census '+json.dumps({'before':before,'after':after,'status':response.status_code,'body':response.json()}))
         assert response.status_code==(200 if same_root_register else 409)
     # Natural supervisor wait/readmission, no forged session or direct result.
@@ -322,6 +407,8 @@ OBSERVE
                 'processes':owned_processes(shipping['pid'],runtime_container,[witness['process']])}))
         raise
     assert request(shipping,'POST','/runtime/use',{'path':str(runtime_container)}).status_code==200
+    if not same_root_register:
+        observe_callback_tail(shipping,parent,child,callbacks,runtime_container,[witness['process']])
 
 
 def test_quiescent_concurrent_org_read_swap_shutdown_reopen(shipping,runtime_container):

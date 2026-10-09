@@ -486,6 +486,18 @@ R4.1 and the same-root R4.5 row are baseline/candidate characterization in
 separate fixtures. A reproduced callback failure remains a failure. The other
 refusal rows and terminal result/quiescence tails still require authentic success.
 Do not change shared session/auth code or fabricate callbacks to make them pass.
+
+The successful refusal source cases retain bounded original CLI callback
+observations and independently read durable parent/child results, audit and
+terminal metrics as R4.6 receipts. R4.5 refusal probes additionally record every
+attached org and its complete cursor-paginated task inventory, including parent,
+child and sibling ownership, full native rows, owned process closure and global
+executor/admission/residue metrics before and after each transition. Pagination,
+byte caps or unavailable native identities fail without trimming. Zero executors
+and quiescent native cleanup remain required; an HTTP409 alone is insufficient.
+These receipts come from the real disposable daemon and ordinary executable
+stubs; they create no task/session/result or production observer seam. Separate
+same-root baseline/candidate characterization retains its actual failures.
 The general integration suite remains SKIPPED THR-243 seq42; Python unit/proof
 execution remains SUSPENDED THR-291 seq5/16. These selections do not release
 those lanes. Whole-repo collect-only discovery requires a complete import/global/

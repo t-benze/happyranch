@@ -368,8 +368,8 @@ def process_table() -> list[dict]:
     return rows
 
 
-def owned_processes(daemon_pid: int, runtime_root: Path, launches: list[dict]) -> list[dict]:
-    rows = process_table()
+def owned_processes(daemon_pid: int, runtime_root: Path, launches: list[dict], *, rows=None) -> list[dict]:
+    rows = process_table() if rows is None else rows
     descendants = {daemon_pid}
     while True:
         expanded = descendants | {r['pid'] for r in rows if r['ppid'] in descendants}
