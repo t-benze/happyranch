@@ -99,8 +99,17 @@ async def _exercise_case(case, app, orgs, headers, root):
             assert old['files'] == new['files'] and old['teams'] == new['teams']
             assert old['schema'] == new['schema']
             for table in old['rows']:
-                if not table.startswith('identity_name_') and table != 'audit_log':
+                if table == 'sqlite_sequence':
+                    # The single approved audit append advances only its own
+                    # AUTOINCREMENT counter; every other sequence stays exact.
+                    expected = tuple((row[0], row[1], row[2] + 1)
+                                     if row[1] == 'audit_log' else row
+                                     for row in old['rows'][table])
+                    assert new['rows'][table] == expected
+                elif not table.startswith('identity_name_') and table != 'audit_log':
                     assert old['rows'][table] == new['rows'][table]
+            assert len(new['rows']['audit_log']) == len(old['rows']['audit_log']) + 1
+            assert new['rows']['audit_log'][:-1] == old['rows']['audit_log']
             assert after['beta'] == before['beta']
             assert after['alpha']['manager_session'] == before['alpha']['manager_session'] == 'sess-owner'
             audits = org.db.execute("SELECT payload FROM audit_log WHERE action='identity_name_changed'").fetchall()

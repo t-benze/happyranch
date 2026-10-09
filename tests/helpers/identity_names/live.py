@@ -139,6 +139,8 @@ class NamingDaemon:
         # Absolute provisioned tool paths are deliberate: parent PATH is closed.
         env = os.environ.copy()
         env['PLAYWRIGHT_BROWSERS_PATH'] = '/opt/naming-browsers'
+        # Retain this browser's CLI daemon stderr/session identity on failures.
+        env['XDG_CACHE_HOME'] = str(work / 'cli-cache')
         env['NAMING_NODE_CHILDREN'] = str(work / 'native-children.jsonl')
         env['NODE_OPTIONS'] = '--require=' + str(SOURCE / 'tests/helpers/identity_names/observe-node.cjs')
         config = work / '.playwright'

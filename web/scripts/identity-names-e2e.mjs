@@ -54,17 +54,25 @@ function result(output) {
 // upload transport; every rename, stale readback and successful compose is real.
 async function interaction(page, base, scenario, uploadFile) {
   const check = (condition, message) => { if (!condition) throw new Error(message); };
+  // The pinned CLI evaluates this function in a VM without Node's URL global.
+  // Only the exact admitted loopback origin supplies product observations.
+  const owned = (url) => url.startsWith(base + '/');
+  const pathname = (url) => owned(url) ? url.slice(base.length).split(/[?#]/)[0] : '';
+  const assignedAgent = (url) => {
+    const match = /[?&]assigned_agent=([^&#]*)/.exec(url);
+    return match ? decodeURIComponent(match[1]) : null;
+  };
   await page.context().route('**/*', (route) => {
-    const url = new URL(route.request().url());
-    return url.origin === base || ['data:', 'blob:'].includes(url.protocol) ? route.continue() : route.abort('blockedbyclient');
+    const url = route.request().url();
+    return owned(url) || url.startsWith('data:') || url.startsWith('blob:') ? route.continue() : route.abort('blockedbyclient');
   });
   page.setDefaultTimeout(10000); page.setDefaultNavigationTimeout(15000);
   const writes = []; const responses = []; const taskQueries = [];
   page.on('request', (request) => {
-    const url = new URL(request.url());
-    if (url.pathname.includes('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method()))
-      writes.push({ path: url.pathname, method: request.method(), body: request.headers()['content-type']?.includes('application/json') ? request.postDataJSON() : { multipart: true } });
-    if (url.pathname.endsWith('/tasks/roots')) taskQueries.push(url.searchParams.get('assigned_agent'));
+    const url = request.url(); const path = pathname(url);
+    if (path.startsWith('/api/') && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method()))
+      writes.push({ path, method: request.method(), body: request.headers()['content-type']?.includes('application/json') ? request.postDataJSON() : { multipart: true } });
+    if (path.endsWith('/tasks/roots')) taskQueries.push(assignedAgent(url));
   });
   page.on('response', (response) => {
     if (response.url().endsWith('/addressable-name')) responses.push(response.status());
@@ -155,7 +163,7 @@ async function interaction(page, base, scenario, uploadFile) {
   check(await agent.inputValue() === 'maker', 'task picker selected a label instead of ID');
   await externalRename('maker', 'NewPickerSam');
   await locale(agent, 'zh-CN');
-  const applied = page.waitForRequest((request) => request.url().includes('/tasks/roots?') && new URL(request.url()).searchParams.get('assigned_agent') === 'maker').catch(() => {
+  const applied = page.waitForRequest((request) => pathname(request.url()).endsWith('/tasks/roots') && assignedAgent(request.url()) === 'maker').catch(() => {
     check(taskQueries.includes('maker'), 'task query never submitted canonical ID');
   });
   await page.getByRole('button', { name: '应用', exact: true }).click();

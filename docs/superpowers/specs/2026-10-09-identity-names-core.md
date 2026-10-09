@@ -416,6 +416,17 @@ Chromium launch configuration inside unchanged Docker restrictions, and real
 callback links/audits for ordinary exchange catch-up rather than assuming exactly
 two unknown-fallback invocations. These corrections need renewed published-source
 execution; prior failed results remain failures.
+Hosted run37980616999 at ac59789d executed the same16 selectors:12 passed,
+4 failed, with complete export and successful owned cleanup. Both OpenAPI
+checks and the live callback case passed there; browser2/3/8 lost their CLI
+session and no authored screenshots were produced. The pinned CLI evaluates
+run-code in a VM without Node's URL global, so naming event callbacks now use
+exact loopback-origin string checks; browser-owned cache retains CLI stderr
+inside exported evidence. Scenario10 now requires exactly one audit append
+and only its sqlite_sequence increment, retaining all prior audit rows and
+every unrelated row/sequence plus full refused/no-op snapshot equality.
+These ordinary naming fixture repairs require renewed published-head proof;
+neither static VM diagnosis nor predecessor passes establish acceptance.
 Python units are SKIPPED/SUSPENDED THR291seq5/16; broken general integration is
 SKIPPED THR243seq42, never PASS. Historical JOB4075 frontend-all exit0 applies to
 its predecessor bytes only. Full same-head independent review, behavioral QA
