@@ -393,6 +393,9 @@ post routine cleanup results to threads. There is no routine thread reuse obliga
 messages, associations, results and audits. Explicit founder-requested coordination
 and required callbacks remain.
 
+Three supporting indexes accelerate the existing read-only cleanup projection.
+They do not backfill history, increment daemon count or grant cleanup authority.
+
 Report actual removed/skipped counts and reasons, measured sizes, allocated and
 apparent bytes separately, unknown unique reclaimed bytes, failures, partial
 outcomes and independent verification gaps honestly in summary and risks. Never
