@@ -1,5 +1,31 @@
 # TASK-10279 native admission, never merge
 
+Run37880480022/evidence52b308427 retained198 original dual archive members and
+18 complete native snapshots. Both cheap native admissions passed. Four genuine
+Settings screenshots were directly viewed, but all four Preferences activation
+predicates still timed out with the native macOS key codes present. These remain
+failed keyboard cases; no Tasks/WS/HTTP-tail or overall browser PASS follows.
+Linux remains held on its original ordinary Chrome sandbox refusal.
+
+The fixed browser driver now records primitive focus/tag/href/location/hash
+after Enter down and up, and observes the same three keys on one script-free
+data document containing only an anchor and button. This finite browser control
+probe distinguishes input serialization from application behavior; it imports
+no application, installs no event listeners and reads no credentials or response
+bodies. It uses native Tab/Enter, with no DOM activation substitute. Its failure
+remains failed and prevents overall PASS while independent product observations
+continue. Existing key serialization is unchanged; no cause is presumed.
+
+A product keyboard failure is now retained as `keyboardError`, and the existing
+retired WebSocket refusal, Tasks navigation, HTTP and second-screenshot checks
+can still run. The case and whole browser stage remain failed if any required
+keyboard assertion fails. Every existing acceptance assertion remains required;
+partial observations are labeled by their actual phase/outcome. The driver and
+workflow deadlines, UID/sandbox controls, immutable candidate/baseline pins,
+native observer, tools and Linux hold remain unchanged. Fresh hosted receipts
+are required. Source/artifact/discovery/independent gates and suspended
+UNFULFILLED keepers remain open. Never merge this evidence branch.
+
 Run37878697605/evidence800112cf retained all198 original dual archive members
 and18 complete native snapshots. Both native preflights passed. Four macOS
 Settings images were directly viewed; focus was true before Tab, before Enter

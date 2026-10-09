@@ -85,14 +85,52 @@ async function wait(session, expression) {
   }
   throw new Error(`browser condition timed out: ${expression}`);
 }
-async function key(session, name, code) {
+async function keyState(session) {
+  return evaluate(session, `({focused:document.hasFocus(), tag:document.activeElement?.tagName || '',
+    href:document.activeElement?.getAttribute('href') || '', location:location.pathname, hash:location.hash})`);
+}
+async function key(session, name, code, diagnostics) {
   assert.ok(['Enter', 'Tab', 'Escape'].includes(name));
   const native = nativeKeys ? { nativeVirtualKeyCode: nativeKeys[name] } : {};
   const text = name === 'Enter' ? '\r' : '';
+  if (diagnostics) diagnostics.beforeDown = await keyState(session);
   await cdp.send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: name, code: name,
     modifiers: 0, windowsVirtualKeyCode: code, ...native, ...(text ? { text, unmodifiedText: text } : {}) }, session);
+  if (diagnostics) diagnostics.afterDown = await keyState(session);
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name,
     modifiers: 0, windowsVirtualKeyCode: code, ...native }, session);
+  if (diagnostics) diagnostics.afterUp = await keyState(session);
+}
+async function nativeKeyboardProbe() {
+  const probe = { scope: 'fixed script-free browser control document; not application evidence', status: 'failed' };
+  results.nativeKeyboardProbe = probe;
+  let context;
+  try {
+    context = (await cdp.send('Target.createBrowserContext')).browserContextId;
+    const targetId = (await cdp.send('Target.createTarget', { url: 'about:blank', browserContextId: context })).targetId;
+    const session = (await cdp.send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+    await cdp.send('Page.enable', {}, session);
+    await cdp.send('Runtime.enable', {}, session);
+    await cdp.send('Page.bringToFront', {}, session);
+    const html = '<!doctype html><meta charset="utf-8"><title>Native keyboard probe</title><a href="#entered">Enter</a><button type="button">Next</button>';
+    await cdp.send('Page.navigate', { url: 'data:text/html,' + encodeURIComponent(html) }, session);
+    await wait(session, `document.hasFocus() && !!document.querySelector('a[href="#entered"]')`);
+    probe.tabs = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const diagnostic = {}; probe.tabs.push(diagnostic);
+      await key(session, 'Tab', 9, diagnostic);
+      if (await evaluate(session, `document.activeElement?.getAttribute('href')==='#entered'`)) break;
+    }
+    assert.equal((await keyState(session)).href, '#entered', 'native probe anchor must be reached by Tab');
+    probe.enter = {};
+    await key(session, 'Enter', 13, probe.enter);
+    await wait(session, `location.hash==='#entered'`);
+    probe.status = 'passed';
+  } catch (error) {
+    probe.error = { type: error.name, message: error.message };
+  } finally {
+    if (context) await cdp.send('Target.disposeBrowserContext', { browserContextId: context });
+  }
 }
 async function screenshot(session, name) {
   const value = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, session);
@@ -128,6 +166,7 @@ try {
       await cdp.send('Target.closeTarget', { targetId });
     }
   }
+  await nativeKeyboardProbe();
   for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[390, 844], [1440, 900]]) {
     const row = { locale, width, height, status: 'failed', screenshots: [] };
     results.cases.push(row);
@@ -155,32 +194,38 @@ try {
       assert.ok(row.settings.navLinks.some(link => link.href === '/orgs/test/settings/preferences'));
       row.screenshots.push(await screenshot(session, `${locale}-${width}-settings.png`));
       // Focus via native Tab events, then activate the actual Preferences link with Enter.
-      let reached = false;
-      row.phase = 'keyboard-navigation';
-      row.keyboardDiagnostics = { beforeTab: await evaluate(session, `({focused:document.hasFocus(),
-        tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
-        location:location.pathname})`) };
-      await wait(session, `document.hasFocus()`);
-      for (let attempt = 0; attempt < 60; attempt++) {
-        await key(session, 'Tab', 9);
-        if (await evaluate(session, `document.activeElement?.getAttribute('href')==='/orgs/test/settings/preferences'`)) {
-          reached = true; break;
+      // Keep a failed keyboard observation while continuing independent WS/Tasks/HTTP evidence.
+      try {
+        let reached = false;
+        row.phase = 'keyboard-navigation';
+        row.keyboardDiagnostics = { beforeTab: await evaluate(session, `({focused:document.hasFocus(),
+          tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
+          location:location.pathname})`) };
+        await wait(session, `document.hasFocus()`);
+        for (let attempt = 0; attempt < 60; attempt++) {
+          await key(session, 'Tab', 9);
+          if (await evaluate(session, `document.activeElement?.getAttribute('href')==='/orgs/test/settings/preferences'`)) {
+            reached = true; break;
+          }
         }
+        assert.ok(reached, 'Preferences link must be reachable by Tab');
+        row.keyboardDiagnostics.beforeEnter = await evaluate(session, `({focused:document.hasFocus(),
+          tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
+          location:location.pathname})`);
+        row.keyboardDiagnostics.enterEvents = {};
+        await key(session, 'Enter', 13, row.keyboardDiagnostics.enterEvents);
+        row.keyboardDiagnostics.afterEnter = await evaluate(session, `({focused:document.hasFocus(),
+          tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
+          location:location.pathname})`);
+        await wait(session, `location.pathname==='/orgs/test/settings/preferences'`);
+        row.keyboard = { tabReachedPreferences: reached, enterNavigated: true };
+        await key(session, 'Escape', 27);
+        row.preferences = await evaluate(session, absence);
+        assert.deepEqual(row.preferences.forbidden, []);
+        assert.equal(row.preferences.dockCount, 0);
+      } catch (error) {
+        row.keyboardError = { type: error.name, message: error.message };
       }
-      assert.ok(reached, 'Preferences link must be reachable by Tab');
-      row.keyboardDiagnostics.beforeEnter = await evaluate(session, `({focused:document.hasFocus(),
-        tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
-        location:location.pathname})`);
-      await key(session, 'Enter', 13);
-      row.keyboardDiagnostics.afterEnter = await evaluate(session, `({focused:document.hasFocus(),
-        tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
-        location:location.pathname})`);
-      await wait(session, `location.pathname==='/orgs/test/settings/preferences'`);
-      row.keyboard = { tabReachedPreferences: reached, enterNavigated: true };
-      await key(session, 'Escape', 27);
-      row.preferences = await evaluate(session, absence);
-      assert.deepEqual(row.preferences.forbidden, []);
-      assert.equal(row.preferences.dockCount, 0);
       // Actual retired transport from the browser. No fake backend or auth injection.
       row.phase = 'retired-websocket';
       row.retiredWebSocket = await evaluate(session, `new Promise((resolve,reject) => {
@@ -204,8 +249,8 @@ try {
       assert.ok(!row.http.some(event => event.path.startsWith('/api/v1/assistant')), 'UI must not call retired Assistant HTTP');
       assert.equal(row.screenshots.length, 2);
       assert.ok(row.screenshots.every(shot => shot.width === width && shot.height === height));
-      row.phase = 'complete';
-      row.status = 'passed';
+      row.phase = row.keyboardError ? 'complete-with-keyboard-failure' : 'complete';
+      row.status = row.keyboardError ? 'failed' : 'passed';
     } catch (error) {
       row.error = { type: error.name, message: error.message };
     } finally {
@@ -213,7 +258,8 @@ try {
       writeFileSync(join(binding.out, 'browser-cases.json'), JSON.stringify(results, null, 2) + '\n', { mode: 0o600 });
     }
   }
-  results.status = results.cases.every(row => row.status === 'passed') ? 'passed' : 'failed';
+  results.status = results.nativeKeyboardProbe.status === 'passed' &&
+    results.cases.every(row => row.status === 'passed') ? 'passed' : 'failed';
   if (results.status !== 'passed') process.exitCode = 1;
 } catch (error) {
   results.admissionError = { type: error.name, message: error.message };
