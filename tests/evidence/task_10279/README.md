@@ -1,5 +1,27 @@
 # TASK-10279 native admission, never merge
 
+Run37878697605/evidence800112cf retained all198 original dual archive members
+and18 complete native snapshots. Both native preflights passed. Four macOS
+Settings images were directly viewed; focus was true before Tab, before Enter
+and after Enter in every case. Each Preferences link held focus before Enter,
+but the active element became a button while the Capacity path remained, and
+all four unchanged location predicates timed out. Zero Tasks images or
+keyboard/WS/navigation/HTTP-tail PASS follows. Linux remains held on its original
+ordinary Chrome sandbox refusal before provisioning.
+
+The finite key serializer now supplies distinct macOS physical codes for
+Enter36, Tab48 and Escape53, as mapped by Chromium's
+[dom_code_data.inc](https://raw.githubusercontent.com/chromium/chromium/main/ui/events/keycodes/dom/dom_code_data.inc).
+Chromium's [InputHandler](https://raw.githubusercontent.com/chromium/chromium/main/content/browser/devtools/protocol/input_handler.cc)
+uses a provided native code to construct the native event on macOS; omitting it
+can select the skip-if-unhandled path. The fixed descriptor and zero modifiers
+are recorded. Existing key/text/down/up semantics and every case assertion stay
+required. Whether native serialization repairs this actual failure must be
+established on fresh runners; this preparation is no cause or PASS claim.
+No DOM activation replaces Enter, event listener/app instrumentation, privilege,
+browser sandbox or product change is introduced. Candidate/pins/workflow/native
+observer and Linux hold remain unchanged; preserve all original failures.
+
 Run37877711425/evidence63084aec6 still failed the four macOS Preferences
 keyboard location assertions after the Enter serialization repair. All198 dual
 archive members and18 complete native snapshots authenticate; four genuine

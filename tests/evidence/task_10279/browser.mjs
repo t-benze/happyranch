@@ -16,6 +16,9 @@ assert.equal(debug.hostname, '127.0.0.1');
 assert.equal(debug.protocol, 'ws:');
 const deadline = Date.now() + 180000;
 const results = { scope: 'real isolated wheel daemon and ordinary Vite distribution', cases: [], status: 'failed' };
+// Fixed physical macOS codes from Chromium's dom_code_data.inc, distinct from Windows VK.
+const nativeKeys = binding.platform === 'darwin' ? { Enter: 0x24, Tab: 0x30, Escape: 0x35 } : null;
+results.keyboardInput = { platform: binding.platform, nativeKeys, modifiers: 0 };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 class CDP {
@@ -83,11 +86,13 @@ async function wait(session, expression) {
   throw new Error(`browser condition timed out: ${expression}`);
 }
 async function key(session, name, code) {
+  assert.ok(['Enter', 'Tab', 'Escape'].includes(name));
+  const native = nativeKeys ? { nativeVirtualKeyCode: nativeKeys[name] } : {};
   const text = name === 'Enter' ? '\r' : '';
   await cdp.send('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: name, code: name,
-    windowsVirtualKeyCode: code, ...(text ? { text, unmodifiedText: text } : {}) }, session);
+    modifiers: 0, windowsVirtualKeyCode: code, ...native, ...(text ? { text, unmodifiedText: text } : {}) }, session);
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name,
-    windowsVirtualKeyCode: code }, session);
+    modifiers: 0, windowsVirtualKeyCode: code, ...native }, session);
 }
 async function screenshot(session, name) {
   const value = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false }, session);
