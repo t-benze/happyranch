@@ -55,6 +55,54 @@ unit_absent() {
   [[ ! -e "$unit_root/etc/systemd/system/$unit" && ! -e "$unit_root/run/systemd/system/$unit" ]] || return 1
   [[ ! -e "$unit_root/etc/systemd/system/$unit.d" && ! -e "$unit_root/run/systemd/system/$unit.d" ]] || return 1
 }
+cleanup_refusal() {
+  # Only these fixed pairs can leave cleanup. Emit each once across all resets
+  # and trap reentry: at most 2 phases x 23 identifiers, less than 4096 bytes.
+  local phase="$1" predicate="$2" key
+  case "$phase" in shipping|final) ;; *) return 1 ;; esac
+  case "$predicate" in
+    reload_failed|fixture_delete_failed|fixture_absence_unconfirmed|unit_absence_unconfirmed|inventory_query_failed|inventory_malformed|unit_file_residue|inventory_scratch_failed|host_listener_residue|virtual_listener_residue|credential_path_residue|transaction_path_residue|payload_path_residue|runtime_path_residue|process_residue|process_query_failed|stage_residue|stage_query_failed|fixture_process_residue|owned_path_unconfirmed|mainpid_unconfirmed|evidence_failed|work_path_residue) ;;
+    *) return 1 ;;
+  esac
+  key="$phase:$predicate"
+  [[ "|${cleanup_refusals_seen:-}|" != *"|$key|"* ]] || return 0
+  cleanup_refusals_seen="${cleanup_refusals_seen:-}|$key"
+  printf 'n3-cleanup:%s:%s\n' "$phase" "$predicate" >&2 || true
+  return 0
+}
+owned_unit_files_absent() {
+  # A named no-match is exit1 on systemd255, indistinguishable from a query
+  # failure. Enumerate ALL files successfully, then validate every complete
+  # UNIT FILE / STATE / PRESET row before comparing exact owned names.
+  # Keep raw bytes out of shell substitution (which strips NUL) and evidence.
+  local phase="$1" inventory status=0
+  inventory="$(mktemp "$work/.n3-unit-inventory.XXXXXX" 2>/dev/null)" || {
+    cleanup_refusal "$phase" inventory_scratch_failed; return 1;
+  }
+  if LC_ALL=C SYSTEMD_COLORS=0 systemctl list-unit-files --full --no-legend --no-pager >"$inventory" 2>/dev/null; then
+    LC_ALL=C awk '
+      {
+        if (NF != 3 || $0 ~ /[^[:print:]\t]/ ||
+            $1 !~ /^[A-Za-z0-9_:.@\\-]+\.(service|socket|target|device|mount|automount|swap|timer|path|slice|scope)$/ ||
+            $2 !~ /^(enabled|enabled-runtime|linked|linked-runtime|alias|masked|masked-runtime|static|disabled|indirect|generated|transient|bad)$/ ||
+            $3 !~ /^(enabled|disabled|ignored|-|n\/a)$/ || seen[$1]++) malformed=1
+        if ($1 == "happyranch-managed.target" || $1 == "happyranch-connector.service" ||
+            $1 == "happyranch-tsnet-sidecar.service") residue=1
+      }
+      END { if (NR == 0 || malformed) exit 11; if (residue) exit 10 }
+    ' "$inventory" 2>/dev/null || status=$?
+    case "$status" in
+      0) ;;
+      10) cleanup_refusal "$phase" unit_file_residue ;;
+      *) cleanup_refusal "$phase" inventory_malformed ;;
+    esac
+  else
+    status=1
+    cleanup_refusal "$phase" inventory_query_failed
+  fi
+  rm -f -- "$inventory" 2>/dev/null || { cleanup_refusal "$phase" inventory_scratch_failed; return 1; }
+  (( status == 0 ))
+}
 diagnostics="${N3_DIAGNOSTICS_DIR:-$(mktemp -d)}"
 mkdir -p "$diagnostics"
 printf 'subject=%s\n' "${PROOF_SUBJECT_SHA:-missing}" >"$diagnostics/bootstrap.txt"
@@ -461,7 +509,7 @@ start_managed_target() {
   return "$start_status"
 }
 cleanup() {
-  local original_status="${1:-$?}" cleanup_failed=0 raw_file unit_list stage_paths
+  local original_status="${1:-$?}" cleanup_failed=0 raw_file stage_paths
   # EXIT, INT and TERM share exactly ONE teardown. The first invocation owns it
   # and saves the initiating status; a signal arriving while teardown is running
   # must not start a second pass or replace that saved status.
@@ -485,8 +533,8 @@ cleanup() {
   fi
   sudo systemctl stop happyranch-managed.target || true
   if [[ -n "${sidecar_ip:-}" ]] && [[ -n "$peer_pid" ]] && sudo kill -0 "$peer_pid" 2>/dev/null; then
-    ! tsnet_open || cleanup_failed=1
-    (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || cleanup_failed=1
+    ! tsnet_open || { cleanup_failed=1; cleanup_refusal final virtual_listener_residue; }
+    (( cleanup_failed != 0 )) || evidence cleanup virtual_admission_removed_while_peer_alive || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   fi
   sudo systemctl disable happyranch-managed.target || true
   sudo systemctl reset-failed happyranch-connector.service happyranch-tsnet-sidecar.service happyranch-managed.target || true
@@ -502,38 +550,33 @@ cleanup() {
       # it, but determine residue from liveness after the reap, not exit code.
       wait "$pid" 2>/dev/null
     fi
-    [[ -z "$pid" ]] || ! sudo kill -0 "$pid" 2>/dev/null || cleanup_failed=1
+    [[ -z "$pid" ]] || ! sudo kill -0 "$pid" 2>/dev/null || { cleanup_failed=1; cleanup_refusal final fixture_process_residue; }
   done
   sudo rm -f /usr/local/share/ca-certificates/happyranch-n3-ci.crt
   sudo update-ca-certificates >/dev/null 2>&1
   printf 'fixtures_reaped=%s\n' "$(( cleanup_failed == 0 ))" >"$diagnostics/cleanup-status.txt"
   sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
-  # Empty output proves absence only when its producer completed successfully.
-  if unit_list="$(systemctl list-unit-files happyranch-managed.target happyranch-connector.service happyranch-tsnet-sidecar.service --no-legend 2>/dev/null)"; then
-    [[ -z "$unit_list" ]] || cleanup_failed=1
-  else
-    cleanup_failed=1
-  fi
+  owned_unit_files_absent final || cleanup_failed=1
   for path in /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar /.happyranch-install-transaction.json /.happyranch-backup /.happyranch-units-backup; do
-    sudo test ! -e "$path" || cleanup_failed=1
+    sudo test ! -e "$path" || { cleanup_failed=1; cleanup_refusal final owned_path_unconfirmed; }
   done
   if stage_paths="$(sudo find / -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit 2>/dev/null)"; then
-    [[ -z "$stage_paths" ]] || cleanup_failed=1
+    [[ -z "$stage_paths" ]] || { cleanup_failed=1; cleanup_refusal final stage_residue; }
   else
-    cleanup_failed=1
+    cleanup_failed=1; cleanup_refusal final stage_query_failed
   fi
-  for port in 18443 18765 18080 19090 15043 13478; do ! port_open "$port" || cleanup_failed=1; done
+  for port in 18443 18765 18080 19090 15043 13478; do ! port_open "$port" || { cleanup_failed=1; cleanup_refusal final host_listener_residue; }; done
   for unit in happyranch-connector.service happyranch-tsnet-sidecar.service; do
-    systemctl_absent_value "$unit" MainPID 0 || cleanup_failed=1
+    systemctl_absent_value "$unit" MainPID 0 || { cleanup_failed=1; cleanup_refusal final mainpid_unconfirmed; }
   done
-  (( cleanup_failed != 0 )) || evidence cleanup all_residue_absent || cleanup_failed=1
+  (( cleanup_failed != 0 )) || evidence cleanup all_residue_absent || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   for raw_file in "${capture_raw_files[@]}"; do rm -f "$raw_file"; done
   rm -rf "$work"
-  [[ ! -e "$work" ]] || cleanup_failed=1
-  (( cleanup_failed != 0 )) || evidence cleanup task_work_removed || cleanup_failed=1
+  [[ ! -e "$work" ]] || { cleanup_failed=1; cleanup_refusal final work_path_residue; }
+  (( cleanup_failed != 0 )) || evidence cleanup task_work_removed || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   if (( original_status == 0 && cleanup_failed == 0 )); then
-    python "$evidence_driver" finalize "$evidence_artifact" || cleanup_failed=1
-    python "$evidence_driver" validate "$evidence_artifact" --expected-subject "$PROOF_SUBJECT_SHA" --expected-run "$run_id" || cleanup_failed=1
+    python "$evidence_driver" finalize "$evidence_artifact" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
+    python "$evidence_driver" validate "$evidence_artifact" --expected-subject "$PROOF_SUBJECT_SHA" --expected-run "$run_id" || { cleanup_failed=1; cleanup_refusal final evidence_failed; }
   fi
   (( cleanup_failed == 0 )) || echo "n3-real-systemd: teardown residue" >&2
   trap - EXIT INT TERM
@@ -700,7 +743,7 @@ PY
   python "$evidence_driver" validate-denial-matrix "$diagnostics/$arm_id-denial-matrix.json" --expected-arm "$arm_id"
 }
 shipping_cleanup() {
-  local cleanup_complete=0 residue_root="${N3_RESIDUE_ROOT:-}" unit_list stage_paths process_status
+  local cleanup_complete=0 residue_root="${N3_RESIDUE_ROOT:-}" stage_paths process_status
   # These requests are deliberately idempotent: the pre-arm reset also runs
   # after a prior cleanup has removed the units.  The explicit process, port,
   # fixture, credential, transaction, and path checks below decide success.
@@ -709,36 +752,32 @@ shipping_cleanup() {
   sudo systemctl reset-failed happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service || true
   sudo rm -rf /etc/systemd/system/happyranch-tsnet-sidecar.service.d
   sudo rm -f /etc/systemd/system/happyranch-managed.target /etc/systemd/system/happyranch-tsnet-sidecar.service /etc/systemd/system/happyranch-connector.service
-  sudo systemctl daemon-reload || cleanup_complete=1
+  sudo systemctl daemon-reload || { cleanup_complete=1; cleanup_refusal shipping reload_failed; }
   sudo rm -rf /opt/happyranch /etc/happyranch /var/lib/happyranch-connector /var/lib/happyranch-tsnet-sidecar /run/happyranch-connector /run/happyranch-tsnet-sidecar /var/log/happyranch-connector /var/log/happyranch-tsnet-sidecar
   while read -r fixture_id; do
-    [[ -z "$fixture_id" ]] || "$work/headscale" nodes delete --identifier "$fixture_id" --force --config "$work/hs/config.yaml" >/dev/null || cleanup_complete=1
+    [[ -z "$fixture_id" ]] || "$work/headscale" nodes delete --identifier "$fixture_id" --force --config "$work/hs/config.yaml" >/dev/null || { cleanup_complete=1; cleanup_refusal shipping fixture_delete_failed; }
   done < <("$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; print("\n".join(str(n["id"]) for n in json.load(sys.stdin) if n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci"))')
-  "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in json.load(sys.stdin)))' || cleanup_complete=1
+  "$work/headscale" nodes list --output json --config "$work/hs/config.yaml" | python -c 'import json,sys; raise SystemExit(any(n.get("givenName")=="home-sidecar-ci" or n.get("name")=="home-sidecar-ci" for n in json.load(sys.stdin)))' || { cleanup_complete=1; cleanup_refusal shipping fixture_absence_unconfirmed; }
   for unit in happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service; do
-    unit_absent "$unit" || cleanup_complete=1
+    unit_absent "$unit" || { cleanup_complete=1; cleanup_refusal shipping unit_absence_unconfirmed; }
   done
-  if unit_list="$(systemctl list-unit-files happyranch-managed.target happyranch-tsnet-sidecar.service happyranch-connector.service --no-legend 2>/dev/null)"; then
-    [[ -z "$unit_list" ]] || cleanup_complete=1
-  else
-    cleanup_complete=1
-  fi
-  ! port_open 18443 || cleanup_complete=1
-  ! tsnet_open || cleanup_complete=1
-  [[ ! -e "$residue_root/etc/happyranch/enrollment.key" && ! -e "$residue_root/etc/systemd/system/happyranch-tsnet-sidecar.service.d" ]] || cleanup_complete=1
-  [[ ! -e "$residue_root/.happyranch-install-transaction.json" && ! -e "$residue_root/.happyranch-backup" && ! -e "$residue_root/.happyranch-units-backup" ]] || cleanup_complete=1
-  [[ ! -e "$residue_root/opt/happyranch" && ! -e "$residue_root/etc/happyranch" && ! -e "$residue_root/var/lib/happyranch-connector" && ! -e "$residue_root/var/lib/happyranch-tsnet-sidecar" ]] || cleanup_complete=1
-  [[ ! -e "$residue_root/run/happyranch-connector" && ! -e "$residue_root/run/happyranch-tsnet-sidecar" && ! -e "$residue_root/var/log/happyranch-connector" && ! -e "$residue_root/var/log/happyranch-tsnet-sidecar" ]] || cleanup_complete=1
+  owned_unit_files_absent shipping || cleanup_complete=1
+  ! port_open 18443 || { cleanup_complete=1; cleanup_refusal shipping host_listener_residue; }
+  ! tsnet_open || { cleanup_complete=1; cleanup_refusal shipping virtual_listener_residue; }
+  [[ ! -e "$residue_root/etc/happyranch/enrollment.key" && ! -e "$residue_root/etc/systemd/system/happyranch-tsnet-sidecar.service.d" ]] || { cleanup_complete=1; cleanup_refusal shipping credential_path_residue; }
+  [[ ! -e "$residue_root/.happyranch-install-transaction.json" && ! -e "$residue_root/.happyranch-backup" && ! -e "$residue_root/.happyranch-units-backup" ]] || { cleanup_complete=1; cleanup_refusal shipping transaction_path_residue; }
+  [[ ! -e "$residue_root/opt/happyranch" && ! -e "$residue_root/etc/happyranch" && ! -e "$residue_root/var/lib/happyranch-connector" && ! -e "$residue_root/var/lib/happyranch-tsnet-sidecar" ]] || { cleanup_complete=1; cleanup_refusal shipping payload_path_residue; }
+  [[ ! -e "$residue_root/run/happyranch-connector" && ! -e "$residue_root/run/happyranch-tsnet-sidecar" && ! -e "$residue_root/var/log/happyranch-connector" && ! -e "$residue_root/var/log/happyranch-tsnet-sidecar" ]] || { cleanup_complete=1; cleanup_refusal shipping runtime_path_residue; }
   if pgrep -f '(^|/)(happyranch-connector|happyranch-tsnet-sidecar)( |$)' >/dev/null 2>&1; then
-    cleanup_complete=1
+    cleanup_complete=1; cleanup_refusal shipping process_residue
   else
     process_status=$?
-    (( process_status == 1 )) || cleanup_complete=1
+    (( process_status == 1 )) || { cleanup_complete=1; cleanup_refusal shipping process_query_failed; }
   fi
   if stage_paths="$(sudo find "${residue_root:-/}" -maxdepth 1 \( -name '.happyranch-stage-*' -o -name '.happyranch-tmp-*' \) -print -quit 2>/dev/null)"; then
-    [[ -z "$stage_paths" ]] || cleanup_complete=1
+    [[ -z "$stage_paths" ]] || { cleanup_complete=1; cleanup_refusal shipping stage_residue; }
   else
-    cleanup_complete=1
+    cleanup_complete=1; cleanup_refusal shipping stage_query_failed
   fi
   (( cleanup_complete == 0 ))
 }

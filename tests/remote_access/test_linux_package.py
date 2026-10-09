@@ -1303,7 +1303,7 @@ def test_real_systemd_cleanup_releases_both_held_barriers_before_teardown(tmp_pa
     fake_bin = tmp_path / "bin"; fake_bin.mkdir()
     (fake_bin / "systemctl").write_text("""#!/bin/bash
 printf 'systemctl:%s\n' "$1" >>"$EVENT_LOG"
-case "$1" in show) echo 0;; list-unit-files) exit 0;; stop|disable|reset-failed|daemon-reload) exit 0;; *) exit 96;; esac
+case "$1" in show) echo 0;; list-unit-files) [[ "$*" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; echo 'unrelated.service enabled enabled';; stop|disable|reset-failed|daemon-reload) exit 0;; *) exit 96;; esac
 """)
     (fake_bin / "sudo").write_text("""#!/bin/bash
 printf 'sudo:%s:%s\n' "$1" "${2:-}" >>"$EVENT_LOG"
@@ -1483,7 +1483,9 @@ def _run_source_cleanup_acceptance(
     (fake_bin / "systemctl").write_text('''#!/bin/bash
 case "$1" in
   show) printf '%s\\n' "${MAIN_PID-0}"; exit "${PID_RC:-0}";;
-  list-unit-files) printf '%s' "${UNIT_LIST_OUTPUT-}"; exit "${UNIT_LIST_RC:-0}";;
+  list-unit-files)
+    if [[ "$*" != 'list-unit-files --full --no-legend --no-pager' ]]; then exit "${NAMED_UNIT_LIST_RC:-1}"; fi
+    printf '%s' "${UNIT_LIST_OUTPUT-unrelated.service enabled enabled}"; exit "${UNIT_LIST_RC:-0}";;
   stop|disable|reset-failed|daemon-reload) exit 0;;
   *) exit 91;;
 esac
@@ -1535,6 +1537,8 @@ def test_real_systemd_cleanup_finalizes_and_validates_actual_evidence_once(tmp_p
 
 @pytest.mark.parametrize("observation", [
     None,
+    {"UNIT_LIST_RC": "1", "UNIT_LIST_OUTPUT": ""},
+    {"UNIT_LIST_RC": "1", "UNIT_LIST_OUTPUT": "unrelated.service enabled enabled"},
     {"UNIT_LIST_RC": "2"}, {"UNIT_LIST_RC": "2", "UNIT_LIST_OUTPUT": "loaded"},
     {"UNIT_LIST_OUTPUT": "loaded"},
     {"FIND_RC": "1"}, {"FIND_RC": "1", "FIND_OUTPUT": "/.happyranch-stage-leftover"},
@@ -1646,7 +1650,8 @@ printf 'systemctl:%s\\n' "$1" >>"$EVENT_LOG"
 case "$1" in
   start) exit 37 ;;
   show) case "$4" in InvocationID) echo 12345678-1234-1234-1234-123456789abc;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) echo 0;; *) echo unknown;; esac ;;
-  stop|disable|reset-failed|daemon-reload|list-unit-files|list-jobs) exit 0 ;;
+  list-unit-files) [[ "$*" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; echo 'unrelated.service enabled enabled' ;;
+  stop|disable|reset-failed|daemon-reload|list-jobs) exit 0 ;;
   *) exit 97 ;;
 esac
 """)
@@ -1763,6 +1768,7 @@ def test_real_systemd_positive_start_exit_trap_preserves_exit_37_despite_capture
     (fake_bin / "systemctl").write_text("""#!/bin/bash
 if [[ $1 == start ]]; then exit 37; fi
 if [[ $1 == show ]]; then case $4 in ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; *) echo unknown;; esac; fi
+if [[ $1 == list-unit-files ]]; then [[ "$*" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; echo 'unrelated.service enabled enabled'; fi
 exit 0
 """)
     (fake_bin / "sudo").write_text("#!/bin/bash\nif [[ $1 == systemctl ]]; then shift; exec systemctl \"$@\"; fi\nexit 0\n")
@@ -1821,7 +1827,8 @@ printf 'systemctl:%s\\n' "$1" >>"$EVENT_LOG"
 case "$1" in
   start) exit 37 ;;
   show) case "$4" in InvocationID) printf '%s\\n' "$INVOCATION";; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; *) echo unknown;; esac ;;
-  list-jobs|stop|disable|reset-failed|daemon-reload|list-unit-files) exit 0 ;;
+  list-unit-files) [[ "$*" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; echo 'unrelated.service enabled enabled' ;;
+  list-jobs|stop|disable|reset-failed|daemon-reload) exit 0 ;;
   *) exit 98 ;;
 esac
 ''')
@@ -1951,7 +1958,8 @@ printf 'systemctl:%s\n' "$1" >>"$EVENT_LOG"
 case "$1" in
   start) exit 37 ;;
   show) case "$4" in InvocationID) echo 12345678-1234-1234-1234-123456789abc;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) echo 0;; *) echo unknown;; esac ;;
-  stop|disable|reset-failed|daemon-reload|list-unit-files|list-jobs) exit 0 ;;
+  list-unit-files) [[ "$*" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; echo 'unrelated.service enabled enabled' ;;
+  stop|disable|reset-failed|daemon-reload|list-jobs) exit 0 ;;
   *) printf 'unknown-systemctl:%s\n' "$1" >>"$EVENT_LOG"; exit 97 ;;
 esac
 """)
@@ -2023,7 +2031,7 @@ def test_real_systemd_signal_traps_cleanup_once_and_preserve_non_success(tmp_pat
     unit_helpers = "systemctl_absent_value() {" + harness.split("systemctl_absent_value() {", 1)[1].split("\ndiagnostics=", 1)[0]
     cleanup = harness.split("cleanup() {", 1)[1].split("\n}\ntrap cleanup EXIT", 1)[0]
     fake_bin = tmp_path / "bin"; fake_bin.mkdir()
-    (fake_bin / "systemctl").write_text("#!/bin/bash\nif [[ $1 == show ]]; then echo 0; fi\nexit 0\n")
+    (fake_bin / "systemctl").write_text("#!/bin/bash\nif [[ $1 == show ]]; then echo 0; fi\nif [[ $1 == list-unit-files ]]; then [[ \"$*\" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; echo 'unrelated.service enabled enabled'; fi\nexit 0\n")
     (fake_bin / "sudo").write_text("#!/bin/bash\nif [[ $1 == systemctl ]]; then shift; exec systemctl \"$@\"; fi\nexit 0\n")
     (fake_bin / "pgrep").write_text("#!/bin/bash\nexit 1\n")
     for executable in fake_bin.iterdir(): executable.chmod(0o700)
@@ -2093,7 +2101,7 @@ def _run_positive_start_cleanup_scenario(
         # unexpected commands fail without forwarding to any host manager.
         fixture = fake_bin / "fixture"
         fixture.write_text(f"#!{sys.executable}\n" + r'''
-import json, os, pathlib, shutil, subprocess, sys
+import json, os, pathlib, shutil, subprocess, sys, tempfile
 root = pathlib.Path(os.environ["FIXTURE_ROOT"])
 work = root / "work"
 tool = pathlib.Path(sys.argv[0]).name
@@ -2161,8 +2169,13 @@ if tool == "systemctl":
             record("reset-reload")
         finish()
     if verb == "list-unit-files":
+        if args == ["--full", "--no-legend", "--no-pager"]:
+            print("unrelated.service enabled enabled")
+            if state["installed"]:
+                for unit in units: print(unit + " enabled enabled")
+            finish()
         assert len(args) == 4 and set(args[:-1]) == set(units) and args[-1] == "--no-legend", argv
-        finish()
+        finish(1)
     if verb == "show":
         assert len(args) == 4 and args[0] in units and args[1] == "-p" and args[3] == "--value", argv
         values = {"LoadState": "loaded" if state["installed"] else "not-found",
@@ -2246,6 +2259,12 @@ if tool == "timeout":
     assert argv in [["1", "bash", "-c", "</dev/tcp/127.0.0.1/" + port] for port in ("18443", "18765", "18080", "19090", "15043", "13478")], argv
     finish(1)  # No host or network probe is forwarded.
 if tool == "mktemp":
+    if argv == [str(work / ".n3-unit-inventory.XXXXXX")]:
+        fd, path = tempfile.mkstemp(prefix=".n3-unit-inventory.", dir=work)
+        os.close(fd)
+        state["inventory_path"] = path
+        print(path)
+        finish()
     assert argv == [str(root / "diagnostics/.n3-losses.XXXXXX")], argv
     record("capture-attempt", cleanup_entered=(root / "diagnostics/cleanup-events.log").exists(), exit=9)
     finish(9)  # Real capture entry observes a failed external temp-file launch.
@@ -2262,7 +2281,15 @@ if tool == "update-ca-certificates":
     assert not argv, argv
     finish()
 if tool == "rm":
+    if argv == ["-f", "--", state.get("inventory_path")]:
+        path = pathlib.Path(argv[-1])
+        assert path.parent == work and path.name.startswith(".n3-unit-inventory."), argv
+        path.unlink()
+        del state["inventory_path"]
+        finish()
     assert argv[0] in {"-f", "-rf"}, argv
+    if set("/etc/systemd/system/" + unit for unit in units) <= set(argv[1:]):
+        state["installed"] = False
     allowed = {"/etc/systemd/system/happyranch-tsnet-sidecar.service.d", "/usr/local/share/ca-certificates/happyranch-n3-ci.crt",
         *["/etc/systemd/system/" + unit for unit in units],
         "/opt/happyranch", "/etc/happyranch", *["/" + base + "/" + name for base in ("var/lib", "run", "var/log") for name in ("happyranch-connector", "happyranch-tsnet-sidecar")], str(work)}
@@ -2336,7 +2363,7 @@ case "$1" in
   start) exit 37 ;;
   show) case "$4" in InvocationID) echo unknown;; ActiveState) echo failed;; SubState) echo failed;; Result) echo exit-code;; ExecMainStatus) echo 37;; MainPID) [[ "{fault}" != observation-pid ]] || exit 2; echo 0;; *) echo unknown;; esac ;;
   stop|disable|reset-failed) [[ "$1" != "{fault}" ]] || exit 55; exit 0 ;;
-  list-unit-files) [[ "{fault}" != observation-list ]] || exit 2; exit 0 ;;
+  list-unit-files) [[ "$*" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; [[ "{fault}" != observation-list ]] || exit 2; echo 'unrelated.service enabled enabled' ;;
   daemon-reload|list-jobs) exit 0 ;;
   *) printf 'unknown-systemctl:%s\\n' "$1" >>"$EVENT_LOG"; exit 97 ;;
 esac
@@ -2488,6 +2515,9 @@ def test_real_systemd_cleanup_command_faults_preserve_exit_37_and_finish_teardow
     assert not any(event.startswith(("evidence:finalize", "evidence:validate", "unknown-")) for event in events)
     if fault.startswith("observation-"):
         assert "evidence:cleanup:all_residue_absent" not in events
+        identifier = {"observation-list": "inventory_query_failed", "observation-find": "stage_query_failed", "observation-pid": "mainpid_unconfirmed"}[fault]
+        assert result.stderr.count(f"n3-cleanup:final:{identifier}\n") == 1
+        assert "TOKEN_CANARY" not in result.stderr
 
 
 @pytest.mark.parametrize(("signal", "expected", "fault"), [
@@ -2510,6 +2540,9 @@ def test_real_systemd_signal_cleanup_command_faults_preserve_signal_status_once(
     assert not any(event.startswith(("evidence:finalize", "evidence:validate", "unknown-")) for event in events)
     if fault.startswith("observation-"):
         assert "evidence:cleanup:all_residue_absent" not in events
+        identifier = {"observation-list": "inventory_query_failed", "observation-find": "stage_query_failed", "observation-pid": "mainpid_unconfirmed"}[fault]
+        assert result.stderr.count(f"n3-cleanup:final:{identifier}\n") == 1
+        assert "TOKEN_CANARY" not in result.stderr
 
 
 def test_real_systemd_signal_during_cleanup_runs_teardown_once(tmp_path: Path) -> None:
@@ -2525,6 +2558,7 @@ if [[ $1 == stop && ! -e "$EVENT_LOG.signalled" ]]; then
   kill -TERM "$PPID"
 fi
 if [[ $1 == show && $4 == MainPID ]]; then echo 0; fi
+if [[ $1 == list-unit-files ]]; then [[ "$*" == 'list-unit-files --full --no-legend --no-pager' ]] || exit 1; echo 'unrelated.service enabled enabled'; fi
 exit 0
 """)
     (fake_bin / "sudo").write_text("#!/bin/bash\nif [[ $1 == systemctl ]]; then shift; exec systemctl \"$@\"; fi\nexit 0\n")
@@ -2603,7 +2637,9 @@ def _run_real_systemd_shipping_cleanup(tmp_path: Path, **env: str) -> subprocess
     (fake_bin / "systemctl").write_text("""#!/bin/bash
 if [[ $1 == show ]]; then p=$4; case $p in LoadState) v=${LOAD_STATE-not-found}; s=${LOAD_RC:-4};; ActiveState) v=${ACTIVE_STATE-inactive}; s=${ACTIVE_RC:-4};; SubState) v=${SUB_STATE-dead}; s=${SUB_RC:-4};; MainPID) v=${MAIN_PID-0}; s=${PID_RC:-4};; esac; printf '%s\\n' "$v"; exit "$s"; fi
 if [[ $1 == list-unit-files ]]; then
-  [[ ${UNIT_LIST_RESIDUE:-0} != 1 ]] || echo loaded
+  if [[ "$*" != 'list-unit-files --full --no-legend --no-pager' ]]; then exit "${NAMED_UNIT_LIST_RC:-1}"; fi
+  if [[ ${UNIT_LIST_RESIDUE:-0} == 1 ]]; then echo 'happyranch-managed.target enabled enabled';
+  else printf '%s' "${UNIT_LIST_OUTPUT-unrelated.service enabled enabled}"; fi
   exit "${UNIT_LIST_RC:-0}"
 fi
 exit 0
@@ -2647,6 +2683,8 @@ def test_real_systemd_shipping_cleanup_accepts_recognized_absent_exit_orderings(
     {"ACTIVE_STATE": "active", "ACTIVE_RC": "0"}, {"MAIN_PID": "42", "PID_RC": "0"},
     {"UNIT_LIST_RESIDUE": "1"}, {"PROCESS_RESIDUE": "1"}, {"PORT_RESIDUE": "1"},
     {"LISTENER_RESIDUE": "1"}, {"FIXTURE_RESIDUE": "1"},
+    {"UNIT_LIST_RC": "1", "UNIT_LIST_OUTPUT": ""},
+    {"UNIT_LIST_RC": "1", "UNIT_LIST_OUTPUT": "unrelated.service enabled enabled"},
     {"UNIT_LIST_RC": "2"}, {"UNIT_LIST_RC": "2", "UNIT_LIST_RESIDUE": "1"},
     {"FIND_RC": "1"}, {"FIND_RC": "1", "FIND_OUTPUT": "/.happyranch-stage-leftover"},
     {"PGREP_RC": "0"}, {"PGREP_RC": "2"}, {"PGREP_RC": "3"}, {"PGREP_RC": "7"},
@@ -2657,6 +2695,10 @@ def test_real_systemd_shipping_cleanup_rejects_query_and_probe_residue(tmp_path:
     result = _run_real_systemd_shipping_cleanup(tmp_path, **env)
     assert result.returncode != 0
     assert "reset-continuation" not in result.stdout
+    identifiers = [line for line in result.stderr.splitlines() if line.startswith("n3-cleanup:")]
+    assert identifiers and len(identifiers) == len(set(identifiers))
+    assert len(identifiers) <= 46 and sum(len(line) + 1 for line in identifiers) < 4096
+    assert all(re.fullmatch(r"n3-cleanup:shipping:[a-z_]+", line) for line in identifiers)
 
 
 @pytest.mark.parametrize("residue", [
@@ -2671,6 +2713,46 @@ def test_real_systemd_shipping_cleanup_rejects_every_filesystem_residue_class(tm
     path.parent.mkdir(parents=True, exist_ok=True)
     path.mkdir() if "." not in path.name else path.write_text("residue")
     assert _run_real_systemd_shipping_cleanup(tmp_path).returncode != 0
+
+
+@pytest.mark.parametrize("phase", ["shipping", "final"])
+@pytest.mark.parametrize(("inventory", "status", "expected_identifier"), [
+    ("unrelated.service enabled enabled\nhappyranch-managed.target-extra.service static -\nprefix-happyranch-connector.service disabled disabled\nhappyranch-tsnet-sidecar.service-extra.service alias -\n", "0", None),
+    *[(f"unrelated.service enabled enabled\n{unit} disabled disabled\n", "0", "unit_file_residue")
+      for unit in ("happyranch-managed.target", "happyranch-connector.service", "happyranch-tsnet-sidecar.service")],
+    ("", "1", "inventory_query_failed"),
+    ("unrelated.service enabled enabled\n", "1", "inventory_query_failed"),
+    ("", "7", "inventory_query_failed"),
+    ("unrelated.service enabled enabled\n", "7", "inventory_query_failed"),
+    ("", "0", "inventory_malformed"),
+    ("TOKEN_CANARY arbitrary upstream text\n", "0", "inventory_malformed"),
+    ("unrelated.service enabled enabled EXTRA\n", "0", "inventory_malformed"),
+    ("unrelated.service enabled\n", "0", "inventory_malformed"),
+    ("unrelated.service enabled enabled\r\n", "0", "inventory_malformed"),
+    ("unrelated.service enabled enabled\nunrelated.service enabled enabled\n", "0", "inventory_malformed"),
+    ("happyranch-managed.target disabled disabled\nMALFORMED\n", "0", "inventory_malformed"),
+])
+def test_real_systemd_cleanup_inventory_requires_success_and_exact_owned_names(
+    tmp_path: Path, phase: str, inventory: str, status: str, expected_identifier: str | None,
+) -> None:
+    """Actual source helpers in existing cleanup seams; named no-match is rc1."""
+    observation = {"NAMED_UNIT_LIST_RC": "1", "UNIT_LIST_RC": status, "UNIT_LIST_OUTPUT": inventory}
+    if phase == "shipping":
+        result = _run_real_systemd_shipping_cleanup(tmp_path, **observation)
+        continued = "reset-continuation" in result.stdout
+    else:
+        result, events = _run_source_cleanup_acceptance(
+            tmp_path, artifact_run="run", cleanup_run="run", include_cleanup=True, observation=observation,
+        )
+        continued = "evidence:finalize" in events and "evidence:validate" in events
+        assert "sudo:rm" in events
+        assert not (tmp_path / "work").exists()
+    assert (result.returncode == 0) == (expected_identifier is None), result.stderr
+    assert continued == (expected_identifier is None), result.stderr
+    if expected_identifier is not None:
+        assert f"n3-cleanup:{phase}:{expected_identifier}\n" in result.stderr
+    assert "TOKEN_CANARY" not in result.stderr + result.stdout
+    assert not list(tmp_path.rglob(".n3-unit-inventory.*"))
 
 
 def test_composite_service_manager_executes_start_ready_stop_crash_restart() -> None:
@@ -3056,7 +3138,6 @@ def _distinct_package(tmp_path: Path, version: str, marker: bytes) -> Path:
     return build_linux_package(
         tmp_path / f"pkg-{version}.tar", sidecar, connector, wheel, inventory, notices, version=version
     )
-
 
 @pytest.mark.parametrize("phase", ["prepared", "payload_retained", "payload_published", "units_publishing"])
 def test_legacy_v1_transaction_marker_is_preserved_and_refused(tmp_path: Path, phase: str) -> None:
