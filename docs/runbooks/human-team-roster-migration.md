@@ -24,9 +24,21 @@ Use an actual authorized disposable M venue before maintenance readiness:
    private durable operation_dir outside runtime/workspaces/tmp, exact closed
    database backup inside an independently restored complete closed org copy
    (`closed_restore_root`), sole existing head manager sentence, actual persistent
-   systemd user-unit and registry paths bound to the effective `daemon_home`, and independently inspected exact
+   systemd user/system-unit and registry paths bound to the effective `daemon_home`, and independently inspected exact
    generated after-images from unchanged candidate materializers. Every image
    names kind, mode, uid/gid, base64 bytes and SHA256; links retain raw targets.
+   Include `closed_canonical_store_restore` for the effective original shared
+   store, `canonical_store_after_images` for every new native package file and
+   containing directory, and `materialization_event_shapes` for the existing
+   catalog's normal info events for both agents. Existing package addresses
+   cannot be rewritten. Directory images contain only kind/mode/uid/gid.
+   Check captures old publication/profile row hashes and audit/materialization
+   prefixes; initial apply rechecks exact closed DB bytes and all those controls.
+   Recovery refuses foreign journals, profile operations or new audit actors.
+   Existing executor dependency rows remain exact. Resolve unfinished journals,
+   profile operations, stale leases and incoherent bindings through their existing
+   owners before checking. Native provider directories and relative skill links
+   must be declared; arbitrary provider files are outside this utility's radius.
    Unknown generated paths or missing capabilities refuse.
 4. On a clean committed candidate, invoke:
 
@@ -64,3 +76,36 @@ metadata and preservation inventories; RF5/RF6/writer-busy causal process contro
 M reboot/maintenance and zero-write replay; held old-reader and U9 localization;
 bilingual viewport screenshots. This draft utility must not be accepted as
 canonical C6/C8/C9 completion while any of those source/proof gaps remains.
+
+Reviewable check input uses this shape. The placeholders are required real
+observations and exact native outputs, **not an executable manifest or receipt**:
+
+```json
+{
+  "operation_id": "OPERATOR_ASSIGNED_UNIQUE_ID",
+  "operation_dir": "/durable/private-operation",
+  "closed_restore_root": "/durable/verified-closed-org-copy",
+  "closed_database_backup": "/durable/verified-closed-org-copy/happyranch.db",
+  "closed_canonical_store_restore": "/durable/verified-closed-store-copy",
+  "head_manager_sentence": "EXACT_SOLE_EXISTING_SENTENCE",
+  "containment": {
+    "daemon_home": "/effective/original/daemon-home",
+    "systemd_user_units": ["ACTUAL_REGISTERED_SUPERVISOR.service"],
+    "systemd_system_units": [],
+    "registry_paths": ["/effective/original/daemon-home/runtimes.yaml"]
+  },
+  "generated_after_images": {"EXACT_NATIVE_WORKSPACE_PATH": "REPLACE_WITH_CLOSED_IMAGE"},
+  "canonical_store_after_images": {"EXACT_NATIVE_PACKAGE_PATH": "REPLACE_WITH_CLOSED_IMAGE"},
+  "materialization_event_shapes": ["REPLACE_WITH_EXACT_NATIVE_EVENT_FIELDS_EXCEPT_ID_AND_CREATED_AT"]
+}
+```
+
+Check is read-only with respect to runtime state. Do not redirect its stdout to
+a production manifest until a real authorized check returns exit0 and its full
+private contents have been reviewed. No M capability or backup receipt is
+created by this example. Successful completed replay checks the owned final
+state before first-apply CAS; loss of an external receipt permits only its
+reconstruction from actual native evidence. Partial prefixes require explicit
+recover. Only the exact declared native package staging bytes and metadata are
+recognized as an owned prefix. Unknown global residue is refused, never swept
+or adopted. Native creation-mask provenance is rechecked before materialization.

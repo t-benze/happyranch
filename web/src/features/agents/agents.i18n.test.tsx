@@ -410,8 +410,11 @@ describe('THR296 human Default worker views', () => {
       model: null, description: `Advice from ${name}`, repos: {}, system_prompt: 'Individual advice.',
     }));
     let policyReads = 0;
+    const modelWrites: unknown[] = [];
     server.use(
       http.get(`${API}/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents })),
+      http.get(`${API}/orgs/${SLUG}/agents/:agent/cleanup-activity`, () =>
+        HttpResponse.json({ activities: [] })),
       http.get(`${API}/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: [{
         name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder',
         is_default: true, workers: agents.map((agent) => agent.name),
@@ -420,15 +423,39 @@ describe('THR296 human Default worker views', () => {
         policyReads += 1;
         return HttpResponse.json({ detail: 'ineligible' }, { status: 404 });
       }),
+      http.put(`${API}/orgs/${SLUG}/agents/consultant_head/model`, async ({ request }) => {
+        modelWrites.push(await request.json());
+        return HttpResponse.json({ name: 'consultant_head', model: 'worker-draft' });
+      }),
     );
-    renderWithProviders(<AppRoutes />, {
-      route: `/orgs/${SLUG}/agents/consultant_head`, i18n: { adapter: savedLocaleAdapter(locale) },
-    });
+    mount(locale, `/orgs/${SLUG}/agents/consultant_head`);
     expect((await screen.findAllByText('Advice from consultant_head')).length).toBeGreaterThan(0);
     expect(screen.getAllByText('consultant_codex').length).toBeGreaterThan(0);
     expect((await screen.findAllByText(translate(locale, 'agents.team.founderManaged'), { exact: false })).length).toBeGreaterThan(0);
     expect(screen.queryByTestId('team-escalation-policy')).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: translate(locale, 'agents.policy.open') })).not.toBeInTheDocument();
+    expect(policyReads).toBe(0);
+    // Locale changes keep the existing worker editor, selection and original
+    // action. The test switch invokes the real provider without stealing focus.
+    const model = screen.getByRole('textbox', { name: translate(locale, 'agents.detail.model') });
+    fireEvent.change(model, { target: { value: 'worker-draft' } });
+    model.focus();
+    (model as HTMLInputElement).setSelectionRange(2, 6);
+    const next = locale === 'en' ? 'zh-CN' : 'en';
+    fireEvent.click(screen.getByTestId(`test-set-locale-${next}`));
+    expect(screen.getByRole('textbox', { name: translate(next, 'agents.detail.model') })).toBe(model);
+    expect(model).toHaveValue('worker-draft');
+    expect(model).toHaveFocus();
+    expect((model as HTMLInputElement).selectionStart).toBe(2);
+    expect((model as HTMLInputElement).selectionEnd).toBe(6);
+    expect(modelWrites).toEqual([]);
+    expect(policyReads).toBe(0);
+    fireEvent.click(screen.getByRole('button', { name: translate(next, 'agents.detail.save') }));
+    await waitFor(() => expect(modelWrites).toEqual([{ model: 'worker-draft' }]));
+    await waitFor(() => expect(screen.queryByRole('button', { name: translate(next, 'agents.detail.save') })).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /consultant_codex.*worker/ }));
+    expect((await screen.findAllByText('Advice from consultant_codex')).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('team-escalation-policy')).not.toBeInTheDocument();
     expect(policyReads).toBe(0);
   });
 });

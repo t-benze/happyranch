@@ -37,6 +37,11 @@ nonblocking publisher-before-DB attempts, async-writer exclusion and uncapped
 success. Cancellation/owner drift/shutdown stop further effects and preserve
 truthful residue. Cold startup may reconcile durable evidence without signalling
 persisted PIDs. Completed-leaf and agent-team behavior remain unchanged.
+Selected live job drain uses the existing termination owner with full K and
+fresh consumed ownership before opaque-control use. After actual drain, the
+same retained operation retries only its original parent handoff. Cold authority
+recovery flushes staged/installed bytes and the containing directory before
+advancing publication state; matching bytes do not prove a prior flush.
 
 Migration is an explicit bounded operator utility, never startup/enable/live
 maintenance. It requires persistent external restart inhibition, complete
@@ -46,6 +51,11 @@ refresh and explicit ready readback. Complete/compensate observes actual state;
 unknown third states refuse. Compensation keeps resumes cleared and publishes
 new authority. Same-manifest replay requires zero protected writes/helpers,
 including zero-row/already-null cases, proved by independent observations.
+The checked private input closes both org and shared canonical-store backups,
+exact output images, native materialization event shapes, pre-edit publication/
+profile rows and prior audit prefixes. Earlier rows/packages remain intact;
+foreign control history and unknown global residue require operator resolution.
+Source closure and readback alone do not establish the required crash/VM proof.
 
 C1–C10 and v24 evidence remain the accepted case record. Python units and U9
 localization are SUSPENDED THR291 seq5/16; general integration is SKIPPED

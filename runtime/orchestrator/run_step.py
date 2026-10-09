@@ -1062,28 +1062,19 @@ def _drain_human_failed_recovery_jobs(orch: "Orchestrator", operation: _HumanFai
     if operation.drain is not None:
         return
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         # Cold startup has no inherited opaque controls; DB settlement is the
         # authentic boundary and persisted PIDs are never signalled.
         operation.phase = "parent_handoff"
         return
-    async def drain() -> None:
-        from runtime.daemon.jobs_runner import terminate_jobs_for_task
-        try:
-            await terminate_jobs_for_task(operation.task_id,
-                inflight_to_task={job: operation.task_id for job in operation.job_ids})
-        except asyncio.CancelledError:
-            operation.finish("recovery_required")
-            return
-        except Exception:
-            logger.exception("human failed recovery job drain failed")
-            operation.finish("recovery_required")
-            return
-        operation.phase = "parent_handoff"
-        _drive_human_failed_recovery(orch, operation)
     operation.disposition = "continuation_pending"
-    operation.drain = loop.create_task(drain())
+    operation.drain = _kill_jobs_for_terminating_task(
+        orch, operation.task_id,
+        recovery_owner=(operation.agent, operation.session_id, operation.result_id, TaskStatus.FAILED.value),
+        recovery_job_ids=operation.job_ids,
+        human_recovery_operation=operation,
+    )
 
 
 def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str,
@@ -3551,7 +3542,8 @@ def _kill_jobs_for_terminating_task(
     recovery_job_ids: tuple[str, ...] | None = None,
     after_recovery_cleanup: Callable[[], None] | None = None,
     after_recovery_parent_effect: Callable[[], None] | None = None,
-) -> None:
+    human_recovery_operation: _HumanFailedRecoveryOperation | None = None,
+) -> asyncio.Task | None:
     """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
 
     Called from ``_complete`` and ``_fail`` whenever a task transitions to a
@@ -3583,6 +3575,61 @@ def _kill_jobs_for_terminating_task(
     from runtime.daemon.jobs_runner import terminate_jobs_for_task
 
     async def _kill_and_backstop() -> None:
+        if human_recovery_operation is not None:
+            operation = human_recovery_operation
+            org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+            queue = getattr(orch, "_queue", None)
+            supervisor = getattr(orch, "_host_supervisor", None)
+            if (org is None or (queue is not None and getattr(queue, "_stopping", False))
+                    or (supervisor is not None and supervisor.is_shutdown())):
+                operation.finish("recovery_required")
+                return
+            authority = org.workflow_authority
+            # This task may start after a writer/cancellation won. Admit the
+            # actual opaque-control action on its owning loop immediately
+            # before entering the native drain, without awaiting under locks.
+            if authority._async_writer_lock.locked() or not authority._publisher_lock.acquire(blocking=False):
+                operation.drain = None
+                _retry_human_failed_recovery(orch, operation)
+                return
+            acquired_db = False
+            try:
+                if authority._async_writer_lock.locked() or not db._lock.acquire(blocking=False):
+                    operation.drain = None
+                    _retry_human_failed_recovery(orch, operation)
+                    return
+                acquired_db = True
+                disposition, context = db.human_failed_recovery_context(
+                    task_id=task_id, agent=operation.agent, session_id=operation.session_id,
+                    result_row_id=operation.result_id,
+                )
+                if (disposition != "eligible" or context["episode"]["state"] != "callback_consumed"
+                        or operation.key != (task_id, operation.agent, context["episode"]["origin_session_id"],
+                                             operation.session_id, operation.result_id)):
+                    operation.finish(disposition if disposition != "eligible" else "lost_owner")
+                    return
+            except Exception:
+                logger.exception("human failed recovery native drain admission failed")
+                operation.finish("recovery_required")
+                return
+            finally:
+                if acquired_db:
+                    db._lock.release()
+                authority._publisher_lock.release()
+            try:
+                await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
+            except asyncio.CancelledError:
+                operation.finish("recovery_required")
+                return
+            except Exception:
+                logger.exception("human failed recovery job drain failed")
+                operation.finish("recovery_required")
+                return
+            # Keep the original K and callback. Busy here retries only this
+            # handoff; it never settles/drains the already finished jobs again.
+            operation.phase = "parent_handoff"
+            _drive_human_failed_recovery(orch, operation)
+            return
         await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
         # Backstop DB update — guarded by status='running' so we don't trample
         # the runner's own terminal write if it got there first.  The database
@@ -3614,7 +3661,7 @@ def _kill_jobs_for_terminating_task(
             daemon=True,
         ).start()
     else:
-        loop.create_task(_kill_and_backstop())
+        return loop.create_task(_kill_and_backstop())
 
 
 

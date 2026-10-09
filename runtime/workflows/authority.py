@@ -1232,7 +1232,16 @@ class WorkflowAuthorityCoordinator:
                     if staging.is_file():
                         if staging.read_bytes() != snapshot:
                             raise WorkflowAuthorityError("authority_staging_snapshot_mismatch")
+                        # Process loss may precede the original staging flush.
+                        # Re-establish file durability before installing it.
+                        with staging.open("rb") as staged:
+                            os.fsync(staged.fileno())
                         os.replace(staging, path)
+                        directory_fd = os.open(path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                         state = "canonical_published"
                         with self._transaction() as conn:
                             conn.execute(
@@ -1241,6 +1250,16 @@ class WorkflowAuthorityCoordinator:
                                 (journal_id, self.namespace),
                             )
                     elif path.is_file() and path.read_bytes() == snapshot:
+                        # The previous process may have died after rename but
+                        # before its directory flush. Bytes alone do not close
+                        # that boundary.
+                        with path.open("rb") as installed:
+                            os.fsync(installed.fileno())
+                        directory_fd = os.open(path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                         state = "canonical_published"
                         with self._transaction() as conn:
                             conn.execute(
@@ -1262,7 +1281,16 @@ class WorkflowAuthorityCoordinator:
                         raise WorkflowAuthorityError("authority_canonical_snapshot_mismatch")
                     if not path.exists():
                         path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(snapshot)
+                        with staging.open("wb") as staged:
+                            staged.write(snapshot)
+                            staged.flush()
+                            os.fsync(staged.fileno())
+                        os.replace(staging, path)
+                        directory_fd = os.open(path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                     with self._transaction() as conn:
                         current, _jid, _old_digest, _pointer_state, profile_fence = self._pointer(
                             conn, self.namespace,

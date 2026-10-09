@@ -94,17 +94,28 @@ def test_c1_registry_and_attachment(human_daemon: tuple[int, Path]) -> None:
         assert next(agent for agent in agents if agent['name'] == name)['role'] == 'worker'
 
 
-def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path]) -> None:
+@pytest.mark.parametrize('owner,code,http_status', [
+    (None, 'owner_required_for_human_team', 422),
+    ('founder', 'unknown_owner', 400),
+    ('missing_worker', 'unknown_owner', 400),
+    ('dev_agent', 'owner_team_mismatch', 400),
+], ids=['missing-owner', 'founder', 'unknown-worker', 'other-team-worker'])
+def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
+                                             owner: str | None, code: str, http_status: int) -> None:
     port, root = human_daemon
     with sqlite3.connect(root / 'happyranch.db') as conn:
         before = conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]
-    reply = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'brief': 'missing owner'}, headers=_auth_headers())
-    assert reply.status_code == 422
-    assert reply.json()['detail']['code'] == 'owner_required_for_human_team'
+        before_attachments = conn.execute('SELECT COUNT(*) FROM task_attachments').fetchone()[0]
+    body = {'team': 'default', 'brief': 'owner guard before any durable allocation'}
+    if owner is not None:
+        body['owner'] = owner
+    reply = httpx.post(_base(port) + '/tasks', json=body, headers=_auth_headers())
+    assert reply.status_code == http_status
+    assert reply.json()['detail']['code'] == code
     with sqlite3.connect(root / 'happyranch.db') as conn:
         assert conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == before
-    invalid = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'owner': 'founder', 'brief': 'invalid executor'}, headers=_auth_headers())
-    assert invalid.status_code == 400 and invalid.json()['detail']['code'] == 'unknown_owner'
+        assert conn.execute('SELECT COUNT(*) FROM task_attachments').fetchone()[0] == before_attachments
+        assert conn.execute('SELECT COUNT(*) FROM task_results').fetchone()[0] == 0
 
 
 @pytest.mark.parametrize('agent', ['consultant_head', 'consultant_codex'], ids=['head', 'codex'])
@@ -155,3 +166,15 @@ def test_c4_normal_and_recovered_verdict_attribution(
             assert type(R) is int and R > 0 and accepted_session == S1 and state == 'callback_consumed'
             selected = conn.execute('SELECT task_id,agent,session_id,verdict FROM task_results WHERE id=?', (R,)).fetchone()
             assert selected == (children[0][0], agent, S1, verdict)
+            assert conn.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (children[0][0],)).fetchone()[0] == 1
+            bound = [json.loads(row[0]) for row in conn.execute(
+                "SELECT payload FROM audit_log WHERE task_id=? AND action='completion_report' ORDER BY id",
+                (children[0][0],)) if '_result_row_id' in json.loads(row[0])]
+            assert len(bound) == 1 and bound[0]['_result_row_id'] == R and bound[0]['_recovery_session_id'] == S1
+            witness = Path(str(plan) + '.calls.jsonl')
+            calls = [json.loads(line) for line in witness.read_text().splitlines()]
+            child_calls = [call for call in calls if call['task'] == children[0][0]]
+            assert child_calls == [
+                {'task': children[0][0], 'session': S0, 'agent': agent},
+                {'task': children[0][0], 'session': S1, 'agent': agent},
+            ]

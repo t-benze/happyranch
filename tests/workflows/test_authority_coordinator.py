@@ -166,14 +166,14 @@ def test_every_durable_boundary_recovers_once_on_cold_reopen(
             org.workflow_authority, "_transaction", crash_at_transaction,
         )
     elif boundary == "file_phase_reserved":
-        original_write_bytes = Path.write_bytes
+        original_open = Path.open
 
-        def crash_before_staging_write(path: Path, data: bytes) -> int:
-            if path.name.endswith(".staging"):
+        def crash_before_staging_write(path: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+            if path.name.endswith(".staging") and mode == "wb":
                 raise InjectedPublisherCrash(boundary)
-            return original_write_bytes(path, data)
+            return original_open(path, mode, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "write_bytes", crash_before_staging_write)
+        monkeypatch.setattr(Path, "open", crash_before_staging_write)
     else:
         def crash_before_canonical_replace(
             source: str | bytes | os.PathLike[str] | os.PathLike[bytes],

@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from typing import Iterator
 
 import yaml
 
@@ -45,6 +46,9 @@ def image(path: Path) -> dict:
         info = path.lstat()
     except FileNotFoundError:
         return {"kind": "absent"}
+    if stat.S_ISDIR(info.st_mode):
+        return {"kind": "directory", "mode": stat.S_IMODE(info.st_mode),
+                "uid": info.st_uid, "gid": info.st_gid}
     if info.st_nlink != 1 or not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
         raise ValueError(f"unsupported file identity: {path}")
     data = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
@@ -54,11 +58,17 @@ def image(path: Path) -> dict:
 
 
 def validate_image(value: dict) -> None:
-    if not isinstance(value, dict) or value.get("kind") not in ("absent", "file", "link"):
+    if not isinstance(value, dict) or value.get("kind") not in ("absent", "directory", "file", "link"):
         raise ValueError("invalid_closed_image")
     if value["kind"] == "absent":
         if set(value) != {"kind"}:
             raise ValueError("invalid_absent_image")
+        return
+    if value["kind"] == "directory":
+        if (set(value) != {"kind", "mode", "uid", "gid"}
+                or type(value["mode"]) is not int or not 0 <= value["mode"] <= 0o777
+                or value["uid"] != os.getuid() or value["gid"] != os.getgid()):
+            raise ValueError("unrestorable_directory_metadata")
         return
     if (set(value) != {"kind", "mode", "uid", "gid", "bytes", "sha256"}
             or type(value["mode"]) is not int or not 0 <= value["mode"] <= 0o777
@@ -116,7 +126,15 @@ def durable_replace(path: Path, target: dict) -> None:
     """One exact path replacement, with file and containing-directory flush."""
     validate_image(target)
     if target["kind"] == "absent":
-        path.unlink(missing_ok=True)
+        if path.is_dir() and not path.is_symlink():
+            path.rmdir()  # exact known empty directory only, never recursive
+        else:
+            path.unlink(missing_ok=True)
+    elif target["kind"] == "directory":
+        path.mkdir(mode=target["mode"], exist_ok=True)
+        if path.is_symlink() or not path.is_dir():
+            raise ValueError("directory_identity_changed")
+        os.chmod(path, target["mode"])
     else:
         data = base64.b64decode(target["bytes"], validate=True)
         if digest(data) != target["sha256"] or target["uid"] != os.getuid() or target["gid"] != os.getgid():
@@ -144,6 +162,86 @@ def durable_replace(path: Path, target: dict) -> None:
         os.close(fd)
     if image(path) != target:
         raise ValueError("replacement_readback_mismatch")
+
+
+def verify_global_assets(manifest: dict, *, initial: bool = False) -> None:
+    """Exact closed shared-store closure; no credential or permission rewrite."""
+    from runtime.config import Settings
+    from runtime.skills.canonical_store import _get_canonical_store_root
+    store = _get_canonical_store_root(Settings(project_root=SOURCE)).resolve(strict=True)
+    if str(store) != manifest["canonical_store_root"]:
+        raise ValueError("effective_canonical_store_path_changed")
+    if preservation_inventory(Path(manifest["closed_canonical_store_restore"])) != manifest["canonical_store_inventory"]:
+        raise ValueError("canonical_store_closed_restore_changed")
+    current = preservation_inventory(store)
+    baseline = manifest["canonical_store_inventory"]
+    mutable = manifest["global_before"]
+    staging = manifest["global_staging_images"]
+    if set(mutable) != set(manifest["global_after"]):
+        raise ValueError("global_manifest_output_closure_mismatch")
+    for rel in set(current) | set(baseline):
+        if rel not in mutable and rel not in staging and current.get(rel) != baseline.get(rel):
+            raise ValueError(f"retained_global_path_changed:{rel}")
+    for rel, before in mutable.items():
+        relative = Path(rel)
+        if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("invalid_global_manifest_path")
+        validate_image(before)
+        validate_image(manifest["global_after"][rel])
+        path = store / rel
+        if not path.parent.resolve().is_relative_to(store):
+            raise ValueError("global_path_redirected")
+        observed = image(path)
+        allowed = (manifest["global_after"][rel], manifest["global_transitional_images"][rel])
+        if observed != before and (initial or observed not in allowed):
+            raise ValueError(f"global_before_image_CAS_or_unknown_state:{rel}")
+    for rel, expected in staging.items():
+        path = store / rel
+        if not path.parent.resolve().is_relative_to(store):
+            raise ValueError("global_staging_path_redirected")
+        observed = image(path)
+        if observed != {"kind": "absent"} and (initial or observed != expected):
+            raise ValueError(f"unknown_native_global_staging_state:{rel}")
+
+
+def restore_global_assets(manifest: dict) -> None:
+    """Compensate only declared known package paths, without deleting trees."""
+    verify_global_assets(manifest)
+    store = Path(manifest["canonical_store_root"])
+    before = {**manifest["global_before"], **{rel: {"kind": "absent"} for rel in manifest["global_staging_images"]}}
+    # Remove known newly built package files before their now-empty parents.
+    for rel in sorted(before, key=lambda key: (-len(Path(key).parts), key)):
+        if before[rel]["kind"] == "absent" and image(store / rel) != before[rel]:
+            durable_replace(store / rel, before[rel])
+    for rel in sorted(before, key=lambda key: (len(Path(key).parts), key)):
+        if before[rel]["kind"] != "absent" and image(store / rel) != before[rel]:
+            durable_replace(store / rel, before[rel])
+
+
+def native_creation_mask() -> int:
+    for line in Path("/proc/self/status").read_text().splitlines():
+        if line.startswith("Umask:"):
+            return int(line.split()[1], 8)
+    raise ValueError("native_creation_mask_observation_unavailable")
+
+
+def resume_native_package_hardening(manifest: dict) -> None:
+    """Close only a proven own rename-before-hardening prefix with its owner."""
+    from runtime.skills.canonical_store import _apply_readonly_hardening
+    verify_global_assets(manifest)
+    store = Path(manifest["canonical_store_root"])
+    roots = {str(Path(*Path(rel).parts[:3])) for rel in manifest["global_after"] if len(Path(rel).parts) >= 3}
+    for rel in sorted(roots):
+        if not (store / rel).exists():
+            continue
+        members = {key: value for key, value in manifest["global_after"].items() if key == rel or key.startswith(rel + "/")}
+        if all(image(store / key) == value for key, value in members.items()):
+            continue
+        if any(image(store / key) not in (value, manifest["global_transitional_images"][key]) for key, value in members.items()):
+            raise ValueError("installed_native_package_is_not_complete_owned_prefix")
+        _apply_readonly_hardening(store / rel)
+        if any(image(store / key) != value for key, value in members.items()):
+            raise ValueError("native_hardening_closed_output_mismatch")
 
 
 def paths(args: argparse.Namespace) -> tuple[Path, Path]:
@@ -181,28 +279,33 @@ def containment(plan: dict, runtime: Path) -> dict:
     home = daemon_home().resolve(strict=True)
     if declaration.get("daemon_home") != str(home) or str(home / "runtimes.yaml") not in declaration["registry_paths"]:
         raise ValueError("effective_daemon_registry_inventory_required")
-    units = declaration["systemd_user_units"]
-    if len(units) != len(set(units)) or any(re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit) is None for unit in units):
-        raise ValueError("invalid_supervisor_inventory")
-    # Inspect the existing user supervisor inventory as well as declared masks.
-    inventory = subprocess.run(["systemctl", "--user", "list-unit-files", "--type=service", "--no-legend", "--no-pager"], capture_output=True, text=True, timeout=10, check=True)
-    actual_units = {line.split()[0] for line in inventory.stdout.splitlines() if line.strip()}
-    if not set(units).issubset(actual_units):
-        raise ValueError("declared_supervisor_missing_from_actual_inventory")
-    for unit in sorted(actual_units - set(units)):
-        launch = subprocess.run(["systemctl", "--user", "show", unit, "--property=ExecStart", "--value"], capture_output=True, text=True, timeout=10, check=True).stdout
-        if "happyranch" in launch or "runtime.daemon" in launch or str(runtime) in launch:
-            raise ValueError("undeclared_alternate_supervisor")
     observed = []
-    for unit in units:
-        mask = Path.home() / ".config/systemd/user" / unit
-        if not mask.is_symlink() or os.readlink(mask) != "/dev/null":
-            raise ValueError("persistent_user_mask_required")
-        run = subprocess.run(["systemctl", "--user", "show", unit, "--property=LoadState,ActiveState,SubState"], capture_output=True, text=True, timeout=10, check=True)
-        properties = dict(line.split("=", 1) for line in run.stdout.splitlines())
-        if properties != {"LoadState": "masked", "ActiveState": "inactive", "SubState": "dead"}:
-            raise ValueError("supervisor_not_inhibited_and_stopped")
-        observed.append({"unit": unit, "mask": str(mask), "properties": properties})
+    for scope, flags, mask_root in (("user", ["--user"], Path.home() / ".config/systemd/user"),
+                                    ("system", [], Path("/etc/systemd/system"))):
+        units = declaration.get(f"systemd_{scope}_units", [])
+        if (not isinstance(units, list) or len(units) != len(set(units))
+                or any(not isinstance(unit, str) or re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit) is None for unit in units)):
+            raise ValueError("invalid_supervisor_inventory")
+        # Include transient/loaded services as well as installed unit files.
+        actual_units = set()
+        for selection in (["list-unit-files"], ["list-units", "--all"]):
+            inventory = subprocess.run(["systemctl", *flags, *selection, "--type=service", "--plain", "--no-legend", "--no-pager"], capture_output=True, text=True, timeout=10, check=True)
+            actual_units.update(line.split()[0] for line in inventory.stdout.splitlines() if line.strip())
+        if not set(units).issubset(actual_units):
+            raise ValueError("declared_supervisor_missing_from_actual_inventory")
+        for unit in sorted(actual_units - set(units)):
+            launch = subprocess.run(["systemctl", *flags, "show", unit, "--property=ExecStart", "--value"], capture_output=True, text=True, timeout=10, check=True).stdout
+            if "happyranch" in launch or "runtime.daemon" in launch or str(runtime) in launch:
+                raise ValueError("undeclared_alternate_supervisor")
+        for unit in units:
+            mask = mask_root / unit
+            if not mask.is_symlink() or os.readlink(mask) != "/dev/null":
+                raise ValueError("persistent_supervisor_mask_required")
+            run = subprocess.run(["systemctl", *flags, "show", unit, "--property=LoadState,ActiveState,SubState"], capture_output=True, text=True, timeout=10, check=True)
+            properties = dict(line.split("=", 1) for line in run.stdout.splitlines())
+            if properties != {"LoadState": "masked", "ActiveState": "inactive", "SubState": "dead"}:
+                raise ValueError("supervisor_not_inhibited_and_stopped")
+            observed.append({"scope": scope, "unit": unit, "mask": str(mask), "properties": properties})
     for value in declaration["registry_paths"]:
         registry = Path(value)
         if not registry.is_absolute() or registry.is_symlink():
@@ -221,16 +324,20 @@ def containment(plan: dict, runtime: Path) -> dict:
             if entry.stat().st_uid != os.getuid():
                 continue
             command = (entry / "cmdline").read_bytes()
+            cwd = (entry / "cwd").resolve(strict=True) if command else None
         except FileNotFoundError:
             continue  # exited during census
-        if (b"runtime.daemon" in command or b"happyranch daemon" in command
-                or os.fsencode(runtime) in command):
+        # A utility/observer argv mentioning R is not an executor writer.
+        # Inspect actual module/command and working-directory scope instead.
+        if (b"runtime.daemon" in command or b"happyranch\x00daemon" in command
+                or b"happyranch daemon" in command
+                or cwd is not None and cwd.is_relative_to(runtime)):
             raise ValueError("runtime_or_daemon_process_present")
     return {"supervisors": observed, "registry_paths": declaration["registry_paths"]}
 
 
 @contextmanager
-def read_db(path: Path):
+def read_db(path: Path) -> Iterator[sqlite3.Connection]:
     if path.is_symlink() or path.stat().st_nlink != 1:
         raise ValueError("database_identity_invalid")
     conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
@@ -246,7 +353,7 @@ def read_db(path: Path):
 
 def domain_signature(conn: sqlite3.Connection) -> str:
     """Full retained domain history; reset/publication owners are separate."""
-    excluded = {"audit_log", "workflow_authority_pointers", "workflow_publication_journals", "workflow_publication_leases", "workflow_profile_dependencies", "workflow_profile_operations", "workflow_profile_leases"}
+    excluded = {"audit_log", "workflow_authority_pointers", "workflow_publication_journals", "workflow_publication_leases", "workflow_profile_dependencies", "workflow_profile_operations", "workflow_profile_leases", "skill_validation_events"}
     rows = []
     for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
         name = row[0]
@@ -263,11 +370,124 @@ def domain_signature(conn: sqlite3.Connection) -> str:
     return digest(canonical(rows))
 
 
+def control_signature(conn: sqlite3.Connection) -> str:
+    """Exact pre-edit CAS of the rows excluded from retained-domain checks."""
+    tables = ("audit_log", "workflow_authority_pointers", "workflow_publication_journals",
+              "workflow_publication_leases", "workflow_profile_dependencies",
+              "workflow_profile_operations", "workflow_profile_leases")
+    rows = [(table, sorted(repr(tuple(row)) for row in conn.execute(f'SELECT * FROM "{table}"')))
+            for table in tables]
+    return digest(canonical(rows))
+
+
+def audit_prefix_signature(conn: sqlite3.Connection, baseline: int) -> str:
+    return digest(canonical([repr(tuple(row)) for row in conn.execute(
+        "SELECT * FROM audit_log WHERE id<=? ORDER BY id", (baseline,))]))
+
+
+def row_hashes(conn: sqlite3.Connection, table: str) -> list[str]:
+    return sorted(digest(repr(tuple(row)).encode()) for row in conn.execute(f'SELECT * FROM "{table}"'))
+
+
+def verify_control_history(conn: sqlite3.Connection, manifest: dict) -> None:
+    """Retained publication/profile/audit rows cannot be borrowed or rewritten."""
+    original = manifest["control_row_hashes"]
+    current_journals = conn.execute("SELECT * FROM workflow_publication_journals").fetchall()
+    observed = {digest(repr(tuple(row)).encode()) for row in current_journals}
+    if not set(original["workflow_publication_journals"]).issubset(observed):
+        raise ValueError("retained_publication_journal_changed")
+    owner = f"THR296:{manifest['operation_id']}"
+    for row in current_journals:
+        if digest(repr(tuple(row)).encode()) in original["workflow_publication_journals"]:
+            continue
+        if (row["namespace"] != f"org/{manifest['org']}"
+                or row["publisher"] != owner and not row["publisher"].startswith(owner + ":")):
+            raise ValueError("foreign_publication_journal_after_check")
+    if row_hashes(conn, "workflow_profile_operations") != original["workflow_profile_operations"]:
+        raise ValueError("foreign_profile_operation_after_check")
+    # Team/role demotion retains executors and their existing bindings. This
+    # operation cannot repair a stale dependency mirror or rebind any peer.
+    if row_hashes(conn, "workflow_profile_dependencies") != original["workflow_profile_dependencies"]:
+        raise ValueError("retained_profile_dependencies_changed")
+    other = sorted(digest(repr(tuple(row)).encode()) for row in conn.execute(
+        "SELECT * FROM workflow_authority_pointers WHERE namespace!=?", (f"org/{manifest['org']}",)))
+    if other != manifest["other_pointer_hashes"]:
+        raise ValueError("foreign_authority_pointer_changed")
+    for row in conn.execute("SELECT * FROM audit_log WHERE id>? ORDER BY id", (manifest["baseline_audit"],)):
+        agent = next((agent for agent in AGENTS if row["task_id"] == f"config:THR296:{manifest['operation_id']}:{agent}"), None)
+        if (agent is None or row["agent"] != "founder" or row["action"] != "thread_session_invalidated"
+                or json.loads(row["payload"]) != {"reason": f"THR296 roster operation {manifest['operation_id']}",
+                    "rows": len(manifest["reset_before"][agent]), "name": agent}):
+            raise ValueError("foreign_audit_after_check")
+
+
+def verify_materialization_events(conn: sqlite3.Connection, manifest: dict) -> None:
+    baseline = manifest["materialization_baseline"]
+    prior = digest(canonical([repr(tuple(row)) for row in conn.execute(
+        "SELECT * FROM skill_validation_events WHERE id<=? ORDER BY id", (baseline,))]))
+    if prior != manifest["materialization_prefix_signature"]:
+        raise ValueError("retained_materialization_history_changed")
+    shapes = manifest["materialization_event_shapes"]
+    for row in conn.execute("SELECT * FROM skill_validation_events WHERE id>? ORDER BY id", (baseline,)):
+        value = dict(row)
+        value.pop("id")
+        value.pop("created_at")
+        if value not in shapes:
+            raise ValueError("unowned_materialization_event_after_check")
+
+
+def require_quiescence(conn: sqlite3.Connection, root: Path, org: str) -> str:
+    """Inspect complete native work owners, without settling any of them."""
+    from runtime.infrastructure.workflow_schema import (
+        validate_workflow_schema, _validate_submission_source_ownership,
+    )
+    layout = validate_workflow_schema(conn, expected_org_slug=org)
+    _validate_submission_source_ownership(conn, layout)
+    predicates = {
+        "tasks": "status NOT IN ('completed','failed','cancelled','superseded') OR active_chain IS NOT NULL OR active_fanout IS NOT NULL",
+        "jobs": "status IN ('pending','running')",
+        "thread_invocations": "status IN ('pending','running')",
+        "dreams": "status IN ('pending','running')",
+        "work_hours": "status IN ('pending','running')",
+        "schedules": "active=1 OR status='running'",
+        "task_completion_recoveries": "state IN ('claimed','callback_accepted')",
+        "thread_reply_delivery_state": "queued_invocation_token IS NOT NULL OR running_invocation_token IS NOT NULL OR required_through_seq>acknowledged_through_seq",
+        "thread_reply_breaker_episodes": "state='probe' OR probe_lease_id IS NOT NULL",
+        "thread_reply_exchange": "state='open'",
+        "thread_exchange_deferrals": "state='held' OR catchup_pending=1",
+        "workflow_instances": "status NOT IN ('complete','cancelled')",
+        "workflow_dispatch_outbox": "state NOT IN ('completed','cancelled')",
+        "workflow_request_task_bridges": "state NOT IN ('completed','cancelled')",
+    }
+    if layout in ('E', 'G'):
+        predicates['workflow_draft_dispatch_intents'] = "state NOT IN ('completed','cancelled','failed')"
+    for table, predicate in predicates.items():
+        if conn.execute(f'SELECT 1 FROM "{table}" WHERE {predicate} LIMIT 1').fetchone():
+            raise ValueError(f"nonquiescent_{table}: reconcile the existing owner before a fresh check")
+    pending = root / "org/agents/_pending"
+    if pending.exists() and (pending.is_symlink() or any(pending.iterdir())):
+        raise ValueError("pending_or_uninspectable_enrollment")
+    return layout
+
+
 def check(args: argparse.Namespace) -> dict:
     plan = json.loads(args.plan.read_bytes())
     runtime, root = paths(args)
     observation = containment(plan, runtime)
     source = source_identity()
+    if sys.version_info[:2] != (3, 14):
+        raise ValueError("effective_python314_required")
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.org_validation import validate_team_membership
+    validate_team_membership(OrgPaths(root=root), TeamsRegistry.load(root))
+    for agent in AGENTS:
+        workspace = root / "workspaces" / agent
+        if (not workspace.is_dir() or workspace.is_symlink()
+                or not (workspace / "task_history.md").is_file()
+                or not (workspace / "memory/_index.md").is_file()
+                or (workspace / "memory").is_symlink()
+                or (workspace / "learnings").exists()):
+            raise ValueError("original_canonical_workspace_history_memory_required")
     operation = plan.get("operation_id")
     if not isinstance(operation, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,80}", operation) is None:
         raise ValueError("operation_id_required")
@@ -285,6 +505,60 @@ def check(args: argparse.Namespace) -> dict:
     restored_inventory = preservation_inventory(restore)
     if preserved != restored_inventory:
         raise ValueError("closed_restore_bytes_type_metadata_mismatch")
+    # Native refresh can publish shared canonical packages. An org-only
+    # backup cannot cover that write closure, even when workspace links look
+    # unchanged. Observe the effective original store and its closed restore.
+    from runtime.config import Settings
+    from runtime.skills.canonical_store import _get_canonical_store_root
+    store = _get_canonical_store_root(Settings(project_root=SOURCE)).resolve(strict=True)
+    global_restore = Path(plan["closed_canonical_store_restore"])
+    if (not global_restore.is_absolute() or global_restore.is_symlink()
+            or global_restore.resolve(strict=True) != global_restore
+            or global_restore.is_relative_to(runtime) or global_restore.is_relative_to(store)
+            or global_restore.is_relative_to(Path("/tmp"))):
+        raise ValueError("independent_closed_canonical_store_restore_required")
+    global_inventory = preservation_inventory(store)
+    if preservation_inventory(global_restore) != global_inventory:
+        raise ValueError("canonical_store_restore_bytes_type_metadata_mismatch")
+    global_after = plan.get("canonical_store_after_images")
+    if not isinstance(global_after, dict):
+        raise ValueError("exact_global_materializer_output_images_required")
+    global_before = {}
+    global_transitional = {}
+    global_staging = {}
+    creation_mask = native_creation_mask()
+    for rel, expected in global_after.items():
+        relative = Path(rel)
+        parts = relative.parts
+        if (not parts or relative.is_absolute() or ".." in parts
+                or not (store / rel).parent.resolve().is_relative_to(store)
+                or len(parts) < 3 and expected.get("kind") != "directory"
+                or len(parts) >= 3 and re.fullmatch(r"[a-f0-9]{16}", parts[2]) is None
+                or expected.get("kind") == "link"):
+            raise ValueError("global_generated_path_outside_native_package_closure")
+        validate_image(expected)
+        transitional = dict(expected)
+        if len(parts) >= 3 and expected["kind"] in ("file", "directory"):
+            transitional["mode"] = (0o666 if expected["kind"] == "file" else 0o777) & ~creation_mask
+            stage_rel = str(Path(*parts[:2], f".tmp.{parts[2][:8]}", *parts[3:]))
+            if stage_rel in global_staging and global_staging[stage_rel] != transitional:
+                raise ValueError("native_global_staging_identity_collision")
+            if image(store / stage_rel) != {"kind": "absent"}:
+                raise ValueError("preexisting_global_staging_requires_its_original_owner")
+            global_staging[stage_rel] = transitional
+        global_transitional[rel] = transitional
+        global_before[rel] = image(store / rel)
+        # Existing immutable-addressed package content is preserved; native
+        # refresh may add a verified new address, never repair an old one.
+        if global_before[rel]["kind"] != "absent" and global_before[rel] != expected:
+            raise ValueError("existing_global_package_change_not_authorized")
+        for parent in relative.parents:
+            if str(parent) != "." and not (store / parent).exists() and str(parent) not in global_after:
+                raise ValueError("global_generated_directory_inventory_incomplete")
+    space = os.statvfs(operation_dir)
+    required_bytes = sum((root / rel).stat().st_size for rel, entry in preserved.items() if entry["kind"] == "file")
+    if space.f_bavail * space.f_frsize < required_bytes or space.f_favail < len(preserved):
+        raise ValueError("insufficient_operation_storage_bytes_or_inodes")
     backup = Path(plan["closed_database_backup"])
     if backup != restore / "happyranch.db":
         raise ValueError("backup_must_belong_to_verified_closed_restore")
@@ -296,22 +570,43 @@ def check(args: argparse.Namespace) -> dict:
     with read_db(db_path) as current, read_db(backup) as restored:
         if domain_signature(current) != domain_signature(restored):
             raise ValueError("backup_restore_history_mismatch")
-        for table, states in (("tasks", ("pending", "in_progress", "escalated")), ("jobs", ("pending", "running")), ("thread_invocations", ("pending", "running")), ("dreams", ("pending", "running")), ("work_hours", ("pending", "running"))):
-            columns = {row[1] for row in current.execute(f'PRAGMA table_info("{table}")')}
-            if "status" not in columns:
-                raise ValueError("quiescence_inventory_incomplete")
-            marks = ",".join("?" for _ in states)
-            if current.execute(f'SELECT 1 FROM "{table}" WHERE status IN ({marks}) LIMIT 1', states).fetchone():
-                raise ValueError(f"nonquiescent_{table}")
-        if current.execute("SELECT 1 FROM schedules WHERE active=1 OR status='running' LIMIT 1").fetchone():
-            raise ValueError("armed_or_running_schedule")
+        layout = require_quiescence(current, root, args.org)
+        if current.execute("SELECT 1 FROM workflow_publication_journals WHERE state NOT IN ('cache_installed','aborted') LIMIT 1").fetchone():
+            raise ValueError("unfinished_publication_requires_existing_owner_reconciliation")
         if current.execute("SELECT 1 FROM workflow_profile_operations WHERE state NOT IN ('published','aborted') LIMIT 1").fetchone():
-            raise ValueError("nonquiescent_profile_operation")
-        for table in ("workflow_publication_leases", "workflow_profile_leases"):
-            if current.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone():
-                raise ValueError(f"nonquiescent_{table}")
+            raise ValueError("unfinished_profile_operation_requires_existing_owner_reconciliation")
+        if (current.execute("SELECT 1 FROM workflow_publication_leases LIMIT 1").fetchone()
+                or current.execute("SELECT 1 FROM workflow_profile_leases LIMIT 1").fetchone()):
+            raise ValueError("preexisting_durable_lease_requires_existing_owner_reconciliation")
+        if current.execute("""SELECT 1 FROM workflow_profile_dependencies d
+                LEFT JOIN workflow_profile_store s ON s.profile_name=d.profile_name
+                LEFT JOIN workflow_profile_registry r ON r.profile_name=d.profile_name
+                WHERE d.state='unbound' OR d.state='active' AND
+                  (s.state IS NULL OR s.state!='active' OR s.generation!=d.bound_generation
+                   OR r.published_generation IS NULL OR r.published_generation!=d.bound_generation)
+                LIMIT 1""").fetchone():
+            raise ValueError("preexisting_profile_closure_not_ready")
         before_domain = domain_signature(current)
+        before_control = control_signature(current)
+        control_rows = {table: row_hashes(current, table) for table in (
+            "workflow_publication_journals", "workflow_profile_operations", "workflow_profile_dependencies")}
+        other_pointers = sorted(digest(repr(tuple(row)).encode()) for row in current.execute(
+            "SELECT * FROM workflow_authority_pointers WHERE namespace!=?", (f"org/{args.org}",)))
         baseline_audit = current.execute("SELECT COALESCE(MAX(id),0) FROM audit_log").fetchone()[0]
+        audit_prefix = audit_prefix_signature(current, baseline_audit)
+        materialization_baseline = current.execute("SELECT COALESCE(MAX(id),0) FROM skill_validation_events").fetchone()[0]
+        materialization_prefix = digest(canonical([repr(tuple(row)) for row in current.execute(
+            "SELECT * FROM skill_validation_events ORDER BY id")]))
+        event_shapes = plan.get("materialization_event_shapes")
+        if not isinstance(event_shapes, list):
+            raise ValueError("closed_native_materialization_event_shapes_required")
+        event_fields = {row[1] for row in current.execute("PRAGMA table_info(skill_validation_events)")} - {"id", "created_at"}
+        for shape in event_shapes:
+            if (not isinstance(shape, dict) or set(shape) != event_fields
+                    or shape["agent"] not in AGENTS or shape["source"] != "materialization"
+                    or shape["severity"] != "info" or shape["ok"] != 1
+                    or shape["findings"] != "[]" or shape["reason_codes"] != "[]"):
+                raise ValueError("materialization_event_shape_outside_native_refresh")
         resets = {agent: [dict(row) for row in current.execute("SELECT * FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent,))] for agent in AGENTS}
     before = {rel: image(root / rel) for rel in CANONICAL}
     after = dict(before)
@@ -351,15 +646,36 @@ def check(args: argparse.Namespace) -> dict:
         raise ValueError("independently_inspectable_materializer_output_closure_required")
     from runtime.daemon.routes.agents import _BOOTSTRAP_OWNED_FILES
     for rel, expected in generated.items():
+        validate_image(expected)
         relative = Path(rel)
         if (relative.is_absolute() or ".." in relative.parts or len(relative.parts) < 3
                 or relative.parts[:2] not in [("workspaces", agent) for agent in AGENTS]
                 or not (root / relative).parent.resolve().is_relative_to(root)):
             raise ValueError("generated_path_outside_exact_consultant_closure")
         owned = "/".join(relative.parts[2:])
-        if owned not in _BOOTSTRAP_OWNED_FILES and not (len(relative.parts) == 4 and relative.parts[2] in (".claude", ".agents")):
-            if not (len(relative.parts) == 5 and relative.parts[2] in (".claude", ".agents") and relative.parts[3] == "skills"):
-                raise ValueError("generated_path_not_owned_by_existing_materializers")
+        directories = {".claude", ".agents", ".claude/skills", ".agents/skills"}
+        skill_link = (len(relative.parts) == 5 and relative.parts[2] in (".claude", ".agents")
+                      and relative.parts[3] == "skills")
+        if owned in directories:
+            if expected.get("kind") != "directory":
+                raise ValueError("native_provider_directory_image_required")
+        elif skill_link:
+            if expected.get("kind") != "link":
+                raise ValueError("native_skill_link_image_required")
+            target = base64.b64decode(expected["bytes"], validate=True).decode()
+            if Path(target).is_absolute():
+                raise ValueError("native_relative_skill_link_required")
+            resolved = ((root / rel).parent / target).resolve()
+            if not resolved.is_relative_to(store) or len(resolved.relative_to(store).parts) != 3:
+                raise ValueError("skill_link_outside_original_canonical_package")
+            package = str(resolved.relative_to(store))
+            if (resolved.relative_to(store).parts[0] != relative.parts[-1]
+                    or re.fullmatch(r"[a-f0-9]{16}", resolved.name) is None
+                    or image(resolved).get("kind") != "directory"
+                       and global_after.get(package, {}).get("kind") != "directory"):
+                raise ValueError("skill_link_package_not_in_closed_native_inventory")
+        elif owned not in _BOOTSTRAP_OWNED_FILES:
+            raise ValueError("generated_path_not_owned_by_existing_materializers")
         if owned in ("task_history.md", "recent_tasks.md", "memory/_index.md") and expected != image(root / rel):
             raise ValueError("existing_history_and_memory_must_be_preserved")
         before[rel] = image(root / rel)
@@ -371,6 +687,13 @@ def check(args: argparse.Namespace) -> dict:
                 source_sha=source, plan_sha=digest(args.plan.read_bytes()), containment=plan["containment"],
                 containment_observation=observation, before=before, after=after,
                 domain_signature=before_domain, reset_before=resets, baseline_audit=baseline_audit,
+                control_signature=before_control, audit_prefix_signature=audit_prefix, workflow_layout=layout,
+                control_row_hashes=control_rows, other_pointer_hashes=other_pointers,
+                materialization_baseline=materialization_baseline, materialization_prefix_signature=materialization_prefix,
+                materialization_event_shapes=event_shapes,
+                canonical_store_root=str(store), canonical_store_inventory=global_inventory,
+                closed_canonical_store_restore=str(global_restore), global_before=global_before, global_after=global_after,
+                global_transitional_images=global_transitional, global_staging_images=global_staging, native_creation_mask=creation_mask,
                 closed_database_backup=str(backup), closed_backup_image=image(backup),
                 closed_restore_root=str(restore), preservation_inventory=preserved)
 
@@ -382,12 +705,22 @@ def finished_state(root: Path, manifest: dict, *, direction: str) -> dict | None
     This is not host/process/reboot proof; those require separate observations.
     """
     verify_preserved_paths(root, manifest)
+    verify_global_assets(manifest)
     desired = manifest["before"] if direction == "compensate" else manifest["after"]
     if any(image(root / rel) != value for rel, value in desired.items()):
+        return None
+    global_desired = manifest["global_before"] if direction == "compensate" else manifest["global_after"]
+    if any(image(Path(manifest["canonical_store_root"]) / rel) != value for rel, value in global_desired.items()):
+        return None
+    if any(image(Path(manifest["canonical_store_root"]) / rel) != {"kind": "absent"} for rel in manifest["global_staging_images"]):
         return None
     with read_db(root / "happyranch.db") as conn:
         if domain_signature(conn) != manifest["domain_signature"]:
             raise ValueError("traffic_or_history_changed_forward_repair_required")
+        if audit_prefix_signature(conn, manifest["baseline_audit"]) != manifest["audit_prefix_signature"]:
+            raise ValueError("retained_audit_history_changed")
+        verify_materialization_events(conn, manifest)
+        verify_control_history(conn, manifest)
         for agent in AGENTS:
             rows = [dict(row) for row in conn.execute("SELECT * FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent,))]
             cleared = [{**row, "agent_session_id": None, "last_resumed_seq": 0} for row in manifest["reset_before"][agent]]
@@ -436,6 +769,8 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
     if manifest["runtime_root"] != str(runtime) or manifest["org"] != args.org:
         raise ValueError("manifest_owner_mismatch")
     containment(manifest, runtime)
+    if native_creation_mask() != manifest["native_creation_mask"]:
+        raise ValueError("native_materializer_creation_mask_changed")
     if set(manifest["before"]) != set(manifest["after"]):
         raise ValueError("manifest_output_closure_mismatch")
     for rel, value in (*manifest["before"].items(), *manifest["after"].items()):
@@ -444,6 +779,7 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
             raise ValueError("manifest_path_redirected")
         validate_image(value)
     verify_preserved_paths(root, manifest)
+    verify_global_assets(manifest)
     if preservation_inventory(Path(manifest["closed_restore_root"])) != manifest["preservation_inventory"]:
         raise ValueError("closed_restore_changed")
     operation_dir = Path(manifest["operation_dir"])
@@ -474,19 +810,33 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         current = image(root / rel)
         if current not in (manifest["before"][rel], manifest["after"][rel]):
             raise ValueError(f"unknown_third_state:{rel}")
-        if not args.recover and current != manifest["before"][rel]:
-            raise ValueError(f"apply_before_image_CAS:{rel}")
     if image(Path(manifest["closed_database_backup"])) != manifest["closed_backup_image"]:
         raise ValueError("closed_backup_changed")
     with read_db(root / "happyranch.db") as conn:
         if domain_signature(conn) != manifest["domain_signature"]:
             raise ValueError("traffic_or_history_changed_forward_repair_required")
+        if audit_prefix_signature(conn, manifest["baseline_audit"]) != manifest["audit_prefix_signature"]:
+            raise ValueError("retained_audit_history_changed")
+        verify_materialization_events(conn, manifest)
+        verify_control_history(conn, manifest)
     direction = "compensate" if args.recover and args.direction == "compensate" else "complete"
     completed = finished_state(root, manifest, direction=direction)
     if completed is not None:
         result = {**completed, "manifest_sha256": manifest_digest}
         write_receipt(receipt, result)
         return result  # receipt-loss reconstruction performs only external write
+    if not args.recover:
+        # Authenticate an already completed operation before this first-apply
+        # gate, so a lost external receipt does not cause another mutation.
+        if any(image(root / rel) != value for rel, value in manifest["before"].items()):
+            raise ValueError("apply_before_image_CAS: use explicit owned recovery for a partial prefix")
+        verify_global_assets(manifest, initial=True)
+        with read_db(root / "happyranch.db") as conn:
+            require_quiescence(conn, root, args.org)
+            if control_signature(conn) != manifest["control_signature"]:
+                raise ValueError("publication_profile_or_audit_before_image_CAS_lost")
+            if image(root / "happyranch.db") != manifest["closed_backup_image"]:
+                raise ValueError("database_closed_before_image_CAS_lost")
     # Existing native coordinators, no startup attachment/publication shortcut.
     from runtime.config import Settings
     from runtime.infrastructure.database import Database
@@ -497,7 +847,7 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
     from runtime.orchestrator.org_validation import validate_team_membership
     from runtime.orchestrator.prompt_loader import load_agent
     from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
-    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    from runtime.workflows.profile_coordinator import ProfileCoordinator, _ConsumerWriterInterval
     settings = Settings(project_root=SOURCE)
     db = Database(root / "happyranch.db")
     try:
@@ -531,7 +881,7 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
                 raise ValueError("reset_before_image_changed")
             if rows:
                 db.reset_thread_sessions_for_agent(agent, audit_scope_id=scope, audit_agent="founder", audit_reason=f"THR296 roster operation {operation_id}")
-        async def replace_roster():
+        async def replace_roster() -> _ConsumerWriterInterval:
             # Existing consumer_writer captures outside leases and releases
             # profile ownership before publication discovery. Both first-party
             # providers retain their existing dependency bindings.
@@ -556,6 +906,9 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
             for rel in desired:
                 if rel not in CANONICAL and image(root / rel) != desired[rel]:
                     durable_replace(root / rel, desired[rel])
+            restore_global_assets(manifest)
+        else:
+            resume_native_package_hardening(manifest)
         for agent in (() if compensating else AGENTS):
             definition = load_agent(paths_obj, agent)
             workspace = root / "workspaces" / agent
@@ -567,6 +920,26 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         for rel, expected in desired.items():
             if image(root / rel) != expected:
                 raise ValueError(f"materializer_closed_output_mismatch:{rel}")
+        verify_global_assets(manifest)
+        global_desired = manifest["global_before"] if compensating else manifest["global_after"]
+        for rel, expected in global_desired.items():
+            path = Path(manifest["canonical_store_root"]) / rel
+            if image(path) != expected:
+                raise ValueError(f"global_materializer_closed_output_mismatch:{rel}")
+            if expected["kind"] == "file":
+                with path.open("rb") as installed:
+                    os.fsync(installed.fileno())
+            if expected["kind"] != "absent":
+                fd = os.open(path if expected["kind"] == "directory" else path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+        fd = os.open(Path(manifest["canonical_store_root"]), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         profiles.reconcile_supported_roster_batch(org.workflow_authority, completed_writer_invocation=interval.publisher_invocation)
         # Publication helper false/log is never readiness.
         if not org.workflow_authority.publish_after_supported_change(publisher=f"THR296:{operation_id}:ready:{direction}"):
