@@ -223,8 +223,16 @@ def child(config_path):
     forbidden_fixtures = {(str(source / p), name) for p, names in evidence['fixture_functions'].items()
                           for name in names}
     runtime_exec = str(source / 'runtime/orchestrator/executors.py')
+    # These roots are immutable during this child. Avoid rebuilding Path
+    # objects on every profiled Python call; the comparisons stay identical.
+    source_prefix = str(source) + '/'
+    tests_prefix = str(source / 'tests') + '/'
+    control_path = str(HERE)
+    profile_started = time.monotonic()
+    module_entries = 0
 
     def profile(frame, event, arg):
+        nonlocal module_entries
         if event == 'c_call':
             key = (getattr(arg, '__module__', '') or '') + '.' + getattr(arg, '__qualname__', '')
             native_call_counts[key] = native_call_counts.get(key, 0) + 1
@@ -238,7 +246,7 @@ def child(config_path):
         call_counts[key] = call_counts.get(key, 0) + 1
         if len(call_counts) > 50000:
             refuse('execution-closure-cap', len(call_counts))
-        if path == str(HERE) and name == 'profile_control_sentinel':
+        if path == control_path and name == 'profile_control_sentinel':
             counts['profile_control_calls'] += 1
         if path.endswith('/site-packages/execnet/rsync_remote.py'):
             # execnet.rsync imports this ordinary module at plugin startup.
@@ -247,7 +255,7 @@ def child(config_path):
                     or name == 'serve_rsync'):
                 refuse('deferred-execnet-transfer-entry', {'file': path, 'function': qualname,
                                                          'module': frame.f_globals.get('__name__')})
-        if path.startswith(str(source / 'tests') + '/'):
+        if path.startswith(tests_prefix):
             if name.startswith('test'):
                 counts['test_body_entries'] += 1
                 refuse('test-body-entry', {'file': path, 'function': qualname})
@@ -264,6 +272,15 @@ def child(config_path):
         if path == runtime_exec and name in ('_run_command', '_resolve_binary', 'run', 'build_launch_spec'):
             counts['provider_entries'] += 1
             refuse('provider-entry', {'file': path, 'function': qualname})
+        if name == '<module>' and path.startswith(source_prefix):
+            module_entries += 1
+            # The existing fatal receipt cap bounds this stream. This is a
+            # prefix observation, never a completed import or no-body tail.
+            emit({'kind': 'candidate-module-entry', 'file': path,
+                  'module': frame.f_globals.get('__name__'),
+                  'elapsed_seconds': time.monotonic() - profile_started,
+                  'module_entries': module_entries,
+                  'python_call_keys': len(call_counts), 'controls_so_far': dict(counts)})
 
     forbidden_events = {'os.system', 'os.fork', 'os.forkpty', 'os.posix_spawn', 'os.exec',
         'os.startfile', 'pty.spawn', 'socket.__new__', 'socket.connect', 'socket.bind', 'socket.getaddrinfo',

@@ -1,5 +1,24 @@
 # TASK10335 audited whole-repository collection under root10318
 
+Original macOS15 run37925630042/attempt1 at evidenceb958deeb reached the
+unchanged 300-second parent deadline (300.227s), exit143. No final child receipt
+exists: collection counts/errors and complete effective call/plugin/control
+closure remain unknown. All three genuine admitted missing-ip attempts are
+recorded with exact source/argv/UID501/timeout10, FileNotFoundError errno2 and
+native fork PID/exit255/reap. Native tables510/493 have scoped owned survivors[];
+source manifests match. These prefix/probe/cleanup facts do not establish
+completed discovery or behavioral QA. JOB4049 acquisition exit0 is not PASS.
+
+The profile callback now precomputes its invariant path strings instead of
+constructing Path objects for every Python call. Its comparisons, counts and
+fatal denials are identical. Bounded candidate-module entry receipts record
+elapsed time and prefix controls to locate any remaining timeout/import edge;
+an entry is not a completed import or final zero-body proof. All 300s/8MiB and
+other existing bounds, hash admission, plugin selection, native observer,
+source parent/provider fence and launch/body denials remain unchanged. Actual
+fresh receipts must determine whether this evidence-only correction completes
+collection; no speed or successful collection is inferred from inspection.
+
 Original macOS15 run37923353211/attempt1 at evidence6650179f retained parent
 exit87: the hash corpus omitted candidate/tests/client/__init__.py. The emitted
 effective options establish collectonly=true, markexpr='', tests/ selection,
