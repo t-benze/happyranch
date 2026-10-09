@@ -1,24 +1,25 @@
-# TASK10335 collection environment acquisition under root10318
+# TASK10335 audited collection-only stage under root10318
 
-Current selection uses only the existing admitted native macOS15 provisioning
-and frozen source dependency setup to acquire the actual installed Python,
-distribution, pytest11 entry-point and startup source identities. The bounded
-archive contains installed Python/startup/metadata bytes for completing the
-transitive/plugin audit. It imports no pytest, plugin or candidate module and
-runs no test body, provider, browser, package build or interface probe. Fresh
-native admission, ordinary UID, source before/after manifests, owned group
-termination/reaping, native cleanup, action/tool/source pins and sealing remain.
+Current selection uses the unchanged admitted native macOS15 provisioning and
+locked source setup, reconciles fresh installed/startup/plugin/stdlib identities
+against the hash-bound collection audit, then conditionally executes ONLY
+supported source-parent `pytest tests/ -v -m "" --collect-only`. Controls start
+before real site startup/original provider guard; fixture/test/runtest/provider,
+network/DB/unknown-launch entry refuses. All effective pytest plugins and
+options, actual collected/selected/deselected/errors/exit, three exact timeout10
+missing-ip probe outcomes and full bounded logs are retained. Discovery fails
+on unknown identity/effect or incomplete receipt; genuine import errors remain.
+The complete original native census and parent/coordinator group reap retain
+invocation-owned cleanup and pristine source requirements. See task_10279 README
+for the finite observation overlay; no native/permission/source-parent change.
 
-Collection is HELD, even after acquisition exit0. Full semantic audit, actual
-effective plugin hooks/options, no-body/unclassified-launch controls and the
-supported parent-driven `pytest tests/ -v -m "" --collect-only` invocation with
-real counts/errors/exit remain owed. This acquisition is no collection or QA
-PASS. The three exact source-hashed `ip -4 -o addr show` globals are admitted
-only for later audited disposable collection, preserving timeout10 and actual
-missing-binary behavior. Root10318 step5 accepts original browser37905976672
-and source37898089226 only in their recorded scopes; they are not rerun here.
-Suspended units/proofs/keeper obligations and all independent delivery gates
-remain. This branch is NEVER-MERGE; PR1017 stays unchanged294beab8.
+Audit/acquisition/workflow status is never behavioral QA or keeper PASS.
+Root10318 step5 accepts browser37905976672 and source37898089226 only at their
+actual scopes; they are not rerun here. Bodies/proofs stay SUSPENDED and keeper
+obligations UNFULFILLED; general integration SKIPPED. Root keeps integration,
+independent review/QA, merge/postmain/deployment ownership. This evidence branch
+is NEVER-MERGE; source PR1017 stays unchanged294beab8. Existing source/tool/action
+pins, native admission, ordinary UID, bounds and complete sealing remain.
 
 ## Historical TASK10318 browser-only recovery
 

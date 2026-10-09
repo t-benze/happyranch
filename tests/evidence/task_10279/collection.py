@@ -1,11 +1,13 @@
-"""Finite collection-environment acquisition, without pytest/product imports.
+"""Finite installed-source acquisition and audited collect-only coordination.
 
-Installed plugin sources must be reviewed before collection is admitted. This
-helper supplies their actual installed identity; it does not execute collection.
+Acquisition does not import pytest/product code. Execution requires the reviewed
+source/plugin hashes and early controls, and retains actual collection failures.
 """
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+import json
 
 
 INSTALLED_SOURCES = r'''
@@ -113,3 +115,140 @@ def acquire(commands, source: Path, root: Path, env: dict[str, str], uv: Path,
         if result['status'] == 'sources-acquired-cleanup-pending':
             result['status'] = 'acquired-collection-held'
         api['save']('collection-acquisition.json', result)
+
+
+STDLIB_BINDING = r'''
+import ast, hashlib, json, os, pathlib, sys, sysconfig
+audit=json.loads(pathlib.Path(sys.argv[1]).read_text())
+root=pathlib.Path(sysconfig.get_path('stdlib')).resolve(strict=True)
+rows={}
+for name,expected in audit['stdlib_hashes'].items():
+ p=root/name
+ assert p.is_file() and hashlib.sha256(p.read_bytes()).hexdigest()==expected, name
+ rows[str(p)]=expected
+# Native stdlib extensions are freshly built from the same official pinned
+# CPython archive/recipe, not compared to another build's physical bytes.
+native={}
+for p in sorted((root/'lib-dynload').glob('*.so')):
+ assert p.is_file() and not p.is_symlink()
+ h=hashlib.sha256(p.read_bytes()).hexdigest()
+ rows[str(p)]=h
+ native[str(p)]=h
+generated={}
+for p in sorted(root.glob('_sysconfigdata*.py')):
+ blob=p.read_bytes(); tree=ast.parse(blob)
+ for n in tree.body:
+  assert isinstance(n,ast.Assign), ast.dump(n)
+  assert all(isinstance(t,ast.Name) for t in n.targets)
+  ast.literal_eval(n.value)
+ h=hashlib.sha256(blob).hexdigest(); rows[str(p)]=h; generated[str(p)]=h
+assert generated
+pathlib.Path(sys.argv[2]).write_text(json.dumps({'files':rows,'stdlib':str(root),
+ 'native_extensions':native,'generated_literal_configuration':generated,
+ 'python':{'executable':sys.executable,'prefix':sys.prefix,'version':sys.version},
+ 'uid':os.getuid(),'candidate_imports':False},sort_keys=True,indent=2)+'\n')
+'''
+
+
+def execute(commands, source: Path, root: Path, env: dict[str, str], uv: Path,
+            python: Path, descriptor: dict, observer: Path, api: dict) -> dict:
+    """Fresh hash/option admission, source-parent collection, actual cleanup."""
+    acquired = acquire(commands, source, root, env, uv, python, descriptor, observer, api)
+    stage = root / 'collection-environment'
+    venv = stage / 'installed'
+    audit_path = Path(__file__).with_name('collection-audit.json')
+    control = Path(__file__).with_name('collection_control.py')
+    audit = json.loads(audit_path.read_text())
+    assert audit['candidate'] == '294beab846efbceecc3fa5dbfb77ff40c95fa5af'
+    installed = json.loads((api['receipts'] / 'collection-installed-sources.json').read_text())
+    # All known installed code/startup bytes, including conditionally excluded
+    # code, must match before selecting the actual executable allow corpus.
+    assert {p:r['sha256'] for p,r in installed['files'].items() if p.endswith(('.py','.pth'))} == audit['installed_all_python_hashes']
+    assert installed['pytest11_entry_points'] == audit['pytest11']
+    assert [[d['name'],d['version']] for d in installed['distributions']] == audit['distributions']
+    assert installed['startup_customization_candidates'] == ['_virtualenv.pth']
+    assert not [e for d in installed['distributions'] for e in d['entry_points']
+                if e['group'] in ('pydantic','pygments.lexers','pygments.styles','pygments.filters','pygments.formatters')]
+    for name, expected in audit['source_hashes'].items():
+        assert hashlib.sha256((source / name).read_bytes()).hexdigest() == expected, name
+    environment = api['clean_env'](stage / 'parent-setup')
+    environment['PATH'] = str(uv.parent) + ':' + environment['PATH']
+    environment['VIRTUAL_ENV'] = environment['UV_PROJECT_ENVIRONMENT'] = str(venv)
+    environment['UV_PYTHON'] = str(venv / 'bin/python')
+    environment['HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT'] = json.dumps({
+        'path': str(api['receipts'] / 'native-descriptor.json'),
+        'sha256': hashlib.sha256((api['receipts'] / 'native-descriptor.json').read_bytes()).hexdigest()})
+    stdlib_path = api['receipts'] / 'collection-stdlib-binding.json'
+    commands.run('collection-stdlib-binding', [venv / 'bin/python', '-I', '-S', '-c',
+                 STDLIB_BINDING, audit_path, stdlib_path], source, environment, 120)
+    stdlib = json.loads(stdlib_path.read_text())
+    verified = {str((source / p).resolve()): h for p,h in audit['source_hashes'].items()}
+    purelib = Path(installed['purelib'])
+    for path, expected in audit['installed_hashes'].items():
+        assert installed['files'][path]['sha256'] == expected, path
+        verified[str((purelib / path).resolve())] = expected
+    verified.update(stdlib['files'])
+    verified[str(control.resolve())] = hashlib.sha256(control.read_bytes()).hexdigest()
+    cfg = {'candidate': audit['candidate'], 'source': str(source), 'stage': str(stage),
+           'audit': str(audit_path), 'verified_files': verified,
+           'receipt_root': str(api['receipts']),
+           'parent_receipt': str(api['receipts'] / 'collection-parent.json'),
+           'child_receipt': str(api['receipts'] / 'collection-child.json'),
+           'events': str(api['receipts'] / 'collection-controls.jsonl'),
+           'frozen_code_names': ['<frozen ' + n + '>' for n in (
+               'importlib._bootstrap','importlib._bootstrap_external','zipimport','abc','codecs',
+               'io','_collections_abc','os','site','stat','importlib.util','importlib.machinery',
+               'ntpath','posixpath','genericpath','runpy')],
+           'native_runtime': api['identity'](api['receipts'] / 'python-runtime.json')}
+    config_path = api['save']('collection-config.json', cfg)
+    result = {'status': 'failed', 'source': audit['candidate'], 'scope': 'whole-repository import/discovery only',
+              'is_behavioral_or_keeper_pass': False, 'acquisition': acquired,
+              'audit': api['identity'](audit_path), 'control': api['identity'](control),
+              'selection': ['pytest','tests/','-v','-m','','--collect-only'], 'collection_executed': False}
+    census = api['census']
+    try:
+        census(commands, 'collection-before', python, observer, descriptor, root, env, source, stage)
+        result['collection_attempted'] = True
+        result['collection_executed'] = None  # Actual child receipt decides.
+        _, code = commands.run('whole-repository-collect-only',
+            [venv / 'bin/python', '-S', control, '--parent', config_path],
+            source, environment, 300, required=False)
+        result['exit'] = code
+        child = Path(cfg['child_receipt'])
+        if child.is_file():
+            data = json.loads(child.read_text())
+            result['collection_executed'] = data['state']['sessionstarted']
+            result['child_receipt'] = api['identity'](child)
+            result['collected'] = data['state'].get('testscollected')
+            result['selected'] = len(data['state']['items'])
+            result['deselected'] = data['state']['deselected']
+            result['errors'] = data['state'].get('collection_errors')
+            result['controls'] = data['controls']
+            result['denied'] = data['denied']
+            result['ip_probes'] = data['probes']
+            if code == 0:
+                assert data['state']['sessionstarted'] and data['profile_retained']
+                assert result['collected'] == result['selected'] > 0
+                assert result['deselected'] == result['errors'] == 0
+                assert not data['denied']
+                assert all(data['controls'][k] == 0 for k in (
+                    'fixture_entries','test_body_entries','runtest_entries','provider_entries'))
+                assert {p['source'] for p in data['probes']} == set(audit['ip_sources'])
+                assert len(data['probes']) == 3
+                assert all(p['error_type'] == 'FileNotFoundError' and p['errno'] == 2
+                           and p['native_fork_child_reaped'] for p in data['probes'])
+                assert data['audit_event_counts'].get('subprocess.Popen') == 3
+            result['status'] = 'collected' if code == 0 else 'collection-errors-retained'
+        else:
+            result['status'] = 'collection-refused-no-complete-child-receipt'
+        return result
+    finally:
+        try:
+            census(commands, 'collection-after', python, observer, descriptor, root, env, source, stage)
+            result['cleanup'] = 'complete-native-table-no-owned-survivors-after-parent-group-reap'
+        except BaseException as error:
+            result['cleanup'] = 'failed-or-unavailable'
+            result['cleanup_error'] = {'type': type(error).__name__, 'message': str(error)}
+            raise
+        finally:
+            api['save']('whole-repository-collection.json', result)

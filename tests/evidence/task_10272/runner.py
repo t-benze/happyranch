@@ -784,7 +784,7 @@ def main():
     assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
     assert os.environ.get('GITHUB_EVENT_NAME') == 'push'
     assert os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'no autonomous or manual reruns'
-    assert platform.system() == 'Darwin', 'this acquisition is admitted native macOS15 only'
+    assert platform.system() == 'Darwin', 'this collection is admitted native macOS15 only'
     assert platform.machine() in ('x86_64', 'arm64')
     if sys.platform == 'linux':
         assert platform.machine() == 'x86_64'
@@ -803,8 +803,8 @@ def main():
                   'general_integration': 'SKIPPED',
                   'wheel_and_frozen_behavior': 'historical37890296572 pinned c6dcefa2; not rerun or relabeled',
                   'real_daemon_browser': 'historical37905976672 accepted by root10318 step5; not rerun',
-                  'source_shipping': 'historical37898089226 at current candidate; no source execution in this collection acquisition',
-                  'whole_repo_discovery': 'held for audit',
+                  'source_shipping': 'historical37898089226 at current candidate; no source test bodies in this collection stage',
+                  'whole_repo_discovery': 'conditional hash-bound collect-only; actual receipt required',
                   'independent_code_review_and_qa': 'pending'}}
     env = clean_env(root / 'bootstrap')
     candidate, baseline = WORKSPACE / 'candidate', WORKSPACE / 'baseline'
@@ -824,7 +824,9 @@ def main():
                 HERE.parent / 'task_10279/artifacts.py',
                 HERE.parent / 'task_10279/browser.py',
                 HERE.parent / 'task_10279/browser.mjs',
-                HERE.parent / 'task_10279/collection.py')}})
+                HERE.parent / 'task_10279/collection.py',
+                HERE.parent / 'task_10279/collection_control.py',
+                HERE.parent / 'task_10279/collection-audit.json')}})
         evidence_head, _ = commands.run('evidence-source-head', ['git', 'rev-parse', 'HEAD'], EVIDENCE, env)
         assert evidence_head.strip() == os.environ['GITHUB_SHA']
         commands.run('native-os', ['uname', '-a'], root, env)
@@ -959,21 +961,41 @@ def main():
             assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        # Acquire actual locked installed sources before plugin audit/collection.
+        # Reconcile the fresh environment against the source audit, then run
+        # ONLY admitted collection through the unchanged source parent.
         collection = runpy.run_path(str(HERE.parent / 'task_10279/collection.py'),
-                                    run_name='hosted_collection_acquisition')
-        result['collection'] = collection['acquire'](
+                                    run_name='hosted_audited_collection')
+        result['collection'] = collection['execute'](
             commands, candidate, root, env, uv, python, descriptor, observer,
             {'clean_env': clean_env, 'census': stage_native_census,
              'receipts': RECEIPTS, 'identity': identity, 'save': save})
         final = source_manifest(commands, 'candidate-collection-final', candidate, env, CANDIDATE)
-        assert final['files'] == before_candidate['files'] and final['links'] == before_candidate['links'], 'acquisition mutated source'
-        result['status'] = 'collection-environment-acquired-discovery-held'
-        return 0
+        assert final['files'] == before_candidate['files'] and final['links'] == before_candidate['links'], 'collection mutated source'
+        result['status'] = result['collection']['status']
+        return result['collection']['exit']
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}
         raise
     finally:
+        # Even a refused/failed collection retains actual source after-state.
+        # These are read-only manifest observations, never source test reruns.
+        final_failures = []
+        result['final_source_preservation'] = {}
+        for role, source, original, pin in (
+                ('candidate', candidate, before_candidate, CANDIDATE),
+                ('baseline', baseline, before_baseline, BASELINE)):
+            if original is None:
+                continue
+            try:
+                after = source_manifest(commands, role + '-final-termination', source, env, pin)
+                pristine = after['files'] == original['files'] and after['links'] == original['links']
+                result['final_source_preservation'][role] = {'pristine': pristine}
+                if not pristine:
+                    final_failures.append(role + ': source changed')
+            except BaseException as error:
+                result['final_source_preservation'][role] = {
+                    'pristine': None, 'error': {'type': type(error).__name__, 'message': str(error)}}
+                final_failures.append(role + ': final source observation failed')
         save('shipping-result.json', result)
         # Keep finite failure diagnostics in Actions logs even if transport
         # sealing refuses. Never print product responses, tokens or prompts.
@@ -984,6 +1006,8 @@ def main():
                           for row in value.get('cases', [])]}
                 for name, value in result.get('artifacts', {}).items()},
             'supplemental_result_is_overall_pass': False}, sort_keys=True), flush=True)
+        if final_failures:
+            raise RuntimeError('; '.join(final_failures))
 
 
 def seal():

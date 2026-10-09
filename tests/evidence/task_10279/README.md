@@ -1,22 +1,45 @@
-# TASK10335 collection environment acquisition
+# TASK10335 audited whole-repository collection under root10318
 
-The current push selects the remaining audit's environment prerequisite in the
-existing native macOS15 venue. The coordinator uses unchanged pinned native
-admission, official CPython3.14.4/uv tools and locked source setup, then acquires
-installed Python/startup/metadata sources and pytest11 entry-point identities
-without importing pytest, plugins or candidate code. Successful authenticated
-acquisition supplies actual disposable installed sources for review; it does not close their
-semantic/startup/hook audit or admit collection. Acquisition exit0 is neither
-collection PASS nor behavioral QA. Full parent-driven all-tests collect-only,
-counts/deselections/errors/exit, zero body/provider/unclassified launch and
-invocation-owned native cleanup evidence remain owed. No import-all shortcut,
-three-probe execution, paused body/proof, browser or packaging rerun occurs.
+The selected remaining stage uses the existing native macOS15 admission and
+pinned CPython3.14.4/uv/locked dependency recipe. Before collection,
+collection-audit.json binds the reviewed immutable source, installed packages,
+pytest11/startup identities and pinned stdlib source bytes to the fresh venue.
+Generated CPython configuration accepts literal assignments only; actual native
+extensions bind the current pinned build, never another build's physical bytes.
+Unknown file/hash/entry-point/startup differences refuse before collection.
 
-Only collection.py, the existing coordinator stage selection, two evidence
-READMEs and workflow stage label change. Existing observer, permissions,
-source/tool/action pins, bounds, source manifests and lossless sealing remain.
-PR1017 candidate294beab846efbceecc3fa5dbfb77ff40c95fa5af is unchanged.
-Root10318 retains integration/review/QA/merge/postmain/deployment ownership.
+collection_control.py invokes the unchanged source integration_parent.main with
+ordinary `pytest tests/ -v -m "" --collect-only`. Its exact pytest-child Popen is
+wrapped to start evidence controls before site.main and the ORIGINAL source
+sitecustomize/provider guard. Parent closed environment, stub registry, actual
+git/source checks, nested uv interpreter binding and group cleanup are retained.
+No permission/native-observer/production-parent change. All original builtin,
+autoload and conftest plugins remain enabled; effective options/plugins are
+receipted. An invocation-owned cache directory prevents source cache mutations.
+
+Early CPython audit and profile controls refuse network/DB/unknown child/thread,
+provider entry, fixture and runtest/test-body entry before execution. Neutral
+synthetic audit dispatches launch no child/socket/command; a neutral evidence
+sentinel confirms profiling without invoking a paused body. Exactly the three
+source-hashed timeout10 `ip -4 -o addr show` globals are specially admitted;
+this macOS venue requires ip genuinely absent on the parent's exact PATH and
+retains each original FileNotFoundError/error-to-None outcome, not a fake success.
+Darwin pythonapi/libc/libproc loading and finite prototype setup are audited;
+other ctypes libraries/symbols refuse. In-memory schema/type/annotation/class,
+route, decorator and ID generation grants no launch or body execution.
+
+whole-repository-collection.json and complete bounded original logs report actual
+collected/selected/deselected/errors/exit, effective plugins, control counts,
+probe results and native cleanup. Fatal refusal is incomplete discovery; import
+failures remain failures. Source before/after manifests and complete owned
+native attribution must be pristine/empty. Static audit, acquisition or workflow
+success alone supplies no collection/behavioral QA/keeper PASS. Bodies and
+surviving proofs remain SUSPENDED/UNFULFILLED; general integration SKIPPED.
+
+Changes are only the collection helpers/audit data, stage coordination/docs and
+workflow stage label. Observer/permissions/source/tool/action pins/bounds/sealing
+remain unchanged. Source PR1017 stays294beab846efbceecc3fa5dbfb77ff40c95fa5af.
+Root10318 owns integration/review/QA/merge/postmain/deployment disposition.
 Historical original evidence below retains its actual immutable scope.
 
 ## Historical TASK10318 direct-root browser-only renewal
