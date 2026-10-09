@@ -53,23 +53,17 @@ scripts/daemon.sh start
 #    subdirectories under <runtime>/orgs/<slug>/.
 happyranch init ~/happyranch-runtime
 
-# 3. Optional but recommended: initialize the runtime-global system assistant.
-#    This verifies that at least one supported agentic CLI works and is
-#    reachable via the Cmd-K web dock.
-happyranch assistant init
-happyranch assistant status
-
-# 4. Materialize an org from a sample tree.
+# 3. Materialize an org from a sample tree.
 happyranch orgs init hk-macau-tourism --from examples/orgs/hk-macau-tourism
 
-# 5. (Optional) Set the default org so you don't pass --org on every command.
+# 4. (Optional) Set the default org so you don't pass --org on every command.
 export HAPPYRANCH_ORG_SLUG=hk-macau-tourism
 
-# 6. Initialize agent workspaces (generates bootstrap docs, copies skills,
+# 5. Initialize agent workspaces (generates bootstrap docs, copies skills,
 #    clones repos declared in each agent's org/agents/<name>.md frontmatter).
 happyranch init-agent
 
-# 7. Run a task. The CLI streams live events until done.
+# 6. Run a task. The CLI streams live events until done.
 happyranch run --brief "Explore how the payment module handles refunds"
 
 # Re-attach to a running task and stream events
@@ -121,35 +115,15 @@ Slug resolution for per-org commands: explicit `--org <slug>` flag > `HAPPYRANCH
 
 The files under `org/` are the source of truth for that organization. You can hand-edit them between tasks (e.g., to refine an agent's system prompt) — the next `happyranch init-agent` regenerates the workspace bootstrap accordingly.
 
-## System Assistant
+## Retired System Assistant
 
-The system assistant is a runtime-global agentic CLI you can attach to for ad-hoc help across the whole container. It is **not** an org agent; it lives under `<runtime>/system/assistant/` and onboards by self-registration — you pick whichever CLI you already have installed (`claude`, `codex`, `opencode`, `pi`, or another) and let it register itself.
-
-```bash
-# 1. Prepare (or repair) the runtime-global assistant workspace at
-#    <runtime>/system/assistant/workspace. When no assistant is configured
-#    yet, this prints the next steps to register one.
-happyranch assistant init
-happyranch assistant init --reconfigure   # redo config for an already-configured assistant
-happyranch assistant init --repair        # fix a broken/partial config
-#    --reconfigure and --repair are mutually exclusive.
-
-# 2. Open your own agentic CLI (claude, codex, opencode, pi, ...) IN that
-#    workspace and ask it to register itself. It calls back:
-happyranch assistant register --from-file <payload.json>
-#    The payload declares an agent-chosen {executor, command, argv}.
-#    Flag form instead of a file:
-happyranch assistant register --executor claude --command claude --argv '["claude"]'
-
-# 3. Verify the configuration is in place.
-happyranch assistant status     # show configuration state and selected executor
-```
-
-On register, the daemon validates the payload structurally — non-empty fields
-and a matching ``argv[0]`` / ``command`` pair — then auto-configures with
-no separate approval.  Custom profiles now require an explicit machine-local
-binary registry entry (``executors.json``) before launch (THR-107 seq155).
-See [`docs/agent-guides/runtime-and-configuration.md`](docs/agent-guides/runtime-and-configuration.md) for the full configuration contract.
+System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
+settings, dock and Cmd/Ctrl-K binding are removed. Existing assistant config,
+conversations, workspace files and skill links remain inert and are not cleaned
+or migrated. Provider conversation roles and ordinary org-agent capabilities
+remain supported. The reserved `system_assistant` workspace name stays excluded
+from the org-agent YAML migration, preventing legacy YAML reads or sentinel
+writes. Historical database, audit and token records remain readable.
 
 ## Commands
 

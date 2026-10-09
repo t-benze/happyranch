@@ -320,43 +320,15 @@ When `since` and `until` are both omitted, returns the `limit` most recent rows.
 When the daemon state is idle (`metrics_store` is `None`), returns
 `{"snapshots": []}` gracefully (never 500).
 
-## System Assistant
+## Retired System Assistant
 
-The system assistant is runtime-global and lives under `<runtime>/system/assistant/`.
-It is not an org agent and must not appear in `org/agents/` or `teams.yaml`.
-
-Initialize or repair it on the active runtime:
-
-```bash
-happyranch assistant init
-happyranch assistant init --repair
-happyranch assistant init --reconfigure
-```
-
-Onboarding is by self-registration. `happyranch assistant init` prepares or
-repairs the assistant workspace and writes registration instructions; the
-founder opens their own agentic CLI there and it completes configuration by
-calling back `happyranch assistant register --from-file <payload>` declaring an
-agent-chosen `{executor, command, argv}`. The daemon validates the payload
-structurally only (non-empty fields and `shutil.which(argv[0])` resolves; this
-is self-registration, not executor-binary resolution — the THR-107 seq155
-registration-only cutover applies to *executor launch*, not assistant
-self-registration) — then auto-configures with no separate approval.
-`happyranch assistant` tells the user to run `happyranch assistant init` when
-no assistant config exists.
-
-Register and repair also reconcile the canonical system-contract union into
-both `<workspace>/.agents/skills/` and `<workspace>/.claude/skills/`. The
-runtime-global assistant has no repository or org custom-skill context, so the
-exact set is `dream`, `jobs`, `start-task`, `thread`, `todos`, and
-`workspace-cleanup`. Repeated repair preserves the instruction pair, config,
-knowledge, learnings, logs, and other assistant workspace content. Existing
-corrupt canonical packages and unsafe, non-link, or wrong-target skill entries
-are detected by a read-only preflight before any workspace write. Refusal leaves
-both skill roots, instructions, metadata, knowledge, learnings, logs, and config
-unchanged. A later materializer-only failure removes only links and empty parent
-directories that were absent before that call; bootstrap never reconstructs a
-corrupt package or rewrites/removes pre-existing operator content on refusal.
+System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
+settings, dock and Cmd/Ctrl-K binding are removed. Existing assistant config,
+conversations, workspace files and skill links remain inert and are not cleaned
+or migrated. Provider conversation roles and ordinary org-agent capabilities
+remain supported. The reserved `system_assistant` workspace name stays excluded
+from the org-agent YAML migration, preventing legacy YAML reads or sentinel
+writes. Historical database, audit and token records remain readable.
 
 entry keyed by the profile name before launch (THR-107 seq155). Custom-adapter
 profiles (``command_adapter_id: custom-adapter:<id>``) are an exception — they
@@ -635,9 +607,9 @@ The workspace ``agent.yaml`` file is **no longer read or written** by any
 org-agent path. A one-shot startup migration (``migrate_agent_yaml_to_frontmatter``,
 idempotent, runs on every daemon start) copies any residual ``agent.yaml``
 values into their owning ``.md`` exactly once, then deletes ``agent.yaml`` and
-writes the ``.agent_yaml_consumed`` sentinel. The system assistant (``runtime/system_assistant.py``) is a
-**separate subsystem** and writes its own ``agent.yaml`` directly — it has no
-``org/agents/`` file and is unaffected.
+writes the ``.agent_yaml_consumed`` sentinel. The reserved legacy name
+``system_assistant`` is excluded before any YAML read or sentinel write.
+Retired assistant workspaces remain inert; startup never repairs or consumes them.
 
 See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
 `docs/agent-guides/agent-executors-and-permissions.md` (executor surface).

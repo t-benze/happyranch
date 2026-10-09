@@ -24,7 +24,6 @@ from cli.client.client import (  # noqa: F401  (cli.main.OpcClient must stay the
 from cli.commands import (
     agents,
     artifacts,
-    assistant,
     doctor,
     dreams,
     executor_binaries,
@@ -63,11 +62,6 @@ from cli.commands.runtime import (  # noqa: F401  (re-export for back-compat)
     cmd_runtime,
     cmd_use,
     cmd_web,
-)
-from cli.commands.assistant import (  # noqa: F401  (re-export for back-compat)
-    cmd_assistant_init,
-    cmd_assistant_register,
-    cmd_assistant_status,
 )
 from cli.commands.tasks import (  # noqa: F401  (re-export for back-compat)
     _completion_payload_from_file,
@@ -169,7 +163,6 @@ def build_parser() -> argparse.ArgumentParser:
     learning.register(sub)
     kb.register(sub)
     artifacts.register(sub)
-    assistant.register(sub)
     doctor.register(sub)
     dreams.register(sub)
     work_hours.register(sub)

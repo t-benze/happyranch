@@ -23,7 +23,7 @@ test('root with orgs renders the Sidebar org dropdown after navigate', async () 
   renderWithProviders(<AppRoutes />, { route: '/orgs/alpha/threads' });
   await waitFor(() => {
     expect(screen.getByLabelText(/Active org/i)).toBeInTheDocument();
-    expect(screen.getByLabelText('Open assistant')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Open assistant')).not.toBeInTheDocument();
     // Threads page header always renders (THREADS-04 serif title).
     expect(
       screen.getByRole('heading', { name: /Conversations across the org/i }),

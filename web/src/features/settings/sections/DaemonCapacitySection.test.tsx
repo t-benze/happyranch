@@ -204,7 +204,7 @@ describe('1 / 18 — staged save copy and provenance', () => {
       expect(body).not.toMatch(forbidden);
     }
     expect(body).toMatch(/cannot link that token to a verified person/);
-    expect(body).toMatch(/does not include background Assistant or job processes/);
+    expect(body).toMatch(/does not include job processes/);
   });
 
   test('18.7 audit copy is qualified and never promises the entry is recorded', async () => {

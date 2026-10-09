@@ -190,7 +190,7 @@ describe('DaemonCapacitySection i18n (W2c capacity)', () => {
     await user.clear(screen.getByLabelText(/任务会话上限/));
     await user.type(screen.getByLabelText(/任务会话上限/), '7');
 
-    act(() => { void view.router.navigate('/orgs/alpha/settings/assistant'); });
+    act(() => { void view.router.navigate('/orgs/alpha/settings/organization'); });
 
     const dialog = await screen.findByRole('dialog', { name: '放弃未保存的容量更改？' });
     const close = within(dialog).getByRole('button', { name: '关闭' });

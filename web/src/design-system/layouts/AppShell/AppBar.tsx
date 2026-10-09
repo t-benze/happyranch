@@ -1,4 +1,4 @@
-import { Bot, Moon, Sun } from 'lucide-react';
+import { Moon, Sun } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { useI18n, useTranslation } from '@/hooks/i18n';
 import { useTheme } from '@/hooks/theme';
@@ -9,10 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
  * AppBar — persistent top app bar (THR-030 BUG-04/05/06).
  *
  * Renders to the right of the Sidebar, above the routed content: current page
- * name on the left; assistant avatar, language selector and theme toggle on the right. The avatar
- * opens the global Assistant Dock via the app-wide `[data-assistant-open]`
- * click handler (AssistantDockHost) — same wiring the search pill used before
- * it was replaced by the avatar entry point (THR-056 PR-6).
+ * name on the left; language selector and theme toggle on the right.
  *
  * The page name is derived purely from the URL pathname (no data fetch), so it
  * stays correct on every surface without new client state. THR-118 W2a keeps
@@ -35,7 +32,6 @@ const SECTION_TITLES: Record<string, MessageKey> = {
   settings: 'shell.title.settings',
   jobs: 'shell.title.jobs',
   health: 'shell.title.runtimeHealth',
-  assistant: 'shell.title.assistant',
 };
 
 /** Pure pathname -> localized page title helper (explicit locale). */
@@ -50,12 +46,10 @@ export function pageTitleFromPath(pathname: string, locale: Locale): string {
 }
 
 export interface AppBarProps {
-  /** Prototypes have no AssistantDockHost, so they omit its unavailable control. */
-  showAssistantControl?: boolean;
   presentation?: 'tasks';
 }
 
-export function AppBar({ showAssistantControl = true, presentation }: AppBarProps): JSX.Element {
+export function AppBar({ presentation }: AppBarProps): JSX.Element {
   const location = useLocation();
   const { locale, setLocale, t } = useI18n();
   const title = pageTitleFromPath(location.pathname, locale);
@@ -64,17 +58,6 @@ export function AppBar({ showAssistantControl = true, presentation }: AppBarProp
     <div className={`border-border bg-bg-subtle flex shrink-0 items-center border-b ${presentation === 'tasks' ? 'tasks-appbar' : 'h-12 gap-4 px-5'}`}>
       <span className={`text-fg font-medium ${presentation === 'tasks' ? 'font-display text-lg' : 'text-sm'}`}>{title}</span>
       <div className="ml-auto flex shrink-0 items-center gap-2">
-        {showAssistantControl && (
-          <button
-            type="button"
-            data-assistant-open="true"
-            aria-label={t('shell.openAssistant')}
-            title={t('shell.openAssistant')}
-            className="bg-accent text-accent-fg hover:bg-accent-hover focus-visible:ring-accent inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none"
-          >
-            <Bot size={16} aria-hidden="true" />
-          </button>
-        )}
         <Select value={locale} onValueChange={(next) => {
           if (next === 'en' || next === 'zh-CN') setLocale(next);
         }}>

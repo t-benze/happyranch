@@ -812,15 +812,12 @@ async function main() {
     }
 
     /**
-     * Open state of the dialog under test. The app mounts a persistent
-     * off-screen Assistant dock with `role="dialog"` (aria-label
-     * "Ranch Assistant"), so a bare `[role=dialog]` query is always truthy;
-     * ignore that dock and report whether a real mounted dialog is open.
+     * Open state of the mounted dialog under test.
      */
     async function dialogOpen(sessionId) {
       return evaluate(
         sessionId,
-        `(() => [...document.querySelectorAll('[role="dialog"]')].some((d) => d.getAttribute('aria-label') !== 'Ranch Assistant'))()`,
+        `!!document.querySelector('[role="dialog"]')`,
       );
     }
 

@@ -406,7 +406,6 @@ async function main() {
       await evaluate(page, `(() => { const t = document.querySelector('[role="dialog"] textarea'); t.focus(); return true; })()`);
       await cdp.send('Input.insertText', { text: DRAFT }, page.sessionId);
       await sleep(200);
-      // The always-mounted assistant dock is also role="dialog": anchor on the
       // dialog that owns the draft textarea, never the first role="dialog".
       const DIALOG = `(document.querySelector('[role="dialog"] textarea') || { closest: () => null }).closest('[role="dialog"]')`;
       await evaluate(page, `(() => { window.__w3bDialog = new WeakRef(${DIALOG}); window.__w3bField = new WeakRef(document.querySelector('[role="dialog"] textarea')); return true; })()`);

@@ -60,7 +60,6 @@ The stable path is:
    sessions.
 4. Run `happyranch init-agent` so each org agent receives a workspace and
    executor configuration.
-5. If using the assistant dock, run `happyranch assistant init` and follow the
    printed registration instructions.
 
 Each agent's executor and repos are declared in its AgentDef frontmatter at

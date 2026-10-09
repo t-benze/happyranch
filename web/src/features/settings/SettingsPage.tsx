@@ -1,7 +1,7 @@
 /**
  * SettingsPage — full page (not dialog) with sticky left sub-nav + field panel.
  *
- * Sub-nav: Capacity · Assistant · Organization · Executors · Preferences.
+ * Sub-nav: Capacity · Organization · Executors · Preferences.
  * (THR-061 seq79: the Usage sub-tab was removed — token usage now lives on
  * the standalone /usage page.)
  * Each sub-nav item routes to /orgs/:slug/settings/:section.
@@ -28,7 +28,6 @@ import {
   useParams,
 } from 'react-router-dom';
 import {
-  Sparkles,
   Home as HomeIcon,
   Terminal,
   Gauge,
@@ -43,7 +42,6 @@ import { PageHeader } from '@/design-system/patterns/PageHeader';
 
 const SECTIONS = [
   { key: 'daemon-capacity', labelKey: 'settings.nav.daemonCapacity', icon: Gauge },
-  { key: 'assistant', labelKey: 'settings.nav.assistant', icon: Sparkles },
   { key: 'organization', labelKey: 'settings.nav.organization', icon: HomeIcon },
   { key: 'executors', labelKey: 'settings.nav.executors', icon: Terminal },
 ] as const satisfies ReadonlyArray<{
@@ -74,6 +72,19 @@ export function SettingsPage(): JSX.Element {
   const settingsQuery = useSettings();
   const { t } = useTranslation();
 
+  const gated = (panel: ReactNode): JSX.Element => (
+    <>
+      {settingsQuery.isLoading && <div className="text-text-secondary flex-1 p-6 text-sm">{t('settings.page.loading')}</div>}
+      {settingsQuery.isError && (
+        <div className="text-feedback-danger flex-1 p-6 text-sm">
+          {t('settings.page.loadError')}
+          {settingsQuery.error?.message && <> {settingsQuery.error.message}</>}
+        </div>
+      )}
+      {settingsQuery.data && <SettingsContent>{panel}</SettingsContent>}
+    </>
+  );
+
   return (
     <div className="bg-surface-canvas flex h-full flex-col">
       <header className="border-border-default border-b p-4">
@@ -84,6 +95,11 @@ export function SettingsPage(): JSX.Element {
       </header>
 
       <Routes>
+        {/* Default, legacy and unknown routes resolve before the API gate. */}
+        <Route index element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+        <Route path="assistant" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+        <Route path="system" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
+        <Route path="agents" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
         {/* Client-only Preferences: outside the settings-API gate. */}
         <Route
           path="preferences"
@@ -93,42 +109,10 @@ export function SettingsPage(): JSX.Element {
             </SettingsContent>
           }
         />
-        <Route
-          path="*"
-          element={
-            <>
-              {settingsQuery.isLoading && (
-                <div className="text-text-secondary flex-1 p-6 text-sm">
-                  {t('settings.page.loading')}
-                </div>
-              )}
-              {settingsQuery.isError && (
-                <div className="text-feedback-danger flex-1 p-6 text-sm">
-                  {t('settings.page.loadError')}
-                  {settingsQuery.error?.message && <> {settingsQuery.error.message}</>}
-                </div>
-              )}
-
-              {settingsQuery.data && (
-                <SettingsContent>
-                  <Routes>
-                    <Route index element={<Navigate to={`/orgs/${slug}/settings/assistant`} replace />} />
-                    <Route path="assistant" element={<AssistantPanel />} />
-                    <Route path="daemon-capacity" element={<DaemonCapacityPanel />} />
-                    <Route path="system" element={<Navigate to={`/orgs/${slug}/settings`} replace />} />
-                    <Route
-                      path="organization"
-                      element={<OrganizationPanel org={settingsQuery.data.org} />}
-                    />
-                    <Route path="agents" element={<Navigate to={`/orgs/${slug}/settings`} replace />} />
-                    <Route path="executors" element={<ExecutorsPanel />} />
-                    <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/assistant`} replace />} />
-                  </Routes>
-                </SettingsContent>
-              )}
-            </>
-          }
-        />
+        <Route path="daemon-capacity" element={gated(<DaemonCapacityPanel />)} />
+        <Route path="organization" element={gated(settingsQuery.data && <OrganizationPanel org={settingsQuery.data.org} />)} />
+        <Route path="executors" element={gated(<ExecutorsPanel />)} />
+        <Route path="*" element={<Navigate to={`/orgs/${slug}/settings/daemon-capacity`} replace />} />
       </Routes>
     </div>
   );
@@ -191,22 +175,11 @@ function SettingsSubNav(): JSX.Element {
 // The lazy imports allow each panel to use its own hooks.
 // ----------------------------------------------------------------
 
-import { AssistantSection } from './sections/AssistantSection';
 import { OrganizationSection } from './sections/OrganizationSection';
 import { ExecutorsSection } from './sections/ExecutorsSection';
 import { DaemonCapacitySection } from './sections/DaemonCapacitySection';
 import { PreferencesSection } from './sections/PreferencesSection';
 import type { OrgSettings } from '@/lib/api/types';
-
-function AssistantPanel(): JSX.Element {
-  const { t } = useTranslation();
-  return (
-    <div className="max-w-2xl p-6">
-      <h2 className="font-display mb-4 text-lg font-semibold">{t('settings.panel.assistant.title')}</h2>
-      <AssistantSection />
-    </div>
-  );
-}
 
 function DaemonCapacityPanel(): JSX.Element {
   // The capacity section owns its own heading and description, matching the

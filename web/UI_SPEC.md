@@ -76,7 +76,7 @@ Statusbar elements, left to right:
 
 ### Interactions
 
-- Cmd/Ctrl-K (future) — opens a command palette (deferred; flagged in §12).
+- Cmd/Ctrl-K is unbound after System Assistant retirement (THR-294); the existing command-palette trigger remains available.
 - Tab cycles through TopBar then into the active feature body. The active nav item has `aria-current="page"`.
 - Switching org via the dropdown replaces `:slug` in the URL and remounts the feature. We do NOT preserve thread selection across orgs — that would surface a thread that doesn't exist in the new scope.
 

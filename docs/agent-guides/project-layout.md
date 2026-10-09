@@ -48,7 +48,6 @@ Tracked source is split by product surface:
 |   |-- thread_forward.py
 |   `-- client/client.py
 |-- runtime/                     # Python runtime package shipped by pyproject
-|   |-- config.py, models.py, runtime.py, system_assistant.py
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing

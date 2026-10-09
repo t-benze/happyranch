@@ -997,7 +997,6 @@ const KEYBOARD_SCENARIOS = [
       } else {
         await page.keyboard.press('Enter');
         await page.waitForTimeout(400);
-        // Scoped by accessible name on purpose: the always-mounted assistant
         // dock also carries `role="dialog"`, so a bare `[role="dialog"][aria-labelledby]` query
         // is never false and would report the leave dialog as still open.
         const afterStay = await page.evaluate(() => ({

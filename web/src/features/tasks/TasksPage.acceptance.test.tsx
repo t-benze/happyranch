@@ -515,20 +515,18 @@ test('C04 recency within groups and alphabetic agent/thread order', async () => 
   expect(ids()).toEqual(['ALPHA', 'EARLY', 'LATE', 'NONE']);
 });
 
-test('C12 Tasks AppBar assistant action reaches the real closed/open dock', async () => {
+test('C12 Tasks shell preserves ROOT without assistant launcher or dock', async () => {
   let requests = 0;
   server.use(
     http.get('/api/v1/orgs/org-a/tasks/roots', () => HttpResponse.json({ tasks: [task('ROOT')], next_cursor: null })),
-    http.get('/api/v1/assistant/status', () => { requests++; return HttpResponse.json({ state: 'uninitialized', selected_executor: null, workspace_path: null, detail: null }); }),
+    http.all('/api/v1/assistant/*', () => { requests++; return HttpResponse.json({}, { status: 404 }); }),
   );
-  mount(client()); await screen.findByText('Brief ROOT'); expect(requests).toBe(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Open assistant' }));
-  const dock = screen.getByRole('dialog', { name: 'Ranch Assistant' });
-  expect(await within(dock).findByText('Assistant is not ready. Set it up from Settings → Assistant.')).toBeInTheDocument();
-  expect(requests).toBe(1);
-  await userEvent.click(screen.getByRole('button', { name: 'Close assistant' }));
-  await waitFor(() => expect(dock).not.toHaveAttribute('aria-modal'));
-  expect(dock).toHaveClass('pointer-events-none');
+  mount(client()); await screen.findByText('Brief ROOT');
+  expect(screen.queryByRole('button', { name: 'Open assistant' })).not.toBeInTheDocument();
+  expect(document.querySelector('[data-assistant-open], [data-assistant-dock]')).toBeNull();
+  await userEvent.keyboard('{Meta>}k{/Meta}{Control>}k{/Control}');
+  expect(requests).toBe(0);
+  expect(screen.queryByRole('dialog', { name: 'Ranch Assistant' })).not.toBeInTheDocument();
   expect(ids()).toEqual(['ROOT']);
 });
 

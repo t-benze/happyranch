@@ -1,5 +1,7 @@
 # System Assistant — Web UI Design (Phase 2 build)
 
+> RETIRED by THR-294. This document is preserved design history. The runtime-global System Assistant is no longer supported; see the maintained runtime/configuration guide for inert legacy compatibility.
+
 - **Task:** TASK-188 (design) → TASK-192 (build)
 - **Status:** APPROVED — founder-signed-off Phase-2 build (THR-006). Rulings:
   G1 browser→WS auth = **Option A** (`Sec-WebSocket-Protocol` subprotocol);

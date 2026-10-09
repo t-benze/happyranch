@@ -68,7 +68,7 @@ function PrototypesLayout(): JSX.Element {
         <Sidebar />
         <div className="flex min-w-0 flex-1 flex-col">
           <PrototypeBanner />
-          <AppBar showAssistantControl={false} />
+          <AppBar />
           <main className="min-h-0 flex-1 overflow-hidden">
             <Outlet />
           </main>

@@ -88,9 +88,9 @@ function referenceRequirementError(requirement: PastureReferenceRequirement, sto
 }
 
 describe('Storybook design-system coverage', () => {
-  test('the authoritative 25-row manifest resolves to concrete story exports and rendered semantics', () => {
-    expect(PASTURE_REFERENCE_REQUIREMENTS).toHaveLength(25);
-    expect(new Set(PASTURE_REFERENCE_REQUIREMENTS.map(({ id }) => id)).size).toBe(25);
+  test('the authoritative 24-row manifest resolves to concrete story exports and rendered semantics', () => {
+    expect(PASTURE_REFERENCE_REQUIREMENTS).toHaveLength(24);
+    expect(new Set(PASTURE_REFERENCE_REQUIREMENTS.map(({ id }) => id)).size).toBe(24);
     const pastureModule = storyModules['../design-system/Pasture.stories.tsx'];
     expect(pastureModule).toBeDefined();
     for (const requirement of PASTURE_REFERENCE_REQUIREMENTS) {
@@ -102,11 +102,11 @@ describe('Storybook design-system coverage', () => {
     const timeline = PASTURE_REFERENCE_REQUIREMENTS.find(({ id }) => id === 'timeline')!;
     const dev = PASTURE_REFERENCE_REQUIREMENTS.find(({ id }) => id === 'dev')!;
     expect(referenceRequirementError(timeline, { StatsTimelineAndTable: { render: () => createElement('h2', null, 'Timeline & tables') } })).toContain('missing requirement root');
-    expect(referenceRequirementError(dev, { AssistantDockAndDevAffordance: { render: () => createElement('div', { 'data-pasture-requirement': 'dev' }, 'Implementation guidance.') } })).toContain('missing semantic selector');
+    expect(referenceRequirementError(dev, { DevAffordanceAndReference: { render: () => createElement('div', { 'data-pasture-requirement': 'dev' }, 'Implementation guidance.') } })).toContain('missing semantic selector');
   });
 
   test('the detailed rename map and screen-scoped inventory retain founder-reference facts', () => {
-    expect(PASTURE_REFERENCE_RENAMES).toHaveLength(42);
+    expect(PASTURE_REFERENCE_RENAMES).toHaveLength(41);
     expect(PASTURE_REFERENCE_RENAMES).toContainEqual(['prototype state switchers', '.devstates']);
     expect(PASTURE_REFERENCE_RENAMES).toContainEqual(['.sched-row (undefined)', '.dtable']);
     expect(PASTURE_SCREEN_SCOPED_COMPOSITIONS).toHaveLength(55);

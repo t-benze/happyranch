@@ -8,7 +8,7 @@ import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 import { SettingsDialog } from './SettingsDialog';
 import { SettingsPage } from './SettingsPage';
-import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch, AssistantStatus, AssistantRegisterBody } from '@/lib/api/types';
+import type { SettingsSnapshot, SystemSettings, OrgSettings, OrgSettingsPatch } from '@/lib/api/types';
 import type { QueryLike, MutationLike } from '@/design-system/providers/DataContext';
 
 const mockSystem: SystemSettings = {
@@ -64,12 +64,6 @@ function renderDialog(
   overrides?: Partial<SettingsSnapshot>,
   onClose = vi.fn(),
   mutateAsync = vi.fn().mockResolvedValue(mockSnapshot),
-  assistantOverrides?: {
-    status?: Partial<AssistantStatus>;
-    initMutateAsync?: ReturnType<typeof vi.fn>;
-    repairMutateAsync?: ReturnType<typeof vi.fn>;
-    registerMutateAsync?: ReturnType<typeof vi.fn>;
-  },
   queryOverride?: Partial<QueryLike<SettingsSnapshot>>,
   page = false,
 ) {
@@ -91,64 +85,16 @@ function renderDialog(
     isPending: false,
   });
 
-  // -- assistant mocks
-  const assistantStatus: AssistantStatus = {
-    state: 'configured',
-    selected_executor: 'claude',
-    workspace_path: '/rt/system/assistant/workspace',
-    detail: null,
-    ...assistantOverrides?.status,
-  };
-
-  const useAssistantStatus = (_enabled: boolean): QueryLike<AssistantStatus> => ({
-    data: assistantStatus,
-    isLoading: false,
-    isError: false,
-    error: null,
-  });
-
-  const initMutateAsync =
-    assistantOverrides?.initMutateAsync ??
-    vi.fn().mockResolvedValue(assistantStatus);
-  const useInitAssistant = (): MutationLike<{ reconfigure: boolean }, AssistantStatus> => ({
-    mutateAsync: initMutateAsync,
-    isPending: false,
-  });
-
-  const repairMutateAsync =
-    assistantOverrides?.repairMutateAsync ??
-    vi.fn().mockResolvedValue(assistantStatus);
-  const useRepairAssistant = (): MutationLike<void, AssistantStatus> => ({
-    mutateAsync: repairMutateAsync,
-    isPending: false,
-  });
-
-  const registerMutateAsync =
-    assistantOverrides?.registerMutateAsync ??
-    vi.fn().mockResolvedValue(assistantStatus);
-  const useRegisterAssistant = (): MutationLike<AssistantRegisterBody, AssistantStatus> => ({
-    mutateAsync: registerMutateAsync,
-    isPending: false,
-  });
-
   const ctxValue = {
     settings: { useSettings, useUpdateOrgSettings },
-    assistant: {
-      useAssistantStatus,
-      useInitAssistant,
-      useRepairAssistant,
-      useRegisterAssistant,
-      openSession: vi.fn().mockRejectedValue(new Error('no socket in dialog')),
-    },
   } as unknown as Parameters<typeof DataContext.Provider>[0]['value'];
 
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/orgs/alpha/dashboard']}>
+      <MemoryRouter initialEntries={[page ? '/orgs/alpha/settings/daemon-capacity' : '/orgs/alpha/dashboard']}>
         <Routes>
-          {/* Direct test-only mount. A relative <Link to="assistant"> resolves to /assistant
-              here, NOT the removed assistant page route, which is the bug this test guards. */}
           <Route
+            path={page ? "/orgs/:slug/settings/*" : "/orgs/:slug/dashboard"}
             element={
               <DataContext.Provider value={ctxValue}>
                 {page ? (
@@ -160,9 +106,7 @@ function renderDialog(
                 )}
               </DataContext.Provider>
             }
-          >
-            <Route path="/orgs/:slug/dashboard" element={<div />} />
-          </Route>
+          />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -232,24 +176,6 @@ describe('SettingsDialog', () => {
       mutateAsync: vi.fn(),
       isPending: false,
     });
-    const useAssistantStatus = (_enabled: boolean): QueryLike<AssistantStatus> => ({
-      data: undefined,
-      isLoading: true,
-      isError: false,
-      error: null,
-    });
-    const useInitAssistant = (): MutationLike<{ reconfigure: boolean }, AssistantStatus> => ({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    });
-    const useRepairAssistant = (): MutationLike<void, AssistantStatus> => ({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    });
-    const useRegisterAssistant = (): MutationLike<AssistantRegisterBody, AssistantStatus> => ({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    });
 
     render(
       <QueryClientProvider client={qc}>
@@ -262,13 +188,6 @@ describe('SettingsDialog', () => {
                   value={
                     {
                       settings: { useSettings, useUpdateOrgSettings },
-                      assistant: {
-                        useAssistantStatus,
-                        useInitAssistant,
-                        useRepairAssistant,
-                        useRegisterAssistant,
-                        openSession: vi.fn(),
-                      },
                     } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
                   }
                 >
@@ -298,24 +217,6 @@ describe('SettingsDialog', () => {
       mutateAsync: vi.fn(),
       isPending: false,
     });
-    const useAssistantStatus = (_enabled: boolean): QueryLike<AssistantStatus> => ({
-      data: undefined,
-      isLoading: false,
-      isError: false,
-      error: null,
-    });
-    const useInitAssistant = (): MutationLike<{ reconfigure: boolean }, AssistantStatus> => ({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    });
-    const useRepairAssistant = (): MutationLike<void, AssistantStatus> => ({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    });
-    const useRegisterAssistant = (): MutationLike<AssistantRegisterBody, AssistantStatus> => ({
-      mutateAsync: vi.fn(),
-      isPending: false,
-    });
 
     render(
       <QueryClientProvider client={qc}>
@@ -328,13 +229,6 @@ describe('SettingsDialog', () => {
                   value={
                     {
                       settings: { useSettings, useUpdateOrgSettings },
-                      assistant: {
-                        useAssistantStatus,
-                        useInitAssistant,
-                        useRepairAssistant,
-                        useRegisterAssistant,
-                        openSession: vi.fn(),
-                      },
                     } as unknown as Parameters<typeof DataContext.Provider>[0]['value']
                   }
                 >
@@ -427,75 +321,9 @@ describe('SettingsDialog', () => {
     expect(patch.threads?.invocation_timeout_seconds).toBeNull();
   });
 
-  // ----------------------------------------------------------------
-  // System Assistant section
-  // ----------------------------------------------------------------
-
-  test('renders System Assistant section with configured state', async () => {
-    renderDialog();
-
-    expect(screen.getByText('System Assistant')).toBeInTheDocument();
-    expect(screen.getByText('Configured')).toBeInTheDocument();
-    expect(screen.getByText('claude')).toBeInTheDocument();
-    expect(
-      screen.getByText(/\/rt\/system\/assistant\/workspace/),
-    ).toBeInTheDocument();
-  });
-
-  test('configured: links to the canonical Settings → Assistant config page', async () => {
-    renderDialog();
-
-    const link = screen.getByRole('link', { name: /manage in settings/i });
-    expect(link).toBeInTheDocument();
-    // The one config home is the Settings page (org-scoped absolute path), NOT
-    // the removed assistant page route.
-    expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
-    // No dead-end registration link; the assistant config home is the Settings page.
-    expect(
-      screen.queryByRole('link', { name: /register executor/i }),
-    ).toBeNull();
-    for (const anchor of screen.getAllByRole('link')) {
-      expect(anchor.getAttribute('href')).not.toBe('/orgs/alpha/assistant');
-    }
-  });
-
-  test('uninitialized: read-only glance + canonical settings link, no inline setup actions', async () => {
-    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
-      status: { state: 'uninitialized', selected_executor: null, workspace_path: null },
-    });
-
-    expect(screen.getByText('Uninitialized')).toBeInTheDocument();
-    // Setup logic lives only in Settings → Assistant now — no inline actions.
-    expect(
-      screen.queryByRole('button', { name: /Initialize workspace/i }),
-    ).toBeNull();
-    expect(
-      screen.queryByRole('link', { name: /register executor/i }),
-    ).toBeNull();
-    const link = screen.getByRole('link', { name: /manage in settings/i });
-    expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
-  });
-
-  test('stale_or_broken: shows detail, no inline Repair button, canonical settings link', async () => {
-    renderDialog(undefined, vi.fn(), vi.fn().mockResolvedValue(mockSnapshot), {
-      status: {
-        state: 'stale_or_broken',
-        selected_executor: 'codex',
-        workspace_path: '/rt/system/assistant/workspace',
-        detail: 'workspace missing AGENTS.md',
-      },
-    });
-
-    expect(screen.getByText('Stale or broken')).toBeInTheDocument();
-    expect(screen.getByText('workspace missing AGENTS.md')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Repair$/i })).toBeNull();
-    const link = screen.getByRole('link', { name: /manage in settings/i });
-    expect(link.getAttribute('href')).toBe('/orgs/alpha/settings/assistant');
-  });
 });
 
-// =============================================================================
-// THR-078 — MSW network-evidence: assistant status visibility gate
+// THR-294 — retained dialog makes no assistant status request
 // =============================================================================
 
 const SETTINGS_FIXTURE: SettingsSnapshot = {
@@ -557,7 +385,7 @@ function countingAssistantStub(): { count: () => number } {
         selected_executor: 'claude',
         workspace_path: '/rt/system/assistant/workspace',
         detail: null,
-      } satisfies AssistantStatus);
+      });
     }),
   );
   return { count: () => count };
@@ -589,7 +417,7 @@ describe('SettingsDialog — assistant status network evidence', () => {
     expect(counter.count()).toBe(0);
   });
 
-  test('open: exactly one fresh status request', async () => {
+  test('open: zero assistant status requests', async () => {
     const counter = countingAssistantStub();
     sessionStorage.setItem('happyranch.token', 'tok');
 
@@ -603,8 +431,8 @@ describe('SettingsDialog — assistant status network evidence', () => {
       { route: '/orgs/alpha/dashboard' },
     );
 
-    // The dialog is open → status query enabled → one request.
-    await vi.waitFor(() => expect(counter.count()).toBe(1));
+    // Opening the retained dialog renders ordinary fields without feature requests.
+    await vi.waitFor(() => expect(counter.count()).toBe(0));
   });
 
   test('open: no interval requests', async () => {
@@ -623,32 +451,32 @@ describe('SettingsDialog — assistant status network evidence', () => {
       { route: '/orgs/alpha/dashboard' },
     );
 
-    // Flush the initial status fetch + React re-render.
+    // Flush ordinary settings reads and React re-render.
     await act(() => vi.advanceTimersByTimeAsync(200));
-    expect(counter.count()).toBe(1);
+    expect(counter.count()).toBe(0);
 
     // Advance past the old 5 000 ms refetchInterval.
     await act(() => vi.advanceTimersByTimeAsync(6_000));
-    expect(counter.count()).toBe(1);
+    expect(counter.count()).toBe(0);
   });
 });
 
 
 describe('active settings surfaces — retired maximum absence', () => {
   test.each([false, true])('loading surface page=%s has no maximum', (page) => {
-    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+    renderDialog(undefined, vi.fn(), vi.fn(),
       { data: undefined, isLoading: true }, page);
     expect(screen.getByText('Loading settings…')).toBeInTheDocument();
     expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
   });
   test.each([false, true])('error surface page=%s has no maximum', (page) => {
-    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+    renderDialog(undefined, vi.fn(), vi.fn(),
       { data: undefined, isError: true, error: new Error('synthetic failure') }, page);
     expect(screen.getByText(/Could not load settings/)).toBeInTheDocument();
     expect(screen.queryByText(/max(?:imum)? orchestration steps|step budget/i)).not.toBeInTheDocument();
   });
   test.each([false, true])('synthetic no-data page=%s is a shell, not API-empty success', (page) => {
-    renderDialog(undefined, vi.fn(), vi.fn(), undefined,
+    renderDialog(undefined, vi.fn(), vi.fn(),
       { data: undefined }, page);
     expect(screen.getByText('Settings')).toBeInTheDocument();
     expect(screen.queryByText('Loading settings…')).not.toBeInTheDocument();

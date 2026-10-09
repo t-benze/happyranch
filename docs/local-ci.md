@@ -42,6 +42,14 @@ container-VM path.
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
 fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.
+Nested `uv` commands use the parent interpreter through `UV_PYTHON`. If that
+interpreter belongs to a venv, its own `pyvenv.cfg` path supplies the exact
+`VIRTUAL_ENV` and `UV_PROJECT_ENVIRONMENT`; ambient environment selectors are
+not copied. The parent uses a closed uv cache, ignores uv configuration and
+refuses downloads or synchronization. Before pytest, a bounded ordinary-user
+`uv run python -I` stdlib observation must match the parent executable path,
+SHA256, prefix and Python version. Its source/revision receipt is retained in
+the command log. A mismatch refuses before product imports or test bodies.
 It uses only source-hashed deterministic Claude/Codex/OpenCode stubs and an exact
 candidate-Python/tested-source completion CLI. Every plan is explicitly written
 through the test plan fixture and hash-approved; missing/stale/unexpected or
@@ -464,3 +472,254 @@ mutates the actual schedule comparison, retaining all four event/input cases.
 Prior over-bound artifacts, exit120 and four error objects remain failed
 evidence. The Jenkins inner-identity timing cause remains UNKNOWN; neither its
 keeper nor capture/production deadline is changed by this source correction.
+
+## System Assistant retirement artifact verification (THR-294)
+
+Run the accepted focused source shipping selection only in an authorized
+**disposable hosted** venue, never on the live Linux daemon host:
+
+```bash
+uv run python tests/helpers/integration_parent.py -- pytest -m integration tests/integration/test_assistant_retirement.py -v --tb=short
+```
+
+R4.1 and the same-root R4.5 row are baseline/candidate characterization in
+separate fixtures. A reproduced callback failure remains a failure. The other
+refusal rows and terminal result/quiescence tails still require authentic success.
+Do not change shared session/auth code or fabricate callbacks to make them pass.
+
+The successful refusal source cases retain bounded original CLI callback
+observations and independently read durable parent/child results, audit and
+terminal metrics as R4.6 receipts. R4.5 refusal probes additionally record every
+attached org and its complete cursor-paginated task inventory, including parent,
+child and sibling ownership, full native rows, owned process closure and global
+executor/admission/residue metrics before and after each transition. Pagination,
+byte caps or unavailable native identities fail without trimming. Zero executors
+and quiescent native cleanup remain required; an HTTP409 alone is insufficient.
+During authentic child retry backoff, the isolated two-task fixture requires
+`executor_sessions_active == 1`: the supervisor retains logical child ownership
+after its rate-limited attempt exits. Attribute that aggregate observation with
+the actual launched child session, served current-session/task/detail inventory,
+matching session-start audit and absent final result, alongside a quiescent
+rate-limited attempt receipt.
+The metric is a logical registry count and does not itself expose its entries;
+complete native observations independently require zero executor processes,
+zero host admission/queue and zero residue before and after every refusal.
+Terminal R4.6 still requires genuine CLI exit0, matching durable completed
+parent/child results and audit, logical session0 and native executor0. No shared
+supervisor/session/metrics behavior is changed to produce these observations.
+These receipts come from the real disposable daemon and ordinary executable
+stubs; they create no task/session/result or production observer seam. Separate
+same-root baseline/candidate characterization retains its actual failures.
+The general integration suite remains SKIPPED THR-243 seq42; Python unit/proof
+execution remains SUSPENDED THR-291 seq5/16. These selections do not release
+those lanes. Whole-repo collect-only discovery requires a complete import/global/
+decorator/conftest/plugin/hook side-effect audit and an isolated parent with
+observed zero test-body execution/real launches before this exact command:
+
+```bash
+uv run python tests/helpers/integration_parent.py -- pytest tests/ --collect-only -q -m ""
+```
+
+For wheel and frozen verification, use the existing Hatchling/PyInstaller/uv
+closure, with independently provisioned official CPython **3.14.4** and
+uv **0.12.5** distribution checksums, executable identities and RECORD receipts
+before dependent runs. A version selector or metadata listing is insufficient.
+Keep separate closed wheel-build, wheel-verify, freeze and frozen-verify roots,
+including HOME/XDG/cache/temp/daemon paths. Pass those variables through child
+environment mappings; never repurpose the operator's HOME. Exclude PYTHONPATH,
+PYTHONHOME, user-site, source callback shims, editable installs and ambient
+credentials. Record immutable source/lock equality and digests before/after each
+operation. Set VIRTUAL_ENV only in the appropriate build/freeze child mapping.
+
+`BUILD_CONSTRAINTS` is a task-owned hash-only requirements file for the accepted
+Hatchling 1.32.4 closure: packaging 26.0, pathspec 1.1.1, pluggy 1.6.0,
+tomlkit 0.15.1 and trove-classifiers 2026.9.21.13. Verify each official wheel
+hash and metadata attribution. Hash-mode refusal of an additional requirement
+is a blocker; do not resolve it unconstrained. The source dependency/build
+backend declarations and lock stay unchanged. The locked freeze group remains
+PyInstaller 6.21.0/hooks 2026.6/altgraph 0.17.5/setuptools 82.0.1/packaging 26.0
+and macOS macholib 1.16.4. No new tooling dependency is admitted.
+
+The paths below are absolute, task-owned, recorded values. Tool executable
+and distribution origins must already be verified. Each command runs in its
+stage's closed child environment; the source cwd is the immutable candidate.
+
+```bash
+"$UV_BIN" export --frozen --no-dev --no-emit-project --format requirements.txt --output-file "$RUNTIME_REQS" --no-python-downloads --no-config
+"$UV_BIN" venv --python "$CANDIDATE_PY" --no-python-downloads --no-config "$WHEEL_BUILD_ENV"
+# VIRTUAL_ENV=WHEEL_BUILD_ENV in the controlled child environment:
+"$UV_BIN" sync --active --frozen --no-dev --no-install-project --no-install-local --no-build --python "$CANDIDATE_PY" --no-python-downloads --no-config
+"$UV_BIN" build "$CANDIDATE_SOURCE" --wheel --out-dir "$WHEEL_OUT" --python "$CANDIDATE_PY" --no-python-downloads --build-constraints "$BUILD_CONSTRAINTS" --require-hashes --no-config
+"$UV_BIN" venv --python "$CANDIDATE_PY" --no-python-downloads --no-config "$VERIFY_ENV"
+"$UV_BIN" pip install --python "$VERIFY_ENV/bin/python" --require-hashes --no-build --no-python-downloads --no-config -r "$RUNTIME_REQS"
+# Unique wheel digest/member/RECORD inspection precedes this installation:
+"$UV_BIN" pip install --python "$VERIFY_ENV/bin/python" --no-deps --no-build --no-python-downloads --no-config "$WHEEL_FILE"
+"$UV_BIN" venv --python "$CANDIDATE_PY" --no-python-downloads --no-config "$FREEZE_ENV"
+# VIRTUAL_ENV=FREEZE_ENV in the separate controlled child environment:
+"$UV_BIN" sync --active --group build --frozen --no-dev --no-install-project --no-install-local --no-build --python "$CANDIDATE_PY" --no-python-downloads --no-config
+"$UV_BIN" run --active --no-sync --frozen --python "$FREEZE_ENV/bin/python" --no-python-downloads --no-config "$FREEZE_ENV/bin/pyinstaller" packaging/daemon.spec --clean --noconfirm
+"$FREEZE_ENV/bin/pyi-archive_viewer" --list --recursive --brief "$FROZEN_DIR/happyranch-daemon"
+"$FREEZE_ENV/bin/pyi-archive_viewer" --list --recursive --brief "$FROZEN_DIR/happyranch"
+```
+
+No shared editable reinstall. Do not use the unqualified build_daemon.sh
+recipe as constrained proof. Both executable origins need independent parser,
+lifecycle, ordinary stub callback, legacy preservation and process cleanup
+receipts outside checkout. Two Analysis objects or one daemon PYZ listing do
+not prove CLI delivery: inspect both recursive executable archives, build TOCs,
+final bundle bytes/modes/links, Python/native dependencies and ordinary skill
+member hashes. Native macOS15 origin and libproc observations are separate from
+Linux evidence. Installed-wheel RECORD/console/shebang and narrow `-I` module
+origin checks must point into that wheel-owned venv; source PYTHONPATH never
+establishes installed/frozen callbacks.
+
+The macOS `proc_bsdinfo` declaration includes the SDK's `pbi_xstatus` field
+before PID/PPID, with unsigned PID fields. The struct's total size alone does
+not establish correct UID, parent or process-group offsets. Hosted native
+receipts must match the actual selected SDK definition. Inaccessible living
+processes still refuse the census; do not omit an opaque same-owner process or
+claim quiescence from an incomplete native table. The only privilege exception
+is the explicitly admitted TASK-10245/THR-294 ephemeral read-only native observer
+on disposable GitHub-hosted Ubuntu and native macOS15 runners. Their existing
+[passwordless sudo](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
+may execute only the fixed `assistant_retirement_native_observer.c` executable,
+compiled as the ordinary runner UID from hash-bound immutable evidence source
+using the authenticated native compiler/SDK. Its sole input is the original
+workload UID; bounded native JSON is returned on stdout. It reads no application
+code, environment, credentials, process arguments or memory, offers no command,
+ref or path service, writes no files and sends no signals. Source/binary/compiler,
+SDK/ABI/native dependencies, absolute sudo command, original UID, observer
+UID/EUID and exits are bound in a closed receipt before test-side admission.
+Real/effective/saved ownership, PID/PPID/PGID/start and required cwd/executable
+identities remain mandatory; exited/reused identities require native
+revalidation. A cheap preflight on both fresh runners precedes costly
+provisioning. Any still-inaccessible living row returns its PID/native operation
+and errno; no sudoers/sysctl/SIP/entitlement changes or weaker census follow.
+All daemon/CLI/stub/browser/build/install/import/collection/test execution stays
+under the ordinary runner UID in closed owned fixtures/user prefixes. Outside
+this explicit hosted admission, unavailable observations still refuse with no
+privilege change. There is no live-host integration, root product execution,
+privileged service or permanent gate.
+
+Copy the stdlib-only driver into the verification root and hash it. Its origin
+manifest binds schema_version 1, source_role (`candidate` or `baseline`),
+origin, venue platform/arch, candidate_sha,
+source/lock/constraints digests, official Python/uv distribution and tool RECORD
+receipts, artifact/bundle inventory, observer executable/digest, absolute
+cli_argv/daemon_argv, closed PATH and skills_root. Wheel also needs site_packages
+and RECORD, an exact console receipt and interpreter mapping; frozen also
+needs both archive listings, TOCs, executable hashes, bundle_root and native
+OS/process receipts. `source_manifest` and `constraints` are path/SHA256
+receipts: the source record has candidate_sha, uv_lock_sha256 and a files map
+of tracked relative path to SHA256. Every path/SHA256 receipt is a regular,
+non-symlink, non-group/world-writable file. Unknown manifest keys refuse.
+An optional `native_observer` path/SHA256 receipt adds only the hosted test-side
+admission above. Copy the hash-matched C source beside the stdlib driver outside
+checkout. The closed admission binds venue, source, binary, compiler, sudo,
+compile argv, native SDK/headers/dependencies/ABI and successful preflight. The
+macOS execute-only `/usr/bin/sudo` transport has a closed fixed-system-stat
+identity instead of a byte hash: regular root-owned setuid executable, no
+group/world write, root-owned nonwritable `/`, `/usr`, `/usr/bin`, no symlinks,
+and recorded device/inode/mode/UID/GID/size/mtime/ctime for all four paths.
+Revalidate this identity before each invocation (and after the initial probe).
+Linux sudo retains its byte hash. This exception applies only to the system
+transport; observer source/binary/compiler and other readable receipts still
+require hashes. No executable permissions change. The
+native tool receipt records actual compiler/header owner UIDs and unchanged
+non-group/world-writable modes. Linux system tools/headers are root-owned;
+the selected preinstalled macOS Xcode compiler/SDK may be root- or original
+runner-owned, must share the same absolute Xcode bundle, and still require
+actual image/version/path/hash receipts. Root ownership alone is not tool
+provenance. No compiler/SDK privilege or host setting is changed. The
+cheap preflight records ordinary bootstrap launcher and native executable
+origins separately. Linux requires exact path equality; macOS permits only
+the exact versioned Python.framework launcher and its fixed same-framework
+Python.app executable, with both hashes and linkage to the same hashed
+framework library. Native parent PID/start/cwd and ordinary UID remain
+required. Runner bootstrap Python is distinct from provisioned CPython3.14.4;
+this origin mapping does not admit another executable or privileged Python.
+See [CPython's macOS launcher source](https://github.com/python/cpython/blob/v3.14.4/Mac/Tools/pythonw.c).
+The
+source test parent passes its descriptor only to pytest; the two executable
+stub census snippets bind it explicitly. Artifact stubs use their existing
+test binding file. The elevated observer never imports this Python driver.
+The tool record binds official distribution hashes and exact Python/uv versions;
+frozen also binds PyInstaller6.21.0. Bundle records bind candidate_sha and
+no-follow entries; frozen TOC records include daemon_analysis, cli_analysis,
+shared_pyz, native_dependencies, python_stdlib and source_sha256. These records
+must come from actual commands and inspected artifacts, never invented values.
+Missing facts fail closed before launch.
+
+```bash
+"$OBSERVER_PY" -I "$ARTIFACT_DRIVER" run --origin wheel --origin-manifest "$MANIFEST" --run-root "$CLOSED_ROOT" --cases lifecycle,parser,ordinary-callback,nonrunning-swap --deadline-seconds 240 --receipt-json "$RECEIPT"
+# Repeat with --origin frozen and its independent native origin manifest/root.
+```
+
+The driver calls the actual artifact CLI for completion with authentic launched
+IDs, and owns bounded identity-scoped teardown. Static driver syntax, metadata,
+archive listings or a submitted job are never behavioral readiness/PASS. Keep
+exact commands/exits and residual failures; independent review and QA bind the
+final pushed PR head and renew after every push. Parent TASK-10245 owns guarded
+merge/post-main and deployment disposition.
+
+Artifact startup and reopen wait within the existing 15-second deadline for
+all three lifecycle files and a PID matching the newly launched child. A
+surviving port/token pair or the previous child's PID is not readiness: the
+daemon publishes its new port before its PID. Regular-file ownership, token
+mode, native executable identity, child liveness and actual HTTP health remain
+required. The driver does not delete old lifecycle files or alter the daemon's
+publication/shutdown behavior. Run37862443466 retained successful CLI callbacks,
+durable histories and terminal native census before this test-side reopen race;
+new execution must establish the repaired full tail. Separate baseline/candidate
+same-root callback failures stay failures, with no shared auth/session repair.
+
+The artifact callback skeleton defines `engineering_head`, `dev_agent` and
+`code_reviewer` with coherent engineering membership before supported CLI
+`orgs init`. The default reviewer remains `code_reviewer`; these callback
+plans launch only the manager and delegated `dev_agent`. Actual run37857635882
+retained org-init HTTP500 on both wheel/frozen origins and both source roles:
+its two-agent skeleton omitted the required reviewer, producing
+`authority_reviewer_incoherent` followed by `profile_dependency_incoherent`.
+Adding the missing static definition requires new native-admitted artifact
+execution before any callback, nonrunning ownership or durable-tail PASS.
+The frozen logs also retain a caught memory-observer source-inspection warning;
+fixture repair does not establish that observation subsystem's health.
+
+The baseline role permits only `ordinary-callback` and `nonrunning-swap`,
+restricted internally to separate same-root characterization fixtures. It
+never invokes a baseline Assistant operation or treats old route/module
+presence as a retirement failure. Compare actual callback exits, durable
+results/task/audit states and cleanup against the candidate receipts; an
+unchanged failure remains a failure. Source baseline characterization uses
+an isolated immutable baseline checkout plus the same hash-recorded test-side
+files, with any test-only commit/head distinguished from the product source
+pin. No shipping code overlay, session forgery or shared auth repair is allowed.
+
+The hosted evidence coordinator authenticates the native descriptor against
+the current run, image, original UID, candidate/baseline pins and exact C
+source before costly provisioning. It carries only this descriptor through
+the closed source test parent; the driver revalidates it before each census.
+Preflight command logs and results remain separate from shipping logs/results.
+The baseline source characterization overlays exactly four test files:
+`integration_parent.py`, the stdlib artifact driver, its fixed C observer and
+`test_assistant_retirement.py`. Record the original baseline helper hash,
+replacement hashes and test-only commit separately from the baseline product
+pin. Assert every other tracked byte/link unchanged, and authenticate the
+unchanged conftests, executable stubs, guard, daemon script and lock before
+execution. Keep each role's original project metadata: dependencies, backend
+and build groups agree, while the candidate has the accepted eight Assistant
+knowledge force-include removals. This overlay cannot change baseline runtime
+or CLI code. Native
+admission is a prerequisite, not source, wheel, frozen or browser readiness;
+source characterization failures remain failures. Whole-repo collection
+remains held for the complete import-side-effect audit and zero-body admission.
+
+The concurrent org-read case captures both complete served A/B inventories
+before interleaving reads and swaps, including the existing `broken` field.
+Hosted run37849177163 completed all31 candidate and two baseline cases per
+venue: all23 legacy variants and the ordinary refusal/retry tails passed;
+the concurrent case exposed its incomplete empty-response expectation, while
+both independent same-root characterizations failed on candidate and baseline.
+Keep those genuine callback failures and their durable/native receipts. A
+test expectation repair, native admission or artifact provisioning does not
+establish complete retirement or behavioral QA acceptance.
