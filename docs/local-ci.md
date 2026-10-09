@@ -429,6 +429,13 @@ result inconclusive: wrapper247 can encode child SIGKILL -9. Exceptions/signals
 and incomplete capture/reaping also leave child exit unknown. Wrapper0 alone
 does not satisfy the JUnit, source/tool postcheck, cleanup and other success gates.
 Wrapper wait and directory absence alone never prove complete reaping.
+During census, `FileNotFoundError` (ENOENT) and `ProcessLookupError` (ESRCH)
+skip a disappeared stat entry. If owned cmdline or exe disappears after stat,
+the census retains pid, ppid, state, pgid, sid and start ticks with empty cmdline
+and null exe. Permission failures and other read or parsing errors propagate;
+they are not evidence of an empty census. Reaping still requires actual
+wait/ECHILD and an empty census. Stubbed-read regressions establish error
+classification only, never real Linux reaping.
 Source, tools and terminal evidence
 must remain consistent after the child. Unproven reaping defers scratch removal.
 

@@ -250,7 +250,7 @@ def pr1011_descendants():
             row = {'pid': int(entry.name), 'ppid': int(fields[1]), 'state': fields[0],
                    'pgid': int(fields[2]), 'sid': int(fields[3]), 'start_ticks': int(fields[19])}
             rows[row['pid']] = row
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue  # This proc entry exited during the complete enumeration.
     owners = {os.getpid()}
     while True:
@@ -265,7 +265,7 @@ def pr1011_descendants():
             row['cmdline'] = [os.fsdecode(part) for part in
                               (pathlib.Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')[:-1]]
             row['exe'] = os.readlink(pathlib.Path('/proc') / str(pid) / 'exe')
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             row['cmdline'] = []  # Terminal/just-exited identity remains in the census.
             row['exe'] = None
         result.append(row)
