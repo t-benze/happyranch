@@ -163,8 +163,8 @@ if pr1010:
     # contain ancestor objects. Admit only this retained-head/main composition.
     commit_header = subprocess.check_output(['git', 'cat-file', '-p', head], text=True).split('\n\n', 1)[0]
     parents = [line.removeprefix('parent ') for line in commit_header.splitlines() if line.startswith('parent ')]
-    if parents != ['29e2cb43fa0390ec832ee7625aae54238dc11034',
-                   '970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c']:
+    if parents != ['48fb0a4bf0b55a6224eb9be3aa7f9650b4549153',
+                   '4cc1be720c1a170f3f5955a818b1053fd9116d23']:
         raise RuntimeError('PR1010 acceptance retained reviewed lineage mismatch')
     if sys.version_info[:2] != (3, 14) or not (source / '.venv/bin/python').samefile(sys.executable):
         raise RuntimeError('PR1010 acceptance requires installed candidate Python 3.14')
@@ -185,8 +185,8 @@ if pr1010:
     )
     receipt.update(command=['uv', 'run', '--frozen', '--no-sync', 'pytest', '-n', '0', '-v', '--tb=short', *pr1010_nodes],
                    acceptance='PR1010 narrow UNIT, THR289 seq33 approving seq31',
-                   retained_reviewed_head='29e2cb43fa0390ec832ee7625aae54238dc11034',
-                   accepted_main='970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c',
+                   retained_reviewed_head='48fb0a4bf0b55a6224eb9be3aa7f9650b4549153',
+                   accepted_main='4cc1be720c1a170f3f5955a818b1053fd9116d23',
                    definitions=13, parameterized_cases=29, child_timeout_seconds=300,
                    native_job_bound_seconds=360, execution='NOT RUN', children_launched=0)
     # Hash the complete imported source closure without importing or collecting tests.

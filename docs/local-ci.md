@@ -77,8 +77,13 @@ Founder THR289 seq33 approving seq31 permits one closed PR1010 selection in this
 same extracted runner and invocation. Only the existing manual event in
 `t-benze/happyranch`, `refs/heads/task/TASK-10008`, exact clean `GITHUB_SHA`
 checkout, installed candidate Python3.14 and literal merge parents
-`29e2cb43fa0390ec832ee7625aae54238dc11034` then
-`970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c` admit it. Parent headers are read
+`48fb0a4bf0b55a6224eb9be3aa7f9650b4549153` then
+`4cc1be720c1a170f3f5955a818b1053fd9116d23` admit it. The first parent is the
+independently reviewed unpublished integration, preserving original retained
+`29e2cb43fa0390ec832ee7625aae54238dc11034` ancestry; the second is accepted main.
+STATIC CONTROL approval of the first parent is not final published-head FULL
+approval. Renew independent control review for the new composition before
+publication or execution. Parent headers are read
 directly from the commit, preserving the existing shallow checkout machinery.
 Wrong repository/event, stale/dirty checkout or lineage mismatch refuses before
 tests. Other refs retain the existing default path and cannot select PR1010.

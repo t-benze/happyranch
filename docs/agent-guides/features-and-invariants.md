@@ -726,6 +726,17 @@ Traps:
 - `ExecutorResult.agent_session_id` is not `ExecutorResult.session_id`.
 - **GH-688 Phase 1 claim gate + no-message-omission proof.** For a claimed conversational `REPLY`, a resumed session may use the delta only when the stored watermark is strictly below the claim's `running_from_seq` AND the ENTIRE required post-watermark range is proven present and contiguous at the production seam: the runner loads the canonical transcript UNCAPPED, independently queries the authoritative transcript max, and authorizes the delta only when every required claimed sequence exists (the claim's inclusive end must also exist). Truncated loads, internal holes, equal/ahead watermarks, a null/zero/negative (<= 0) watermark (a stored id with watermark <= 0 is never eligible), and claim ends beyond the transcript fail closed to the genuinely complete canonical full prompt — a delta can never omit a message the delivery state requires. `last_resumed_seq` is observed session presentation and is never the delivery cursor.
 
+**Cleanup indexes and breaker scheduling (issue1019 / THR-295).** The common
+schema tail creates three nonunique indexes with `IF NOT EXISTS` after legacy
+columns exist: tasks(assigned_agent,created_at DESC,id DESC), audit_log(task_id,agent)
+where action='workspace_cleanup_triggered', and task_results(task_id,agent,id DESC).
+Existing names are retained without definition validation; display SQL is unchanged.
+Delivery listing and mint run sequentially via `await asyncio.to_thread` under the
+original DB RLock. Close uses that lock too. Removal can cause a logged sweep error;
+cancellation can leave worker work running. Pending-token recovery, publication,
+claim/count-once and cooldown behavior remain unchanged. No org lifetime lock or
+worker drain is added; other synchronous DB callers retain their limitations.
+
 ## Thread Task Followup
 
 When a task dispatched from a thread reaches true terminal state, `_maybe_post_thread_followup` appends a system message and mints a `TASK_FOLLOWUP` invocation. Spec: `docs/superpowers/specs/2026-05-28-thread-task-followup-design.md`.

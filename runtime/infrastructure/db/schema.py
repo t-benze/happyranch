@@ -2389,6 +2389,20 @@ class SchemaMixin:
             )
             self._conn.commit()
 
+        # Cleanup activity indexes follow the legacy column migrations above.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_tasks_agent_created_id "
+            "ON tasks(assigned_agent,created_at DESC,id DESC)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_trigger_task_agent "
+            "ON audit_log(task_id,agent) WHERE action='workspace_cleanup_triggered'"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cleanup_results_task_agent_id "
+            "ON task_results(task_id,agent,id DESC)"
+        )
+
     def _create_authority_tables(self) -> None:
         """THR-181 Track A Slice 1: additive durable authority foundation.
 

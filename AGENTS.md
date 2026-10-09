@@ -298,6 +298,17 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 **Failure diagnostics (THR-220).** Failed thread-invocation audits retain capped raw stdout/stderr tails as additive payload keys. Task, thread, and dream reports select one bounded human cause from complete stderr before tailing; exact known benign launcher/trust lines do not win, while meaningful stderr (including lookalikes) does. The proven API-error/session-limit envelope separately retains its bounded reset notice on those existing surfaces. This is not a comprehensive redaction guarantee and does not alter raw classifier, rate-limit, exact-eviction, retry-owner, or breaker inputs. Claude's session-limit notice is terminal but is not a short-backoff rate-limit retry signal.
 
+**Cleanup activity performance (issue1019 / THR-295).** The supported schema
+path adds three nonunique indexes after legacy columns exist: tasks(assigned_agent,
+created_at DESC,id DESC), audit_log(task_id,agent) where
+action='workspace_cleanup_triggered', and task_results(task_id,agent,id DESC).
+`CREATE INDEX IF NOT EXISTS` retains existing names without validating definitions.
+The reader SQL is unchanged. Breaker delivery listing and mint use sequential
+`await asyncio.to_thread` calls with the original DB RLock. Synchronized close
+serializes connection access; removal can cause a logged sweep error. Cancellation
+can leave a worker running or a committed pending token for later recovery.
+There is no added orgs_lock hold, worker drain or lifespan guarantee.
+
 ## Workflow authority publication (U2A)
 
 `WorkflowAuthorityCoordinator` owns the org-scoped producer half of the
@@ -490,8 +501,11 @@ The ordinary commands below describe the restored behavior.
 Founder THR289 seq33 approving seq31 releases only PR1010's literal 13-node,
 29-case UNIT acceptance in the existing disposable manual `local-ci-all` job.
 The extracted runner selects it only for `refs/heads/task/TASK-10008`, the exact
-clean `GITHUB_SHA` checkout and literal retained29e2/accepted970 merge parents;
-mismatches refuse. Independent control review must precede execution. Its
+clean `GITHUB_SHA` checkout and literal reviewed-integration48fb/accepted-main4cc1
+merge parents, in that order, preserving original retained29e2 ancestry; mismatches
+refuse. The first parent has independent unpublished STATIC CONTROL approval,
+not final published-head FULL approval. Renew independent control review for the
+new composition before publication or execution. Its
 frozen/no-sync Python3.14 command runs serially with a 300-second child bound
 (360-second native-job bound), complete stream/hash/exit and cleanup receipts.
 It exits before `all` or G follow-ons. Ordinary units/wrapper, historical SIX

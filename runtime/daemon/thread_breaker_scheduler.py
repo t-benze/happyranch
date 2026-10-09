@@ -18,7 +18,8 @@ async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0)
         for org in list(state.orgs.values()):
             try:
                 keys = {}
-                for delivery in org.db.list_reply_delivery_states():
+                deliveries = await asyncio.to_thread(org.db.list_reply_delivery_states)
+                for delivery in deliveries:
                     agent = load_agent(OrgPaths(root=org.root), delivery.agent_name)
                     if agent is None:
                         continue
@@ -27,7 +28,8 @@ async def thread_breaker_scheduler_loop(state, *, interval_seconds: float = 5.0)
                             agent.executor.lower(), agent.model, state.settings,
                         )
                     )
-                entries = org.db.mint_due_thread_reply_breaker_probes(
+                entries = await asyncio.to_thread(
+                    org.db.mint_due_thread_reply_breaker_probes,
                     no_episode_executor_keys=keys,
                     cooldown_seconds=THREAD_REPLY_BREAKER_COOLDOWN_SECONDS,
                 )

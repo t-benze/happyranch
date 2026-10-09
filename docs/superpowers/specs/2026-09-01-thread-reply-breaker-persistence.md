@@ -41,3 +41,13 @@ a pre-claim exception or cancellation releases it for a later tick, while the
 durable claim still launches exactly once. Environment
 and config input cannot alter policy or continuity across restart. PR B adds no
 API/web projection or manual action.
+
+Current scheduler (issue1019 / THR-295): delivery listing and mint use sequential
+`await asyncio.to_thread` calls. Each synchronized call acquires/releases the
+original DB RLock wholly in its worker; Database.close uses the same lock.
+No orgs_lock hold, owned-worker drain or lifespan change is added. Removal can
+close before a worker starts and cause a logged sweep error; publication to a
+detached queue need not be consumed. Cancellation cannot stop running thread work;
+a committed pending token is republished on a later attached tick. Unloaded orgs
+require reattachment for recovery. Mint/claim/settlement/count-once/cooldown rules
+are unchanged. Other synchronous DB callers and shutdown retain their limits.
