@@ -99,9 +99,38 @@ async function key(session, name, code, diagnostics) {
   if (diagnostics) diagnostics.afterDown = await keyState(session);
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: name, code: name,
     modifiers: 0, windowsVirtualKeyCode: code, ...native }, session);
-  // Finish renderer frames before observing focus or dispatching the next key.
-  await evaluate(session, 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+  // Bound input settling without depending on headless animation-frame delivery.
+  await sleep(50);
   if (diagnostics) diagnostics.afterUp = await keyState(session);
+}
+async function discardCapacityNavigation(session, locale, destination) {
+  assert.ok(['/orgs/test/settings/preferences', '/orgs/test/tasks'].includes(destination));
+  assert.ok(['en', 'zh-CN'].includes(locale));
+  const target = JSON.stringify(destination);
+  await wait(session, `location.pathname===${target} || !!document.querySelector('[role="dialog"]')`);
+  const observation = { discarded: false, before: await keyState(session),
+    visibility: await evaluate(session, 'document.visibilityState') };
+  if (await evaluate(session, `location.pathname===${target}`)) return observation;
+  const title = locale === 'en' ? 'Discard unsaved capacity changes?' : '放弃未保存的容量更改？';
+  const label = locale === 'en' ? 'Discard and continue' : '放弃并继续';
+  const ready = `(() => { const dialogs=[...document.querySelectorAll('[role="dialog"]')];
+    return dialogs.length===1 && [...dialogs[0].querySelectorAll('h2')].some(e=>e.textContent.trim()===${JSON.stringify(title)})
+      && [...dialogs[0].querySelectorAll('button')].filter(e=>e.textContent.trim()===${JSON.stringify(label)} && !e.disabled).length===1; })()`;
+  await wait(session, ready);
+  const focused = `document.activeElement?.tagName==='BUTTON' && !!document.activeElement.closest('[role="dialog"]')
+    && document.activeElement.textContent.trim()===${JSON.stringify(label)}`;
+  let reached = false;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    if (await evaluate(session, focused)) { reached = true; break; }
+    await key(session, 'Tab', 9);
+  }
+  assert.ok(reached, 'real Capacity discard button must be reachable by Tab');
+  observation.enter = {};
+  await key(session, 'Enter', 13, observation.enter);
+  await wait(session, `location.pathname===${target} && !document.querySelector('[role="dialog"]')`);
+  observation.discarded = true;
+  observation.after = await keyState(session);
+  return observation;
 }
 async function nativeKeyboardProbe() {
   const probe = { scope: 'fixed script-free browser control document; not application evidence', status: 'failed' };
@@ -220,6 +249,7 @@ try {
         row.keyboardDiagnostics.afterEnter = await evaluate(session, `({focused:document.hasFocus(),
           tag:document.activeElement?.tagName || '', href:document.activeElement?.getAttribute('href') || '',
           location:location.pathname})`);
+        row.keyboardDiagnostics.capacityNavigation = await discardCapacityNavigation(session, locale, '/orgs/test/settings/preferences');
         await wait(session, `location.pathname==='/orgs/test/settings/preferences'`);
         row.keyboard = { tabReachedPreferences: reached, enterNavigated: true };
         await key(session, 'Escape', 27);
@@ -243,6 +273,7 @@ try {
         row.tasksBeforeClick = await keyState(session);
         await evaluate(session, `(() => { const a=document.querySelector('a[href="/orgs/test/tasks"]'); if(!a)throw new Error('Tasks navigation absent'); a.click(); return true; })()`);
         row.tasksAfterClick = await keyState(session);
+        row.tasksCapacityNavigation = await discardCapacityNavigation(session, locale, '/orgs/test/tasks');
         await wait(session, `location.pathname==='/orgs/test/tasks' && !!document.querySelector('aside')`);
       } catch (error) {
         row.navigationError = { type: error.name, message: error.message };

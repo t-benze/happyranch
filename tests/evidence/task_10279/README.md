@@ -1,5 +1,32 @@
 # TASK-10279 native admission, never merge
 
+Run 37882779591 at evidence 6d863d7e authenticated 202 original dual archive members
+and 18 complete native snapshots. Both cheap native admissions passed. The
+script-free native Tab/Enter control passed. All four application keyboard
+observations failed at the animation-frame Runtime.evaluate wait; independent
+Tasks predicates also failed. Real bootstrap/org/settings HTTP 200 and retired
+WebSocket refusal 1006 were observed in all four cases. Eight genuine Settings
+and navigation-failed images were directly viewed; every navigation-failed
+image shows the existing Capacity discard confirmation, not the Tasks page.
+These remain failed cases. Linux retains its original ordinary sandbox refusal.
+
+The fixed key helper now uses a bounded 50 ms input settling delay, followed by
+the existing native state and required destination predicates, instead of
+requiring animation-frame delivery. No keyboard field or native code changes.
+Preferences still requires actual Tab/Enter on its link. If the existing Capacity
+discard dialog blocks Preferences or Tasks navigation, a finite helper verifies
+its exact official en/zh-CN title/button, reaches its real discard button through
+native Tab, and activates it through native Enter. It never invokes router
+internals, sends settings writes or substitutes direct navigation for the
+required interaction. The dialog must close and the original destination
+predicate must pass. Primitive focus/visibility/dialog-action observations are
+recorded; any failure still prevents case and whole-stage PASS.
+
+Fresh hosted receipts are required; this preparation establishes no keyboard,
+Tasks or browser PASS. Native control, all existing acceptance assertions,
+failure aggregation, candidate/workflow/pins, deadlines, UID/sandbox controls,
+Linux refusal and remaining maker/keeper gates are unchanged. Never merge.
+
 Run37881568164/evidence57e32fc455 retained all198 original dual archive members
 and18 complete native snapshots. Both cheap native admissions passed. All four
 macOS Settings cases and the script-free control still failed Enter activation.
