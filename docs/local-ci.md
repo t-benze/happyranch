@@ -638,6 +638,17 @@ exact commands/exits and residual failures; independent review and QA bind the
 final pushed PR head and renew after every push. Parent TASK-10245 owns guarded
 merge/post-main and deployment disposition.
 
+Artifact startup and reopen wait within the existing 15-second deadline for
+all three lifecycle files and a PID matching the newly launched child. A
+surviving port/token pair or the previous child's PID is not readiness: the
+daemon publishes its new port before its PID. Regular-file ownership, token
+mode, native executable identity, child liveness and actual HTTP health remain
+required. The driver does not delete old lifecycle files or alter the daemon's
+publication/shutdown behavior. Run37862443466 retained successful CLI callbacks,
+durable histories and terminal native census before this test-side reopen race;
+new execution must establish the repaired full tail. Separate baseline/candidate
+same-root callback failures stay failures, with no shared auth/session repair.
+
 The artifact callback skeleton defines `engineering_head`, `dev_agent` and
 `code_reviewer` with coherent engineering membership before supported CLI
 `orgs init`. The default reviewer remains `code_reviewer`; these callback

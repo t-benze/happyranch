@@ -466,12 +466,19 @@ class Driver:
             assert time.monotonic() < ready_deadline, 'artifact readiness exceeded 15s'
             assert self.process.poll() is None, 'artifact daemon exited before readiness'
             home = Path(self.env['HAPPYRANCH_DAEMON_HOME'])
-            if (home / 'daemon.port').exists() and (home / 'daemon.token').exists():
+            # A stopped child can leave port/token files behind. Publication
+            # writes the new port before the new PID; wait for this child's
+            # PID before treating those files as its readiness evidence.
+            if all((home / name).exists() for name in ('daemon.pid', 'daemon.port', 'daemon.token')):
                 for filename in ('daemon.pid', 'daemon.port', 'daemon.token'):
                     info = (home / filename).lstat()
                     assert stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
                 assert stat.S_IMODE((home / 'daemon.token').stat().st_mode) == 0o600
-                assert int((home / 'daemon.pid').read_text()) == self.process.pid
+                published_pid = (home / 'daemon.pid').read_text().strip()
+                if not published_pid or int(published_pid) != self.process.pid:
+                    time.sleep(.1)
+                    continue
+                assert self.process.poll() is None, 'artifact daemon exited during readiness publication'
                 assert self.identity['exe'] == str(Path(self.daemon[0]).resolve()), 'native daemon executable origin mismatch'
                 port = int((home / 'daemon.port').read_text()); self.token = (home / 'daemon.token').read_text().strip()
                 self.base = f'http://127.0.0.1:{port}/api/v1'
