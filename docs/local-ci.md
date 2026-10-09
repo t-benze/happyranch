@@ -495,6 +495,18 @@ child and sibling ownership, full native rows, owned process closure and global
 executor/admission/residue metrics before and after each transition. Pagination,
 byte caps or unavailable native identities fail without trimming. Zero executors
 and quiescent native cleanup remain required; an HTTP409 alone is insufficient.
+During authentic child retry backoff, the isolated two-task fixture requires
+`executor_sessions_active == 1`: the supervisor retains logical child ownership
+after its rate-limited attempt exits. Attribute that aggregate observation with
+the actual launched child session, served current-session/task/detail inventory,
+matching session-start audit and absent final result, alongside a quiescent
+rate-limited attempt receipt.
+The metric is a logical registry count and does not itself expose its entries;
+complete native observations independently require zero executor processes,
+zero host admission/queue and zero residue before and after every refusal.
+Terminal R4.6 still requires genuine CLI exit0, matching durable completed
+parent/child results and audit, logical session0 and native executor0. No shared
+supervisor/session/metrics behavior is changed to produce these observations.
 These receipts come from the real disposable daemon and ordinary executable
 stubs; they create no task/session/result or production observer seam. Separate
 same-root baseline/candidate characterization retains its actual failures.

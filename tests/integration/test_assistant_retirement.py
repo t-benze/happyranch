@@ -208,7 +208,7 @@ def assert_terminal(shipping,task,launches,container,seconds=40):
     return result
 
 
-def observe_all_runtime_ownership(shipping,container,launches,parent,child):
+def observe_all_runtime_ownership(shipping,container,launches,parent,child,child_session):
     """Read every attached org/task scope; never substitute HTTP409 for zero executors."""
     runtime=request(shipping,'GET','/runtime')
     assert runtime.status_code==200 and runtime.json()['runtime']==str(container)
@@ -233,7 +233,7 @@ def observe_all_runtime_ownership(shipping,container,launches,parent,child):
                 assert task['task_id'] not in seen
                 seen.add(task['task_id'])
                 tasks.append({key:task[key] for key in
-                              ('task_id','parent_task_id','assigned_agent','status','block_kind')})
+                              ('task_id','parent_task_id','assigned_agent','status','block_kind','current_session_id')})
             cursor=page['next_cursor']
             if cursor is None:break
             assert page['tasks'] and cursor==page['tasks'][-1]['task_id']
@@ -242,22 +242,36 @@ def observe_all_runtime_ownership(shipping,container,launches,parent,child):
     records=[task for org in inventory.values() for task in org['tasks']]
     assert any(task['task_id']==parent and task['block_kind']=='delegated' for task in records)
     assert any(task['task_id']==child and task['parent_task_id']==parent for task in records)
+    # This isolated fixture has only the delegated parent and its genuine retry
+    # child. The logical invocation survives backoff after its process exits.
+    # Attribute the count using the launched session and served durable state;
+    # the aggregate metric alone does not identify a SessionTracker entry.
+    assert len(records)==2 and {task['task_id'] for task in records}=={parent,child}
+    child_record=next(task for task in records if task['task_id']==child)
+    assert child_record['status']=='in_progress' and child_record['block_kind'] is None
+    assert child_record['assigned_agent']=='dev_agent' and child_record['current_session_id']==child_session
+    child_body=detail(shipping,child)
+    assert child_body['task']['current_session_id']==child_session and not child_body['results']
+    assert any(row['action']=='session_start' and row['agent']=='dev_agent'
+               and row['payload']['session_id']==child_session for row in child_body['audit_log'])
     metrics_response=request(shipping,'GET','/metrics')
     assert metrics_response.status_code==200
     metrics=metrics_response.json();host=metrics['host_sessions']
     native=process_table()
     remaining=owned_processes(shipping['pid'],container,launches,rows=native)
     observation={'runtime':str(container),'orgs':inventory,'parent':parent,'child':child,
+                 'logical_child':{'task':child,'session':child_session,'detail':child_body},
                  'executor_sessions_active':metrics['executor_sessions_active'],
                  'host_admission':host['admission'],'host_residue':host['residue'],
                  'host_receipts':host['receipts']['recent'],'native':native,'remaining':remaining}
     encoded=json.dumps(observation,sort_keys=True)
     assert len(encoded.encode())<=1024*1024,'bounded complete ownership receipt; no trimming'
     print('R4.5 ALL-RUNTIME OWNERSHIP '+encoded,flush=True)
-    assert metrics['executor_sessions_active']==0
+    assert metrics['executor_sessions_active']==1
     assert host['admission']['active']==host['admission']['queue_depth']==0
     assert host['residue']['survivors_count']==0
     assert host['receipts']['recent'] and all(row['quiescent'] for row in host['receipts']['recent'])
+    assert any(row['terminal_reason']=='rate_limited' for row in host['receipts']['recent'])
     assert not remaining
     return observation
 
@@ -382,12 +396,12 @@ OBSERVE
     for suffix,target in operations:
         assert time.monotonic()<deadline
         if not same_root_register:
-            observe_all_runtime_ownership(shipping,runtime_container,[witness['process']],parent,child)
+            observe_all_runtime_ownership(shipping,runtime_container,[witness['process']],parent,child,witness['session'])
         before=owned_processes(shipping['pid'],runtime_container,[witness['process']]);assert not before
         response=request(shipping,'POST','/runtime'+suffix,{'path':str(target)})
         after=owned_processes(shipping['pid'],runtime_container,[witness['process']]);assert not after
         if not same_root_register:
-            observe_all_runtime_ownership(shipping,runtime_container,[witness['process']],parent,child)
+            observe_all_runtime_ownership(shipping,runtime_container,[witness['process']],parent,child,witness['session'])
         print('R4.5 census '+json.dumps({'before':before,'after':after,'status':response.status_code,'body':response.json()}))
         assert response.status_code==(200 if same_root_register else 409)
     # Natural supervisor wait/readmission, no forged session or direct result.
