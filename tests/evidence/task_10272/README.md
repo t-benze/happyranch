@@ -1,3 +1,30 @@
+# Current TASK-10279 browser-only continuation
+
+The current exact task/TASK-10279 push keeps native admission first, then uses
+the existing pinned setup-node action to select24.19.0. `runner.main` provisions
+ordinary official CPython3.14.4/uv0.12.5 and the same constrained Hatchling1.32.4
+closure, builds one candidate wheel and the default Vite distribution in owned
+copies, and invokes the fixed ordinary browser stage. Every case uses real
+isolated wheel-daemon HTTP/bootstrap, retired WS rejection and browser keyboard/
+navigation/settings observations, with eight expected locale/viewport PNGs.
+`browser-tools`, web source/dist inventories, wheel RECORD/archive/tool/native/
+skill receipts, real-browser cases/driver/native launches and cleanup must all
+be inspected before a scoped browser acceptance. No synthetic API, auth
+injection, app instrumentation, real provider launch or privileged product code.
+
+The source selection and baseline overlay functions are unchanged and are not
+called by this browser stage. Original37868783544 receipts at immutable
+candidate0d498d535 establish29candidate passes/two genuine same-root failures
+and two separate baseline failures on each venue; the latter remain failures.
+Historical37866089378 wheel/frozen case scopes and Linux baseline-wheel opaque
+native ENOENT remain retained, never broadened to an overall PASS. The coordinator
+records these source/artifact refs and actual full manifest hashes. No unchanged
+source/artifact body is rerun; the new wheel is only the browser's actual
+ephemeral installed origin. Whole-repo discovery stays held; suspended proofs
+remain UNFULFILLED; independent full-diff review and behavioral QA are pending.
+
+Prior stage descriptions below retain their historical scope.
+
 # TASK-10272 finite hosted source evidence
 
 Historical TASK-10272 runs and source remain preserved at their immutable

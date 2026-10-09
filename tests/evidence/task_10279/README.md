@@ -1,5 +1,37 @@
 # TASK-10279 native admission, never merge
 
+Current prepared stage: finite real-daemon browser evidence from an installed
+candidate wheel and an ordinary Vite distribution, with en/zh-CN at 390x844 and
+1440x900. The fixed browser driver authenticates the wheel/RECORD, default web
+copy and distribution hashes, Node24.19.0, npm, native Chrome and ordinary UID.
+It uses genuine same-origin bootstrap/HTTP, actual retired WebSocket rejection,
+Tab/Enter navigation and Settings/Tasks screenshots. It mocks no endpoint,
+injects no bearer, changes no product code and submits no task/provider launch.
+The only init script sets the ordinary browser locale preference; no app
+instrumentation or evidence build flag is used. Full native launch identities,
+bounded ordinary cleanup, direct-child reaping and source/stage before/after
+attribution remain mandatory. Both fresh runners repeat native admission before
+Node selection or CPython/Hatchling/npm provisioning. This preparation is not
+executed browser evidence, QA PASS or delivery.
+
+Actual source run37868783544/evidence0542d92d completed every fixed selection
+at candidate0d498d535: each venue29candidate cases passed, including all23legacy
+variants and ordinary held/delegated refusal tails; two same-root cases failed.
+The separate immutable baseline characterizations both failed. Exact JUnit
+inventories, original full logs and native before/after closure are retained.
+Source failure is not hidden or reclassified: this browser-only stage retains
+that run's complete manifests and does not rerun its bodies. Successful prior
+wheel/frozen case scopes at37866089378 remain historical; same-root failures and
+Linux baseline-wheel opaque ENOENT remain failed evidence. A fresh wheel build
+is required only for the real browser's ephemeral installed daemon origin.
+Frozen build tools are not needed or reprovisioned for this wheel-only stage;
+the existing frozen builder still requires its original authenticated tools.
+Whole collection remains held for the complete side-effect audit and observed
+closed-stub admission. Suspended units/keeper proofs remain UNFULFILLED.
+
+The older paragraphs below record previous coordinator stages and actual runs.
+The current workflow runs the browser-only stage described above.
+
 This continues TASK-10272 evidence recovery for the same draft PR1017. The
 previous workflow and its actual failures are retained; this new exact-branch
 push workflow first performs the newly admitted cheap native preflight on fresh

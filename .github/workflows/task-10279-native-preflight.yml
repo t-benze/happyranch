@@ -42,7 +42,11 @@ jobs:
           path: baseline
       - name: Compile fixed observer and run cheap native admission
         run: python3 -I evidence/tests/evidence/task_10279/preflight.py
-      - name: Run current-head focused source and baseline characterization
+      - name: Select existing Node24 toolchain after native admission
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.19.0
+      - name: Run finite real-daemon ordinary-distribution browser evidence
         run: python3 -I evidence/tests/evidence/task_10272/runner.py
       - name: Seal bounded receipts including failure
         id: seal

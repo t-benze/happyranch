@@ -789,7 +789,8 @@ def main():
                   'units_and_surviving_proofs': 'SUSPENDED/UNFULFILLED',
                   'general_integration': 'SKIPPED',
                   'wheel_and_frozen_behavior': 'historical37866089378 actual cases retained; not rerun',
-                  'real_daemon_browser': 'pending', 'whole_repo_discovery': 'held for audit',
+                  'real_daemon_browser': 'this finite ordinary-dist stage; actual receipts required',
+                  'whole_repo_discovery': 'held for audit',
                   'independent_code_review_and_qa': 'pending'}}
     env = clean_env(root / 'bootstrap')
     candidate, baseline = WORKSPACE / 'candidate', WORKSPACE / 'baseline'
@@ -806,7 +807,9 @@ def main():
                 HERE.parent / 'task_10279/native_observer.c',
                 HERE.parent / 'task_10279/README.md',
                 EVIDENCE / '.github/workflows/task-10279-native-preflight.yml',
-                HERE.parent / 'task_10279/artifacts.py')}})
+                HERE.parent / 'task_10279/artifacts.py',
+                HERE.parent / 'task_10279/browser.py',
+                HERE.parent / 'task_10279/browser.mjs')}})
         evidence_head, _ = commands.run('evidence-source-head', ['git', 'rev-parse', 'HEAD'], EVIDENCE, env)
         assert evidence_head.strip() == os.environ['GITHUB_SHA']
         commands.run('native-os', ['uname', '-a'], root, env)
@@ -869,9 +872,9 @@ def main():
         wheels = root / 'wheels'
         wheels.mkdir()
         items = {}
-        # This source-only renewal needs uv and locked source dependencies.
-        # Retain prior artifact/tool receipts without reprovisioning build tools.
-        names = ('uv',)
+        # Browser needs a fresh installed wheel on this disposable runner.
+        # Reuse the official constrained Hatchling closure, without frozen builds.
+        names = ('uv', *HATCH)
         for name in dict.fromkeys(names):
             wheel = wheels_for(pins, name)
             metadata = RECEIPTS / (name + '-official-metadata.json')
@@ -893,6 +896,16 @@ def main():
         uv = uv_env / 'bin/uv'
         commands.run('uv-version', [uv, '--version'], root, env)
         save('uv-executable.json', identity(uv))
+        hatch_env = root / 'hatch-env'
+        constraints = root / 'build-constraints.txt'
+        constraints.write_text(''.join(f'{n}=={items[n]["version"]} --hash=sha256:{items[n]["sha256"]}\n' for n in HATCH))
+        shutil.copyfile(constraints, RECEIPTS / 'build-constraints.txt')
+        commands.run('hatch-venv', [uv, 'venv', '--python', python, '--no-python-downloads',
+                                  '--no-config', hatch_env], root, env)
+        commands.run('hatch-install', [uv, 'pip', 'install', '--python', hatch_env / 'bin/python',
+                     '--no-index', '--find-links', wheels, '--require-hashes', '--no-build',
+                     '--no-python-downloads', '--no-config', '-r', constraints], root, env)
+        distribution_receipt(commands, 'hatch', hatch_env / 'bin/python', [items[n] for n in HATCH], env, root)
         commands.run('native-process-census-before', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
         save('historical-artifact-reference.json', {
@@ -904,23 +917,33 @@ def main():
             'manifest_sha256': {
                 'macos-15': '37d72ff3e69b188cd4f6b12c71acbb251a88c65d0775778ac846dfba03735537',
                 'ubuntu-latest': 'eee6ded9dedf4fb28aad76046fd0873095509a8fa57beefd2069531ba3b607e6'}})
-        overlay, test_head = overlay_characterization(commands, candidate, baseline, env, before_baseline)
-        result['source_execution_this_run'] = 'current-head fixed focused source selections; genuine failures retained'
+        save('historical-source-reference.json', {
+            'run_id': '37868783544', 'evidence_sha': '0542d92d80617fc39884f6e4c13b541a43b844ef',
+            'candidate': CANDIDATE, 'baseline': BASELINE, 'execution_this_run': 'not-executed',
+            'is_behavioral_pass': False,
+            'scope': 'both venues candidate29passed/2same-rootfailed, baseline2same-rootfailed; full native attribution retained',
+            'manifest_sha256': {
+                'macos-15': 'fe24830b480a5e2217c73754919808c3da4857f342d20559eb51c4d3eba120bb',
+                'ubuntu-latest': '930ef84ea56bcfe93138d8932f0f88b0568bab00006b8e06d95f193341152c10'}})
+        result['source_execution_this_run'] = 'not-executed; authenticated current-head source failures retained'
         for role, source in (('candidate', candidate), ('baseline', baseline)):
-            result[role + '_source_exit'] = source_stage(commands, role, source, candidate,
-                                                       root, env, uv, python, descriptor, observer)
             after = source_manifest(commands, role + '-after', source, env,
-                                    CANDIDATE if role == 'candidate' else BASELINE,
-                                    None if role == 'candidate' else test_head)
+                                    CANDIDATE if role == 'candidate' else BASELINE)
             original = before_candidate if role == 'candidate' else before_baseline
-            expected = dict(original['files'])
-            if role == 'baseline':
-                expected.update({relative: sha(candidate / relative) for relative in overlay})
-            assert after['files'] == expected and after['links'] == original['links'], 'source mutated'
+            assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
+        browser = runpy.run_path(str(HERE.parent / 'task_10279/browser.py'), run_name='fixed_browser_coordinator')
+        result['browser'] = browser['browser_stage'](commands, candidate, root, uv, python,
+            constraints, descriptor, {'save': save, 'clean_env': clean_env,
+                'receipts': RECEIPTS, 'wheels': wheels, 'census': stage_native_census})
+        for role, source in (('candidate', candidate), ('baseline', baseline)):
+            after = source_manifest(commands, role + '-final', source, env,
+                                    CANDIDATE if role == 'candidate' else BASELINE)
+            original = before_candidate if role == 'candidate' else before_baseline
+            assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        passed = result['candidate_source_exit'] == result['baseline_source_exit'] == 0
-        result['status'] = 'focused-source-checks-passed-artifacts-not-rerun' if passed else 'focused-source-checks-failed-artifacts-not-rerun'
+        passed = result['browser']['exit'] == 0 and not result['browser']['error']
+        result['status'] = 'browser-stage-passed-source-characterization-failures-retained' if passed else 'browser-stage-failed-source-characterization-failures-retained'
         return 0 if passed else 1
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}

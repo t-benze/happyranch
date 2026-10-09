@@ -135,8 +135,9 @@ def build_origin(origin: str, role: str, source: Path, source_record: Path,
              'uv_distribution_sha256': receipt(receipts / 'uv-installed-records.json')['sha256'],
              'python_runtime': receipt(receipts / 'python-runtime.json'),
              'uv_records': receipt(receipts / 'uv-installed-records.json'),
-             'hatch_records': receipt(receipts / 'hatch-installed-records.json'),
-             'freeze_records': receipt(receipts / 'freeze-installed-records.json')}
+             'hatch_records': receipt(receipts / 'hatch-installed-records.json')}
+    if origin == 'frozen':
+        tools['freeze_records'] = receipt(receipts / 'freeze-installed-records.json')
     manifest = {'schema_version': 1, 'source_role': role, 'origin': origin,
         'candidate_sha': record['candidate_sha'], 'platform': sys.platform, 'arch': os.uname().machine,
         'source_digest': receipt(source_record)['sha256'], 'lock_digest': record['uv_lock_sha256'],
