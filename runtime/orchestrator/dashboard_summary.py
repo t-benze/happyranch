@@ -664,7 +664,7 @@ def compute_org_pulse_7d(db: Database, *, now: datetime, teams) -> list[TeamPuls
             trend_delta=trend_delta,
             sparkline=sparkline,
             members=len(mgr.workers),
-            lead=mgr.name,
+            lead=mgr.principal,
         ))
     return result
 

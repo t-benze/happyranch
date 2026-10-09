@@ -854,7 +854,8 @@ class ProfileCoordinator:
             # and transaction; empty dependency rows cannot establish this fact.
             empty_inputs = attachment and not (
                 definitions or prompt_loader.list_pending(paths)
-                or TeamsRegistry.load(org.root).teams() or org.teams.teams()
+                or any(manager.name is not None or manager.workers for manager in TeamsRegistry.load(org.root)._teams.values())
+                or any(manager.name is not None or manager.workers for manager in org.teams._teams.values())
             )
             capture_error = None
             try:

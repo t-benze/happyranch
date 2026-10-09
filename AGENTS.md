@@ -308,6 +308,38 @@ serializes connection access; removal can cause a logged sweep error. Cancellati
 can leave a worker running or a committed pending token for later recovery.
 There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
+## Founder-managed teams (THR296)
+
+Team managers may be existing agent names or closed tagged principals
+`{kind: agent|human, principal: ...}`. The sole human principal is `founder`;
+its executable manager is absent. Founder never enters AgentDef, all_agents,
+workspace, callback or executor identity. Attachment validates duplicates and
+both directions of active/pending roster and AgentDef role/team agreement.
+Existing omitted task routing defaults to Engineering unless an explicit
+`task_default_team` is present. Proven fresh org creation adds empty human
+Default and writes both `default_team` and `task_default_team` as Default.
+Selecting a human team requires an active executable owner before task,
+attachment or queue persistence (`422 owner_required_for_human_team`). Workers
+remain ordinary decision owners of roots, with self-only decomposition.
+
+New workflow authority uses schema2 typed managers and both routing pointers;
+retained schema1 bytes/digests and pinned workflow contexts keep their original
+interpretation. Human manager principals are never executable role candidates
+or policy-selector managers. Startup never moves or reconstructs the roster.
+Human delegated outcomes name the valid persisted executable parent owner, or
+`unknown_manager` on invalid ancestry. Only absent verdict maps implicitly;
+blank/custom/standard strings remain exact. These are agent outcome records,
+not authenticated Founder approval.
+
+Selected human failed-leaf recovery uses exact positive INTEGER result identity,
+complete selected-only history and separate guarded commits. The review/history
+precede the consumed marker. A finite process-local operation retains the same
+identity, phase and original parent effect through writer contention; 50ms
+outside-lock retries have no count cap. Pending is never settlement, and
+shutdown leaves authentic residue for next-start recovery. Agent-team and
+completed-leaf transaction behavior is preserved. See the current THR296 spec
+and operator runbook; source authoring is not behavioral verification.
+
 ## Workflow authority publication (U2A)
 
 `WorkflowAuthorityCoordinator` owns the org-scoped producer half of the

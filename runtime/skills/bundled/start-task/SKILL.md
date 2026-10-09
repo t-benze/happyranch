@@ -194,12 +194,21 @@ Parameters:
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `output_dir`) may be omitted.
 
+   Ordinary worker-owned root tasks also return a decision: task_type=task
+   defines the decision owner. A worker may delegate only to itself; it gains
+   no peer/fanout, manager administration, policy or template rights. Human
+   Founder manages the team but never executes as an agent. Worker-owned
+   delegated leaves return plain completions. Their review_verdict records an
+   agent outcome attributed to the executable parent owner, not human approval.
+
    - If your role is to issue a verdict (code review, QA, design review, etc.), include `"verdict": "<value>"` in your payload. Free string; your team's workflow KB entry documents the vocabulary. Optional — workers without verdicts simply omit the field.
 
-   **Team-manager only — add a `decision` field.** Alongside the prose
-   `summary`, a team-manager session must include a top-level `decision`
-   object that the orchestrator will execute. Workers omit it. Omitting it
-   from a manager session escalates the task. See the response-format
+   **Decision-owning roots — add a `decision` field.** Alongside the prose
+   `summary`, a root task owner includes the supported top-level `decision`.
+   An ordinary worker root may finish or delegate to itself, with no peer,
+   fanout or manager administration. Delegated worker leaves omit decisions.
+   Team-manager roots retain their existing decision and escalation contract.
+   See the response-format
    section of your role_guidance for the exact shapes. The runtime request models and transition handlers enforce the
    contract; this skill explains
    the valid actions:
@@ -410,7 +419,9 @@ the fields your injected role contract requires:
   Do not invent policy wording, clause identifiers, a canonical phrase, or a
   second evaluation. For decisions where the injected guidance
   does not require that assessment, omit the field.
-  A worker must **never** manufacture a manager decision.
+  A worker must **never** manufacture a manager decision or manager policy
+  assessment. Its own root decision is limited to the supported finish/self
+  delegation contract; a delegated worker leaf omits `decision`.
 
 **Real waits only.** `waiting_on_job_ids` requires `status="blocked"` and must
 list only real, currently non-terminal jobs owned by this task. An explicitly

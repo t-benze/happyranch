@@ -29,6 +29,19 @@ still pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
+## Founder-managed Default (THR296)
+
+GET teams/settings retain string manager names for agent teams; human rows
+carry manager:null, manager_kind:human, human_manager:founder and is_default.
+Both TypeScript wire types and existing real/mock providers accept this shape.
+Existing Agent selectors/detail and Work Hours display localized Founder
+leadership while preserving executable worker selection. Demoted consultants
+are ineligible for manager policy views; no transfer UI is introduced.
+`happyranch run --team default` requires an explicit active executable --owner.
+Omitted requests follow task_default_team (legacy Engineering). Founder cannot
+be selected as an executor. Normal and recovered review_verdict audits record
+agent outcomes, not authenticated human approval.
+
 ## Daemon-managed workspace cleanup
 
 `workspace_cleanup.reclamation_actions_enabled` is an internal, strict boolean

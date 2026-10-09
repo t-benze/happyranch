@@ -2146,6 +2146,7 @@ export const en = {
   'agents.noAgents.title': 'No agents yet',
   'agents.select.title': 'Select an agent',
   'agents.select.body': 'Select an agent from the roster to view and edit details.',
+  'agents.team.founderManaged': 'Managed by Founder',
   'agents.role.manager': 'Manager',
   'agents.role.worker': 'Worker',
   'agents.role.none': 'No role',

@@ -180,3 +180,42 @@ def test_remove_team_missing_is_noop(tmp_path: Path) -> None:
     reg = TeamsRegistry.load(rt.root)
     reg.remove_team("nonexistent")  # should not raise
     assert reg.teams() == []
+
+
+@pytest.mark.parametrize('manager', [
+    {'kind': 'human', 'principal': 'founder'},
+    {'kind': 'agent', 'principal': 'engineering_head'},
+])
+def test_tagged_manager_and_routing_roundtrip(tmp_path: Path, manager: dict) -> None:
+    import yaml
+    root = tmp_path / 'org-root'
+    (root / 'org').mkdir(parents=True)
+    source = {'default_team': 'default', 'task_default_team': 'engineering', 'kept': {'operator': 7},
+              'teams': {'default': {'manager': manager, 'workers': ['consultant_head']},
+                        'engineering': {'manager': 'engineering_head', 'workers': []}}}
+    (root / 'org/teams.yaml').write_text(yaml.safe_dump(source))
+    registry = TeamsRegistry.load(root)
+    registry.add_worker('default', 'consultant_codex')
+    registry.remove_worker('default', 'consultant_codex')
+    assert yaml.safe_load((root / 'org/teams.yaml').read_text()) == source
+    assert registry.task_default_team == 'engineering'
+    if manager['kind'] == 'human':
+        assert registry.executable_manager_for_team('default') is None
+        assert 'founder' not in registry.all_agents()
+        assert registry.team_for_agent('founder') is None
+        assert not registry.is_team_manager('founder')
+        assert registry.team_row('default') == {'name': 'default', 'manager': None,
+            'manager_kind': 'human', 'human_manager': 'founder', 'is_default': True,
+            'workers': ['consultant_head']}
+
+
+@pytest.mark.parametrize('manager', [
+    {'kind': 'human', 'principal': 'other'},
+    {'kind': 'unknown', 'principal': 'founder'},
+    {'kind': 'agent', 'principal': ''},
+    {'kind': 'human', 'principal': 'founder', 'executor': 'claude'},
+    ['founder'],
+])
+def test_invalid_tagged_manager_refuses(manager: object) -> None:
+    with pytest.raises(ValueError):
+        TeamsRegistry._from_layout({'default': {'manager': manager, 'workers': []}})

@@ -1,0 +1,623 @@
+"""Explicit offline THR296 roster check/apply/complete-or-compensate.
+
+No daemon attachment, supervisor mutation, live migration or traffic release.
+A design plan is not an executable checked manifest. See the migration runbook.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import base64
+from contextlib import contextmanager
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+
+import yaml
+
+from runtime.orchestrator.agent_def import parse_agent_text
+from runtime.orchestrator.teams import TeamsRegistry
+
+AGENTS = ("consultant_head", "consultant_codex")
+CANONICAL = ("org/agents/consultant_head.md", "org/agents/consultant_codex.md", "org/teams.yaml")
+ADVICE = "Advise the founder and HappyRanch teams on product, services and business operations. You are an individual consultant reporting directly to the founder."
+SOURCE = Path(__file__).resolve().parents[1]
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical(data: object) -> bytes:
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def image(path: Path) -> dict:
+    """Closed exact bytes/type/mode/owner; links retain their raw text."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"kind": "absent"}
+    if info.st_nlink != 1 or not (stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)):
+        raise ValueError(f"unsupported file identity: {path}")
+    data = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+    return {"kind": "link" if path.is_symlink() else "file", "mode": stat.S_IMODE(info.st_mode),
+            "uid": info.st_uid, "gid": info.st_gid, "bytes": base64.b64encode(data).decode(), "sha256": digest(data)}
+
+
+
+def validate_image(value: dict) -> None:
+    if not isinstance(value, dict) or value.get("kind") not in ("absent", "file", "link"):
+        raise ValueError("invalid_closed_image")
+    if value["kind"] == "absent":
+        if set(value) != {"kind"}:
+            raise ValueError("invalid_absent_image")
+        return
+    if (set(value) != {"kind", "mode", "uid", "gid", "bytes", "sha256"}
+            or type(value["mode"]) is not int or not 0 <= value["mode"] <= 0o777
+            or value["uid"] != os.getuid() or value["gid"] != os.getgid()
+            or digest(base64.b64decode(value["bytes"], validate=True)) != value["sha256"]
+            or (value["kind"] == "link" and value["mode"] != 0o777)):
+        raise ValueError("unrestorable_closed_image_metadata")
+
+
+def preservation_inventory(root: Path) -> dict:
+    """Uncapped read-only bytes/type/metadata closure without following links."""
+    result = {}
+    def visit(path: Path) -> None:
+        info = path.lstat()
+        if info.st_uid != os.getuid() or info.st_gid != os.getgid():
+            raise ValueError("preservation_owner_not_restorable")
+        rel = str(path.relative_to(root))
+        entry = dict(mode=stat.S_IMODE(info.st_mode), uid=info.st_uid, gid=info.st_gid)
+        if stat.S_ISLNK(info.st_mode):
+            entry.update(kind="link", target=os.readlink(path))
+        elif stat.S_ISDIR(info.st_mode):
+            entry.update(kind="directory")
+        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            sha = hashlib.sha256()
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    sha.update(chunk)
+            entry.update(kind="file", sha256=sha.hexdigest())
+        else:
+            raise ValueError("unsupported_preservation_identity")
+        result[rel] = entry
+        if entry["kind"] == "directory":
+            for child in sorted(path.iterdir()):
+                visit(child)
+    visit(root)
+    return result
+
+
+def verify_preserved_paths(root: Path, manifest: dict) -> None:
+    expected = manifest["preservation_inventory"]
+    actual = preservation_inventory(root)
+    mutable = set(manifest["before"]) | {"happyranch.db", "happyranch.db-wal", "happyranch.db-shm", "org/.workflow-authority.json"}
+    # New containing directories are part of the declared generated closure.
+    directories = {str(parent) for rel in manifest["before"] for parent in Path(rel).parents if str(parent) != "."}
+    for rel in set(expected) | set(actual):
+        if rel in mutable:
+            continue
+        if rel not in expected and rel in directories and actual[rel]["kind"] == "directory":
+            continue
+        if expected.get(rel) != actual.get(rel):
+            raise ValueError(f"retained_path_changed:{rel}")
+
+
+def durable_replace(path: Path, target: dict) -> None:
+    """One exact path replacement, with file and containing-directory flush."""
+    validate_image(target)
+    if target["kind"] == "absent":
+        path.unlink(missing_ok=True)
+    else:
+        data = base64.b64decode(target["bytes"], validate=True)
+        if digest(data) != target["sha256"] or target["uid"] != os.getuid() or target["gid"] != os.getgid():
+            raise ValueError("metadata_or_image_not_owned")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, raw = tempfile.mkstemp(prefix=f".{path.name}.roster-", dir=path.parent)
+        stage = Path(raw)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                if target["kind"] == "file":
+                    out.write(data)
+                    out.flush()
+                    os.fchmod(out.fileno(), target["mode"])
+                    os.fsync(out.fileno())
+            if target["kind"] == "link":
+                stage.unlink()
+                stage.symlink_to(data.decode())
+            os.replace(stage, path)
+        finally:
+            stage.unlink(missing_ok=True)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    if image(path) != target:
+        raise ValueError("replacement_readback_mismatch")
+
+
+def paths(args: argparse.Namespace) -> tuple[Path, Path]:
+    if not args.runtime_root.is_absolute() or re.fullmatch(r"[a-z0-9-]{1,40}", args.org) is None:
+        raise ValueError("invalid_runtime_or_org")
+    runtime = args.runtime_root.resolve(strict=True)
+    marker = yaml.safe_load((runtime / "happyranch.yaml").read_text())
+    if marker.get("schema_version") != 2 or marker.get("type") != "multi-org-runtime":
+        raise ValueError("explicit_multi_org_runtime_required")
+    root = runtime / "orgs" / args.org
+    if root.is_symlink() or (runtime / "orgs").is_symlink() or root.resolve(strict=True) != root:
+        raise ValueError("org_path_redirected")
+    for rel in CANONICAL:
+        if (root / rel).is_symlink() or (root / rel).resolve().is_relative_to(root) is False:
+            raise ValueError("canonical_path_redirected")
+    return runtime, root
+
+
+def source_identity() -> str:
+    if subprocess.check_output(["git", "status", "--porcelain"], cwd=SOURCE).strip():
+        raise ValueError("clean_committed_candidate_required")
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=SOURCE, text=True).strip()
+
+
+def containment(plan: dict, runtime: Path) -> dict:
+    """Observe actual persistent masks, registry detachment and no daemon.
+
+    Unsupported/custom/alternate supervisors must be resolved by the operator,
+    never accepted from a boolean or an unexecuted design-plan assertion.
+    """
+    declaration = plan.get("containment")
+    if not isinstance(declaration, dict) or not declaration.get("systemd_user_units") or not declaration.get("registry_paths"):
+        raise ValueError("actual_persistent_restart_inhibition_required")
+    from runtime.runtime import daemon_home
+    home = daemon_home().resolve(strict=True)
+    if declaration.get("daemon_home") != str(home) or str(home / "runtimes.yaml") not in declaration["registry_paths"]:
+        raise ValueError("effective_daemon_registry_inventory_required")
+    units = declaration["systemd_user_units"]
+    if len(units) != len(set(units)) or any(re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit) is None for unit in units):
+        raise ValueError("invalid_supervisor_inventory")
+    # Inspect the existing user supervisor inventory as well as declared masks.
+    inventory = subprocess.run(["systemctl", "--user", "list-unit-files", "--type=service", "--no-legend", "--no-pager"], capture_output=True, text=True, timeout=10, check=True)
+    actual_units = {line.split()[0] for line in inventory.stdout.splitlines() if line.strip()}
+    if not set(units).issubset(actual_units):
+        raise ValueError("declared_supervisor_missing_from_actual_inventory")
+    for unit in sorted(actual_units - set(units)):
+        launch = subprocess.run(["systemctl", "--user", "show", unit, "--property=ExecStart", "--value"], capture_output=True, text=True, timeout=10, check=True).stdout
+        if "happyranch" in launch or "runtime.daemon" in launch or str(runtime) in launch:
+            raise ValueError("undeclared_alternate_supervisor")
+    observed = []
+    for unit in units:
+        mask = Path.home() / ".config/systemd/user" / unit
+        if not mask.is_symlink() or os.readlink(mask) != "/dev/null":
+            raise ValueError("persistent_user_mask_required")
+        run = subprocess.run(["systemctl", "--user", "show", unit, "--property=LoadState,ActiveState,SubState"], capture_output=True, text=True, timeout=10, check=True)
+        properties = dict(line.split("=", 1) for line in run.stdout.splitlines())
+        if properties != {"LoadState": "masked", "ActiveState": "inactive", "SubState": "dead"}:
+            raise ValueError("supervisor_not_inhibited_and_stopped")
+        observed.append({"unit": unit, "mask": str(mask), "properties": properties})
+    for value in declaration["registry_paths"]:
+        registry = Path(value)
+        if not registry.is_absolute() or registry.is_symlink():
+            raise ValueError("registry_inventory_invalid")
+        state = yaml.safe_load(registry.read_text())
+        if not isinstance(state, dict) or state.get("active"):
+            raise ValueError("alternate_registered_launch_not_inhibited")
+    # Exhaustive same-user observation, fail closed on inaccessible candidates.
+    proc = Path("/proc")
+    if not proc.is_dir():
+        raise ValueError("linux_process_census_unavailable")
+    for entry in proc.iterdir():
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        try:
+            if entry.stat().st_uid != os.getuid():
+                continue
+            command = (entry / "cmdline").read_bytes()
+        except FileNotFoundError:
+            continue  # exited during census
+        if (b"runtime.daemon" in command or b"happyranch daemon" in command
+                or os.fsencode(runtime) in command):
+            raise ValueError("runtime_or_daemon_process_present")
+    return {"supervisors": observed, "registry_paths": declaration["registry_paths"]}
+
+
+@contextmanager
+def read_db(path: Path):
+    if path.is_symlink() or path.stat().st_nlink != 1:
+        raise ValueError("database_identity_invalid")
+    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    if conn.execute("PRAGMA integrity_check").fetchall()[0][0] != "ok" or conn.execute("PRAGMA foreign_key_check").fetchall():
+        conn.close()
+        raise ValueError("database_integrity_refusal")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def domain_signature(conn: sqlite3.Connection) -> str:
+    """Full retained domain history; reset/publication owners are separate."""
+    excluded = {"audit_log", "workflow_authority_pointers", "workflow_publication_journals", "workflow_publication_leases", "workflow_profile_dependencies", "workflow_profile_operations", "workflow_profile_leases"}
+    rows = []
+    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"):
+        name = row[0]
+        if name in excluded or name == "sqlite_sequence":
+            continue
+        quoted = '"' + name.replace('"', '""') + '"'
+        records = [dict(record) for record in conn.execute(f"SELECT * FROM {quoted}")]
+        if name == "thread_participants":
+            for record in records:
+                if record["agent_name"] in AGENTS:
+                    record["agent_session_id"], record["last_resumed_seq"] = None, 0
+        records = [tuple(record.items()) for record in records]
+        rows.append((name, sorted(repr(record) for record in records)))
+    return digest(canonical(rows))
+
+
+def check(args: argparse.Namespace) -> dict:
+    plan = json.loads(args.plan.read_bytes())
+    runtime, root = paths(args)
+    observation = containment(plan, runtime)
+    source = source_identity()
+    operation = plan.get("operation_id")
+    if not isinstance(operation, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,80}", operation) is None:
+        raise ValueError("operation_id_required")
+    operation_dir = Path(plan["operation_dir"])
+    if (not operation_dir.is_absolute() or not operation_dir.is_dir()
+            or operation_dir.is_symlink() or operation_dir.resolve() != operation_dir
+            or operation_dir.is_relative_to(runtime) or operation_dir.is_relative_to(Path("/tmp"))
+            or operation_dir.stat().st_uid != os.getuid() or stat.S_IMODE(operation_dir.stat().st_mode) != 0o700):
+        raise ValueError("durable_private_external_operation_directory_required")
+    restore = Path(plan["closed_restore_root"])
+    if (not restore.is_absolute() or restore.is_symlink() or restore.resolve(strict=True) != restore
+            or restore.is_relative_to(runtime) or restore.is_relative_to(Path("/tmp"))):
+        raise ValueError("independent_closed_restore_required")
+    preserved = preservation_inventory(root)
+    restored_inventory = preservation_inventory(restore)
+    if preserved != restored_inventory:
+        raise ValueError("closed_restore_bytes_type_metadata_mismatch")
+    backup = Path(plan["closed_database_backup"])
+    if backup != restore / "happyranch.db":
+        raise ValueError("backup_must_belong_to_verified_closed_restore")
+    db_path = root / "happyranch.db"
+    if any((root / ("happyranch.db" + suffix)).exists() and (root / ("happyranch.db" + suffix)).stat().st_size for suffix in ("-wal", "-journal")):
+        raise ValueError("database_not_closed_checkpointed")
+    if backup.is_relative_to(runtime) or backup.is_symlink() or backup.read_bytes() != db_path.read_bytes():
+        raise ValueError("exact_closed_backup_required")
+    with read_db(db_path) as current, read_db(backup) as restored:
+        if domain_signature(current) != domain_signature(restored):
+            raise ValueError("backup_restore_history_mismatch")
+        for table, states in (("tasks", ("pending", "in_progress", "escalated")), ("jobs", ("pending", "running")), ("thread_invocations", ("pending", "running")), ("dreams", ("pending", "running")), ("work_hours", ("pending", "running"))):
+            columns = {row[1] for row in current.execute(f'PRAGMA table_info("{table}")')}
+            if "status" not in columns:
+                raise ValueError("quiescence_inventory_incomplete")
+            marks = ",".join("?" for _ in states)
+            if current.execute(f'SELECT 1 FROM "{table}" WHERE status IN ({marks}) LIMIT 1', states).fetchone():
+                raise ValueError(f"nonquiescent_{table}")
+        if current.execute("SELECT 1 FROM schedules WHERE active=1 OR status='running' LIMIT 1").fetchone():
+            raise ValueError("armed_or_running_schedule")
+        if current.execute("SELECT 1 FROM workflow_profile_operations WHERE state NOT IN ('published','aborted') LIMIT 1").fetchone():
+            raise ValueError("nonquiescent_profile_operation")
+        for table in ("workflow_publication_leases", "workflow_profile_leases"):
+            if current.execute(f'SELECT 1 FROM "{table}" LIMIT 1').fetchone():
+                raise ValueError(f"nonquiescent_{table}")
+        before_domain = domain_signature(current)
+        baseline_audit = current.execute("SELECT COALESCE(MAX(id),0) FROM audit_log").fetchone()[0]
+        resets = {agent: [dict(row) for row in current.execute("SELECT * FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent,))] for agent in AGENTS}
+    before = {rel: image(root / rel) for rel in CANONICAL}
+    after = dict(before)
+    for agent in AGENTS:
+        rel = f"org/agents/{agent}.md"
+        text = base64.b64decode(before[rel]["bytes"]).decode()
+        definition = parse_agent_text(text, expected_name=agent)
+        if (definition.team != "consultant" or definition.role != ("manager" if agent == AGENTS[0] else "worker")
+                or definition.executor != ("claude" if agent == AGENTS[0] else "codex")):
+            raise ValueError("canonical_consultant_before_image_required")
+        text, count = re.subn(r"(?m)^team: consultant$", "team: default", text, count=1)
+        if count != 1:
+            raise ValueError("exact_team_field_required")
+        if agent == AGENTS[0]:
+            text, count = re.subn(r"(?m)^role: manager$", "role: worker", text, count=1)
+            sentence = plan.get("head_manager_sentence")
+            if count != 1 or not isinstance(sentence, str) or text.count(sentence) != 1 or sentence not in definition.system_prompt:
+                raise ValueError("exact_sole_manager_sentence_required")
+            text = text.replace(sentence, ADVICE, 1)
+        data = text.encode()
+        after[rel] = {**before[rel], "bytes": base64.b64encode(data).decode(), "sha256": digest(data)}
+    roster = yaml.safe_load(base64.b64decode(before[CANONICAL[2]]["bytes"]))
+    team = roster["teams"].get("consultant")
+    if team != {"manager": AGENTS[0], "workers": [AGENTS[1]]}:
+        raise ValueError("exact_consultant_membership_required")
+    existing = roster["teams"].get("default")
+    if existing is not None and existing != {"manager": {"kind": "human", "principal": "founder"}, "workers": []}:
+        raise ValueError("conflicting_Default")
+    del roster["teams"]["consultant"]
+    roster["teams"]["default"] = {"manager": {"kind": "human", "principal": "founder"}, "workers": list(AGENTS)}
+    roster.update(default_team="default", task_default_team="engineering")
+    TeamsRegistry._from_layout(roster["teams"], metadata={k: v for k, v in roster.items() if k != "teams"})
+    data = yaml.safe_dump(roster, sort_keys=False).encode()
+    after[CANONICAL[2]] = {**before[CANONICAL[2]], "bytes": base64.b64encode(data).decode(), "sha256": digest(data)}
+    generated = plan.get("generated_after_images")
+    if not isinstance(generated, dict) or not generated:
+        raise ValueError("independently_inspectable_materializer_output_closure_required")
+    from runtime.daemon.routes.agents import _BOOTSTRAP_OWNED_FILES
+    for rel, expected in generated.items():
+        relative = Path(rel)
+        if (relative.is_absolute() or ".." in relative.parts or len(relative.parts) < 3
+                or relative.parts[:2] not in [("workspaces", agent) for agent in AGENTS]
+                or not (root / relative).parent.resolve().is_relative_to(root)):
+            raise ValueError("generated_path_outside_exact_consultant_closure")
+        owned = "/".join(relative.parts[2:])
+        if owned not in _BOOTSTRAP_OWNED_FILES and not (len(relative.parts) == 4 and relative.parts[2] in (".claude", ".agents")):
+            if not (len(relative.parts) == 5 and relative.parts[2] in (".claude", ".agents") and relative.parts[3] == "skills"):
+                raise ValueError("generated_path_not_owned_by_existing_materializers")
+        if owned in ("task_history.md", "recent_tasks.md", "memory/_index.md") and expected != image(root / rel):
+            raise ValueError("existing_history_and_memory_must_be_preserved")
+        before[rel] = image(root / rel)
+        after[rel] = expected
+    for value in (*before.values(), *after.values()):
+        validate_image(value)
+    return dict(kind="THR296-checked-manifest-v1", operation_id=operation,
+                operation_dir=str(operation_dir), runtime_root=str(runtime), org=args.org,
+                source_sha=source, plan_sha=digest(args.plan.read_bytes()), containment=plan["containment"],
+                containment_observation=observation, before=before, after=after,
+                domain_signature=before_domain, reset_before=resets, baseline_audit=baseline_audit,
+                closed_database_backup=str(backup), closed_backup_image=image(backup),
+                closed_restore_root=str(restore), preservation_inventory=preserved)
+
+
+def finished_state(root: Path, manifest: dict, *, direction: str) -> dict | None:
+    """Read actual owned journal/rows to reconstruct a missing external receipt.
+
+    No Database constructor, reset helper, materializer or publication is used.
+    This is not host/process/reboot proof; those require separate observations.
+    """
+    verify_preserved_paths(root, manifest)
+    desired = manifest["before"] if direction == "compensate" else manifest["after"]
+    if any(image(root / rel) != value for rel, value in desired.items()):
+        return None
+    with read_db(root / "happyranch.db") as conn:
+        if domain_signature(conn) != manifest["domain_signature"]:
+            raise ValueError("traffic_or_history_changed_forward_repair_required")
+        for agent in AGENTS:
+            rows = [dict(row) for row in conn.execute("SELECT * FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent,))]
+            cleared = [{**row, "agent_session_id": None, "last_resumed_seq": 0} for row in manifest["reset_before"][agent]]
+            if rows != cleared:
+                return None
+            audits = conn.execute("SELECT * FROM audit_log WHERE task_id=? ORDER BY id", (f"config:THR296:{manifest['operation_id']}:{agent}",)).fetchall()
+            if cleared:
+                expected = {"reason": f"THR296 roster operation {manifest['operation_id']}", "rows": len(cleared), "name": agent}
+                if (len(audits) != 1 or audits[0]["action"] != "thread_session_invalidated"
+                        or audits[0]["agent"] != "founder" or audits[0]["id"] <= manifest["baseline_audit"]
+                        or json.loads(audits[0]["payload"]) != expected):
+                    return None
+            elif audits:
+                raise ValueError("zero_row_reset_receipt_conflict")
+        pointer = conn.execute("SELECT * FROM workflow_authority_pointers WHERE namespace=?", (f"org/{manifest['org']}",)).fetchone()
+        if pointer is None or pointer["state"] != "ready":
+            return None
+        journal = conn.execute("SELECT * FROM workflow_publication_journals WHERE id=?", (pointer["journal_id"],)).fetchone()
+        if (journal is None or journal["state"] != "cache_installed"
+                or journal["publisher"] != f"THR296:{manifest['operation_id']}:ready:{direction}"
+                or journal["generation"] != pointer["current_generation"]
+                or journal["snapshot_digest"] != pointer["snapshot_digest"]):
+            return None
+        raw = bytes(journal["snapshot_bytes"])
+        if digest(raw) != pointer["snapshot_digest"] or (root / "org/.workflow-authority.json").read_bytes() != raw:
+            raise ValueError("owned_ready_snapshot_mismatch")
+        from runtime.workflows.authority import validate_authority_snapshot
+        validate_authority_snapshot(json.loads(raw))
+        if conn.execute("SELECT 1 FROM workflow_profile_dependencies WHERE org_namespace=? AND state='unbound'", (f"org/{manifest['org']}",)).fetchone():
+            raise ValueError("profile_closure_not_ready")
+        return dict(operation_id=manifest["operation_id"], direction=direction,
+                    generation=pointer["current_generation"], snapshot_digest=pointer["snapshot_digest"],
+                    traffic_released=False)
+
+
+def write_receipt(path: Path, result: dict) -> None:
+    data = canonical(result)
+    durable_replace(path, {"kind": "file", "mode": 0o600, "uid": os.getuid(), "gid": os.getgid(),
+                          "bytes": base64.b64encode(data).decode(), "sha256": digest(data)})
+
+
+def apply(args: argparse.Namespace, manifest: dict) -> dict:
+    runtime, root = paths(args)
+    if manifest.get("kind") != "THR296-checked-manifest-v1" or manifest.get("source_sha") != source_identity():
+        raise ValueError("real_checked_manifest_and_exact_candidate_required")
+    if manifest["runtime_root"] != str(runtime) or manifest["org"] != args.org:
+        raise ValueError("manifest_owner_mismatch")
+    containment(manifest, runtime)
+    if set(manifest["before"]) != set(manifest["after"]):
+        raise ValueError("manifest_output_closure_mismatch")
+    for rel, value in (*manifest["before"].items(), *manifest["after"].items()):
+        relative = Path(rel)
+        if relative.is_absolute() or ".." in relative.parts or not (root / rel).parent.resolve().is_relative_to(root):
+            raise ValueError("manifest_path_redirected")
+        validate_image(value)
+    verify_preserved_paths(root, manifest)
+    if preservation_inventory(Path(manifest["closed_restore_root"])) != manifest["preservation_inventory"]:
+        raise ValueError("closed_restore_changed")
+    operation_dir = Path(manifest["operation_dir"])
+    if (not operation_dir.is_absolute() or operation_dir.is_symlink() or operation_dir.resolve() != operation_dir
+            or operation_dir.is_relative_to(runtime) or operation_dir.is_relative_to(Path("/tmp"))
+            or operation_dir.stat().st_uid != os.getuid() or stat.S_IMODE(operation_dir.stat().st_mode) != 0o700):
+        raise ValueError("operation_directory_not_private")
+    operation_id = manifest["operation_id"]
+    if args.recover and args.operation_id != operation_id:
+        raise ValueError("recovery_operation_mismatch")
+    receipt = operation_dir / "receipt.json"
+    manifest_digest = args.expected_digest
+    if receipt.exists():
+        result = json.loads(receipt.read_bytes())
+        if result["manifest_sha256"] != manifest_digest:
+            raise ValueError("receipt_request_mismatch")
+        desired = manifest["before"] if result["direction"] == "compensate" else manifest["after"]
+        if any(image(root / rel) != target for rel, target in desired.items()):
+            raise ValueError("completed_receipt_state_drift")
+        if result["direction"] == "compensate" and not (args.recover and args.direction == "compensate"):
+            raise ValueError("fresh_operation_required_after_compensation")
+        actual = finished_state(root, manifest, direction=result["direction"])
+        if actual is None or {**actual, "manifest_sha256": manifest_digest} != result:
+            raise ValueError("completed_receipt_readiness_drift")
+        return result  # read-only DB; no reset helper, publication or protected write
+    desired = manifest["before"] if args.recover and args.direction == "compensate" else manifest["after"]
+    for rel in manifest["before"]:
+        current = image(root / rel)
+        if current not in (manifest["before"][rel], manifest["after"][rel]):
+            raise ValueError(f"unknown_third_state:{rel}")
+        if not args.recover and current != manifest["before"][rel]:
+            raise ValueError(f"apply_before_image_CAS:{rel}")
+    if image(Path(manifest["closed_database_backup"])) != manifest["closed_backup_image"]:
+        raise ValueError("closed_backup_changed")
+    with read_db(root / "happyranch.db") as conn:
+        if domain_signature(conn) != manifest["domain_signature"]:
+            raise ValueError("traffic_or_history_changed_forward_repair_required")
+    direction = "compensate" if args.recover and args.direction == "compensate" else "complete"
+    completed = finished_state(root, manifest, direction=direction)
+    if completed is not None:
+        result = {**completed, "manifest_sha256": manifest_digest}
+        write_receipt(receipt, result)
+        return result  # receipt-loss reconstruction performs only external write
+    # Existing native coordinators, no startup attachment/publication shortcut.
+    from runtime.config import Settings
+    from runtime.infrastructure.database import Database
+    from runtime.daemon.org_state import OrgState
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.orchestrator.context_builder import ContextBuilder
+    from runtime.orchestrator.org_validation import validate_team_membership
+    from runtime.orchestrator.prompt_loader import load_agent
+    from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
+    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    settings = Settings(project_root=SOURCE)
+    db = Database(root / "happyranch.db")
+    try:
+        paths_obj = OrgPaths(root=root)
+        # A partial prefix cannot attach. The coherent target registry is used
+        # only after exact observed-file CAS; no startup roster reconstruction.
+        roster_bytes = base64.b64decode(desired[CANONICAL[2]]["bytes"])
+        layout = yaml.safe_load(roster_bytes)
+        teams = TeamsRegistry._from_layout(layout["teams"], root=root,
+            metadata={key: value for key, value in layout.items() if key != "teams"})
+        orch = Orchestrator(db, settings, paths_obj, args.org, teams)
+        org = OrgState(slug=args.org, root=root, db=db, teams=teams, settings=settings, orchestrator=orch)
+        profiles = ProfileCoordinator(daemon_home=settings.daemon_home, orgs={args.org: org})
+        org.workflow_authority._profile_coordinator = profiles
+        # Resume reset + native audit is atomic per consultant; retain cleared
+        # resumes on compensation. Actual reset state/audit owns recovery.
+        for agent in AGENTS:
+            scope = f"config:THR296:{operation_id}:{agent}"
+            audits = db.get_audit_logs(scope)
+            with db._lock:
+                rows = [dict(row) for row in db._conn.execute("SELECT * FROM thread_participants WHERE agent_name=? ORDER BY thread_id", (agent,))]
+            before_rows = manifest["reset_before"][agent]
+            cleared = [{**row, "agent_session_id": None, "last_resumed_seq": 0} for row in before_rows]
+            if audits:
+                if (len(audits) != 1 or audits[0]["action"] != "thread_session_invalidated" or rows != cleared
+                        or audits[0]["agent"] != "founder" or audits[0]["id"] <= manifest["baseline_audit"]
+                        or audits[0]["payload"] != {"reason": f"THR296 roster operation {operation_id}", "rows": len(cleared), "name": agent}):
+                    raise ValueError("reset_ownership_or_third_state_refusal")
+                continue
+            if rows != before_rows:
+                raise ValueError("reset_before_image_changed")
+            if rows:
+                db.reset_thread_sessions_for_agent(agent, audit_scope_id=scope, audit_agent="founder", audit_reason=f"THR296 roster operation {operation_id}")
+        async def replace_roster():
+            # Existing consumer_writer captures outside leases and releases
+            # profile ownership before publication discovery. Both first-party
+            # providers retain their existing dependency bindings.
+            async with profiles.consumer_writer(org=org, publisher=f"THR296:{operation_id}",
+                    consumer=AGENTS[0], preserve=True) as interval:
+                async with org.teams_lock:
+                    with interval.canonical_change():
+                        for rel in CANONICAL:
+                            current = image(root / rel)
+                            if current not in (manifest["before"][rel], manifest["after"][rel]):
+                                raise ValueError("final_canonical_CAS_lost")
+                            if current != desired[rel]:
+                                durable_replace(root / rel, desired[rel])
+                        teams_now = TeamsRegistry.load(root)
+                        org.teams = orch._teams = org.workflow_authority._teams = teams_now
+            return interval
+        interval = asyncio.run(replace_roster())
+        teams = org.teams
+        validate_team_membership(paths_obj, teams)
+        compensating = args.recover and args.direction == "compensate"
+        if compensating:
+            for rel in desired:
+                if rel not in CANONICAL and image(root / rel) != desired[rel]:
+                    durable_replace(root / rel, desired[rel])
+        for agent in (() if compensating else AGENTS):
+            definition = load_agent(paths_obj, agent)
+            workspace = root / "workspaces" / agent
+            if not workspace.is_dir() or workspace.is_symlink():
+                raise ValueError("original_workspace_required")
+            ContextBuilder(settings, paths_obj, slug=args.org).ensure_workspace_ready(workspace, agent, definition.system_prompt, provider=definition.executor)
+            materialize_workspace_skills(workspace, settings, slug=args.org, context="bootstrap", provider=definition.executor,
+                agent_name=agent, team=definition.team, skills_root=SOURCE / "runtime/skills", org_root=root, db=db)
+        for rel, expected in desired.items():
+            if image(root / rel) != expected:
+                raise ValueError(f"materializer_closed_output_mismatch:{rel}")
+        profiles.reconcile_supported_roster_batch(org.workflow_authority, completed_writer_invocation=interval.publisher_invocation)
+        # Publication helper false/log is never readiness.
+        if not org.workflow_authority.publish_after_supported_change(publisher=f"THR296:{operation_id}:ready:{direction}"):
+            raise ValueError("publication_not_ready")
+        ready = org.workflow_authority.verify_admission_ready()
+        result = dict(operation_id=operation_id, manifest_sha256=manifest_digest,
+                      direction="compensate" if args.recover and args.direction == "compensate" else "complete",
+                      generation=ready.generation, snapshot_digest=ready.snapshot_digest,
+                      traffic_released=False)
+        if finished_state(root, manifest, direction=direction) is None:
+            raise ValueError("final_owned_state_not_ready")
+        write_receipt(receipt, result)
+        return result
+    finally:
+        db.close()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--check", action="store_true")
+    action.add_argument("--apply", action="store_true")
+    action.add_argument("--recover", action="store_true")
+    parser.add_argument("--runtime-root", type=Path, required=True)
+    parser.add_argument("--org", required=True)
+    parser.add_argument("--plan", type=Path)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--expected-digest")
+    parser.add_argument("--operation-id")
+    parser.add_argument("--direction", choices=("complete", "compensate"))
+    args = parser.parse_args(argv)
+    try:
+        if args.check:
+            if args.plan is None:
+                raise ValueError("real_check_input_required")
+            result = check(args)
+        else:
+            if args.manifest is None or args.expected_digest is None:
+                raise ValueError("exact_manifest_digest_required")
+            raw = args.manifest.read_bytes()
+            if digest(raw) != args.expected_digest:
+                raise ValueError("manifest_digest_mismatch")
+            if args.recover and (args.direction is None or args.operation_id is None):
+                raise ValueError("explicit_recovery_owner_and_direction_required")
+            result = apply(args, json.loads(raw))
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError, subprocess.SubprocessError, yaml.YAMLError) as exc:
+        print(f"refused: {exc}; retain restart inhibition and resolve the named boundary", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import { translate } from '@/lib/i18n';
 import type {
@@ -212,5 +212,28 @@ describe('Work-Hours Overview (S1)', () => {
         screen.getByText(translate('en', 'workHours.recovery.title')),
       ).toBeInTheDocument();
     });
+  });
+});
+
+
+describe('THR296 human Default working-hours roster', () => {
+  test.each(['en', 'zh-CN'] as const)('%s retains worker membership without a synthetic human agent', async (locale) => {
+    seed({ agents: [agent('consultant_head', 'Individual advice.', 'default'), agent('consultant_codex', 'Individual advice.', 'default')] });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: [{
+      name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder',
+      is_default: true, workers: ['consultant_head', 'consultant_codex'],
+    }] })));
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/work-hours`, i18n: { adapter: savedLocaleAdapter(locale) },
+    });
+    expect(await screen.findByText('consultant_head')).toBeInTheDocument();
+    expect(screen.getByText('consultant_codex')).toBeInTheDocument();
+    const rows = within(screen.getByRole('table')).getAllByRole('row');
+    expect(rows).toHaveLength(3);
+    await waitFor(() => {
+      for (const row of rows.slice(1)) expect(within(row).getByText('default')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('founder')).not.toBeInTheDocument();
+    expect(screen.queryByText('null')).not.toBeInTheDocument();
   });
 });

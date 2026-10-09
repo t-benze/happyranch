@@ -33,6 +33,19 @@ This file serves two purposes. The **Feature Modules Overview** below is an orie
 
 For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/agent-guides/` explains those sources. Prefer them over the design specs — `docs/superpowers/specs/` is append-only design history unless `docs/superpowers/specs/README.md` marks a spec `current`.
 
+## Founder-managed Default (THR296)
+
+Human team leadership never adds an AgentDef or launch identity. Native
+thread-session invalidation atomically commits each consultant's resume reset
+and its audit, without changing delivery/breaker state, messages, memory or
+history. Compensation retains safely cleared resumes and publishes a new
+coherent authority generation; it never restores an old ready pointer.
+Workflow profile closure and version-aware authority readers must agree before
+readiness. Portability remains preflight/reconcile plus explicitly authorized
+closed-copy/restore/reopen; no archive/export/import service is added. The
+bounded utility requires stopped service, persistent external restart inhibition,
+closed verified backups and exact current-file CAS. No live migration is authorized.
+
 ## Feature Modules Overview
 
 ### Workflow cutover prerequisite

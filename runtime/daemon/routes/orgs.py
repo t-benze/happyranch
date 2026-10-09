@@ -54,6 +54,18 @@ def _seed_skeleton(org_root: Path, *, from_example: Path | None) -> None:
         (org_root / "org" / "agents").mkdir()
         (org_root / "org" / "agents" / "_pending").mkdir()
         (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    # Fresh creation only; existing org attachment never seeds or moves rosters.
+    from runtime.orchestrator.teams import TeamsRegistry
+    registry = TeamsRegistry.load(org_root)
+    if "default" in registry.teams():
+        manager = registry.manager_for_team("default")
+        if manager.kind != "human" or manager.principal != "founder":
+            raise ValueError("example Default conflicts with founder-managed Default")
+    else:
+        from runtime.orchestrator.teams import TeamManager
+        registry._teams["default"] = TeamManager(name=None, team="default", workers=(), kind="human", principal="founder")
+    registry._metadata.update(default_team="default", task_default_team="default")
+    registry.save()
     (org_root / "workspaces").mkdir(exist_ok=True)
     (org_root / "kb").mkdir(exist_ok=True)
     OrgPaths(org_root).artifacts_dir.mkdir(exist_ok=True)

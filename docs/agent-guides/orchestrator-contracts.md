@@ -29,6 +29,22 @@ still pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
+## Founder-managed Default (THR296)
+
+Founder-managed teams use a human principal without an executable manager.
+Explicit active worker owners may run ordinary roots and self-decompose; they
+have no peer/fanout, manager administration, policy or template authority.
+Missing owners for a human team are refused before persistence. Delegated
+outcomes use a valid persisted executable parent owner, with unknown_manager
+for invalid ancestry. Null verdict uses the native implicit mapping; blank and
+custom strings remain exact. This audit is an agent outcome, never human approval.
+Selected human failed-leaf recovery is result-scoped and conservatively refuses
+foreign/multiple/unreadable history. Separate evidence, chain, fanout, FAILED,
+review and marker commits remain separate; history and review precede marker.
+Retained loop retries wait 50ms outside locks without a retry cap. Busy/pending
+is not settlement; parent handoff follows genuine owned cleanup. Shutdown
+preserves accepted/consumed residue for existing next-start recovery.
+
 ## Conventions
 
 - Type hints on all function signatures.

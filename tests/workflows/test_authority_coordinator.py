@@ -21,6 +21,8 @@ from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import (
     WorkflowAuthorityCoordinator,
     WorkflowAuthorityError,
+    snapshot_team_agents,
+    validate_authority_snapshot,
 )
 
 
@@ -83,10 +85,11 @@ def test_org_state_load_publishes_once_and_cold_reopen_is_read_only(tmp_path: Pa
     ready = first.workflow_authority.verify_admission_ready()
     snapshot = json.loads(ready.snapshot_bytes)
     assert ready.generation == 1
-    assert snapshot["schema_version"] == 1
+    assert snapshot["schema_version"] == 2
     assert snapshot["org_slug"] == "alpha"
+    assert snapshot["default_team"] == snapshot["task_default_team"] == "engineering"
     assert snapshot["teams"] == [{
-        "manager": "engineering_manager",
+        "manager": {"kind": "agent", "principal": "engineering_manager"},
         "name": "engineering",
         "workers": ["code_reviewer", "dev_agent"],
     }]
@@ -529,3 +532,24 @@ def test_independent_coordinators_cannot_publish_a_superseded_writer_snapshot(
     ]
     second_db.close()
     first.close()
+
+
+@pytest.mark.parametrize("version,manager,expected", [
+    (1, "engineering_manager", ["engineering_manager", "dev_agent"]),
+    (2, {"kind": "agent", "principal": "engineering_manager"}, ["engineering_manager", "dev_agent"]),
+    (2, {"kind": "human", "principal": "founder"}, ["dev_agent"]),
+])
+def test_c5_retained_version_membership_never_makes_founder_executable(version, manager, expected):
+    snapshot = {"schema_version": version, "teams": [{"name": "engineering", "manager": manager, "workers": ["dev_agent"]}]}
+    if version == 2:
+        snapshot.update(default_team="engineering", task_default_team="engineering")
+    before = json.dumps(snapshot, sort_keys=True)
+    validate_authority_snapshot(snapshot)
+    assert snapshot_team_agents(snapshot, snapshot["teams"][0]) == expected
+    assert json.dumps(snapshot, sort_keys=True) == before
+
+
+def test_c5_unknown_authority_version_refuses_before_interpretation():
+    snapshot = {"schema_version": 3, "teams": []}
+    with pytest.raises(WorkflowAuthorityError, match="authority_snapshot_version_unsupported"):
+        validate_authority_snapshot(snapshot)

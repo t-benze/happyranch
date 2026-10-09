@@ -400,3 +400,35 @@ describe('classifyAgentError', () => {
     ).toBe('无法创建智能体。');
   });
 });
+
+
+describe('THR296 human Default worker views', () => {
+  test.each(['en', 'zh-CN'] as const)('%s keeps both ordinary consultants and denies manager controls', async (locale) => {
+    stub();
+    const agents = ['consultant_head', 'consultant_codex'].map((name) => ({
+      name, team: 'default', role: 'worker', executor: name === 'consultant_head' ? 'claude' : 'codex',
+      model: null, description: `Advice from ${name}`, repos: {}, system_prompt: 'Individual advice.',
+    }));
+    let policyReads = 0;
+    server.use(
+      http.get(`${API}/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents })),
+      http.get(`${API}/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: [{
+        name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder',
+        is_default: true, workers: agents.map((agent) => agent.name),
+      }] })),
+      http.get(`${API}/orgs/${SLUG}/agents/:agent/team-escalation-policy`, () => {
+        policyReads += 1;
+        return HttpResponse.json({ detail: 'ineligible' }, { status: 404 });
+      }),
+    );
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/agents/consultant_head`, i18n: { adapter: savedLocaleAdapter(locale) },
+    });
+    expect((await screen.findAllByText('Advice from consultant_head')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('consultant_codex').length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(translate(locale, 'agents.team.founderManaged'), { exact: false })).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('team-escalation-policy')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: translate(locale, 'agents.policy.open') })).not.toBeInTheDocument();
+    expect(policyReads).toBe(0);
+  });
+});

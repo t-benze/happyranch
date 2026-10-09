@@ -162,7 +162,8 @@ export function OverviewPage(): JSX.Element {
                 )}
                 {teamNames.map((name) => (
                   <SelectItem key={name} value={name}>
-                    {name}
+                    {name}{teamsQuery.data?.teams.some((entry) => entry.name === name && entry.manager_kind === 'human')
+                      ? ` · ${t('agents.team.founderManaged')}` : ''}
                   </SelectItem>
                 ))}
               </SelectContent>

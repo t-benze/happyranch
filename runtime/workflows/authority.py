@@ -153,6 +153,42 @@ def _agent_projection(agent, *, status: str) -> dict[str, object]:
     }
 
 
+def snapshot_team_agents(snapshot: dict, team: dict) -> list[str]:
+    """Interpret retained v1 and typed v2 authority without rewriting history."""
+    version = snapshot.get("schema_version")
+    manager = team.get("manager")
+    if type(version) is not int or version not in (1, 2):
+        raise WorkflowAuthorityError("authority_snapshot_version_unsupported")
+    if version == 1:
+        if not isinstance(manager, str) or not manager.strip():
+            raise WorkflowAuthorityError("authority_manager_incoherent")
+        lead = manager
+    else:
+        if (not isinstance(manager, dict) or set(manager) != {"kind", "principal"}
+                or manager["kind"] not in ("agent", "human")
+                or not isinstance(manager["principal"], str) or not manager["principal"].strip()
+                or (manager["kind"] == "human" and manager["principal"] != "founder")):
+            raise WorkflowAuthorityError("authority_manager_incoherent")
+        lead = manager["principal"] if manager["kind"] == "agent" else None
+    workers = team.get("workers")
+    if not isinstance(workers, list) or any(not isinstance(item, str) or not item.strip() for item in workers):
+        raise WorkflowAuthorityError("authority_worker_incoherent")
+    return ([lead] if lead is not None else []) + workers
+
+
+def validate_authority_snapshot(snapshot: dict) -> None:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("teams"), list):
+        raise WorkflowAuthorityError("authority_snapshot_invalid")
+    if type(snapshot.get("schema_version")) is not int or snapshot["schema_version"] not in (1, 2):
+        raise WorkflowAuthorityError("authority_snapshot_version_unsupported")
+    for team in snapshot["teams"]:
+        snapshot_team_agents(snapshot, team)
+    if snapshot["schema_version"] == 2:
+        names = {team["name"] for team in snapshot["teams"]}
+        if any(snapshot.get(key) not in names for key in ("default_team", "task_default_team")):
+            raise WorkflowAuthorityError("authority_routing_incoherent")
+
+
 class WorkflowAuthorityCoordinator:
     """Publish one canonical authority generation for one organization."""
 
@@ -194,7 +230,7 @@ class WorkflowAuthorityCoordinator:
 
         teams = [
             {
-                "manager": fresh_teams.manager_for_team(name).name,
+                "manager": fresh_teams.manager_for_team(name).manager_value(typed=True),
                 "name": name,
                 "workers": sorted(fresh_teams.manager_for_team(name).workers),
             }
@@ -202,13 +238,14 @@ class WorkflowAuthorityCoordinator:
         ]
         in_memory_teams = [
             {
-                "manager": self._teams.manager_for_team(name).name,
+                "manager": self._teams.manager_for_team(name).manager_value(typed=True),
                 "name": name,
                 "workers": sorted(self._teams.manager_for_team(name).workers),
             }
             for name in self._teams.teams()
         ]
-        if in_memory_teams != teams:
+        if (in_memory_teams != teams or self._teams.default_team != fresh_teams.default_team
+                or self._teams.task_default_team != fresh_teams.task_default_team):
             raise WorkflowAuthorityError("authority_team_cache_incoherent")
 
         active = list(prompt_loader.list_agents(paths))
@@ -227,8 +264,8 @@ class WorkflowAuthorityCoordinator:
         # a matching canonical definition and every active worker must appear
         # in its declared team's worker set.
         for team in teams:
-            manager = projected.get(str(team["manager"]))
-            if not (
+            manager = projected.get(team["manager"]["principal"])
+            if team["manager"]["kind"] == "agent" and not (
                 manager is not None
                 and manager["status"] == "active"
                 and manager["role"] == "manager"
@@ -274,7 +311,9 @@ class WorkflowAuthorityCoordinator:
             "machine_global_profiles": [],
             "org_slug": self._org_slug,
             "reviewer_agents": list(reviewer_agents),
-            "schema_version": 1,
+            "schema_version": 2,
+            "default_team": fresh_teams.default_team,
+            "task_default_team": fresh_teams.task_default_team,
             "teams": teams,
         })
 
@@ -906,8 +945,16 @@ class WorkflowAuthorityCoordinator:
                 staging = path.with_name(
                     f"{path.name}.{fence_journal_id}.staging",
                 )
-                staging.write_bytes(snapshot)
+                with staging.open("wb") as staged:
+                    staged.write(snapshot)
+                    staged.flush()
+                    os.fsync(staged.fileno())
                 os.replace(staging, path)
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
                 with self._transaction() as conn:
                     changed = conn.execute(
                         "UPDATE workflow_publication_journals "
@@ -1024,6 +1071,7 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("authority_pointer_not_ready")
         if self._cache.get(self.namespace) != (generation, digest):
             raise WorkflowAuthorityError("authority_pointer_not_ready")
+        validate_authority_snapshot(json.loads(snapshot))
         return AuthorityReadiness(self.namespace, generation, digest, snapshot)
 
     def verify_admission_ready(self) -> AuthorityReadiness:

@@ -17,6 +17,9 @@ escalated}.
 """
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 import importlib.util
 import json
 import logging
@@ -898,10 +901,248 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
 
 
+@dataclass
+class _HumanFailedRecoveryOperation:
+    task_id: str
+    agent: str
+    session_id: str
+    result_id: int
+    phase: str = "evidence"
+    key: tuple | None = None
+    completion: Future = field(default_factory=Future)
+    disposition: str = "continuation_pending"
+    timer: object | None = None
+    drain: object | None = None
+    job_ids: tuple[str, ...] = ()
+    bookkeeping: list[Callable[[], None]] = field(default_factory=list)
+    parent_effect: Callable[[], None] | None = None
+
+    def finish(self, disposition: str) -> None:
+        self.disposition = disposition
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        if not self.completion.done():
+            self.completion.set_result(disposition)
+
+
+def _is_human_failed_recovery(orch: "Orchestrator", task, report) -> bool:
+    if (task is None or task.task_type != "subtask" or task.parent_task_id is None
+            or report.status != "blocked" or report.waiting_on_job_ids):
+        return False
+    try:
+        return orch.teams.manager_for_team(task.team).kind == "human"
+    except KeyError:
+        return False
+
+
+def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
+    """One synchronous gate attempt on the writer loop, or before serving."""
+    if operation.completion.done():
+        return
+    org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+    queue = getattr(orch, "_queue", None)
+    supervisor = getattr(orch, "_host_supervisor", None)
+    if (org is None or (queue is not None and getattr(queue, "_stopping", False))
+            or (supervisor is not None and supervisor.is_shutdown())):
+        operation.finish("recovery_required")
+        return
+    authority, db = org.workflow_authority, orch._db
+    operation.disposition = "writer_busy"
+    if authority._async_writer_lock.locked() or not authority._publisher_lock.acquire(blocking=False):
+        _retry_human_failed_recovery(orch, operation)
+        return
+    acquired_db = False
+    try:
+        if authority._async_writer_lock.locked() or not db._lock.acquire(blocking=False):
+            return
+        acquired_db = True
+        with authority.writer_interval(publisher="human-failed-leaf-recovery"):
+            params = dict(task_id=operation.task_id, agent=operation.agent,
+                          session_id=operation.session_id, result_row_id=operation.result_id)
+            while operation.phase != "drain_jobs":
+                disposition, context = db.human_failed_recovery_context(
+                    **params, allow_unbound_live=operation.phase == "evidence")
+                if disposition != "eligible":
+                    operation.finish("lost_owner" if disposition == "not_applicable" else disposition)
+                    return
+                task, episode = context["task"], context["episode"]
+                key = (operation.task_id, operation.agent, episode["origin_session_id"], operation.session_id, operation.result_id)
+                if operation.key is None:
+                    operation.key = key
+                    if operation.parent_effect is None:
+                        operation.parent_effect = lambda: _enqueue_parent_if_waiting(
+                            orch, operation.task_id, root_auto_revisit_spawned=False)
+                    full = getattr(orch, "_human_failed_recovery_by_fingerprint", None)
+                    if full is None:
+                        full = orch._human_failed_recovery_by_fingerprint = {}
+                    full[key] = operation
+                elif operation.key != key:
+                    operation.finish("lost_owner")
+                    return
+                if episode["state"] == "callback_consumed" and operation.phase in ("evidence", "chain", "fanout", "fail", "review", "history", "marker"):
+                    operation.phase = "settle_jobs"
+                if operation.phase in ("evidence", "chain", "fanout", "fail", "review", "marker"):
+                    disposition = db.apply_human_failed_recovery_effect(**params, effect=operation.phase)
+                    if disposition != "progressed":
+                        operation.finish(disposition)
+                        return
+                    order = ("evidence", "chain", "fanout", "fail", "review", "history", "marker", "settle_jobs")
+                    operation.phase = order[order.index(operation.phase) + 1]
+                elif operation.phase == "history":
+                    # Preserve the native file boundary outside DB/SQL while
+                    # retaining the publisher; fresh reads precede the marker.
+                    db._lock.release()
+                    acquired_db = False
+                    orch._update_task_history(operation.task_id)
+                    if not db._lock.acquire(blocking=False):
+                        return
+                    acquired_db = True
+                    operation.phase = "marker"
+                elif operation.phase == "settle_jobs":
+                    ids = db.settle_consumed_task_completion_recovery_jobs(
+                        task_id=operation.task_id, agent=operation.agent,
+                        recovery_session_id=operation.session_id, result_row_id=operation.result_id,
+                        terminal_status=TaskStatus.FAILED.value,
+                        finished_at=datetime.now(timezone.utc).isoformat())
+                    if ids is None:
+                        operation.finish("lost_owner")
+                        return
+                    operation.job_ids = ids
+                    operation.phase = "drain_jobs" if ids else "parent_handoff"
+                elif operation.phase == "parent_handoff":
+                    if not db.handoff_consumed_task_completion_recovery_parent_effect(
+                            task_id=operation.task_id, agent=operation.agent,
+                            recovery_session_id=operation.session_id, result_row_id=operation.result_id,
+                            terminal_status=TaskStatus.FAILED.value, effect=operation.parent_effect):
+                        operation.finish("lost_owner")
+                        return
+                    operation.phase = "caller_bookkeeping"
+                elif operation.phase == "caller_bookkeeping":
+                    for effect in operation.bookkeeping:
+                        effect()
+                    operation.bookkeeping.clear()
+                    operation.finish("done")
+                    return
+    except Exception:
+        logger.exception("human failed recovery requires next-start reconciliation task=%s phase=%s", operation.task_id, operation.phase)
+        operation.finish("recovery_required")
+    finally:
+        if acquired_db:
+            db._lock.release()
+        authority._publisher_lock.release()
+        if not operation.completion.done():
+            if operation.phase == "drain_jobs":
+                _drain_human_failed_recovery_jobs(orch, operation)
+            else:
+                _retry_human_failed_recovery(orch, operation)
+
+
+def _retry_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
+    if operation.completion.done() or operation.timer is not None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Genuine pre-serving startup only; no inherited live controls.
+        org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+        if getattr(orch, "_main_loop", None) is not None or org is None or org.workflow_authority._async_writer_lock.locked():
+            operation.finish("recovery_required")
+        return
+    if loop is not getattr(orch, "_main_loop", loop) and getattr(orch, "_main_loop", None) is not None:
+        operation.finish("recovery_required")
+        return
+    def retry() -> None:
+        operation.timer = None
+        _drive_human_failed_recovery(orch, operation)
+    operation.timer = loop.call_later(0.05, retry)
+
+
+def _drain_human_failed_recovery_jobs(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
+    if operation.drain is not None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Cold startup has no inherited opaque controls; DB settlement is the
+        # authentic boundary and persisted PIDs are never signalled.
+        operation.phase = "parent_handoff"
+        return
+    async def drain() -> None:
+        from runtime.daemon.jobs_runner import terminate_jobs_for_task
+        try:
+            await terminate_jobs_for_task(operation.task_id,
+                inflight_to_task={job: operation.task_id for job in operation.job_ids})
+        except asyncio.CancelledError:
+            operation.finish("recovery_required")
+            return
+        except Exception:
+            logger.exception("human failed recovery job drain failed")
+            operation.finish("recovery_required")
+            return
+        operation.phase = "parent_handoff"
+        _drive_human_failed_recovery(orch, operation)
+    operation.disposition = "continuation_pending"
+    operation.drain = loop.create_task(drain())
+
+
+def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str,
+                                 session_id: str, result_id: int, *,
+                                 bookkeeping: Callable[[], None] | None = None,
+                                 parent_effect: Callable[[], None] | None = None) -> _HumanFailedRecoveryOperation:
+    """Retain selected identity before transferring a worker's finite tail."""
+    operation = _HumanFailedRecoveryOperation(task_id, agent, session_id, result_id,
+        parent_effect=parent_effect)
+    def install() -> None:
+        operations = getattr(orch, "_human_failed_recovery_operations", None)
+        if operations is None:
+            operations = orch._human_failed_recovery_operations = {}
+        transport_key = (task_id, agent, session_id, result_id)
+        existing = operations.get(transport_key)
+        if existing is not None and (not existing.completion.done() or bookkeeping is None):
+            if bookkeeping is not None:
+                existing.bookkeeping.append(bookkeeping)
+            # Preserve the original phase/callback rather than redraining.
+            def joined(done: Future) -> None:
+                operation.finish(done.result())
+            existing.completion.add_done_callback(joined)
+            return
+        if existing is not None and existing.disposition == "done":
+            operation.phase = "caller_bookkeeping" if bookkeeping is not None else "settle_jobs"
+        if bookkeeping is not None:
+            operation.bookkeeping.append(bookkeeping)
+        operations[transport_key] = operation
+        _drive_human_failed_recovery(orch, operation)
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    loop = getattr(orch, "_main_loop", None)
+    if running is not None:
+        if loop is not None and running is not loop:
+            operation.finish("recovery_required")
+        else:
+            install()
+    elif loop is not None:
+        if loop.is_closed() or not loop.is_running():
+            operation.finish("recovery_required")
+        else:
+            try:
+                loop.call_soon_threadsafe(install)
+            except RuntimeError:
+                operation.finish("recovery_required")
+    else:
+        install()
+        while not operation.completion.done():
+            time.sleep(0.05)
+            _drive_human_failed_recovery(orch, operation)
+    return operation
+
+
 def _consume_accepted_completion_recovery(
     orch: "Orchestrator", task_id: str, report, *, agent: str, session_id: str,
     result_row_id: int,
-) -> None:
+) -> _HumanFailedRecoveryOperation | None:
     """Reconcile one ledger-selected recovery callback at the effect boundary.
 
     Terminal effects retain their established reconciliation.  The blocked
@@ -955,6 +1196,8 @@ def _consume_accepted_completion_recovery(
             reclaim_terminal_worktree=False,
         )
         return
+    if _is_human_failed_recovery(orch, current, report):
+        return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id)
     effects_applied = (
         current.status in TERMINAL_STATES
     )
@@ -989,13 +1232,7 @@ def _consume_accepted_completion_recovery(
     if report.status == "completed" and current.task_type == "subtask":
         reviewer = None
         if current.parent_task_id is not None and not orch.teams.is_team_manager(agent):
-            parent = db.get_task(current.parent_task_id)
-            try:
-                reviewer = orch.teams.manager_for_team(
-                    parent.team if parent is not None else current.team,
-                ).name
-            except KeyError:
-                reviewer = "unknown_manager"
+            reviewer = _delegated_reviewer(orch, current)
         transitioned = db.consume_accepted_completed_task_completion_recovery(
             task_id=task_id, agent=agent, session_id=session_id,
             result_row_id=result_row_id, note=report.output_summary,
@@ -1442,7 +1679,8 @@ def _consume_completion_report(
     recovery_owner: tuple[str, str] | None = None,
     recovery_result_id: int | None = None,
     reclaim_terminal_worktree: bool = True,
-) -> None:
+    after_human_recovery: Callable[[], None] | None = None,
+) -> _HumanFailedRecoveryOperation | str | None:
     """Guard the common consumer with the v2 decision-dispatch receipt.
 
     This is the single common entry every ordinary completion, accepted
@@ -1473,6 +1711,14 @@ def _consume_completion_report(
     if outcome.kind == _V2_DECISION_DISPATCH_SKIP:
         return
     if outcome.kind == _V2_DECISION_DISPATCH_ORDINARY:
+        if _is_human_failed_recovery(orch, task, report):
+            accepted = db.selected_human_leaf_recovery_result(task_id=task_id, agent=agent,
+                session_id=task.current_session_id or "")
+            if accepted is not None:
+                if accepted["id"] != resolved_row_id:
+                    return "lost_owner"
+                return _submit_human_failed_recovery(orch, task_id, agent, task.current_session_id or "", resolved_row_id,
+                    bookkeeping=after_human_recovery)
         _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
@@ -2750,7 +2996,10 @@ def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple
 
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
     """Root tasks default to the manager for their team."""
-    return orch.teams.manager_for_team(task.team).name
+    owner = orch.teams.executable_manager_for_team(task.team)
+    if owner is None:
+        raise ValueError("owner_required_for_human_team")
+    return owner
 
 
 def _workspace_cleanup_remainder(after) -> dict | None:
@@ -3159,20 +3408,35 @@ def _fail(
         )
     except Exception:  # pragma: no cover - fail-closed defensive
         pass
-    # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
-    # on a FAILED task. The chain can't re-activate (the task is terminal),
-    # but the dangling state is cosmetically misleading. Always-clear is
-    # cheap and works for cascade-fail, self-blocked, invalid-delegate, and
-    # session-failure failure modes.
-    orch._db.update_task_active_chain(task_id, None)
-    orch._db.update_task_active_fanout(task_id, None)
-    orch._db.update_task(
-        task_id,
-        status=TaskStatus.FAILED,
-        block_kind=None,
-        note=note,
-        completed_at=datetime.now(timezone.utc).isoformat(),
-    )
+    with orch._db._lock:
+        current = orch._db.get_task(task_id)
+        if current is not None:
+            try:
+                human = orch.teams.manager_for_team(current.team).kind == "human"
+            except KeyError:
+                human = False
+            if human and current.task_type == "subtask" and current.assigned_agent:
+                accepted = orch._db.get_accepted_task_completion_recovery_result(task_id=task_id, agent=current.assigned_agent)
+                if accepted is not None:
+                    # Only a caller presenting actual R may consume it. A late
+                    # provider failure cannot clear or overwrite its winner.
+                    return
+        if _is_already_terminal(orch, task_id):
+            return
+        # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
+        # on a FAILED task. The chain can't re-activate (the task is terminal),
+        # but the dangling state is cosmetically misleading. Always-clear is
+        # cheap and works for cascade-fail, self-blocked, invalid-delegate, and
+        # session-failure failure modes.
+        orch._db.update_task_active_chain(task_id, None)
+        orch._db.update_task_active_fanout(task_id, None)
+        orch._db.update_task(
+            task_id,
+            status=TaskStatus.FAILED,
+            block_kind=None,
+            note=note,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
     _fail_terminal_tail(
         orch,
         task_id,
@@ -3202,6 +3466,15 @@ def _fail_terminal_tail(
 ) -> None:
     """Run `_fail`'s post-transition effects, optionally owner-fenced."""
     def current() -> bool:
+        task = orch._db.get_task(task_id)
+        if task is not None and task.task_type == "subtask" and task.assigned_agent:
+            try:
+                human = orch.teams.manager_for_team(task.team).kind == "human"
+            except KeyError:
+                human = False
+            if human and orch._db.selected_human_leaf_recovery_result(task_id=task_id, agent=task.assigned_agent,
+                    session_id=task.current_session_id or "") is not None:
+                return False
         return (
             expected_note is None
             or _task_matches_authority_v2_refusal_failure(
@@ -3232,6 +3505,16 @@ def _handoff_consumed_recovery_terminal_effects(
     the async cleanup receives only the captured IDs and fences parent delivery
     with the same consumed owner predicate.
     """
+    task = orch._db.get_task(task_id)
+    if terminal_status == TaskStatus.FAILED.value and task is not None and task.task_type == "subtask":
+        try:
+            human = orch.teams.manager_for_team(task.team).kind == "human"
+        except KeyError:
+            human = False
+        if human:
+            return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id,
+                parent_effect=after_recovery_cleanup,
+                bookkeeping=after_recovery_parent_effect)
     recovery_job_ids = orch._db.settle_consumed_task_completion_recovery_jobs(
         task_id=task_id, agent=agent, recovery_session_id=session_id,
         result_row_id=result_row_id, terminal_status=terminal_status,
@@ -3336,6 +3619,45 @@ def _kill_jobs_for_terminating_task(
 
 
 
+def _delegated_reviewer(orch: "Orchestrator", task) -> str:
+    """Human teams attribute agent outcomes to the executable parent owner."""
+    db = orch._db
+    parent = db.get_task(task.parent_task_id) if task.parent_task_id else None
+    try:
+        child_team = orch.teams.manager_for_team(task.team)
+        if child_team.kind != "human":
+            return orch.teams.manager_for_team(parent.team if parent else task.team).name or "unknown_manager"
+        from runtime.orchestrator import prompt_loader
+        from runtime.orchestrator._paths import OrgPaths
+        owner = None if parent is None else parent.assigned_agent
+        org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+        if (org is None or not owner or parent.team != task.team or parent.id == task.id
+                or parent.parent_task_id == task.id or parent.task_type not in ("task", "subtask")):
+            return "unknown_manager"
+        seen = {task.id}
+        ancestor = parent
+        while ancestor is not None:
+            if ancestor.id in seen:
+                return "unknown_manager"
+            seen.add(ancestor.id)
+            if ancestor.parent_task_id is None:
+                break
+            ancestor = db.get_task(ancestor.parent_task_id)
+            if ancestor is None:
+                return "unknown_manager"
+        active = {definition.name: definition for definition in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        definition = active.get(owner)
+        child = active.get(task.assigned_agent)
+        if (definition is None or child is None or definition.team != task.team
+                or child.team != task.team or child.role != "worker"
+                or definition.role != "worker" or owner not in child_team.workers
+                or task.assigned_agent not in child_team.workers):
+            return "unknown_manager"
+        return owner
+    except (KeyError, ValueError):
+        return "unknown_manager"
+
+
 def _log_verdict_if_delegated(
     orch: "Orchestrator", task_id: str, *, success: bool,
 ) -> None:
@@ -3358,12 +3680,7 @@ def _log_verdict_if_delegated(
     agent = task.assigned_agent
     if not agent or orch.teams.is_team_manager(agent) or agent in ("orchestrator", "unknown"):
         return
-    parent = orch._db.get_task(task.parent_task_id)
-    reviewer_team = parent.team if parent else task.team
-    try:
-        reviewer = orch.teams.manager_for_team(reviewer_team).name
-    except KeyError:
-        reviewer = "unknown_manager"
+    reviewer = _delegated_reviewer(orch, task)
     orch._audit.log_review_verdict(
         task_id=task_id,
         reviewer=reviewer,

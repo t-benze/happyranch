@@ -2141,6 +2141,201 @@ class TasksMixin:
         return not any(row["state"] == "claimed" for row in rows)
 
     @_synchronized
+    def selected_human_leaf_recovery_result(self, *, task_id: str, agent: str,
+                                           session_id: str, result_row_id: int | None = None) -> dict | None:
+        rows = self._conn.execute("""SELECT tr.* FROM task_completion_recoveries r
+            JOIN task_results tr ON tr.id=r.accepted_result_id
+            JOIN tasks t ON t.id=r.task_id
+            WHERE r.task_id=? AND r.agent=? AND r.recovery_session_id=?
+            AND r.state IN ('callback_accepted','callback_consumed')
+            AND tr.task_id=r.task_id AND tr.agent=r.agent AND tr.session_id=r.recovery_session_id
+            AND t.assigned_agent=r.agent AND t.current_session_id=r.recovery_session_id
+            AND t.cancelled_at IS NULL""", (task_id, agent, session_id)).fetchall()
+        if len(rows) != 1 or (result_row_id is not None and rows[0]["id"] != result_row_id):
+            return None
+        return dict(rows[0])
+
+    @_synchronized
+    def human_failed_recovery_context(self, *, task_id: str, agent: str,
+                                     session_id: str, result_row_id: int,
+                                     allow_unbound_live: bool = False) -> tuple[str, dict | None]:
+        """Read uncapped selected-only causal history for a human failed leaf.
+
+        The owning run_step driver holds publisher before this connection lock.
+        No terminal note alone establishes cause; foreign history refuses.
+        """
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+        from runtime.orchestrator.run_step import _delegated_reviewer
+        from runtime.orchestrator import prompt_loader
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_validation import validate_team_membership
+        from runtime.workflows.recovery import classify_task
+
+        org = getattr(getattr(self, "_workflow_drafts", None), "org", None)
+        task = self.get_task(task_id)
+        if org is None or task is None:
+            return "lost_owner", None
+        try:
+            team = org.teams.manager_for_team(task.team)
+        except KeyError:
+            return "lost_owner", None
+        if team.kind != "human" or task.task_type != "subtask" or task.parent_task_id is None:
+            return "not_applicable", None
+        if (type(result_row_id) is not int or result_row_id <= 0
+                or task.assigned_agent != agent or task.current_session_id != session_id
+                or task.cancelled_at is not None):
+            return "lost_owner", None
+        episodes = self._conn.execute("SELECT * FROM task_completion_recoveries WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
+        results = self._conn.execute("SELECT * FROM task_results WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
+        if len(episodes) != 1 or len(results) != 1:
+            return "ambiguous_history", None
+        episode, row = dict(episodes[0]), dict(results[0])
+        if (episode["agent"] != agent or episode["recovery_session_id"] != session_id
+                or episode["accepted_result_id"] != result_row_id
+                or episode["accepted_result_session_id"] != session_id
+                or episode["state"] not in ("callback_accepted", "callback_consumed")
+                or not episode["origin_session_id"] or not episode["provider_session_id"]
+                or not episode["claimed_at"] or not episode["expires_at"]
+                or episode["origin_session_id"] == session_id
+                or row["id"] != result_row_id or row["agent"] != agent or row["session_id"] != session_id):
+            return "lost_owner", None
+        if row["status"] != "blocked":
+            return "not_applicable", None
+        for field in ("waiting_on_job_ids", "risks_flagged", "decision_json", "local_ci"):
+            raw = row.get(field)
+            if raw:
+                decoded = json.loads(raw) if isinstance(raw, str) else raw
+                if field == "waiting_on_job_ids" and decoded:
+                    return "not_applicable", None
+        report = completion_report_from_result_row(task_id, row, fallback_agent=agent)
+        if report.waiting_on_job_ids or report.decision is not None:
+            return "not_applicable", None
+        if (task.active_chain is not None or task.active_fanout is not None
+                or self._conn.execute("SELECT 1 FROM tasks WHERE parent_task_id=?", (task_id,)).fetchone()
+                or classify_task(self, task_id, org_slug=org.slug).kind != "legacy"
+                or self.authority_policy_v2_completion_dispatch_context(root_task_id=task_id, result_row_id=result_row_id).kind != "no_v2"):
+            return "ambiguous_history", None
+        validate_team_membership(OrgPaths(root=org.root), org.teams)
+        active = {a.name: a for a in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        child = active.get(agent)
+        if child is None or child.team != task.team or child.role != "worker" or agent not in team.workers:
+            return "lost_owner", None
+        reviewer = _delegated_reviewer(org.orchestrator, task)
+        note = "self-blocked: " + report.output_summary
+        verdict = report.verdict if report.verdict is not None else "rejected"
+        logs = self.get_audit_logs(task_id)
+        starts, bound, unbound, reviews = [], [], [], []
+        informational = {"session_end", "progress", "zombie_flagged", "zombie_cleared",
+                         "task_attachment_materialized", "executor_throttle", "task_scratch_reclaimed", "portability_reconciled"}
+        for log in logs:
+            payload = log.get("payload")
+            if not isinstance(payload, dict):
+                return "ambiguous_history", None
+            action = log["action"]
+            if action == "session_start":
+                if (log["agent"] != agent or set(payload) != {"workspace", "session_id", "invocation_purpose", "executor", "model"}
+                        or payload["session_id"] not in (episode["origin_session_id"], session_id)
+                        or payload["invocation_purpose"] != ("unattributed" if payload["session_id"] == session_id else "worker_execution")
+                        or not isinstance(payload["workspace"], str) or not payload["workspace"]):
+                    return "ambiguous_history", None
+                starts.append(payload["session_id"])
+            elif action == "completion_report":
+                expected = report.model_dump()
+                if log["agent"] != agent:
+                    return "ambiguous_history", None
+                if payload == expected:
+                    unbound.append(log)
+                elif payload == {**expected, "_recovery_session_id": session_id, "_result_row_id": result_row_id}:
+                    bound.append(log)
+                else:
+                    return "ambiguous_history", None
+            elif action == "review_verdict":
+                reviews.append(log)
+            elif action not in informational and not action.startswith("memory_"):
+                return "ambiguous_history", None
+        if (sorted(starts) != sorted([episode["origin_session_id"], session_id])
+                or len(unbound) > 1 or len(bound) > 1 or len(reviews) > 1):
+            return "ambiguous_history", None
+        live = task.status == TaskStatus.IN_PROGRESS and task.block_kind is None
+        failed = (task.status == TaskStatus.FAILED and task.block_kind is None
+                  and task.completed_at is not None and task.note == note)
+        if not live and not failed:
+            return "lost_owner", None
+        if not bound and not (allow_unbound_live and live and not reviews and episode["state"] == "callback_accepted"):
+            return "ambiguous_history", None
+        if reviews and (not bound or not failed or reviews[0]["id"] <= bound[0]["id"]
+                        or reviews[0]["agent"] != reviewer
+                        or reviews[0]["payload"] != {"verdict": verdict, "feedback": note, "reviewed_agent": agent}):
+            return "ambiguous_history", None
+        if episode["state"] == "callback_consumed" and (not failed or len(reviews) != 1):
+            return "ambiguous_history", None
+        return "eligible", dict(task=task, episode=episode, report=report,
+                                reviewer=reviewer, note=note, verdict=verdict,
+                                bound=bound, reviews=reviews)
+
+    @_synchronized
+    def apply_human_failed_recovery_effect(self, *, task_id: str, agent: str,
+                                          session_id: str, result_row_id: int,
+                                          effect: str) -> str:
+        """Each CAS commits separately; the selected driver owns ordering."""
+        disposition, context = self.human_failed_recovery_context(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id, allow_unbound_live=effect == "evidence")
+        if disposition != "eligible":
+            return disposition
+        task, episode = context["task"], context["episode"]
+        now = _now()
+        params = dict(T=task_id, A=agent, S0=episode["origin_session_id"], S1=session_id,
+                      R=result_row_id, parent=task.parent_task_id, team=task.team, now=now)
+        guard = """id=:T AND assigned_agent=:A AND current_session_id=:S1
+            AND cancelled_at IS NULL AND status='in_progress' AND block_kind IS NULL
+            AND task_type='subtask' AND parent_task_id=:parent AND team=:team
+            AND active_chain IS NULL AND active_fanout IS NULL
+            AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id=:T)
+            AND EXISTS (SELECT 1 FROM task_completion_recoveries r JOIN task_results tr ON tr.id=r.accepted_result_id
+                WHERE r.task_id=:T AND r.agent=:A AND r.origin_session_id=:S0 AND r.recovery_session_id=:S1
+                AND r.accepted_result_id=:R AND r.accepted_result_session_id=:S1 AND r.state='callback_accepted'
+                AND tr.task_id=:T AND tr.agent=:A AND tr.session_id=:S1 AND tr.status='blocked')"""
+        if effect == "evidence":
+            if context["bound"]:
+                return "progressed"
+            payload = {**context["report"].model_dump(), "_recovery_session_id": session_id, "_result_row_id": result_row_id}
+            params.update(payload=json.dumps(payload))
+            cur = self._conn.execute("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) SELECT :T,:A,'completion_report',:payload,:now WHERE EXISTS (SELECT 1 FROM tasks WHERE " + guard + ")", params)
+        elif effect in ("chain", "fanout", "fail"):
+            if task.status == TaskStatus.FAILED:
+                return "progressed"
+            setters = {"chain": "active_chain=NULL,updated_at=:now", "fanout": "active_fanout=NULL,updated_at=:now", "fail": "status='failed',block_kind=NULL,note=:note,completed_at=:now,updated_at=:now"}
+            params["note"] = context["note"]
+            cur = self._conn.execute("UPDATE tasks SET " + setters[effect] + " WHERE " + guard, params)
+        elif effect == "review":
+            if context["reviews"]:
+                return "progressed"
+            if task.status != TaskStatus.FAILED:
+                return "lost_owner"
+            params.update(reviewer=context["reviewer"], payload=json.dumps({"verdict": context["verdict"], "feedback": context["note"], "reviewed_agent": agent}), note=context["note"])
+            cur = self._conn.execute("""INSERT INTO audit_log(task_id,agent,action,payload,timestamp)
+                SELECT :T,:reviewer,'review_verdict',:payload,:now
+                WHERE EXISTS (SELECT 1 FROM tasks WHERE id=:T AND assigned_agent=:A AND current_session_id=:S1
+                AND cancelled_at IS NULL AND status='failed' AND note=:note AND parent_task_id=:parent AND team=:team)
+                AND NOT EXISTS (SELECT 1 FROM audit_log WHERE task_id=:T AND action='review_verdict')""", params)
+        elif effect == "marker":
+            if episode["state"] == "callback_consumed":
+                return "progressed"
+            if task.status != TaskStatus.FAILED or not context["reviews"]:
+                return "lost_owner"
+            params["note"] = context["note"]
+            cur = self._conn.execute("""UPDATE task_completion_recoveries SET state='callback_consumed',settled_at=:now
+                WHERE task_id=:T AND agent=:A AND origin_session_id=:S0 AND recovery_session_id=:S1
+                AND accepted_result_id=:R AND accepted_result_session_id=:S1 AND state='callback_accepted'
+                AND EXISTS (SELECT 1 FROM tasks WHERE id=:T AND assigned_agent=:A AND current_session_id=:S1
+                    AND status='failed' AND cancelled_at IS NULL AND note=:note AND team=:team AND parent_task_id=:parent)""", params)
+        else:
+            raise ValueError("unknown human failed-leaf effect")
+        self._conn.commit()
+        return "progressed" if cur.rowcount == 1 else "lost_owner"
+
+    @_synchronized
     def mark_task_completion_recovery_callback_consumed(
         self, *, task_id: str, agent: str, session_id: str, result_row_id: int,
         settled_at: str,
@@ -2489,7 +2684,7 @@ class TasksMixin:
                WHERE r.state='callback_consumed'
                  AND t.cancelled_at IS NULL
                  AND ((t.status=? AND t.task_type IN ('subtask', 'task'))
-                      OR (t.status=? AND t.task_type='task'
+                      OR (t.status=? AND t.task_type IN ('task','subtask')
                           AND t.parent_task_id IS NOT NULL))
                  AND tr.task_id=r.task_id AND tr.agent=r.agent
                  AND tr.session_id=r.recovery_session_id
@@ -2498,7 +2693,16 @@ class TasksMixin:
                ORDER BY r.id""",
             (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value),
         ).fetchall()
-        return [dict(row) for row in rows]
+        owners = []
+        for row in rows:
+            task = self.get_task(row["task_id"])
+            if row["status"] == TaskStatus.FAILED.value and task is not None and task.task_type == "subtask":
+                if not self.consumed_task_completion_recovery_owner_is_current(
+                        task_id=row["task_id"], agent=row["agent"], recovery_session_id=row["recovery_session_id"],
+                        result_row_id=row["accepted_result_id"], terminal_status=row["status"]):
+                    continue
+            owners.append(dict(row))
+        return owners
 
     @_synchronized
     def consumed_task_completion_recovery_owner_is_current(
@@ -2528,6 +2732,12 @@ class TasksMixin:
             (task_id, agent, recovery_session_id, result_row_id,
              terminal_status),
         ).fetchone()
+        if row is not None and terminal_status == TaskStatus.FAILED.value:
+            task = self.get_task(task_id)
+            if task is not None and task.task_type == "subtask":
+                disposition, context = self.human_failed_recovery_context(
+                    task_id=task_id, agent=agent, session_id=recovery_session_id, result_row_id=result_row_id)
+                return disposition == "eligible" and context["episode"]["state"] == "callback_consumed"
         return row is not None
 
     @_synchronized

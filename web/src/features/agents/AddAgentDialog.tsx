@@ -224,9 +224,9 @@ export function AddAgentDialog({ open, onOpenChange }: Props): JSX.Element {
                   className="border-border-subtle bg-bg-subtle w-full rounded border p-2 text-sm"
                 >
                   <option value="">{t('agents.add.selectTeam')}</option>
-                  {teams.map((t) => (
-                    <option key={t.name} value={t.name}>
-                      {t.name}
+                  {teams.map((entry) => (
+                    <option key={entry.name} value={entry.name}>
+                      {entry.name}{entry.manager_kind === 'human' ? ` · ${t('agents.team.founderManaged')}` : ''}
                     </option>
                   ))}
                 </select>

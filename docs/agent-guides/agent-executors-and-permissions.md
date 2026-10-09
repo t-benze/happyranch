@@ -1,5 +1,17 @@
 # Agent Executors And Permissions
 
+## Founder-managed Default (THR296)
+
+Moving consultant_head and consultant_codex changes their current roster
+membership and demotes the former manager. Canonical names, providers,
+workspaces, runtime/provider memory, Git registrations and history remain in
+place. Founder is not an executor. Ordinary workers keep self-only delegation
+and acquire no manager/admin/policy/template powers. Existing supported
+materializers refresh declared generated instructions/skill links; their
+permission and authentication algorithms are unchanged. Operator migration
+clears both agents' provider resume IDs/watermarks using the native atomic
+reset/audit helper, while preserving thread delivery and breaker continuity.
+
 ## Bundled skill sources and canonical delivery
 
 Release-owned instructions and supporting assets live in

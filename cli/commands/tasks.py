@@ -1080,11 +1080,11 @@ def register(sub) -> None:
     p_run.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_run.add_argument(
         "--team", default=None,
-        help="Team to route the task to (default: engineering)",
+        help="Team to route the task to (default: org task_default_team; legacy engineering)",
     )
     p_run.add_argument(
         "--owner", default=None,
-        help="Assign the task to a specific agent (default: the team manager)",
+        help="Assign an active executable agent; required for a human-managed team",
     )
     p_run_brief = p_run.add_mutually_exclusive_group(required=True)
     p_run_brief.add_argument("--brief", help="Task description (inline string)")

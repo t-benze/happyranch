@@ -1102,13 +1102,4 @@ async def put_teams(slug: str, org: OrgDep, patch: TeamsPatch) -> dict:
                     detail={"code": "teams_worker_agent_drift", "message": "; ".join(worker_drift)},
                 )
 
-    # Return updated teams list (mirrors GET /teams shape)
-    rows = []
-    for tname in teams.teams():
-        tm = teams.manager_for_team(tname)
-        rows.append({
-            "name": tname,
-            "manager": tm.name,
-            "workers": list(tm.workers),
-        })
-    return {"teams": rows}
+    return {"teams": [teams.team_row(name) for name in teams.teams()]}

@@ -2021,6 +2021,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'agents.noAgents.title': '还没有智能体',
   'agents.select.title': '选择一个智能体',
   'agents.select.body': '从名册中选择一个智能体以查看和编辑详情。',
+  'agents.team.founderManaged': '由创始人管理',
   'agents.role.manager': '经理',
   'agents.role.worker': '工作者',
   'agents.role.none': '无角色',

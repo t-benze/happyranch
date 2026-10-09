@@ -126,3 +126,28 @@ def test_validate_ignores_pending_agents(tmp_path: Path) -> None:
     )
     teams = TeamsRegistry.load(org_root)
     validate_team_membership(paths, teams)  # no raise
+
+
+@pytest.mark.parametrize('head_after,codex_after,roster_after', [
+    (True, False, False), (False, True, False), (False, False, True),
+    (True, True, False), (True, False, True), (False, True, True),
+])
+@pytest.mark.parametrize('existing_empty_default', [False, True])
+def test_every_partial_consultant_move_refuses_at_attachment(
+    tmp_path: Path, head_after: bool, codex_after: bool, roster_after: bool,
+    existing_empty_default: bool,
+) -> None:
+    import yaml
+    root = _seed_empty_org(tmp_path / 'alpha')
+    paths = OrgPaths(root=root)
+    _write_active(paths, _make_agent(name='consultant_head', team='default' if head_after else 'consultant', role='worker' if head_after else 'manager'))
+    _write_active(paths, _make_agent(name='consultant_codex', team='default' if codex_after else 'consultant', role='worker'))
+    human = {'manager': {'kind': 'human', 'principal': 'founder'}, 'workers': []}
+    layout = {'consultant': {'manager': 'consultant_head', 'workers': ['consultant_codex']}}
+    if existing_empty_default:
+        layout['default'] = human
+    if roster_after:
+        layout = {'default': {**human, 'workers': ['consultant_head', 'consultant_codex']}}
+    (root / 'org/teams.yaml').write_text(yaml.safe_dump({'teams': layout}))
+    with pytest.raises(OrgConsistencyError):
+        validate_team_membership(paths, TeamsRegistry.load(root))
