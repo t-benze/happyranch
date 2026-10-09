@@ -23,6 +23,7 @@ interface MessageBubbleProps {
   seq: number;
   /** Speaker name; required for non-system variants. */
   speaker?: string;
+  speakerLabel?: React.ReactNode;
   /** Role for the agent chip dot color. Founder/decline default to founder. */
   speakerRole?: 'manager' | 'worker' | 'founder';
   timestamp: string;
@@ -100,6 +101,7 @@ export function MessageBubble(props: MessageBubbleProps): JSX.Element {
         {speaker && (
           <AgentChip
             name={speaker}
+            label={props.speakerLabel}
             role={speakerRole ?? (variant === 'founder' ? 'founder' : 'worker')}
           />
         )}

@@ -1,3 +1,5 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
+import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
 import { SystemPromptEditor } from './SystemPromptEditor';
 /**
  * AgentDetailDrawer — opens when `:agent_name` is in the URL. Slides in
@@ -21,7 +23,7 @@ import {
   DrawerDescription,
   DrawerTitle,
 } from '@/design-system/primitives/Drawer';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
+import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
 import { TaskCard } from '@/design-system/patterns/TaskCard';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { ApiError } from '@/lib/api';
@@ -65,6 +67,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
   return (
     <Drawer open onOpenChange={(o) => !o && onClose()}>
       <DrawerContent>
+        <div className="p-4"><AddressableNameEditor canonicalId={agentName} /></div>
         <header className="border-border-subtle border-b p-4">
           <DrawerTitle className="text-fg flex items-center gap-3 text-lg">
             <AgentChip name={agentName} role={agent?.role ?? 'worker'} />
@@ -116,6 +119,7 @@ export function AgentDetailDrawer({ agentName }: AgentDetailDrawerProps): JSX.El
                 <li key={t.task_id}>
                   <TaskCard
                     task={t}
+                    agentLabel={t.assigned_agent ? <IdentityName canonicalId={t.assigned_agent} /> : undefined}
                     to={taskRoutes.detail(t.task_id)}
                     density={density}
                     taskRoutes={taskRoutes}

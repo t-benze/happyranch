@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 import { useState } from 'react';
 import type { TaskRecallNode } from '@/lib/api/types';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
@@ -63,7 +64,7 @@ export function TaskRecallTree({ node, depth = 0 }: { node: TaskRecallNode; dept
       <div className="flex items-center gap-2 text-sm">
         <IdBadge kind="task" id={node.task_id} to={routes.detail(node.task_id)} />
         {node.assigned_agent && (
-          <span className="text-fg-muted">{node.assigned_agent}</span>
+          <span className="text-fg-muted"><IdentityName canonicalId={node.assigned_agent} /></span>
         )}
         <StatusBadge status={node.status} />
       </div>

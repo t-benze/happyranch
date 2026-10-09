@@ -2974,6 +2974,7 @@ def _build_agent_prompt(orch: "Orchestrator", task, agent: str) -> str:
         manager_name=agent,
         self_only=not is_mgr,
         reviewer_agents=sorted(_reviewer_agents_for(orch)),
+        name_metadata=orch.read_name_metadata(),
     )
     headers: list[str] = []
     revisit = _revisit_header_if_applicable(orch, task.id)

@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * Task detail — Direction-A Pasture, full-page surface.
  *
@@ -19,7 +20,7 @@ import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
+import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
 import { Markdown } from '@/design-system/patterns/Markdown';
 import { useTask, useTaskRecall, useTasksRoutes } from '@/hooks/tasks';
 import { useJobsList } from '@/hooks/jobs';
@@ -60,7 +61,7 @@ type Translate = (key: MessageKey, params?: MessageParams) => string;
 
 /** A single node in the chain timeline. */
 interface TimelineNodeProps {
-  label: string;
+  label: ReactNode;
   detail?: string;
   state: 'done' | 'current' | 'blocked' | 'pending';
   blockerName?: string;
@@ -266,7 +267,7 @@ function WorkflowChainTimeline({
           return (
             <TimelineNodeItem
               key={legNum}
-              label={leg.agent}
+              label={<IdentityName canonicalId={leg.agent} />}
               detail={leg.expect_verdict ?? undefined}
               state={legState}
               blockerName={
@@ -326,7 +327,7 @@ function SubtaskRow({ node, depth = 0 }: SubtaskRowProps): JSX.Element {
           )}
           {(node.assigned_agent || summary) && (
             <p className="text-text-muted mt-0.5 truncate text-xs">
-              {node.assigned_agent}
+              {node.assigned_agent && <IdentityName canonicalId={node.assigned_agent} />}
               {node.assigned_agent && summary && ' · '}
               {summary}
             </p>

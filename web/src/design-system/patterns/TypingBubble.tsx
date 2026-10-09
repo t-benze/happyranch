@@ -15,6 +15,7 @@ import { formatElapsed } from '@/lib/elapsed';
 
 export function TypingBubble({
   agentName,
+  agentLabel,
   status,
   startedAt,
   nowMs,
@@ -23,6 +24,7 @@ export function TypingBubble({
   ariaLabel,
 }: {
   agentName: string;
+  agentLabel?: ReactNode;
   status: 'queued' | 'working';
   startedAt: string | null;
   nowMs?: number;
@@ -64,7 +66,7 @@ export function TypingBubble({
       aria-label={ariaLabel ?? `${agentName} is ${working ? 'replying' : 'queued'}`}
     >
       <div className="flex items-center gap-2">
-        <span className="text-fg truncate text-sm font-semibold">{agentName}</span>
+        <span className="text-fg truncate text-sm font-semibold">{agentLabel ?? agentName}</span>
         <span className={`text-caption ${working ? 'text-info' : 'text-text-muted'}`}>
           {shownCaption}
         </span>

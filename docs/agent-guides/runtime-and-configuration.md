@@ -1,5 +1,73 @@
 # Runtime And Configuration
 
+## Current naming metadata prompt wiring
+
+TASK10385 adds a read-only OrgState→Orchestrator naming reader, using the existing
+validated org metadata adapter. Every relevant prompt construction captures
+current names once for its labels; filesystem namespace capture precedes the
+short DB coherent-read section. It does not hold DB locks across file scans or
+load files/DB per rendered name. Task role and outer wrapper are separate reads.
+
+Full/delta thread prompts, eviction and non-resumable full fallback, resumed
+no-callback nudge, and dream/wake/schedule production builders refresh naming
+context. No provider resume ID, launch/admission/executor/scheduler algorithm,
+callback identity/order, schema or config identity changes. Unavailable metadata
+renders ID-only context, with no reconciliation/write/launch gate or snapshots.
+CLI read filters retain historical IDs and naming-unavailable ID access; server
+owners keep original checks. Installed skills are unchanged; only release-owned
+bundled wording is updated for the current-name versus automation-ID boundary.
+
+The combined candidate includes UI/type consumers. Its maker handoff records
+actual frontend checks and unexecuted disposable E2E, browser and schema
+obligations. Final independent review/QA/checks/publication/merge remain.
+No live runtime/provider/config/restart or deployment is authorized by the
+frontend verification leg. See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+## Naming v1 core, API and routing source
+
+Schema2 multi-org attachment installs naming only after baseline admission; no
+flat-schema1 conversion or history-only ID mining is added. Naming failure is
+volatile readiness with an actionable category. Original strict team/attachment
+and complete workflow/reference guards remain. Every naming-installed F/E/G needs
+a compatible naming reader; existing explicit workflow commands preserve exact
+naming row identities/revisions and reject malformed naming without repair.
+One daemon controls each organization; no naming cross-process lease is added.
+
+Bounded API reads need no new readiness gate for canonical IDs. Failed naming
+metadata returns explicit null addressable_name/name_revision and unavailable
+status while original ID roster/lifecycle reads remain. Operator rename refreshes
+and validates through the accepted A service and refuses naming-only failure
+safely. All four routes use existing OrgDep and org-local owners; no foreign-org
+label lookup or alias-based config/session/workspace binding is introduced.
+No live migration, enablement, config change or restart is authorized by source.
+
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are SKIPPED/SUSPENDED THR2915/16 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+
 **G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
 initializes the complete G layout before attachment. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.

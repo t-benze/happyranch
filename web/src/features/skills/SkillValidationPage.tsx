@@ -1,3 +1,4 @@
+import { useIdentityPresentation } from '@/hooks/identities';
 /**
  * SkillValidationPage — Runtime Validation event list (THR-092 Slice 6 of 6).
  *
@@ -249,6 +250,7 @@ function EventRow({ row, slug }: { row: ValidationRow; slug: string }): JSX.Elem
 }
 
 export function SkillValidationPage(): JSX.Element {
+  const identityPresentation = useIdentityPresentation();
   const { t, locale } = useTranslation();
   const { slug } = useParams<{ slug: string }>();
   const [filters, setFilters] = useState<ValidationFilters>(EMPTY_FILTERS);
@@ -268,10 +270,10 @@ export function SkillValidationPage(): JSX.Element {
   const nowMs = Date.now();
   const baseEvents = optionsQuery.data?.events ?? [];
   const skillOpts = skillOptions(baseEvents);
-  const agentOpts = agentOptions(baseEvents);
+  const agentOpts = agentOptions(baseEvents).map((option) => ({ ...option, label: option.value ? identityPresentation.label(option.value) : option.label }));
 
   const events = listQuery.data?.events ?? [];
-  const rows = events.map((e) => toValidationRow(e, nowMs, locale, t));
+  const rows = events.map((e) => ({ ...toValidationRow(e, nowMs, locale, t), ...(e.agent ? { agentLabel: identityPresentation.label(e.agent) } : {}) }));
   // The endpoint `label` is a daemon value: its known token maps to catalog
   // copy, any other label renders verbatim.
   const endpointLabel = listQuery.data?.label ?? optionsQuery.data?.label;

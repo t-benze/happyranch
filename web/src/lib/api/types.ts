@@ -494,7 +494,13 @@ export interface PrereqsResponse {
 // Agents
 // ---------------------------------------------------------------------------
 
-export interface AgentSummary {
+export interface IdentityNameMetadata {
+  addressable_name?: string | null;
+  name_revision?: number | null;
+  naming_status?: 'ready' | 'unavailable';
+}
+
+export interface AgentSummary extends IdentityNameMetadata {
   name: string;
   team: string | null;
   role: 'manager' | 'worker' | null;
@@ -527,7 +533,7 @@ export type SystemPromptErrorDetail =
       compensation: { canonical: SystemPromptCompensation; workspace: SystemPromptCompensation } }
   | { code: 'system_prompt_audit_failed'; commit_state: 'possibly_committed' };
 
-export interface AgentEnrollment {
+export interface AgentEnrollment extends IdentityNameMetadata {
   name: string;
   team: string;
   role: 'manager' | 'worker';
@@ -1193,3 +1199,28 @@ export interface DocumentWorkflowActivationReceipt extends Omit<LegacyWorkflowAc
 }
 export type WorkflowActivationRequest = LegacyWorkflowActivationRequest | DocumentWorkflowActivationRequest;
 export type WorkflowActivationReceipt = LegacyWorkflowActivationReceipt | DocumentWorkflowActivationReceipt;
+
+// Naming v1 — separate metadata; AgentSummary.name remains canonical ID.
+export interface IdentityView {
+  canonical_id: string;
+  kind: 'agent' | 'founder';
+  lifecycle: 'active' | 'pending' | 'terminated' | 'absent' | 'founder';
+  addressable_name: string | null;
+  name_revision: number | null;
+  canonical_definition_revision: string | null;
+  naming_status: 'ready' | 'unavailable';
+}
+export interface IdentityList { identities: IdentityView[] }
+export interface RenameBody { addressable_name: string; expected_name_revision: number }
+export interface ResolveBody {
+  addresses: string[];
+  context: 'thread_recipient' | 'task_owner' | 'lookup';
+  thread_id?: string | null;
+}
+export interface Resolution {
+  address: string;
+  status: 'resolved' | 'former_name' | 'unknown_identity' | 'invalid_identity_address' | 'ineligible_identity' | 'naming_unavailable';
+  identity: IdentityView | null;
+  eligible: boolean;
+}
+export interface ResolveResponse { resolutions: Resolution[] }

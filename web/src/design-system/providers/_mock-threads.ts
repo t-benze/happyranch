@@ -344,14 +344,15 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (body: InviteArgs) => {
+      const destinationId = body.destination?.threadId ?? threadId;
       await sleep(120);
-      const list = store.participants[threadId] ?? [];
+      const list = store.participants[destinationId] ?? [];
       if (!list.includes(body.agent_name)) {
-        store.participants[threadId] = [...list, body.agent_name];
+        store.participants[destinationId] = [...list, body.agent_name];
       }
-      const seq = nextSeq(threadId);
-      store.messages[threadId] = [
-        ...(store.messages[threadId] ?? []),
+      const seq = nextSeq(destinationId);
+      store.messages[destinationId] = [
+        ...(store.messages[destinationId] ?? []),
         {
           seq,
           speaker: 'founder',
@@ -364,11 +365,12 @@ function useInviteAgent(threadId: string): MutationLike<InviteArgs, InviteResult
           responder_status: [],
         },
       ];
-      return { thread_id: threadId, agent_name: body.agent_name, system_message_seq: seq };
+      return { thread_id: destinationId, agent_name: body.agent_name, system_message_seq: seq };
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['mock-thread', threadId] });
-      qc.invalidateQueries({ queryKey: ['mock-thread-messages', threadId] });
+    onSuccess: (_result, body) => {
+      const destinationId = body.destination?.threadId ?? threadId;
+      qc.invalidateQueries({ queryKey: ['mock-thread', destinationId] });
+      qc.invalidateQueries({ queryKey: ['mock-thread-messages', destinationId] });
     },
   });
 }

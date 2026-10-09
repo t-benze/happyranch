@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * WakesView — read-only list of scheduled work-hours wakes (§4.9 PRD final).
  * Direction-A Pasture fidelity pass (THR-030 Leg B Batch 10).
@@ -250,7 +251,7 @@ function AgentGroupCard({
           to={`/orgs/${slug}/agents/${agent}`}
           className="text-text-primary font-display text-base hover:underline"
         >
-          {agent}
+          <IdentityName canonicalId={agent} />
         </Link>
         <span className="text-text-muted font-mono text-xs tabular-nums">
           {t('workHours.wakes.cardCount', { count: entries.length })}

@@ -14,13 +14,17 @@
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { MentionAutocomplete } from '@/design-system/patterns/MentionAutocomplete';
-import type { AgentSummary } from '@/lib/api/types';
+import type { AddressOption } from './MentionAutocomplete';
 
 interface Props {
   id?: string;
+  disabled?: boolean;
+  multiple?: boolean;
+  ariaLabel?: string;
+  ariaDescribedBy?: string;
   value: string;
   onChange: (next: string) => void;
-  agents: AgentSummary[];
+  agents: AddressOption[];
   placeholder?: string;
   className?: string;
   /** When true, strips non-roster tokens from committed positions. */
@@ -43,7 +47,7 @@ function tokenAtCaret(value: string, caret: number): { start: number; query: str
  * (every token except the last, which is the one the user is actively
  * typing). Empty tokens are preserved as separators.
  */
-function filterNonRoster(value: string, rosterNames: Set<string>): string {
+function filterNonRoster(value: string, options: AddressOption[]): string {
   const tokens = value.split(',');
   if (tokens.length <= 1) return value;
   const result: string[] = [];
@@ -52,9 +56,9 @@ function filterNonRoster(value: string, rosterNames: Set<string>): string {
       result.push(tokens[i]);
     } else {
       const trimmed = tokens[i].trim();
-      if (trimmed === '' || rosterNames.has(trimmed)) {
-        result.push(tokens[i]);
-      }
+      const option = options.find((a) => a.name.toLowerCase() === trimmed.toLowerCase() || a.addressable_name?.toLowerCase() === trimmed.toLowerCase());
+      if (trimmed === '') result.push(tokens[i]);
+      else if (option) result.push(option.name);
       // else: non-roster committed token — omit
     }
   }
@@ -63,6 +67,10 @@ function filterNonRoster(value: string, rosterNames: Set<string>): string {
 
 export function RecipientsInput({
   id,
+  disabled,
+  multiple = true,
+  ariaLabel,
+  ariaDescribedBy,
   value,
   onChange,
   agents,
@@ -77,11 +85,6 @@ export function RecipientsInput({
     | null
   >(null);
 
-  const rosterNames = useMemo(
-    () => new Set(agents.map((a) => a.name)),
-    [agents],
-  );
-
   const matches = useMemo(() => {
     if (!popup) return [];
     if (popup.query.trim().length === 0) return [];
@@ -90,8 +93,8 @@ export function RecipientsInput({
       value.split(',').map((s) => s.trim()).filter(Boolean),
     );
     return agents
-      .filter((a) => !taken.has(a.name) || a.name.toLowerCase().startsWith(q))
-      .filter((a) => a.name.toLowerCase().startsWith(q))
+      .filter((a) => !taken.has(a.name) || (a.name.toLowerCase().startsWith(q) || a.addressable_name?.toLowerCase().startsWith(q)))
+      .filter((a) => (a.name.toLowerCase().startsWith(q) || a.addressable_name?.toLowerCase().startsWith(q)))
       .slice(0, 8);
   }, [popup, agents, value]);
 
@@ -99,7 +102,7 @@ export function RecipientsInput({
 
   const refresh = useCallback(() => {
     const el = inputRef.current;
-    if (!el) { setPopup(null); return; }
+    if (!el || disabled) { setPopup(null); return; }
     const caret = el.selectionStart ?? 0;
     const { start, query } = tokenAtCaret(value, caret);
     const rect = el.getBoundingClientRect();
@@ -108,10 +111,10 @@ export function RecipientsInput({
       tokenStart: start,
       anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
     });
-  }, [value]);
+  }, [value, disabled]);
 
   const accept = useCallback(
-    (agent: AgentSummary) => {
+    (agent: AddressOption) => {
       if (!popup) return;
       const el = inputRef.current;
       if (!el) return;
@@ -123,7 +126,7 @@ export function RecipientsInput({
       // If there's more text after the caret (e.g. trailing partial recipient),
       // don't append a separator. Otherwise add ", " so the next token can be
       // typed immediately.
-      const sep = after.trim().length === 0 ? ', ' : '';
+      const sep = multiple && after.trim().length === 0 ? ', ' : '';
       const inserted = `${leading}${agent.name}${sep}`;
       const next = before + inserted + after;
       onChange(next);
@@ -134,7 +137,7 @@ export function RecipientsInput({
         el.focus();
       });
     },
-    [value, popup, onChange],
+    [value, popup, onChange, multiple],
   );
 
   return (
@@ -142,11 +145,14 @@ export function RecipientsInput({
       <input
         ref={inputRef}
         id={id}
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
         type="text"
         value={value}
         onChange={(e) => {
           const next = restrictToOptions
-            ? filterNonRoster(e.target.value, rosterNames)
+            ? filterNonRoster(e.target.value, agents)
             : e.target.value;
           onChange(next);
           // Defer to next tick so the controlled value has updated before we

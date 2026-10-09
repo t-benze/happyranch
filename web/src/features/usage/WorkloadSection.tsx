@@ -1,3 +1,5 @@
+import { useIdentityPresentation } from '@/hooks/identities';
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * Workload — one row per agent the daemon reports for the current window
  * (PRD §4). Lifecycle counts only: no token value, CLI/model selector or
@@ -93,7 +95,7 @@ function AgentRow({ row, compare }: { row: WorkloadAgent; compare: boolean }): J
   return (
     <tr className="border-border-default border-b last:border-0">
       <th scope="row" className={IDENTITY_CLASS}>
-        <span className="text-text-primary font-medium break-words">{row.agent}</span>
+        <span className="text-text-primary font-medium break-words"><IdentityName canonicalId={row.agent} /></span>
       </th>
       {count('task_runs')}
       {count('thread_wakes')}
@@ -201,12 +203,13 @@ function CoverageSentence({ data, compare }: { data: WorkloadResponse; compare: 
 }
 
 function UnclassifiedFootnote({ data }: { data: WorkloadResponse }): JSX.Element | null {
+  const identities = useIdentityPresentation();
   const presentation = useUsagePresentation();
   const { t, formatCount } = presentation;
   const rows = data.agents.filter((a) => a.current.delivery_unclassified_results > 0);
   if (rows.length === 0) return null;
   const total = rows.reduce((n, a) => n + a.current.delivery_unclassified_results, 0);
-  const detail = rows.map((a) => `${a.agent} ${formatCount(a.current.delivery_unclassified_results)}`).join(', ');
+  const detail = rows.map((a) => `${identities.label(a.agent)} ${formatCount(a.current.delivery_unclassified_results)}`).join(', ');
   return (
     <p>
       {t('usage.unclassifiedDelivery', { n: formatCount(total), detail })}

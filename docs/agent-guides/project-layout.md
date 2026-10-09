@@ -1,5 +1,52 @@
 # Project Layout
 
+## Naming v1 core, API, routing, CLI/prompt and UI source
+
+`runtime/identities/schema.py` owns the org-only naming v1 layout and closed
+validation; `registry.py` owns bounded canonical capture, lifecycle reconciliation,
+typed classification and the internal CAS rename/audit transaction. OrgState and
+existing supported caller intervals integrate it. Generic Database/runtime-audit
+never install these tables. Naming fixtures and independent literals live under
+`tests/helpers/identity_names/`; the finite core selector file is
+`tests/integration/test_identity_names_core.py`. CLI/prompt and UI source are now present; combined execution/acceptance remain separate.
+
+`runtime/daemon/routes/identities.py` owns the bounded typed identity read,
+resolve and strict operator rename API; `app.py` registers it under the existing
+org prefix. Agent list/enrollment routes add current-label metadata without
+changing canonical fields. Registry read adapters do not reconcile or install.
+`runtime/infrastructure/db/reply_delivery.py` and `reply_exchange.py` are the
+actual routing stores. `runtime/reply_delivery.py` is the separate failure-category
+helper. The Database facade admits public MESSAGE appends; OrgState wires only
+its org-local address provider. The daemon/thread_mentions compatibility alias
+is unchanged. `test_identity_names_integrated.py` preserves A11 and adds the four
+readable routing scenario bodies; no collection/execution has occurred.
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are SKIPPED/SUSPENDED THR2915/16 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+
 HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel: orchestrator, daemon and CLI, audit, KB, threads, revisit, and escalation primitives. The organization it runs is loaded per runtime from `<runtime>/orgs/<slug>/org/`.
 
 A canonical sample org lives at `examples/orgs/hk-macau-tourism/`. Treat it as the reference shape when bootstrapping a new org; nothing about that org's specific teams, agents, or constraints is baked into the system.

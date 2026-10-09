@@ -25,7 +25,7 @@ describe('C14 Tasks stories render shipping components with local state', () => 
     expect(screen.getByText('Tasks')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open assistant' })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Filter' }));
-    await userEvent.type(screen.getByLabelText('Assigned agent (exact name)'), 'unknown-agent');
+    await userEvent.type(screen.getByLabelText('Assigned agent (exact name)'), 'unknown_agent');
     await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
     // The escalated traversal is independent of the agent filter, so its row
     // stays visible; 'No tasks' would contradict the rendered rows.

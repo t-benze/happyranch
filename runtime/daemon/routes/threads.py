@@ -4,7 +4,8 @@ from __future__ import annotations
 import json as _json
 import mimetypes
 from datetime import datetime, timezone
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -35,6 +36,9 @@ from runtime.orchestrator import prompt_loader
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threads
 from runtime.reply_delivery import reply_failure_category
+from runtime.identities.registry import classify_message_addresses
+from runtime.identities.schema import NamingError
+from runtime.infrastructure.thread_mentions import parse_mentions
 
 router = APIRouter(dependencies=[require_token()])
 
@@ -44,6 +48,42 @@ router = APIRouter(dependencies=[require_token()])
 # Routes via the inbox UI instead.
 FOUNDER_LITERAL = "@founder"
 MAX_THREAD_ATTACHMENTS = 5
+
+
+def _naming_http_error(exc: NamingError) -> HTTPException:
+    code = exc.code
+    status = 409 if code in ('former_name', 'naming_classification_changed') else 503
+    return HTTPException(status_code=status, detail={'code': code, **getattr(exc, 'details', {})})
+
+
+def _validate_message_addresses(org: Any, body_markdown: str | None) -> None:
+    """Action-boundary revalidation; no queue, SQL write or file mutation."""
+    try:
+        addresses = org.db.prepare_thread_message(body_markdown)
+        org.db.validate_thread_message(addresses)
+    except NamingError as exc:
+        raise _naming_http_error(exc) from exc
+
+
+def _resolve_message_recipients(org: Any, recipients: list[str], body_markdown: str | None) -> list[str]:
+    """Resolve human recipient data only; actor/session fields never enter."""
+    tokens = [name[1:] if name.startswith('@') else name for name in recipients]
+    try:
+        # Former tokens anywhere refuse the WHOLE input before unknown-target
+        # diagnostics or creation. Message grammar stays the shipping parser.
+        subjects, _proof = classify_message_addresses(org, tokens + parse_mentions(body_markdown))
+    except NamingError as exc:
+        raise _naming_http_error(exc) from exc
+    resolved = []
+    for address, subject in zip(recipients, subjects):
+        if subject is None or (subject.kind == 'agent' and subject.lifecycle != 'active'):
+            raise HTTPException(status_code=404, detail={'code': 'unknown_agent', 'agent': address})
+        name = FOUNDER_LITERAL if subject.kind == 'founder' else subject.canonical_id
+        if name != FOUNDER_LITERAL and not (org.root / 'workspaces' / name).exists():
+            raise HTTPException(status_code=404, detail={'code': 'unknown_agent', 'agent': address})
+        if name not in resolved:
+            resolved.append(name)
+    return resolved
 
 
 async def _publish_thread_event(
@@ -100,6 +140,10 @@ def _create_agent_thread_locked(
     thread) reuse the exact participant/turn/audit semantics without going
     through the authenticated compose route.
     """
+    # This is also the actual non-HTTP dream compose boundary. All address
+    # classification occurs before even thread-ID allocation, without awaits.
+    recipients = _resolve_message_recipients(org, recipients, body_text)
+    _validate_message_addresses(org, body_text)
     seen: set[str] = set()
     deduped: list[str] = []
     for name in recipients:
@@ -220,6 +264,16 @@ def _attachments_preview(attachments: list[ThreadAttachment]) -> str:
     return f"Attached {len(attachments)} {file_word}: {names}{suffix}"
 
 
+class _AttachmentReferenceReader(ArtifactStore):
+    """Borrow shipping path/name validation without creating a store.
+
+    Attachment-reference preview is read-only, including a missing root;
+    callbacks keep their original auth validation order before admission.
+    """
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+
 def _normalize_attachments(
     org: object,
     refs: list[AttachmentRefBody] | None,
@@ -234,7 +288,7 @@ def _normalize_attachments(
             detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
         )
     seen: set[str] = set()
-    store = ArtifactStore(OrgPaths(org.root).artifacts_dir)
+    store = _AttachmentReferenceReader(OrgPaths(org.root).artifacts_dir)
     out: list[ThreadAttachment] = []
     for ref in refs:
         artifact_name = ref.artifact_name.strip()
@@ -416,6 +470,8 @@ async def _compose_thread_multipart(
     if not body.recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
 
+    raw_recipients = list(body.recipients)
+    body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
     # Validate shared artifact refs (if any) via existing path.
     shared_attachments = _normalize_attachments(
         org, body.attachments, uploaded_by=uploaded_by,
@@ -424,6 +480,8 @@ async def _compose_thread_multipart(
     # Validate recipients.
     org_paths = OrgPaths(root=org.root)
     for name in body.recipients:
+        if name == FOUNDER_LITERAL:
+            continue
         agent_def = prompt_loader.load_agent(org_paths, name)
         workspace_exists = (org.root / "workspaces" / name).exists()
         if agent_def is None or not workspace_exists:
@@ -451,7 +509,7 @@ async def _compose_thread_multipart(
             )
 
     turn_cap = resolve_org_setting_threads(org.db, code_default=OrgConfig())["default_turn_cap"]
-    addressed_agents = list(body.recipients)
+    addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
 
     total_file_count = len(file_fields) + len(shared_attachments)
     if total_file_count > MAX_THREAD_ATTACHMENTS:
@@ -460,7 +518,12 @@ async def _compose_thread_multipart(
             detail={"code": "too_many_attachments", "max": MAX_THREAD_ATTACHMENTS},
         )
 
+    uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
+
     async with org.db_lock:
+        body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
+        _validate_message_addresses(org, body.body_markdown)
+        addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
         thread_id = org.db.next_thread_id()
         org.db.insert_thread(ThreadRecord(
             id=thread_id, subject=subject, turn_cap=turn_cap,
@@ -468,12 +531,13 @@ async def _compose_thread_multipart(
             forwarded_from_kind=body.forwarded_from_kind,
         ))
         for name in body.recipients:
+            if name == FOUNDER_LITERAL:
+                continue
             org.db.add_thread_participant(thread_id, name, added_by="founder")
 
         # Store uploaded files in thread-scoped store.
         thread_attachments: list[ThreadAttachment] = []
-        for file_field in file_fields:
-            content = await file_field.read()
+        for file_field, content in zip(file_fields, uploaded_contents):
             if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
                 raise HTTPException(
                     status_code=413,
@@ -582,6 +646,8 @@ async def compose_thread(
         raise HTTPException(status_code=422, detail={"code": "empty_subject"})
     if not body.recipients:
         raise HTTPException(status_code=422, detail={"code": "empty_recipients"})
+    raw_recipients = list(body.recipients)
+    body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
     attachments = _normalize_attachments(
         org, body.attachments, uploaded_by="founder",
     )
@@ -590,6 +656,8 @@ async def compose_thread(
     # Validate each recipient is an approved agent with a workspace.
     org_paths = OrgPaths(root=org.root)
     for name in body.recipients:
+        if name == FOUNDER_LITERAL:
+            continue
         agent_def = prompt_loader.load_agent(org_paths, name)
         workspace_exists = (org.root / "workspaces" / name).exists()
         if agent_def is None or not workspace_exists:
@@ -628,9 +696,12 @@ async def compose_thread(
     # invocation. The founder is not a participant; no founder mint.
     # Self-exclusion is moot at compose time (founder is the speaker and is
     # not in recipients).
-    addressed_agents = list(body.recipients)
+    addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
 
     async with org.db_lock:
+        body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
+        _validate_message_addresses(org, body.body_markdown)
+        addressed_agents = [name for name in body.recipients if name != FOUNDER_LITERAL]
         thread_id = org.db.next_thread_id()
         org.db.insert_thread(ThreadRecord(
             id=thread_id, subject=subject, turn_cap=turn_cap,
@@ -638,6 +709,8 @@ async def compose_thread(
             forwarded_from_kind=body.forwarded_from_kind,
         ))
         for name in body.recipients:
+            if name == FOUNDER_LITERAL:
+                continue
             org.db.add_thread_participant(thread_id, name, added_by="founder")
         seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker="founder",
@@ -762,6 +835,8 @@ async def _compose_agent_thread_multipart(
     if org.sessions.is_recovery_session(body.task_id, body.composer, body.session_id):
         raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
+    raw_recipients = list(body.recipients)
+    body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
     # Dedupe recipients.
     seen_rcpt: set[str] = set()
     recipients: list[str] = []
@@ -808,7 +883,12 @@ async def _compose_agent_thread_multipart(
         name for name in recipients if name != FOUNDER_LITERAL and name != body.composer
     ]
 
+    uploaded_contents = [await file_field.read(MAX_THREAD_ATTACHMENT_BYTES + 1) for file_field in file_fields]
+
     async with org.db_lock:
+        recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
+        _validate_message_addresses(org, body.body_markdown)
+        addressed_agents = [name for name in recipients if name != FOUNDER_LITERAL and name != body.composer]
         thread_id = org.db.next_thread_id()
         org.db.insert_thread(ThreadRecord(
             id=thread_id, subject=subject, turn_cap=turn_cap,
@@ -823,8 +903,7 @@ async def _compose_agent_thread_multipart(
 
         # Store uploaded files in thread-scoped store.
         thread_attachments: list[ThreadAttachment] = []
-        for file_field in file_fields:
-            content = await file_field.read()
+        for file_field, content in zip(file_fields, uploaded_contents):
             if len(content) > MAX_THREAD_ATTACHMENT_BYTES:
                 raise HTTPException(
                     status_code=413,
@@ -976,6 +1055,8 @@ async def compose_thread_as_agent(
     if org.sessions.is_recovery_session(body.task_id, body.composer, body.session_id):
         raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
 
+    raw_recipients = list(body.recipients)
+    body.recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
     # Dedupe recipients (preserve order).
     seen: set[str] = set()
     recipients: list[str] = []
@@ -1009,6 +1090,8 @@ async def compose_thread_as_agent(
     composed_from_task_id = body.task_id
 
     async with org.db_lock:
+        recipients = _resolve_message_recipients(org, raw_recipients, body.body_markdown)
+        _validate_message_addresses(org, body.body_markdown)
         thread_id, seq, tokens_to_enqueue, wake_recipients = _create_agent_thread_locked(
             org,
             composer=body.composer,
@@ -1411,6 +1494,7 @@ async def reply_thread_endpoint(
         inv = org.db.get_pending_invocation(body.invocation_token)
         if inv is None:
             raise HTTPException(status_code=409, detail={"code": "invocation_token_consumed"})
+        _validate_message_addresses(org, body_text)
         seq, settlement, arrivals = org.db.reply_conversational(
             thread_id=thread_id,
             speaker=body.speaker,
@@ -2051,6 +2135,7 @@ async def _send_thread_message_inprocess(
 
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
+        _validate_message_addresses(org, body_text)
         seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,
@@ -2102,6 +2187,7 @@ async def _post_agent_message(
     """
     tokens_to_enqueue: list[str] = []
     async with org.db_lock:
+        _validate_message_addresses(org, body_text)
         seq, arrivals = org.db.record_conversational_arrival(
             thread_id=thread_id, speaker=speaker,
             kind=ThreadMessageKind.MESSAGE,

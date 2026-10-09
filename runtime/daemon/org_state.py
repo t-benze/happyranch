@@ -65,6 +65,8 @@ class OrgState:
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
     memory_collection: CollectionObserver | None = field(init=False, default=None)
     memory_collection_unavailable: str | None = field(init=False, default=None)
+    naming_readiness: str = field(init=False, default="unavailable")
+    naming_diagnostic: str | None = field(init=False, default="naming_not_initialized")
     sessions: SessionTracker = field(default_factory=SessionTracker)
     db_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kb_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -102,6 +104,9 @@ class OrgState:
     }
 
     def __post_init__(self) -> None:
+        from runtime.identities.registry import prepare_message_addresses, validate_message_addresses
+        self.db._thread_address_prepare = lambda body: prepare_message_addresses(self, body)
+        self.db._thread_address_validate = lambda addresses: validate_message_addresses(self, addresses)
         try:
             from runtime.infrastructure.memory_collection import CollectionObserver
             self.memory_collection = CollectionObserver(org=self.slug, root=self.root, db=self.db)
@@ -243,6 +248,8 @@ class OrgState:
     @classmethod
     def load(cls, *, slug: str, root: Path, settings: Settings) -> "OrgState":
         paths = OrgPaths(root=root)
+        from runtime.identities.schema import preflight
+        naming_preflight = preflight(paths.db_path, org_slug=slug)
         db = Database(paths.db_path)
         try:
             install_or_recover(db, expected_org_slug=slug)
@@ -298,6 +305,15 @@ class OrgState:
                 settings=settings,
                 orchestrator=orchestrator,
             )
+            from runtime.identities.registry import read_name_metadata, refresh_names
+            # Binding reads current validated org metadata at prompt construction;
+            # no cached snapshot, reconciliation or new launch/readiness gate.
+            orchestrator._name_metadata_reader = lambda: read_name_metadata(state)
+            state.naming_diagnostic = naming_preflight
+            # Cold load has no concurrent route coroutine. Capture/install is
+            # outside short authority/profile leases, after baseline admission.
+            with state.workflow_authority.writer_interval(publisher="identity_names_load"):
+                refresh_names(state, install=True)
             # U2A publishes/reconciles the org authority generation before the
             # state is returned. Failure remains fail-closed in the workflow
             # pointer but does not detach the org or alter legacy task/chain

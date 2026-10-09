@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 import { useCallback, useRef, useState } from 'react';
 import { useTaskTailSSE } from '@/hooks/tasks';
 import type { TaskEvent } from '@/lib/api/types';
@@ -130,7 +131,7 @@ export function TaskEventsLog({ taskId }: { taskId: string }): JSX.Element {
               >
                 {prettyLabel(label, locale)}
               </span>
-              {ev.agent && <span className="text-fg-muted">· {ev.agent}</span>}
+              {ev.agent && <span className="text-fg-muted">· <IdentityName canonicalId={ev.agent} /></span>}
               {hasPayload && (
                 <span className="text-fg-muted ml-auto">{isOpen ? '▾' : '▸'}</span>
               )}

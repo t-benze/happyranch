@@ -1,5 +1,76 @@
 # Orchestrator Contracts
 
+## Current name context in task prompts
+
+TASK10385 binds a presentation-only current metadata reader from OrgState to
+Orchestrator. The task role builder renders Name · ID for members selected by
+existing `_list_candidate_agents` IDs; it never substitutes labels into delegation,
+chains, fanout, reviewer rules or callback examples. The outer task wrapper
+refreshes self/founder context on every construction, including leaf/self-only
+and resumed work. Its outer agent, task/session/provider IDs remain canonical.
+
+Task role and outer wrapper are separate bounded metadata reads. All labels in
+each rendering share that read; no file/DB lookup per label or persisted snapshot
+is added. Founder is separate human context, never a roster agent. Missing naming
+metadata produces honest ID-only context with no writes, reconciliation or
+launch gate. Prompt wording states current-name human addressing and ID-only
+automation; remembered names do not override fresh resumed-turn context.
+
+Full/resumed thread, full fallback and resumed nudge plus dream/wake/schedule
+production callers supply fresh context under the same rule. IDs retain authority,
+role checks, durable queue membership and callback/failure ordering. Scenario8
+renders shipping builders and scenario9 checks bindings; AUTHORED / NOT RUN is
+not provider-resume or behavioral acceptance. UI/type source is present; final
+independent whole-candidate review/QA/checks/publication/merge remain required.
+See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+## Naming v1 core, API and routing source
+
+Org identity names use the same outer coroutine gate as supported roster and
+consumer writes, with profile-before-publication ordering preserved. The thread
+RLock is distinct and cannot serialize yielding coroutine writers. Naming helpers
+capture twice outside short leases and project after real terminal compensation;
+pure rename never calls canonical_change. IDs continue to own session bindings,
+automated decisions, team membership and canonical definition filenames.
+
+The bounded API delegates operator rename to that same CAS/gate/audit service;
+it adds no canonical generation/publication, receipt or authority/profile
+algorithm. Raw task/session/agent/composer/speaker/thread/invocation binding-key
+presence (including null/partial/malformed) is denied before strict body decoding.
+Read resolution preserves lifecycle and current team/thread context predicates
+and returns typed founder-human/former diagnostics; it is never an authorization
+or reservation. Subsequent action owners revalidate canonical eligibility. No
+label becomes a session principal, automated target, team participant or executor.
+Current and resumed prompt rosters are implemented by the presentation-only
+reader described above.
+
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are SKIPPED/SUSPENDED THR2915/16 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+
 **G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
 initializes the complete G layout before attachment. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.

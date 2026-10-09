@@ -1,3 +1,6 @@
+import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
+import { useIdentityPresentation } from '@/hooks/identities';
+import { IdentityName } from '@/shared/identities/IdentityName';
 import { SystemPromptEditor } from './SystemPromptEditor';
 /**
  * AgentDetailPane — inline right detail/edit pane (Direction-A Pasture).
@@ -96,6 +99,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
   const { slug } = useParams<{ slug: string }>();
   const { t, locale, render } = useTranslation();
   const agentsQuery = useAgentsList();
+  const identityPresentation = useIdentityPresentation();
   const teamsQuery = useTeamsList();
   const { density } = useDensity();
   const taskRoutes = useTasksRoutes();
@@ -341,11 +345,11 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       <header className="border-border-default flex items-start gap-3.5 border-b px-5 py-4">
         {/* AGENTS-04: detail-hero avatar anchor (Direction-A `a-agents`),
             reusing the roster's role-colored initial chip. */}
-        <AgentAvatar name={agentName} role={agent?.role ?? null} size="lg" />
+        <AgentAvatar displayName={identityPresentation.name(agentName)} name={agentName} role={agent?.role ?? null} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
             <h2 className="font-display text-text-primary truncate text-xl font-medium">
-              {agentName}
+              <IdentityName canonicalId={agentName} />
             </h2>
             <span
               aria-hidden="true"
@@ -398,6 +402,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
 
       {/* --- Editable fields — Pasture card sections --- */}
       <div className="flex-1 space-y-5 overflow-y-auto px-5 py-4">
+        <AddressableNameEditor canonicalId={agentName} />
         {isEligiblePolicyManager(
           policyAgent,
           teamsQuery.data?.teams,
@@ -629,6 +634,7 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
                 <li key={task.task_id}>
                   <TaskCard
                     task={task}
+                    agentLabel={task.assigned_agent ? <IdentityName canonicalId={task.assigned_agent} /> : undefined}
                     to={taskRoutes.detail(task.task_id)}
                     density={density}
                     taskRoutes={taskRoutes}

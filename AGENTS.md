@@ -1,5 +1,101 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**Naming v1 core, API and routing source (THR-293 seq14/22/34).** One daemon controls each org.
+OrgState admits the existing generic/workflow/canonical source before installing
+an org-only, atomic three-table naming extension. Generic Database and
+runtime-audit remain naming-free. Every naming-installed database, including F,
+requires a compatible naming reader; explicit F/E/G workflow migrations preserve
+naming rows/revisions and never install absent naming. Flat schema1 still refuses.
+Current names and permanent former claims share the case-insensitive ASCII
+namespace with present active/pending/terminated IDs and founder. Editable names
+are 1–64 ASCII letters/digits/underscore/hyphen with a letter/digit first and no
+trimming. An admitted `_worker` ID remains an owner-bound default/address; it is
+not an editable-name exception or permission to admit longer IDs.
+
+The internal rename service uses revision CAS and one atomic existing-shaped
+founder audit; pure rename changes no task/session/workspace/permission/authority
+binding. Supported lifecycle writers reconcile actual terminal canonical results
+under their existing shared coroutine gate. Naming-unavailable blocks new ID
+creation/rename, while original same-ID guards and callbacks keep their existing
+behavior. Coherent naming never proves bootstrap, workspace rollback or cleanup
+success. The bounded API source mounts org-local GET /identities, POST
+/identities/resolve and PUT /agents/{agent_id}/addressable-name and
+/founder/addressable-name. Strict rename requires only addressable_name and
+positive expected_name_revision. Raw body/query task/session/agent/composer/
+speaker/thread/invocation identity-key presence refuses before decoding, even
+null/partial/malformed. Existing shared bearer cannot prove a human identity;
+descriptive founder/name headers confer no authority. Reads preserve canonical
+IDs and expose null/unavailable label metadata on naming failure; name revision
+and canonical-definition revision are distinct. Resolution is diagnostic, never
+authorization or reservation.
+
+Routing source now classifies current names and permanent IDs case-insensitively
+to canonical agent IDs using the unchanged @token grammar (including quoted and
+email-interior matches). Any recognized former token rejects the entire current
+message/recipient input with409 former_name and current_name, before thread-ID
+allocation, exchange closure, callback settlement/consumption, message/audit/queue
+mutation or application attachment finalization. Composer, speaker, task/session
+and invocation fields remain ID-only; labels confer no authority. Current names
+of pending/terminated owners do not designate wake targets. Unknown text and
+self/nonparticipant-only mentions retain ordinary fallback when naming is ready.
+Unavailable naming preserves actual ID behavior; non-ID addresses refuse503
+naming_unavailable. No read adapter reconciles or writes names.
+
+**Current naming CLI/prompt contract.**
+Operator `identities list/resolve/rename` uses existing API and name-revision CAS,
+local validation and uncertain-failure readback without retries. Human targets
+resolve current names to IDs; founder recipients retain `@founder`. Historical
+ID filters and naming-unavailable ID access preserve owner checks. Every CLI
+managed associated upload checks former body/recipient tokens first, including
+quoted/email-interior grammar, without rewriting bodies or claiming reservation/
+rollback across HTTP requests. Task/manager/full/resumed/fallback/dream/wake/
+schedule prompts receive current self/founder/ID-selected roster labels; metadata
+failure renders ID-only context without writes or launch gates. Automation,
+callbacks, delegation/chain/fanout/config/roles and provider/task/session IDs stay
+ID-bound. The provider-aware UI/types, editors and name/ID pickers are present.
+Scenario5/8/9 E2E assertions still need execution; the maker handoff records actual
+frontend outcomes. See the current naming spec and maintained guides for the
+combined source contract and remaining behavioral acceptance gates.
+
+
+Current-founder-only MESSAGE classification is ephemeral and separate from
+empty agent mentions. It suppresses broadcast and frozen-cohort fallback for
+that message, while full-recipient required watermarks still advance. Mixed
+founder/eligible-agent mentions route the agents. Founder stays human inbox only,
+never participant/executor. BOOTSTRAP/TASK_FOLLOWUP keep their isolated broadcast.
+Already-due stale-exchange catch-up tokens remain returned and enqueued after
+commit; they are not attributed to the new founder-only message. Restart reads
+existing canonical mentions_json/ranges/tokens/exchange/deferral rows, without
+reparsing historical names or discarding pending work. Frozen priority membership
+comes from the opening message's persisted mentions; no member/receipt column
+or table is added.
+
+Filesystem namespace capture precedes the connection RLock; DB-only snapshot
+revalidation precedes the transaction's first effect. Compose/send/reply and the
+shared non-HTTP dream compose boundary revalidate actions. Multipart reads finish
+before final admission and application allocation/store/write has no intervening
+await. Framework-owned request parsing/spooling is not published attachment
+storage. The existing one-daemon ordering applies; no nested coroutine gate,
+extra namespace lock or filesystem-under-DB lookup is introduced.
+
+THR293seq34/35 requires twelve readable E2E scenarios, not the historical233/297
+case matrix. Four authored routing bodies contribute to5/6/7/9/12 and remain
+NOT RUN; original manifests are preserved as historical proposed work. Python
+units/collection are SKIPPED/SUSPENDED, never PASS and never a blocker. General
+broken integration is SKIPPED THR243seq42. Focused naming E2E belongs later in a
+supported disposable GitHub/Mac Linux guest, with finite commands/resources and
+actual cleanup; no blanket unspecified execution release is required. This
+combined candidate includes CLI/prompt and provider-aware UI/type source with
+English and Chinese editors, labels and pickers. Supported frontend checks run
+in the guarded worktree; exact command/runtime/source/exit receipts and remaining
+E2E/browser/schema obligations live in the maker handoff. Final whole-candidate
+independent reviewer APPROVE, focused behavioral QA PASS, applicable checks/hooks,
+normal publication and guarded manager merge remain. Source integration and
+mock-backed frontend checks do not establish whole-feature acceptance.
+
+See the [current naming contract](docs/superpowers/specs/2026-10-09-identity-names-core.md).
+
+
 **G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
 initializes the complete G layout before attachment. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
@@ -438,8 +534,12 @@ exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
 For authorized integration-skipped clean-head `scripts/local_ci.sh all`, dispatch
 the existing manual nightly workflow on the exact candidate ref when execution is
-authorized. Its sole input is `all_only` (boolean, default false), with no
-`run_integration` toggle. The receipt-producing extracted runner is
+authorized. Its default manual lane takes `all_only` (boolean, default false),
+with no `run_integration` toggle. Explicit `naming_only=true` instead suppresses
+that broad lane and selects only the finite naming job, requiring an exact
+published `naming_source_sha` and immutable amd64 `naming_image`. The default
+and schedule predicates and existing checks are unchanged. The receipt-producing
+extracted runner for the default manual lane is
 `uv run python scripts/nightly_local_ci_all.py`; authenticate its actual
 local-ci-all checkout/source/tool provenance, command exit and separate
 integration SKIPPED result. The manual job retains the approved 150-minute cap;
@@ -605,3 +705,56 @@ retire historical failed ancestors.
 Run focused behavior tests for every changed domain. Before committing, run `git diff --check`, `git diff --stat`, and inspect the final diff. Compare it against the latest scope summary and explain any unexpected changes.
 
 Stop and escalate before touching permission-model generation, auth or credentials, schema migrations or overloaded-column semantics, v0/v1 compatibility, or other high-risk or load-bearing work.
+
+## Functional naming UI and API contract
+
+The existing org surface has an independent human-founder name editor. Active
+agent detail, pending enrollment and terminated identity surfaces expose agent
+name editors, keeping immutable ID and definition settings separate. Editable
+names use exact ASCII 1–64 grammar (first letter/digit, then letters/digits/_/-),
+without trimming. PUT sends only `addressable_name` and positive
+`expected_name_revision`. A stale conflict performs authoritative GET, retains
+the draft and requires explicit resubmission. An ambiguous response reads back
+and reports the observed name/revision or uncertainty, with no blind retry or
+claim that failed transport rolled back a commit. Absent/unavailable metadata
+cannot rename. A displayed human label provides no authentication proof.
+
+Provider-aware naming hooks share one org-scoped identity list/query. Successful
+rename/readback refreshes identity metadata, preserving canonical IDs, settings
+and unrelated drafts. Current labels display Name · ID (ID alone when equal or
+unavailable); historical IDs, links, keys, owner/filter/recipient values and
+stored message text remain canonical/literal. Metadata follows existing focus/
+reconnect behavior and bounded 30-second polling; availability is never a global
+gate for established ID operations. Editor drafts are scoped by org/kind/ID and
+survive locale changes and identity refetches.
+
+Real thread compose/follow-up/invite/forward and task read-filter pickers search
+current names and permanent IDs. Selected values stay IDs across renames. Founder
+is a separate human option routed as established `@founder`, never an agent
+participant or task owner. There is no task-create owner GUI in the present web
+source; the existing task agent filter is the relevant selector. Prospective
+invite resolve omits `thread_id` because that optional scope means existing
+participants; the actual invite endpoint retains final action eligibility.
+Recognized former body/recipient tokens stop UI-managed associated attachment
+uploads when caught by separate preflight. Unknown body @text remains literal,
+including the existing quoted/email token parser behavior. This read is not a
+reservation: final server admission may reject after an intervening rename, and
+already-completed uploads are not claimed rolled back. New en/zh-CN text uses
+existing controls/tokens; 390×844/1440×900 light/dark behavior and screenshots are
+unexecuted acceptance obligations, not pixel-fidelity evidence.
+
+The four existing naming adapters mirror IdentityView/ResolveResponse/RenameBody.
+The repository contract snapshot is a summarized route/parameter/status artifact,
+not full JSON Schema. Its four entries were authored manually from source; no
+pytest regeneration ran. Actual schema comparison, supported frontend lint/
+typecheck/build/tests, browser evidence and independent final-candidate review/
+behavioral QA remain required. The shipping-page MSW assertions in
+`web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
+API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
+canonical skill-row attributes and stable row identity during label refresh.
+These provider/component tests use frontend mocks. Source-specific commands,
+red/keeper results and actual execution status belong in the maker handoff;
+frontend results do not establish daemon/DB end-to-end behavior. Existing
+twelve-scenario integration bodies/fixtures are preserved. Python units remain SKIPPED/SUSPENDED;
+general integration remains SKIPPED THR243seq42. No publication, merge, deployment
+or whole-feature completion is established by this source slice.

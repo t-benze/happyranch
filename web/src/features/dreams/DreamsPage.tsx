@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * DreamsPage — the reflection feed (§4.8). Direction-A Pasture fidelity
  * pass (THR-030 Leg B Batch 9).
@@ -117,7 +118,7 @@ function DreamCard({
           <CrescentMoonBadge className="h-3.5 w-3.5" label={t('dreams.badge')} />
           <span className="text-text-primary font-mono text-xs font-medium tabular-nums">{dream.dream_id}</span>
           <span className="text-text-muted text-xs">·</span>
-          <span className="text-text-secondary text-xs">{dream.agent_name}</span>
+          <span className="text-text-secondary text-xs"><IdentityName canonicalId={dream.agent_name} /></span>
           <span className={[
             'ml-auto text-overline px-1.5 py-0.5 rounded-full font-medium uppercase tracking-wide',
             statusPill(dream.status),

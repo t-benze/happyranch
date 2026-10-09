@@ -3,6 +3,19 @@ name: todos
 description: Use when you need to create a scheduled Todo for yourself from explicit founder or operator instruction. Never infer or proactively schedule future work. Scheduling is self-only and available to every valid in-org agent.
 ---
 
+## Current names and permanent automation IDs (unpublished source)
+
+Fresh prompts may show current Name · ID for this turn. Use the permanent ID
+from the injected parameters for callback agent/composer/speaker, task/session/
+invocation proofs, configuration and delegate/then/fanout targets. A name is
+human-addressing/presentation data, never actor authority. Human destination
+arguments and @mentions accept current names or IDs; former names refuse with
+the current name and do not forward. Founder is a separate human; recipient
+transport remains `@founder`. Metadata failure gives ID-only context.
+
+Human Todo-list filters accept current names; `schedules create/spawn` payload agent and self/session checks remain permanent-ID-only. No scheduling authority changes.
+
+
 # Todos — Agent-owned scheduled commitments (THR-105 v2)
 
 Agents may create `one_shot`, `weekly`, and `recurring` self-scheduled Todos via the

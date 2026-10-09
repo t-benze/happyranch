@@ -8,6 +8,8 @@
 
 interface AgentChipProps {
   name: string;
+  /** Current metadata display; name remains the canonical ID. */
+  label?: React.ReactNode;
   role: 'manager' | 'worker' | 'founder';
   /** Allow long identities to wrap when truncation would hide required data. */
   wrap?: boolean;
@@ -19,7 +21,7 @@ const DOT_BG: Record<AgentChipProps['role'], string> = {
   founder: 'bg-agent-founder',
 };
 
-export function AgentChip({ name, role, wrap = false }: AgentChipProps): JSX.Element {
+export function AgentChip({ name, label, role, wrap = false }: AgentChipProps): JSX.Element {
   return (
     <span className="text-fg inline-flex items-center gap-2 text-sm">
       <span
@@ -29,7 +31,7 @@ export function AgentChip({ name, role, wrap = false }: AgentChipProps): JSX.Ele
       <span
         className={wrap ? 'min-w-0 break-all' : 'truncate'}
       >
-        {name}
+        {label ?? name}
       </span>
     </span>
   );

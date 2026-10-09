@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, within } from '@testing-library/react';
+import { AppProvider } from '@/design-system/providers/AppProvider';
 import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the dreams hooks so the page renders deterministically
@@ -18,13 +19,15 @@ vi.mock('@/hooks/dreams', () => ({
 
 function renderPage(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryDefaults(['identities', 'test-org'], { staleTime: Infinity });
+  qc.setQueryData(['identities', 'test-org'], { identities: [] });
   vi.spyOn(qc, 'invalidateQueries');
   const rendered = render(
-    <QueryClientProvider client={qc}>
+    <AppProvider client={qc}>
       <MemoryRouter initialEntries={['/orgs/test-org/dreams']}>
         <I18nTestBoundary>{ui}</I18nTestBoundary>
       </MemoryRouter>
-    </QueryClientProvider>,
+    </AppProvider>,
   );
   return { ...rendered, qc };
 }
@@ -360,7 +363,7 @@ describe('DreamsPage', () => {
     fireEvent.click(card!);
 
     // Detail drawer should show agent + date
-    expect(screen.getByText('product_lead · 2026-06-18')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'product_lead · 2026-06-18' })).toBeDefined();
     // Candidate should be visible
     expect(screen.getByText('Spanish after-hours routing')).toBeDefined();
 
@@ -402,12 +405,12 @@ describe('DreamsPage', () => {
 
     const card = screen.getByText('DREAM-0011').closest('button')!;
     fireEvent.click(card);
-    expect(screen.getByText('product_lead · 2026-06-18')).toBeDefined();
+    expect(screen.getByRole('heading', { name: 'product_lead · 2026-06-18' })).toBeDefined();
 
     // Click again to close
     fireEvent.click(card);
     // Title should not be visible anymore (drawer closed)
-    expect(screen.queryByText('product_lead · 2026-06-18')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'product_lead · 2026-06-18' })).toBeNull();
   });
 
   /* ---------------------------------------------------------------- */

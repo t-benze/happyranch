@@ -1,5 +1,74 @@
 # Features And Invariants
 
+## Current CLI/prompt naming invariants
+
+TASK10385 adds operator identity inspect/resolve/rename with name-revision CAS
+and uncertain-failure readback. Human destinations/filter labels resolve to IDs;
+former names report current names without forwarding. Founder transport stays
+`@founder`, never agent participation/ownership. Historical IDs and unavailable-
+naming ID operations preserve original owner checks. Human Name · ID output is
+explicitly current enrichment, not a historical snapshot or JSON/history rewrite.
+
+All associated CLI upload paths preflight former body/recipient tokens; final
+forwarded text is checked using the unchanged quoted/email-interior grammar.
+Unknown text remains intact. A read preflight is no reservation and uploads are
+independent; server action admission can refuse after an intervening rename.
+Current task/full/resumed/fallback/dream/wake/schedule context refreshes labels
+without changing canonical role/authority/session/queue/proof bindings. Founder
+is separate human context; metadata failure supplies ID-only presentation.
+
+Relevant source assertions are inside existing scenarios5/8/9, AUTHORED / NOT RUN.
+The twelve-scenario set remains the acceptance proposal; old233/297 material is
+retained history. Actual provider resume/fallback launches, auxiliary runners,
+rename-after-upload races and actual browser/picker behavior remain unexercised.
+Frontend mock results and static evidence do not establish those behaviors. UI/types are present; disposable E2E,
+independent full review/QA and publication/merge remain required. See the [current naming contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+## Naming v1 core, API and routing source
+
+The internal naming registry retains chosen/current/former ownership permanently,
+while default-only rejected reservations release. Absent-owner revision metadata
+survives, preventing ABA; exact same-ID reenrollment restores chosen spelling.
+Former classification is a diagnostic and does not forward to a current recipient.
+Founder has typed human ownership. Naming projection does not infer bootstrap,
+archive restoration or termination-cleanup success from canonical coherence.
+
+Current file-backed active/pending/terminated owners plus founder are enumerated
+by the bounded naming API. Absent/history-only retained owners stay out of that
+roster. Resolver distinguishes resolved, former_name, unknown_identity,
+invalid_identity_address, ineligible_identity and naming_unavailable. Former
+claims yield only a typed diagnostic/current name; eligible=false prevents
+forwarding. Founder remains human and cannot be a task owner or agent participant.
+Reads never install/reconcile and preserve baseline canonical-ID availability
+with explicit null label/revision metadata on naming-only failure. The routing parser retains ordinary unknown @text behavior.
+
+
+Current routing source resolves names/IDs case-insensitively with the unchanged
+@token grammar. Former inputs refuse409 with current_name before thread creation,
+stale closure, callback settlement or application attachment finalization. A
+lookup grants no reservation; action boundaries revalidate. Actors/proofs remain
+ID-only. Current-founder-only messages suppress new broadcast/cohort wakes, retain
+full-recipient obligations and enqueue prior catch-up separately. Founder remains
+human inbox only. Restart uses durable IDs/ranges/tokens/exchange/deferral rows;
+no historical body reclassification or schema addition occurs. Filesystem capture
+precedes the RLock and multipart reads precede final no-await admission/write.
+Unavailable naming keeps actual ID behavior; non-ID addresses refuse503.
+
+THR293seq34/35 requires twelve readable E2E scenarios. Core/API/routing,
+CLI/prompt and UI/type source are present in the combined candidate. The existing
+routing bodies and CLI assertions remain reusable E2E material; shipping-page
+MSW assertions cover frontend portions of scenarios2/3/4/5/8/10, without daemon/DB
+proof. Exact execution results and remaining obligations live in the maker
+handoff. Python units/collection/duration are SKIPPED/SUSPENDED THR2915/16 and
+general integration is SKIPPED THR243seq42, never PASS. Focused naming E2E requires
+a supported disposable GitHub runner or Mac Linux guest with finite commands,
+resources, output, deadline and actual cleanup. Independent full review,
+behavioral QA, applicable checks, normal publication and guarded merge remain.
+
+
+[Current contract](../superpowers/specs/2026-10-09-identity-names-core.md).
+
+
 **G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
 initializes the complete G layout before attachment. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
@@ -894,3 +963,77 @@ requested F/E/G installer on its own disposable database; the comparison
 includes every SQL object. A candidate never supplies a baseline, and any
 required reference failure or unrelated object still refuses. This changes
 no observed-only authority-v2 claim rule.
+
+## Functional naming UI and API contract
+
+The existing org surface has an independent human-founder name editor. Active
+agent detail, pending enrollment and terminated identity surfaces expose agent
+name editors, keeping immutable ID and definition settings separate. Editable
+names use exact ASCII 1–64 grammar (first letter/digit, then letters/digits/_/-),
+without trimming. PUT sends only `addressable_name` and positive
+`expected_name_revision`. A stale conflict performs authoritative GET, retains
+the draft and requires explicit resubmission. An ambiguous response reads back
+and reports the observed name/revision or uncertainty, with no blind retry or
+claim that failed transport rolled back a commit. Absent/unavailable metadata
+cannot rename. A displayed human label provides no authentication proof.
+
+Provider-aware naming hooks share one org-scoped identity list/query. Successful
+rename/readback refreshes identity metadata, preserving canonical IDs, settings
+and unrelated drafts. Current labels display Name · ID (ID alone when equal or
+unavailable); historical IDs, links, keys, owner/filter/recipient values and
+stored message text remain canonical/literal. Metadata follows existing focus/
+reconnect behavior and bounded 30-second polling; availability is never a global
+gate for established ID operations. Editor drafts are scoped by org/kind/ID and
+survive locale changes and identity refetches.
+
+Real thread compose/follow-up/invite/forward and task read-filter pickers search
+current names and permanent IDs. Selected values stay IDs across renames. Founder
+is a separate human option routed as established `@founder`, never an agent
+participant or task owner. There is no task-create owner GUI in the present web
+source; the existing task agent filter is the relevant selector. Prospective
+invite resolve omits `thread_id` because that optional scope means existing
+participants; the actual invite endpoint retains final action eligibility.
+Recognized former body/recipient tokens stop UI-managed associated attachment
+uploads when caught by separate preflight. Unknown body @text remains literal,
+including the existing quoted/email token parser behavior. This read is not a
+reservation: final server admission may reject after an intervening rename, and
+already-completed uploads are not claimed rolled back. New en/zh-CN text uses
+existing controls/tokens; 390×844/1440×900 light/dark behavior and screenshots are
+unexecuted acceptance obligations, not pixel-fidelity evidence.
+
+The four existing naming adapters mirror IdentityView/ResolveResponse/RenameBody.
+The repository contract snapshot is a summarized route/parameter/status artifact,
+not full JSON Schema. Its four entries were authored manually from source; no
+pytest regeneration ran. Actual schema comparison, supported frontend lint/
+typecheck/build/tests, browser evidence and independent final-candidate review/
+behavioral QA remain required. The shipping-page MSW assertions in
+`web/src/test/identity-names.test.tsx` add UI portions of scenarios2/3/4/5/8/10;
+API assertions are `web/src/lib/api/identities.test.ts`; scenario9 also exercises
+canonical skill-row attributes and stable row identity during label refresh.
+These provider/component tests use frontend mocks. Source-specific commands,
+red/keeper results and actual execution status belong in the maker handoff;
+frontend results do not establish daemon/DB end-to-end behavior. Existing
+twelve-scenario integration bodies/fixtures are preserved. Python units remain SKIPPED/SUSPENDED;
+general integration remains SKIPPED THR243seq42. No publication, merge, deployment
+or whole-feature completion is established by this source slice.
+
+
+Naming verification source now has the explicit finite selection
+`tests/helpers/identity_names/run.sh` for the same twelve THR293seq34 business
+scenarios. Core/ASGI assertions retain their layer attribution; naming-only
+`test_identity_names_e2e.py` and `web/scripts/identity-names-e2e.mjs` add real
+served daemon/CLI/native callback/browser-to-SQL assertions for2/3/6/8/9 and
+real390x844/1440x900 en/zh-CN light/dark captures. They are AUTHORED / NOT RUN;
+MSW/component greens and static syntax do not establish these outcomes. The
+current case record, mutations and unselected historical branches are in
+`docs/superpowers/specs/2026-10-09-identity-names-core.md` under Current finite
+naming verification source. Standalone OpenAPI --check and a genuine served
+schema comparison remain required; the snapshot is still hand-authored. Clean
+hooked publication precedes the authorized disposable GitHub naming operation.
+The naming-only workflow and `scripts/identity_names_hosted.sh` are installed;
+execution remains pending actual source publication and hosted receipts. The
+runner preserves source/evidence sentinels through init/prepare/work/export with
+a bounded offline mount holder, refuses output truncation, and reserves cleanup
+under one job-start deadline. Python unit suspension and
+general integration exception retain their exact scope; no behavioral acceptance,
+merge, live migration or deployment is established.

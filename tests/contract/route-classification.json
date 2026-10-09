@@ -149,7 +149,11 @@
     "POST /api/v1/runtime/custom-cli/{operation_id}/commit",
     "POST /api/v1/runtime/custom-cli/{operation_id}/retry",
     "GET /api/v1/runtime/custom-cli/status",
-    "POST /api/v1/runtime/custom-cli/{operation_id}/forget"
+    "POST /api/v1/runtime/custom-cli/{operation_id}/forget",
+    "GET /api/v1/orgs/{slug}/identities",
+    "POST /api/v1/orgs/{slug}/identities/resolve",
+    "PUT /api/v1/orgs/{slug}/agents/{agent_id}/addressable-name",
+    "PUT /api/v1/orgs/{slug}/founder/addressable-name"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",

@@ -33,7 +33,7 @@ import { Link, useParams } from 'react-router-dom';
 import { EmptyState } from '@/design-system/patterns/EmptyState';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
-import { AgentChip } from '@/design-system/patterns/AgentChip';
+import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
 import { Button } from '@/design-system/primitives/Button';
 import { ContentWrap } from '@/design-system/layouts/ContentWrap/ContentWrap';
 import { useJob, useStopJob } from '@/hooks/jobs';

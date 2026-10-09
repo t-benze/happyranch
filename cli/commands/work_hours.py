@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from cli import _shared
+from cli import identities
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import OpcClient
 
@@ -60,10 +61,12 @@ def cmd_work_hours_spawn(args: argparse.Namespace) -> None:
 
 
 def cmd_work_hours_status(args: argparse.Namespace) -> None:
+    identities.validate_address(args.agent)
     client, slug = _client_and_org(args)
+    filter_agent = identities.filter_target(client, slug, args.agent)
     params = {}
     if args.agent:
-        params["agent"] = args.agent
+        params["agent"] = filter_agent
     r = client.get(f"/api/v1/orgs/{slug}/work-hours/status", params=params)
     if not _ok(r):
         return
@@ -71,10 +74,12 @@ def cmd_work_hours_status(args: argparse.Namespace) -> None:
 
 
 def cmd_work_hours_list(args: argparse.Namespace) -> None:
+    identities.validate_address(args.agent)
     client, slug = _client_and_org(args)
+    filter_agent = identities.filter_target(client, slug, args.agent)
     params = {"limit": args.limit}
     if args.agent:
-        params["agent"] = args.agent
+        params["agent"] = filter_agent
     r = client.get(f"/api/v1/orgs/{slug}/work-hours", params=params)
     if not _ok(r):
         return
@@ -82,12 +87,13 @@ def cmd_work_hours_list(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(work_hours, indent=2))
         return
+    names = identities.labels(client, slug)
     if not work_hours:
         print("(no work hours)")
         return
     for w in work_hours:
         print(
-            f"{w['work_hour_id']:12s}  {w['status']:10s}  {w['agent_name']:20s}  "
+            f"{w['work_hour_id']:12s}  {w['status']:10s}  {identities.display(names, w['agent_name']):20s}  "
             f"{w['local_date']} {w['slot']} {w['mode']:10s}  "
             f"{_fmt_ts(w.get('ended_at') or w['scheduled_for'])}  "
             f"spawned={w['spawned_task_count']}"
@@ -103,7 +109,8 @@ def cmd_work_hours_show(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(body, indent=2))
         return
-    print(f"# {body['work_hour_id']} - {body['agent_name']}")
+    names = identities.labels(client, slug)
+    print(f"# {body['work_hour_id']} - {identities.display(names, body['agent_name'])}")
     print(
         f"status={body['status']} {body['local_date']} {body['slot']} "
         f"mode={body['mode']} scheduled={_fmt_ts(body['scheduled_for'])}"

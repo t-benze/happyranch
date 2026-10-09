@@ -351,6 +351,10 @@ class WorkflowCutoverStore:
             with self._transaction(write=False) as conn:
                 marker, events = self._read(conn)
                 blockers = self._integrity_blockers(conn)
+                from runtime.identities.schema import validate_names
+                if validate_names(conn, org_slug=self._org_slug):
+                    blockers.append(self._blocker("naming_schema_requires_compatible_reader", owner="operator",
+                                                  required_action="retain_compatible_runtime"))
                 if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G"):
                     layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
                     blockers.append(self._blocker("submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",

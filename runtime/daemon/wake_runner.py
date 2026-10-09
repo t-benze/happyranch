@@ -68,6 +68,7 @@ def build_wake_prompt(
     managed_skills_index: str = "",
     repo_refresh_note: str = "",
     active_policy_section: str = "",
+    name_metadata=None,
 ) -> str:
     """Compose the wake-session prompt.
 
@@ -106,7 +107,7 @@ routines. It is NOT the work itself, and it is NOT a reflection. The real work
 happens in the root tasks you spawn — do not perform the routines here.
 
 Cadence: local_date {local_date}, slot {slot}, mode {mode}.
-current_time: {current_time}{skills_block}{repo_refresh_block}
+{prompt_name_context(name_metadata, agent_name)}current_time: {current_time}{skills_block}{repo_refresh_block}
 Turn EACH routine below into ONE concrete root-task brief (phrased for the work
 due since the last wake at this cadence), then submit them ALL in a SINGLE
 callback:
@@ -265,6 +266,7 @@ async def run_wake(
         managed_skills_index=managed_skills_index,
         repo_refresh_note=repo_refresh_note,
         active_policy_section=active_policy_section,
+        name_metadata=read_name_metadata(org_state),
     )
 
     executor_name = _prov  # already resolved above (TASK-2511)

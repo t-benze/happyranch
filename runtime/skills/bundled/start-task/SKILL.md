@@ -3,6 +3,17 @@ name: start-task
 description: Use this skill at the start of every task. Parses task_id, session_id, brief, and role_guidance from the prompt, executes the work, reports completion back to the daemon, and cleans up worktrees.
 ---
 
+## Current names and permanent automation IDs (unpublished source)
+
+Fresh prompts may show current Name · ID for this turn. Use the permanent ID
+from the injected parameters for callback agent/composer/speaker, task/session/
+invocation proofs, configuration and delegate/then/fanout targets. A name is
+human-addressing/presentation data, never actor authority. Human destination
+arguments and @mentions accept current names or IDs; former names refuse with
+the current name and do not forward. Founder is a separate human; recipient
+transport remains `@founder`. Metadata failure gives ID-only context.
+
+
 # start-task
 
 ## THR-247 recovery-turn exception

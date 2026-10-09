@@ -23,6 +23,7 @@ from runtime.daemon.routes import (
     executor_binaries,
     executors,
     health,
+    identities,
     jobs,
     kb,
     metrics,
@@ -139,6 +140,7 @@ async def _lifespan(app: FastAPI):
         migrate_artifacts_layout(org.root)
         OrgPaths(org.root).artifacts_dir.mkdir(exist_ok=True)
         # THR-095: one-shot reconcile agent.yaml executor/repos/model → .md
+        org.naming_readiness = "unavailable"
         try:
             from runtime.daemon.agent_config import migrate_agent_yaml_to_frontmatter
             migration_results = migrate_agent_yaml_to_frontmatter(
@@ -154,6 +156,12 @@ async def _lifespan(app: FastAPI):
                     )
         except Exception as exc:
             _logger.warning("THR-095 migration error for org %s: %s", org.slug, exc)
+        finally:
+            from runtime.identities.registry import refresh_names
+            # The compatibility batch/profile reconciliation has released its
+            # leases; startup has not exposed any route writers yet.
+            with org.workflow_authority.writer_interval(publisher="identity_names_compatibility"):
+                refresh_names(org)
         # THR-106: one-shot skill-id rename hr:review -> hr:reflection in the
         # persisted org/config.yaml skills eligibility section (allow + deny,
         # org/team/agent scope). Sentinel-gated (.hr_review_renamed).
@@ -439,6 +447,7 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(orgs.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.router, prefix="/api/v1/orgs/{slug}")
+    app.include_router(identities.router, prefix="/api/v1/orgs/{slug}", tags=["identities"])
     app.include_router(authority_policy.router, prefix="/api/v1/orgs/{slug}", tags=["authority-policy"])
     app.include_router(teams.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(audit.router, prefix="/api/v1/orgs/{slug}")

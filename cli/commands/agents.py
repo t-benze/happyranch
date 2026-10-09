@@ -5,6 +5,7 @@ import argparse
 import sys
 
 from cli import _shared
+from cli import identities
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
 
@@ -15,6 +16,7 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
 
     import httpx
 
+    identities.validate_address(args.agent)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -23,9 +25,11 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    target = identities.agent_target(client, slug, args.agent, lifecycles={"active"}) if args.agent is not None else None
+    names = identities.labels(client, slug)
     try:
         for payload in client.stream(
-            "POST", f"/api/v1/orgs/{slug}/agents/init", json={"agent": args.agent},
+            "POST", f"/api/v1/orgs/{slug}/agents/init", json={"agent": target},
         ):
             try:
                 event = _json.loads(payload)
@@ -35,7 +39,7 @@ def cmd_init_agent(args: argparse.Namespace) -> None:
             if event.get("phase") == "all_done":
                 print("Done.")
                 return
-            agent = event.get("agent", "")
+            agent = identities.display(names, event.get("agent", ""))
             phase = event.get("phase", "")
             # Executor drift: pre-THR-095 daemons could report that the org
             # .md frontmatter disagreed with a workspace agent.yaml. THR-095
@@ -225,14 +229,16 @@ def cmd_enrollments(args: argparse.Namespace) -> None:
         return
     print(f"{'Name':<22} {'Status':<12} {'Description':<40} Created")
     print("-" * 90)
+    names = identities.labels(client, slug)
     for e in enrollments:
         desc = e["description"][:37] + "..." if len(e["description"]) > 37 else e["description"]
-        print(f"{e['name']:<22} {e['status']:<12} {desc:<40} {_fmt_ts(e['created_at'])}")
+        print(f"{identities.display(names, e['name']):<22} {e['status']:<12} {desc:<40} {_fmt_ts(e['created_at'])}")
 
 
 
 def cmd_approve_agent(args: argparse.Namespace) -> None:
     """Founder action: approve a pending agent enrollment."""
+    identities.validate_address(args.name)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -241,15 +247,17 @@ def cmd_approve_agent(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    r = client.post(f"/api/v1/orgs/{slug}/agents/{args.name}/approve", json={})
+    target = identities.agent_target(client, slug, args.name, lifecycles={"pending"})
+    r = client.post(f"/api/v1/orgs/{slug}/agents/{target}/approve", json={})
     if not _ok(r):
         return
-    print(f"Approved: {args.name}")
+    print(f"Approved: {identities.display(identities.labels(client, slug), target)}")
 
 
 
 def cmd_reject_agent(args: argparse.Namespace) -> None:
     """Founder action: reject a pending agent enrollment."""
+    identities.validate_address(args.name)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -258,10 +266,11 @@ def cmd_reject_agent(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
-    r = client.post(f"/api/v1/orgs/{slug}/agents/{args.name}/reject", json={})
+    target = identities.agent_target(client, slug, args.name, lifecycles={"pending"})
+    r = client.post(f"/api/v1/orgs/{slug}/agents/{target}/reject", json={})
     if not _ok(r):
         return
-    print(f"Rejected: {args.name}")
+    print(f"Rejected: {identities.display(identities.labels(client, slug), target)}")
 
 
 
@@ -271,6 +280,7 @@ def cmd_set_model(args: argparse.Namespace) -> None:
     THR-095: writes to org/agents/<name>.md frontmatter ONLY
     (single source of truth). Omit --model to clear (revert to CLI default).
     """
+    identities.validate_address(args.agent)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -279,10 +289,11 @@ def cmd_set_model(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    target = identities.agent_target(client, slug, args.agent, lifecycles={"active"})
     model = args.model if args.model else None
     r = client.request(
         "PUT",
-        f"/api/v1/orgs/{slug}/agents/{args.agent}/model",
+        f"/api/v1/orgs/{slug}/agents/{target}/model",
         json={"model": model},
     )
     if not _ok(r):
@@ -290,7 +301,7 @@ def cmd_set_model(args: argparse.Namespace) -> None:
     result = r.json()
     before = result["before"]
     after = result["after"]
-    print(f"Model change for {result['agent']}:")
+    print(f"Model change for {identities.display(identities.labels(client, slug), result['agent'])}:")
     print(f"  before: {before}")
     print(f"  after:  {after}")
 
@@ -305,6 +316,7 @@ def cmd_set_executor(args: argparse.Namespace) -> None:
     file (``.claude/settings.json``) and preserves the canonical
     ``AGENTS.md``/``CLAUDE.md`` instruction pair and ``.claude/skills``.
     """
+    identities.validate_address(args.agent)
     try:
         client = OpcClient.from_env()
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
@@ -313,9 +325,10 @@ def cmd_set_executor(args: argparse.Namespace) -> None:
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    target = identities.agent_target(client, slug, args.agent, lifecycles={"active"})
     r = client.request(
         "PUT",
-        f"/api/v1/orgs/{slug}/agents/{args.agent}/executor",
+        f"/api/v1/orgs/{slug}/agents/{target}/executor",
         json={"executor": args.executor, "clean": args.clean},
     )
     if not _ok(r):
@@ -327,7 +340,7 @@ def cmd_set_executor(args: argparse.Namespace) -> None:
     def _fmt(val: object) -> str:
         return str(val) if val is not None else "(no workspace)"
 
-    print(f"Executor switch for {result['agent']}:")
+    print(f"Executor switch for {identities.display(identities.labels(client, slug), result['agent'])}:")
     print(f"  org .md frontmatter:  {before['org_executor']} -> {after['org_executor']}")
     stale = result.get("stale_files") or []
     if stale:
@@ -341,7 +354,125 @@ def cmd_set_executor(args: argparse.Namespace) -> None:
 
 
 
+def _identity_client(args):
+    client = OpcClient.from_env()
+    slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    return client, slug
+
+
+def cmd_identities_list(args: argparse.Namespace) -> None:
+    import json
+    client, slug = _identity_client(args)
+    response = client.get(f"/api/v1/orgs/{slug}/identities")
+    _ok(response)
+    body = response.json()
+    if args.json:
+        print(json.dumps(body, indent=2))
+        return
+    for row in body["identities"]:
+        label = row.get("addressable_name")
+        name = f"{label} · {row['canonical_id']}" if label else row["canonical_id"]
+        print(f"{name}  {row['kind']}/{row['lifecycle']}  "
+              f"name_revision={row.get('name_revision')}  naming={row['naming_status']}")
+
+
+def cmd_identities_resolve(args: argparse.Namespace) -> None:
+    import json
+    for address in args.addresses:
+        identities.validate_address(address)
+    if len(args.addresses) > 128 or (args.thread_id is not None and (
+            args.context != "thread_recipient" or not 1 <= len(args.thread_id) <= 128)):
+        identities.fail("resolve accepts 1–128 addresses; --thread-id requires thread_recipient", code=2)
+    client, slug = _identity_client(args)
+    payload = {"addresses": args.addresses, "context": args.context}
+    if args.thread_id:
+        payload["thread_id"] = args.thread_id
+    response = client.post(f"/api/v1/orgs/{slug}/identities/resolve", json=payload)
+    _ok(response)
+    body = response.json()
+    if args.json:
+        print(json.dumps(body, indent=2))
+        return
+    for row in body["resolutions"]:
+        identity = row.get("identity") or {}
+        label, canonical = identity.get("addressable_name"), identity.get("canonical_id")
+        shown = f"{label} · {canonical}" if label else canonical or "-"
+        print(f"{row['address']}: {row['status']}  {shown}  eligible={row['eligible']}")
+
+
+def cmd_identities_rename(args: argparse.Namespace) -> None:
+    import json
+    from pathlib import Path
+    import httpx
+    identities.validate_address(args.target)
+    if args.from_file:
+        if args.expected_name_revision is not None:
+            identities.fail("--expected-name-revision belongs with --name; file carries its own revision", code=2)
+        try:
+            payload = json.loads(Path(args.from_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            identities.fail(f"cannot read rename payload: {exc}", code=2)
+    else:
+        payload = {"addressable_name": args.name, "expected_name_revision": args.expected_name_revision}
+    identities.validate_rename(payload)
+    client, slug = _identity_client(args)
+    target = identities.resolve_targets(client, slug, [args.target])[0]
+    path = (f"/api/v1/orgs/{slug}/founder/addressable-name" if target == "founder" else
+            f"/api/v1/orgs/{slug}/agents/{target}/addressable-name")
+    ambiguous = False
+    identity = None
+    try:
+        response = client.request("PUT", path, json=payload)
+        ambiguous = response.status_code >= 500
+        if 200 <= response.status_code < 300:
+            try:
+                identity = response.json()
+                ambiguous = (not isinstance(identity, dict)
+                    or identity.get("canonical_id") != target
+                    or identity.get("addressable_name") != payload["addressable_name"]
+                    or type(identity.get("name_revision")) is not int)
+            except ValueError:
+                ambiguous = True
+    except httpx.RequestError:
+        ambiguous = True
+    if ambiguous:
+        rows = identities.identity_rows(client, slug)
+        current = next((row for row in rows if row.get("canonical_id") == target), None)
+        print("Rename outcome uncertain; readback (no automatic retry):", file=sys.stderr)
+        print(json.dumps(current, indent=2) if current else "naming readback unavailable", file=sys.stderr)
+        raise SystemExit(1)
+    _ok(response)
+    if args.json:
+        print(json.dumps(identity, indent=2))
+    else:
+        print(f"{identity['addressable_name']} · {identity['canonical_id']}  "
+              f"name_revision={identity['name_revision']}")
+
+
 def register(sub) -> None:
+    p_identity = sub.add_parser("identities", help="Inspect/resolve current names and permanent IDs; operator rename")
+    identity_sub = p_identity.add_subparsers(dest="identity_command", required=True)
+    p_list = identity_sub.add_parser("list", help="Current Name · ID and independent name revision")
+    p_list.add_argument("--org", default=None)
+    p_list.add_argument("--json", action="store_true")
+    p_list.set_defaults(func=cmd_identities_list)
+    p_resolve = identity_sub.add_parser("resolve", help="Read-only diagnostic; grants no action authority")
+    p_resolve.add_argument("--org", default=None)
+    p_resolve.add_argument("addresses", nargs="+")
+    p_resolve.add_argument("--context", choices=["lookup", "task_owner", "thread_recipient"], default="lookup")
+    p_resolve.add_argument("--thread-id", default=None)
+    p_resolve.add_argument("--json", action="store_true")
+    p_resolve.set_defaults(func=cmd_identities_resolve)
+    p_rename = identity_sub.add_parser("rename", help="Operator agent/founder rename using name-revision CAS")
+    p_rename.add_argument("--org", default=None)
+    p_rename.add_argument("target", help="Permanent ID or current name (founder is the human)")
+    group = p_rename.add_mutually_exclusive_group(required=True)
+    group.add_argument("--name", default=None)
+    group.add_argument("--from-file", default=None)
+    p_rename.add_argument("--expected-name-revision", type=int, default=None)
+    p_rename.add_argument("--json", action="store_true")
+    p_rename.set_defaults(func=cmd_identities_rename)
+
     p_init_agent = sub.add_parser("init-agent", help="Initialize agent workspaces with system prompts and repo clone")
     p_init_agent.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_init_agent.add_argument("agent", nargs="?", default=None,

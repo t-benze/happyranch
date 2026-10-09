@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * S1 — Schedule Overview (roster). One row per agent: agent · team · effective
  * mode · effective cadence · next wake · read-only On status · eligibility chip
@@ -212,7 +213,7 @@ export function OverviewPage(): JSX.Element {
                           to={`/orgs/${slug}/work-hours/${a.name}`}
                           className="text-accent-text font-medium hover:underline"
                         >
-                          {a.name}
+                          <IdentityName canonicalId={a.name} />
                         </Link>
                       </td>
                       <td className="text-text-muted px-3 py-2">{team ?? '—'}</td>
