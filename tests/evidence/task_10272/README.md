@@ -1,4 +1,26 @@
-# TASK10318 browser-only recovery
+# TASK10335 collection environment acquisition under root10318
+
+Current selection uses only the existing admitted native macOS15 provisioning
+and frozen source dependency setup to acquire the actual installed Python,
+distribution, pytest11 entry-point and startup source identities. The bounded
+archive contains installed Python/startup/metadata bytes for completing the
+transitive/plugin audit. It imports no pytest, plugin or candidate module and
+runs no test body, provider, browser, package build or interface probe. Fresh
+native admission, ordinary UID, source before/after manifests, owned group
+termination/reaping, native cleanup, action/tool/source pins and sealing remain.
+
+Collection is HELD, even after acquisition exit0. Full semantic audit, actual
+effective plugin hooks/options, no-body/unclassified-launch controls and the
+supported parent-driven `pytest tests/ -v -m "" --collect-only` invocation with
+real counts/errors/exit remain owed. This acquisition is no collection or QA
+PASS. The three exact source-hashed `ip -4 -o addr show` globals are admitted
+only for later audited disposable collection, preserving timeout10 and actual
+missing-binary behavior. Root10318 step5 accepts original browser37905976672
+and source37898089226 only in their recorded scopes; they are not rerun here.
+Suspended units/proofs/keeper obligations and all independent delivery gates
+remain. This branch is NEVER-MERGE; PR1017 stays unchanged294beab8.
+
+## Historical TASK10318 browser-only recovery
 
 The latest task10279 evidence push executes only existing native macOS15
 browser work at candidate294beab8. Original run37898089226 source cases are

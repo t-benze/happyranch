@@ -25,7 +25,7 @@ import xml.etree.ElementTree as ET
 
 CANDIDATE = '294beab846efbceecc3fa5dbfb77ff40c95fa5af'
 BASELINE = '8378064e9933d5b3af4247eca55750ac427a564f'
-OBSERVED_MAIN = '970cdfa7a6c663ea2ff1aa81b2db4c51eb34729c'
+OBSERVED_MAIN = '4cc1be720c1a170f3f5955a818b1053fd9116d23'
 SOURCE_INPUT_SHA256 = {
     'tests/helpers/assistant_retirement_artifact_driver.py': '3627ca48916117fc3fa99f6465bc0fc878839e7b24ea07d7b1cecdea5c104118',
     'tests/helpers/assistant_retirement_native_observer.c': 'f70f92756cc057b289b863f972d097ccc47b16551b5b18de4c83f968da313984',
@@ -784,7 +784,7 @@ def main():
     assert os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted'
     assert os.environ.get('GITHUB_EVENT_NAME') == 'push'
     assert os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'no autonomous or manual reruns'
-    assert platform.system() == 'Darwin', 'this renewal is macOS browser only'
+    assert platform.system() == 'Darwin', 'this acquisition is admitted native macOS15 only'
     assert platform.machine() in ('x86_64', 'arm64')
     if sys.platform == 'linux':
         assert platform.machine() == 'x86_64'
@@ -802,8 +802,8 @@ def main():
                   'units_and_surviving_proofs': 'SUSPENDED/UNFULFILLED',
                   'general_integration': 'SKIPPED',
                   'wheel_and_frozen_behavior': 'historical37890296572 pinned c6dcefa2; not rerun or relabeled',
-                  'real_daemon_browser': 'current-head macOS4cases required; Linux sandbox refusal retained, not rerun',
-                  'source_shipping': 'historical37898089226 at current candidate; no source execution in this browser renewal',
+                  'real_daemon_browser': 'historical37905976672 accepted by root10318 step5; not rerun',
+                  'source_shipping': 'historical37898089226 at current candidate; no source execution in this collection acquisition',
                   'whole_repo_discovery': 'held for audit',
                   'independent_code_review_and_qa': 'pending'}}
     env = clean_env(root / 'bootstrap')
@@ -823,7 +823,8 @@ def main():
                 EVIDENCE / '.github/workflows/task-10279-native-preflight.yml',
                 HERE.parent / 'task_10279/artifacts.py',
                 HERE.parent / 'task_10279/browser.py',
-                HERE.parent / 'task_10279/browser.mjs')}})
+                HERE.parent / 'task_10279/browser.mjs',
+                HERE.parent / 'task_10279/collection.py')}})
         evidence_head, _ = commands.run('evidence-source-head', ['git', 'rev-parse', 'HEAD'], EVIDENCE, env)
         assert evidence_head.strip() == os.environ['GITHUB_SHA']
         commands.run('native-os', ['uname', '-a'], root, env)
@@ -888,8 +889,8 @@ def main():
         wheels = root / 'wheels'
         wheels.mkdir()
         items = {}
-        # Official Python/uv plus the browser wheel's constrained backend only.
-        names = ('uv', *HATCH) if sys.platform == 'darwin' else ('uv',)
+        # Existing official Python/uv only; no browser/build tool closure needed.
+        names = ('uv',)
         for name in dict.fromkeys(names):
             wheel = wheels_for(pins, name)
             metadata = RECEIPTS / (name + '-official-metadata.json')
@@ -911,17 +912,6 @@ def main():
         uv = uv_env / 'bin/uv'
         commands.run('uv-version', [uv, '--version'], root, env)
         save('uv-executable.json', identity(uv))
-        constraints = root / 'build-constraints.txt'
-        if sys.platform == 'darwin':
-            constraints.write_text(''.join(f'{n}=={items[n]["version"]} --hash=sha256:{items[n]["sha256"]}\n' for n in HATCH))
-            shutil.copyfile(constraints, RECEIPTS / 'build-constraints.txt')
-            hatch_env = root / 'hatch-env'
-            commands.run('hatch-venv', [uv, 'venv', '--python', python, '--no-python-downloads',
-                                      '--no-config', hatch_env], root, env)
-            commands.run('hatch-install', [uv, 'pip', 'install', '--python', hatch_env / 'bin/python',
-                         '--no-index', '--find-links', wheels, '--require-hashes', '--no-build',
-                         '--no-python-downloads', '--no-config', '-r', constraints], root, env)
-            distribution_receipt(commands, 'hatch', hatch_env / 'bin/python', [items[n] for n in HATCH], env, root)
         commands.run('native-process-census-before', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
         save('historical-artifact-reference.json', {
@@ -969,24 +959,17 @@ def main():
             assert after['files'] == original['files'] and after['links'] == original['links'], 'source mutated'
         commands.run('native-process-census-after', [python, '-I', '-c', census_code,
                      observer, json.dumps(descriptor)], root, env)
-        # Source characterization is already retained at this exact candidate.
-        # Only the remaining browser gap executes in this renewal.
-        browser_passed = True
-        if sys.platform == 'darwin':
-            assert sha(HERE.parent / 'task_10279/artifacts.py') == ARTIFACT_HELPER_SHA256, 'immutable browser wheel coordinator drift'
-            browser = runpy.run_path(str(HERE.parent / 'task_10279/browser.py'), run_name='hosted_browser_coordinator')
-            result['browser'] = browser['browser_stage'](commands, candidate, root, uv, python,
-                constraints, descriptor, {'save': save, 'clean_env': clean_env,
-                'census': stage_native_census, 'receipts': RECEIPTS, 'wheels': wheels})
-            browser_passed = result['browser']['exit'] == 0 and not result['browser']['error']
-            final = source_manifest(commands, 'candidate-browser-final', candidate, env, CANDIDATE)
-            assert final['files'] == before_candidate['files'] and final['links'] == before_candidate['links'], 'browser mutated source'
-        else:
-            result['browser'] = {'execution_this_run': 'not-executed',
-                'original_failure': 'historical-browser-reference.json', 'status': 'Linux sandbox refusal retained'}
-        passed = browser_passed
-        result['status'] = 'browser-only-passed' if passed else 'browser-only-failed'
-        return 0 if passed else 1
+        # Acquire actual locked installed sources before plugin audit/collection.
+        collection = runpy.run_path(str(HERE.parent / 'task_10279/collection.py'),
+                                    run_name='hosted_collection_acquisition')
+        result['collection'] = collection['acquire'](
+            commands, candidate, root, env, uv, python, descriptor, observer,
+            {'clean_env': clean_env, 'census': stage_native_census,
+             'receipts': RECEIPTS, 'identity': identity, 'save': save})
+        final = source_manifest(commands, 'candidate-collection-final', candidate, env, CANDIDATE)
+        assert final['files'] == before_candidate['files'] and final['links'] == before_candidate['links'], 'acquisition mutated source'
+        result['status'] = 'collection-environment-acquired-discovery-held'
+        return 0
     except BaseException as error:
         result['error'] = {'type': type(error).__name__, 'message': str(error)}
         raise

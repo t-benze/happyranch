@@ -1,4 +1,25 @@
-# TASK10318 direct-root browser-only renewal
+# TASK10335 collection environment acquisition
+
+The current push selects the remaining audit's environment prerequisite in the
+existing native macOS15 venue. The coordinator uses unchanged pinned native
+admission, official CPython3.14.4/uv tools and locked source setup, then acquires
+installed Python/startup/metadata sources and pytest11 entry-point identities
+without importing pytest, plugins or candidate code. This closes the absence
+of actual disposable installed sources for review; it does not close their
+semantic/startup/hook audit or admit collection. Acquisition exit0 is neither
+collection PASS nor behavioral QA. Full parent-driven all-tests collect-only,
+counts/deselections/errors/exit, zero body/provider/unclassified launch and
+invocation-owned native cleanup evidence remain owed. No import-all shortcut,
+three-probe execution, paused body/proof, browser or packaging rerun occurs.
+
+Only collection.py, the existing coordinator stage selection, two evidence
+READMEs and workflow stage label change. Existing observer, permissions,
+source/tool/action pins, bounds, source manifests and lossless sealing remain.
+PR1017 candidate294beab846efbceecc3fa5dbfb77ff40c95fa5af is unchanged.
+Root10318 retains integration/review/QA/merge/postmain/deployment ownership.
+Historical original evidence below retains its actual immutable scope.
+
+## Historical TASK10318 direct-root browser-only renewal
 
 Source pin remains294beab846efbceecc3fa5dbfb77ff40c95fa5af. Original
 run37898089226/evidencec1a16c087 is FAILURE, with fully acquired original

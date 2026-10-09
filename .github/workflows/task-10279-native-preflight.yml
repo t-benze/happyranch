@@ -46,7 +46,7 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.19.0
-      - name: Renew only remaining macOS ordinary-distribution browser
+      - name: Acquire installed collection sources; collection remains held
         run: python3 -I evidence/tests/evidence/task_10272/runner.py
       - name: Seal bounded receipts including failure
         id: seal
