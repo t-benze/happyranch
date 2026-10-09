@@ -19,6 +19,8 @@ schema1 bytes/digests/context interpretation remain immutable. Human principals
 are excluded from executable workflow role candidates and current manager-policy
 projection. Worker decisions grant self-decomposition only, without admin,
 peer delegation/fanout, supersession, policy or template powers.
+Existing bilingual Agents views retain loading/error/empty states, Retry and
+detail auto-selection after recovery, without exposing a human executor.
 
 Normal child outcomes use the valid executable persisted parent owner only on
 human teams; invalid ancestry is unknown_manager. Agent-team attribution is

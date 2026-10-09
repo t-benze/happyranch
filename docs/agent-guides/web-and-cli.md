@@ -37,6 +37,8 @@ Both TypeScript wire types and existing real/mock providers accept this shape.
 Existing Agent selectors/detail and Work Hours display localized Founder
 leadership while preserving executable worker selection. Demoted consultants
 are ineligible for manager policy views; no transfer UI is introduced.
+The existing roster shows localized loading/error/empty states and Retry;
+a recovered first fetch still selects the ordinary worker detail pane.
 `happyranch run --team default` requires an explicit active executable --owner.
 Omitted requests follow task_default_team (legacy Engineering). Founder cannot
 be selected as an executor. Normal and recovered review_verdict audits record

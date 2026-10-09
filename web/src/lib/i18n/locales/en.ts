@@ -2140,6 +2140,7 @@ export const en = {
   'agents.page.newAgent': 'New agent',
   'agents.tab.active': 'Active',
   'agents.tab.pending': 'Pending',
+  'agents.page.loadError': 'Could not load agents.',
   'agents.empty.title': 'No agents enrolled',
   'agents.empty.body': 'Add a manager to create your first team.',
   'agents.empty.cta': 'Add agent',

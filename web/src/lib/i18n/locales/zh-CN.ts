@@ -2015,6 +2015,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'agents.page.newAgent': '新建智能体',
   'agents.tab.active': '活跃',
   'agents.tab.pending': '待审批',
+  'agents.page.loadError': '无法加载智能体。',
   'agents.empty.title': '尚未登记智能体',
   'agents.empty.body': '添加一名经理以创建你的第一个团队。',
   'agents.empty.cta': '添加智能体',

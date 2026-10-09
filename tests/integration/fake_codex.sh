@@ -12,6 +12,8 @@ fi
 # stub lives beside the bound Python/callback wrappers; restore that exact
 # test-only route before the unchanged executable/registry/plan identity gate.
 export PATH="${0%/*}:/usr/bin:/bin"
+HAPPYRANCH_TEST_CONTEXT_ARGV_JSON=$(python -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${STUB_ARGV[@]}")
+export HAPPYRANCH_TEST_CONTEXT_ARGV_JSON
 
 PROMPT=""
 JSON_OUTPUT=0
@@ -48,7 +50,7 @@ if [[ -z "${FAKE_CODEX_PLAN:-}" || ! -f "$FAKE_CODEX_PLAN" || ! -x "$FAKE_CODEX_
         python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" codex "$FAKE_CODEX_PLAN" "${STUB_ARGV[@]}"
     fi
     if [[ -n "${FAKE_CODEX_PLAN:-}" && -f "$FAKE_CODEX_PLAN" ]]; then
-    bash "$FAKE_CODEX_PLAN" "$TASK_ID" "$SESSION_ID" "$ORG_SLUG" 1>&2
+    printf '%s' "$PROMPT" | bash "$FAKE_CODEX_PLAN" "$TASK_ID" "$SESSION_ID" "$ORG_SLUG" 1>&2
 fi
 
 # When the orchestrator runs Codex with `--json`, emit a real-shaped

@@ -115,7 +115,9 @@ state before first-apply CAS; loss of an external receipt permits only its
 reconstruction from actual native evidence. Partial prefixes require explicit
 recover. Only the exact declared native package staging bytes and metadata are
 recognized as an owned prefix. Unknown global residue is refused, never swept
-or adopted. Native creation-mask provenance is rechecked before materialization.
+or adopted. Any changed global prefix also requires this OP's authentic native
+publication journal; matching package names/bytes alone confer no ownership.
+Native creation-mask provenance is rechecked before materialization.
 
 The source-bound admission probe is now authored at
 `tests/helpers/human_team_incompatible_reader_probe.py`. Actual old-source
@@ -135,6 +137,61 @@ row/file readback assertion alone does not prove zero syscalls. Candidate/schema
 and b317/schema1 positive graph/admission controls, the external observers,
 causal control/restoration and five specified repetitions remain required under
 the manager's concrete held-source execution disposition.
+
+Native interruption closure is source-correlated, never filename-only. A new
+OP-owned publication journal must exist before recovery can recognize new
+instruction siblings. The native timestamp/collision suffix must match the
+unchanged writer; regular staging bytes must be a prefix of the checked
+original/target bytes with the native owner/mode, and staged links must have
+the exact checked raw target. Pre-check siblings remain preserved and are
+never adopted. Explicit recovery closes only those validated temporary paths;
+complete retains verified original-byte preservation copies in the actual
+receipt, while compensate removes only newly OP-correlated copies. Unlisted
+siblings and unknown bytes/types/metadata refuse. Live roster/instruction files
+remain atomic before/after images. Only declared settings/opencode outputs
+written in place by the unchanged adapters admit an interrupted target prefix.
+Shared-package staging admits only declared native directories/files and exact
+target-byte prefixes; unknown members still refuse. Readiness requires complete
+generated outputs, fully verified preservation copies and zero temporary
+residue. Missing containing directories must be declared with exact metadata.
+These are authored recovery rules, not successful crash/maintenance evidence.
+
+Authority staging is tied to the authentic OP-owned journal's exact snapshot,
+phase, bytes and creation metadata. Explicit recovery discards only a checked
+partial temporary file before invoking the unchanged native coordinator. A
+complete reserved stage remains for that coordinator to publish; a discarded
+partial reserved stage lets it record its genuine unpublished abort unless
+the canonical snapshot already landed. Forward recovery rebuilds its missing
+canonical snapshot through the native owner. The utility never writes a
+journal/pointer to manufacture readiness, and unknown staging refuses.
+
+The systemd inventory includes pre/start/post/reload commands. This bounded
+adapter refuses every undeclared command-bearing unit: executable bytes/hashes
+and a plan assertion cannot prove its configured/internal launches exclude
+the runtime. A venue with ordinary unmasked system services therefore has an
+explicit missing containment capability, not a successful check. Resolve the
+exact venue/unit closure with the manager before maintenance authorization;
+the utility does not mask or stop services. Desktop autostart or executable
+rc.local is outside this adapter and refuses. The same-user census also includes
+daemon scripts, direct daemon-module paths and executor binaries. This remains
+a cooperative, explicitly inhibited disposable-VM operation: no host exactly
+once or hostile same-user exclusion claim follows. Actual M capability, reboot
+and independent complete launch-inventory evidence remain required.
+
+C7's closed test-side context plan is authored at
+`tests/helpers/human_team_context_plan.py`. Existing guarded fake binaries pass
+their full actual stdin and capture original argv without changing positional
+plan conventions or usage output. The helper binds genuine task/session,
+thread token/trigger sequence, dream, wake and schedule IDs; it calls the
+corresponding supported callback and records actual generated settings,
+instruction bytes and both skill-root links. It does not produce or settle a
+context, insert a result, or attest final behavior. The ten real producer and
+final durable context assertions remain required; helper authoring alone does
+not close C7. Wbrowser's finite selection is now authored at
+`tests/integration/test_human_team_roster_browser.py`, using the built SPA and
+the fixture-owned loopback daemon with explicit loading/error/empty transport
+states. Browser capability, execution, screenshots and independent bilingual
+assessment remain unavailable/unobserved, not PASS.
 
 The accepted test-side frame/syscall helper files are authored, not executed or
 capability-approved. Frame input is a closed JSON object with `source_sha` and

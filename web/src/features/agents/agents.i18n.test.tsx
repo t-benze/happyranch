@@ -27,6 +27,61 @@ import { en, zhCN } from '@/lib/i18n/catalog';
 import { formatDateShapeFor } from '@/lib/i18n/format';
 import { classifyAgentError, renderAgentError } from './strings';
 
+describe('THR296 human roster query states', () => {
+  test.each(['en', 'zh-CN'] as const)('loading and failed roster recover in %s', async (locale) => {
+    stub();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let failed = true;
+    server.use(
+      http.get(`${API}/orgs/${SLUG}/agents`, async () => {
+        await pending;
+        return failed ? HttpResponse.json({ detail: 'fixture outage' }, { status: 503 })
+          : HttpResponse.json({ agents: [{ ...AGENTS.agents[1], name: 'consultant_codex', team: 'default' }] });
+      }),
+      http.get(`${API}/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: [{
+        name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder',
+        is_default: true, workers: ['consultant_codex'],
+      }] })),
+      http.get(`${API}/orgs/${SLUG}/agents/:agent/cleanup-activity`, () => HttpResponse.json({ activities: [] })),
+    );
+    mount(locale, `/orgs/${SLUG}/agents`);
+    try {
+      expect(await screen.findByRole('status', { name: translate(locale, 'agents.common.loading') })).toBeInTheDocument();
+    } finally {
+      release();
+    }
+    const message = locale === 'en' ? 'Could not load agents.' : '无法加载智能体。';
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(screen.queryByText(translate(locale, 'agents.empty.title'))).not.toBeInTheDocument();
+    failed = false;
+    fireEvent.click(screen.getByRole('button', { name: translate(locale, 'common.retry') }));
+    expect((await screen.findAllByText('consultant_codex')).length).toBeGreaterThan(0);
+    expect(await screen.findByRole('textbox', { name: translate(locale, 'agents.detail.model') })).toBeInTheDocument();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('team-escalation-policy')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: translate(locale, 'agents.policy.open') })).not.toBeInTheDocument();
+  });
+
+  test.each(['en', 'zh-CN'] as const)('empty human Default remains enrollable in %s', async (locale) => {
+    stub();
+    server.use(
+      http.get(`${API}/orgs/${SLUG}/agents`, () => HttpResponse.json({ agents: [] })),
+      http.get(`${API}/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: [{
+        name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder',
+        is_default: true, workers: [],
+      }] })),
+    );
+    mount(locale, `/orgs/${SLUG}/agents`);
+    expect(await screen.findByText(translate(locale, 'agents.empty.title'))).toBeInTheDocument();
+    expect(screen.queryByText('founder', { exact: true })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: translate(locale, 'agents.empty.cta') }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('combobox', { name: translate(locale, 'agents.add.team') })).toBeInTheDocument();
+    expect(screen.queryByTestId('team-escalation-policy')).not.toBeInTheDocument();
+  });
+});
+
 const SLUG = 'happyranch';
 const API = '/api/v1';
 const NativeRequest = globalThis.Request;

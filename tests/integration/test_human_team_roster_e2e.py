@@ -43,7 +43,9 @@ def human_daemon(runtime: Path, request: pytest.FixtureRequest,
     return request.getfixturevalue('live_daemon'), runtime
 
 
-def _write_plan(path: Path, root: Path, *, status: str, verdict: str | None, self_child: bool, recovery: bool = False) -> None:
+def _write_plan(path: Path, root: Path, *, status: str, verdict: str | None, self_child: bool,
+                recovery: bool = False, attempted_decision: dict | None = None,
+                administration: bool = False) -> None:
     witness = path.parent / (path.name + '.calls.jsonl')
     # Existing bound fake binaries supply real task/runtime-session arguments;
     # this plan calls the supported callback, never writes task/results/audits.
@@ -54,7 +56,7 @@ import json, pathlib, subprocess, sys
 T, S, workspace = sys.argv[1:]
 agent = pathlib.Path(workspace).name
 org = pathlib.Path(workspace).parent.parent.name
-''' + f"root = pathlib.Path({str(root)!r})\nwitness = pathlib.Path({str(witness)!r})\nstatus = {status!r}\nverdict = {verdict!r}\nself_child = {self_child!r}\nrecovery = {recovery!r}\n" + '''
+''' + f"root = pathlib.Path({str(root)!r})\nwitness = pathlib.Path({str(witness)!r})\nstatus = {status!r}\nverdict = {verdict!r}\nself_child = {self_child!r}\nrecovery = {recovery!r}\nattempted_decision = {attempted_decision!r}\nadministration = {administration!r}\n" + '''
 with witness.open('a') as out:
     out.write(json.dumps({'task': T, 'session': S, 'agent': agent}) + '\\n')
 # Independent read determines actual root/child provenance. The plan never
@@ -63,13 +65,44 @@ import sqlite3
 with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as conn:
     parent = conn.execute('SELECT parent_task_id FROM tasks WHERE id=?', (T,)).fetchone()[0]
     children = conn.execute('SELECT COUNT(*) FROM tasks WHERE parent_task_id=?', (T,)).fetchone()[0]
+    prior = conn.execute("SELECT COUNT(*) FROM task_results WHERE task_id=? AND session_id!=''", (T,)).fetchone()[0]
     if recovery and parent is not None:
         accepted = conn.execute('SELECT recovery_session_id FROM task_completion_recoveries WHERE task_id=?', (T,)).fetchone()
         if accepted is None:
             sys.exit(0)  # genuine Codex clean omission; native runner claims recovery
         assert accepted[0] == S, (accepted, S)
+if administration:
+    import ast, httpx
+    from runtime.daemon.paths import port_file
+    base = 'http://127.0.0.1:' + port_file().read_text().strip() + '/api/v1/orgs/' + org
+    observed = []
+    for action in ('enroll', 'update', 'terminate'):
+        body = {'action': action, 'name': 'consultant_codex' if agent == 'consultant_head' else 'consultant_head',
+                'task_id': T, 'session_id': S, 'description': 'valid advisory worker',
+                'system_prompt': 'Advise the founder.', 'executor': 'codex'}
+        if action == 'enroll':
+            body['name'] = 'ungranted_worker'
+        reply = httpx.post(base + '/agents/manage', json=body)
+        assert reply.status_code == 403 and reply.json()['detail'] == 'manage-agent requires an active team-manager session', reply.text
+        observed.append({'action': action, 'status': reply.status_code, 'detail': reply.json()['detail']})
+    # Reuse the independently literal existing valid fixture without importing
+    # or collecting its suspended unit owner. The real current session must
+    # reach manager_required, rather than unknown_session or invalid_request.
+    source = pathlib.Path(__import__('runtime').__file__).resolve().parent.parent
+    tree = ast.parse((source / 'tests/workflows/test_template_store.py').read_text())
+    definitions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == 'VALID_DEFINITION' for target in node.targets)]
+    assert len(definitions) == 1
+    reply = httpx.post(base + '/workflows/templates/publish', params={'session_id': S}, json={
+        'operation_key': 'worker-denied-' + T, 'template_name': 'product-design',
+        'expected_current_version': 0, 'definition': definitions[0]})
+    assert reply.status_code == 403 and reply.json()['detail']['code'] == 'manager_required', reply.text
+    observed.append({'action': 'template-publish', 'status': reply.status_code, 'detail': reply.json()['detail']})
+    pathlib.Path(str(witness) + '.administration.json').write_text(json.dumps(observed))
 payload = {'task_id': T, 'session_id': S, 'agent': agent, 'status': 'completed', 'summary': 'root done', 'confidence': 90}
-if self_child and parent is None and children == 0:
+if attempted_decision is not None and parent is None and prior == 0:
+    payload['decision'] = attempted_decision
+elif self_child and parent is None and children == 0:
     payload['decision'] = {'action': 'delegate', 'agent': agent, 'prompt': 'self child'}
 elif parent is None:
     payload['decision'] = {'action': 'done', 'summary': 'root done'}
@@ -242,14 +275,55 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
 
 
 @pytest.mark.parametrize('agent', ['consultant_head', 'consultant_codex'], ids=['head', 'codex'])
-def test_c3_worker_lifecycle_and_denials(human_daemon: tuple[int, Path], agent: str) -> None:
+@pytest.mark.parametrize('operation', ['root', 'peer-delegate', 'peer-then', 'peer-fanout', 'supersede', 'administration'])
+def test_c3_worker_lifecycle_and_denials(human_daemon: tuple[int, Path], agent: str, operation: str,
+                                        fake_claude_plan_env: Path, fake_codex_plan_env: Path) -> None:
     port, root = human_daemon
+    peer = 'consultant_codex' if agent == 'consultant_head' else 'consultant_head'
+    decisions = {
+        'peer-delegate': {'action': 'delegate', 'agent': peer, 'prompt': 'valid peer work'},
+        'peer-then': {'action': 'delegate', 'agent': agent, 'prompt': 'valid own work',
+                      'then': [{'agent': peer, 'prompt': 'valid peer continuation'}]},
+        'peer-fanout': {'action': 'fanout', 'children': [{'agent': agent, 'prompt': 'own work'},
+                          {'agent': peer, 'prompt': 'peer work'}], 'width_cap_ack': 2},
+        'supersede': {'action': 'supersede', 'successor_brief': 'valid replacement', 'rationale': 'valid recovery',
+            'attestation': {'recovery_reason': 'valid recovery', 'policy_product_intent_unchanged': True,
+                'no_budget_or_external_commitment': True, 'no_permission_or_cross_team_change': True,
+                'no_schema_auth_security_privacy_or_data_access_change': True, 'no_unresolved_founder_gate': True}},
+    }
+    plan = fake_claude_plan_env if agent == 'consultant_head' else fake_codex_plan_env
+    _write_plan(plan, root, status='completed', verdict=None, self_child=False,
+                attempted_decision=decisions.get(operation), administration=operation == 'administration')
+    canonical_before = {str(path.relative_to(root)): path.read_bytes()
+                        for path in (root / 'org').rglob('*.md') if path.is_file()}
+    roster_before = (root / 'org/teams.yaml').read_bytes()
+    tables = ('manager_supersessions', 'workflow_template_versions', 'workflow_template_publish_operations',
+              'authority_policy_releases', 'authority_policy_activations')
+    with sqlite3.connect(root / 'happyranch.db') as conn:
+        rows_before = {name: conn.execute(f'SELECT * FROM {name}').fetchall() for name in tables}
     reply = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'owner': agent, 'brief': 'ordinary root'}, headers=_auth_headers()).raise_for_status().json()
     final = _wait_for_terminal(_base(port), reply['task_id'])
-    assert final['task']['status'] == 'completed'
+    assert final['task']['status'] == ('failed' if operation == 'supersede' else 'completed')
     with sqlite3.connect(root / 'happyranch.db') as conn:
         actual = conn.execute('SELECT id,session_id,agent FROM task_results WHERE task_id=?', (reply['task_id'],)).fetchall()
-        assert len(actual) == 1 and type(actual[0][0]) is int and actual[0][1] and actual[0][2] == agent
+        genuine = [row for row in actual if row[1]]
+        assert len(genuine) == (2 if operation.startswith('peer-') else 1)
+        assert all(type(row[0]) is int and row[0] > 0 and row[2] == agent for row in genuine)
+        assert conn.execute('SELECT COUNT(*) FROM tasks WHERE parent_task_id=?', (reply['task_id'],)).fetchone()[0] == 0
+        assert conn.execute('SELECT active_chain,active_fanout FROM tasks WHERE id=?', (reply['task_id'],)).fetchone() == (None, None)
+        assert {name: conn.execute(f'SELECT * FROM {name}').fetchall() for name in tables} == rows_before
+        if operation.startswith('peer-'):
+            feedback = conn.execute("SELECT output_summary FROM task_results WHERE task_id=? AND session_id=''", (reply['task_id'],)).fetchall()
+            assert len(feedback) == 1 and 'only' in feedback[0][0] and 'yourself' in feedback[0][0]
+        if operation == 'supersede':
+            assert final['task']['note'] == 'manager supersession claim is not current'
+    assert (root / 'org/teams.yaml').read_bytes() == roster_before
+    assert {str(path.relative_to(root)): path.read_bytes()
+            for path in (root / 'org').rglob('*.md') if path.is_file()} == canonical_before
+    if operation == 'administration':
+        evidence = json.loads(Path(str(plan) + '.calls.jsonl.administration.json').read_text())
+        assert [row['action'] for row in evidence] == ['enroll', 'update', 'terminate', 'template-publish']
+        assert not (root / 'org/agents/ungranted_worker.md').exists()
     # Current human-team worker is not an eligible manager policy target.
     denied = httpx.get(_base(port) + f'/agents/{agent}/team-escalation-policy', headers=_auth_headers())
     assert denied.status_code == 404

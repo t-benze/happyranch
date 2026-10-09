@@ -107,35 +107,166 @@ def preservation_inventory(root: Path) -> dict:
     return result
 
 
+def native_workspace_residue(root: Path, manifest: dict) -> dict:
+    """Recognize only declared outputs' genuine native interrupted prefixes.
+
+    Names alone confer no ownership. A new native journal must bind this OP,
+    and each sibling must have the original/target bytes, owner and native
+    creation mode. Retained pre-check siblings are never adopted or removed.
+    This is cooperative offline recovery, not a hostile same-user guarantee.
+    """
+    baseline = manifest["preservation_inventory"]
+    found = {}
+    with read_db(root / "happyranch.db") as conn:
+        verify_owned_publication(conn, manifest)
+        original = set(manifest["control_row_hashes"]["workflow_publication_journals"])
+        started = any(digest(repr(tuple(row)).encode()) not in original
+                      for row in conn.execute("SELECT * FROM workflow_publication_journals"))
+    if not started:
+        return found
+    for rel, before in manifest["before"].items():
+        target = root / rel
+        if not target.parent.is_dir():
+            continue
+        instruction = (rel in {f"workspaces/{agent}/{name}" for agent in AGENTS
+                               for name in ("AGENTS.md", "CLAUDE.md")})
+        for sibling in target.parent.iterdir():
+            key = str(sibling.relative_to(root))
+            if key in baseline or key in found:
+                continue
+            candidates = []
+            backup = False
+            if (len(Path(rel).parts) == 5 and Path(rel).parts[3] == "skills"
+                    and sibling.name == ".tmp." + target.name):
+                candidates = [manifest["after"][rel]]
+            elif re.fullmatch(r"\." + re.escape(target.name) + r"\.roster-[A-Za-z0-9_]{8}", sibling.name):
+                # mkstemp creates a regular 0600 file before write/fchmod;
+                # link staging unlinks it then creates the final raw link.
+                candidates = [before, manifest["after"][rel]]
+            elif instruction:
+                match = re.fullmatch(re.escape(target.name) +
+                    r"\.happyranch-\d{8}T\d{12}Z\.(bak|tmp|restore\.tmp|lnk|restore\.lnk)(?:-[1-9]\d*)?", sibling.name)
+                if match is None:
+                    continue
+                operation = match[1]
+                backup = operation == "bak"
+                candidates = ([before] if operation in ("bak", "restore.tmp", "restore.lnk")
+                              else [manifest["after"][rel]])
+            else:
+                continue
+            value = image(sibling)
+            matches = []
+            for candidate in candidates:
+                if candidate["kind"] not in ("file", "link"):
+                    continue
+                if value.get("uid") != candidate["uid"] or value.get("gid") != candidate["gid"]:
+                    continue
+                if value["kind"] == "link" and value == candidate:
+                    matches.append(candidate)
+                elif (candidate['kind'] == 'link' and value['kind'] == 'file'
+                      and re.fullmatch(r'\.' + re.escape(target.name) + r'\.roster-[A-Za-z0-9_]{8}', sibling.name)
+                      and value['mode'] == 0o600 and base64.b64decode(value['bytes']) == b''):
+                    # The utility's link replacement first reserves an empty
+                    # mkstemp file, then unlinks it and creates the raw link.
+                    matches.append(candidate)
+                elif value["kind"] == candidate["kind"] == "file":
+                    raw = base64.b64decode(value["bytes"])
+                    if (value["mode"] in (0o600, candidate["mode"])
+                            and base64.b64decode(candidate["bytes"]).startswith(raw)):
+                        matches.append(candidate)
+            if not matches or backup and before["kind"] != "file":
+                raise ValueError(f"unknown_native_workspace_prefix:{key}")
+            found[key] = {"observed": value, "backup": backup,
+                          "complete": before if backup else matches[0]}
+    return found
+
+
+def close_native_workspace_residue(root: Path, manifest: dict, *, compensate: bool) -> None:
+    """Close validated owned siblings, never sweep by filename prefix."""
+    for rel, entry in native_workspace_residue(root, manifest).items():
+        path = root / rel
+        if image(path) != entry["observed"]:
+            raise ValueError("native_workspace_prefix_CAS_lost")
+        if entry["backup"] and not compensate:
+            # Preserve the original bytes even at a kill inside its write.
+            # Live outputs are still produced by the unchanged materializer.
+            if image(path) != entry["complete"]:
+                durable_replace(path, entry["complete"])
+        else:
+            durable_replace(path, {"kind": "absent"})
+
+
+def known_output_prefix(root: Path, manifest: dict, rel: str) -> bool:
+    current = image(root / rel)
+    before, after = manifest["before"][rel], manifest["after"][rel]
+    if current in (before, after):
+        return True
+    # Only these unchanged adapter writes truncate the live file. Canonical
+    # roster and instruction files are replaced atomically and never admit a
+    # partial live image. A checked old/target metadata match is mandatory.
+    if not any(rel == f"workspaces/{agent}/.claude/settings.json"
+               or rel == f"workspaces/{agent}/opencode.json" for agent in AGENTS):
+        return False
+    if current.get("kind") != "file" or after["kind"] != "file":
+        return False
+    if any(current[key] != after[key] for key in ("mode", "uid", "gid")):
+        return False
+    with read_db(root / "happyranch.db") as conn:
+        verify_owned_publication(conn, manifest)
+        baseline = set(manifest["control_row_hashes"]["workflow_publication_journals"])
+        if not any(digest(repr(tuple(row)).encode()) not in baseline
+                   for row in conn.execute("SELECT * FROM workflow_publication_journals")):
+            return False
+    return base64.b64decode(after["bytes"]).startswith(base64.b64decode(current["bytes"]))
+
+
+def native_authority_residue(root: Path, manifest: dict) -> dict:
+    """Observe a genuine own journal's exact native authority write prefix."""
+    found = {}
+    with read_db(root / 'happyranch.db') as conn:
+        verify_owned_publication(conn, manifest)
+        original = set(manifest['control_row_hashes']['workflow_publication_journals'])
+        for row in conn.execute('SELECT * FROM workflow_publication_journals'):
+            if digest(repr(tuple(row)).encode()) in original:
+                continue
+            rel = f"org/.workflow-authority.json.{row['id']}.staging"
+            value = image(root / rel)
+            if value['kind'] == 'absent':
+                continue
+            snapshot = bytes(row['snapshot_bytes'])
+            if (row['state'] not in ('file_phase_reserved', 'canonical_published', 'forward_recovery_required')
+                    or value['kind'] != 'file' or value['mode'] != 0o666 & ~manifest['native_creation_mask']
+                    or value['uid'] != os.getuid() or value['gid'] != os.getgid()
+                    or not snapshot.startswith(base64.b64decode(value['bytes']))):
+                raise ValueError('unknown_authority_staging_prefix')
+            found[rel] = {'observed': value, 'complete': base64.b64decode(value['bytes']) == snapshot,
+                          'state': row['state']}
+    return found
+
+
+def close_native_authority_residue(root: Path, manifest: dict) -> None:
+    """Discard only a checked own temp; its unchanged native owner decides.
+
+    A complete reserved stage remains for native recovery to publish. A partial
+    reserved stage is discarded so native recovery records aborted_unpublished
+    unless the canonical snapshot already landed. A forward recovery rewrites
+    its missing canonical snapshot. This utility never settles the journal.
+    """
+    for rel, entry in native_authority_residue(root, manifest).items():
+        if entry['complete'] and entry['state'] == 'file_phase_reserved':
+            continue
+        if image(root / rel) != entry['observed']:
+            raise ValueError('authority_staging_prefix_CAS_lost')
+        durable_replace(root / rel, {'kind': 'absent'})
+
+
 def verify_preserved_paths(root: Path, manifest: dict) -> None:
     expected = manifest["preservation_inventory"]
     actual = preservation_inventory(root)
-    mutable = set(manifest["before"]) | {"happyranch.db", "happyranch.db-wal", "happyranch.db-shm", "org/.workflow-authority.json"}
-    # Only a source-owned journal can explain the native authority staging
-    # file. Its name, full bytes and creation metadata must agree; an arbitrary
-    # similarly named file is never an automatic repair candidate.
-    with read_db(root / "happyranch.db") as conn:
-        verify_owned_publication(conn, manifest)
-        prefix = f"THR296:{manifest['operation_id']}"
-        for row in conn.execute("SELECT * FROM workflow_publication_journals WHERE namespace=?", (f"org/{manifest['org']}",)):
-            if row["publisher"] != prefix and not row["publisher"].startswith(prefix + ":"):
-                continue
-            rel = f"org/.workflow-authority.json.{row['id']}.staging"
-            if rel not in actual:
-                continue
-            value = image(root / rel)
-            if (row["state"] != "file_phase_reserved" or value["kind"] != "file"
-                    or value["mode"] != 0o666 & ~manifest["native_creation_mask"]
-                    or value["uid"] != os.getuid() or value["gid"] != os.getgid()
-                    or base64.b64decode(value["bytes"]) != bytes(row["snapshot_bytes"])):
-                raise ValueError("unknown_authority_staging_prefix")
-            mutable.add(rel)
-    # New containing directories are part of the declared generated closure.
-    directories = {str(parent) for rel in manifest["before"] for parent in Path(rel).parents if str(parent) != "."}
+    mutable = set(manifest["before"]) | set(native_workspace_residue(root, manifest)) | {"happyranch.db", "happyranch.db-wal", "happyranch.db-shm", "org/.workflow-authority.json"}
+    mutable.update(native_authority_residue(root, manifest))
     for rel in set(expected) | set(actual):
         if rel in mutable:
-            continue
-        if rel not in expected and rel in directories and actual[rel]["kind"] == "directory":
             continue
         if expected.get(rel) != actual.get(rel):
             raise ValueError(f"retained_path_changed:{rel}")
@@ -198,6 +329,14 @@ def verify_global_assets(manifest: dict, *, initial: bool = False) -> None:
     staging = manifest["global_staging_images"]
     if set(mutable) != set(manifest["global_after"]):
         raise ValueError("global_manifest_output_closure_mismatch")
+    if not initial and current != baseline:
+        root = Path(manifest['runtime_root']) / 'orgs' / manifest['org']
+        with read_db(root / 'happyranch.db') as conn:
+            verify_owned_publication(conn, manifest)
+            original = set(manifest['control_row_hashes']['workflow_publication_journals'])
+            if not any(digest(repr(tuple(row)).encode()) not in original
+                       for row in conn.execute('SELECT * FROM workflow_publication_journals')):
+                raise ValueError('global_prefix_without_owned_publication')
     for rel in set(current) | set(baseline):
         if rel not in mutable and rel not in staging and current.get(rel) != baseline.get(rel):
             raise ValueError(f"retained_global_path_changed:{rel}")
@@ -219,7 +358,10 @@ def verify_global_assets(manifest: dict, *, initial: bool = False) -> None:
         if not path.parent.resolve().is_relative_to(store):
             raise ValueError("global_staging_path_redirected")
         observed = image(path)
-        if observed != {"kind": "absent"} and (initial or observed != expected):
+        partial = (observed.get("kind") == expected.get("kind") == "file"
+                   and all(observed.get(field) == expected[field] for field in ("mode", "uid", "gid"))
+                   and base64.b64decode(expected["bytes"]).startswith(base64.b64decode(observed["bytes"])))
+        if observed != {"kind": "absent"} and (initial or observed != expected and not partial):
             raise ValueError(f"unknown_native_global_staging_state:{rel}")
 
 
@@ -298,6 +440,15 @@ def containment(plan: dict, runtime: Path) -> dict:
     home = daemon_home().resolve(strict=True)
     if declaration.get("daemon_home") != str(home) or str(home / "runtimes.yaml") not in declaration["registry_paths"]:
         raise ValueError("effective_daemon_registry_inventory_required")
+    # This bounded adapter supports persistently masked systemd services.
+    # Desktop/login startup wrappers have no inhibition owner here; do not
+    # silently certify a VM which also has those launch channels installed.
+    for startup in (Path.home() / ".config/autostart", Path("/etc/xdg/autostart")):
+        if startup.is_symlink() or startup.exists() and any(startup.iterdir()):
+            raise ValueError("unsupported_desktop_autostart_containment")
+    rc_local = Path("/etc/rc.local")
+    if rc_local.exists() and os.access(rc_local, os.X_OK):
+        raise ValueError("unsupported_rc_local_containment")
     observed = []
     for scope, flags, mask_root in (("user", ["--user"], Path.home() / ".config/systemd/user"),
                                     ("system", [], Path("/etc/systemd/system"))):
@@ -312,10 +463,27 @@ def containment(plan: dict, runtime: Path) -> dict:
             actual_units.update(line.split()[0] for line in inventory.stdout.splitlines() if line.strip())
         if not set(units).issubset(actual_units):
             raise ValueError("declared_supervisor_missing_from_actual_inventory")
+        excluded = []
         for unit in sorted(actual_units - set(units)):
-            launch = subprocess.run(["systemctl", *flags, "show", unit, "--property=ExecStart", "--value"], capture_output=True, text=True, timeout=10, check=True).stdout
+            # Pre/post/reload commands can start a wrapper just as ExecStart
+            # can. A shell/interpreter/remote/container trampoline does not
+            # prove exclusion from this runtime by omitting its path in argv.
+            launch = subprocess.run(["systemctl", *flags, "show", unit,
+                "--property=ExecStart,ExecStartPre,ExecStartPost,ExecReload", "--value"],
+                capture_output=True, text=True, timeout=10, check=True).stdout
             if "happyranch" in launch or "runtime.daemon" in launch or str(runtime) in launch:
                 raise ValueError("undeclared_alternate_supervisor")
+            commands = re.findall(r"\{ path=([^ ;}]+) ; argv\[\]=(.*?) ; ignore_errors=(yes|no) ;", launch)
+            if launch.strip() and not commands:
+                raise ValueError(f"uninspectable_supervisor_launch:{scope}:{unit}")
+            if commands:
+                # Neither an ELF signature nor an exact executable hash
+                # proves that its internal/configured launches exclude this
+                # runtime. This adapter has no independently validated
+                # exclusion capability for unmasked command-bearing units.
+                # Do not turn a plan's assertion into that capability.
+                raise ValueError(f"unproven_supervisor_launch_closure:{scope}:{unit}")
+            excluded.append({"unit": unit, "commands": []})
         for unit in units:
             mask = mask_root / unit
             if not mask.is_symlink() or os.readlink(mask) != "/dev/null":
@@ -325,6 +493,7 @@ def containment(plan: dict, runtime: Path) -> dict:
             if properties != {"LoadState": "masked", "ActiveState": "inactive", "SubState": "dead"}:
                 raise ValueError("supervisor_not_inhibited_and_stopped")
             observed.append({"scope": scope, "unit": unit, "mask": str(mask), "properties": properties})
+        observed.append({"scope": scope, "excluded_launches": excluded})
     for value in declaration["registry_paths"]:
         registry = Path(value)
         if not registry.is_absolute() or registry.is_symlink():
@@ -348,7 +517,11 @@ def containment(plan: dict, runtime: Path) -> dict:
             continue  # exited during census
         # A utility/observer argv mentioning R is not an executor writer.
         # Inspect actual module/command and working-directory scope instead.
-        if (b"runtime.daemon" in command or b"happyranch\x00daemon" in command
+        arguments = command.split(b"\0")
+        names = {os.path.basename(os.fsdecode(argument)) for argument in arguments[:2]}
+        if (b"runtime.daemon" in command or b"runtime/daemon/" in command
+                or names.intersection({"daemon.sh", "claude", "codex", "opencode", "pi"})
+                or b"happyranch\x00daemon" in command
                 or b"happyranch daemon" in command
                 or cwd is not None and cwd.is_relative_to(runtime)):
             raise ValueError("runtime_or_daemon_process_present")
@@ -774,8 +947,20 @@ def check(args: argparse.Namespace) -> dict:
             raise ValueError("existing_history_and_memory_must_be_preserved")
         before[rel] = image(root / rel)
         after[rel] = expected
+    for rel in generated:
+        for parent in Path(rel).parents:
+            if (str(parent) != "." and not (root / parent).exists()
+                    and after.get(str(parent), {}).get("kind") != "directory"):
+                raise ValueError("generated_directory_inventory_incomplete")
     for value in (*before.values(), *after.values()):
         validate_image(value)
+    for agent in AGENTS:
+        regular = f"workspaces/{agent}/AGENTS.md"
+        link = f"workspaces/{agent}/CLAUDE.md"
+        if (after.get(regular, {}).get("kind") != "file"
+                or after.get(link, {}).get("kind") != "link"
+                or base64.b64decode(after[link]["bytes"]) != b"AGENTS.md"):
+            raise ValueError("both_complete_native_instruction_pairs_required")
     return dict(kind="THR296-checked-manifest-v1", operation_id=operation,
                 operation_dir=str(operation_dir), runtime_root=str(runtime), org=args.org,
                 source_sha=source, plan_sha=digest(args.plan.read_bytes()), containment=plan["containment"],
@@ -800,6 +985,10 @@ def finished_state(root: Path, manifest: dict, *, direction: str) -> dict | None
     No Database constructor, reset helper, materializer or publication is used.
     This is not host/process/reboot proof; those require separate observations.
     """
+    residue = native_workspace_residue(root, manifest)
+    if any(not entry["backup"] or entry["observed"] != entry["complete"]
+           for entry in residue.values()) or direction == "compensate" and residue:
+        return None
     verify_preserved_paths(root, manifest)
     verify_global_assets(manifest)
     desired = manifest["before"] if direction == "compensate" else manifest["after"]
@@ -852,6 +1041,7 @@ def finished_state(root: Path, manifest: dict, *, direction: str) -> dict | None
             raise ValueError("profile_closure_not_ready")
         return dict(operation_id=manifest["operation_id"], direction=direction,
                     generation=pointer["current_generation"], snapshot_digest=pointer["snapshot_digest"],
+                    preservation_copies={rel: entry["observed"] for rel, entry in residue.items()},
                     traffic_released=False)
 
 
@@ -910,8 +1100,7 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         return result  # read-only DB; no reset helper, publication or protected write
     desired = manifest["before"] if args.recover and args.direction == "compensate" else manifest["after"]
     for rel in manifest["before"]:
-        current = image(root / rel)
-        if current not in (manifest["before"][rel], manifest["after"][rel]):
+        if not known_output_prefix(root, manifest, rel):
             raise ValueError(f"unknown_third_state:{rel}")
     if image(Path(manifest["closed_database_backup"])) != manifest["closed_backup_image"]:
         raise ValueError("closed_backup_changed")
@@ -940,6 +1129,11 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
                 raise ValueError("publication_profile_or_audit_before_image_CAS_lost")
             if image(root / "happyranch.db") != manifest["closed_backup_image"]:
                 raise ValueError("database_closed_before_image_CAS_lost")
+    else:
+        # Only explicit owned recovery closes a staged prefix. Check/first
+        # apply never adopt a sibling left by an unrelated earlier operation.
+        close_native_workspace_residue(root, manifest, compensate=direction == "compensate")
+        close_native_authority_residue(root, manifest)
     # Existing native coordinators, no startup attachment/publication shortcut.
     from runtime.config import Settings
     from runtime.infrastructure.database import Database
@@ -1032,6 +1226,7 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
                 agent_name=agent, team=definition.team, skills_root=SOURCE / "runtime/skills", org_root=root, db=db)
             validate_workspace_skills_integrity(workspace, expected_specs=expected_specs,
                 settings=settings, db=db, agent_name=agent)
+        close_native_workspace_residue(root, manifest, compensate=compensating)
         for rel, expected in desired.items():
             if image(root / rel) != expected:
                 raise ValueError(f"materializer_closed_output_mismatch:{rel}")
@@ -1072,12 +1267,11 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         if not org.workflow_authority.publish_after_supported_change(publisher=f"THR296:{operation_id}:ready:{direction}"):
             raise ValueError("publication_not_ready")
         ready = org.workflow_authority.verify_admission_ready()
-        result = dict(operation_id=operation_id, manifest_sha256=manifest_digest,
-                      direction="compensate" if args.recover and args.direction == "compensate" else "complete",
-                      generation=ready.generation, snapshot_digest=ready.snapshot_digest,
-                      traffic_released=False)
-        if finished_state(root, manifest, direction=direction) is None:
+        final = finished_state(root, manifest, direction=direction)
+        if (final is None or final["generation"] != ready.generation
+                or final["snapshot_digest"] != ready.snapshot_digest):
             raise ValueError("final_owned_state_not_ready")
+        result = {**final, "manifest_sha256": manifest_digest}
         write_receipt(receipt, result)
         return result
     finally:

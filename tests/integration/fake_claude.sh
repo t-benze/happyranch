@@ -12,6 +12,8 @@ fi
 # stub lives beside the bound Python/callback wrappers; restore that exact
 # test-only route before the unchanged executable/registry/plan identity gate.
 export PATH="${0%/*}:/usr/bin:/bin"
+HAPPYRANCH_TEST_CONTEXT_ARGV_JSON=$(python -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${STUB_ARGV[@]}")
+export HAPPYRANCH_TEST_CONTEXT_ARGV_JSON
 
 PROMPT=""
 JSON_OUTPUT=0
@@ -81,7 +83,7 @@ if [[ -n "$THREAD_INVOCATION_TOKEN" ]]; then
         python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_THREAD_PLAN" "${STUB_ARGV[@]}"
     fi
     if [[ -n "${FAKE_CLAUDE_THREAD_PLAN:-}" && -f "$FAKE_CLAUDE_THREAD_PLAN" ]]; then
-        bash "$FAKE_CLAUDE_THREAD_PLAN" \
+        printf '%s' "$PROMPT" | bash "$FAKE_CLAUDE_THREAD_PLAN" \
             "$THREAD_ID" "$THREAD_INVOCATION_TOKEN" "$THREAD_AGENT" "$ORG_SLUG" "$THREAD_PURPOSE" 1>&2
     fi
     # Emit the same JSON result blob the task path does — the executor parses it.
@@ -111,7 +113,7 @@ if [[ -z "${FAKE_CLAUDE_PLAN:-}" || ! -f "$FAKE_CLAUDE_PLAN" || ! -x "$FAKE_CLAU
         python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_PLAN" "${STUB_ARGV[@]}"
     fi
     if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
-    bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG" 1>&2
+    printf '%s' "$PROMPT" | bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG" 1>&2
 fi
 
 # When the orchestrator runs Claude with `--output-format json` (always, since
