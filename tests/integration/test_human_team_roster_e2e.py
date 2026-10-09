@@ -1,7 +1,8 @@
 """Finite THR296 shipping cases. Execute only via authorized disposable parent.
 
-No production-host runs. RF5/RF6 source-bound fault observation, writer barriers,
-C5 history/portability, C7-C9 maintenance and browser cases need further owners.
+No production-host runs. RF5/RF6 real-process cuts and ten real context sources
+are authored here; writer barriers, full history/portability and maintenance
+observers still need further source. Authoring is never execution evidence.
 """
 from __future__ import annotations
 
@@ -13,6 +14,9 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
+from datetime import datetime, timedelta, timezone
+import signal
 
 import httpx
 import pytest
@@ -29,7 +33,107 @@ VERDICTS = [(None, 'none'), ('', 'blank'), ('CUSTOM_REVIEW_OUTCOME', 'custom'),
 
 @pytest.fixture
 def human_daemon(runtime: Path, request: pytest.FixtureRequest,
-                 fake_claude_plan_env: Path, fake_codex_plan_env: Path) -> tuple[int, Path]:
+                 fake_claude_plan_env: Path, fake_codex_plan_env: Path,
+                 tmp_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                 fake_claude: Path, fake_codex: Path, fake_opencode: Path):
+    _seed_human_roster(runtime)
+    # Plans are explicit; normal callback verification never invokes providers.
+    _write_plan(fake_claude_plan_env, runtime, status='completed', verdict=None, self_child=False)
+    _write_plan(fake_codex_plan_env, runtime, status='completed', verdict=None, self_child=False)
+    cut = getattr(request.node, 'callspec', None)
+    cut = cut.params.get('cut') if cut is not None else None
+    if cut is None:
+        yield request.getfixturevalue('live_daemon'), runtime
+        return
+    from tests.integration.conftest import _nested_daemon_env
+    from runtime.daemon import paths as daemon_paths, runtimes
+    from runtime.orchestrator.executor_binary_registry import save_registry
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    monkeypatch.setenv('HAPPYRANCH_EXECUTOR_LAUNCH_SPACING_SECONDS', '0')
+    save_registry({'claude': str(fake_claude), 'codex': str(fake_codex), 'opencode': str(fake_opencode)})
+    runtimes.register(runtime.parent.parent)
+    witness = tmp_path / 'real-failed-cut.json'
+    log = (tmp_path / 'real-failed-daemon.log').open('w')
+    processes = []
+    # TEST-SIDE profile observes the actual effect method's successful return.
+    # It installs before imports/all threads, hashes source and compiled code,
+    # and abruptly exits only after the real separately committed effect. It
+    # does not replace SQL, a method, an executor, or a final transition.
+    launcher = r'''
+import hashlib,json,marshal,os,runpy,sys,threading,types
+from pathlib import Path
+source=Path(sys.argv[1]); revision=sys.argv[2]; cut=sys.argv[3]; receipt=Path(sys.argv[4])
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(source))
+import subprocess
+assert subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()==revision
+assert not subprocess.check_output(['git','-C',str(source),'status','--porcelain']).strip()
+path=source/'runtime/infrastructure/db/tasks.py'
+data=path.read_bytes()
+assert data==subprocess.check_output(['git','-C',str(source),'show',revision+':runtime/infrastructure/db/tasks.py'])
+def members(code):
+    yield code
+    for value in code.co_consts:
+        if isinstance(value,types.CodeType): yield from members(value)
+codes=[code for code in members(compile(data,str(path),'exec',dont_inherit=True,optimize=sys.flags.optimize))
+       if code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect']
+assert len(codes)==1
+expected=hashlib.sha256(marshal.dumps(codes[0])).hexdigest()
+def observe(frame,event,arg):
+    if (event!='return' or frame.f_code.co_filename!=str(path)
+            or frame.f_code.co_qualname!='TasksMixin.apply_human_failed_recovery_effect'
+            or frame.f_locals.get('effect')!=cut or arg!='progressed'): return
+    assert sys.getprofile() is observe
+    assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==expected
+    local=frame.f_locals
+    record={'pid':os.getpid(),'thread':threading.get_ident(),'source_sha':revision,
+            'file_sha256':hashlib.sha256(data).hexdigest(),'code_sha256':expected,
+            'effect':cut,'return':arg,'task':local['task_id'],'agent':local['agent'],
+            'session':local['session_id'],'result':local['result_row_id']}
+    fd=os.open(receipt,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(fd,'w') as out:
+        json.dump(record,out,sort_keys=True);out.flush();os.fsync(out.fileno())
+    os._exit(86)
+if cut!='none':
+    sys.setprofile(observe);threading.setprofile(observe)
+sys.argv=['runtime.daemon']
+runpy.run_module('runtime.daemon',run_name='__main__')
+'''
+    def start(selected: str) -> int:
+        process = subprocess.Popen([sys.executable, '-I', '-c', launcher, binding['source'],
+            binding['revision'], selected, str(witness)], cwd=binding['source'],
+            env=_nested_daemon_env(), stdout=log, stderr=log, start_new_session=True)
+        processes.append(process)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            assert process.poll() is None, f'daemon exited {process.returncode}; see {log.name}'
+            if daemon_paths.port_file().exists():
+                port = int(daemon_paths.port_file().read_text())
+                try:
+                    if httpx.get(f'http://127.0.0.1:{port}/api/v1/health', timeout=0.5).status_code == 200:
+                        return port
+                except httpx.HTTPError:
+                    pass
+            time.sleep(0.05)
+        raise AssertionError('real daemon health unavailable')
+    try:
+        port = start(cut)
+        request.node._roster_fault_daemon = {'process': processes[0], 'start': start, 'witness': witness}
+        yield port, runtime
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+        log.close()
+
+
+def _seed_human_roster(runtime: Path) -> None:
     roster = yaml.safe_load((runtime / 'org/teams.yaml').read_text())
     roster['teams']['default'] = {'manager': {'kind': 'human', 'principal': 'founder'},
                                  'workers': ['consultant_head', 'consultant_codex']}
@@ -37,10 +141,6 @@ def human_daemon(runtime: Path, request: pytest.FixtureRequest,
     (runtime / 'org/teams.yaml').write_text(yaml.safe_dump(roster))
     seed_workspace(runtime, 'consultant_head')
     seed_workspace(runtime, 'consultant_codex', executor='codex')
-    # Plans are explicit; normal callback verification never invokes providers.
-    _write_plan(fake_claude_plan_env, runtime, status='completed', verdict=None, self_child=False)
-    _write_plan(fake_codex_plan_env, runtime, status='completed', verdict=None, self_child=False)
-    return request.getfixturevalue('live_daemon'), runtime
 
 
 def _write_plan(path: Path, root: Path, *, status: str, verdict: str | None, self_child: bool,
@@ -51,14 +151,19 @@ def _write_plan(path: Path, root: Path, *, status: str, verdict: str | None, sel
     # this plan calls the supported callback, never writes task/results/audits.
     path.write_text('''#!/usr/bin/env bash
 set -euo pipefail
+HAPPYRANCH_TEST_ACTUAL_PROMPT=$(cat)
+export HAPPYRANCH_TEST_ACTUAL_PROMPT
 python - "$1" "$2" "$PWD" <<'PLAN'
-import json, pathlib, subprocess, sys
+import json, os, pathlib, re, subprocess, sys
 T, S, workspace = sys.argv[1:]
 agent = pathlib.Path(workspace).name
 org = pathlib.Path(workspace).parent.parent.name
 ''' + f"root = pathlib.Path({str(root)!r})\nwitness = pathlib.Path({str(witness)!r})\nstatus = {status!r}\nverdict = {verdict!r}\nself_child = {self_child!r}\nrecovery = {recovery!r}\nattempted_decision = {attempted_decision!r}\nadministration = {administration!r}\n" + '''
 with witness.open('a') as out:
-    out.write(json.dumps({'task': T, 'session': S, 'agent': agent}) + '\\n')
+    out.write(json.dumps({'task': T, 'session': S, 'agent': agent,
+        'prompt': os.environ['HAPPYRANCH_TEST_ACTUAL_PROMPT'],
+        'argv': json.loads(os.environ['HAPPYRANCH_TEST_CONTEXT_ARGV_JSON']),
+        'workspace': workspace}) + '\\n')
 # Independent read determines actual root/child provenance. The plan never
 # manufactures a result or seeds the final transition.
 import sqlite3
@@ -67,10 +172,17 @@ with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) a
     children = conn.execute('SELECT COUNT(*) FROM tasks WHERE parent_task_id=?', (T,)).fetchone()[0]
     prior = conn.execute("SELECT COUNT(*) FROM task_results WHERE task_id=? AND session_id!=''", (T,)).fetchone()[0]
     if recovery and parent is not None:
-        accepted = conn.execute('SELECT recovery_session_id FROM task_completion_recoveries WHERE task_id=?', (T,)).fetchone()
+        accepted = conn.execute('SELECT origin_session_id,recovery_session_id,provider_session_id,state FROM task_completion_recoveries WHERE task_id=?', (T,)).fetchone()
         if accepted is None:
+            assert prior == 0
             sys.exit(0)  # genuine Codex clean omission; native runner claims recovery
-        assert accepted[0] == S, (accepted, S)
+        assert accepted[1] == S and accepted[0] != S and accepted[2] and accepted[3] == 'claimed', (accepted, S)
+        prompt = os.environ['HAPPYRANCH_TEST_ACTUAL_PROMPT']
+        explicit = re.findall(r'binding task=(TASK-[0-9]+) session=(sess-[a-f0-9]+)', prompt)
+        assert explicit == [(T, S)], explicit
+        argv = json.loads(os.environ['HAPPYRANCH_TEST_CONTEXT_ARGV_JSON'])
+        assert 'resume' in argv and accepted[2] in argv, (accepted, argv)
+        assert prior == 0
 if administration:
     import ast, httpx
     from runtime.daemon.paths import port_file
@@ -329,19 +441,62 @@ def test_c3_worker_lifecycle_and_denials(human_daemon: tuple[int, Path], agent: 
     assert denied.status_code == 404
 
 
-@pytest.mark.parametrize('agent,recovery', [('consultant_head', False), ('consultant_codex', False), ('consultant_codex', True)], ids=['head', 'codex', 'codex-accepted'])
-@pytest.mark.parametrize('status', ['completed', 'blocked'], ids=['completed', 'failed'])
+C4_SCENARIOS = [
+    (agent, recovery, status, None)
+    for agent, recovery in [('consultant_head', False), ('consultant_codex', False), ('consultant_codex', True)]
+    for status in ('completed', 'blocked')
+] + [('consultant_codex', True, 'blocked', cut) for cut in ('fail', 'review')]
+
+
+@pytest.mark.parametrize('agent,recovery,status,cut', C4_SCENARIOS, ids=[
+    ('rf5-zero-review' if cut == 'fail' else 'rf6-one-review') if cut else
+    ('head' if agent == 'consultant_head' else 'codex-accepted' if recovery else 'codex') +
+    ('-completed' if status == 'completed' else '-failed')
+    for agent, recovery, status, cut in C4_SCENARIOS])
 @pytest.mark.parametrize('verdict', [value for value, _ in VERDICTS], ids=[name for _, name in VERDICTS])
 def test_c4_normal_and_recovered_verdict_attribution(
-    human_daemon: tuple[int, Path], agent: str, recovery: bool, status: str, verdict: str | None,
+    human_daemon: tuple[int, Path], request: pytest.FixtureRequest,
+    agent: str, recovery: bool, status: str, cut: str | None, verdict: str | None,
     fake_claude_plan_env: Path, fake_codex_plan_env: Path,
 ) -> None:
-    # Normal and genuine two-invocation Codex admission. RF5/RF6 external
-    # crash cuts/writer barriers remain separately unfinished; no fake marker.
+    # Normal and genuine two-invocation Codex admission, including actual
+    # separately committed RF5/RF6 cuts. No manually inserted recovery marker.
     port, root = human_daemon
     plan = fake_claude_plan_env if agent == 'consultant_head' else fake_codex_plan_env
     _write_plan(plan, root, status=status, verdict=verdict, self_child=True, recovery=recovery)
     reply = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'owner': agent, 'brief': 'self child then final parent'}, headers=_auth_headers()).raise_for_status().json()
+    original_review = None
+    selected_before = None
+    if cut:
+        owned = request.node._roster_fault_daemon
+        assert owned['process'].wait(timeout=150) == 86
+        observed = json.loads(owned['witness'].read_text())
+        assert observed['effect'] == cut and observed['agent'] == agent
+        assert type(observed['result']) is int and observed['result'] > 0
+        with sqlite3.connect(root / 'happyranch.db') as conn:
+            selected_before = conn.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone()
+            assert selected_before is not None
+            child = conn.execute('SELECT parent_task_id,status,assigned_agent,current_session_id,note,completed_at FROM tasks WHERE id=?',
+                                 (observed['task'],)).fetchone()
+            assert child[:4] == (reply['task_id'], 'failed', agent, observed['session'])
+            assert child[4] == 'self-blocked: child outcome' and child[5]
+            assert conn.execute('SELECT state,accepted_result_id,accepted_result_session_id FROM task_completion_recoveries WHERE task_id=?',
+                                (observed['task'],)).fetchone() == ('callback_accepted', observed['result'], observed['session'])
+            bound = [json.loads(row[0]) for row in conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='completion_report' ORDER BY id",
+                                                              (observed['task'],))]
+            assert sum(row.get('_result_row_id') == observed['result'] and row.get('_recovery_session_id') == observed['session'] for row in bound) == 1
+            reviews = conn.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict' ORDER BY id",
+                                   (observed['task'],)).fetchall()
+            assert len(reviews) == (0 if cut == 'fail' else 1)
+            if reviews:
+                original_review = reviews[0]
+                assert original_review[2] == agent
+                assert json.loads(original_review[4]) == {'verdict': verdict if verdict is not None else 'rejected',
+                    'feedback': 'self-blocked: child outcome', 'reviewed_agent': agent}
+            # This is the committed failed child before parent progression;
+            # a genuine callback/result for its next parent invocation is owed.
+            assert conn.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (reply['task_id'],)).fetchone()[0] == 1
+        port = owned['start']('none')
     final = _wait_for_terminal(_base(port), reply['task_id'])
     assert final['task']['status'] == 'completed'
     with sqlite3.connect(root / 'happyranch.db') as conn:
@@ -363,6 +518,10 @@ def test_c4_normal_and_recovered_verdict_attribution(
             assert type(R) is int and R > 0 and accepted_session == S1 and state == 'callback_consumed'
             selected = conn.execute('SELECT task_id,agent,session_id,verdict FROM task_results WHERE id=?', (R,)).fetchone()
             assert selected == (children[0][0], agent, S1, verdict)
+            if selected_before is not None:
+                assert conn.execute('SELECT * FROM task_results WHERE id=?', (R,)).fetchone() == selected_before
+            if original_review is not None:
+                assert conn.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", (children[0][0],)).fetchall() == [original_review]
             assert conn.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (children[0][0],)).fetchone()[0] == 1
             bound = [json.loads(row[0]) for row in conn.execute(
                 "SELECT payload FROM audit_log WHERE task_id=? AND action='completion_report' ORDER BY id",
@@ -371,10 +530,22 @@ def test_c4_normal_and_recovered_verdict_attribution(
             witness = Path(str(plan) + '.calls.jsonl')
             calls = [json.loads(line) for line in witness.read_text().splitlines()]
             child_calls = [call for call in calls if call['task'] == children[0][0]]
-            assert child_calls == [
+            assert [{key: call[key] for key in ('task', 'session', 'agent')} for call in child_calls] == [
                 {'task': children[0][0], 'session': S0, 'agent': agent},
                 {'task': children[0][0], 'session': S1, 'agent': agent},
             ]
+            assert all(call['workspace'] == str(root / 'workspaces' / agent) for call in child_calls)
+            assert 'resume' not in child_calls[0]['argv']
+            assert 'resume' in child_calls[1]['argv'] and provider in child_calls[1]['argv']
+            assert f'binding task={children[0][0]} session={S1}' in child_calls[1]['prompt']
+            # The genuine original tuple cannot append a second result or
+            # replace the ledger after the selected recovery callback wins.
+            frozen = conn.execute('SELECT * FROM task_results WHERE task_id=? ORDER BY id', (children[0][0],)).fetchall()
+            stale = httpx.post(_base(port) + f'/tasks/{children[0][0]}/completion',
+                headers=_auth_headers(), json={'session_id': S0, 'agent': agent,
+                    'status': 'completed', 'output_summary': 'late original', 'confidence': 90})
+            assert stale.status_code == 409, stale.text
+            assert conn.execute('SELECT * FROM task_results WHERE task_id=? ORDER BY id', (children[0][0],)).fetchall() == frozen
 
 
 @pytest.mark.parametrize('roster_kind', ['human', 'legacy-agent-control'])
@@ -493,3 +664,211 @@ runpy.run_path(str(script),run_name='__main__')
         {'source_sha': binding['revision'], 'command': command, 'exit': actual.returncode,
          'refusal': expected, 'closed_file_readback_unchanged': True,
          'transient_write_proof': 'separate observer required', 'M_success': 'not attempted'}, sort_keys=True))
+
+
+CONTEXTS = [(agent, kind) for agent in ('consultant_head', 'consultant_codex')
+            for kind in ('task', 'thread', 'dream', 'wake', 'schedule')]
+
+
+@pytest.mark.parametrize('agent,kind', CONTEXTS, ids=[
+    ('head' if agent == 'consultant_head' else 'codex') + '-' + kind for agent, kind in CONTEXTS])
+def test_c7_both_resume_resets_and_worker_contexts(
+    runtime: Path, request: pytest.FixtureRequest, tmp_path: Path, agent: str, kind: str,
+    fake_claude_plan_env: Path, fake_codex_plan_env: Path,
+    fake_claude_thread_plan_env: Path,
+) -> None:
+    """L context proof through real producers, callbacks and final SQL.
+
+    Closed fixture setup invokes both native reset owners; it establishes no
+    successful operator migration, inhibition, backup or M receipt. The real M
+    utility/reset/crash proof is a separate prerequisite, never inferred here.
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.models import ScheduleKind, ThreadMessageKind, ThreadRecord, ThreadStatus
+    from runtime.orchestrator.schedule_service import ScheduleService
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    _seed_human_roster(runtime)
+    retained_memory = {}
+    for name in ('consultant_head', 'consultant_codex'):
+        memory = runtime / 'workspaces' / name / 'learnings.md'
+        memory.write_text(f'# Retained memory: {name}\nC7 prior worker knowledge.\n')
+        retained_memory[memory] = memory.read_bytes()
+    attached = _attach_process(runtime)
+    assert attached.returncode == 0, attached.stderr
+    # A meaningful retained archived episode is unrelated to the new eligible
+    # reply. The fixture may seed old continuity, never runtime results/claims.
+    db = Database(runtime / 'happyranch.db')
+    now = datetime.now(timezone.utc)
+    control = 'THR-001'
+    db.insert_thread(ThreadRecord(id=control, subject='retained control',
+                                  status=ThreadStatus.ARCHIVED, archived_at=now))
+    for name, provider in (('consultant_head', 'claude'), ('consultant_codex', 'codex'),
+                           ('dev_agent', 'claude')):
+        db._conn.execute('INSERT INTO thread_participants VALUES (?,?,?,?,?,?)',
+                         (control, name, now.isoformat(), 'founder', 'obsolete-' + name, 7))
+        db._conn.execute('''INSERT INTO thread_reply_delivery_state
+            (thread_id,agent_name,acknowledged_through_seq,required_through_seq,updated_at)
+            VALUES (?,?,?,?,?)''', (control, name, 7, 9, now.isoformat()))
+        db._conn.execute('''INSERT INTO thread_reply_breaker_episodes
+            (thread_id,agent_name,executor_key,episode_id,state,consecutive_failures,
+             opened_at,cooldown_until,last_failure_category,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)''', (control, name, provider, 'retained-' + name,
+                'open', 3, now.isoformat(), (now + timedelta(days=1)).isoformat(),
+                'provider_failure', now.isoformat()))
+    db._conn.commit()
+    eligible_thread = None
+    if kind == 'thread':
+        eligible_thread = 'THR-002'
+        db.insert_thread(ThreadRecord(id=eligible_thread, subject='eligible full context'))
+        for index in range(7):
+            db.append_thread_message(thread_id=eligible_thread, speaker='founder',
+                kind=ThreadMessageKind.MESSAGE,
+                body_markdown='C7-EARLY-CONTEXT-MARKER' if index == 0 else f'retained context {index}')
+        db._conn.execute('INSERT INTO thread_participants VALUES (?,?,?,?,?,?)',
+            (eligible_thread, agent, now.isoformat(), 'founder', 'obsolete-' + agent, 7))
+        db._conn.execute('''INSERT INTO thread_reply_delivery_state
+            (thread_id,agent_name,acknowledged_through_seq,required_through_seq,updated_at)
+            VALUES (?,?,?,?,?)''', (eligible_thread, agent, 7, 7, now.isoformat()))
+        db._conn.commit()
+    preserved_tables = ('threads', 'thread_messages', 'thread_invocations',
+                        'thread_reply_delivery_state', 'thread_reply_breaker_episodes',
+                        'thread_reply_breaker_receipts')
+    before = {table: db._conn.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
+              for table in preserved_tables}
+    third = tuple(db._conn.execute('SELECT * FROM thread_participants WHERE agent_name=?',
+                                  ('dev_agent',)).fetchone())
+    for name in ('consultant_head', 'consultant_codex'):
+        expected_rows = 2 if name == agent and kind == 'thread' else 1
+        assert db.reset_thread_sessions_for_agent(name, audit_scope_id='config:human-team-roster:C7',
+            audit_agent='founder', audit_reason='fixture demotion continuity') == expected_rows
+    assert {table: db._conn.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
+            for table in preserved_tables} == before
+    assert tuple(db._conn.execute('SELECT * FROM thread_participants WHERE agent_name=?',
+                                  ('dev_agent',)).fetchone()) == third
+    assert [tuple(row) for row in db._conn.execute('''SELECT agent_name,agent_session_id,last_resumed_seq
+        FROM thread_participants WHERE thread_id='THR-001' AND agent_name LIKE 'consultant_%' ORDER BY agent_name''')] == [
+        ('consultant_codex', None, 0), ('consultant_head', None, 0)]
+    invalidations = db._conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id",
+                                    ('config:human-team-roster:C7',)).fetchall()
+    assert [json.loads(row[0]) for row in invalidations] == [
+        {'reason': 'fixture demotion continuity', 'rows': 2 if name == agent and kind == 'thread' else 1, 'name': name}
+        for name in ('consultant_head', 'consultant_codex')]
+    if kind == 'dream':
+        db.upsert_org_setting('dreaming', json.dumps({'enabled': True,
+            'schedule': {'time': '00:00', 'timezone': 'UTC', 'catch_up_on_startup': True},
+            'agents': {'mode': 'whitelist', 'include': [agent]}}))
+    if kind == 'wake':
+        definition = runtime / 'org/agents' / (agent + '.md')
+        definition.write_text(definition.read_text() + '\n## Routine Tasks\n- C7 own routine\n')
+        db.upsert_org_setting('working_hours', json.dumps({'enabled': True,
+            'agents': {'mode': 'whitelist', 'include': [agent]},
+            'default': {'mode': 'continuous', 'interval': '24h', 'timezone': 'UTC',
+                        'catch_up_on_startup': True}}))
+    schedule_id = None
+    if kind == 'schedule':
+        schedule_id = ScheduleService(db).create(agent_name=agent, team='default',
+            kind=ScheduleKind.ONE_SHOT, fire_at=datetime.now(timezone.utc) + timedelta(seconds=1), recurrence=None,
+            timezone='UTC', normalized_brief='C7 own scheduled root',
+            source_instruction='explicit isolated fixture one-shot').id
+    db.close()
+    capture = tmp_path / 'actual-contexts.jsonl'
+    helper = Path(binding['source']) / 'tests/helpers/human_team_context_plan.py'
+    for plan, provider in ((fake_claude_plan_env, 'claude'), (fake_claude_thread_plan_env, 'claude'),
+                           (fake_codex_plan_env, 'codex')):
+        # DeterministicPlan authenticates exact bytes before the real stub runs.
+        import shlex
+        plan.write_text('#!/usr/bin/env bash\nset -euo pipefail\npython ' +
+            shlex.quote(str(helper)) + ' --provider ' + provider + ' --capture ' +
+            shlex.quote(str(capture)) + '\n')
+    port = request.getfixturevalue('live_daemon')
+    base = _base(port)
+    task_id = thread_id = None
+    if kind == 'task':
+        task_id = httpx.post(base + '/tasks', headers=_auth_headers(), json={
+            'owner': agent, 'team': 'default', 'brief': 'C7 actual worker root'}).raise_for_status().json()['task_id']
+    if kind == 'thread':
+        thread_id = eligible_thread
+        httpx.post(base + f'/threads/{thread_id}/send', headers=_auth_headers(), json={
+            'body_markdown': 'C7 actual founder sends next message'}).raise_for_status()
+    deadline = time.monotonic() + 150
+    records = []
+    while time.monotonic() < deadline:
+        if capture.exists():
+            records = [json.loads(line) for line in capture.read_text().splitlines() if line]
+            matching = [row for row in records if row['kind'] == kind and row['agent'] == agent]
+            if matching and matching[0]['callback_exit'] == 0:
+                break
+        time.sleep(0.1)
+    else:
+        pytest.fail(f'actual {kind} callback absent: {records}')
+    actual = matching[0]
+    assert actual['source_sha'] == binding['revision']
+    assert actual['workspace'] == str(runtime / 'workspaces' / agent)
+    assert actual['provider'] == ('claude' if agent == 'consultant_head' else 'codex')
+    assert 'obsolete-' not in json.dumps(actual['stub_argv'])
+    assert 'Team Head' not in actual['prompt']
+    assert 'role: worker' in actual['definition_bytes'] and 'team: default' in actual['definition_bytes']
+    assert actual['generated_files']['CLAUDE.md']['raw_link'] == 'AGENTS.md'
+    for provider_root in ('.agents/skills/', '.claude/skills/'):
+        assert any(path.startswith(provider_root) for path in actual['skill_links'])
+        assert not any(path == provider_root + 'manage-agent' for path in actual['skill_links'])
+    with sqlite3.connect(runtime / 'happyranch.db') as conn:
+        for table in ('thread_reply_delivery_state', 'thread_reply_breaker_episodes'):
+            column_names = [column[0] for column in conn.execute(f'SELECT * FROM {table} LIMIT 0').description]
+            index = column_names.index('thread_id')
+            assert conn.execute(f'SELECT * FROM {table} WHERE thread_id=? ORDER BY rowid', (control,)).fetchall() == [tuple(row) for row in before[table] if row[index] == control]
+        if kind == 'thread':
+            token = actual['identity']['invocation_token']
+            assert actual['identity']['thread_id'] == thread_id
+            assert 'C7-EARLY-CONTEXT-MARKER' in actual['prompt']
+            # Callback commit precedes provider exit; wait for the real runner's
+            # consumption rather than declaring a successful callback terminal.
+            final_deadline = time.monotonic() + 30
+            while time.monotonic() < final_deadline:
+                invocation = conn.execute('SELECT status,reply_message_seq FROM thread_invocations WHERE invocation_token=?', (token,)).fetchone()
+                if invocation and invocation[0] == 'consumed':
+                    break
+                time.sleep(0.1)
+            assert invocation and invocation[0] == 'consumed', invocation
+            assert conn.execute('SELECT speaker,body_markdown FROM thread_messages WHERE thread_id=? AND seq=?',
+                                (thread_id, invocation[1])).fetchone() == (agent, 'C7 genuine current worker reply')
+        elif kind in ('dream', 'wake', 'schedule'):
+            table = {'dream': 'dreams', 'wake': 'work_hours', 'schedule': 'schedules'}[kind]
+            context_id = actual['identity']['context_id']
+            row = conn.execute(f'SELECT * FROM {table} WHERE id=?', (context_id,))
+            columns = [column[0] for column in row.description]
+            value = dict(zip(columns, row.fetchone(), strict=True))
+            assert value['agent_name'] == agent
+            assert value['status'] == ('fired' if kind == 'schedule' else 'completed')
+            transcript = Path(value['transcript_path'])
+            if not transcript.is_absolute():
+                transcript = runtime / transcript
+            assert transcript.is_file() and transcript.read_text()
+            if kind == 'dream':
+                assert value['ended_at'] and value['new_learnings_count'] == value['kb_candidate_count'] == 0
+                assert value['founder_thread_id'] is None
+                assert conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0
+            else:
+                spawned = json.loads(value['spawned_task_ids'])
+                assert len(spawned) == 1
+                task_id = spawned[0]
+                if kind == 'schedule':
+                    assert context_id == schedule_id and value['active'] == 0 and value['fire_count'] == 1
+                else:
+                    assert value['ended_at'] and value['spawned_task_count'] == 1
+    if task_id is not None:
+        final = _wait_for_terminal(base, task_id)
+        assert final['task']['status'] == 'completed'
+        with sqlite3.connect(runtime / 'happyranch.db') as conn:
+            assert conn.execute('SELECT assigned_agent,team FROM tasks WHERE id=?', (task_id,)).fetchone() == (agent, 'default')
+            results = conn.execute('SELECT id,agent,session_id FROM task_results WHERE task_id=?', (task_id,)).fetchall()
+            assert len(results) == 1 and type(results[0][0]) is int and results[0][0] > 0
+            assert results[0][1] == agent and results[0][2]
+    assert {path: path.read_bytes() for path in retained_memory} == retained_memory
+    (tmp_path / 'C7-context-receipt.json').write_text(json.dumps({
+        'source_sha': binding['revision'], 'context': kind, 'agent': agent,
+        'captured_callback': actual, 'L_context_only': True,
+        'retained_memory_sha256': {str(path.relative_to(runtime)): hashlib.sha256(raw).hexdigest()
+                                   for path, raw in retained_memory.items()},
+        'M_utility_reset_proof': 'separate unexecuted prerequisite'}, sort_keys=True))

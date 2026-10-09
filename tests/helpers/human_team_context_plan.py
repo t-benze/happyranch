@@ -95,9 +95,9 @@ def main() -> int:
         thread = _one(r'^(?:You are participating in|Continuing) thread (THR-\d+):', prompt, 'thread')
         token = _one(r'^Your invocation_token for this turn is: ([a-f0-9-]+)\s*$', prompt, 'invocation_token')
         with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as conn:
-            current = conn.execute('SELECT thread_id,agent_name,status,triggering_seq FROM thread_invocations WHERE invocation_token=?', (token,)).fetchall()
-        if (len(current) != 1 or current[0][:3] != (thread, agent, 'running')
-                or type(current[0][3]) is not int or current[0][3] <= 0):
+            current = conn.execute('SELECT thread_id,agent_name,status,triggering_seq,started_at FROM thread_invocations WHERE invocation_token=?', (token,)).fetchall()
+        if (len(current) != 1 or current[0][:3] != (thread, agent, 'pending')
+                or type(current[0][3]) is not int or current[0][3] <= 0 or not current[0][4]):
             raise ValueError('actual_current_thread_token_binding_required')
         payload = {'thread_id': thread, 'speaker': agent, 'invocation_token': token,
                    'body_markdown': 'C7 genuine current worker reply', 'in_response_to_seq': current[0][3]}

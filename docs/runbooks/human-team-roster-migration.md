@@ -185,9 +185,14 @@ plan conventions or usage output. The helper binds genuine task/session,
 thread token/trigger sequence, dream, wake and schedule IDs; it calls the
 corresponding supported callback and records actual generated settings,
 instruction bytes and both skill-root links. It does not produce or settle a
-context, insert a result, or attest final behavior. The ten real producer and
-final durable context assertions remain required; helper authoring alone does
-not close C7. Wbrowser's finite selection is now authored at
+context, insert a result, or attest final behavior. Ten real producer/admission
+cases are authored in `test_c7_both_resume_resets_and_worker_contexts`, one per
+consultant and task/thread/dream/wake/schedule. They independently check the
+native resets, retained memory and archived delivery/breaker controls, full
+thread context, actual callback and durable context/task outcome. Their L
+fixture resets do not attest successful operator migration in M. Execution,
+causal controls and five repetitions remain unavailable; source alone does not
+close C7. Wbrowser's finite selection is now authored at
 `tests/integration/test_human_team_roster_browser.py`, using the built SPA and
 the fixture-owned loopback daemon with explicit loading/error/empty transport
 states. Browser capability, execution, screenshots and independent bilingual

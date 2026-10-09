@@ -7898,3 +7898,68 @@ def test_retry_spawn_outcome(runtime, db, monkeypatch, fanout, outcome):
         assert db.get_task("RC-P").revision_count == 1
         assert db.get_task("RC-P").current_session_id == ("new-owner" if outcome == "lost" else "rc-owner")
     assert not db._conn.in_transaction
+
+
+HUMAN_VERDICTS = [(None, 'none'), ('', 'blank'), ('CUSTOM_REVIEW_OUTCOME', 'custom'),
+                  ('APPROVE', 'approve'), ('PASS', 'pass'), ('REQUEST_CHANGES', 'request_changes'),
+                  ('REVISE', 'revise'), ('BLOCK', 'block')]
+
+
+@pytest.mark.parametrize('agent', ['consultant_head', 'consultant_codex'], ids=['head', 'codex'])
+@pytest.mark.parametrize('status', ['completed', 'blocked'], ids=['completed', 'failed'])
+@pytest.mark.parametrize('verdict', [value for value, _ in HUMAN_VERDICTS], ids=[name for _, name in HUMAN_VERDICTS])
+def test_c4_human_ordinary_exact_verdict(tmp_path: Path, agent: str, status: str,
+                                        verdict: str | None) -> None:
+    """SUSPENDED unit localization of real ordinary consumer/audit SQL.
+
+    Executor behavior and genuine transport/process settlement belong to L4;
+    this case independently fixes raw result, reviewer, feedback and verdict.
+    """
+    import sqlite3
+    from runtime.daemon.org_state import OrgState
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.models import CompletionReport
+    from runtime.orchestrator.run_step import _consume_completion_report
+    root = tmp_path / 'human-ordinary'
+    (root / 'org/agents').mkdir(parents=True)
+    (root / 'org/teams.yaml').write_text('''default_team: default
+task_default_team: default
+teams:
+  default:
+    manager: {kind: human, principal: founder}
+    workers: [consultant_head, consultant_codex]
+''')
+    for name in ('consultant_head', 'consultant_codex'):
+        (root / 'org/agents' / (name + '.md')).write_text(render_agent_text(AgentDef(
+            name=name, team='default', role='worker', executor='claude' if name.endswith('head') else 'codex',
+            allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+            system_prompt=f'You are {name}.')))
+    org = OrgState.load(slug='test', root=root, settings=Settings())
+    try:
+        org.orchestrator._queue = _SlugQueue()
+        org.db.insert_task(TaskRecord(id='TASK-PARENT', brief='parent', team='default', assigned_agent=agent,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED))
+        org.db.insert_task(TaskRecord(id='TASK-LEAF', brief='leaf', team='default', assigned_agent=agent,
+            task_type='subtask', parent_task_id='TASK-PARENT', status=TaskStatus.IN_PROGRESS,
+            current_session_id='sess-ordinary'))
+        org.db.insert_task_result(task_id='TASK-LEAF', agent=agent, session_id='sess-ordinary',
+            status=status, confidence_score=90, output_summary='literal child outcome', verdict=verdict)
+        with sqlite3.connect(org.db.path) as observer:
+            selected = observer.execute('SELECT * FROM task_results WHERE task_id=?', ('TASK-LEAF',)).fetchone()
+            result_id = observer.execute('SELECT id FROM task_results WHERE task_id=?', ('TASK-LEAF',)).fetchone()[0]
+        report = CompletionReport(task_id='TASK-LEAF', agent=agent, status=status,
+            confidence=90, output_summary='literal child outcome', verdict=verdict)
+        _consume_completion_report(org.orchestrator, 'TASK-LEAF', report,
+                                   result_row_id=result_id, reclaim_terminal_worktree=False)
+        with sqlite3.connect(org.db.path) as observer:
+            assert observer.execute('SELECT status FROM tasks WHERE id=?', ('TASK-LEAF',)).fetchone() == (
+                'completed' if status == 'completed' else 'failed',)
+            rows = observer.execute("SELECT agent,payload FROM audit_log WHERE task_id=? AND action='review_verdict'", ('TASK-LEAF',)).fetchall()
+            assert len(rows) == 1 and rows[0][0] == agent
+            assert json.loads(rows[0][1]) == {
+                'verdict': verdict if verdict is not None else 'approved' if status == 'completed' else 'rejected',
+                'feedback': 'literal child outcome' if status == 'completed' else 'self-blocked: literal child outcome',
+                'reviewed_agent': agent}
+            assert observer.execute('SELECT * FROM task_results WHERE id=?', (result_id,)).fetchone() == selected
+    finally:
+        org.close()

@@ -4887,3 +4887,111 @@ def test_shipping_startup_invocation_commit_serializes_owned_job_backstop(
     assert invocation.consumed_at is not None
     unrelated_after = reopened.get_invocation_any_status(unrelated.invocation_token)
     assert unrelated_after is not None and unrelated_after.status.value == "consumed"
+
+
+C4_HUMAN_VERDICTS = [(None, 'none'), ('', 'blank'), ('CUSTOM_REVIEW_OUTCOME', 'custom'),
+                    ('APPROVE', 'approve'), ('PASS', 'pass'), ('REQUEST_CHANGES', 'request_changes'),
+                    ('REVISE', 'revise'), ('BLOCK', 'block')]
+
+
+@pytest.mark.parametrize('cut', ['completed', 'rf5_zero_review', 'rf6_one_review'])
+@pytest.mark.parametrize('verdict', [value for value, _ in C4_HUMAN_VERDICTS], ids=[name for _, name in C4_HUMAN_VERDICTS])
+def test_c4_human_codex_accepted_exact_verdict(tmp_path: Path, cut: str, verdict: str | None) -> None:
+    """SUSPENDED accepted-result/SQLite localization, explicitly fixture data.
+
+    L4 separately owns genuine two-invocation Codex transport and final parent
+    process/result. This unit invokes real effect owners and cold startup;
+    fixture admission is never represented as an actual provider callback.
+    """
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    from runtime.daemon.org_state import OrgState
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+    root = tmp_path / 'human-accepted'
+    (root / 'org/agents').mkdir(parents=True)
+    (root / 'org/teams.yaml').write_text('''default_team: default
+task_default_team: default
+teams:
+  default:
+    manager: {kind: human, principal: founder}
+    workers: [consultant_head, consultant_codex]
+''')
+    for name in ('consultant_head', 'consultant_codex'):
+        (root / 'org/agents' / (name + '.md')).write_text(render_agent_text(AgentDef(
+            name=name, team='default', role='worker', executor='claude' if name.endswith('head') else 'codex',
+            allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+            system_prompt=f'You are {name}.')))
+        (root / 'workspaces' / name).mkdir(parents=True)
+    org = OrgState.load(slug='test', root=root, settings=Settings())
+    owner, reviewer = 'consultant_codex', 'consultant_head'
+    queue = TaskQueue()
+    org.orchestrator._queue = queue
+    original_review = None
+    try:
+        db = org.db
+        db.insert_task(TaskRecord(id='TASK-PARENT', brief='parent', team='default', assigned_agent=reviewer,
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED))
+        db.insert_task(TaskRecord(id='TASK-LEAF', brief='leaf', team='default', assigned_agent=owner,
+            task_type='subtask', parent_task_id='TASK-PARENT', status=TaskStatus.IN_PROGRESS,
+            current_session_id='origin'))
+        audit = AuditLogger(db)
+        audit.log_session_start('TASK-LEAF', owner, str(root / 'workspaces' / owner),
+            session_id='origin', invocation_purpose='worker_execution', executor='codex')
+        claim_time = datetime.now(timezone.utc)
+        assert db.claim_task_completion_recovery(task_id='TASK-LEAF', agent=owner,
+            origin_session_id='origin', recovery_session_id='recovery', provider_session_id='provider',
+            claimed_at=claim_time.isoformat(), expires_at=(claim_time + timedelta(minutes=2)).isoformat())
+        assert db.publish_task_completion_recovery_binding(task_id='TASK-LEAF', agent=owner,
+            origin_session_id='origin', recovery_session_id='recovery')
+        audit.log_session_start('TASK-LEAF', owner, str(root / 'workspaces' / owner),
+            session_id='recovery', invocation_purpose='unattributed', executor='codex')
+        assert db.admit_task_completion_callback(task_id='TASK-LEAF', agent=owner,
+            session_id='recovery', status='completed' if cut == 'completed' else 'blocked',
+            output_summary='literal accepted outcome', verdict=verdict, confidence_score=90)
+        accepted = db.get_accepted_task_completion_recovery_result(task_id='TASK-LEAF', agent=owner)
+        assert accepted is not None and type(accepted['id']) is int and accepted['id'] > 0
+        result_id = accepted['id']
+        report = completion_report_from_result_row('TASK-LEAF', accepted, fallback_agent=owner)
+        with sqlite3.connect(db.path) as observer:
+            selected = observer.execute('SELECT * FROM task_results WHERE id=?', (result_id,)).fetchone()
+        if cut == 'completed':
+            _consume_accepted_completion_recovery(org.orchestrator, 'TASK-LEAF', report,
+                agent=owner, session_id='recovery', result_row_id=result_id)
+        else:
+            effects = ('evidence', 'chain', 'fanout', 'fail') + (('review',) if cut == 'rf6_one_review' else ())
+            for effect in effects:
+                assert db.apply_human_failed_recovery_effect(task_id='TASK-LEAF', agent=owner,
+                    session_id='recovery', result_row_id=result_id, effect=effect) == 'progressed'
+            with sqlite3.connect(db.path) as observer:
+                assert observer.execute('SELECT state FROM task_completion_recoveries WHERE task_id=?', ('TASK-LEAF',)).fetchone() == ('callback_accepted',)
+                reviews = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", ('TASK-LEAF',)).fetchall()
+                assert len(reviews) == (0 if cut == 'rf5_zero_review' else 1)
+                original_review = reviews[0] if reviews else None
+            org.close()
+            org = OrgState.load(slug='test', root=root, settings=Settings())
+            org.orchestrator._queue = queue
+            _sweep_on_startup(org.db, queue, 'test', org.orchestrator)
+        with sqlite3.connect(org.db.path) as observer:
+            assert observer.execute('SELECT status FROM tasks WHERE id=?', ('TASK-LEAF',)).fetchone() == (
+                'completed' if cut == 'completed' else 'failed',)
+            assert observer.execute('SELECT state,accepted_result_id FROM task_completion_recoveries WHERE task_id=?',
+                                    ('TASK-LEAF',)).fetchone() == ('callback_consumed', result_id)
+            reviews = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", ('TASK-LEAF',)).fetchall()
+            assert len(reviews) == 1 and reviews[0][2] == reviewer
+            assert json.loads(reviews[0][4]) == {
+                'verdict': verdict if verdict is not None else 'approved' if cut == 'completed' else 'rejected',
+                'feedback': 'literal accepted outcome' if cut == 'completed' else 'self-blocked: literal accepted outcome',
+                'reviewed_agent': owner}
+            assert original_review is None or reviews == [original_review]
+            assert observer.execute('SELECT * FROM task_results WHERE id=?', (result_id,)).fetchone() == selected
+        # Second real sweep must retain exact review ID/raw payload and marker;
+        # no mock callback count or host exactly-once claim stands for that fact.
+        _sweep_on_startup(org.db, queue, 'test', org.orchestrator)
+        with sqlite3.connect(org.db.path) as observer:
+            assert observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", ('TASK-LEAF',)).fetchall() == reviews
+            assert observer.execute('SELECT * FROM task_results WHERE id=?', (result_id,)).fetchone() == selected
+    finally:
+        org.close()

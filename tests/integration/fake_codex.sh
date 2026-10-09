@@ -31,8 +31,25 @@ elif [[ $# -gt 0 ]]; then
     PROMPT="${*: -1}"
 fi
 
-TASK_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*task_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
-SESSION_ID=$(echo "$PROMPT" | awk -F': ' '/^[[:space:]]*session_id: /{gsub(/^[[:space:]]*/, "", $0); print $2; exit}')
+# A recovery invocation carries its new runtime tuple in an explicit binding.
+# The outer Parameters block may also be present; every present tuple must
+# agree. Non-task contexts retain empty positional args for their own parser.
+BINDING=$(printf '%s' "$PROMPT" | python -c '
+import re,sys
+prompt=sys.stdin.read()
+tasks=re.findall(r"^[ \t]*task_id: (TASK-[0-9]+)[ \t]*$",prompt,re.MULTILINE)
+sessions=re.findall(r"^[ \t]*session_id: (sess-[a-f0-9]+)[ \t]*$",prompt,re.MULTILINE)
+explicit=re.findall(r"binding task=(TASK-[0-9]+) session=(sess-[a-f0-9]+)",prompt)
+if len(tasks)>1 or len(sessions)>1 or len(explicit)>1 or bool(tasks)!=bool(sessions):
+    raise SystemExit("duplicate_or_incomplete_runtime_binding")
+ordinary=list(zip(tasks,sessions))
+if ordinary and explicit and ordinary!=explicit:
+    raise SystemExit("conflicting_runtime_binding")
+selected=ordinary or explicit
+print(" ".join(selected[0]) if selected else "")
+')
+TASK_ID="${BINDING%% *}"
+SESSION_ID="${BINDING#* }"
 
 # Multi-org: the executor cwd is <runtime>/orgs/<slug>/workspaces/<agent>.
 ORG_PARENT="${PWD%/workspaces/*}"
