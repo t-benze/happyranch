@@ -53,8 +53,10 @@ def test_scenario3_browser_founder_name_and_durable_human_inbox(naming_daemon):
     assert sql_rows(daemon.alpha, 'SELECT * FROM thread_invocations ORDER BY rowid') == before
     assert sql_rows(daemon.alpha, 'SELECT agent_name FROM thread_participants WHERE thread_id=?', (thread,)) == []
     assert sql_rows(daemon.alpha, 'SELECT composed_by FROM threads WHERE id=?', (thread,)) == [['founder']]
+    # Durable mentions contain eligible agent participants; the human founder
+    # is classified separately and must never become an agent mention.
     assert sql_rows(daemon.alpha, 'SELECT speaker,body_markdown,mentions_json FROM thread_messages WHERE thread_id=?',
-                    (thread,)) == [['founder', '@HumanBoss', '["founder"]']]
+                    (thread,)) == [['founder', '@HumanBoss', '[]']]
     inbox = daemon.request('GET', '/threads')
     assert inbox.status_code == 200, inbox.text
     assert any(row['thread_id'] == thread for row in inbox.json()['threads'])

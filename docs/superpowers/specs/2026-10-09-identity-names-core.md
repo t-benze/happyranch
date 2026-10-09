@@ -442,3 +442,19 @@ conservative total, retaining CPU/process/evidence/inode/deadline limits.
 Existing boundary records now include actual volume bytes/inodes and cgroup
 current/peak/events. Renewed preparation and naming proof remain pending;
 previous source-specific successes and failed receipts retain their attribution.
+
+Hosted run37983990181 at a629410e executed the same16 selectors:13 passed,
+3 failed, with complete export and successful owned cleanup. The real founder
+editor, typed human resolve and native callback/served schema observations
+succeeded there; no screenshots were produced. The naming browser adapter
+now checks its retained input node after locale translation and uses both
+recipient label translations across the existing two-way locale event.
+The founder SQL assertion preserves empty eligible-agent mentions, alongside
+permanent founder speaker/composer and no participant/invocation; human routing
+classification remains ephemeral. A pasted current name exposed the recipient
+input's deferred callback reading its previous controlled value. The popup now
+reads the current DOM input value; the existing scenario8 task-picker UI test
+pastes a name without keyup and retains its ID/rename/locale/query assertions.
+Actual causal red output is preserved; renewed published-head daemon/browser
+proof and all32 authored captures remain required. These repairs add no business
+scenario, additional product contract, schema or authority change.

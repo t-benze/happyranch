@@ -111,7 +111,8 @@ async function interaction(page, base, scenario, uploadFile) {
     await peer.close(); await page.bringToFront();
     await page.waitForFunction((next) => document.documentElement.lang === next, locale);
     check(await original.evaluate((el) => el.isConnected), 'locale remounted input');
-    check(await input.inputValue() === value, 'locale lost draft/selected ID');
+    // Accessible names translate; prove the retained node's value directly.
+    check(await original.evaluate((el) => el.value) === value, 'locale lost draft/selected ID');
     check(await original.evaluate((el) => document.activeElement === el && el.selectionEnd === 4), 'locale lost focus/selection');
     check(writes.length === before, 'locale emitted a product mutation');
   }
@@ -174,7 +175,7 @@ async function interaction(page, base, scenario, uploadFile) {
   await page.getByRole('button', { name: /New thread/i }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('Subject', { exact: true }).fill('Naming browser selected IDs');
-  const recipient = dialog.getByLabel('Recipients (comma-separated agent names)');
+  const recipient = dialog.getByLabel(/Recipients \(comma-separated agent names\)|收件人（以逗号分隔的智能体名称）/);
   await recipient.fill('NewPickerSam');
   await page.getByRole('option', { name: /NewPickerSam · maker/ }).click();
   check(await recipient.inputValue() === 'maker, ', 'thread picker selected a label');

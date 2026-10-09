@@ -104,14 +104,16 @@ export function RecipientsInput({
     const el = inputRef.current;
     if (!el || disabled) { setPopup(null); return; }
     const caret = el.selectionStart ?? 0;
-    const { start, query } = tokenAtCaret(value, caret);
+    // A deferred onChange still closes over the previous controlled value.
+    // Read the current input so paste/fill works without a subsequent keyup.
+    const { start, query } = tokenAtCaret(el.value, caret);
     const rect = el.getBoundingClientRect();
     setPopup({
       query,
       tokenStart: start,
       anchor: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
     });
-  }, [value, disabled]);
+  }, [disabled]);
 
   const accept = useCallback(
     (agent: AddressOption) => {

@@ -236,7 +236,9 @@ describe('naming v1 shipping UI — mocked HTTP', () => {
     const f = fixture(); const client = mount('/orgs/alpha/tasks'); const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: t('tasks.page.filter') }));
     const input = screen.getByLabelText(t('tasks.filters.agent')) as HTMLInputElement;
-    await user.type(input, 'Alpha'); await user.click(await screen.findByRole('option', { name: /Alpha · agent_a/ }));
+    // Paste has no keyup to repair a stale deferred change-handler value.
+    await user.click(input); await user.paste('Alpha');
+    await user.click(await screen.findByRole('option', { name: /Alpha · agent_a/ }));
     expect(input.value).toBe('agent_a'); f.change('alpha', 'agent_a', 'Renamed');
     await act(async () => { await client.invalidateQueries({ queryKey: ['identities', 'alpha'] }); });
     input.focus(); input.setSelectionRange(0, 4); fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
