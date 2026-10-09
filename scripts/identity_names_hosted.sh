@@ -211,12 +211,61 @@ if(f.existsSync(root)) {
   for(const entry of f.readdirSync(root,{withFileTypes:true}))
     if(entry.isDirectory()) walk(p.join(root,entry.name),p.join(output,entry.name));
 }
+f.writeFileSync('/evidence/fixture-export.json',JSON.stringify({files,bytes,workloadExit:Number(process.argv[2])})+'\n');
 if(Number(process.argv[2])===0) {
   for(const name of ['naming.log','naming.xml','work-status.json','boundary-completed.json'])
     if(!f.existsSync('/evidence/'+name) || f.statSync('/evidence/'+name).size===0)
       throw Error('missing required completed evidence:'+name);
+  // Successful pytest tmp_path cleanup must never erase the native proof.
+  if(files===0) throw Error('missing required native fixture evidence');
+  const cases=f.readdirSync(output,{withFileTypes:true}).filter(e=>e.isDirectory()).map(e=>p.join(output,e.name,'evidence'));
+  const requireFile=path=>{
+    if(!f.existsSync(path) || !f.statSync(path).isFile() || f.statSync(path).size===0)
+      throw Error('missing required native evidence:'+path);
+    return f.readFileSync(path);
+  };
+  const json=path=>JSON.parse(requireFile(path));
+  const daemons=cases.filter(directory=>f.existsSync(p.join(directory,'daemon-owned.json')));
+  // The six explicit live selectors each own one daemon fixture.
+  if(daemons.length!==6) throw Error('missing actual daemon ownership/closure');
+  for(const directory of daemons) {
+    json(p.join(directory,'daemon-owned.json'));
+    const closed=json(p.join(directory,'daemon-closure.json'));
+    if(closed.stop_exit!==0 || !closed.pid_dead || !closed.listener_closed || closed.remaining_native_pids.length)
+      throw Error('incomplete actual daemon closure:'+directory);
+  }
+  const sql=cases.filter(directory=>f.existsSync(p.join(directory,'sql-observations.jsonl')));
+  if(!sql.length) throw Error('missing actual SQL observations');
+  for(const directory of sql) requireFile(p.join(directory,'sql-observations.jsonl'));
+  const served=cases.filter(directory=>f.existsSync(p.join(directory,'served-openapi.json')));
+  if(served.length!==1) throw Error('missing unique served-schema evidence');
+  json(p.join(served[0],'served-openapi.json'));
+  const witnesses=cases.filter(directory=>f.existsSync(p.join(directory,'witness','identities.jsonl')));
+  if(!witnesses.length) throw Error('missing genuine callback witness');
+  for(const directory of witnesses) requireFile(p.join(directory,'witness','identities.jsonl'));
+  for(const scenario of ['agent','founder','picker']) {
+    const found=cases.map(directory=>p.join(directory,'browser-'+scenario)).filter(directory=>f.existsSync(p.join(directory,'result.json')));
+    if(found.length!==1) throw Error('missing unique browser proof:'+scenario);
+    const directory=found[0], result=json(p.join(directory,'result.json'));
+    const closed=json(p.join(directory,'browser-closure.json'));
+    if(result.ownedChildrenClosed!==true || closed.remainingPids.length)
+      throw Error('incomplete actual browser closure:'+scenario);
+    requireFile(p.join(directory,'native-children.jsonl'));
+    if(scenario==='picker') {
+      const expected=[];
+      for(const width of [390,1440]) for(const locale of ['en','zh-CN'])
+        for(const theme of ['light','dark']) for(const route of ['agents-maker','settings-organization','threads','tasks'])
+          expected.push(`${route}-${width}-${locale}-${theme}.png`);
+      if(JSON.stringify([...result.screenshots].sort())!==JSON.stringify(expected.sort()))
+        throw Error('incomplete authored route/viewport/locale/theme captures');
+      for(const name of expected) {
+        const png=requireFile(p.join(directory,name));
+        if(png.length>4*1024**2 || !png.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))
+          throw Error('invalid required screenshot:'+name);
+      }
+    }
+  }
 }
-f.writeFileSync('/evidence/fixture-export.json',JSON.stringify({files,bytes,workloadExit:Number(process.argv[2])})+'\n');
 console.log('fixture export complete',files,bytes);
 EXPORT
 naming_call 5 65536 holder-start.txt docker run -d --name "$naming_holder" \
@@ -371,7 +420,8 @@ output.mkdir()
 # Only exact naming fixture evidence/receipts/child ownership; no global temp
 # or dependency/cache/runtime copy, and no silent skip on output exhaustion.
 for directory in root.iterdir():
-    if not directory.is_dir():
+    # Pytest's current aliases refer to the same owned fixture, not another case.
+    if directory.is_symlink() or not directory.is_dir():
         continue
     for path in directory.rglob('*'):
         relative=path.relative_to(directory)

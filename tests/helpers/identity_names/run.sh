@@ -25,4 +25,5 @@ uv run python scripts/run_bounded_output.py --output "$NAMING_EVIDENCE/naming.lo
   tests/integration/test_identity_names_core.py::test_scenario12_interrupted_lifecycle_and_reservations \
   tests/integration/test_identity_names_e2e.py::test_served_openapi_matches_supported_snapshot \
   -m integration -v --tb=short --basetemp /scratch/naming-tests \
+  -o tmp_path_retention_policy=all \
   --junitxml "$NAMING_EVIDENCE/naming.xml"

@@ -458,3 +458,14 @@ pastes a name without keyup and retains its ID/rename/locale/query assertions.
 Actual causal red output is preserved; renewed published-head daemon/browser
 proof and all32 authored captures remain required. These repairs add no business
 scenario, additional product contract, schema or authority change.
+
+Hosted run37985913002 at20e0ff63 passed all16 selected assertions and both
+OpenAPI comparisons, but its fixture export contained zero files. Repository
+failed-only pytest temporary-path retention erased successful native fixture
+records and32 captures before export; GitHub success does not establish complete
+maker proof. The naming-only invocation now overrides retention to all, without
+changing the repository default. Holder export refuses success without retained
+daemon/SQL/callback/served-schema/browser closure records and every authored
+route/viewport/locale/theme PNG. It preserves exported counts and partial records
+on failure. Same12 scenarios/16 selectors and all original quotas/deadlines remain;
+renewed published-head proof is required, with the incomplete predecessor retained.
