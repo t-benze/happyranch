@@ -307,6 +307,17 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 
 **Failure diagnostics (THR-220).** Failed thread-invocation audits retain capped raw stdout/stderr tails as additive payload keys. Task, thread, and dream reports select one bounded human cause from complete stderr before tailing; exact known benign launcher/trust lines do not win, while meaningful stderr (including lookalikes) does. The proven API-error/session-limit envelope separately retains its bounded reset notice on those existing surfaces. This is not a comprehensive redaction guarantee and does not alter raw classifier, rate-limit, exact-eviction, retry-owner, or breaker inputs. Claude's session-limit notice is terminal but is not a short-backoff rate-limit retry signal.
 
+**Cleanup activity performance (issue1019 / THR-295).** The supported schema
+path adds three nonunique indexes after legacy columns exist: tasks(assigned_agent,
+created_at DESC,id DESC), audit_log(task_id,agent) where
+action='workspace_cleanup_triggered', and task_results(task_id,agent,id DESC).
+`CREATE INDEX IF NOT EXISTS` retains existing names without validating definitions.
+The reader SQL is unchanged. Breaker delivery listing and mint use sequential
+`await asyncio.to_thread` calls with the original DB RLock. Synchronized close
+serializes connection access; removal can cause a logged sweep error. Cancellation
+can leave a worker running or a committed pending token for later recovery.
+There is no added orgs_lock hold, worker drain or lifespan guarantee.
+
 ## Workflow authority publication (U2A)
 
 `WorkflowAuthorityCoordinator` owns the org-scoped producer half of the

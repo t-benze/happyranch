@@ -74,6 +74,16 @@ first-line display eligibility (alone/LF/CRLF) neither creates trigger audits no
 changes daemon count or action authority. Runtime and canonical bundled-skill
 rollout require separately authorized deployment after merge.
 
+Cleanup activity uses three nonunique indexes installed with `IF NOT EXISTS`
+after legacy columns exist: tasks(assigned_agent,created_at DESC,id DESC),
+audit_log(task_id,agent) where action='workspace_cleanup_triggered', and
+task_results(task_id,agent,id DESC). Existing definitions are not validated;
+reader SQL, history and cleanup authority are unchanged. Breaker listing/mint
+use sequential `await asyncio.to_thread` calls and the original DB RLock, also
+used by close. Removal can log a sweep error; cancellation can leave a worker
+running and a committed pending token for later attached-tick recovery. No
+org lifetime lock, worker drain or new shutdown guarantee is added.
+
 The daily trigger and manual dispatch share the ONE `workspace-cleanup` TASK
 system contract (`requires_repo=false`; source
 `runtime/skills/bundled/workspace-cleanup/SKILL.md`). Manual dispatch requires

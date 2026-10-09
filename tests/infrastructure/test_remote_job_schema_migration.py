@@ -737,10 +737,41 @@ def test_exact_untouched_merged_s2_upgrades_and_preserves_every_unrelated_byte_v
         "authority_policy_v2_recovery_notifications",
         "authority_policy_v2_root_dispatch",
     }
+    cleanup_indexes = {
+        "idx_cleanup_tasks_agent_created_id": (
+            "tasks",
+            "CREATE INDEX idx_cleanup_tasks_agent_created_id ON tasks(assigned_agent,created_at DESC,id DESC)",
+            [("assigned_agent", 0, "BINARY", 1), ("created_at", 1, "BINARY", 1), ("id", 1, "BINARY", 1)],
+            0,
+        ),
+        "idx_cleanup_trigger_task_agent": (
+            "audit_log",
+            "CREATE INDEX idx_cleanup_trigger_task_agent ON audit_log(task_id,agent) WHERE action='workspace_cleanup_triggered'",
+            [("task_id", 0, "BINARY", 1), ("agent", 0, "BINARY", 1)],
+            1,
+        ),
+        "idx_cleanup_results_task_agent_id": (
+            "task_results",
+            "CREATE INDEX idx_cleanup_results_task_agent_id ON task_results(task_id,agent,id DESC)",
+            [("task_id", 0, "BINARY", 1), ("agent", 0, "BINARY", 1), ("id", 1, "BINARY", 1)],
+            0,
+        ),
+    }
+    assert not {row[1] for row in before_schema} & cleanup_indexes.keys()
+    with sqlite3.connect(path) as conn:
+        for name, (table, literal_sql, expected_keys, partial) in cleanup_indexes.items():
+            assert conn.execute(
+                "SELECT type,tbl_name,sql FROM sqlite_master WHERE name=?", (name,),
+            ).fetchall() == [("index", table, literal_sql)]
+            metadata = [row for row in conn.execute(f'PRAGMA index_list("{table}")') if row[1] == name]
+            assert len(metadata) == 1
+            assert metadata[0][2:] == (0, "c", partial)
+            xinfo = conn.execute(f'PRAGMA index_xinfo("{name}")').fetchall()
+            assert [(row[2], row[3], row[4], row[5]) for row in xinfo] == expected_keys + [(None, 0, "BINARY", 0)]
     def unrelated(schema: list[tuple]) -> list[tuple]:
         return [
             row for row in schema
-            if row[1] not in added | {
+            if row[1] not in added | cleanup_indexes.keys() | {
                 "remote_runners",
                 "idx_task_completion_recoveries_task",
                 # Usage v1 PR2 adds only executor/model to this existing table.
