@@ -917,6 +917,7 @@ def test_foreign_stage_sentinel_attempt_identity_is_refused_unchanged(
         foreign = root / f".happyranch-stage-{attempt}-{suffix}"
     assert foreign != owned_stage
     foreign.mkdir(mode=0o750)
+    foreign.chmod(0o750)
     sentinel = foreign / "operator-data"
     sentinel.write_bytes(b"FOREIGN")
     sentinel.chmod(0o640)
