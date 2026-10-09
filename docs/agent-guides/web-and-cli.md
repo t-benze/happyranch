@@ -677,6 +677,13 @@ Teams membership editing (add/remove workers only — manager reassignment is fo
 
 The agent detail pane also reads `GET /agents/{agent}/cleanup-activity`. It returns at most five newest distinct own-agent tasks eligible by a historical same-agent `workspace_cleanup_triggered` audit or the exact manual first line `HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)` (alone, LF or CRLF; no substring/prefix matching). Eligibility and deduplication precede the five-row limit. Routine reports stay on this existing agent page through ordinary completion/results, with no cleanup-report thread creation, routine posting or reuse obligation. Historical threads/messages/associations/results/audits and explicit founder-requested coordination remain intact. Manual display does not increment daemon count or grant action authority. A task's lifecycle status and latest same-agent result status remain separate; missing summaries are rendered as unavailable. This GET is a read-only projection and does not start or perform cleanup.
 
+Three nonunique cleanup indexes support the existing reader SQL and are installed
+with `IF NOT EXISTS` after legacy columns exist, retaining existing definitions.
+The synchronous route already runs in a worker. Breaker delivery listing and mint
+now use sequential `await asyncio.to_thread` calls, so those DB waits run off the
+event loop. Other callers can still wait for their own DB operation; synchronous
+unload prechecks and close can still block the loop.
+
 Build and dev commands:
 
 ```bash
