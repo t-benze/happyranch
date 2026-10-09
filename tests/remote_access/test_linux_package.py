@@ -1482,7 +1482,15 @@ def _run_source_cleanup_acceptance(
     (fake_bin / "python").write_text("#!/bin/bash\nprintf 'evidence:%s\\n' \"$2\" >>\"$EVENT_LOG\"\nexec \"$REAL_PYTHON\" \"$@\"\n")
     (fake_bin / "systemctl").write_text('''#!/bin/bash
 case "$1" in
-  show) printf '%s\\n' "${MAIN_PID-0}"; exit "${PID_RC:-0}";;
+  show)
+    [[ $4 == MainPID ]] || exit 91
+    printf '%s:%s\\n' "$2" "$4" >>"$SHOW_LOG"
+    [[ $2 != happyranch-managed.target ]] || exit 0
+    if [[ -z ${FAULT_UNIT:-} || $2 == "$FAULT_UNIT" ]]; then
+      [[ ${PID_MISSING:-0} != 1 ]] || exit "${PID_RC:-0}"
+      printf '%s\\n' "${MAIN_PID-0}"; exit "${PID_RC:-0}"
+    fi
+    echo 0; exit 0;;
   list-unit-files)
     if [[ "$*" != 'list-unit-files --full --no-legend --no-pager' ]]; then exit "${NAMED_UNIT_LIST_RC:-1}"; fi
     printf '%s' "${UNIT_LIST_OUTPUT-unrelated.service enabled enabled}"; exit "${UNIT_LIST_RC:-0}";;
@@ -1522,7 +1530,8 @@ cleanup 0
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False,
                             env=os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "EVENT_LOG": str(events),
                                               "REAL_PYTHON": sys.executable, "N3_RESIDUE_ROOT": str(tmp_path),
-                                              "N3_UNIT_ROOT": str(tmp_path)} | (observation or {}))
+                                              "N3_UNIT_ROOT": str(tmp_path),
+                                              "SHOW_LOG": str(tmp_path / "systemctl-show.log")} | (observation or {}))
     return result, events.read_text().splitlines() if events.exists() else []
 
 
@@ -1533,6 +1542,9 @@ def test_real_systemd_cleanup_finalizes_and_validates_actual_evidence_once(tmp_p
     assert result.returncode == 0, result.stderr
     assert events.count("evidence:finalize") == 1
     assert events.count("evidence:validate") == 1
+    assert (tmp_path / "systemctl-show.log").read_text().splitlines() == [
+        "happyranch-connector.service:MainPID", "happyranch-tsnet-sidecar.service:MainPID",
+    ]
 
 
 @pytest.mark.parametrize("observation", [
@@ -2182,7 +2194,8 @@ if tool == "systemctl":
                   "ActiveState": "active" if state["active"] else "inactive",
                   "SubState": "running" if state["active"] else "dead", "MainPID": str(state["main_pid"])}
         assert args[2] in values, argv
-        print(values[args[2]])
+        if args[0] != units[0] or args[2] != "MainPID":
+            print(values[args[2]])
         finish()
     if verb == "is-active":
         assert args == ["--quiet", units[1]], argv
@@ -2635,7 +2648,21 @@ def _run_real_systemd_shipping_cleanup(tmp_path: Path, **env: str) -> subprocess
     cleanup = harness.split("shipping_cleanup() {", 1)[1].split("\n}\nreset_shipping_unit()", 1)[0]
     fake_bin = tmp_path / "bin"; fake_bin.mkdir()
     (fake_bin / "systemctl").write_text("""#!/bin/bash
-if [[ $1 == show ]]; then p=$4; case $p in LoadState) v=${LOAD_STATE-not-found}; s=${LOAD_RC:-4};; ActiveState) v=${ACTIVE_STATE-inactive}; s=${ACTIVE_RC:-4};; SubState) v=${SUB_STATE-dead}; s=${SUB_RC:-4};; MainPID) v=${MAIN_PID-0}; s=${PID_RC:-4};; esac; printf '%s\\n' "$v"; exit "$s"; fi
+if [[ $1 == show ]]; then
+  printf '%s:%s\\n' "$2" "$4" >>"$SHOW_LOG"
+  # Target has common Unit properties, but no Service MainPID property.
+  [[ $2 != happyranch-managed.target || $4 != MainPID ]] || exit 0
+  selected=0
+  [[ -z ${FAULT_UNIT:-} || $2 == "$FAULT_UNIT" ]] && selected=1
+  case "$4" in
+    LoadState) v=not-found; s=4; if (( selected )); then v=${LOAD_STATE-not-found}; s=${LOAD_RC:-4}; fi;;
+    ActiveState) v=inactive; s=4; if (( selected )); then v=${ACTIVE_STATE-inactive}; s=${ACTIVE_RC:-4}; fi;;
+    SubState) v=dead; s=4; if (( selected )); then v=${SUB_STATE-dead}; s=${SUB_RC:-4}; fi;;
+    MainPID) v=0; s=4; if (( selected )); then v=${MAIN_PID-0}; s=${PID_RC:-4}; [[ ${PID_MISSING:-0} != 1 ]] || exit "$s"; fi;;
+    *) exit 91;;
+  esac
+  printf '%s\\n' "$v"; exit "$s"
+fi
 if [[ $1 == list-unit-files ]]; then
   if [[ "$*" != 'list-unit-files --full --no-legend --no-pager' ]]; then exit "${NAMED_UNIT_LIST_RC:-1}"; fi
   if [[ ${UNIT_LIST_RESIDUE:-0} == 1 ]]; then echo 'happyranch-managed.target enabled enabled';
@@ -2666,7 +2693,8 @@ shipping_cleanup() {{
 shipping_cleanup || exit 1
 printf 'reset-continuation\\n'
 """
-    run_env = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path)} | env
+    run_env = os.environ | {"PATH": f"{fake_bin}:{os.environ['PATH']}", "N3_RESIDUE_ROOT": str(tmp_path), "N3_UNIT_ROOT": str(tmp_path),
+                            "SHOW_LOG": str(tmp_path / "systemctl-show.log")} | env
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=run_env, check=False)
 
 
@@ -2675,6 +2703,13 @@ def test_real_systemd_shipping_cleanup_accepts_recognized_absent_exit_orderings(
     result = _run_real_systemd_shipping_cleanup(tmp_path, **dict(zip(("LOAD_RC", "ACTIVE_RC", "SUB_RC", "PID_RC"), map(str, exit_codes), strict=True)))
     assert result.returncode == 0, result.stderr
     assert result.stdout == "reset-continuation\n", result.stderr
+    queries = (tmp_path / "systemctl-show.log").read_text().splitlines()
+    assert queries == [
+        "happyranch-managed.target:LoadState", "happyranch-managed.target:ActiveState",
+        "happyranch-managed.target:SubState",
+        *[f"{unit}:{prop}" for unit in ("happyranch-tsnet-sidecar.service", "happyranch-connector.service")
+          for prop in ("LoadState", "ActiveState", "SubState", "MainPID")],
+    ]
 
 
 @pytest.mark.parametrize("env", [
@@ -2701,8 +2736,69 @@ def test_real_systemd_shipping_cleanup_rejects_query_and_probe_residue(tmp_path:
     assert all(re.fullmatch(r"n3-cleanup:shipping:[a-z_]+", line) for line in identifiers)
 
 
+@pytest.mark.parametrize("phase", ["shipping", "final"])
+@pytest.mark.parametrize("unit", ["happyranch-connector.service", "happyranch-tsnet-sidecar.service"])
+@pytest.mark.parametrize("observation", [
+    {"PID_MISSING": "1", "PID_RC": "0"}, {"PID_MISSING": "1", "PID_RC": "4"},
+    {"MAIN_PID": "", "PID_RC": "0"}, {"MAIN_PID": "", "PID_RC": "4"},
+    {"MAIN_PID": "prose"}, {"MAIN_PID": "00"}, {"MAIN_PID": "42", "PID_RC": "0"},
+    {"MAIN_PID": "0", "PID_RC": "2"}, {"MAIN_PID": "0", "PID_RC": "7"},
+])
+def test_real_systemd_cleanup_each_service_requires_affirmative_pid_absence(
+    tmp_path: Path, phase: str, unit: str, observation: dict[str, str],
+) -> None:
+    """Only the selected service fails; absent target and sibling stay valid."""
+    observation = observation | {"FAULT_UNIT": unit}
+    if phase == "shipping":
+        result = _run_real_systemd_shipping_cleanup(tmp_path, **observation)
+        assert "reset-continuation" not in result.stdout
+        assert result.stderr == "n3-cleanup:shipping:unit_absence_unconfirmed\n"
+    else:
+        result, events = _run_source_cleanup_acceptance(
+            tmp_path, artifact_run="run", cleanup_run="run", include_cleanup=True, observation=observation,
+        )
+        assert "evidence:finalize" not in events and "evidence:validate" not in events
+        assert "evidence:cleanup:all_residue_absent" not in events
+        assert result.stderr.count("n3-cleanup:final:mainpid_unconfirmed\n") == 1
+        assert "sudo:rm" in events and not (tmp_path / "work").exists()
+    assert result.returncode != 0
+    queries = (tmp_path / "systemctl-show.log").read_text().splitlines()
+    assert queries.count(f"{unit}:MainPID") == 1
+    sibling = "happyranch-tsnet-sidecar.service" if unit == "happyranch-connector.service" else "happyranch-connector.service"
+    assert queries.count(f"{sibling}:MainPID") == 1
+    assert "happyranch-managed.target:MainPID" not in queries
+
+
+@pytest.mark.parametrize(("property", "observation"), [
+    ("LoadState", {"LOAD_STATE": "loaded", "LOAD_RC": "0"}),
+    ("ActiveState", {"ACTIVE_STATE": "active", "ACTIVE_RC": "0"}),
+    ("SubState", {"SUB_STATE": "running", "SUB_RC": "0"}),
+    ("LoadState", {"LOAD_STATE": "", "LOAD_RC": "0"}),
+    ("ActiveState", {"ACTIVE_STATE": "", "ACTIVE_RC": "0"}),
+    ("SubState", {"SUB_STATE": "", "SUB_RC": "0"}),
+    ("LoadState", {"LOAD_STATE": "not-found", "LOAD_RC": "2"}),
+    ("ActiveState", {"ACTIVE_STATE": "inactive", "ACTIVE_RC": "2"}),
+    ("SubState", {"SUB_STATE": "dead", "SUB_RC": "2"}),
+])
+def test_real_systemd_shipping_cleanup_target_requires_common_absence_observations(
+    tmp_path: Path, property: str, observation: dict[str, str],
+) -> None:
+    result = _run_real_systemd_shipping_cleanup(
+        tmp_path, **(observation | {"FAULT_UNIT": "happyranch-managed.target"}),
+    )
+    assert result.returncode != 0
+    assert "reset-continuation" not in result.stdout
+    assert result.stderr == "n3-cleanup:shipping:unit_absence_unconfirmed\n"
+    queries = (tmp_path / "systemctl-show.log").read_text().splitlines()
+    assert queries.count(f"happyranch-managed.target:{property}") == 1
+    assert "happyranch-managed.target:MainPID" not in queries
+    assert queries.count("happyranch-connector.service:MainPID") == 1
+    assert queries.count("happyranch-tsnet-sidecar.service:MainPID") == 1
+
+
 @pytest.mark.parametrize("residue", [
-    "etc/systemd/system/happyranch-managed.target", "run/systemd/system/happyranch-managed.target.d",
+    "etc/systemd/system/happyranch-managed.target", "run/systemd/system/happyranch-managed.target",
+    "etc/systemd/system/happyranch-managed.target.d", "run/systemd/system/happyranch-managed.target.d",
     "etc/happyranch/enrollment.key", ".happyranch-install-transaction.json", ".happyranch-backup",
     ".happyranch-units-backup", "opt/happyranch", "var/lib/happyranch-connector",
     "run/happyranch-tsnet-sidecar", "var/log/happyranch-connector", ".happyranch-stage-leftover",
@@ -2712,7 +2808,11 @@ def test_real_systemd_shipping_cleanup_rejects_every_filesystem_residue_class(tm
     path = tmp_path / residue
     path.parent.mkdir(parents=True, exist_ok=True)
     path.mkdir() if "." not in path.name else path.write_text("residue")
-    assert _run_real_systemd_shipping_cleanup(tmp_path).returncode != 0
+    result = _run_real_systemd_shipping_cleanup(tmp_path)
+    assert result.returncode != 0
+    assert "reset-continuation" not in result.stdout
+    if "happyranch-managed.target" in residue:
+        assert result.stderr == "n3-cleanup:shipping:unit_absence_unconfirmed\n"
 
 
 @pytest.mark.parametrize("phase", ["shipping", "final"])

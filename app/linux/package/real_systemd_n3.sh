@@ -48,10 +48,20 @@ systemctl_absent_value() {
 }
 unit_absent() {
   local unit="$1" unit_root="${N3_UNIT_ROOT:-}"
+  case "$unit" in
+    happyranch-managed.target|happyranch-connector.service|happyranch-tsnet-sidecar.service) ;;
+    *) return 1 ;;
+  esac
   systemctl_absent_value "$unit" LoadState not-found || return 1
   systemctl_absent_value "$unit" ActiveState inactive || return 1
   systemctl_absent_value "$unit" SubState dead || return 1
-  systemctl_absent_value "$unit" MainPID 0 || return 1
+  # MainPID belongs to Service, not Target or the common Unit interface.
+  # Keep affirmative PID absence for both services; a missing service PID
+  # remains unknown, even when all common unit states report absence.
+  case "$unit" in
+    happyranch-connector.service|happyranch-tsnet-sidecar.service)
+      systemctl_absent_value "$unit" MainPID 0 || return 1 ;;
+  esac
   [[ ! -e "$unit_root/etc/systemd/system/$unit" && ! -e "$unit_root/run/systemd/system/$unit" ]] || return 1
   [[ ! -e "$unit_root/etc/systemd/system/$unit.d" && ! -e "$unit_root/run/systemd/system/$unit.d" ]] || return 1
 }
