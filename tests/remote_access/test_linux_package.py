@@ -1542,6 +1542,11 @@ def test_real_systemd_cleanup_finalizes_and_validates_actual_evidence_once(tmp_p
     assert result.returncode == 0, result.stderr
     assert events.count("evidence:finalize") == 1
     assert events.count("evidence:validate") == 1
+    ledger = json.loads((tmp_path / "execution-evidence.json").read_text())
+    assert sum(
+        event["phase"] == "cleanup" and event["observation"] == "all_residue_absent"
+        for event in ledger["records"]
+    ) == 1
     assert (tmp_path / "systemctl-show.log").read_text().splitlines() == [
         "happyranch-connector.service:MainPID", "happyranch-tsnet-sidecar.service:MainPID",
     ]
@@ -2758,7 +2763,11 @@ def test_real_systemd_cleanup_each_service_requires_affirmative_pid_absence(
             tmp_path, artifact_run="run", cleanup_run="run", include_cleanup=True, observation=observation,
         )
         assert "evidence:finalize" not in events and "evidence:validate" not in events
-        assert "evidence:cleanup:all_residue_absent" not in events
+        ledger = json.loads((tmp_path / "execution-evidence.json").read_text())
+        assert not any(
+            event["phase"] == "cleanup" and event["observation"] == "all_residue_absent"
+            for event in ledger["records"]
+        )
         assert result.stderr.count("n3-cleanup:final:mainpid_unconfirmed\n") == 1
         assert "sudo:rm" in events and not (tmp_path / "work").exists()
     assert result.returncode != 0
