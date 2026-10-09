@@ -1,5 +1,36 @@
 # TASK-10279 native admission, never merge
 
+Run37871722986/evidence859df87e passed native preflight on both fresh venues,
+but did not produce browser cases or screenshots. Linux refused the image's
+fixed Chrome executable at the strict file-permission check before web build.
+macOS built the wheel/web and ran ordinary lifecycle, but org initialization
+returned500 with actual `authority_reviewer_incoherent` and
+`profile_dependency_incoherent` tracebacks: the browser-only skeleton lacked
+the required default reviewer. Original dual archives and failed outcomes remain.
+
+Prepared recovery adds the same static `code_reviewer` roster used by the
+current candidate's ordinary artifact fixture. It does not launch that worker
+or change default review policy. Linux authenticates every fixed installed
+`google-chrome-stable` bundle byte against protected root-owned package metadata,
+records the actual package version, MD5 inventory, SHA256, UID, modes and sizes,
+and copies only verified bytes into its ordinary owned protected prefix. The
+original image executable is input only and is never launched. The strict
+execution receipt check is unchanged. Complete copied origins are revalidated
+before and after browser execution, with bounded512MiB/2000member admission.
+The privileged `chrome-sandbox` member is authenticated but never copied or
+invoked. The browser must work with its default unprivileged namespace sandbox;
+there is no sandbox-disabling flag, privileged helper, AppArmor/sysctl change,
+host-permission repair or fallback. The finite CDP helper reads Chrome's own
+internal sandbox status before any Linux product UI case and requires actual
+namespace and seccomp sandbox activation. Native browser dependencies are
+recorded, and complete copied origins are checked even on failed execution.
+Missing package origin, identity drift or
+unavailable default sandbox fails with authentic bounded diagnostics. Chromium's
+[sandbox documentation](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)
+explains that relocated binaries can encounter Ubuntu namespace restrictions;
+documentation does not prove readiness on the next actual runner. New receipts
+are required. This evidence-only preparation changes no candidate or workflow.
+
 Current prepared stage: finite real-daemon browser evidence from an installed
 candidate wheel and an ordinary Vite distribution, with en/zh-CN at 390x844 and
 1440x900. The fixed browser driver authenticates the wheel/RECORD, default web

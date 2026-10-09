@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -20,6 +21,134 @@ def file_receipt(path):
     path = Path(path).resolve(strict=True)
     assert path.is_file() and not path.stat().st_mode & 0o022
     return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def prepare_linux_chrome(commands, root, env, save):
+    """Authenticate fixed installed package bytes into an ordinary protected copy.
+
+    A writable image executable is input only, never the launched executable.
+    No privileged sandbox helper is copied or invoked; default user-namespace
+    sandbox readiness remains an actual browser requirement, with no fallback.
+    """
+    assert sys.platform == 'linux' and os.getuid() == os.geteuid() != 0
+    source = Path('/opt/google/chrome')
+    metadata = Path('/var/lib/dpkg/info/google-chrome-stable.md5sums')
+    for path in (metadata, *metadata.parents, source, *source.parents):
+        info = path.lstat()
+        assert not stat.S_ISLNK(info.st_mode) and info.st_uid == 0
+        assert not info.st_mode & 0o022, f'unprotected package origin parent: {path}'
+    assert metadata.stat().st_size <= 1024 * 1024
+    metadata_bytes = metadata.read_bytes()
+    package, _ = commands.run('browser-chrome-package', ['/usr/bin/dpkg-query', '-W',
+        '-f=${binary:Package}\t${Version}\t${db:Status-Abbrev}\n', 'google-chrome-stable'], root, env)
+    package_name, version, status = package.strip().split('\t')
+    assert package_name == 'google-chrome-stable' and status.strip() == 'ii'
+    assert version and len(version) <= 100
+    inventory = {}
+    for line in metadata_bytes.decode('utf-8', errors='strict').splitlines():
+        checksum, name = line.split(None, 1)
+        assert len(checksum) == 32 and all(c in '0123456789abcdef' for c in checksum)
+        assert name not in inventory and not Path(name).is_absolute() and '..' not in Path(name).parts
+        inventory[name] = checksum
+    assert len(inventory) <= 2000 and 'opt/google/chrome/chrome' in inventory
+    destination = root / 'browser-chrome'
+    destination.mkdir(mode=0o700)
+    entries = {}; total = 0
+    for directory, directories, files in os.walk(source, followlinks=False):
+        directories.sort(); files.sort()
+        for name in directories:
+            info = (Path(directory) / name).lstat()
+            assert stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
+        for name in files:
+            original = Path(directory) / name
+            relative = original.relative_to(source).as_posix()
+            before = original.lstat()
+            assert stat.S_ISREG(before.st_mode) and before.st_uid == 0
+            key = 'opt/google/chrome/' + relative
+            assert key in inventory, f'unrecorded Chrome package member: {relative}'
+            assert len(entries) < 2000 and before.st_size <= 300 * 1024 * 1024
+            target = destination / relative
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            md5 = hashlib.md5(usedforsecurity=False); sha = hashlib.sha256(); size = 0
+            # Authenticate the excluded helper too, but never materialize or launch it.
+            sink = None if relative == 'chrome-sandbox' else target.open('xb')
+            try:
+                with original.open('rb') as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b''):
+                        size += len(block); total += len(block)
+                        assert size <= 300 * 1024 * 1024 and total <= 512 * 1024 * 1024
+                        md5.update(block); sha.update(block)
+                        if sink is not None:
+                            sink.write(block)
+            finally:
+                if sink is not None:
+                    sink.close()
+            assert original.lstat() == before and size == before.st_size
+            assert md5.hexdigest() == inventory[key], f'Chrome installed-package byte mismatch: {relative}'
+            row = {'sha256': sha.hexdigest(), 'package_md5': md5.hexdigest(),
+                'size': size, 'source_uid': before.st_uid, 'source_mode': before.st_mode,
+                'source_device': before.st_dev, 'source_inode': before.st_ino,
+                'copied': sink is not None}
+            if sink is not None:
+                assert not before.st_mode & (stat.S_ISUID | stat.S_ISGID), 'privileged Chrome member refused'
+                target.chmod(0o500 if before.st_mode & 0o111 else 0o400)
+                row['copy'] = file_receipt(target)
+                row['copy_mode'] = target.stat().st_mode
+            entries[relative] = row
+    expected = {name.removeprefix('opt/google/chrome/') for name in inventory
+                if name.startswith('opt/google/chrome/')}
+    assert set(entries) == expected and 'chrome' in entries
+    assert metadata.read_bytes() == metadata_bytes
+    for name, row in entries.items():
+        path = source / name; info = path.lstat()
+        assert (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_size) == (
+            row['source_device'], row['source_inode'], row['source_mode'], row['source_uid'], row['size'])
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == row['sha256']
+    origin = {'schema_version': 1, 'source': str(source), 'destination': str(destination),
+        'package': package_name, 'version': version, 'metadata': file_receipt(metadata),
+        'entries': entries, 'bytes': total, 'workload_uid': os.getuid(),
+        'sandbox_flags': [], 'excluded_privileged_member': 'chrome-sandbox'}
+    record = save('browser-linux-chrome-origin.json', origin)
+    validate_linux_chrome(record, destination / 'chrome')
+    return destination / 'chrome', file_receipt(record)
+
+
+def validate_linux_chrome(record, executable):
+    """Revalidate every closed copied package member, with no origin exception."""
+    value = json.loads(Path(record).read_text())
+    assert set(value) == {'schema_version', 'source', 'destination', 'package', 'version',
+        'metadata', 'entries', 'bytes', 'workload_uid', 'sandbox_flags', 'excluded_privileged_member'}
+    assert value['schema_version'] == 1 and value['source'] == '/opt/google/chrome'
+    assert value['package'] == 'google-chrome-stable'
+    assert value['workload_uid'] == os.getuid() != 0 and value['sandbox_flags'] == []
+    assert value['excluded_privileged_member'] == 'chrome-sandbox'
+    assert 0 < len(value['entries']) <= 2000 and 0 < value['bytes'] <= 512 * 1024 * 1024
+    assert value['metadata']['path'] == '/var/lib/dpkg/info/google-chrome-stable.md5sums'
+    assert file_receipt(value['metadata']['path']) == value['metadata']
+    destination = Path(value['destination'])
+    assert destination.is_absolute() and destination.name == 'browser-chrome'
+    assert Path(executable) == destination / 'chrome'
+    actual = set()
+    for directory, directories, files in os.walk(destination, followlinks=False):
+        for name in (None, *directories):
+            path = Path(directory) if name is None else Path(directory) / name
+            info = path.lstat()
+            assert stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and not info.st_mode & 0o022
+        for name in files:
+            path = Path(directory) / name; relative = path.relative_to(destination).as_posix()
+            actual.add(relative)
+            assert len(actual) <= 2000
+            row = value['entries'][relative]; info = path.lstat()
+            assert set(row) == {'sha256', 'package_md5', 'size', 'source_uid', 'source_mode',
+                'source_device', 'source_inode', 'copied', 'copy', 'copy_mode'}
+            assert row['source_uid'] == 0 and 0 <= row['size'] <= 300 * 1024 * 1024
+            assert stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            assert not info.st_mode & (stat.S_ISUID | stat.S_ISGID | 0o022)
+            assert row['copied'] and row['copy']['path'] == str(path)
+            assert info.st_mode == row['copy_mode'] and info.st_size == row['size']
+            assert file_receipt(path) == row['copy'] and row['sha256'] == row['copy']['sha256']
+    assert actual == {name for name, row in value['entries'].items() if row['copied']}
+    assert 'chrome-sandbox' not in actual and 'chrome' in actual
 
 
 def browser_stage(commands, candidate, root, uv, python, constraints, descriptor, api):
@@ -34,13 +163,20 @@ def browser_stage(commands, candidate, root, uv, python, constraints, descriptor
     version, _ = commands.run('browser-node-version', [node, '--version'], root, env)
     assert version.strip() == 'v24.19.0'
     npm_version, _ = commands.run('browser-npm-version', [npm, '--version'], root, env)
-    chrome = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-                  if sys.platform == 'darwin' else '/opt/google/chrome/chrome')
+    chrome_origin = None
+    if sys.platform == 'linux':
+        chrome, chrome_origin = prepare_linux_chrome(commands, root, env, save)
+    else:
+        chrome = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
     assert chrome.is_file(), 'fixed hosted native Chrome executable unavailable'
     chrome_version, _ = commands.run('browser-chrome-version', [chrome, '--version'], root, env)
+    dependencies, _ = commands.run('browser-chrome-native-dependencies',
+        ['/usr/bin/otool', '-L', chrome] if sys.platform == 'darwin' else ['/usr/bin/ldd', chrome], root, env)
     save('browser-tools.json', {'node': file_receipt(node), 'node_version': version.strip(),
          'npm': file_receipt(npm), 'npm_version': npm_version.strip(),
          'chrome': file_receipt(chrome), 'chrome_version': chrome_version.strip(),
+         'chrome_origin': chrome_origin,
+         'native_dependencies_sha256': hashlib.sha256(dependencies.encode()).hexdigest(),
          'workload_uid': os.getuid(), 'observer_uid': 0})
     build = root / 'browser-web-source'
     build.mkdir(mode=0o700)
@@ -77,7 +213,7 @@ def browser_stage(commands, candidate, root, uv, python, constraints, descriptor
     binding = save('browser-stage-binding.json', {
         'manifest': file_receipt(manifest), 'driver': file_receipt(driver / 'assistant_retirement_artifact_driver.py'),
         'dist': str(dist), 'dist_inventory': file_receipt(api['receipts'] / 'browser-dist-inventory.json'),
-        'node': file_receipt(node), 'chrome': file_receipt(chrome),
+        'node': file_receipt(node), 'chrome': file_receipt(chrome), 'chrome_origin': chrome_origin,
         'harness': file_receipt(Path(__file__).with_suffix('.mjs')), 'descriptor': descriptor,
         'run_root': str(stage / 'live-browser'), 'out': str(api['receipts'] / 'real-browser')})
     api['census'](commands, 'real-browser-before', python, driver / 'assistant_retirement_artifact_driver.py',
@@ -94,10 +230,15 @@ def browser_stage(commands, candidate, root, uv, python, constraints, descriptor
 def drive(binding_path):
     assert os.getuid() == os.geteuid() != 0 and sys.version_info[:3] == (3, 14, 4)
     binding = json.loads(binding_path.read_text())
-    assert set(binding) == {'manifest', 'driver', 'dist', 'dist_inventory', 'node', 'chrome',
+    assert set(binding) == {'manifest', 'driver', 'dist', 'dist_inventory', 'node', 'chrome', 'chrome_origin',
                             'harness', 'descriptor', 'run_root', 'out'}
     for key in ('manifest', 'driver', 'dist_inventory', 'node', 'chrome', 'harness'):
         assert file_receipt(binding[key]['path']) == binding[key]
+    if sys.platform == 'linux':
+        assert file_receipt(binding['chrome_origin']['path']) == binding['chrome_origin']
+        validate_linux_chrome(binding['chrome_origin']['path'], binding['chrome']['path'])
+    else:
+        assert binding['chrome_origin'] is None
     helper = runpy.run_path(binding['driver']['path'], run_name='fixed_browser_driver')
     helper['configure_native_observer'](binding['descriptor'])
     manifest = json.loads(Path(binding['manifest']['path']).read_text())
@@ -119,9 +260,9 @@ def drive(binding_path):
         driver.lifecycle(); result['daemon_launches'].append(driver.identity)
         skeleton = driver.root / 'skeleton'
         agents = skeleton / 'org/agents'; agents.mkdir(parents=True)
-        (skeleton / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n')
+        (skeleton / 'org/teams.yaml').write_text('teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent, code_reviewer]\n')
         (skeleton / 'org/config.yaml').write_text('dreaming:\n  enabled: false\nworking_hours:\n  enabled: false\n')
-        for name, role in (('engineering_head', 'manager'), ('dev_agent', 'worker')):
+        for name, role in (('engineering_head', 'manager'), ('dev_agent', 'worker'), ('code_reviewer', 'worker')):
             (agents / (name + '.md')).write_text(f'---\nname: {name}\nteam: engineering\nrole: {role}\nexecutor: codex\nallow_rules: []\nrepos: {{}}\nmodel: null\n---\n\nYou are {name}.\n')
         driver.command(driver.cli + ['orgs', 'init', 'test', '--from', str(skeleton)])
         assert driver.request('GET', '/orgs')[1]['orgs'][0]['slug'] == 'test'
@@ -148,7 +289,7 @@ def drive(binding_path):
             assert port.isdecimal() and 0 < int(port) < 65536 and endpoint.startswith('/devtools/browser/')
             node_binding = driver.root / 'browser-binding.json'
             node_binding.write_text(json.dumps({'base': driver.base.removesuffix('/api/v1') + '/',
-                'devtools': 'ws://127.0.0.1:' + port + endpoint, 'out': str(out)}))
+                'devtools': 'ws://127.0.0.1:' + port + endpoint, 'out': str(out), 'platform': sys.platform}))
             with (driver.root / 'node.log').open('wb') as node_log:
                 node = subprocess.Popen([binding['node']['path'], binding['harness']['path'], str(node_binding)],
                     cwd=driver.root, env=driver.env, stdout=node_log, stderr=node_log, start_new_session=True)
@@ -198,6 +339,13 @@ def drive(binding_path):
                     result.setdefault('direct_child_kill', []).append(child.pid)
                 except subprocess.TimeoutExpired:
                     result['child_reap_unavailable'] = child.pid
+        if sys.platform == 'linux':
+            try:
+                validate_linux_chrome(binding['chrome_origin']['path'], binding['chrome']['path'])
+                result['chrome_origin_unchanged'] = True
+            except Exception as error:
+                result['status'] = 'failed'
+                result['chrome_origin_error'] = {'type': type(error).__name__, 'message': str(error)}
         daemon_log = driver.root / 'daemon.log'
         if daemon_log.exists():
             raw = daemon_log.read_bytes()

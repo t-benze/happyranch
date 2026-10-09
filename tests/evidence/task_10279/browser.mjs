@@ -6,7 +6,8 @@ import { join } from 'node:path';
 assert.equal(process.argv.length, 3);
 assert.equal(process.versions.node, '24.19.0');
 const binding = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-assert.deepEqual(Object.keys(binding).sort(), ['base', 'devtools', 'out']);
+assert.deepEqual(Object.keys(binding).sort(), ['base', 'devtools', 'out', 'platform']);
+assert.ok(['linux', 'darwin'].includes(binding.platform));
 const origin = new URL(binding.base);
 assert.equal(origin.hostname, '127.0.0.1');
 assert.equal(origin.pathname, '/');
@@ -99,6 +100,21 @@ const absence = `(() => {
 })()`;
 
 try {
+  if (binding.platform === 'linux') {
+    const targetId = (await cdp.send('Target.createTarget', { url: 'chrome://sandbox' })).targetId;
+    try {
+      const session = (await cdp.send('Target.attachToTarget', { targetId, flatten: true })).sessionId;
+      await cdp.send('Runtime.enable', {}, session);
+      const status = await wait(session, `document.body?.innerText.includes('Seccomp-BPF') && document.body.innerText`);
+      assert.ok(status.length <= 16384, 'bounded Chrome sandbox status');
+      results.linuxSandbox = { text: status, namespace: /Namespace sandbox\s+Yes/.test(status),
+        seccomp: /Seccomp-BPF sandbox\s+Yes/.test(status), disablingFlags: [] };
+      assert.ok(results.linuxSandbox.namespace && results.linuxSandbox.seccomp,
+        'default unprivileged namespace and seccomp sandbox must be active');
+    } finally {
+      await cdp.send('Target.closeTarget', { targetId });
+    }
+  }
   for (const locale of ['en', 'zh-CN']) for (const [width, height] of [[390, 844], [1440, 900]]) {
     const row = { locale, width, height, status: 'failed', screenshots: [] };
     results.cases.push(row);
@@ -167,6 +183,9 @@ try {
   }
   results.status = results.cases.every(row => row.status === 'passed') ? 'passed' : 'failed';
   if (results.status !== 'passed') process.exitCode = 1;
+} catch (error) {
+  results.admissionError = { type: error.name, message: error.message };
+  process.exitCode = 1;
 } finally {
   writeFileSync(join(binding.out, 'browser-cases.json'), JSON.stringify(results, null, 2) + '\n', { mode: 0o600 });
   try {
