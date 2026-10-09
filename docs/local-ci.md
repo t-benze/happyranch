@@ -16,8 +16,9 @@ Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
 on the exact candidate ref when execution is authorized. Manual dispatch exposes
 only `all_only` (boolean, default false), with no `run_integration` toggle. The
 existing manual `local-ci-all` job invokes the receipt-producing extracted
-`uv run python scripts/nightly_local_ci_all.py` runner from the checkout root.
-It runs the exact `scripts/local_ci.sh all` command on
+`uv run python scripts/nightly_local_ci_all.py` runner on ordinary refs; the
+closed retained PR1011 path below uses the B2 frozen/no-sync outer invocation.
+The ordinary path runs the exact `scripts/local_ci.sh all` command on
 Python 3.14/Node 24, while the separate general integration job is SKIPPED.
 The manual lane has a finite 150-minute cap: the Python unit step alone took
 99 minutes in hosted run 37650992085, exceeding the former 60-minute cap.
@@ -32,7 +33,7 @@ remaining Web checks; an exit0 does not establish a Python unit PASS. The
 extracted runner's fixed suspension guard also prevents G collection, source
 controls and repetitions for every `all_only` value; their dormant definitions
 remain retained and unexecuted. No manual dispatch or rerun is required for the
-current merge-forward repair.
+ordinary source-only merge-forward repair.
 Commands whose unit selection includes real
 socket/daemon cases, including `scripts/local_ci.sh all`, also require that
 disposable venue. On-host verification is limited to demonstrably pure offline
@@ -362,6 +363,89 @@ integration expectations and the old all-only predicate are superseded.
 General integration SUITE remains SKIPPED under THR139seq77/THR243seq42, never PASS.
 No manual dispatch or rerun is part of the current G source-delivery unit.
 
+### Closed retained PR1011 command and admission
+
+THR278 seq40/49/72 authorizes a finite entry in the same manual job, separately
+from the ordinary Python/G/SIX suspension. ROOT TASK-10330 exclusively owns the
+retained `task/TASK-10034` publication/dispatch interval. Accepted helper source
+is the exact released 64,462-byte dashboard test file (SHA256
+`356b62afef43bb972a05a30f90089646b2611cafaf907499a64348ce6d71624c`).
+Historical delayed-entry RED/GREEN/byte-mode restoration and no-worker proof
+remain TASK10120/TASK10214 evidence authenticated by TASK10341; source acceptance
+is neither a new repetition nor behavioral proof. Real W3/W4 retain worker AND
+shutdown entry, the 0.5s watchdog, both cleanup budgets/errors and complete
+cancel/reap/queue/session/thread assertions.
+
+The independent native reviewer produces an immutable exact-commit/tree/full
+source-mode control APPROVE. The supported task/session/result transport lets
+ROOT10330 authenticate reviewer identity, complete output, actual verdict and
+source before recording acceptance. Missing/malformed/wrong reviewer or PR,
+stale head, equal-tree/different-commit, capped or unavailable proof prevents
+dispatch. The manager verifies the accepted complete candidate against the
+remote retained ref and owns serialization THROUGH platform event creation.
+Uncontrolled writers prevent dispatch; this is an existing publication trust
+boundary, not a lock service or protection against a malicious privileged writer.
+No in-repository verdict, circular final self-hash, new GitHub reviewer receipt,
+credential, selector, input or event is used. Publication changing the commit
+requires renewed independent control review. Record native review/task binding,
+approved SHA/tree, workflow/ref and actual run ID/attempt in supported evidence.
+
+B2 changes only the conjunction `t-benze/happyranch` + `workflow_dispatch` +
+`refs/heads/task/TASK-10034` outer command to
+`uv run --frozen --no-sync python scripts/nightly_local_ci_all.py`. The existing
+single `uv sync --frozen`, tool pins, inputs, runner and 150-minute job cap stay.
+The hosted driver separately checks repository/manual event/retained ref,
+HEAD/platform SHA/fetched ref, full tracked bytes and Git modes, symlink contents,
+full index and all nonignored untracked files, effective Python3.14 and admitted
+uv/node/npm/npx links/versions/bytes (Node24). Explicit checks survive optimized
+Python. Source and tools are rechecked before the sole child seam. Clean checkout
+consistency does not authenticate independent review. Manager compares the actual
+hosted run/attempt/source artifacts with the prior native approval; a discovered
+mismatch invalidates evidence and retains possible spend, never authorizes rerun.
+
+The sole OS child command is
+`uv run --frozen --no-sync pytest tests/ -v -n 4 --basetemp=<fresh-owned-path>`.
+Committed default nonintegration addopts remain effective. Only driver-constructed
+evidence options enter `PYTEST_ADDOPTS`: external JUnit and pytest cache paths,
+with no inherited selector, marker/config/plugin override or collection/benchmark.
+The owned HOME/XDG/cache/TMP/daemon root has executor registry `{}`, port0 and
+admitted tool links. Provider/live-host state is absent from the closed environment.
+No `scripts/local_ci.sh all`, G/SIX or helper-repetition command is reachable from
+accepted or refused PR1011 entry; both `all_only` values use the same fixed path.
+Ordinary refs retain their existing Web-only all and suspended G behavior.
+
+Receipts retain exact argv/environment, full source/tool/run identity, UTC and
+monotonic timing, PID/start ticks/parent/group/session observations and exits.
+Full merged child stdout/stderr and separate wrapper stderr use ordered compressed
+members with raw/stored byte totals and SHA256; JUnit is captured before scratch
+removal, including available partial XML on failure. Linux driver subreaper
+readback and complete owned `/proc` parent closure include session-escaping
+orphans; pidfd signals and actual adopted-child waits record cleanup. Normal child
+exit is explicitly attributed to the unchanged wrapper `process.wait`/return
+contract and observed child leader, not a direct driver wait on that leader.
+Wrapper exceptions/signals leave child exit unknown. Wrapper wait and directory
+absence alone never prove complete reaping. Source, tools and terminal evidence
+must remain consistent after the child. Unproven reaping defers scratch removal.
+
+Existing 10-second TERM/KILL waits, 1MiB tail, 8MiB raw segments, 128MiB stored
+member and 512MiB archive bounds remain; limits are not expanded. Reader errors,
+ordinary interruptions, failed finalizers and unavailable/unparseable JUnit keep
+failure/inconclusive receipts. Abrupt loss can leave only launch-boundary evidence;
+missing evidence never yields PASS. FIVE separate socketless repetitions and ONE
+full command remain distinct finite allocations, reported 0/5 and 0/1 before
+proof with no reset/exhaustive-hosted-census claim. Actual launch spends even on
+failure; ambiguous launch retains possible spend. This source-only implementation
+leg executes neither allocation and grants no dispatch.
+
+Final FULL independent code APPROVE, executable QA PASS, current exact-head
+CI/actual selected hosted Codex callback, guarded manager merge and active
+exact-merge checks remain. Supported deployment and measured restart separately
+establish installed source and readiness; source/merge/current health and historic
+offline 6.7s→0.09s are not startup closure. The 16.045s lock and 20.040s gap remain
+distinct; no <30s promise. Reviewer settings are excluded. General integration
+remains SKIPPED THR243seq42/THR211seq270–271, never PASS. The paused ordinary `all`
+receipt validates Web only. PR1010 authority, pins and proof allocations are separate.
+
 Python units remain SUSPENDED under THR291 seq5/16. In addition to the inherited
 `scripts/local_ci.sh all` pause, the G follow-on block in
 `scripts/nightly_local_ci_all.py` has a fixed local
@@ -374,7 +458,7 @@ after a new Founder release through ordinary review. For TASK10062 descendants,
 new test execution is also SKIPPED / FOUNDER-WAIVED THR139seq429. Inspection does
 not verify behavior. The following describes the retained dormant plan.
 
-The manual lane invokes exactly `uv run python scripts/nightly_local_ci_all.py`
+The ordinary manual lane invokes `uv run python scripts/nightly_local_ci_all.py`
 from the checkout root, keeping the workflow run scalar below GitHub's observed
 21,000-character limit. The source manifest authenticates both the workflow YAML
 and this fixed script. Source-copy controls mutate and restore each declared path
@@ -382,7 +466,7 @@ in their own archived checkout; the selection and preservation-plan controls
 reference the script, while input and integration-predicate controls reference YAML.
 The copied keeper reads that same checkout's script.
 
-The true lane runs the unchanged `scripts/local_ci.sh all` first and preserves
+The dormant G true plan runs the unchanged `scripts/local_ci.sh all` first and preserves
 its exit separately. Successful all is followed by the closed literal 101-node
 collection and five ordered fresh isolated and sibling rounds: 505 node processes
 plus 75 complete-file processes. No selector input or timeout increase is

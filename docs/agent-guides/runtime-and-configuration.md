@@ -866,14 +866,56 @@ no hook bypass is authorized. Existing historical workflow reruns and old
 checkouts do not acquire this pause automatically and must not be used to
 launch the unit suite. Restore execution only after founder release of the
 stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
+review and merge. The closed PR1011 finite entry below leaves ordinary Python,
+G and SIX suspended. The ordinary commands below describe the restored behavior.
 
 The manual `local-ci-all` workflow step invokes the fixed
-`uv run python scripts/nightly_local_ci_all.py` entry from the checkout root.
+`uv run python scripts/nightly_local_ci_all.py` entry on ordinary refs. B2 uses
+`uv run --frozen --no-sync python scripts/nightly_local_ci_all.py` only for
+`t-benze/happyranch` + `workflow_dispatch` + `refs/heads/task/TASK-10034`.
 Its G follow-on retains the fixed unit-suspension guard and zero-child receipt;
 source provenance authenticates both this script and the workflow YAML.
 Source-copy keepers read the script from their own archived checkout. See
 [Local CI](../local-ci.md) for the retained dormant plan and source controls.
+
+**PR1011 finite source/control boundary (THR278 seq40/49/72).** ROOT TASK-10330
+owns publication/dispatch on the retained ref, after exact accepted helper
+release, independent native exact-commit/tree/full-source-mode control APPROVE
+and supported task/session/result authentication and manager acceptance.
+Serialization continues THROUGH platform event creation; uncontrolled writers,
+missing/capped/stale review or changed commit prevent dispatch. Hosted SHA and
+checkout equality verify consistency only; they do not authenticate review.
+No new GitHub receipt, circular hash, selector/input, credential or lock service
+is introduced. The manager cross-checks actual run/head/attempt/full artifacts
+against that accepted binding, preserving any mismatch/possible spend.
+
+The closed driver explicitly validates repository/event/ref, platform/fetched
+retained HEAD, full tracked bytes/Git modes/symlinks, index/all nonignored
+untracked files and effective Python3.14/uv/node/npm/npx (Node24), then rechecks
+source and tools before the sole child. It launches exactly
+`uv run --frozen --no-sync pytest tests/ -v -n 4 --basetemp=<fresh-owned-path>`
+in the existing disposable Ubuntu venue. The prior single frozen sync and tool
+pins remain. Committed nonintegration addopts stay; fixed evidence-only
+`PYTEST_ADDOPTS` supplies external JUnit/cache paths. Owned HOME/XDG/cache/TMP,
+executor registry `{}`, port0 and admitted tool links exclude provider/live state.
+The branch exits before ordinary all/G/SIX and triggers zero helper repetitions
+for either `all_only` value. The ordinary global pause remains unchanged.
+
+FIVE socketless helper repetitions and ONE full run are separate finite proofs,
+reported 0/5 and 0/1 before execution, with no reset or exhaustive census claim.
+Actual launch spends on failure; uncertainty retains possible spend, with no
+rerun entitlement. Complete ordered compressed merged child streams, separate
+wrapper stderr, pre-removal JUnit, full source/tool/argv/environment/time/process
+and actual adopted-child waits/reaping evidence are required; wrapper wait or
+scratch absence alone proves no quiescence. Abrupt loss/incomplete evidence is
+inconclusive. Existing 10s TERM/KILL waits,150-minute cap,1MiB tail,8MiB segments,
+128MiB member/512MiB archive bounds stay. See Local CI for the precise child-exit
+attribution and conservative cleanup contract. No execution occurs in source-only
+prepublication work. Final independent FULL review/executable QA/current CI/
+actual hosted Codex callback/guarded merge/active exact-merge checks and supported
+deployment/measured restart remain separate. General integration is SKIPPED,
+ordinary paused all proves Web only, reviewer settings are excluded, and historic
+offline timing/current health cannot close startup or promise <30s readiness.
 
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
