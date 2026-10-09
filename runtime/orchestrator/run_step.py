@@ -1111,7 +1111,7 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
             operations = orch._human_failed_recovery_operations = {}
         transport_key = (task_id, agent, session_id, result_id)
         existing = operations.get(transport_key)
-        if existing is not None and (not existing.completion.done() or bookkeeping is None):
+        if existing is not None and not existing.completion.done():
             if bookkeeping is not None:
                 existing.bookkeeping.append(bookkeeping)
             # Preserve the original phase/callback rather than redraining.

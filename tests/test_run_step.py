@@ -7905,11 +7905,13 @@ HUMAN_VERDICTS = [(None, 'none'), ('', 'blank'), ('CUSTOM_REVIEW_OUTCOME', 'cust
                   ('REVISE', 'revise'), ('BLOCK', 'block')]
 
 
+@pytest.mark.parametrize('ancestry', ['valid', 'missing-parent', 'other-team', 'inactive-owner',
+    'wrong-role', 'missing-owner', 'self-parent', 'cycle', 'missing-ancestor'])
 @pytest.mark.parametrize('agent', ['consultant_head', 'consultant_codex'], ids=['head', 'codex'])
 @pytest.mark.parametrize('status', ['completed', 'blocked'], ids=['completed', 'failed'])
 @pytest.mark.parametrize('verdict', [value for value, _ in HUMAN_VERDICTS], ids=[name for _, name in HUMAN_VERDICTS])
 def test_c4_human_ordinary_exact_verdict(tmp_path: Path, agent: str, status: str,
-                                        verdict: str | None) -> None:
+                                        verdict: str | None, ancestry: str) -> None:
     """SUSPENDED unit localization of real ordinary consumer/audit SQL.
 
     Executor behavior and genuine transport/process settlement belong to L4;
@@ -7947,6 +7949,30 @@ teams:
         with sqlite3.connect(org.db.path) as observer:
             selected = observer.execute('SELECT * FROM task_results WHERE task_id=?', ('TASK-LEAF',)).fetchone()
             result_id = observer.execute('SELECT id FROM task_results WHERE task_id=?', ('TASK-LEAF',)).fetchone()[0]
+        # Invalid ancestry is declared fixture input, not receipt/history.
+        reviewer = agent if ancestry == 'valid' else 'unknown_manager'
+        if ancestry == 'missing-parent':
+            with org.db._lock:
+                org.db._conn.execute("DELETE FROM tasks WHERE id='TASK-PARENT'")
+                org.db._conn.commit()
+        elif ancestry == 'other-team':
+            org.db.update_task('TASK-PARENT', team='unregistered-team')
+        elif ancestry == 'inactive-owner':
+            (root / 'org/agents' / (agent + '.md')).unlink()
+        elif ancestry == 'wrong-role':
+            from dataclasses import replace
+            from runtime.orchestrator.agent_def import parse_agent_text
+            path = root / 'org/agents' / (agent + '.md')
+            definition = parse_agent_text(path.read_text(), expected_name=agent)
+            path.write_text(render_agent_text(replace(definition, role='manager')))
+        elif ancestry == 'missing-owner':
+            org.db.update_task('TASK-PARENT', assigned_agent=None)
+        elif ancestry == 'self-parent':
+            org.db.update_task('TASK-LEAF', parent_task_id='TASK-LEAF')
+        elif ancestry == 'cycle':
+            org.db.update_task('TASK-PARENT', parent_task_id='TASK-LEAF')
+        elif ancestry == 'missing-ancestor':
+            org.db.update_task('TASK-PARENT', parent_task_id='TASK-MISSING-ANCESTOR')
         report = CompletionReport(task_id='TASK-LEAF', agent=agent, status=status,
             confidence=90, output_summary='literal child outcome', verdict=verdict)
         _consume_completion_report(org.orchestrator, 'TASK-LEAF', report,
@@ -7955,7 +7981,7 @@ teams:
             assert observer.execute('SELECT status FROM tasks WHERE id=?', ('TASK-LEAF',)).fetchone() == (
                 'completed' if status == 'completed' else 'failed',)
             rows = observer.execute("SELECT agent,payload FROM audit_log WHERE task_id=? AND action='review_verdict'", ('TASK-LEAF',)).fetchall()
-            assert len(rows) == 1 and rows[0][0] == agent
+            assert len(rows) == 1 and rows[0][0] == reviewer
             assert json.loads(rows[0][1]) == {
                 'verdict': verdict if verdict is not None else 'approved' if status == 'completed' else 'rejected',
                 'feedback': 'literal child outcome' if status == 'completed' else 'self-blocked: literal child outcome',

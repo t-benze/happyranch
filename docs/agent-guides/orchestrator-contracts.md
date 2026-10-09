@@ -34,7 +34,9 @@ enablement, deployment or a Phase1-completion claim.
 Founder-managed teams use a human principal without an executable manager.
 Explicit active worker owners may run ordinary roots and self-decompose; they
 have no peer/fanout, manager administration, policy or template authority.
-Missing owners for a human team are refused before persistence. Delegated
+Missing owners for a human team are refused before persistence. Malformed active
+definitions after attachment produce the existing unknown_owner admission refusal
+before task/attachment allocation. Delegated
 outcomes use a valid persisted executable parent owner, with unknown_manager
 for invalid ancestry. Null verdict uses the native implicit mapping; blank and
 custom strings remain exact. This audit is an agent outcome, never human approval.
@@ -43,7 +45,9 @@ foreign/multiple/unreadable history. Separate evidence, chain, fanout, FAILED,
 review and marker commits remain separate; history and review precede marker.
 Retained loop retries wait 50ms outside locks without a retry cap. Busy/pending
 is not settlement; parent handoff follows genuine owned cleanup. Shutdown
-preserves accepted/consumed residue for existing next-start recovery.
+preserves accepted/consumed residue for existing next-start recovery. Finished
+same-result reentry checks current ownership/history again; cancellation or a
+replacement binding cannot receive a cached done disposition.
 
 ## Conventions
 

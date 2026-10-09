@@ -10,7 +10,9 @@ identities are workers. Consultant leaves the active registry only; all retained
 history, policy namespaces/pins, workflows, memory, workspaces and thread state
 remain. Existing task routing stays Engineering; new org creation explicitly
 writes both routing pointers as Default. Selecting Default requires an active
-executable owner before task/attachment/queue writes. Founder never executes.
+executable owner before task/attachment/queue writes. Malformed active definitions
+after attachment refuse through existing unknown_owner admission before allocation.
+Founder never executes.
 Attachment validates closed manager tags, duplicate memberships and both role/
 team directions, including all partial three-file moves with empty Default.
 
@@ -42,7 +44,9 @@ nonblocking publisher-before-DB attempts, async-writer exclusion and uncapped
 row/report, omission episode and parent/team relation before subsequent effects
 and native job-control admission. Loop scheduling refusal resolves to
 recovery-required, retaining durable residue. An ordinary failed verdict tail
-cannot append a review owned by that selected callback.
+cannot append a review owned by that selected callback. Finished same-result
+reentry renews current ownership/history classification instead of returning
+cached done after cancellation or binding replacement.
 Portability waits outside org.db_lock; pending is never success. Cancellation/owner drift/shutdown stop further effects and preserve
 truthful residue. Cold startup may reconcile durable evidence without signalling
 persisted PIDs. Completed-leaf and agent-team behavior remain unchanged.

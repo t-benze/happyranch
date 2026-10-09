@@ -120,7 +120,13 @@ async def submit_task(body: SubmitTask, org: OrgDep, request: Request) -> dict:
                     detail={"code": "unknown_team", "valid": registry.teams()},
                 )
 
-        active = {agent.name: agent for agent in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        from runtime.orchestrator.agent_def import AgentParseError
+        try:
+            active = {agent.name: agent for agent in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        except AgentParseError:
+            # Canonical drift after attachment is still an admission refusal;
+            # do not allocate a task or claim an otherwise valid attachment.
+            raise HTTPException(status_code=400, detail={"code": "unknown_owner", "owner": body.owner}) from None
         if body.owner is not None:
             if body.owner not in registry.all_agents() or body.owner not in active:
                 raise HTTPException(

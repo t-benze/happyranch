@@ -319,7 +319,8 @@ Existing omitted task routing defaults to Engineering unless an explicit
 `task_default_team` is present. Proven fresh org creation adds empty human
 Default and writes both `default_team` and `task_default_team` as Default.
 Selecting a human team requires an active executable owner before task,
-attachment or queue persistence (`422 owner_required_for_human_team`). Workers
+attachment or queue persistence (`422 owner_required_for_human_team`). Malformed
+active definitions after attachment also refuse owner admission before allocation. Workers
 remain ordinary decision owners of roots, with self-only decomposition.
 
 New workflow authority uses schema2 typed managers and both routing pointers;
@@ -336,7 +337,8 @@ complete selected-only history and separate guarded commits. The review/history
 precede the consumed marker. A finite process-local operation retains the same
 identity, phase and original parent effect through writer contention; 50ms
 outside-lock retries have no count cap. Pending is never settlement, and
-shutdown leaves authentic residue for next-start recovery. Agent-team and
+shutdown leaves authentic residue for next-start recovery. Finished same-result
+reentry renews the current owner/history checks; cached done is not authority. Agent-team and
 completed-leaf transaction behavior is preserved. See the current THR296 spec
 and operator runbook; source authoring is not behavioral verification.
 

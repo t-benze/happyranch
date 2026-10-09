@@ -1,8 +1,8 @@
 """Finite THR296 shipping cases. Execute only via authorized disposable parent.
 
 No production-host runs. RF5/RF6 real-process cuts and ten real context sources
-are authored here; writer barriers, full history/portability and maintenance
-observers still need further source. Authoring is never execution evidence.
+are authored here; C1–C4 writer/history consumers are finite sources; C5–C10 remaining
+maintenance, portability/context and browser sources stay with the parent. Authoring is never execution evidence.
 """
 from __future__ import annotations
 
@@ -81,7 +81,14 @@ codes=[code for code in members(compile(data,str(path),'exec',dont_inherit=True,
 assert len(codes)==1
 expected=hashlib.sha256(marshal.dumps(codes[0])).hexdigest()
 writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_before_retry',
-             'writer_cancelled_before_retry'}
+             'writer_cancelled_before_retry',
+    'writer_busy_before_consumption-shared_loop', 'writer_busy_before_consumption-startup_loop',
+    'writer_busy_before_consumption-zombie_loop', 'writer_busy_before_consumption-portability_loop',
+    'writer_busy_after_job_drain', 'writer_busy_no_job_reentry',
+    'loss-before_consumption-cancel', 'loss-before_consumption-binding_replacement',
+    'loss-after_job_drain-cancel', 'loss-after_job_drain-binding_replacement',
+    'no_job_reentry_terminal_cancel_refusal', 'loss-no_job_reentry-cancel', 'loss-no_job_reentry-binding_replacement',
+    'shutdown_while_deferred', 'late_inline_unbound'}
 writer_path=source/'runtime/orchestrator/run_step.py'
 writer_data=writer_path.read_bytes()
 assert writer_data==subprocess.check_output(['git','-C',str(source),'show',revision+':runtime/orchestrator/run_step.py'])
@@ -89,6 +96,19 @@ writer_codes={code.co_qualname:hashlib.sha256(marshal.dumps(code)).hexdigest()
     for code in members(compile(writer_data,str(writer_path),'exec',dont_inherit=True,optimize=sys.flags.optimize))
     if code.co_qualname in {'_submit_human_failed_recovery','_drive_human_failed_recovery','_HumanFailedRecoveryOperation.finish'}}
 assert len(writer_codes)==3
+extra_codes={}
+for rel,qualnames in {
+    'runtime/infrastructure/database.py':{'Database.admit_task_completion_callback'},
+    'runtime/daemon/jobs_runner.py':{'terminate_jobs_for_task'},
+    'runtime/daemon/app.py':{'_wire_then_start_workers'},
+    'runtime/daemon/routes/tasks.py':{'cancel_task'},
+}.items():
+    extra_path=source/rel; extra_data=extra_path.read_bytes()
+    assert extra_data==subprocess.check_output(['git','-C',str(source),'show',revision+':'+rel])
+    for code in members(compile(extra_data,str(extra_path),'exec',dont_inherit=True,optimize=sys.flags.optimize)):
+        if code.co_qualname in qualnames:
+            extra_codes[(str(extra_path),code.co_qualname)]=hashlib.sha256(marshal.dumps(code)).hexdigest()
+assert len(extra_codes)==4
 writer_state={}
 def record_writer(event, **fields):
     target=receipt.with_name(receipt.name+'.'+event)
@@ -97,17 +117,103 @@ def record_writer(event, **fields):
     fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'w') as out:
         json.dump(value,out,sort_keys=True);out.flush();os.fsync(out.fileno())
-async def held_writer(org):
-    # Real supported context entry, on the daemon's actual owning loop. No
-    # canonical segment is called: unrelated writer holds only its async bit.
+def selected_identity(orch,task_id,result_id):
+    with orch._db._lock:
+        rows=orch._db._conn.execute('SELECT * FROM task_completion_recoveries WHERE task_id=?',(task_id,)).fetchall()
+        assert len(rows)==1
+        episode=dict(rows[0])
+    assert episode['accepted_result_id']==result_id and type(result_id) is int and result_id>0
+    return {'task':task_id,'agent':episode['agent'],'origin':episode['origin_session_id'],
+        'session':episode['recovery_session_id'],'result':result_id}
+async def shipping_caller(orch,caller):
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    from runtime.orchestrator.run_step import _consume_completion_report,_handoff_consumed_recovery_terminal_effects,_enqueue_parent_if_waiting
+    identity=writer_state['identity']; task=orch._db.get_task(identity['task'])
+    selected=orch._db.get_latest_task_result(identity['task'],identity['agent'],identity['session'])
+    assert selected['id']==identity['result']
+    report=completion_report_from_result_row(task.id,selected,fallback_agent=identity['agent'])
+    if caller=='shared_loop':
+        operation=_consume_completion_report(orch,task.id,report,result_row_id=selected['id'])
+    elif caller=='startup_loop':
+        from runtime.daemon.__main__ import _sweep_on_startup
+        # Child is still live: this sweep cannot independently orphan-wake its
+        # waiting parent. No whole-parent sweep is used for the no-job case.
+        assert task.status.value=='in_progress'
+        _sweep_on_startup(orch._db,orch._queue,orch._slug,orch)
+    elif caller=='zombie_loop':
+        from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint
+        operation=_consume_zombie_fingerprint(orch._db,task.id,selected,task,orch)
+    elif caller=='portability_loop':
+        # A real fixture subprocess has exited. Its observed PID is used only
+        # by native signal-0 liveness; no persisted PID is signalled as control.
+        import httpx
+        from runtime.daemon import paths
+        from datetime import datetime,timedelta,timezone
+        reaped=subprocess.Popen([sys.executable,'-c','pass'])
+        assert reaped.wait(timeout=2)==0
+        orch._db.update_task(task.id,executor_pid=reaped.pid,
+            last_heartbeat=(datetime.now(timezone.utc)-timedelta(minutes=5)).isoformat())
+        def request():
+            return httpx.post('http://127.0.0.1:'+paths.port_file().read_text().strip()+
+                '/api/v1/orgs/'+orch._slug+'/reconcile-portability',
+                headers={'Authorization':'Bearer '+paths.read_token()},
+                json={'candidate_task_id':task.id,'disposition':'consume_result',
+                      'evidence':{'fixture':'actual reaped subprocess'}},timeout=30)
+        reply=await asyncio.to_thread(request)
+        record_writer('portability-response',status=reply.status_code,body=reply.json(),**identity)
+    else:
+        assert caller=='no_job_reentry'
+        assert not orch._db.get_running_job_task_ids()
+        operation=_handoff_consumed_recovery_terminal_effects(orch,task.id,identity['agent'],identity['session'],
+            identity['result'],'failed',after_recovery_cleanup=lambda:_enqueue_parent_if_waiting(
+                orch,task.id,root_auto_revisit_spawned=False))
+async def prepared_late_cancel(org):
+    # The authentic cancel route reads a live child, then waits on its own
+    # existing org DB lock. Selected failure/drain uses publisher + DB RLock,
+    # so that native route can commit a later cancellation winner unchanged.
+    import httpx
+    from runtime.daemon import paths
+    identity=writer_state['identity']
+    await org.db_lock.acquire()
+    def request():
+        return httpx.post('http://127.0.0.1:'+paths.port_file().read_text().strip()+
+            '/api/v1/orgs/'+org.slug+'/tasks/'+identity['task']+'/cancel',
+            headers={'Authorization':'Bearer '+paths.read_token()},
+            json={'rationale':'actual late C4 cancellation','cascade':False},timeout=120)
+    pending=asyncio.create_task(asyncio.to_thread(request))
+    try:
+        permission=receipt.with_name(receipt.name+'.commit-late-cancel')
+        while not permission.exists():await asyncio.sleep(0.01)
+    finally:
+        org.db_lock.release()
+    reply=await pending
+    record_writer('late-cancel-response',status=reply.status_code,body=reply.json(),**identity)
+async def held_writer(org,caller=None):
     for number in range(2 if cut=='writer_reacquired_before_retry' else 1):
         async with org._profile_coordinator.consumer_writer(org=org,
                 publisher='THR296-isolated-writer-control',consumer='consultant_head',preserve=True):
             assert org.workflow_authority._async_writer_lock.locked()
             record_writer('held-'+str(number),loop=id(asyncio.get_running_loop()),**writer_state['identity'])
             writer_state['ready'].set()
+            if caller is not None and number==0:
+                writer_state['caller']=asyncio.create_task(shipping_caller(writer_state['orch'],caller))
             release=receipt.with_name(receipt.name+'.release-'+str(number))
             while not release.exists():
+                control=receipt.with_name(receipt.name+'.binding-replacement')
+                if control.exists() and 'replacement' not in writer_state:
+                    orch=writer_state['orch'];identity=writer_state['identity']
+                    # Same source-owned ordinary binding publication primitives;
+                    # this is an explicit fixture winner, never a launch/result.
+                    session=orch._build_session_id()
+                    orch._db.update_task(identity['task'],assigned_agent=identity['agent'],current_session_id=session)
+                    orch._sessions.set_active(identity['task'],identity['agent'],session,org_slug=orch._slug)
+                    writer_state['replacement']=session
+                    record_writer('binding-replaced',replacement=session,**identity)
+                shutdown=receipt.with_name(receipt.name+'.shutdown')
+                if shutdown.exists() and 'shutdown' not in writer_state:
+                    await writer_state['orch']._queue.stop()
+                    writer_state['shutdown']=True
+                    record_writer('shutdown-observed',**writer_state['identity'])
                 await asyncio.sleep(0.01)
         record_writer('released-'+str(number),**writer_state['identity'])
     record_writer('writer-complete',**writer_state['identity'])
@@ -128,11 +234,16 @@ def observe_writer(frame,event,arg):
             assert len(rows)==1
             episode=dict(rows[0])
         assert episode['state']=='callback_accepted' and episode['accepted_result_id']==local['result_id']
-        writer_state.update(identity={'task':task.id,'agent':local['agent'],'origin':episode['origin_session_id'],
-            'session':local['session_id'],'result':local['result_id']},ready=threading.Event())
+        writer_state.update(identity=selected_identity(orch,task.id,local['result_id']),
+            ready=threading.Event(),orch=orch)
         org=orch._workflow_drafts.org
-        writer_state['writer']=asyncio.run_coroutine_threadsafe(held_writer(org),orch._main_loop)
-        assert writer_state['ready'].wait(10),'native writer did not acquire actual async interval'
+        if cut in ('loss-after_job_drain-cancel','loss-no_job_reentry-cancel'):
+            writer_state['cancel_ready']=threading.Event()
+            writer_state['late_cancel']=asyncio.run_coroutine_threadsafe(prepared_late_cancel(org),orch._main_loop)
+            assert writer_state['cancel_ready'].wait(10),'actual cancel route did not traverse live child'
+        if 'after_job_drain' not in cut and cut!='loss-no_job_reentry-cancel':
+            writer_state['writer']=asyncio.run_coroutine_threadsafe(held_writer(org),orch._main_loop)
+            assert writer_state['ready'].wait(10),'native writer did not acquire actual async interval'
     elif frame.f_code.co_qualname=='_drive_human_failed_recovery' and event=='return' and writer_state:
         operation=local['operation']
         if operation.task_id!=writer_state['identity']['task']:return
@@ -143,11 +254,62 @@ def observe_writer(frame,event,arg):
             record_writer('consumer-deferred',phase=operation.phase,**writer_state['identity'])
     elif frame.f_code.co_qualname=='_HumanFailedRecoveryOperation.finish' and event=='return' and writer_state:
         operation=local['self']
-        if operation is writer_state.get('operation') and 'finished' not in writer_state:
+        if operation.task_id==writer_state['identity']['task'] and 'finished' not in writer_state:
             writer_state['finished']=True
             record_writer('consumer-finished',disposition=operation.disposition,phase=operation.phase,
                 key=list(operation.key) if operation.key is not None else None,**writer_state['identity'])
 def observe(frame,event,arg):
+    if (cut=='loss-no_job_reentry-cancel' and event=='return' and frame.f_code.co_filename==str(path)
+            and frame.f_code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect'
+            and frame.f_locals.get('effect')=='marker' and arg=='progressed'):
+        assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==expected
+        # C9.i's after-real-marker/before-parent localization, combined with
+        # L4's genuine admission/process identities. The native SQL/effect
+        # returned successfully; this test-side source observer interrupts its
+        # finite tail before parent handoff. No result/marker/task is fabricated.
+        # This fault is UNEXECUTED and is not a captured shipping receipt.
+        loop=asyncio.get_running_loop();orch=writer_state['orch']
+        loop.call_soon(sys.setprofile,observe)
+        loop.create_task(held_writer(orch._workflow_drafts.org,'no_job_reentry'))
+        raise RuntimeError('test-side actual marker return interruption')
+
+    extra=(frame.f_code.co_filename,frame.f_code.co_qualname)
+    if cut in writer_cuts and extra in extra_codes:
+        assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==extra_codes[extra]
+        local=frame.f_locals
+        if (extra[1]=='Database.admit_task_completion_callback' and event=='return' and arg
+                and (cut.endswith(('shared_loop','startup_loop','zombie_loop','portability_loop'))
+                     or cut=='late_inline_unbound') and not writer_state):
+            db=local['self'];org=db._workflow_drafts.org;orch=org.orchestrator
+            task=db.get_task(local['task_id'])
+            if task is not None and task.task_type=='subtask' and task.team=='default':
+                selected=db.get_accepted_task_completion_recovery_result(task_id=task.id,agent=task.assigned_agent)
+                assert selected is not None
+                writer_state.update(identity=selected_identity(orch,task.id,selected['id']),ready=threading.Event(),orch=orch)
+                caller=cut.rsplit('-',1)[-1] if cut!='late_inline_unbound' else 'shared_loop'
+                if cut=='late_inline_unbound':
+                    writer_state['caller']=asyncio.get_running_loop().create_task(shipping_caller(orch,caller))
+                else:
+                    writer_state['writer']=asyncio.get_running_loop().create_task(held_writer(org,caller))
+        elif (extra[1]=='cancel_task' and event=='return' and cut in ('loss-after_job_drain-cancel','loss-no_job_reentry-cancel')
+                and writer_state and local.get('to_cancel')==[writer_state['identity']['task']]
+                and 'cancel_traversed' not in writer_state):
+            assert local['org'].db_lock.locked()
+            writer_state['cancel_traversed']=True
+            record_writer('cancel-traversed',to_cancel=local['to_cancel'],**writer_state['identity'])
+            writer_state['cancel_ready'].set()
+        elif (extra[1]=='terminate_jobs_for_task' and event=='call' and 'after_job_drain' in cut
+                and writer_state and 'writer' not in writer_state and local['task_id']==writer_state['identity']['task']):
+            orch=writer_state['orch']
+            writer_state['writer']=asyncio.get_running_loop().create_task(held_writer(orch._workflow_drafts.org))
+        elif (extra[1]=='_wire_then_start_workers' and event=='return' and 'no_job_reentry' in cut and not writer_state):
+            state=local['state'];org=state.get_org('test');orch=org.orchestrator
+            owners=org.db.get_consumed_task_completion_recovery_owners()
+            assert len(owners)==1 and owners[0]['status']=='failed'
+            selected=owners[0]
+            writer_state.update(identity=selected_identity(orch,selected['task_id'],selected['accepted_result_id']),
+                ready=threading.Event(),orch=orch)
+            writer_state['writer']=asyncio.get_running_loop().create_task(held_writer(org,'no_job_reentry'))
     if cut in writer_cuts:
         observe_writer(frame,event,arg)
         return
@@ -167,14 +329,35 @@ def observe(frame,event,arg):
     os._exit(86)
 if cut!='none':
     sys.setprofile(observe);threading.setprofile(observe)
-sys.argv=['runtime.daemon']
-runpy.run_module('runtime.daemon',run_name='__main__')
+if 'no_job_reentry' in cut and cut!='loss-no_job_reentry-cancel':
+    # Actual cold compatible state + app/lifespan/queue/provider pipeline. This
+    # specifically isolates consumed-child handoff: no generic parked-parent
+    # startup sweep is invoked to satisfy the writer-only progression oracle.
+    import uvicorn
+    from runtime.config import Settings
+    from runtime.daemon import paths,runtimes
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+    from runtime.daemon.app import create_app
+    from runtime.daemon.__main__ import _bind_port,_install_signal_handlers
+    paths.ensure_daemon_home();paths.ensure_token()
+    state=DaemonState.from_runtime(RuntimeDir.load(runtimes.load().active),Settings())
+    app=create_app(state)
+    sock,port=_bind_port(state.settings.daemon_bind_host,state.settings.daemon_port)
+    paths.port_file().write_text(str(port));paths.pid_file().write_text(str(os.getpid()))
+    _install_signal_handlers(state)
+    uvicorn.Server(uvicorn.Config(app,log_level='info',lifespan='on')).run(sockets=[sock])
+else:
+    sys.argv=['runtime.daemon']
+    runpy.run_module('runtime.daemon',run_name='__main__')
 '''
     def start(selected: str) -> int:
         process = subprocess.Popen([sys.executable, '-I', '-c', launcher, binding['source'],
             binding['revision'], selected, str(witness)], cwd=binding['source'],
             env=_nested_daemon_env(), stdout=log, stderr=log, start_new_session=True)
         processes.append(process)
+        if hasattr(request.node, '_roster_fault_daemon'):
+            request.node._roster_fault_daemon['process'] = process
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             assert process.poll() is None, f'daemon exited {process.returncode}; see {log.name}'
@@ -188,7 +371,7 @@ runpy.run_module('runtime.daemon',run_name='__main__')
             time.sleep(0.05)
         raise AssertionError('real daemon health unavailable')
     try:
-        port = start(cut)
+        port = start('marker' if 'no_job_reentry' in cut and cut!='loss-no_job_reentry-cancel' else cut)
         request.node._roster_fault_daemon = {'process': processes[0], 'start': start, 'witness': witness}
         yield port, runtime
     finally:
@@ -215,7 +398,8 @@ def _seed_human_roster(runtime: Path) -> None:
 
 def _write_plan(path: Path, root: Path, *, status: str, verdict: str | None, self_child: bool,
                 recovery: bool = False, attempted_decision: dict | None = None,
-                administration: bool = False) -> None:
+                administration: bool = False, c4_cut: str | None = None,
+                policy_activation: dict | None = None, failure_blocker: bool = False) -> None:
     witness = path.parent / (path.name + '.calls.jsonl')
     # Existing bound fake binaries supply real task/runtime-session arguments;
     # this plan calls the supported callback, never writes task/results/audits.
@@ -228,12 +412,12 @@ import json, os, pathlib, re, subprocess, sys
 T, S, workspace = sys.argv[1:]
 agent = pathlib.Path(workspace).name
 org = pathlib.Path(workspace).parent.parent.name
-''' + f"root = pathlib.Path({str(root)!r})\nwitness = pathlib.Path({str(witness)!r})\nstatus = {status!r}\nverdict = {verdict!r}\nself_child = {self_child!r}\nrecovery = {recovery!r}\nattempted_decision = {attempted_decision!r}\nadministration = {administration!r}\n" + '''
+''' + f"root = pathlib.Path({str(root)!r})\nwitness = pathlib.Path({str(witness)!r})\nstatus = {status!r}\nverdict = {verdict!r}\nself_child = {self_child!r}\nrecovery = {recovery!r}\nattempted_decision = {attempted_decision!r}\nadministration = {administration!r}\nc4_cut = {c4_cut!r}\npolicy_activation = {policy_activation!r}\nfailure_blocker = {failure_blocker!r}\n" + '''
 with witness.open('a') as out:
     out.write(json.dumps({'task': T, 'session': S, 'agent': agent,
         'prompt': os.environ['HAPPYRANCH_TEST_ACTUAL_PROMPT'],
         'argv': json.loads(os.environ['HAPPYRANCH_TEST_CONTEXT_ARGV_JSON']),
-        'workspace': workspace}) + '\\n')
+        'workspace': workspace, 'pid': os.getpid()}) + '\\n')
 # Independent read determines actual root/child provenance. The plan never
 # manufactures a result or seeds the final transition.
 import sqlite3
@@ -290,7 +474,8 @@ if administration:
     assert control.status_code == 200, control.text
     control = control.json()
     assert control['target_manager'] == 'engineering_head' and control['team'] == 'engineering'
-    assert control['family'] == 'empty' and control['selector_epoch'] == 0
+    assert policy_activation is not None
+    assert control['family'] == 'v2' and control['selector_id'] == policy_activation['expected_selector_id']
     observed.append({'action': 'agent-manager-policy-control', 'status': 200})
     reply = httpx.get(base + '/agents/' + agent + '/team-escalation-policy', headers=headers)
     assert reply.status_code == 404 and reply.json()['detail']['code'] == 'policy_surface_not_available', reply.text
@@ -303,19 +488,63 @@ if administration:
                       headers=headers, json=body)
     assert reply.status_code == 404 and reply.json()['detail']['code'] == 'policy_surface_not_available', reply.text
     observed.append({'action': 'worker-policy-create-activate', 'status': 404, 'detail': reply.json()['detail']})
+    activation = {**policy_activation, 'request_id': 'worker-existing-activate-' + T}
+    reply = httpx.post(base + '/agents/' + agent + '/team-escalation-policy/v2/activations',
+                      headers=headers, json=activation)
+    assert reply.status_code == 404 and reply.json()['detail']['code'] == 'policy_surface_not_available', reply.text
+    observed.append({'action': 'worker-policy-existing-activate', 'status': 404, 'detail': reply.json()['detail']})
     pathlib.Path(str(witness) + '.administration.json').write_text(json.dumps(observed))
 payload = {'task_id': T, 'session_id': S, 'agent': agent, 'status': 'completed', 'summary': 'root done', 'confidence': 90}
 if attempted_decision is not None and parent is None and prior == 0:
     payload['decision'] = attempted_decision
 elif self_child and parent is None and children == 0:
     payload['decision'] = {'action': 'delegate', 'agent': agent, 'prompt': 'self child'}
+elif parent is None and failure_blocker:
+    with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
+        failed = observer.execute('SELECT id,status,note FROM tasks WHERE parent_task_id=?', (T,)).fetchall()
+    assert len(failed) == 1 and failed[0][1:] == ('failed', 'self-blocked: child outcome'), failed
+    prompt = os.environ['HAPPYRANCH_TEST_ACTUAL_PROMPT']
+    assert failed[0][0] in prompt and 'child outcome' in prompt, prompt
+    payload['decision'] = {'action': 'escalate', 'reason': 'self child failed: founder decision required'}
 elif parent is None:
     payload['decision'] = {'action': 'done', 'summary': 'root done'}
 else:
     payload.update(status=status, verdict=verdict, summary='child outcome')
 file = pathlib.Path(workspace) / ('completion-' + S + '.json')
 file.write_text(json.dumps(payload))
+if parent is not None and c4_cut is not None and ('after_job_drain' in c4_cut):
+    # Genuine task-owned runner jobs, separate from the blocked result's empty
+    # wait list. The original failure is retained and one opaque job drains.
+    import time
+    for suffix, script in [('prior', 'echo retained-failure >&2; sleep 30'),
+                           ('running', 'echo owned-running; while true; do sleep 1; done')]:
+        request = pathlib.Path(workspace) / ('job-' + suffix + '-' + S + '.json')
+        request.write_text(json.dumps({'task_id': T, 'session_id': S, 'title': 'C4-' + suffix,
+            'script': script, 'interpreter': 'bash', 'review_required': False, 'persistent': suffix == 'running',
+            'max_runtime_seconds': 1 if suffix == 'prior' else 180}))
+        actual = subprocess.run(['happyranch', 'jobs', 'submit', '--org', org, '--from-file', str(request)],
+            capture_output=True, text=True, timeout=30)
+        assert actual.returncode == 0, actual.stderr
+        job_ids = re.findall(r'JOB-[0-9]+', actual.stdout)
+        assert len(set(job_ids)) == 1, actual.stdout
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
+                job = observer.execute('SELECT status,exit_code,stderr_head FROM jobs WHERE id=?', (job_ids[0],)).fetchone()
+            if job and job[0] == ('failed' if suffix == 'prior' else 'running'): break
+            time.sleep(0.05)
+        assert job and job[0] == ('failed' if suffix == 'prior' else 'running'), job
+        if suffix == 'prior': assert job[1] != 0 and 'retained-failure' in job[2]
 subprocess.run(['happyranch', 'report-completion', '--org', org, '--from-file', str(file)], check=True)
+if parent is not None and c4_cut is not None and (c4_cut.endswith(('shared_loop', 'startup_loop', 'zombie_loop', 'portability_loop'))
+        or c4_cut == 'late_inline_unbound') and 'after_job_drain' not in c4_cut and 'no_job_reentry' not in c4_cut:
+    # Callback is genuinely accepted; executor remains alive so a shared
+    # consumer can finish before the actual inline unbound audit on exit.
+    import time
+    permission = pathlib.Path(str(witness) + '.allow-child-exit')
+    deadline = time.monotonic() + 150
+    while not permission.exists() and time.monotonic() < deadline: time.sleep(0.01)
+    assert permission.exists(), 'actual executor-return barrier not released'
 PLAN
 ''')
 
@@ -484,6 +713,14 @@ def test_c1_registry_and_attachment(request: pytest.FixtureRequest, runtime: Pat
     assert next(row for row in reply['teams'] if row['name'] == 'default') == {
         'name': 'default', 'manager': None, 'manager_kind': 'human', 'human_manager': 'founder',
         'is_default': True, 'workers': ['consultant_head', 'consultant_codex']}
+    deadline = time.monotonic() + 30
+    while True:
+        dashboard = httpx.get(_base(port) + '/dashboard/summary', headers=_auth_headers())
+        if dashboard.status_code != 503 or time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    assert dashboard.status_code == 200, dashboard.text
+    assert next(row for row in dashboard.json()['org_pulse'] if row['team'] == 'default')['lead'] == 'founder'
     agents = httpx.get(_base(port) + '/agents', headers=_auth_headers()).raise_for_status().json()['agents']
     assert not any(agent['name'] == 'founder' for agent in agents)
     assert not (root / 'workspaces/founder').exists()
@@ -519,6 +756,11 @@ def test_c1_registry_and_attachment(request: pytest.FixtureRequest, runtime: Pat
 
 @pytest.mark.parametrize('owner,code,http_status', [
     (None, 'owner_required_for_human_team', 422),
+    ('', 'unknown_owner', 400),
+    ('wrong-team-head', 'unknown_owner', 400),
+    ('malformed-head', 'unknown_owner', 400),
+    *[(case, None, 0) for case in ('internal-human', 'internal-legacy', 'internal-pending-manager',
+        'internal-role-drift', 'queue-ownerless-human', 'cli-human-missing', 'cli-worker', 'cli-legacy')],
     ('founder', 'unknown_owner', 400),
     ('missing_worker', 'unknown_owner', 400),
     ('dev_agent', 'owner_team_mismatch', 400),
@@ -530,12 +772,46 @@ def test_c1_registry_and_attachment(request: pytest.FixtureRequest, runtime: Pat
     ('consultant_head', None, 200),
     ('consultant_codex', None, 200),
     ('legacy-omitted', None, 200),
-], ids=['missing-owner', 'founder', 'unknown-worker', 'other-team-worker',
+], ids=['missing-owner', 'blank-owner', 'wrong-team-definition', 'malformed-definition',
+        'internal-human', 'internal-legacy', 'internal-pending-manager', 'internal-role-drift',
+        'queue-ownerless-human', 'cli-human-missing', 'cli-worker', 'cli-legacy',
+        'founder', 'unknown-worker', 'other-team-worker',
         'pending-worker', 'inactive-worker', 'wrong-worker-role', 'unknown-team', 'fresh-default-omitted',
         'head-with-attachment', 'codex-owner-only-with-attachment', 'legacy-omitted-with-attachment'])
 def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
-                                             owner: str | None, code: str, http_status: int) -> None:
+                                             owner: str | None, code: str | None, http_status: int, tmp_path: Path) -> None:
     port, root = human_daemon
+    if owner is not None and owner.startswith(('internal-', 'queue-')):
+        _c2_internal_admission_source(root, tmp_path, owner)
+        return
+    if owner is not None and owner.startswith('cli-'):
+        with sqlite3.connect(root / 'happyranch.db') as observer:
+            before = {name: observer.execute('SELECT * FROM ' + name + ' ORDER BY rowid').fetchall()
+                      for name in ('tasks', 'task_attachments', 'task_results')}
+        command = ['happyranch', 'run', '--org', 'test', '--brief', 'C2 genuine CLI routing']
+        if owner == 'cli-human-missing':
+            command += ['--team', 'default']
+        elif owner == 'cli-worker':
+            command += ['--team', 'default', '--owner', 'consultant_codex']
+        actual = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        if owner == 'cli-human-missing':
+            assert 'owner_required_for_human_team' in actual.stdout + actual.stderr
+            with sqlite3.connect(root / 'happyranch.db') as observer:
+                assert {name: observer.execute('SELECT * FROM ' + name + ' ORDER BY rowid').fetchall()
+                        for name in before} == before
+        else:
+            assert actual.returncode == 0, actual.stderr
+            import re
+            task_ids = re.findall(r'Submitted (TASK-[0-9]+)', actual.stdout)
+            assert len(task_ids) == 1, actual.stdout
+            final = _wait_for_terminal(_base(port), task_ids[0])
+            assert final['task']['status'] == 'completed'
+            with sqlite3.connect(root / 'happyranch.db') as observer:
+                assert observer.execute('SELECT team,assigned_agent FROM tasks WHERE id=?', (task_ids[0],)).fetchone() == (
+                    ('default', 'consultant_codex') if owner == 'cli-worker' else ('engineering', 'engineering_head'))
+                results = observer.execute('SELECT id,agent,session_id FROM task_results WHERE task_id=?', (task_ids[0],)).fetchall()
+                assert len(results) == 1 and type(results[0][0]) is int and results[0][0] > 0 and results[0][2]
+        return
     base = _base(port)
     if owner == 'fresh-omitted':
         created = httpx.post(f'http://127.0.0.1:{port}/api/v1/orgs',
@@ -550,12 +826,16 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
         destination = root / 'org/agents' / ('_pending' if owner == 'pending-head' else '_terminated')
         destination.mkdir(exist_ok=True)
         (root / 'org/agents' / f'{name}.md').rename(destination / f'{name}.md')
-    elif owner == 'wrong-role-head':
+    elif owner in ('wrong-role-head', 'wrong-team-head', 'malformed-head'):
         from dataclasses import replace
         from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
         path = root / 'org/agents/consultant_head.md'
         definition = parse_agent_text(path.read_text(), expected_name='consultant_head')
-        path.write_text(render_agent_text(replace(definition, role='manager')))
+        if owner == 'malformed-head':
+            path.write_text('---\nname: consultant_head\nteam: default\nrole: invalid-role\n---\n')
+        else:
+            changed = replace(definition, role='manager') if owner == 'wrong-role-head' else replace(definition, team='engineering')
+            path.write_text(render_agent_text(changed))
     upload = httpx.post(base + '/tasks/attachments', headers=_auth_headers(),
                         params={'agent': 'founder'},
                         files={'file': ('roster.png', b'\x89PNG\r\n\x1a\nfixture', 'image/png')})
@@ -568,7 +848,7 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
             'attachments': [{'storage_key': attachment['storage_key'], 'display_name': 'roster.png'}]}
     if owner in ('legacy-omitted', 'fresh-omitted'):
         del body['team']
-    elif owner in ('pending-head', 'wrong-role-head'):
+    elif owner in ('pending-head', 'wrong-role-head', 'wrong-team-head', 'malformed-head'):
         body['owner'] = 'consultant_head'
     elif owner == 'inactive-codex':
         body['owner'] = 'consultant_codex'
@@ -601,8 +881,83 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
         assert conn.execute('SELECT COUNT(*) FROM task_results').fetchone()[0] == 0
 
 
+def _c2_internal_admission_source(root: Path, tmp_path: Path, case: str) -> None:
+    """Finite cold internal submission and corrupt-root queue controls.
+
+    The corrupt ownerless row is declared fixture input. No callback/result or
+    final transition is seeded; API/CLI positive siblings own actual execution.
+    """
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    cold = tmp_path / 'internal-runtime'
+    script = r"""
+import asyncio,json,sqlite3,sys,shutil
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from runtime.runtime import RuntimeDir
+from runtime.config import Settings
+from runtime.daemon.org_state import OrgState
+from runtime.daemon.state import DaemonState
+from runtime.daemon.dispatcher import Dispatcher
+from runtime.daemon.runner import enqueue_task
+from runtime.models import TaskRecord
+from runtime.orchestrator.agent_def import parse_agent_text,render_agent_text
+from dataclasses import replace
+rt=RuntimeDir.init(Path(sys.argv[2])); root=rt.orgs_dir/'test'
+shutil.copytree(Path(sys.argv[3])/'org',root/'org')
+org=OrgState.load(slug='test',root=root,settings=Settings(project_root=Path(sys.argv[1])))
+case=sys.argv[4]
+def snapshot():
+    with sqlite3.connect(org.db.path) as observer:
+        return {table:observer.execute('SELECT * FROM '+table+' ORDER BY rowid').fetchall()
+                for table in ('tasks','task_results','task_attachments','audit_log')}
+try:
+    if case=='internal-pending-manager':
+        pending=root/'org/agents/_pending';pending.mkdir(exist_ok=True)
+        (root/'org/agents/engineering_head.md').rename(pending/'engineering_head.md')
+    elif case=='internal-role-drift':
+        path=root/'org/agents/engineering_head.md'
+        definition=parse_agent_text(path.read_text(),expected_name='engineering_head')
+        path.write_text(render_agent_text(replace(definition,role='worker')))
+    before=snapshot()
+    if case=='queue-ownerless-human':
+        org.db.insert_task(TaskRecord(id='TASK-OWNERLESS',brief='declared corrupt ownerless root',team='default'))
+        state=DaemonState(runtime=rt,settings=Settings(),orgs={'test':org})
+        org.orchestrator.attach_queue(state.queue)
+        async def drive():
+            enqueue_task(state,'test','TASK-OWNERLESS')
+            await state.queue.drain_sync(Dispatcher(state))
+        asyncio.run(drive())
+        after=snapshot()
+        with sqlite3.connect(org.db.path) as observer:
+            assert observer.execute('SELECT assigned_agent,current_session_id FROM tasks WHERE id=?',('TASK-OWNERLESS',)).fetchone()==(None,None)
+        assert after['task_results']==before['task_results']
+        assert after['task_attachments']==before['task_attachments']
+        assert not [row for row in after['audit_log'] if row[3]=='session_start']
+    elif case=='internal-legacy':
+        task_id=org.orchestrator.create_task('native omitted owner control')
+        with sqlite3.connect(org.db.path) as observer:
+            assert observer.execute('SELECT team,status FROM tasks WHERE id=?',(task_id,)).fetchone()==('engineering','pending')
+    else:
+        try:org.orchestrator.create_task('must refuse before allocation',team='default' if case=='internal-human' else None)
+        except ValueError as exc:
+            assert str(exc)==('owner_required_for_human_team' if case=='internal-human' else 'unknown_owner'),str(exc)
+        else:raise AssertionError('invalid internal owner allocated task')
+        assert snapshot()==before
+    assert not (root/'workspaces/founder').exists()
+    print(json.dumps({'case':case,'checked':True}))
+finally:org.close()
+"""
+    actual = subprocess.run([sys.executable, '-I', '-c', script, binding['source'],
+        str(cold), str(root), case], capture_output=True, text=True, timeout=30)
+    assert actual.returncode == 0, actual.stderr
+    assert json.loads(actual.stdout.splitlines()[-1]) == {'case': case, 'checked': True}
+    if case == 'queue-ownerless-human':
+        assert 'owner_required_for_human_team' in actual.stderr
+
+
 @pytest.mark.parametrize('agent', ['consultant_head', 'consultant_codex'], ids=['head', 'codex'])
-@pytest.mark.parametrize('operation', ['root', 'peer-delegate', 'peer-then', 'peer-fanout', 'supersede', 'administration'])
+@pytest.mark.parametrize('operation', ['root', 'self-child', 'self-child-failed', 'peer-delegate', 'peer-then', 'peer-fanout', 'supersede', 'administration'])
 def test_c3_worker_lifecycle_and_denials(human_daemon: tuple[int, Path], agent: str, operation: str,
                                         fake_claude_plan_env: Path, fake_codex_plan_env: Path) -> None:
     port, root = human_daemon
@@ -619,24 +974,56 @@ def test_c3_worker_lifecycle_and_denials(human_daemon: tuple[int, Path], agent: 
                 'no_schema_auth_security_privacy_or_data_access_change': True, 'no_unresolved_founder_gate': True}},
     }
     plan = fake_claude_plan_env if agent == 'consultant_head' else fake_codex_plan_env
-    _write_plan(plan, root, status='completed', verdict=None, self_child=False,
-                attempted_decision=decisions.get(operation), administration=operation == 'administration')
+    policy_activation = None
+    if operation == 'administration':
+        # Actual authenticated synthetic Founder control creates a valid saved
+        # release before the immutable denial baseline. This is fixture input,
+        # never worker authority, live activation or product acceptance.
+        control = httpx.get(_base(port) + '/agents/engineering_head/team-escalation-policy',
+                            headers=_auth_headers()).raise_for_status().json()
+        assert control['family'] == 'empty' and control['selector_epoch'] == 0
+        saved = httpx.post(_base(port) + '/agents/engineering_head/team-escalation-policy/v2/releases',
+            headers=_auth_headers(), json={**control['v2_starter'],
+                'create_request_id': 'c3-fixture-create-' + agent,
+                'activation_request_id': 'c3-fixture-select-' + agent,
+                'based_on_selector_id': control['selector_id'], 'expected_selector_id': control['selector_id'],
+                'action': 'bootstrap', 'acknowledge_shared_credential_attribution': True})
+        assert saved.status_code == 201, saved.text
+        receipt = saved.json()
+        policy_activation = {'team': 'engineering', 'release_id': receipt['receipt']['release_id'],
+            'expected_selector_id': receipt['selector_id'], 'action': 'activate',
+            'acknowledge_shared_credential_attribution': True}
+    _write_plan(plan, root, status='blocked' if operation == 'self-child-failed' else 'completed',
+                verdict=None, self_child=operation in ('self-child', 'self-child-failed'),
+                attempted_decision=decisions.get(operation), administration=operation == 'administration',
+                policy_activation=policy_activation, failure_blocker=operation == 'self-child-failed')
     canonical_before = {str(path.relative_to(root)): path.read_bytes()
                         for path in (root / 'org').rglob('*.md') if path.is_file()}
     roster_before = (root / 'org/teams.yaml').read_bytes()
     tables = ('manager_supersessions', 'workflow_template_versions', 'workflow_template_publish_operations',
-              'authority_policy_releases', 'authority_policy_activations')
+              'authority_policy_releases', 'authority_policy_activations', 'authority_policy_v2_releases',
+              'authority_policy_v2_activations', 'authority_policy_active_selector',
+              'authority_policy_active_selector_history', 'authority_policy_v2_control_audit')
     with sqlite3.connect(root / 'happyranch.db') as conn:
         rows_before = {name: conn.execute(f'SELECT * FROM {name}').fetchall() for name in tables}
     reply = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'owner': agent, 'brief': 'ordinary root'}, headers=_auth_headers()).raise_for_status().json()
     final = _wait_for_terminal(_base(port), reply['task_id'])
-    assert final['task']['status'] == ('failed' if operation == 'supersede' else 'completed')
+    assert final['task']['status'] == ('failed' if operation == 'supersede' else
+                                      'escalated' if operation == 'self-child-failed' else 'completed')
     with sqlite3.connect(root / 'happyranch.db') as conn:
         actual = conn.execute('SELECT id,session_id,agent FROM task_results WHERE task_id=?', (reply['task_id'],)).fetchall()
         genuine = [row for row in actual if row[1]]
-        assert len(genuine) == (2 if operation.startswith('peer-') else 1)
+        assert len(genuine) == (2 if operation.startswith('peer-') or operation.startswith('self-child') else 1)
         assert all(type(row[0]) is int and row[0] > 0 and row[2] == agent for row in genuine)
-        assert conn.execute('SELECT COUNT(*) FROM tasks WHERE parent_task_id=?', (reply['task_id'],)).fetchone()[0] == 0
+        children = conn.execute('SELECT id,team,assigned_agent,status FROM tasks WHERE parent_task_id=?', (reply['task_id'],)).fetchall()
+        if operation.startswith('self-child'):
+            assert len(children) == 1 and children[0][1:] == ('default', agent, 'failed' if operation == 'self-child-failed' else 'completed')
+            child_results = conn.execute('SELECT id,agent,session_id FROM task_results WHERE task_id=?', (children[0][0],)).fetchall()
+            assert len(child_results) == 1 and type(child_results[0][0]) is int and child_results[0][0] > 0
+            assert child_results[0][1] == agent and child_results[0][2]
+            assert genuine[0][1] != genuine[1][1]
+        else:
+            assert children == []
         assert conn.execute('SELECT active_chain,active_fanout FROM tasks WHERE id=?', (reply['task_id'],)).fetchone() == (None, None)
         assert {name: conn.execute(f'SELECT * FROM {name}').fetchall() for name in tables} == rows_before
         if operation.startswith('peer-'):
@@ -650,7 +1037,8 @@ def test_c3_worker_lifecycle_and_denials(human_daemon: tuple[int, Path], agent: 
     if operation == 'administration':
         evidence = json.loads(Path(str(plan) + '.calls.jsonl.administration.json').read_text())
         assert [row['action'] for row in evidence] == ['enroll', 'update', 'terminate', 'template-publish',
-            'agent-manager-policy-control', 'worker-policy-read', 'worker-policy-create-activate']
+            'agent-manager-policy-control', 'worker-policy-read', 'worker-policy-create-activate',
+            'worker-policy-existing-activate']
         assert not (root / 'org/agents/ungranted_worker.md').exists()
     # Current human-team worker is not an eligible manager policy target.
     denied = httpx.get(_base(port) + f'/agents/{agent}/team-escalation-policy', headers=_auth_headers())
@@ -663,7 +1051,14 @@ C4_SCENARIOS = [
     for status in ('completed', 'blocked')
 ] + [('consultant_codex', True, 'blocked', cut) for cut in (
     'fail', 'review', 'writer_busy_before_consumption-inline_worker', 'writer_reacquired_before_retry',
-    'writer_cancelled_before_retry')]
+    'writer_cancelled_before_retry',
+    'writer_busy_before_consumption-shared_loop', 'writer_busy_before_consumption-startup_loop',
+    'writer_busy_before_consumption-zombie_loop', 'writer_busy_before_consumption-portability_loop',
+    'writer_busy_after_job_drain', 'writer_busy_no_job_reentry',
+    'loss-before_consumption-cancel', 'loss-before_consumption-binding_replacement',
+    'loss-after_job_drain-cancel', 'loss-after_job_drain-binding_replacement',
+    'no_job_reentry_terminal_cancel_refusal', 'loss-no_job_reentry-cancel', 'loss-no_job_reentry-binding_replacement',
+    'shutdown_while_deferred', 'late_inline_unbound')]
 
 
 @pytest.mark.parametrize('agent,recovery,status,cut', C4_SCENARIOS, ids=[
@@ -681,10 +1076,16 @@ def test_c4_normal_and_recovered_verdict_attribution(
     # separately committed RF5/RF6 cuts. No manually inserted recovery marker.
     port, root = human_daemon
     plan = fake_claude_plan_env if agent == 'consultant_head' else fake_codex_plan_env
-    _write_plan(plan, root, status=status, verdict=verdict, self_child=True, recovery=recovery)
+    _write_plan(plan, root, status=status, verdict=verdict, self_child=True, recovery=recovery, c4_cut=cut)
     reply = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'owner': agent, 'brief': 'self child then final parent'}, headers=_auth_headers()).raise_for_status().json()
     original_review = None
     selected_before = None
+    if cut is not None and cut not in ('fail', 'review', 'writer_busy_before_consumption-inline_worker',
+            'writer_reacquired_before_retry', 'writer_cancelled_before_retry'):
+        observed_cut = _c4_live_continuation_oracle(request, port, root, reply['task_id'], plan, cut, verdict)
+        port, selected_before, original_review, stopped = observed_cut
+        if stopped:
+            return
     if cut in ('fail', 'review'):
         owned = request.node._roster_fault_daemon
         assert owned['process'].wait(timeout=150) == 86
@@ -761,7 +1162,7 @@ def test_c4_normal_and_recovered_verdict_attribution(
             with sqlite3.connect(root / 'happyranch.db') as conn:
                 cancelled_before = conn.execute('SELECT status,cancelled_at,note,current_session_id FROM tasks WHERE id=?',
                     (observed['task'],)).fetchone()
-                assert cancelled_before[0] == 'failed' and cancelled_before[1]
+                assert cancelled_before[0] == 'cancelled' and cancelled_before[1]
                 assert cancelled_before[3] == observed['session']
         witness.with_name(witness.name + '.release-0').write_text('release owned native writer\n')
         if cut == 'writer_reacquired_before_retry':
@@ -1239,3 +1640,201 @@ def test_c7_both_resume_resets_and_worker_contexts(
         'retained_memory_sha256': {str(path.relative_to(runtime)): hashlib.sha256(raw).hexdigest()
                                    for path, raw in retained_memory.items()},
         'M_utility_reset_proof': 'separate unexecuted prerequisite'}, sort_keys=True))
+
+
+def _c4_live_continuation_oracle(request: pytest.FixtureRequest, port: int, root: Path,
+                                parent_id: str, plan: Path, cut: str, verdict: str | None):
+    """Closed L4 native writer/drain observations and genuine final callbacks.
+
+    No unit admission, task/result/final-transition INSERT, wrapped SQL writer
+    or parent-only startup sweep can satisfy this shipping progress oracle.
+    """
+    owned = request.node._roster_fault_daemon
+    witness = owned['witness']
+    original_review = None
+    def record(event: str) -> dict:
+        path = witness.with_name(witness.name + '.' + event)
+        deadline = time.monotonic() + 150
+        while not path.exists() and time.monotonic() < deadline:
+            assert owned['process'].poll() is None, 'actual C4 daemon exited before native observation'
+            time.sleep(0.02)
+        assert path.exists(), f'missing actual native C4 event {event}'
+        return json.loads(path.read_text())
+    if 'no_job_reentry' in cut and cut != 'loss-no_job_reentry-cancel':
+        assert owned['process'].wait(timeout=150) == 86
+        marker = json.loads(witness.read_text())
+        assert marker['effect'] == 'marker' and type(marker['result']) is int and marker['result'] > 0
+        with sqlite3.connect(root / 'happyranch.db') as observer:
+            selected_before = observer.execute('SELECT * FROM task_results WHERE id=?', (marker['result'],)).fetchone()
+            reviews = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", (marker['task'],)).fetchall()
+            assert len(reviews) == 1
+            original_review = reviews[0]
+            assert observer.execute('SELECT state,accepted_result_id FROM task_completion_recoveries WHERE task_id=?', (marker['task'],)).fetchone() == ('callback_consumed', marker['result'])
+            assert observer.execute('SELECT parent_task_id,status,note FROM tasks WHERE id=?', (marker['task'],)).fetchone() == (parent_id, 'failed', 'self-blocked: child outcome')
+            assert observer.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (parent_id,)).fetchone()[0] == 1
+        port = owned['start'](cut)
+    elif cut == 'late_inline_unbound':
+        observed = record('consumer-finished')
+        assert observed['disposition'] == 'done'
+        with sqlite3.connect(root / 'happyranch.db') as observer:
+            selected_before = observer.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone()
+            original_review = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", (observed['task'],)).fetchone()
+            assert original_review is not None
+            payloads = [json.loads(row[0]) for row in observer.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='completion_report'", (observed['task'],))]
+            assert len(payloads) == 1 and payloads[0]['_result_row_id'] == observed['result']
+            assert observer.execute('SELECT state FROM task_completion_recoveries WHERE task_id=?', (observed['task'],)).fetchone() == ('callback_consumed',)
+        Path(str(plan) + '.calls.jsonl.allow-child-exit').write_text('release genuine late inline executor return\n')
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with sqlite3.connect(root / 'happyranch.db') as observer:
+                rows = observer.execute("SELECT id,payload FROM audit_log WHERE task_id=? AND action='completion_report' ORDER BY id", (observed['task'],)).fetchall()
+            if len(rows) == 2: break
+            time.sleep(0.02)
+        assert len(rows) == 2
+        assert '_result_row_id' in json.loads(rows[0][1]) and '_result_row_id' not in json.loads(rows[1][1])
+        assert rows[1][0] > original_review[0]
+        owned['process'].terminate()
+        assert owned['process'].wait(timeout=20) == 0
+        port = owned['start']('none')
+        return port, selected_before, original_review, False
+    observed = record('held-0')
+    deferred = record('consumer-deferred')
+    assert observed['task'] == deferred['task'] and observed['origin'] != observed['session']
+    assert type(observed['result']) is int and observed['result'] > 0
+    assert deferred['phase'] == ('parent_handoff' if 'after_job_drain' in cut else 'evidence')
+    with sqlite3.connect(root / 'happyranch.db') as observer:
+        selected_before = observer.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone()
+        assert selected_before is not None
+        task_before = observer.execute('SELECT status,cancelled_at,note,current_session_id,parent_task_id,completed_at FROM tasks WHERE id=?', (observed['task'],)).fetchone()
+        episode_before = observer.execute('SELECT origin_session_id,recovery_session_id,accepted_result_id,state FROM task_completion_recoveries WHERE task_id=?', (observed['task'],)).fetchone()
+        reviews_before = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict' ORDER BY id", (observed['task'],)).fetchall()
+        prior_jobs = observer.execute("SELECT * FROM jobs WHERE task_id=? AND title='C4-prior'", (observed['task'],)).fetchall()
+        current_jobs = observer.execute("SELECT id,status,reason,stdout_path,stderr_path FROM jobs WHERE task_id=? AND title='C4-running'", (observed['task'],)).fetchall()
+        parent_before = observer.execute('SELECT status,block_kind FROM tasks WHERE id=?', (parent_id,)).fetchone()
+        assert parent_before == ('in_progress', 'delegated')
+        assert observer.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (parent_id,)).fetchone()[0] == 1
+        assert episode_before[:3] == (observed['origin'], observed['session'], observed['result'])
+        is_consumed = 'after_job_drain' in cut or 'no_job_reentry' in cut
+        assert episode_before[3] == ('callback_consumed' if is_consumed else 'callback_accepted')
+        assert task_before[0] == ('failed' if is_consumed else 'in_progress')
+        assert len(reviews_before) == int(is_consumed)
+        if is_consumed:
+            assert reviews_before[0][2] == 'consultant_codex'
+            assert json.loads(reviews_before[0][4]) == {'verdict': verdict if verdict is not None else 'rejected',
+                'feedback': 'self-blocked: child outcome', 'reviewed_agent': 'consultant_codex'}
+            original_review = reviews_before[0]
+        if 'after_job_drain' in cut:
+            assert len(prior_jobs) == 1 and len(current_jobs) == 1
+            assert current_jobs[0][1:3] == ('failed', 'task_ended')
+            assert current_jobs[0][3] and Path(current_jobs[0][3]).exists()
+    # Check again while the *actual* supported writer remains entered. Only
+    # diagnostic heartbeats may change; K/result/review/marker/parent effects do not.
+    time.sleep(0.12)
+    with sqlite3.connect(root / 'happyranch.db') as observer:
+        assert observer.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone() == selected_before
+        assert observer.execute('SELECT status,cancelled_at,note,current_session_id,parent_task_id,completed_at FROM tasks WHERE id=?', (observed['task'],)).fetchone() == task_before
+        assert observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict' ORDER BY id", (observed['task'],)).fetchall() == reviews_before
+        assert observer.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (parent_id,)).fetchone()[0] == 1
+    loss = cut.rsplit('-', 1)[-1] if cut.startswith('loss-') else None
+    if loss == 'cancel':
+        if 'after_job_drain' in cut or cut == 'loss-no_job_reentry-cancel':
+            traversed = record('cancel-traversed')
+            assert traversed['to_cancel'] == [observed['task']]
+            witness.with_name(witness.name + '.commit-late-cancel').write_text('release native staged cancellation request\n')
+            cancelled = record('late-cancel-response')
+            assert cancelled['status'] == 200 and observed['task'] in cancelled['body']['cancelled']
+        else:
+            cancelled = httpx.post(_base(port) + f'/tasks/{observed["task"]}/cancel', headers=_auth_headers(),
+                json={'rationale': 'actual C4 cancellation winner', 'cascade': False}, timeout=10)
+            assert cancelled.status_code == 200, cancelled.text
+            assert observed['task'] in cancelled.json()['cancelled']
+    elif cut == 'no_job_reentry_terminal_cancel_refusal':
+        # A new request after the actual FAILED marker is independently
+        # terminal-refused. It cannot manufacture the accepted late-cancel
+        # winner; that earlier-traversal loss is localized separately in U9.
+        cancelled = httpx.post(_base(port) + f'/tasks/{observed["task"]}/cancel', headers=_auth_headers(),
+            json={'rationale': 'terminal request control', 'cascade': False}, timeout=10)
+        assert cancelled.status_code == 409 and cancelled.json()['detail']['code'] == 'task_already_terminal'
+    elif loss == 'binding_replacement':
+        witness.with_name(witness.name + '.binding-replacement').write_text('publish native fixture replacement binding\n')
+        replaced = record('binding-replaced')
+        assert replaced['replacement'] != observed['session']
+    elif cut == 'shutdown_while_deferred':
+        witness.with_name(witness.name + '.shutdown').write_text('native queue shutdown\n')
+        record('shutdown-observed')
+    with sqlite3.connect(root / 'happyranch.db') as observer:
+        winner = observer.execute('SELECT status,cancelled_at,note,current_session_id,parent_task_id,completed_at FROM tasks WHERE id=?', (observed['task'],)).fetchone()
+        winner_reviews = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict' ORDER BY id", (observed['task'],)).fetchall()
+        winner_marker = observer.execute('SELECT origin_session_id,recovery_session_id,accepted_result_id,state FROM task_completion_recoveries WHERE task_id=?', (observed['task'],)).fetchone()
+    witness.with_name(witness.name + '.release-0').write_text('release actual native writer interval\n')
+    record('writer-complete')
+    finished = record('consumer-finished')
+    if loss or cut == 'shutdown_while_deferred':
+        assert finished['disposition'] == ('recovery_required' if cut == 'shutdown_while_deferred' else 'lost_owner')
+        for _ in range(2):
+            time.sleep(0.12)
+            with sqlite3.connect(root / 'happyranch.db') as observer:
+                assert observer.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone() == selected_before
+                assert observer.execute('SELECT status,cancelled_at,note,current_session_id,parent_task_id,completed_at FROM tasks WHERE id=?', (observed['task'],)).fetchone() == winner
+                assert observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict' ORDER BY id", (observed['task'],)).fetchall() == winner_reviews
+                assert observer.execute('SELECT origin_session_id,recovery_session_id,accepted_result_id,state FROM task_completion_recoveries WHERE task_id=?', (observed['task'],)).fetchone() == winner_marker
+                if loss != 'cancel':
+                    assert observer.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?', (parent_id,)).fetchone()[0] == 1
+        return port, selected_before, original_review, True
+    assert finished['disposition'] == 'done'
+    assert finished['key'] == [observed[key] for key in ('task', 'agent', 'origin', 'session', 'result')]
+    Path(str(plan) + '.calls.jsonl.allow-child-exit').write_text('release genuine executor return after selected shared consumer\n')
+    if cut.endswith('portability_loop'):
+        reply = record('portability-response')
+        assert reply['status'] == 200 and reply['body']['disposition'] == 'consume_result'
+    final = _wait_for_terminal(_base(port), parent_id)
+    assert final['task']['status'] == 'completed'
+    with sqlite3.connect(root / 'happyranch.db') as observer:
+        parent_results = observer.execute('SELECT id,session_id,agent FROM task_results WHERE task_id=? ORDER BY id', (parent_id,)).fetchall()
+        assert len(parent_results) == 2 and all(type(row[0]) is int and row[0] > 0 and row[1] for row in parent_results)
+        assert parent_results[0][1] != parent_results[1][1]
+        assert all(row[2] == 'consultant_codex' for row in parent_results)
+        assert observer.execute('SELECT * FROM task_results WHERE id=?', (observed['result'],)).fetchone() == selected_before
+        assert observer.execute("SELECT * FROM jobs WHERE task_id=? AND title='C4-prior'", (observed['task'],)).fetchall() == prior_jobs
+        if original_review is not None:
+            assert observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict'", (observed['task'],)).fetchall() == [original_review]
+    return port, selected_before, original_review, False
+
+
+@pytest.mark.parametrize('team', ['default', 'engineering'], ids=['human', 'legacy'])
+def test_c1_settings_save_and_rollback(human_daemon: tuple[int, Path], team: str) -> None:
+    """Finite current settings producer; deliberately staged canonical inputs."""
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    port, root = human_daemon
+    path = root / 'org/teams.yaml'
+    before = yaml.safe_load(path.read_text())
+    before_agents = {str(p.relative_to(root)): p.read_bytes() for p in (root / 'org/agents').glob('*.md')}
+    worker = 'settings_fixture_worker'
+    definition = root / 'org/agents' / (worker + '.md')
+    definition.write_text(render_agent_text(AgentDef(name=worker, team=team, role='worker', executor='codex',
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt='Synthetic settings worker.')))
+    # A new active definition is the supported settings add prerequisite. The
+    # request publishes the matching roster; no executor task/session is made.
+    reply = httpx.put(_base(port) + '/settings/teams', headers=_auth_headers(),
+                     json={'team': team, 'add_workers': [worker]})
+    assert reply.status_code == 200, reply.text
+    added = {**before, 'teams': {**before['teams'], team: {**before['teams'][team],
+             'workers': [*before['teams'][team]['workers'], worker]}}}
+    assert yaml.safe_load(path.read_text()) == added
+    roster = path.read_bytes()
+    # Removing an active file's membership is a real post-save drift, not an
+    # invalid name/auth failure; original typed manager and pointers survive.
+    refused = httpx.put(_base(port) + '/settings/teams', headers=_auth_headers(),
+                       json={'team': team, 'remove_workers': [worker]})
+    assert refused.status_code == 409 and refused.json()['detail']['code'] == 'teams_consistency_drift', refused.text
+    assert yaml.safe_load(path.read_text()) == added
+    assert path.read_bytes() == roster
+    assert {str(p.relative_to(root)): p.read_bytes() for p in (root / 'org/agents').glob('*.md') if p != definition} == before_agents
+    assert definition.read_bytes() == render_agent_text(AgentDef(name=worker, team=team, role='worker', executor='codex',
+        allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+        system_prompt='Synthetic settings worker.')).encode()
+    with sqlite3.connect(root / 'happyranch.db') as observer:
+        assert observer.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0
+        assert observer.execute('SELECT COUNT(*) FROM task_results').fetchone()[0] == 0
+    assert not (root / 'workspaces/founder').exists()

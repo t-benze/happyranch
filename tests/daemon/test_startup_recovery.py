@@ -5167,3 +5167,490 @@ teams:
             assert observer.execute('SELECT * FROM task_results WHERE id=?', (result_id,)).fetchone() == selected
     finally:
         org.close()
+
+
+@pytest.fixture
+def c4_selected_human_leaf(tmp_path: Path, request: pytest.FixtureRequest):
+    """Closed C4 U9 fixture admission; never a genuine Codex callback receipt."""
+    from datetime import datetime, timedelta, timezone
+    from runtime.daemon.org_state import OrgState
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+    root = tmp_path / 'c4-selected-localization'
+    (root / 'org/agents').mkdir(parents=True)
+    (root / 'org/teams.yaml').write_text('''default_team: default
+task_default_team: default
+teams:
+  default:
+    manager: {kind: human, principal: founder}
+    workers: [consultant_head, consultant_codex]
+''')
+    for name in ('consultant_head', 'consultant_codex'):
+        (root / 'org/agents' / (name + '.md')).write_text(render_agent_text(AgentDef(
+            name=name, team='default', role='worker', executor='codex' if name.endswith('codex') else 'claude',
+            allow_rules=(), repos={}, enrolled_by=None, enrolled_at_task=None, enrolled_at=None,
+            system_prompt=f'You are {name}.')))
+        (root / 'workspaces' / name).mkdir(parents=True)
+    org = OrgState.load(slug='test', root=root, settings=Settings())
+    try:
+        db = org.db
+        org.orchestrator.attach_queue(TaskQueue())
+        control = request.node.callspec.params.get('control')
+        owner = 'consultant_codex'
+        db.insert_task(TaskRecord(id='TASK-PARENT', brief='fixture parent', team='default', assigned_agent='consultant_head',
+            status=TaskStatus.IN_PROGRESS, block_kind=BlockKind.DELEGATED))
+        db.insert_task(TaskRecord(id='TASK-LEAF', brief='fixture selected child', team='default', assigned_agent=owner,
+            task_type='task' if control == 'manager' else 'subtask',
+            parent_task_id=None if control == 'manager' else 'TASK-PARENT', status=TaskStatus.IN_PROGRESS, current_session_id='origin'))
+        audit = AuditLogger(db)
+        audit.log_session_start('TASK-LEAF', owner, str(root / 'workspaces' / owner), session_id='origin',
+            invocation_purpose='worker_execution', executor='codex')
+        now = datetime.now(timezone.utc)
+        assert db.claim_task_completion_recovery(task_id='TASK-LEAF', agent=owner, origin_session_id='origin',
+            recovery_session_id='recovery', provider_session_id='provider-fixture', claimed_at=now.isoformat(),
+            expires_at=(now + timedelta(minutes=2)).isoformat())
+        assert db.publish_task_completion_recovery_binding(task_id='TASK-LEAF', agent=owner,
+            origin_session_id='origin', recovery_session_id='recovery')
+        audit.log_session_start('TASK-LEAF', owner, str(root / 'workspaces' / owner), session_id='recovery',
+            invocation_purpose='unattributed', executor='codex')
+        verdict = request.node.callspec.params['verdict']
+        callback = dict(status='completed' if control == 'completed' else 'blocked',
+            output_summary='selected localization outcome', verdict=verdict, confidence_score=90)
+        if control == 'blocked_jobs':
+            from runtime.models import JobRecord, JobStatus
+            db.insert_job(JobRecord(id='JOB-WAIT', task_id='TASK-LEAF', agent_name=owner,
+                title='declared pending job input', rationale='localization only', interpreter='bash',
+                script_text='exit 0', created_at=now.isoformat(), status=JobStatus.PENDING))
+            callback['waiting_on_job_ids'] = ['JOB-WAIT']
+        assert db.admit_task_completion_callback(task_id='TASK-LEAF', agent=owner, session_id='recovery', **callback)
+        if control == 'carrier':
+            db.insert_task(TaskRecord(id='TASK-CARRIER-CHILD', brief='declared nested carrier input', team='default',
+                assigned_agent=owner, parent_task_id='TASK-LEAF', task_type='subtask'))
+        selected = db.get_accepted_task_completion_recovery_result(task_id='TASK-LEAF', agent=owner)
+        assert selected is not None and type(selected['id']) is int and selected['id'] > 0
+        report = completion_report_from_result_row('TASK-LEAF', selected, fallback_agent=owner)
+        yield org, dict(task_id='TASK-LEAF', agent=owner, session_id='recovery', result_row_id=selected['id']), report
+    finally:
+        org.close()
+
+
+def _c4_localization_rows(db: Database) -> dict:
+    """Independent complete SQL read, not the production ownership predicate."""
+    import sqlite3
+    with sqlite3.connect(db.path) as observer:
+        return {table: observer.execute('SELECT * FROM ' + table + ' ORDER BY rowid').fetchall()
+                for table in ('tasks', 'task_results', 'task_completion_recoveries', 'audit_log', 'jobs')}
+
+
+C4_FAILED_BOUNDARIES = [
+    'before_bound_report', 'after_bound_report', 'after_chain_clear', 'after_fanout_clear',
+    'before_failed_update', 'after_failed_before_review', 'after_review_before_history',
+    'after_history_before_consumed', 'after_consumed_before_cleanup',
+    'after_consumed_before_parent', 'after_parent_handoff',
+]
+C4_FAILED_CONTROLS = [
+    'no_review', 'one_review', 'ambiguous_review', 'multiple_review', 'malformed_review',
+    'review_before_bound', 'reviewer_drift', 'foreign_newer_verdict', 'foreign_same_summary',
+    'prior_review', 'stale_binding_before_write', 'stale_binding_after_selection',
+    'cancel_before_cas', 'cancel_after_failed', 'cancel_before_marker', 'concurrent_same_result',
+    'late_generic_failure', 'late_inline_unbound', 'zero_jobs', 'owned_running_job', 'prior_failed_job',
+    'unknown_parent', 'parent_team_mismatch', 'inactive_parent_owner',
+]
+
+
+@pytest.mark.parametrize('case', C4_FAILED_BOUNDARIES + C4_FAILED_CONTROLS)
+@pytest.mark.parametrize('verdict', [value for value, _ in C4_HUMAN_VERDICTS], ids=[name for _, name in C4_HUMAN_VERDICTS])
+def test_c4_human_codex_failed_recovery_cut(c4_selected_human_leaf, case: str, verdict: str | None,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """SUSPENDED C9.i actual-effect cuts/history controls, source only.
+
+    Pass-through cuts delegate the real separately committed owner unchanged.
+    L4 separately owes real admission, process exit and final parent callback.
+    """
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery, _fail
+    from runtime.infrastructure.audit_logger import AuditLogger
+    from runtime.models import JobRecord, JobStatus
+    org, params, report = c4_selected_human_leaf
+    db, orch = org.db, org.orchestrator
+    selected_before = _c4_localization_rows(db)['task_results']
+    native = db.apply_human_failed_recovery_effect
+    review_before = None
+    if case in C4_FAILED_BOUNDARIES:
+        class ActualCut(BaseException):
+            pass
+        effect_cuts = {
+            'after_bound_report': 'evidence', 'after_chain_clear': 'chain', 'after_fanout_clear': 'fanout',
+            'after_failed_before_review': 'fail', 'after_review_before_history': 'review',
+            'after_consumed_before_cleanup': 'marker',
+        }
+        def cut_effect(**fields):
+            if (case == 'before_bound_report' and fields['effect'] == 'evidence'
+                    or case == 'before_failed_update' and fields['effect'] == 'fail'):
+                raise ActualCut
+            actual = native(**fields)
+            if fields['effect'] == effect_cuts.get(case) and actual == 'progressed':
+                raise ActualCut
+            return actual
+        monkeypatch.setattr(db, 'apply_human_failed_recovery_effect', cut_effect)
+        history = orch._update_task_history
+        def cut_history(task_id):
+            history(task_id)
+            if case == 'after_history_before_consumed':
+                raise ActualCut
+        monkeypatch.setattr(orch, '_update_task_history', cut_history)
+        settlement = db.settle_consumed_task_completion_recovery_jobs
+        def cut_settlement(**fields):
+            actual = settlement(**fields)
+            if case == 'after_consumed_before_parent' and actual is not None:
+                raise ActualCut
+            return actual
+        monkeypatch.setattr(db, 'settle_consumed_task_completion_recovery_jobs', cut_settlement)
+        handoff = db.handoff_consumed_task_completion_recovery_parent_effect
+        def cut_handoff(**fields):
+            actual = handoff(**fields)
+            if case == 'after_parent_handoff' and actual:
+                raise ActualCut
+            return actual
+        monkeypatch.setattr(db, 'handoff_consumed_task_completion_recovery_parent_effect', cut_handoff)
+        with pytest.raises(ActualCut):
+            _consume_accepted_completion_recovery(orch, 'TASK-LEAF', report, agent=params['agent'],
+                session_id='recovery', result_row_id=params['result_row_id'])
+        residue = _c4_localization_rows(db)
+        with db._lock:
+            reviews = db._conn.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id='TASK-LEAF' AND action='review_verdict'").fetchall()
+            review_before = [tuple(row) for row in reviews]
+        # Independent cuts keep selected bytes/INTEGER identity; later restart
+        # must retain the original review row when it genuinely exists.
+        assert residue['task_results'] == selected_before
+        task = db.get_task('TASK-LEAF')
+        failed = C4_FAILED_BOUNDARIES.index(case) >= C4_FAILED_BOUNDARIES.index('after_failed_before_review')
+        assert task.status.value == ('failed' if failed else 'in_progress')
+        assert len(review_before) == int(C4_FAILED_BOUNDARIES.index(case) >= C4_FAILED_BOUNDARIES.index('after_review_before_history'))
+        assert db.get_task('TASK-PARENT').assigned_agent == 'consultant_head'
+        monkeypatch.undo()
+        # Reset only process-local continuation fixture state after the cut;
+        # no durable result/task/marker/audit is rewritten as restart evidence.
+        orch._human_failed_recovery_operations = {}
+        orch._human_failed_recovery_by_fingerprint = {}
+        _sweep_on_startup(db, orch._queue, 'test', orch)
+    else:
+        prefix = ('evidence', 'chain', 'fanout', 'fail')
+        if case in ('stale_binding_before_write', 'cancel_before_cas'):
+            prefix = ()
+        elif case in ('review_before_bound', 'prior_review'):
+            AuditLogger(db).log_review_verdict('TASK-LEAF', reviewer='consultant_head', verdict=verdict or 'rejected',
+                feedback='self-blocked: selected localization outcome', reviewed_agent=params['agent'])
+            prefix = ()
+        for effect in prefix:
+            assert native(**params, effect=effect) == 'progressed'
+        if case in ('one_review', 'reviewer_drift', 'cancel_before_marker'):
+            assert native(**params, effect='review') == 'progressed'
+        audit = AuditLogger(db)
+        if case in ('ambiguous_review', 'multiple_review', 'malformed_review'):
+            if case == 'malformed_review':
+                db.insert_audit_log('TASK-LEAF', 'consultant_head', 'review_verdict', {'verdict': 7})
+            else:
+                for number in range(2 if case == 'multiple_review' else 1):
+                    audit.log_review_verdict('TASK-LEAF', reviewer='foreign-reviewer', verdict='BLOCK',
+                        feedback='prior or ambiguous evidence', reviewed_agent=params['agent'])
+        elif case in ('foreign_newer_verdict', 'foreign_same_summary'):
+            db.insert_task_result(task_id='TASK-LEAF', agent=params['agent'], session_id='foreign', status='blocked',
+                output_summary='selected localization outcome' if case == 'foreign_same_summary' else 'foreign',
+                verdict='BLOCK', confidence_score=90)
+        elif case in ('stale_binding_before_write', 'stale_binding_after_selection'):
+            db.update_task('TASK-LEAF', current_session_id='replacement-winner')
+        elif case in ('cancel_before_cas', 'cancel_after_failed', 'cancel_before_marker'):
+            db.update_task('TASK-LEAF', cancelled_at='2026-10-10T00:00:00Z')
+        elif case == 'reviewer_drift':
+            db.update_task('TASK-PARENT', assigned_agent='consultant_codex')
+        elif case == 'unknown_parent':
+            db.update_task('TASK-LEAF', parent_task_id='TASK-MISSING')
+        elif case == 'parent_team_mismatch':
+            db.update_task('TASK-PARENT', team='engineering')
+        elif case == 'inactive_parent_owner':
+            # Invalid ancestry owner while the child roster stays coherent.
+            # Removing a registered active definition would instead test org
+            # corruption and stop before the ancestry reviewer boundary.
+            inactive = org.root / 'org/agents/_terminated'
+            inactive.mkdir(exist_ok=True)
+            (inactive / 'inactive_prior_owner.md').write_text(
+                '---\nname: inactive_prior_owner\nteam: default\nrole: worker\nexecutor: codex\n---\nRetained inactive fixture.\n')
+            db.update_task('TASK-PARENT', assigned_agent='inactive_prior_owner')
+        elif case == 'owned_running_job':
+            db.insert_job(JobRecord(id='JOB-OWNED', task_id='TASK-LEAF', agent_name=params['agent'],
+                title='localization row; no opaque process claimed', rationale='declared localization input', interpreter='bash',
+                created_at='2026-10-10T00:00:00Z', script_text='exit 0', status=JobStatus.RUNNING))
+        elif case == 'prior_failed_job':
+            db.insert_job(JobRecord(id='JOB-PRIOR', task_id='TASK-LEAF', agent_name=params['agent'],
+                title='authentic fixture failure', rationale='declared localization input', interpreter='bash',
+                created_at='2026-10-10T00:00:00Z', script_text='exit 7', status=JobStatus.FAILED, exit_code=7,
+                stderr_head='retained prior failure'))
+        if case in ('one_review', 'late_inline_unbound', 'prior_failed_job'):
+            with db._lock:
+                review_before = [tuple(row) for row in db._conn.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id='TASK-LEAF' AND action='review_verdict'").fetchall()]
+        before = _c4_localization_rows(db)
+        refused = case in ('ambiguous_review', 'multiple_review', 'malformed_review', 'review_before_bound',
+            'reviewer_drift', 'foreign_newer_verdict', 'foreign_same_summary', 'prior_review',
+            'stale_binding_before_write', 'stale_binding_after_selection', 'cancel_before_cas',
+            'cancel_after_failed', 'cancel_before_marker')
+        if case == 'late_generic_failure':
+            _fail(orch, 'TASK-LEAF', 'late unrelated provider failure')
+            assert _c4_localization_rows(db) == before
+        if case == 'concurrent_same_result':
+            from concurrent.futures import ThreadPoolExecutor
+            gate = threading.Barrier(2)
+            def consumer():
+                gate.wait(timeout=2)
+                return _consume_accepted_completion_recovery(orch, 'TASK-LEAF', report, agent=params['agent'],
+                    session_id='recovery', result_row_id=params['result_row_id'])
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(consumer) for _ in range(2)]
+                operations = [future.result(timeout=5) for future in futures]
+            assert all(operation.completion.done() and operation.completion.result() == 'done' for operation in operations)
+            operation = operations[0]
+        else:
+            operation = _consume_accepted_completion_recovery(orch, 'TASK-LEAF', report, agent=params['agent'],
+                session_id='recovery', result_row_id=params['result_row_id'])
+        assert operation is not None and operation.completion.done()
+        if refused:
+            assert operation.completion.result() in ('lost_owner', 'ambiguous_history')
+            assert _c4_localization_rows(db) == before
+            return
+        assert operation.completion.result() == 'done'
+        if case == 'late_inline_unbound':
+            db.insert_audit_log('TASK-LEAF', params['agent'], 'completion_report', report.model_dump())
+            _sweep_on_startup(db, orch._queue, 'test', orch)
+        if case == 'owned_running_job':
+            assert db.get_job('JOB-OWNED').status.value == 'failed'
+            assert db.get_job('JOB-OWNED').reason == 'task_ended'
+        if case == 'prior_failed_job':
+            assert _c4_localization_rows(db)['jobs'] == before['jobs']
+    import sqlite3
+    with sqlite3.connect(db.path) as observer:
+        assert observer.execute('SELECT * FROM task_results ORDER BY id').fetchall() == selected_before
+        assert observer.execute("SELECT state,accepted_result_id FROM task_completion_recoveries WHERE task_id='TASK-LEAF'").fetchone() == ('callback_consumed', params['result_row_id'])
+        reviews = observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id='TASK-LEAF' AND action='review_verdict'").fetchall()
+        assert len(reviews) == 1
+        expected_reviewer = 'unknown_manager' if case in ('unknown_parent', 'parent_team_mismatch', 'inactive_parent_owner') else 'consultant_head'
+        assert reviews[0][2] == expected_reviewer
+        assert json.loads(reviews[0][4]) == {'verdict': verdict if verdict is not None else 'rejected',
+            'feedback': 'self-blocked: selected localization outcome', 'reviewed_agent': 'consultant_codex'}
+        if review_before:
+            assert reviews == review_before
+        bound_id = observer.execute("SELECT id FROM audit_log WHERE task_id='TASK-LEAF' AND action='completion_report' ORDER BY id").fetchone()[0]
+        assert bound_id < reviews[0][0]
+
+
+C4_CONTINUATION_CASES = [
+    *[('before_consumption', caller, None) for caller in
+      ('inline_worker', 'shared_loop', 'startup_loop', 'zombie_loop', 'portability_loop')],
+    ('after_job_drain', 'shared_loop', None), ('no_job_reentry', 'shared_loop', None),
+    *[(phase, 'shared_loop', loss) for phase in ('before_consumption', 'after_job_drain', 'no_job_reentry')
+      for loss in ('cancel', 'binding_replacement')],
+    ('before_consumption', 'shared_loop', 'shutdown'), ('before_consumption', 'shared_loop', 'reacquired'),
+]
+
+
+@pytest.mark.parametrize('phase,caller,loss', C4_CONTINUATION_CASES, ids=[
+    f'{phase}-{caller}-{loss or "release"}' for phase, caller, loss in C4_CONTINUATION_CASES])
+@pytest.mark.parametrize('verdict', [value for value, _ in C4_HUMAN_VERDICTS], ids=[name for _, name in C4_HUMAN_VERDICTS])
+def test_c4_human_failed_writer_continuation(c4_selected_human_leaf, phase: str, caller: str,
+                                            loss: str | None, verdict: str | None, tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """SUSPENDED D1/D2 owner/phase localization with native writer and drain.
+
+    No queue count is final parent progress. L4 owns the genuine parent callback.
+    This unit's distinct risk is retained K/phase and winner/audit/job SQL.
+    """
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    from runtime.workflows.profile_coordinator import ProfileCoordinator
+    from runtime.orchestrator.run_step import (
+        _consume_accepted_completion_recovery, _consume_completion_report,
+        _handoff_consumed_recovery_terminal_effects, _enqueue_parent_if_waiting,
+    )
+    from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint
+    from runtime.daemon.routes.portability import ReconcilePortabilityBody, reconcile_portability
+    from starlette.requests import Request
+    org, params, report = c4_selected_human_leaf
+    orch, db = org.orchestrator, org.db
+    coordinator = ProfileCoordinator(daemon_home=tmp_path / 'isolated-profile-home', orgs={'test': org})
+    original_result = _c4_localization_rows(db)['task_results']
+    if phase == 'no_job_reentry':
+        for effect in ('evidence', 'chain', 'fanout', 'fail', 'review'):
+            assert db.apply_human_failed_recovery_effect(**params, effect=effect) == 'progressed'
+        orch._update_task_history('TASK-LEAF')
+        assert db.apply_human_failed_recovery_effect(**params, effect='marker') == 'progressed'
+    handoffs = []
+    parent_effect = lambda: (handoffs.append('native-parent-handoff'), _enqueue_parent_if_waiting(orch, 'TASK-LEAF', root_auto_revisit_spawned=False))
+    async def drive():
+        orch._main_loop = asyncio.get_running_loop()
+        ready, release = asyncio.Event(), asyncio.Event()
+        async def writer():
+            async with coordinator.consumer_writer(org=org, publisher='c4-isolated-writer', consumer='consultant_head', preserve=True):
+                assert org.workflow_authority._async_writer_lock.locked()
+                ready.set()
+                await release.wait()
+        actual_job = None
+        if phase == 'after_job_drain':
+            from runtime.daemon import jobs_runner
+            from runtime.models import JobRecord, JobStatus
+            db.insert_job(JobRecord(id='JOB-NATIVE', task_id='TASK-LEAF', agent_name='consultant_codex',
+                title='owned real subprocess', rationale='finite native drain control', interpreter='bash',
+                script_text='while true; do sleep 1; done', created_at=datetime.now(timezone.utc).isoformat(),
+                status=JobStatus.RUNNING))
+            actual_job = asyncio.create_task(jobs_runner.run_job(job_id='JOB-NATIVE',
+                script_text='while true; do sleep 1; done', interpreter='bash', cwd=str(tmp_path),
+                stdout_path=str(tmp_path / 'native.stdout'), stderr_path=str(tmp_path / 'native.stderr'),
+                max_runtime_seconds=30, publish=lambda event: None))
+            for _ in range(200):
+                if 'JOB-NATIVE' in jobs_runner._INFLIGHT: break
+                await asyncio.sleep(0.01)
+            assert 'JOB-NATIVE' in jobs_runner._INFLIGHT
+            native_drain = jobs_runner.terminate_jobs_for_task
+            async def observed_drain(*args, **kwargs):
+                actual = await native_drain(*args, **kwargs)
+                # Pass-through U9 boundary: real signals/wait have completed.
+                # The actual supported writer now enters before native handoff.
+                holder = asyncio.create_task(writer())
+                await ready.wait()
+                await release.wait()
+                await holder
+                return actual
+            monkeypatch.setattr(jobs_runner, 'terminate_jobs_for_task', observed_drain)
+            operation = _consume_accepted_completion_recovery(orch, 'TASK-LEAF', report,
+                agent=params['agent'], session_id='recovery', result_row_id=params['result_row_id'])
+            await asyncio.wait_for(ready.wait(), 10)
+            assert actual_job.done()
+            actual_exit = await actual_job
+            assert actual_exit.reason == 'task_ended'
+        else:
+            holder = asyncio.create_task(writer())
+            await ready.wait()
+            if phase == 'no_job_reentry':
+                operation = _handoff_consumed_recovery_terminal_effects(orch, 'TASK-LEAF', 'consultant_codex',
+                    'recovery', params['result_row_id'], 'failed', after_recovery_cleanup=parent_effect)
+            elif caller == 'inline_worker':
+                operation = await asyncio.to_thread(_consume_accepted_completion_recovery, orch, 'TASK-LEAF', report,
+                    agent=params['agent'], session_id='recovery', result_row_id=params['result_row_id'])
+            elif caller == 'shared_loop':
+                operation = _consume_completion_report(orch, 'TASK-LEAF', report, result_row_id=params['result_row_id'])
+            elif caller == 'startup_loop':
+                _sweep_on_startup(db, orch._queue, 'test', orch)
+                operation = orch._human_failed_recovery_operations[('TASK-LEAF', 'consultant_codex', 'recovery', params['result_row_id'])]
+            elif caller == 'zombie_loop':
+                selected = db.get_accepted_task_completion_recovery_result(task_id='TASK-LEAF', agent='consultant_codex')
+                operation = _consume_zombie_fingerprint(db, 'TASK-LEAF', selected, db.get_task('TASK-LEAF'), orch)
+            else:
+                import subprocess, sys
+                reaped = subprocess.Popen([sys.executable, '-c', 'pass'])
+                assert reaped.wait(timeout=2) == 0
+                db.update_task('TASK-LEAF', executor_pid=reaped.pid,
+                    last_heartbeat=(datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat())
+                portability = asyncio.create_task(reconcile_portability('test', ReconcilePortabilityBody(
+                    candidate_task_id='TASK-LEAF', disposition='consume_result', evidence={'fixture': 'actual reaped subprocess'}),
+                    org, Request({'type': 'http'})))
+                await asyncio.sleep(0)
+                operation = orch._human_failed_recovery_operations[('TASK-LEAF', 'consultant_codex', 'recovery', params['result_row_id'])]
+                assert not portability.done()
+        before = _c4_localization_rows(db)
+        assert operation is not None and not operation.completion.done()
+        assert handoffs == []
+        if phase != 'after_job_drain':
+            assert operation.disposition == 'writer_busy' and operation.timer is not None
+        await asyncio.sleep(0.12)
+        assert _c4_localization_rows(db) == before
+        if loss == 'cancel':
+            db.update_task('TASK-LEAF', cancelled_at=datetime.now(timezone.utc).isoformat())
+        elif loss == 'binding_replacement':
+            # The shipped ordinary publication writer owns this same task
+            # binding update. Here it is an explicit unit winner fixture.
+            db.update_task('TASK-LEAF', current_session_id='replacement-fixture')
+        elif loss == 'shutdown':
+            orch._queue._stopping = True
+        winner = _c4_localization_rows(db)
+        release.set()
+        if phase != 'after_job_drain': await holder
+        if loss == 'reacquired':
+            async with coordinator.consumer_writer(org=org, publisher='c4-second-writer', consumer='consultant_head', preserve=True):
+                await asyncio.sleep(0.12)
+                assert not operation.completion.done()
+                assert _c4_localization_rows(db) == winner
+        actual = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(operation.completion)), 10)
+        assert actual == ('lost_owner' if loss in ('cancel', 'binding_replacement') else 'recovery_required' if loss == 'shutdown' else 'done')
+        assert operation.timer is None
+        if loss in ('cancel', 'binding_replacement', 'shutdown'):
+            assert _c4_localization_rows(db) == winner
+            assert handoffs == []
+            await asyncio.sleep(0.12)
+            assert _c4_localization_rows(db) == winner
+        else:
+            assert operation.key == ('TASK-LEAF', 'consultant_codex', 'origin', 'recovery', params['result_row_id'])
+            assert db.get_task('TASK-LEAF').status.value == 'failed'
+            with sqlite3.connect(db.path) as observer:
+                reviews = observer.execute("SELECT agent,payload FROM audit_log WHERE task_id='TASK-LEAF' AND action='review_verdict'").fetchall()
+                assert len(reviews) == 1 and reviews[0][0] == 'consultant_head'
+                assert json.loads(reviews[0][1])['verdict'] == (verdict if verdict is not None else 'rejected')
+                assert observer.execute("SELECT state FROM task_completion_recoveries WHERE task_id='TASK-LEAF'").fetchone() == ('callback_consumed',)
+        if caller == 'portability_loop':
+            if loss is None:
+                assert (await portability)['disposition'] == 'consume_result'
+            else:
+                from fastapi import HTTPException
+                with pytest.raises(HTTPException): await portability
+        assert _c4_localization_rows(db)['task_results'] == original_result
+    try:
+        asyncio.run(drive())
+    finally:
+        orch._main_loop = None
+
+
+@pytest.mark.parametrize('loss', ['cancel', 'binding_replacement'])
+@pytest.mark.parametrize('verdict', [value for value, _ in C4_HUMAN_VERDICTS], ids=[name for _, name in C4_HUMAN_VERDICTS])
+def test_c4_finished_operation_reentry_rechecks_owner(c4_selected_human_leaf, loss: str, verdict: str | None) -> None:
+    """SUSPENDED regression: cached done is not current ownership on reentry."""
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+    org, params, report = c4_selected_human_leaf
+    def consume():
+        return _consume_accepted_completion_recovery(org.orchestrator, 'TASK-LEAF', report,
+            agent=params['agent'], session_id='recovery', result_row_id=params['result_row_id'])
+    original = consume()
+    assert original.completion.done() and original.completion.result() == 'done'
+    if loss == 'cancel':
+        org.db.update_task('TASK-LEAF', cancelled_at='2026-10-10T00:00:00Z')
+    else:
+        org.db.update_task('TASK-LEAF', current_session_id='replacement-winner')
+    before = _c4_localization_rows(org.db)
+    reentry = consume()
+    assert reentry.completion.done() and reentry.completion.result() == 'lost_owner'
+    assert _c4_localization_rows(org.db) == before
+
+
+@pytest.mark.parametrize('control', ['completed', 'manager', 'carrier', 'blocked_jobs'])
+@pytest.mark.parametrize('verdict', [value for value, _ in C4_HUMAN_VERDICTS], ids=[name for _, name in C4_HUMAN_VERDICTS])
+def test_c4_human_failed_selection_excludes_other_paths(c4_selected_human_leaf, control: str, verdict: str | None) -> None:
+    """SUSPENDED U9 exclusion boundary, not actual provider/callback proof.
+
+    Completed's unchanged consumer is invoked; manager/carrier/jobs keep their
+    existing shipping-path owners. This read classifier grants no new effect.
+    """
+    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+    org, params, report = c4_selected_human_leaf
+    before = _c4_localization_rows(org.db)
+    disposition, context = org.db.human_failed_recovery_context(**params, allow_unbound_live=True)
+    assert disposition == ('ambiguous_history' if control == 'carrier' else 'not_applicable')
+    assert context is None and _c4_localization_rows(org.db) == before
+    if control == 'completed':
+        _consume_accepted_completion_recovery(org.orchestrator, 'TASK-LEAF', report,
+            agent=params['agent'], session_id=params['session_id'], result_row_id=params['result_row_id'])
+        assert not getattr(org.orchestrator, '_human_failed_recovery_operations', {})
+        assert org.db.get_task('TASK-LEAF').status.value == 'completed'
+        import sqlite3
+        with sqlite3.connect(org.db.path) as observer:
+            assert observer.execute('SELECT * FROM task_results ORDER BY id').fetchall() == before['task_results']
+            assert observer.execute("SELECT state,accepted_result_id FROM task_completion_recoveries WHERE task_id='TASK-LEAF'").fetchone() == ('callback_consumed', params['result_row_id'])
+            review = observer.execute("SELECT agent,payload FROM audit_log WHERE task_id='TASK-LEAF' AND action='review_verdict'").fetchall()
+            assert len(review) == 1 and review[0][0] == 'consultant_head'
+            assert json.loads(review[0][1]) == {'verdict': verdict if verdict is not None else 'approved',
+                'feedback': 'selected localization outcome', 'reviewed_agent': 'consultant_codex'}
