@@ -315,6 +315,14 @@ Team managers may be existing agent names or closed tagged principals
 its executable manager is absent. Founder never enters AgentDef, all_agents,
 workspace, callback or executor identity. Attachment validates duplicates and
 both directions of active/pending roster and AgentDef role/team agreement.
+An exactly registered pending bootstrap manager may attach only with matching
+team/manager role and a unique active-or-pending identity. It stays absent from
+the active launch roster and current policy eligibility; workflow authority
+remains fenced until ordinary authenticated approval publishes an ACTIVE manager.
+Missing/mismatched definitions and active/pending duplicates refuse attachment.
+HTTP removal of a still-active declared worker is invalid and rolls back; native
+registry add/remove roundtrips are separate serialization coverage.
+
 Existing omitted task routing defaults to Engineering unless an explicit
 `task_default_team` is present. Proven fresh org creation adds empty human
 Default and writes both `default_team` and `task_default_team` as Default.

@@ -1568,3 +1568,209 @@ def test_legacy_closure_bytes_survive_generic_publication_and_cold_replay(activa
             validate_workflow_schema(current.db._conn, expected_org_slug="alpha")
     finally:
         current.close()
+
+
+def _c5_history_observation(org):
+    """Independent connection; immutable @1 IDs/bytes, not current capture."""
+    from tests.workflows.authority_test_support import C5_SCHEMA1_HISTORY as f
+    with sqlite3.connect(org.db.path.resolve().as_uri() + '?mode=ro', uri=True) as reader:
+        assert reader.execute('SELECT snapshot_bytes,snapshot_digest FROM workflow_publication_journals WHERE id=?',
+                              ('c5-fixed-schema1-history',)).fetchone() == (f['snapshot_bytes'], f['snapshot_digest'])
+        for table, prefix in (('workflow_authorization_revisions','authorization'),
+                              ('workflow_binding_snapshots','binding'), ('workflow_contexts','context')):
+            column = 'authority' if prefix == 'authorization' else prefix
+            assert reader.execute(f'SELECT {column}_bytes,{column}_digest FROM {table} WHERE id=?',
+                                  (f[prefix + '_id'],)).fetchone() == (f[prefix + '_bytes'], f[prefix + '_digest'])
+        return {name: tuple(reader.execute(f'SELECT * FROM {name} ORDER BY rowid')) for name in (
+            'workflow_contexts','workflow_binding_snapshots','workflow_authorization_revisions',
+            'workflow_activations','workflow_activation_operations','workflow_draft_dispatch_intents','workflow_draft_dispatch_events','task_results')}
+
+
+@pytest.mark.parametrize('profile_binding', ['no-profile', 'explicit-profile'])
+@pytest.mark.parametrize('historical_state', ['queued','completed'])
+def test_c5_schema1_history_and_schema2_graph_survive_publication_cold_replay(activation_org, profile_binding,historical_state):
+    from contextlib import ExitStack
+    from runtime.daemon.org_state import OrgState
+    from runtime.workflows.authority import WorkflowAuthorityError
+    from runtime.workflows.draft_dispatch import DraftOwnershipError
+    from tests.workflows.authority_test_support import seed_c5_schema1_history
+    from tests.workflows.authority_test_support import c5_profile_fixture
+    client, org, state, body = activation_org
+    fixed = seed_c5_schema1_history(org,completed=historical_state=='completed')
+    old_body = copy.deepcopy(fixed['request'])
+    old = client.post(BASE, json=old_body)
+    assert old.status_code == 200, old.text
+    assert {key:old.json()[key] for key in fixed['receipt']} == fixed['receipt']
+    assert old.json()['state'] == historical_state
+    if historical_state == 'completed':
+        from tests.workflows.authority_test_support import C5_SCHEMA1_COMPLETED
+        with sqlite3.connect(org.db.path.resolve().as_uri() + '?mode=ro',uri=True) as reader:
+            reader.row_factory = sqlite3.Row
+            assert dict(reader.execute('SELECT * FROM task_results WHERE id=901').fetchone()) == C5_SCHEMA1_COMPLETED['result']
+    retained = _c5_history_observation(org)
+    with ExitStack() as stack:
+        if profile_binding == 'explicit-profile':
+            stack.enter_context(c5_profile_fixture('c5-explicit-profile'))
+            _select_activation_profile(client, org, body, 'c5-explicit-profile')
+        # Real lifecycle writers add workers to the already-existing human Default.
+        for name in ('consultant_head', 'consultant_codex'):
+            response = client.post('/api/v1/orgs/alpha/agents', json=dict(name=name, role='worker',
+                team='default', executor='codex' if name.endswith('codex') else 'claude',
+                description='C5 document worker', system_prompt='Draft bounded documents.'))
+            assert response.status_code == 200, response.text
+        ready = org.workflow_authority.verify_admission_ready()
+        value = json.loads(ready.snapshot_bytes)
+        assert value['schema_version'] == 2
+        assert value['default_team'] == value['task_default_team'] == 'default'
+        assert next(row for row in value['teams'] if row['name'] == 'default') == dict(
+            name='default',manager=dict(kind='human',principal='founder'),workers=['consultant_codex','consultant_head'])
+        assert next(row for row in value['teams'] if row['name'] == 'engineering')['manager'] == dict(kind='agent',principal='engineering_manager')
+        assert 'founder' not in [row['name'] for row in value['agents']]
+        profiles = value['machine_global_profiles']
+        assert [row['profile_name'] for row in profiles] == (['c5-explicit-profile'] if profile_binding == 'explicit-profile' else [])
+        capture = org.workflow_authority.capture_admission()
+        assert capture.ready == ready
+        with sqlite3.connect(org.db.path.resolve().as_uri() + '?mode=ro', uri=True) as reader:
+            pointer = reader.execute('SELECT current_generation,snapshot_digest,state,journal_id FROM workflow_authority_pointers WHERE namespace=?', (ready.namespace,)).fetchone()
+            assert pointer[:3] == (ready.generation,hashlib.sha256(ready.snapshot_bytes).hexdigest(),'ready')
+            assert reader.execute('SELECT snapshot_bytes,state FROM workflow_publication_journals WHERE id=?',(pointer[3],)).fetchone() == (ready.snapshot_bytes,'cache_installed')
+            deps = reader.execute("SELECT profile_name,consumer_identity,bound_generation,state FROM workflow_profile_dependencies WHERE state!='removed'").fetchall()
+            if profile_binding == 'explicit-profile':
+                store = reader.execute('SELECT generation,profile_digest,state FROM workflow_profile_store WHERE profile_name=?', ('c5-explicit-profile',)).fetchone()
+                assert deps == [('c5-explicit-profile','dev_agent',store[0],'active')]
+                assert reader.execute('SELECT published_generation FROM workflow_profile_registry WHERE profile_name=?', ('c5-explicit-profile',)).fetchone() == (store[0],)
+            else:
+                assert deps == []
+        before = _snapshot(org)
+        # Frozen historical draft is authentic data, but stale current use cannot claim.
+        if historical_state == 'queued':
+            with pytest.raises(DraftOwnershipError, match='workflow_activation_authority_stale'):
+                asyncio.run(org.workflow_drafts.claim(fixed['receipt']['root_task_id']))
+        else:
+            assert asyncio.run(org.workflow_drafts.claim(fixed['receipt']['root_task_id'])) is None
+        assert _snapshot(org) == before
+        current = copy.deepcopy(body)
+        current.update(operation_key='c5-current-schema2',instance_id='c5-current-schema2')
+        current['authority'] = dict(namespace=ready.namespace,generation=ready.generation,snapshot_digest=ready.snapshot_digest)
+        current['bindings']['product-lead'] = dict(kind='agent',principal='consultant_head',team='default')
+        sibling = copy.deepcopy(current)
+        sibling.update(operation_key='c5-product-schema2',instance_id='c5-product-schema2')
+        sibling['bindings']['product-lead'] = dict(kind='agent',principal='product_lead',team='product')
+        sibling_response = client.post(BASE,json=sibling)
+        assert sibling_response.status_code == 201, sibling_response.text
+        sibling_receipt = sibling_response.json()
+        assert org.db.get_task(sibling_receipt['root_task_id']).assigned_agent == 'product_lead'
+        response = client.post(BASE,json=current)
+        assert response.status_code == 201, response.text
+        receipt = response.json()
+        assert receipt['bindings']['founder'] == dict(kind='human',principal='founder',team=None)
+        assert receipt['template']['compiler_pin'] == 'workflow-compiler@1'
+        assert org.db.get_task(receipt['root_task_id']).assigned_agent == 'consultant_head'
+        with sqlite3.connect(org.db.path.resolve().as_uri() + '?mode=ro', uri=True) as reader:
+            raw, digest = reader.execute('SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)', (receipt['intent_id'],)).fetchone()
+            assert hashlib.sha256(raw).hexdigest() == digest == receipt['context_digest']
+            assert json.loads(raw)['authority_snapshot'] == value
+            assert json.loads(raw)['template']['schema_version'] == 1
+            assert reader.execute('SELECT state,session_id,final_result_id,host_launch_started FROM workflow_draft_dispatch_intents WHERE id=?',(receipt['intent_id'],)).fetchone() == ('queued',None,None,0)
+            assert reader.execute("SELECT COUNT(*) FROM tasks WHERE assigned_agent='founder'").fetchone()[0] == 0
+            sibling_context = reader.execute('SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)',(sibling_receipt['intent_id'],)).fetchone()
+            assert json.loads(sibling_context[0])['authority_snapshot'] == value
+            assert hashlib.sha256(sibling_context[0]).hexdigest() == sibling_context[1] == sibling_receipt['context_digest']
+        # A later supported writer fences the queued current draft too; notification
+        # revalidation must not grant execution from a frozen prior generation.
+        response = client.post('/api/v1/orgs/alpha/agents',json=dict(name='c5_unrelated_worker',role='worker',
+            team='engineering',executor='claude',description='Unrelated current writer',system_prompt='worker'))
+        assert response.status_code == 200, response.text
+        before = _snapshot(org)
+        queued = tuple(state.queue._queue._queue)
+        org.workflow_drafts.notify_queued(receipt['root_task_id'],state.queue)
+        assert tuple(state.queue._queue._queue) == queued
+        with pytest.raises(DraftOwnershipError,match='workflow_activation_authority_stale'):
+            asyncio.run(org.workflow_drafts.claim(receipt['root_task_id']))
+        with pytest.raises(DraftOwnershipError,match='workflow_activation_authority_stale'):
+            asyncio.run(org.workflow_drafts.claim(sibling_receipt['root_task_id']))
+        assert tuple(org.db.execute('SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)',(sibling_receipt['intent_id'],)).fetchone()) == sibling_context
+        assert _snapshot(org) == before
+        # Every old closure row remains exact; the new graph is additional data.
+        observed = _c5_history_observation(org)
+        for table, rows in retained.items():
+            assert all(row in observed[table] for row in rows), table
+        org.close()
+        reopened = OrgState.load(slug='alpha',root=org.root,settings=org.settings)
+        try:
+            with state.profile_coordinator.dynamic_org_attachment(reopened):
+                state.orgs['alpha'] = reopened
+            assert _c5_history_observation(reopened) == observed
+            assert reopened.workflow_authority.capture_admission().ready.snapshot_bytes == (reopened.root/'org/.workflow-authority.json').read_bytes()
+            stable = _snapshot(reopened)
+            for request_body,original in ((old_body,fixed['receipt']),(current,receipt),(sibling,sibling_receipt)):
+                replay = client.post(BASE,json=request_body)
+                assert replay.status_code == 200 and replay.json()['replayed'], replay.text
+                for key in ('activation_id','root_task_id','intent_id','context_digest','template','original_request_digest'):
+                    assert replay.json()[key] == original[key]
+                fetched = client.get(BASE+'/'+original['activation_id'])
+                assert fetched.status_code == 200 and fetched.json()['context_digest'] == original['context_digest']
+            assert _snapshot(reopened) == stable
+        finally:
+            reopened.close()
+
+
+@pytest.mark.parametrize('case,code', [
+    ('future-version','authority_snapshot_version_unsupported'),
+    ('malformed-manager','authority_manager_incoherent'),
+    ('malformed-team','authority_snapshot_invalid'),
+    ('malformed-pointer','authority_routing_incoherent'),
+    ('stale-generation','workflow_activation_authority_stale'),
+    ('founder-agent-binding','role_binding_not_authorized'),
+])
+def test_c5_current_reader_refuses_before_graph_writes(activation_org,case,code):
+    client,org,state,body = activation_org
+    if case in ('stale-generation','founder-agent-binding'):
+        body = copy.deepcopy(body)
+        if case == 'stale-generation':
+            body['authority']['generation'] += 1
+        else:
+            body['bindings']['product-lead'] = dict(kind='agent',principal='founder',team='default')
+    else:
+        ready = org.workflow_authority.verify_admission_ready()
+        document = json.loads(ready.snapshot_bytes)
+        if case == 'future-version': document['schema_version'] = 999
+        elif case == 'malformed-manager': document['teams'][0]['manager'] = dict(kind='human',principal='foreign-human')
+        elif case == 'malformed-team': document['teams'][0] = 'not-a-team'
+        else: document['task_default_team'] = []
+        raw = _bytes(document);sha = _sha(raw)
+        # Adverse otherwise-coherent stored input, never an accepted publication.
+        with org.db._lock:
+            pointer = org.db.execute('SELECT journal_id FROM workflow_authority_pointers WHERE namespace=?',(ready.namespace,)).fetchone()[0]
+            org.db.execute('UPDATE workflow_publication_journals SET snapshot_bytes=?,snapshot_digest=? WHERE id=?',(raw,sha,pointer))
+            org.db.execute('UPDATE workflow_authority_pointers SET snapshot_digest=? WHERE namespace=?',(sha,ready.namespace))
+            org.db._conn.commit()
+        org.workflow_authority.canonical_path.write_bytes(raw)
+        assert org.workflow_authority.recover() == 'rehydrated_coherent'
+    before = _snapshot(org)
+    response = client.post(BASE,json=body)
+    assert response.status_code == (403 if case == 'founder-agent-binding' else 409), response.text
+    assert response.json()['detail']['code'] == code
+    assert _snapshot(org) == before
+    assert not org.db.execute('SELECT 1 FROM workflow_instances').fetchone()
+
+
+def test_c5_uncaptured_canonical_change_refuses_before_admission(activation_org):
+    from dataclasses import replace
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import render_agent_text
+    client,org,state,body = activation_org
+    paths = OrgPaths(root=org.root)
+    current = prompt_loader.load_agent(paths,'dev_agent')
+    path = paths.agents_dir/'dev_agent.md'
+    # Otherwise coherent current canonical fixture, deliberately changed outside
+    # the supported writer. This control isolates capture equality, not YAML,
+    # ownership, authorization or unrelated profile denial.
+    path.write_text(render_agent_text(replace(current,description='Unpublished current canonical change')))
+    bytes_before = path.read_bytes()
+    before = _snapshot(org)
+    refused = client.post(BASE,json=body)
+    assert refused.status_code == 409 and refused.json()['detail']['code'] == 'workflow_activation_authority_stale', refused.text
+    assert _snapshot(org) == before and path.read_bytes() == bytes_before
+    assert not org.db.execute('SELECT 1 FROM workflow_instances').fetchone()

@@ -2278,3 +2278,60 @@ def test_supported_legacy_frontmatter_migration_reconciles_profile_membership_af
         pointer = _pointer(org)
         assert migrate_agent_yaml_to_frontmatter(canonical, workflow_authority=org.workflow_authority)["worker"] == "skipped (already migrated)"
         assert _pointer(org) == pointer
+
+
+@pytest.mark.parametrize('profile_binding', ['no-profile','explicit-profile'])
+def test_c5_human_roster_batch_keeps_profile_then_publisher_before_roster_save(tmp_path,monkeypatch,profile_binding):
+    """Observe real locks at the actual save; wrappers provide no publication."""
+    from contextlib import ExitStack
+    import asyncio
+    from runtime.orchestrator.teams import TeamManager
+    monkeypatch.setenv('HAPPYRANCH_DAEMON_HOME',str(tmp_path/'daemon'))
+    with ExitStack() as stack:
+        from tests.workflows.authority_test_support import c5_profile_fixture
+        if profile_binding == 'explicit-profile': stack.enter_context(c5_profile_fixture('c5-order-profile'))
+        org = _seed_org(tmp_path/'alpha',slug='alpha',executors={'worker':'c5-order-profile' if profile_binding == 'explicit-profile' else 'claude'})
+        coordinator = ProfileCoordinator(daemon_home=tmp_path/'daemon',orgs={'alpha':org})
+        org._profile_coordinator = coordinator
+        coordinator.reconcile_startup()
+        original_leases = coordinator._profile_leases
+        original_save = org.teams.save
+        held = []
+        observations = []
+        @contextmanager
+        def observe_profiles(names,**kwargs):
+            if not observations:
+                assert not org.workflow_authority._publisher_lock._is_owned(), 'publisher acquired before profile lease'
+            with original_leases(names,**kwargs) as actual:
+                held.append(actual)
+                try: yield actual
+                finally: held.pop()
+        def observe_save():
+            assert held, 'roster save occurred before profile leases'
+            assert org.teams_lock.locked()
+            assert org.workflow_authority._publisher_lock._is_owned()
+            assert not org.db._conn.in_transaction
+            assert org.db.execute('SELECT owner_pid FROM workflow_publication_leases WHERE namespace=?',
+                                  (org.workflow_authority.namespace,)).fetchone()[0] == os.getpid()
+            observations.append(held[-1])
+            original_save()
+        monkeypatch.setattr(coordinator,'_profile_leases',observe_profiles)
+        monkeypatch.setattr(org.teams,'save',observe_save)
+        async def update():
+            async with coordinator.consumer_writer(org=org,publisher='c5-roster-save',consumer='worker',preserve=True) as change:
+                async with org.teams_lock:
+                    with change.canonical_change():
+                        # Pointer publication is in the exact typed-roster radius.
+                        org.teams._teams['default'] = TeamManager(name=None,team='default',workers=(),kind='human',principal='founder',tagged=True)
+                        org.teams._metadata.update(default_team='default',task_default_team='engineering')
+                        org.teams.save()
+        try:
+            asyncio.run(update())
+            assert observations == ([('c5-order-profile',)] if profile_binding == 'explicit-profile' else [()])
+            ready = org.workflow_authority.capture_admission().ready
+            value = json.loads(ready.snapshot_bytes)
+            assert value['schema_version'] == 2
+            assert value['default_team'] == 'default' and value['task_default_team'] == 'engineering'
+            assert next(row for row in value['teams'] if row['name']=='default')['manager'] == {'kind':'human','principal':'founder'}
+        finally:
+            org.close()

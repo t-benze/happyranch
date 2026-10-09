@@ -126,13 +126,15 @@ an independently prepared closed **agent-managed** schema2 control with a genuin
 ready journal/pointer, and its independently recorded snapshot digest:
 
 ```sh
-/venue/old-b317/.venv/bin/python -I /venue/candidate/tests/helpers/human_team_incompatible_reader_probe.py --source /venue/old-b317 --source-sha b3179b123fddbb0f0f604ed9e0d148f1b23455f3 --root /venue/reader-case --org reader-case --operation capture-admission --expect workflow_activation_authority_stale --snapshot-digest ACTUAL_SCHEMA2_DIGEST
+HAPPYRANCH_DAEMON_HOME=/venue/reader-home /venue/old-b317/.venv/bin/python -I /venue/candidate/tests/helpers/human_team_incompatible_reader_probe.py --source /venue/old-b317 --source-sha b3179b123fddbb0f0f604ed9e0d148f1b23455f3 --root /venue/reader-runtime/orgs/reader-case --org reader-case --operation capture-admission --expect workflow_activation_authority_stale --snapshot-digest ACTUAL_SCHEMA2_DIGEST
 ```
 
 Bind an isolated mode-0700 reader daemon home and Python3.14. The helper uses
 actual reader constructors, unfenced public profile binding and native recovery
-before measurement; it verifies module origins and input digest. It does not
-republish schema1, replace a validator or manufacture a graph/receipt. Its exact
+before measurement; it verifies module origins and input digest. Measured capture
+does not republish schema1, replace a validator or manufacture a graph/receipt.
+Positive controls use `--positive-graph` for separate selected-source route
+admission after that measurement; the negative never enters those writers. Its exact
 row/file readback assertion alone does not prove zero syscalls. Candidate/schema2
 and b317/schema1 positive graph/admission controls, the external observers,
 causal control/restoration and five specified repetitions remain required under
@@ -216,3 +218,29 @@ cuts, logical-line localization and full capability/loss/kill controls still
 require closure; an unsupported cut or observation is UNAVAILABLE, never PASS.
 No helper was run on this host. Zero-row/already-null replay and M reboot proof
 remain outstanding even when final file hashes or audit counts agree.
+
+
+C1 bootstrap and C5 source closure (TASK10458): an exact unique pending bootstrap
+manager attaches without becoming executable; ordinary approval/init must publish
+the active manager before owner/workflow admission. HTTP removal of a still-active
+declared worker is invalid and rolls back. Native registry roundtrips are distinct.
+
+C5 source cases now author actual activation/draft/graph/receipt producers, fixed
+independent schema1 historical admission bytes/IDs/digests, schema2 human/agent
+publication, stale draft and malformed/unknown-version refusals, explicit/no-profile
+closure, and compatible cold reopen. Template-definition schema1 is unchanged.
+The positive reader controls separately admit real graphs after measured read-only
+capture; the b317 schema2 negative stops at capture_admission before any writer.
+Historical fixture data is never presented as an executed old callback/result.
+
+The compatible-restore selections author a closed file/DB copy, independent exact
+backup/restore metadata and digest comparison, supported RuntimeDir registration
+into a second owned root, and coherent current/historical readback. Explicit
+profiles retain their actual owned same-machine dependency paths; no path rewriting
+or export/import API is invented. HAPPYRANCH_TEST_ROSTER_M_VENUE selects a root
+only and grants no authorization/capability. M remains unprovisioned/HELD. These
+assertions have not executed and provide no successful utility/restore receipt.
+The root still owns C6–C10, actual old-reader/M/L/browser receipts, causal controls,
+five isolated/affected-sibling repetitions, independent final-head review/QA,
+publication/CI and operator acceptance. Python units/collection/control/repetition
+remain SUSPENDED THR291seq5/16; general integration remains SKIPPED THR243seq42.

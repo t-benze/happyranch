@@ -100,17 +100,18 @@ def runtime(runtime_container: Path, request: pytest.FixtureRequest) -> Path:
     teams = yaml.safe_load((org_root / "org" / "teams.yaml").read_text())["teams"]
     for config in teams.values():
         for agent in (config["manager"], *config["workers"]):
-            if (agent == "engineering_head"
-                    and request.node.name == "test_register_and_run_completes_via_codex_callback"):
-                continue
-            seed_agent_definition(org_root, agent)
+            bootstrap = (agent == "engineering_head"
+                and request.node.name == "test_register_and_run_completes_via_codex_callback")
+            seed_agent_definition(org_root, agent, executor="codex" if bootstrap else "claude",
+                                  pending=bootstrap)
     # NOTE: artifacts/ is intentionally NOT created here.
     # tests/integration/test_artifacts_e2e.py::test_lifespan_creates_artifacts_dir_for_existing_org
     # depends on this absence to exercise the daemon's startup mkdir. Do not add it.
     return org_root
 
 
-def seed_agent_definition(org_root: Path, agent: str, *, executor: str = "claude") -> AgentDef:
+def seed_agent_definition(org_root: Path, agent: str, *, executor: str = "claude",
+                          pending: bool = False) -> AgentDef:
     """Render a roster member for supported startup or example-based attachment."""
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
@@ -129,6 +130,8 @@ def seed_agent_definition(org_root: Path, agent: str, *, executor: str = "claude
         description="Integration test agent.", model=None,
     )
     agents_dir = org_root / "org" / "agents"
+    if pending:
+        agents_dir /= "_pending"
     agents_dir.mkdir(parents=True, exist_ok=True)
     (agents_dir / f"{agent}.md").write_text(render_agent_text(agent_def))
     return agent_def

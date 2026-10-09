@@ -5,7 +5,11 @@
 Moving consultant_head and consultant_codex changes their current roster
 membership and demotes the former manager. Canonical names, providers,
 workspaces, runtime/provider memory, Git registrations and history remain in
-place. Founder is not an executor. Ordinary workers keep self-only delegation
+place. An attached pending bootstrap manager has no executable active definition
+or current manager-policy eligibility; approval/init use the existing lifecycle.
+The hosted Codex smoke stages that exact pending definition before attachment,
+then retains real authenticated approval and the genuine callback/launch witness.
+Founder is not an executor. Ordinary workers keep self-only delegation
 and acquire no manager/admin/policy/template powers. Existing supported
 materializers refresh declared generated instructions/skill links; their
 permission and authentication algorithms are unchanged. The bounded operator

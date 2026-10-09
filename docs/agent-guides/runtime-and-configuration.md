@@ -36,7 +36,10 @@ task pointers retain Engineering routing. Proven fresh org creation writes an
 empty Founder-managed Default and explicitly sets both pointers to Default.
 Attachment validates duplicate memberships and both registry→definition and
 definition→registry team/role agreement; pending enrollment keeps its supported
-semantics. Startup performs no roster move. Tagged managers have exactly kind
+semantics. Exactly matching pending bootstrap managers may attach, while missing,
+wrong-team/role and duplicate active/pending identities refuse. Pending managers
+remain non-executable and cannot make workflow authority ready; ordinary approval
+must promote them and publish the coherent active roster. Startup performs no roster move. Tagged managers have exactly kind
 and principal; human principal is founder and has no executable-agent name.
 New workflow authority snapshots use schema2 typed principals and pointers.
 Historical schema1 snapshots/bindings retain their original bytes and digests;

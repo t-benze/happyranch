@@ -15,6 +15,12 @@ after attachment refuse through existing unknown_owner admission before allocati
 Founder never executes.
 Attachment validates closed manager tags, duplicate memberships and both role/
 team directions, including all partial three-file moves with empty Default.
+An exact unique pending bootstrap manager may attach but remains non-executable
+and workflow-fenced until supported approval publishes the ACTIVE definition.
+Missing/mismatched pending managers and active/pending duplicates refuse.
+TASK10394 C1.a erratum: HTTP removal of a still-active declared worker is invalid
+and rolls back; valid native add/remove serialization is separate proof. Existing
+settings guards stay intact; no online removal/move behavior is introduced.
 
 New authority JSON is schema2 with typed managers and both pointers. Historical
 schema1 bytes/digests/context interpretation remain immutable. Human principals

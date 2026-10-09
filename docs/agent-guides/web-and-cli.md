@@ -34,6 +34,10 @@ enablement, deployment or a Phase1-completion claim.
 GET teams/settings retain string manager names for agent teams; human rows
 carry manager:null, manager_kind:human, human_manager:founder and is_default.
 Both TypeScript wire types and existing real/mock providers accept this shape.
+Settings accepts coherent worker additions and preserves pointers/principals.
+Removing a still-active declared worker returns teams_consistency_drift and rolls
+back. A native registry serialization add/remove roundtrip does not prove valid
+HTTP removal; the coordinated offline utility owns the approved team move.
 Existing Agent selectors/detail and Work Hours display localized Founder
 leadership while preserving executable worker selection. Demoted consultants
 are ineligible for manager policy views; no transfer UI is introduced.

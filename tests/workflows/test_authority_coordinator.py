@@ -553,3 +553,33 @@ def test_c5_unknown_authority_version_refuses_before_interpretation():
     snapshot = {"schema_version": 3, "teams": []}
     with pytest.raises(WorkflowAuthorityError, match="authority_snapshot_version_unsupported"):
         validate_authority_snapshot(snapshot)
+
+
+@pytest.mark.parametrize('mutation,code', [
+    ('team-scalar','authority_snapshot_invalid'), ('team-name-list','authority_snapshot_invalid'),
+    ('pointer-list','authority_routing_incoherent'), ('duplicate-worker','authority_worker_incoherent'),
+    ('manager-as-worker','authority_worker_incoherent'), ('duplicate-team','authority_snapshot_invalid'),
+])
+def test_c5_malformed_current_snapshot_has_bounded_read_refusal(mutation,code):
+    snapshot = {'schema_version':2,'default_team':'engineering','task_default_team':'engineering',
+        'teams':[{'name':'engineering','manager':{'kind':'agent','principal':'engineering_manager'},'workers':['dev_agent']}]}
+    if mutation == 'team-scalar': snapshot['teams'][0] = 'not-a-team'
+    elif mutation == 'team-name-list': snapshot['teams'][0]['name'] = []
+    elif mutation == 'pointer-list': snapshot['task_default_team'] = []
+    elif mutation == 'duplicate-worker': snapshot['teams'][0]['workers'] *= 2
+    elif mutation == 'manager-as-worker': snapshot['teams'][0]['workers'].append('engineering_manager')
+    else: snapshot['teams'].append(dict(snapshot['teams'][0]))
+    before = json.dumps(snapshot,sort_keys=True)
+    with pytest.raises(WorkflowAuthorityError,match=code):
+        validate_authority_snapshot(snapshot)
+    assert json.dumps(snapshot,sort_keys=True) == before
+
+
+def test_c5_schema1_membership_reader_retains_prior_order_and_multiplicity():
+    # Retained reader interpretation is versioned; current schema2 uniqueness
+    # does not silently tighten historical schema1 arrays or rewrite their bytes.
+    raw = b'{"schema_version":1,"teams":[{"manager":"engineering_manager","name":"engineering","workers":["dev_agent","dev_agent"]}]}'
+    snapshot = json.loads(raw)
+    validate_authority_snapshot(snapshot)
+    assert snapshot_team_agents(snapshot,snapshot['teams'][0]) == ['engineering_manager','dev_agent','dev_agent']
+    assert snapshot['teams'][0]['workers'] == ['dev_agent','dev_agent']

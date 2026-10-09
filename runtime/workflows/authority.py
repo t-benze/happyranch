@@ -155,6 +155,8 @@ def _agent_projection(agent, *, status: str) -> dict[str, object]:
 
 def snapshot_team_agents(snapshot: dict, team: dict) -> list[str]:
     """Interpret retained v1 and typed v2 authority without rewriting history."""
+    if not isinstance(snapshot, dict) or not isinstance(team, dict):
+        raise WorkflowAuthorityError("authority_snapshot_invalid")
     version = snapshot.get("schema_version")
     manager = team.get("manager")
     if type(version) is not int or version not in (1, 2):
@@ -171,7 +173,9 @@ def snapshot_team_agents(snapshot: dict, team: dict) -> list[str]:
             raise WorkflowAuthorityError("authority_manager_incoherent")
         lead = manager["principal"] if manager["kind"] == "agent" else None
     workers = team.get("workers")
-    if not isinstance(workers, list) or any(not isinstance(item, str) or not item.strip() for item in workers):
+    if (not isinstance(workers, list)
+            or any(not isinstance(item, str) or not item.strip() for item in workers)
+            or (version == 2 and (len(set(workers)) != len(workers) or lead in workers))):
         raise WorkflowAuthorityError("authority_worker_incoherent")
     return ([lead] if lead is not None else []) + workers
 
@@ -181,11 +185,21 @@ def validate_authority_snapshot(snapshot: dict) -> None:
         raise WorkflowAuthorityError("authority_snapshot_invalid")
     if type(snapshot.get("schema_version")) is not int or snapshot["schema_version"] not in (1, 2):
         raise WorkflowAuthorityError("authority_snapshot_version_unsupported")
+    names = set()
+    members = set()
     for team in snapshot["teams"]:
-        snapshot_team_agents(snapshot, team)
+        if (not isinstance(team, dict) or not isinstance(team.get("name"), str)
+                or not team["name"].strip()
+                or (snapshot["schema_version"] == 2 and team["name"] in names)):
+            raise WorkflowAuthorityError("authority_snapshot_invalid")
+        names.add(team["name"])
+        identities = snapshot_team_agents(snapshot, team)
+        if snapshot["schema_version"] == 2 and members.intersection(identities):
+            raise WorkflowAuthorityError("authority_agent_identity_conflict")
+        members.update(identities)
     if snapshot["schema_version"] == 2:
-        names = {team["name"] for team in snapshot["teams"]}
-        if any(snapshot.get(key) not in names for key in ("default_team", "task_default_team")):
+        if any(not isinstance(snapshot.get(key), str) or snapshot[key] not in names
+               for key in ("default_team", "task_default_team")):
             raise WorkflowAuthorityError("authority_routing_incoherent")
 
 
@@ -1071,7 +1085,11 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("authority_pointer_not_ready")
         if self._cache.get(self.namespace) != (generation, digest):
             raise WorkflowAuthorityError("authority_pointer_not_ready")
-        validate_authority_snapshot(json.loads(snapshot))
+        try:
+            document = json.loads(snapshot)
+        except (ValueError, UnicodeError) as exc:
+            raise WorkflowAuthorityError("authority_snapshot_invalid") from exc
+        validate_authority_snapshot(document)
         return AuthorityReadiness(self.namespace, generation, digest, snapshot)
 
     def verify_admission_ready(self) -> AuthorityReadiness:

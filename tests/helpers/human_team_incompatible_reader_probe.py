@@ -1,9 +1,11 @@
 """Source-pinned C5 admission probe; old-source execution remains HELD.
 
 Run only in the manager-authorized disposable venue. This invokes the selected
-reader's real public admission capture, without publishing or replacing its
-validator. Baseline equality is a readback assertion, not syscall/no-write proof.
-The accepted external observers and positive graph cases remain separate gates.
+reader's real public admission capture without changing its measured inputs or
+replacing its validator. Baseline equality is readback, not syscall/no-write
+proof. The optional positive graph uses real selected-source routes as a
+separate action after capture; it never runs on a negative input. External
+observation and genuine old-source execution remain held gates.
 """
 from __future__ import annotations
 
@@ -56,7 +58,10 @@ def main() -> int:
     parser.add_argument("--operation", choices=["capture-admission"], required=True)
     parser.add_argument("--expect", choices=["admitted", "workflow_activation_authority_stale"], required=True)
     parser.add_argument("--snapshot-digest", required=True)
+    parser.add_argument("--positive-graph", action="store_true", help="Separate positive-control graph setup/admission after the measured capture; old-source execution remains held")
     args = parser.parse_args()
+    if args.positive_graph and args.expect != "admitted":
+        raise ValueError("negative_probe_cannot_write_a_graph")
     sys.dont_write_bytecode = True
     if sys.version_info[:2] != (3, 14):
         raise ValueError("effective_python314_required")
@@ -137,13 +142,90 @@ def main() -> int:
             raise AssertionError(f"actual admission={actual!r}; expected={args.expect!r}")
         if before_domain != after_domain or before_files != after_files:
             raise AssertionError("measured admission capture changed fixture rows/files")
+        graph_receipt = None
+        if args.positive_graph:
+            # Positive graph proof is a SEPARATE action after readback-equal
+            # capture. The negative never enters this setup or any writer.
+            # Use the selected source's existing explicit org-only F->E script
+            # on this disposable fixture; no installer/private schema seam.
+            db.close()
+            migrated = subprocess.run([sys.executable, str(source / "scripts/migrate_workflow_draft_schema.py"),
+                "--runtime-root", str(root.parent.parent), "--org", args.org],
+                cwd=source, capture_output=True, text=True, timeout=30)
+            if migrated.returncode != 0:
+                raise AssertionError(("positive fixture layout unavailable", migrated.stdout, migrated.stderr))
+            db = Database(root / "happyranch.db")
+            orch = Orchestrator(db, settings, paths, args.org, teams)
+            org = OrgState(slug=args.org, root=root, db=db, teams=teams, settings=settings, orchestrator=orch)
+            profiles = ProfileCoordinator(daemon_home=home, orgs={args.org: org})
+            asyncio.run(bind_profiles())
+            assert org.workflow_authority.recover() == "rehydrated_coherent"
+            assert org.workflow_authority.capture_admission().ready.snapshot_bytes == ready.snapshot_bytes
+            from fastapi.testclient import TestClient
+            from runtime.daemon import paths as daemon_paths
+            from runtime.daemon.app import create_app
+            from runtime.daemon.state import DaemonState
+            state = DaemonState(runtime=None, settings=settings, orgs={args.org: org}, profile_coordinator=profiles)
+            client = TestClient(create_app(state))
+            client.headers.update({"Authorization": "Bearer " + daemon_paths.ensure_token()})
+            base = "/api/v1/orgs/" + args.org
+            definition = {
+                "kind":"product-design", "schema_version":1,
+                "description":"Immutable PRD authoring and current-revision review",
+                "author":{"role":"product-lead","kind":"agent","artifact":"immutable-prd-revision"},
+                "reviewers":[{"role":"founder","kind":"human"},{"role":"implementer","kind":"agent"},{"role":"tester","kind":"agent"}],
+                "approval":{"mode":"all","revision":"current","required_roles":["founder","implementer","tester"]},
+                "request_changes":{"action":"return-to-author"},
+            }
+            try:
+                published = client.post(base + "/workflows/templates/publish", json=dict(operation_key="reader-control-template",
+                    team_slug="content", template_name="product-design", expected_current_version=0, definition=definition))
+                assert published.status_code == 201, published.text
+                template = published.json()
+                enabled = client.post(base + "/workflows/cutover/requests", json=dict(operation_key="reader-control-enable", action="enable", expected_generation=1))
+                assert enabled.status_code == 200 and enabled.json()["state"] == "enabled", enabled.text
+                body = dict(operation_key="reader-control-graph",instance_id="reader-control-graph",expected_activation_revision=0,
+                    template={key:template[key] for key in ("identity_id","version","definition_digest")},
+                    authority=dict(namespace=ready.namespace,generation=ready.generation,snapshot_digest=ready.snapshot_digest),
+                    scope=dict(brief="Reader control bounded document."),
+                    bindings={"product-lead":dict(kind="agent",principal="content_manager",team="content"),
+                              "founder":dict(kind="human",principal="founder",team=None),
+                              "implementer":dict(kind="agent",principal="dev_agent",team="engineering"),
+                              "tester":dict(kind="agent",principal="qa_engineer",team="engineering")},
+                    eligible_replacements={role:[] for role in ("product-lead","founder","implementer","tester")},
+                    allowed_actions=["draft-document","submit-immutable-document","collect-review","approve-planning-input","return-to-author"],inputs=[])
+                admitted = client.post(base + "/workflows/activations", json=body)
+                assert admitted.status_code == 201, admitted.text
+                graph_receipt = admitted.json()
+                with sqlite3.connect((root / "happyranch.db").resolve().as_uri() + "?mode=ro", uri=True) as reader:
+                    assert reader.execute("SELECT assigned_agent,team,status FROM tasks WHERE id=?",(graph_receipt["root_task_id"],)).fetchone() == ("content_manager","content","pending")
+                    raw, sha = reader.execute("SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)",(graph_receipt["intent_id"],)).fetchone()
+                    assert hashlib.sha256(raw).hexdigest() == sha == graph_receipt["context_digest"]
+                    assert json.loads(raw)["authority_snapshot"] == json.loads(ready.snapshot_bytes)
+                    assert reader.execute("SELECT state,session_id,host_launch_started,final_result_id FROM workflow_draft_dispatch_intents WHERE id=?",(graph_receipt["intent_id"],)).fetchone() == ("queued",None,0,None)
+                    assert reader.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 0
+                frozen = _domain(db)
+                replay = client.post(base + "/workflows/activations", json=body)
+                assert replay.status_code == 200 and replay.json()["replayed"], replay.text
+                assert replay.json()["activation_id"] == graph_receipt["activation_id"]
+                assert _domain(db) == frozen
+            finally:
+                client.close()
+        # Late imports also belong to the selected source; no candidate runtime
+        # can silently satisfy a pinned pre-feature control.
+        for name, module in tuple(sys.modules.items()):
+            if name == "runtime" or name.startswith("runtime."):
+                filename = getattr(module, "__file__", None)
+                assert filename is not None and Path(filename).resolve().is_relative_to(source), name
+                origins[name] = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
         print(json.dumps(dict(reader_source_sha=source_sha, effective_python=sys.executable,
                               python_version=sys.version, imported_source_hashes=origins,
                               snapshot_digest=args.snapshot_digest, setup=outcome,
                               action=args.operation, actual=actual,
                               persisted_readback_unchanged=True,
                               syscall_no_write_proof="external observer required",
-                              graph_execution="not performed by this capture probe"), sort_keys=True))
+                              graph_execution="separate positive graph admission; no executor/callback" if args.positive_graph else "not performed by this capture probe",
+                              positive_graph_receipt=graph_receipt), sort_keys=True))
         return 0
     finally:
         db.close()

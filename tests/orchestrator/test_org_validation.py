@@ -151,3 +151,26 @@ def test_every_partial_consultant_move_refuses_at_attachment(
     (root / 'org/teams.yaml').write_text(yaml.safe_dump({'teams': layout}))
     with pytest.raises(OrgConsistencyError):
         validate_team_membership(paths, TeamsRegistry.load(root))
+
+
+@pytest.mark.parametrize('pending_case', ['coherent', 'missing', 'wrong-team', 'wrong-role', 'duplicate'])
+def test_pending_bootstrap_manager_attachment_requires_exact_unique_definition(tmp_path, pending_case):
+    root = _seed_empty_org(tmp_path / 'bootstrap')
+    paths = OrgPaths(root=root)
+    (root / 'org/teams.yaml').write_text('teams:\n  ops:\n    manager: ops_manager\n    workers: []\n')
+    pending = _make_agent(name='ops_manager', team='other' if pending_case == 'wrong-team' else 'ops',
+                          role='worker' if pending_case == 'wrong-role' else 'manager')
+    if pending_case != 'missing':
+        prompt_loader.write_pending_agent(paths, pending)
+    if pending_case == 'duplicate':
+        _write_active(paths, _make_agent(name='ops_manager', team='ops', role='manager'))
+    before = {str(p.relative_to(root)): p.read_bytes() for p in (root / 'org').rglob('*.md')}
+    if pending_case == 'coherent':
+        validate_team_membership(paths, TeamsRegistry.load(root))
+        assert prompt_loader.list_agents(paths) == []
+        assert prompt_loader.load_agent(paths, 'ops_manager') is None
+        assert prompt_loader.load_pending_agent(paths, 'ops_manager') == pending
+    else:
+        with pytest.raises(OrgConsistencyError, match='both active and pending' if pending_case == 'duplicate' else 'no matching manager'):
+            validate_team_membership(paths, TeamsRegistry.load(root))
+    assert {str(p.relative_to(root)): p.read_bytes() for p in (root / 'org').rglob('*.md')} == before

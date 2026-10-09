@@ -1,8 +1,8 @@
 """Finite THR296 shipping cases. Execute only via authorized disposable parent.
 
 No production-host runs. RF5/RF6 real-process cuts and ten real context sources
-are authored here; C1–C4 writer/history consumers are finite sources; C5–C10 remaining
-maintenance, portability/context and browser sources stay with the parent. Authoring is never execution evidence.
+are authored here; C1–C5 writer/history/compatible-reader sources are finite sources; C6–C10 remaining
+maintenance, context and browser closure stays with the parent. Authoring is never execution evidence.
 """
 from __future__ import annotations
 
@@ -595,7 +595,8 @@ C1_ATTACH_CASES = [
     'cross-team-worker', 'duplicate-agent-manager', 'missing-worker-definition',
     'unregistered-active-worker', 'wrong-worker-team', 'wrong-worker-role',
     'wrong-manager-role', 'pending-worker-control', 'pending-manager-refused',
-    'legacy-save-control', 'human-save-control',
+    'legacy-save-control', 'human-save-control', 'pending-manager-control',
+    'missing-pending-manager', 'wrong-pending-manager-team', 'duplicate-active-pending-manager',
 ]
 
 
@@ -609,7 +610,9 @@ def test_c1_registry_and_attachment(request: pytest.FixtureRequest, runtime: Pat
         # process, not a unit call to the validator or an invented callback.
         cold = tmp_path / 'cold-attachment'
         shutil.copytree(runtime / 'org', cold / 'org')
-        if partial not in ('legacy-save-control', 'wrong-manager-role', 'duplicate-agent-manager', 'pending-manager-refused'):
+        if partial not in ('legacy-save-control', 'wrong-manager-role', 'duplicate-agent-manager',
+            'pending-manager-refused', 'pending-manager-control', 'missing-pending-manager',
+            'wrong-pending-manager-team', 'duplicate-active-pending-manager'):
             _seed_human_roster(cold)
         path = cold / 'org/teams.yaml'
         data = yaml.safe_load(path.read_text())
@@ -642,25 +645,44 @@ def test_c1_registry_and_attachment(request: pytest.FixtureRequest, runtime: Pat
             changed = replace(definition, team='engineering') if partial == 'wrong-worker-team' else replace(
                 definition, role='worker' if partial == 'wrong-manager-role' else 'manager')
             target.write_text(render_agent_text(changed))
-        elif partial in ('pending-worker-control', 'pending-manager-refused'):
+        elif partial in ('pending-worker-control', 'pending-manager-refused', 'pending-manager-control',
+                         'missing-pending-manager', 'wrong-pending-manager-team', 'duplicate-active-pending-manager'):
             name = 'consultant_codex' if partial == 'pending-worker-control' else 'engineering_head'
             pending = cold / 'org/agents/_pending'
             pending.mkdir(exist_ok=True)
-            (cold / 'org/agents' / f'{name}.md').rename(pending / f'{name}.md')
+            target = pending / f'{name}.md'
+            original = cold / 'org/agents' / f'{name}.md'
+            if partial == 'duplicate-active-pending-manager':
+                target.write_bytes(original.read_bytes())
+            else:
+                original.rename(target)
+            if partial == 'missing-pending-manager':
+                target.unlink()
+            elif partial in ('pending-manager-refused', 'wrong-pending-manager-team'):
+                from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
+                from dataclasses import replace
+                definition = parse_agent_text(target.read_text(), expected_name=name)
+                target.write_text(render_agent_text(replace(definition, role='worker')
+                    if partial == 'pending-manager-refused' else replace(definition, team='content')))
         path.write_text(yaml.safe_dump(data))
         before = {str(p.relative_to(cold)): p.read_bytes() for p in (cold / 'org').rglob('*') if p.is_file()}
-        successful = partial in ('pending-worker-control', 'legacy-save-control', 'human-save-control')
+        successful = partial in ('pending-worker-control', 'legacy-save-control', 'human-save-control', 'pending-manager-control')
         actual = _attach_process(cold, save=partial.endswith('save-control'))
         if successful:
             assert actual.returncode == 0, actual.stderr
             value = json.loads(actual.stdout.splitlines()[-1])
             assert 'founder' not in value['agents']
-            assert value['default'] == ('engineering' if partial == 'legacy-save-control' else 'default')
+            assert value['default'] == ('engineering' if partial in ('legacy-save-control','pending-manager-control') else 'default')
             assert value['task_default'] == 'engineering'
             assert yaml.safe_load(path.read_text()) == data
             expected = sorted(name for entry in teams.values() for name in
                 ([entry['manager']] if isinstance(entry['manager'], str) else []) + entry['workers'])
             assert sorted(value['agents']) == expected
+            if partial == 'pending-manager-control':
+                assert not (cold / 'org/agents/engineering_head.md').exists()
+                assert (cold / 'org/agents/_pending/engineering_head.md').read_bytes() == before['org/agents/_pending/engineering_head.md']
+                with sqlite3.connect(cold / 'happyranch.db') as observer:
+                    assert observer.execute("SELECT state FROM workflow_authority_pointers WHERE namespace='org/test'").fetchone() == ('fenced',)
             if partial == 'pending-worker-control':
                 assert not (cold / 'org/agents/consultant_codex.md').exists()
                 assert (cold / 'org/agents/_pending/consultant_codex.md').read_bytes() == before['org/agents/_pending/consultant_codex.md']
@@ -1246,11 +1268,291 @@ def test_c4_normal_and_recovered_verdict_attribution(
             assert conn.execute('SELECT * FROM task_results WHERE task_id=? ORDER BY id', (children[0][0],)).fetchall() == frozen
 
 
+
+def _c5_shipping_graph_process(tmp_path: Path, *, restore: bool, explicit_profile: bool) -> None:
+    """Finite real route/registration process. Restore requires separate M venue.
+
+    This is authored source, not a successful restore or utility receipt. The
+    clean parent supplies source/interpreter isolation; no new runner is added.
+    """
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    script = r'''
+import asyncio,copy,hashlib,json,os,shutil,sqlite3,stat,sys
+from dataclasses import asdict
+from contextlib import ExitStack
+from pathlib import Path
+source,revision,venue,restore,explicit=sys.argv[1:]
+source=Path(source);venue=Path(venue);restore=restore=='True';explicit=explicit=='True'
+sys.dont_write_bytecode=True
+sys.path.insert(0,str(source))
+import subprocess
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=source).strip()
+assert sys.version_info[:2]==(3,14)
+from fastapi.testclient import TestClient
+from runtime.config import Settings
+from runtime.daemon import paths,runtimes
+from runtime.daemon.app import create_app
+from runtime.daemon.org_state import OrgState
+from runtime.daemon.state import DaemonState
+from runtime.runtime import RuntimeDir
+from runtime.workflows.authority import WorkflowAuthorityError
+from runtime.workflows.draft_dispatch import DraftOwnershipError
+from tests.workflows.authority_test_support import C5_SCHEMA1_HISTORY,C5_SCHEMA1_COMPLETED,seed_c5_schema1_history
+from tests.helpers.human_team_incompatible_reader_probe import _closed_files
+home=venue/'daemon-home';home.mkdir(mode=0o700)
+os.environ['HAPPYRANCH_DAEMON_HOME']=str(home)
+settings=Settings(project_root=source)
+container=RuntimeDir.init(venue/'source-runtime')
+runtimes.register(container.root)
+state=DaemonState.from_runtime(container,settings)
+client=TestClient(create_app(state))
+client.headers.update({'Authorization':'Bearer '+paths.ensure_token()})
+base='/api/v1/orgs/alpha'
+owned=[]
+def checked(method,path,body=None,status=200):
+    response=getattr(client,method)(path,**({'json':body} if body is not None else {}))
+    assert response.status_code==status,(path,response.status_code,response.text)
+    return response.json()
+def rows(org):
+    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+        return {name:tuple(reader.execute('SELECT * FROM "'+name+'" ORDER BY rowid'))
+                for name, in reader.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")}
+def history(org):
+    f=C5_SCHEMA1_HISTORY
+    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+        assert reader.execute('SELECT snapshot_bytes,snapshot_digest FROM workflow_publication_journals WHERE id=?',('c5-fixed-schema1-history',)).fetchone()==(f['snapshot_bytes'],f['snapshot_digest'])
+        for table,prefix in [('workflow_authorization_revisions','authorization'),('workflow_binding_snapshots','binding'),('workflow_contexts','context')]:
+            column='authority' if prefix=='authorization' else prefix
+            assert reader.execute('SELECT '+column+'_bytes,'+column+'_digest FROM '+table+' WHERE id=?',(f[prefix+'_id'],)).fetchone()==(f[prefix+'_bytes'],f[prefix+'_digest'])
+        reader.row_factory=sqlite3.Row
+        assert dict(reader.execute('SELECT * FROM task_results WHERE id=901').fetchone())==C5_SCHEMA1_COMPLETED['result']
+        assert [dict(row) for row in reader.execute('SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? ORDER BY event_seq',(f['receipt']['intent_id'],))]==C5_SCHEMA1_COMPLETED['events']
+        return {prefix:(f[prefix+'_id'],f[prefix+'_digest']) for prefix in ('authorization','binding','context')}
+def profile_closure():
+    from runtime.orchestrator.runtime_executor_store import load_runtime_profiles
+    from runtime.orchestrator.executor_registry import get_registry
+    from runtime.orchestrator.adapter_store import get_adapter
+    profiles=load_runtime_profiles()
+    if not explicit:
+        assert profiles=={}
+        return {}
+    name='c5-portable-profile'
+    profile=get_registry().get_profile(name);adapter=get_adapter(name+'-adapter')
+    assert profile is not None and adapter is not None and adapter.status=='approved'
+    assert profiles[name]=={'workspace_adapter_id':'pi','command_adapter_id':'custom-adapter:'+adapter.id}
+    executable=Path(adapter.executable)
+    assert executable.is_absolute() and executable.is_relative_to(home) and not executable.is_symlink()
+    assert executable.stat().st_uid==os.getuid() and os.access(executable,os.X_OK)
+    assert hashlib.sha256(executable.read_bytes()).hexdigest()==adapter.executable_hash
+    files={}
+    for path in (home/'executor_profiles.yaml',home/'adapters.yaml',executable):
+        info=path.lstat()
+        assert stat.S_ISREG(info.st_mode) and info.st_uid==os.getuid()
+        files[str(path)]=(hashlib.sha256(path.read_bytes()).hexdigest(),stat.S_IMODE(info.st_mode),info.st_uid,info.st_gid)
+    return dict(config=profiles,profile=asdict(profile),adapter=asdict(adapter),files=files)
+def ready(org):
+    capture=org.workflow_authority.capture_admission(); r=capture.ready
+    raw=(org.root/'org/.workflow-authority.json').read_bytes()
+    assert raw==r.snapshot_bytes and hashlib.sha256(raw).hexdigest()==r.snapshot_digest
+    value=json.loads(raw)
+    assert value['schema_version']==2
+    assert value['default_team']==value['task_default_team']=='default'
+    assert next(row for row in value['teams'] if row['name']=='default')=={'name':'default','manager':{'kind':'human','principal':'founder'},'workers':['consultant_codex','consultant_head']}
+    assert all(row['name']!='founder' for row in value['agents'])
+    assert [row['profile_name'] for row in value['machine_global_profiles']]==(['c5-portable-profile'] if explicit else [])
+    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+        pointer=reader.execute('SELECT current_generation,journal_id,snapshot_digest,state FROM workflow_authority_pointers WHERE namespace=?',(r.namespace,)).fetchone()
+        assert pointer[0]==r.generation and pointer[2:]==(r.snapshot_digest,'ready')
+        assert reader.execute('SELECT snapshot_bytes,snapshot_digest,state FROM workflow_publication_journals WHERE id=?',(pointer[1],)).fetchone()==(raw,r.snapshot_digest,'cache_installed')
+        assert reader.execute('SELECT COUNT(*) FROM workflow_publication_leases').fetchone()[0]==0
+    return r
+try:
+    checked('post','/api/v1/orgs',{'slug':'alpha'})
+    org=state.orgs['alpha'];owned.append(org)
+    # Actual empty-org attachment is valid, but no reviewer means no authority.
+    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+        assert reader.execute("SELECT state FROM workflow_authority_pointers WHERE namespace='org/alpha'").fetchone()==('fenced',)
+        assert reader.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]==0
+    try: org.workflow_authority.capture_admission()
+    except WorkflowAuthorityError as exc: assert exc.code=='authority_pointer_not_ready'
+    else: raise AssertionError('missing-reviewer empty org was admitted')
+    for name,team,role in [('engineering_manager','engineering','manager'),('code_reviewer','engineering','worker'),('dev_agent','engineering','worker'),('qa_engineer','engineering','worker'),('product_lead','product','manager')]:
+        checked('post',base+'/agents',dict(name=name,role=role,executor='claude',description='C5 fixture',system_prompt='Bounded documents.',**({'new_team':team} if role=='manager' else {'team':team})))
+    template=checked('post',base+'/workflows/templates/publish',dict(operation_key='c5-template',team_slug='product',template_name='product-design',expected_current_version=0,definition=json.loads(C5_SCHEMA1_HISTORY['context_bytes'])['template']),201)
+    assert template['definition_digest']=='0d815497899d1e6f43022ec8c88574a36bbf295a05fbf00f411c8a8e324c7f57'
+    assert checked('post',base+'/workflows/cutover/requests',dict(operation_key='c5-enable',action='enable',expected_generation=1))['state']=='enabled'
+    f=seed_c5_schema1_history(org,completed=True)
+    original=checked('post',base+'/workflows/activations',f['request'])
+    assert {key:original[key] for key in f['receipt']}==f['receipt']
+    assert original['state']=='completed' and original['pending'] is False
+    from tests.workflows.authority_test_support import C5_SCHEMA1_COMPLETED
+    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+        reader.row_factory=sqlite3.Row
+        assert dict(reader.execute('SELECT * FROM task_results WHERE id=901').fetchone())==C5_SCHEMA1_COMPLETED['result']
+    preserved=history(org)
+    with ExitStack() as profile_stack:
+        if explicit:
+            # Existing finite profile fixture owner, not a profile-store seam.
+            from tests.workflows.authority_test_support import c5_profile_fixture
+            profile_stack.enter_context(c5_profile_fixture('c5-portable-profile'))
+            checked('put',base+'/agents/dev_agent/executor',{'executor':'c5-portable-profile'})
+        for name in ('consultant_head','consultant_codex'):
+            checked('post',base+'/agents',dict(name=name,team='default',role='worker',executor='codex' if name.endswith('codex') else 'claude',description='C5 worker',system_prompt='Bounded documents.'))
+        r=ready(org)
+        request=copy.deepcopy(f['request']);request.update(operation_key='c5-schema2',instance_id='c5-schema2')
+        request['authority']=dict(namespace=r.namespace,generation=r.generation,snapshot_digest=r.snapshot_digest)
+        request['bindings']['product-lead']=dict(kind='agent',principal='consultant_head',team='default')
+        sibling=copy.deepcopy(request);sibling.update(operation_key='c5-product-schema2',instance_id='c5-product-schema2')
+        sibling['bindings']['product-lead']=dict(kind='agent',principal='product_lead',team='product')
+        sibling_receipt=checked('post',base+'/workflows/activations',sibling,201)
+        assert org.db.get_task(sibling_receipt['root_task_id']).assigned_agent=='product_lead'
+        current=checked('post',base+'/workflows/activations',request,201)
+        assert current['root_task_id']!=f['receipt']['root_task_id']
+        assert org.db.get_task(current['root_task_id']).assigned_agent=='consultant_head'
+        with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+            raw,sha=reader.execute('SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)',(current['intent_id'],)).fetchone()
+            assert hashlib.sha256(raw).hexdigest()==sha==current['context_digest']
+            assert json.loads(raw)['authority_snapshot']==json.loads(r.snapshot_bytes)
+            assert reader.execute("SELECT COUNT(*) FROM tasks WHERE assigned_agent='founder'").fetchone()[0]==0
+            assert reader.execute('SELECT COUNT(*) FROM task_results WHERE task_id=?',(current['root_task_id'],)).fetchone()[0]==0
+            assert reader.execute('SELECT state,session_id,final_result_id,host_launch_started FROM workflow_draft_dispatch_intents WHERE id=?',(current['intent_id'],)).fetchone()==('queued',None,None,0)
+            sibling_context=reader.execute('SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)',(sibling_receipt['intent_id'],)).fetchone()
+            assert hashlib.sha256(sibling_context[0]).hexdigest()==sibling_context[1]==sibling_receipt['context_digest']
+            assert json.loads(sibling_context[0])['authority_snapshot']==json.loads(r.snapshot_bytes)
+        # Current unknown-version negative is distinct from pinned old-reader
+        # capture mismatch. Coherent adverse fixture bytes; no parser/cache patch.
+        negative=copy.deepcopy(request);negative.update(operation_key='c5-unknown-version',instance_id='c5-unknown-version')
+        corrupt=json.loads(r.snapshot_bytes);corrupt['schema_version']=999
+        corrupt_raw=json.dumps(corrupt,sort_keys=True,separators=(',',':')).encode();corrupt_sha=hashlib.sha256(corrupt_raw).hexdigest()
+        pointer=org.db.execute('SELECT journal_id FROM workflow_authority_pointers WHERE namespace=?',(r.namespace,)).fetchone()[0]
+        org.db.execute('UPDATE workflow_publication_journals SET snapshot_bytes=?,snapshot_digest=? WHERE id=?',(corrupt_raw,corrupt_sha,pointer))
+        org.db.execute('UPDATE workflow_authority_pointers SET snapshot_digest=? WHERE namespace=?',(corrupt_sha,r.namespace));org.db._conn.commit()
+        org.workflow_authority.canonical_path.write_bytes(corrupt_raw)
+        assert org.workflow_authority.recover()=='rehydrated_coherent'
+        refused_before=rows(org)
+        refused=client.post(base+'/workflows/activations',json=negative)
+        assert refused.status_code==409 and refused.json()['detail']['code']=='authority_snapshot_version_unsupported',refused.text
+        assert rows(org)==refused_before
+        org.db.execute('UPDATE workflow_publication_journals SET snapshot_bytes=?,snapshot_digest=? WHERE id=?',(r.snapshot_bytes,r.snapshot_digest,pointer))
+        org.db.execute('UPDATE workflow_authority_pointers SET snapshot_digest=? WHERE namespace=?',(r.snapshot_digest,r.namespace));org.db._conn.commit()
+        org.workflow_authority.canonical_path.write_bytes(r.snapshot_bytes)
+        assert org.workflow_authority.recover()=='rehydrated_coherent'
+        before=rows(org)
+        assert asyncio.run(org.workflow_drafts.claim(f['receipt']['root_task_id'])) is None
+        # The completed interpretation is fixture history, never fresh callback
+        # evidence. Actual current queued work revalidates after the next writer.
+        checked('post',base+'/agents',dict(name='c5_unrelated_worker',role='worker',team='engineering',executor='claude',description='C5 unrelated writer',system_prompt='worker'))
+        before=rows(org)
+        try: asyncio.run(org.workflow_drafts.claim(current['root_task_id']))
+        except DraftOwnershipError as exc: assert str(exc)=='workflow_activation_authority_stale'
+        else: raise AssertionError('stale schema2 queued draft was claimed')
+        try: asyncio.run(org.workflow_drafts.claim(sibling_receipt['root_task_id']))
+        except DraftOwnershipError as exc: assert str(exc)=='workflow_activation_authority_stale'
+        else: raise AssertionError('stale unrelated-team draft was claimed')
+        assert tuple(org.db.execute('SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)',(sibling_receipt['intent_id'],)).fetchone())==sibling_context
+        assert rows(org)==before
+        assert history(org)==preserved
+        for task_id in (current['root_task_id'],sibling_receipt['root_task_id']):
+            checked('post',base+'/tasks/'+task_id+'/cancel',{'rationale':'close the disposable C5 fixture','cascade':False})
+        # Native cancellations precede the closed-copy baseline. Drain only stale
+        # local queue notifications after both tasks are terminal; no launch.
+        while not state.queue._queue.empty(): state.queue._queue.get_nowait()
+        before=rows(org)
+        preflight=checked('get',base+'/portability-preflight')
+        assert preflight['classification']['rejections']==[] and preflight['eligible'],preflight
+        assert rows(org)==before
+        retained=history(org);coherent=ready(org);retained_profiles=profile_closure()
+        client.close()
+        asyncio.run(state.close_all())
+        state.metrics_store.close()
+        state.metrics_store=None;state.direct_connect_authority_store=None
+        # Each owner is closed/checkpointed before file hashing or a copy.
+        assert not list(container.root.rglob('*-wal'))
+        if restore:
+            backup=venue/'closed-backup'
+            copied=venue/'restored-runtime'
+            shutil.copytree(container.root,backup,symlinks=True,copy_function=shutil.copy2)
+            assert _closed_files(backup)==_closed_files(container.root)
+            shutil.copytree(backup,copied,symlinks=True,copy_function=shutil.copy2)
+            assert _closed_files(copied)==_closed_files(backup)
+            target=RuntimeDir.load(copied)
+            # Existing official registry/path owner, no export/import API.
+            runtimes.register(target.root)
+            registration=runtimes.load()
+            assert registration.active==copied.resolve() and copied.resolve() in registration.registered
+        else:
+            target=container
+        # Reconstruct the actual containing daemon/registration owner and its
+        # machine profile coordinator, including every shared-store owner.
+        state=DaemonState.from_runtime(target,settings)
+        assert state.runtime.root.resolve()==target.root.resolve()
+        assert state.broken_orgs=={} and set(state.orgs)=={'alpha'}
+        reopened=state.orgs['alpha']
+        assert reopened.root.resolve()==(target.root/'orgs/alpha').resolve()
+        owned.append(reopened)
+        assert history(reopened)==retained
+        assert ready(reopened)==coherent
+        # Shared profile requirements remain at owned, unchanged registered
+        # paths. This checks same-machine restore, not an invented path rewrite.
+        assert profile_closure()==retained_profiles
+        assert state.profile_coordinator._closure_coherent(reopened)
+        client=TestClient(create_app(state));client.headers.update({'Authorization':'Bearer '+paths.ensure_token()})
+        frozen=rows(reopened)
+        for old_request,receipt in ((f['request'],f['receipt']),(request,current),(sibling,sibling_receipt)):
+            replay=checked('post',base+'/workflows/activations',old_request)
+            assert replay['replayed']
+            for key in ('activation_id','root_task_id','intent_id','context_digest','template','original_request_digest'):
+                assert replay[key]==receipt[key]
+            fetched=checked('get',base+'/workflows/activations/'+receipt['activation_id'])
+            assert fetched['context_digest']==receipt['context_digest']
+        assert rows(reopened)==frozen
+        with sqlite3.connect(reopened.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+            assert reader.execute('SELECT COUNT(*) FROM task_results WHERE task_id IN (?,?)',(current['root_task_id'],sibling_receipt['root_task_id'])).fetchone()[0]==0
+        preflight=checked('get',base+'/portability-preflight')
+        assert preflight['eligible'] and preflight['classification']['rejections']==[],preflight
+        assert rows(reopened)==frozen
+        print(json.dumps(dict(source_sha=revision,python=sys.executable,version=sys.version,action='compatible-closed-restore' if restore else 'current-graph-reopen',profile='explicit' if explicit else 'none',schema1=retained,schema2_digest=coherent.snapshot_digest,registered_root=str(runtimes.load().active),graph=current['activation_id'],actual_result_rows=0,execution='schema1 completed fixture data only; no current provider/callback or migration utility execution',physical_no_write='not proved by row/file readback'),sort_keys=True))
+finally:
+    client.close()
+    asyncio.run(state.close_all())
+    if state.metrics_store is not None: state.metrics_store.close()
+    for org in owned:
+        try: org.close()
+        except sqlite3.ProgrammingError: pass
+'''
+    if restore:
+        # Location only: this environment value grants no capability or approval.
+        # A separately accepted M task/receipt must provision the owned root.
+        supplied = os.environ.get('HAPPYRANCH_TEST_ROSTER_M_VENUE')
+        assert supplied, 'HELD: separately provisioned and authorized M venue required'
+        parent = Path(supplied)
+        assert parent.is_absolute() and not parent.is_symlink() and parent.is_dir()
+        assert parent.stat().st_uid == os.getuid()
+        venue = parent / ('C5-' + tmp_path.name)
+    else:
+        venue = tmp_path / 'C5-graph-venue'
+    assert not venue.exists()
+    venue.mkdir(mode=0o700)
+    actual = subprocess.run([sys.executable,'-I','-c',script,binding['source'],binding['revision'],str(venue),
+                             str(restore),str(explicit_profile)],capture_output=True,text=True,timeout=120)
+    assert actual.returncode == 0, (actual.stdout,actual.stderr)
+    receipt = json.loads(actual.stdout.splitlines()[-1])
+    assert receipt['source_sha'] == binding['revision']
+    assert receipt['action'] == ('compatible-closed-restore' if restore else 'current-graph-reopen')
+    assert receipt['profile'] == ('explicit' if explicit_profile else 'none')
+    assert receipt['actual_result_rows'] == 0
+    (tmp_path / 'C5-graph-process-receipt.json').write_text(json.dumps({'receipt':receipt,'exit':actual.returncode},sort_keys=True))
+
 @pytest.mark.parametrize('roster_kind,reader_kind', [
     ('human', 'current'), ('legacy-agent-control', 'current'),
+    ('human','current-graph'), ('human','current-graph-explicit-profile'),
+    ('human','compatible-restore'), ('human','compatible-restore-explicit-profile'),
     ('legacy-agent-control', 'pinned-b317-schema2-refusal'),
     ('legacy-agent-control', 'pinned-b317-schema1-control'),
-], ids=['human-current', 'legacy-agent-current', 'b317-schema2-refusal', 'b317-schema1-control'])
+], ids=['human-current', 'legacy-agent-current', 'current-graph', 'current-graph-explicit-profile',
+        'compatible-restore', 'compatible-restore-explicit-profile', 'b317-schema2-refusal', 'b317-schema1-control'])
 def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: Path,
                                                        roster_kind: str, reader_kind: str) -> None:
     """Real current publication/cold reader plus a pinned admission input.
@@ -1259,6 +1561,10 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
     activation/receipt fixtures, compatible M restore and old-source execution
     are separately required; this case does not substitute for those proofs.
     """
+    if reader_kind.startswith(('current-graph','compatible-restore')):
+        _c5_shipping_graph_process(tmp_path,restore=reader_kind.startswith('compatible-restore'),
+                                   explicit_profile=reader_kind.endswith('explicit-profile'))
+        return
     from tests.helpers.integration_stub_guard.guard import manifest
     binding = manifest()
     old_sha = 'b3179b123fddbb0f0f604ed9e0d148f1b23455f3'
@@ -1324,10 +1630,16 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
                '--source-sha', reader_sha, '--root', str(runtime), '--org', 'test',
                '--operation', 'capture-admission', '--expect', expected,
                '--snapshot-digest', hashlib.sha256(raw).hexdigest()]
-    actual = subprocess.run(command, env=reader_environment, capture_output=True, text=True, timeout=30)
+    if expected == 'admitted': command.append('--positive-graph')
+    actual = subprocess.run(command, env=reader_environment, capture_output=True, text=True, timeout=90)
     assert actual.returncode == 0, (actual.stdout, actual.stderr)
     receipt = json.loads(actual.stdout.splitlines()[-1])
     assert receipt['actual'] == expected and receipt['persisted_readback_unchanged']
+    if expected == 'admitted':
+        assert receipt['positive_graph_receipt']['root_task_id']
+        assert receipt['positive_graph_receipt']['execution_started'] is False
+    else:
+        assert receipt['positive_graph_receipt'] is None
     assert receipt['reader_source_sha'] == reader_sha
     assert receipt['snapshot_digest'] == hashlib.sha256(raw).hexdigest()
     (tmp_path / 'C5-current-reader-receipt.json').write_text(json.dumps(

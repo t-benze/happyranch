@@ -26,13 +26,17 @@ def validate_team_membership(paths: OrgPaths, teams: TeamsRegistry) -> None:
     """Require matching roles and membership in both canonical directions.
 
     Active definitions must be registered exactly once. A declared pending
-    worker remains valid enrollment state; pending managers cannot execute.
+    worker or exactly registered bootstrap manager remains valid enrollment
+    state. Attachment does not make pending identities executable or ready
+    for workflow authority publication.
     Report all drift so partial three-file migrations fail attachment clearly.
     """
     known_teams = set(teams.teams())
     active = {agent.name: agent for agent in prompt_loader.list_agents(paths)}
     pending = {agent.name: agent for agent in prompt_loader.list_pending(paths)}
     drift: list[str] = []
+    for name in sorted(active.keys() & pending.keys()):
+        drift.append(f"  - agent {name!r} has both active and pending definitions")
     memberships: dict[str, list[tuple[str, str]]] = {}
     for team in teams.teams():
         manager = teams.manager_for_team(team)
@@ -41,7 +45,7 @@ def validate_team_membership(paths: OrgPaths, teams: TeamsRegistry) -> None:
             entries.insert(0, (manager.name, "manager"))
         for name, role in entries:
             memberships.setdefault(name, []).append((team, role))
-            agent = active.get(name) or (pending.get(name) if role == "worker" else None)
+            agent = active.get(name) or pending.get(name)
             if agent is None or agent.team != team or agent.role != role:
                 drift.append(f"  - teams.yaml {team!r} {role} {name!r} has no matching {role} agent file")
     for name, registrations in memberships.items():

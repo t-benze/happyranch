@@ -31,6 +31,11 @@ enablement, deployment or a Phase1-completion claim.
 
 ## Founder-managed Default (THR296)
 
+Attachment and executable authority are distinct. An exactly registered pending
+bootstrap manager can attach without a current manager grant; owner admission and
+workflow capture still require its ordinary supported promotion to ACTIVE. Active/
+pending duplicate identities or mismatched pending manager role/team refuse.
+
 Founder-managed teams use a human principal without an executable manager.
 Explicit active worker owners may run ordinary roots and self-decompose; they
 have no peer/fanout, manager administration, policy or template authority.
