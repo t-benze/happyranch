@@ -195,9 +195,12 @@ def execute(commands, source: Path, root: Path, env: dict[str, str], uv: Path,
            'parent_receipt': str(api['receipts'] / 'collection-parent.json'),
            'child_receipt': str(api['receipts'] / 'collection-child.json'),
            'events': str(api['receipts'] / 'collection-controls.jsonl'),
+           # Complete four non-test families in pinned CPython3.14.4's
+           # Tools/build/freeze_modules.py; source hashes bind every member.
+           # Frozen test fixtures and unknown code origins remain excluded.
            'frozen_code_names': ['<frozen ' + n + '>' for n in (
                'importlib._bootstrap','importlib._bootstrap_external','zipimport','abc','codecs',
-               'io','_collections_abc','os','site','stat','importlib.util','importlib.machinery',
+               'io','_collections_abc','_sitebuiltins','os','site','stat','importlib.util','importlib.machinery',
                'ntpath','posixpath','genericpath','runpy')],
            'native_runtime': api['identity'](api['receipts'] / 'python-runtime.json')}
     config_path = api['save']('collection-config.json', cfg)

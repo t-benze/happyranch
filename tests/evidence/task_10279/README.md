@@ -67,6 +67,25 @@ relaxed child assertion follows. Existing parent-owned directory cleanup include
 the identity temp files. Only authentic fresh collection receipts can establish
 discovery; both earlier failures remain failures.
 
+Original run37920998265 at evidencebec6a015 reached active pre-site controls,
+then refused `<frozen _sitebuiltins>` with parent exit87 before pytest startup.
+The original receipt has no complete child tail, collection count, effective
+plugin list or ip outcomes; they remain unknown. Three synthetic denial controls
+executed no effects, and the neutral profile sentinel was observed. Complete
+native tables506 before/507 after attribute no owned survivors; source manifests
+are equal. These are scoped early-refusal/cleanup facts, never discovery PASS.
+
+The exact frozen list now includes the missing `_sitebuiltins`, completing all
+17 members of the four non-test families declared in pinned CPython3.14.4's
+`Tools/build/freeze_modules.py`. Every corresponding source already matches the
+existing stdlib hash ledger. Normal site startup imports `_sitebuiltins` and
+constructs builtin quit/exit/license/help objects in memory. Its constructors
+store values and filename strings; deferred license reads, pager, pydoc and exit
+calls do not execute during that startup. Frozen test fixtures, unknown origins
+and every launch/body/provider refusal stay excluded. No native observer,
+permission, production-parent or source change is made. Actual fresh execution
+and its full tail remain required; all prior failures remain failures.
+
 ## Historical TASK10318 direct-root browser-only renewal
 
 Source pin remains294beab846efbceecc3fa5dbfb77ff40c95fa5af. Original
