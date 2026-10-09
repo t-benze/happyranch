@@ -30,6 +30,33 @@ def write(path, data):
     Path(path).write_text(json.dumps(data, sort_keys=True, indent=2) + '\n')
 
 
+def isolated_directories(root):
+    """Bounded provenance only; never follow links or admit nonempty state."""
+    root = Path(root)
+    rows, total = [], 0
+    pending = [root / name for name in ('home', 'config', 'tmp', 'cache', 'daemon')]
+    while pending:
+        path = pending.pop()
+        assert len(rows) < 128, 'isolated directory provenance entry cap'
+        info = path.lstat()
+        row = {'path': str(path.relative_to(root)), 'uid': info.st_uid,
+               'mode': info.st_mode, 'size': info.st_size}
+        if path.is_symlink():
+            row.update(kind='symlink', target=os.readlink(path))
+        elif path.is_dir():
+            row['kind'] = 'directory'
+            pending.extend(sorted(path.iterdir(), reverse=True))
+        elif path.is_file():
+            total += info.st_size
+            assert total <= 1024 * 1024, 'isolated directory provenance byte cap'
+            row.update(kind='file', sha256=digest(path))
+        else:
+            raise AssertionError('unclassified isolated directory entry')
+        rows.append(row)
+    return {'entries': sorted(rows, key=lambda row: row['path']),
+            'regular_file_bytes': total, 'entry_cap': 128, 'byte_cap': 1024 * 1024}
+
+
 def parent(config_path):
     config = json.loads(config_path.read_text())
     source = Path(config['source'])
@@ -42,6 +69,7 @@ def parent(config_path):
     # stub creation and group cleanup execute unchanged.
     original = subprocess.Popen
     launches = []
+    interpreter_observations = []
     wrapped = False
 
     def popen(argv, *args, **kwargs):
@@ -60,6 +88,24 @@ def parent(config_path):
     subprocess.Popen = popen
     try:
         module = runpy.run_path(str(target), run_name='collection_source_parent')
+        original_verify = module['verify_interpreter_binding']
+
+        def verify(env, python, uv, source, revision):
+            root = Path(env['HOME']).parent
+            before = isolated_directories(root)
+            row = {'root': str(root), 'before': before,
+                   'uv': str(uv), 'uv_sha256': digest(uv),
+                   'operation': 'unchanged source verify_interpreter_binding',
+                   'source_parent_sha256': digest(target)}
+            interpreter_observations.append(row)
+            assert all(not any((root / name).iterdir())
+                       for name in ('home', 'config', 'tmp', 'cache'))
+            try:
+                return original_verify(env, python, uv, source, revision)
+            finally:
+                row['after'] = isolated_directories(root)
+
+        module['main'].__globals__['verify_interpreter_binding'] = verify
         code = module['main'](['--', 'pytest', *ARGS])
         return code
     finally:
@@ -67,6 +113,7 @@ def parent(config_path):
         write(config['parent_receipt'], {'source': PIN, 'parent_sha256': digest(target),
             'supported_selection': ['pytest', *ARGS], 'overlay_sha256': digest(HERE),
             'parent_launches': launches, 'pytest_child_wrapped': wrapped,
+            'interpreter_isolated_directory_observations': interpreter_observations,
             'scope': 'source parent execution; original source parent and provider guard unchanged'})
 
 
@@ -92,6 +139,14 @@ def child(config_path):
         'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR',
         'HAPPYRANCH_RUNTIME', 'HAPPYRANCH_DAEMON_TOKEN', 'HAPPYRANCH_ORG_SLUG'))
     empty = {name: not any((owned / name).iterdir()) for name in ('home', 'config', 'tmp')}
+    if not all(empty.values()):
+        refusal = {'status': 'bootstrap-isolation-refused-before-site-pytest',
+                   'source': PIN, 'uid': os.getuid(), 'empty_directories': empty,
+                   'isolated_directory_snapshot': isolated_directories(owned),
+                   'collection_executed': False,
+                   'counts_errors_launch_controls': 'not established; controls not yet active'}
+        write(Path(config['receipt_root']) / 'collection-bootstrap-refusal.json', refusal)
+        print(json.dumps(refusal, sort_keys=True), file=sys.stderr, flush=True)
     assert all(empty.values())
     # The unchanged parent has already performed its bounded uv interpreter
     # identity command. Its new invocation-owned cache may contain uv data;

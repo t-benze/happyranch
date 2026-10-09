@@ -42,6 +42,17 @@ remain unchanged. Source PR1017 stays294beab846efbceecc3fa5dbfb77ff40c95fa5af.
 Root10318 owns integration/review/QA/merge/postmain/deployment disposition.
 Historical original evidence below retains its actual immutable scope.
 
+Original run37918879544 at evidencec17f8c5e failed the empty-home/config/tmp
+assertion before site/pytest and before the launch/body controls became active.
+Its actual collection counts, effective plugins and probes are unestablished;
+acquisition exit0 is not a discovery result. Native cleanup and unchanged source
+manifests retain only their actual scopes. The helper now records bounded
+name/type/UID/mode/size/hash/link provenance of the isolated directories before
+and after the unchanged parent uv interpreter check and on early child refusal.
+It follows no symlink, caps128 entries/1MiB regular-file bytes, and keeps the
+strict empty-directory refusal. Tool-owned contents are not automatically
+admitted; actual refusal receipts must be inspected before any further retry.
+
 ## Historical TASK10318 direct-root browser-only renewal
 
 Source pin remains294beab846efbceecc3fa5dbfb77ff40c95fa5af. Original
