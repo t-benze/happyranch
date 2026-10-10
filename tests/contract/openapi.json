@@ -2797,6 +2797,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/pause-overview": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "before",
+            "query"
+          ],
+          [
+            "limit",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/tasks/roots": {
       "GET": {
         "params": [
@@ -2971,6 +2997,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/pause": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "422"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/tasks/{task_id}/progress": {
       "POST": {
         "params": [
@@ -3042,6 +3090,28 @@
         "responses": [
           "200",
           "410",
+          "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/resume": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
           "422"
         ]
       }

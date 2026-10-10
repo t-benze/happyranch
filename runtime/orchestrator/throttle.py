@@ -164,7 +164,20 @@ class ProviderThrottle:
             )
             attempts = 1 + len(schedule)
             result: Any = None
-            for attempt in range(attempts):
+            from runtime.orchestrator.task_pause import current_invocation
+            invocation = current_invocation()
+            first_attempt = 0
+            if invocation is not None and backoff_seconds != ():
+                with invocation.store.db._lock:
+                    row = invocation.store.row_uncommitted(invocation.store.root_uncommitted(invocation.task.id)["id"])
+                    retry = invocation._entry(row)["retry"]
+                if retry and retry["boundary"] == "provider":
+                    first_attempt = retry["ordinal"]
+                    schedule = tuple(retry["schedule"])
+                    attempts = 1 + retry["budget"]
+                elif invocation.owner not in {"draft", "recovery"}:
+                    invocation.retry_attempt(boundary="provider", ordinal=0, budget=len(schedule), schedule=tuple(schedule))
+            for attempt in range(first_attempt, attempts):
                 self._spacing_gate(provider)
                 result = launch()
                 # The reactive 429 retry fires ONLY for a launch that BOTH
@@ -185,6 +198,9 @@ class ProviderThrottle:
                 if not retry_worthy or attempt == attempts - 1:
                     return result
                 backoff = schedule[attempt]
+                if invocation is not None:
+                    invocation.retry_attempt(boundary="provider", ordinal=attempt + 1,
+                                             budget=len(schedule), backoff=backoff, schedule=tuple(schedule))
                 if on_event is not None:
                     self._emit(
                         on_event,

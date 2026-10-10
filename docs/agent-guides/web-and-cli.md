@@ -1418,3 +1418,8 @@ After review, `uv run python scripts/generate_openapi_snapshot.py --write`
 atomically replaces `tests/contract/openapi.json`. The summarizer preserves workflow input discriminators. The former Python
 contract test is retired; Web/Swift still consume the snapshot and route
 classification. This operator does not run tests.
+
+
+## Root task Pause and Resume (THR-292)
+
+Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. Backend PR1 supplies transport; browser controls/bilingual UI belong to PR2. [Contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).

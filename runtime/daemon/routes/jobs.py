@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 from collections import deque
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +19,8 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.jobs_runner import run_job as _spawn_job
 from runtime.daemon.jobs_runner import _interpreter_binary, fire_resume_check_for_job
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.orchestrator.task_pause import assert_origin_unheld, fingerprint
+from runtime.infrastructure.task_pause_controls import PauseControlError, normal_session_entry
 from runtime.models import (
     JobInterpreter,
     JobRecord,
@@ -258,6 +262,9 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         )
     if org.sessions.is_recovery_session(body.task_id, agent, body.session_id):
         raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
+    from runtime.workflows.recovery import classify_task
+    if classify_task(org.db, body.task_id, org_slug=org.slug).kind != "legacy":
+        raise HTTPException(status_code=403, detail={"code": "workflow_document_only"})
     scope_id = body.task_id
 
     # 4. Title.
@@ -313,37 +320,59 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     else:
         effective_max_runtime = _DEFAULT_BOUNDED_RUNTIME_SECONDS
 
-    # Effect: allocate id, insert row, audit.
+    # The authentic submit session is persisted with the pending job. It
+    # grants no exception unless captured as positively running at Pause.
+    store = getattr(org.db, "_task_pause_store", None)
     async with org.db_lock:
-        job_id = org.db.next_job_id()
-        record = JobRecord(
-            id=job_id,
-            task_id=scope_id,
-            agent_name=agent,
-            title=title,
-            rationale=rationale,
-            script_text=body.script,
-            interpreter=JobInterpreter(body.interpreter),
-            cwd_hint=cwd_hint,
-            status=JobStatus.PENDING,
-            review_required=body.review_required,
-            persistent=body.persistent,
-            max_runtime_seconds=effective_max_runtime,
-            created_at=_now_iso(),
-        )
-        org.db.insert_job(record)
-
-    audit = AuditLogger(org.db)
-    audit.log_job_submitted(
-        task_id=scope_id,
-        job_id=job_id,
-        agent=agent,
-        title=title,
-        interpreter=body.interpreter,
-        cwd_hint=cwd_hint,
-        byte_size=len(body.script.encode("utf-8")),
-        line_count=body.script.count("\n") + 1,
-    )
+        with org.sessions.binding_lease(scope_id, agent):
+            if org.sessions.get_active(scope_id, agent) != body.session_id:
+                raise HTTPException(status_code=409, detail={"code": "session_mismatch"})
+            if org.sessions.is_recovery_session(scope_id, agent, body.session_id):
+                raise HTTPException(status_code=403, detail={"code": "recovery_purpose_forbidden"})
+            writer = store.writer(scope_id) if store is not None else nullcontext((None, None))
+            with writer as (root, control):
+                job_id = org.db.next_job_id()
+                record = JobRecord(
+                    id=job_id,
+                    task_id=scope_id,
+                    agent_name=agent,
+                    title=title,
+                    rationale=rationale,
+                    script_text=body.script,
+                    interpreter=JobInterpreter(body.interpreter),
+                    cwd_hint=cwd_hint,
+                    status=JobStatus.PENDING,
+                    review_required=body.review_required,
+                    persistent=body.persistent,
+                    max_runtime_seconds=effective_max_runtime,
+                    created_at=_now_iso(),
+                )
+                if store is None:
+                    org.db.insert_job(record)
+                else:
+                    org.db._insert_job_uncommitted(record)
+                    control = control or store.ensure_uncommitted(root["id"])
+                    control["journal"]["entries"].append({
+                        "id": f"job:{job_id}", "org": org.slug, "root_task_id": root["id"],
+                        "task_id": scope_id, "agent": agent, "session_id": body.session_id,
+                        "owner": "job", "owner_identity": {"job_id": job_id},
+                        "fingerprint": fingerprint(org.db.get_task(scope_id)), "generation": control["generation"],
+                        "phase": "pending_job", "retry": {}, "context": {}, "started_at": None,
+                        "captured_generation": None})
+                    digest = _job_submission_digest(record)
+                    audit_id = org.db.insert_audit_log_uncommitted(scope_id, agent, "job_submitted", {
+                        "script_request_id": job_id, "title": title, "interpreter": body.interpreter,
+                        "cwd_hint": cwd_hint, "byte_size": len(body.script.encode("utf-8")),
+                        "line_count": body.script.count("\n") + 1,
+                        "submit_session_id": body.session_id, "submission_digest": digest})
+                    control["journal"]["entries"][-1]["context"]["job_submission"] = {
+                        "audit_id": audit_id, "digest": digest}
+                    store.save_journal_uncommitted(control)
+    if store is None:
+        AuditLogger(org.db).log_job_submitted(
+            task_id=scope_id, job_id=job_id, agent=agent, title=title,
+            interpreter=body.interpreter, cwd_hint=cwd_hint,
+            byte_size=len(body.script.encode("utf-8")), line_count=body.script.count("\n") + 1)
 
     # Founder-review path: leave pending, return.
     if body.review_required:
@@ -378,7 +407,7 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
         run_result = await _run_job_core(
             org, job_id=job_id,
             cwd_override=None, timeout_override=None,
-            trigger="agent", trigger_actor=agent,
+            trigger="agent", trigger_actor=agent, submit_session_id=body.session_id,
         )
     except HTTPException:
         # cwd_missing / interpreter_unavailable / invalid_cwd_override —
@@ -389,6 +418,7 @@ async def submit_job(slug: str, body: SubmitBody, org: OrgDep) -> dict:
     return {
         "id": job_id,
         "status": run_result["status"],
+        **({"deferred": True, "code": run_result["code"]} if run_result.get("deferred") else {}),
         "created_at": record.created_at,
         "started_at": run_result.get("started_at"),
         "cwd_resolved": run_result.get("cwd_resolved"),
@@ -813,11 +843,64 @@ def _resolve_cwd(
     return workspace_root
 
 
+def _job_submission_digest(record: JobRecord) -> str:
+    fields = ("id", "task_id", "agent_name", "title", "rationale", "script_text", "interpreter",
+              "cwd_hint", "review_required", "persistent", "max_runtime_seconds", "created_at")
+    value = record.model_dump(mode="json")
+    return hashlib.sha256(_json.dumps({key: value[key] for key in fields},
+        sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def _authenticated_pending_submission(org, record: JobRecord, entry: dict | None) -> bool:
+    """Server submission provenance permits unheld delivery after its SID ends.
+
+    This proves only the original pending auto-job; it gives no live-session
+    exception, founder approval, new submission or replacement entitlement.
+    """
+    if (entry is None or entry["phase"] != "pending_job" or record.review_required
+            or entry["org"] != org.slug or entry["task_id"] != record.task_id
+            or entry["agent"] != record.agent_name or entry["owner_identity"].get("job_id") != record.id):
+        return False
+    proof = entry["context"].get("job_submission")
+    if proof is None or proof["digest"] != _job_submission_digest(record):
+        return False
+    audit = org.db._conn.execute("SELECT task_id,agent,action,payload FROM audit_log WHERE id=?",
+                                (proof["audit_id"],)).fetchone()
+    if audit is None or tuple(audit[:3]) != (record.task_id, record.agent_name, "job_submitted"):
+        return False
+    try:
+        payload = _json.loads(audit["payload"])
+    except (ValueError, TypeError):
+        return False
+    return (isinstance(payload, dict) and payload.get("script_request_id") == record.id
+            and payload.get("submit_session_id") == entry["session_id"]
+            and payload.get("submission_digest") == proof["digest"])
+
+
+def _settle_pause_job(org, task_id: str, job_id: str, *, no_launch_proven: bool = False) -> None:
+    store = getattr(org.db, "_task_pause_store", None)
+    if store is None:
+        return
+    with store.writer(task_id) as (_, row):
+        job = org.db.get_job(job_id)
+        if row is not None and job is not None and job.status.value in {"completed", "failed", "rejected"}:
+            if no_launch_proven:
+                row["journal"]["entries"] = [e for e in row["journal"]["entries"]
+                    if not (e["owner"] == "job" and e["owner_identity"].get("job_id") == job_id)]
+            else:
+                for entry in row["journal"]["entries"]:
+                    if entry["owner"] == "job" and entry["owner_identity"].get("job_id") == job_id:
+                        entry["phase"] = "unknown"
+                        entry["started_at"] = entry["captured_generation"] = None
+            store.save_journal_uncommitted(row)
+
+
 async def _run_job_core(
     org, *, job_id: str,
     cwd_override: str | None, timeout_override: int | None,
     trigger: str = "founder",
     trigger_actor: str | None = None,
+    submit_session_id: str | None = None,
 ) -> dict:
     """Shared core for HTTP and in-process run paths.
 
@@ -836,6 +919,8 @@ async def _run_job_core(
             detail={"code": "unknown_job", "job_id": job_id},
         )
 
+    if trigger != "agent":
+        assert_origin_unheld(org, record.task_id)
     if record.status != JobStatus.PENDING:
         raise HTTPException(
             status_code=409,
@@ -883,45 +968,128 @@ async def _run_job_core(
             },
         )
 
-    # Allocate output paths under <runtime>/orgs/<slug>/jobs/.
+    # Reserve the launch before any output or runner side effect. A committed
+    # winner drains even if Pause lands before asynchronous process creation.
     jobs_dir = org.root / "jobs"
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-    stdout_path = jobs_dir / f"{job_id}.out"
-    stderr_path = jobs_dir / f"{job_id}.err"
-    stdout_path.write_bytes(b"")
-    stderr_path.write_bytes(b"")
-
+    stdout_path, stderr_path = jobs_dir / f"{job_id}.out", jobs_dir / f"{job_id}.err"
     now = _now_iso()
-    try:
-        org.db.transition_job_to_running(
-            job_id,
-            reviewer=reviewer,
-            reviewed_at=now,
-            started_at=now,
-            cwd_resolved=str(cwd_resolved),
-            max_runtime_seconds=timeout,
-            stdout_path=str(stdout_path),
-            stderr_path=str(stderr_path),
-        )
-    except ValueError:
-        raise HTTPException(status_code=409, detail={"code": "not_pending"})
-
+    store = getattr(org.db, "_task_pause_store", None)
     audit = AuditLogger(org.db)
-    if trigger == "agent":
-        audit.log_job_auto_started(
-            task_id=record.task_id, job_id=job_id, agent=reviewer,
-            cwd_resolved=str(cwd_resolved),
-            timeout_seconds=timeout,
-            interpreter=record.interpreter.value,
-            persistent=record.persistent,
-        )
+    if store is not None:
+        async with org.db_lock:
+            lease = org.sessions.binding_lease(record.task_id, record.agent_name) if trigger == "agent" else nullcontext()
+            with lease:
+                with store.writer(record.task_id) as (root, control):
+                    current = org.db.get_job(job_id)
+                    if current is None or current.status != JobStatus.PENDING:
+                        raise HTTPException(status_code=409, detail={"code": "not_pending"})
+                    if trigger != "agent":
+                        try:
+                            store.held_uncommitted(record.task_id)
+                        except PauseControlError as exc:
+                            raise HTTPException(status_code=409, detail=exc.detail) from exc
+                    entries = [] if control is None else control["journal"]["entries"]
+                    job_entry = next((e for e in entries if e["owner"] == "job"
+                                      and e["owner_identity"].get("job_id") == job_id), None)
+                    task = org.db.get_task(record.task_id)
+                    effective = bool(control and control["held"] and root["status"] not in {"completed", "failed", "cancelled", "superseded"})
+                    if trigger == "agent":
+                        sid = submit_session_id if submit_session_id is not None else (job_entry["session_id"] if job_entry else None)
+                        exact = bool(_authenticated_pending_submission(org, current, job_entry)
+                                     and sid == job_entry["session_id"] and trigger_actor == record.agent_name
+                                     and task is not None and task.cancelled_at is None
+                                     and task.status.value in {"pending", "in_progress"}
+                                     and task.assigned_agent == record.agent_name)
+                        exception = exact and effective and task.current_session_id == sid and any(
+                            e["phase"] == "running" and normal_session_entry(org.db._conn, e)
+                            and e["task_id"] == record.task_id and e["agent"] == record.agent_name and e["session_id"] == sid
+                            and e["captured_generation"] == control["generation"]
+                            for e in entries) and org.sessions.get_active(record.task_id, record.agent_name) == sid \
+                            and not org.sessions.is_recovery_session(record.task_id, record.agent_name, sid)
+                        if not exact or (effective and not exception):
+                            return {"id": job_id, "status": "pending", "deferred": True, "code": "root_paused" if effective else "job_owner_unavailable"}
+                    if job_entry is None:
+                        if task is None:
+                            raise HTTPException(status_code=409, detail={"code": "pause_control_unavailable"})
+                        control = control or store.ensure_uncommitted(root["id"])
+                        job_entry = {"id": f"job:{job_id}", "org": org.slug, "root_task_id": root["id"],
+                            "task_id": record.task_id, "agent": record.agent_name,
+                            "session_id": None, "owner": "job", "owner_identity": {"job_id": job_id},
+                            "fingerprint": fingerprint(task), "generation": control["generation"],
+                            "phase": "pending_job", "retry": {}, "context": {},
+                            "started_at": None, "captured_generation": None}
+                        control["journal"]["entries"].append(job_entry)
+                    if current is None or current.status != JobStatus.PENDING:
+                        raise HTTPException(status_code=409, detail={"code": "not_pending"})
+                    if not org.db._transition_job_to_running_uncommitted(
+                            job_id, reviewer=reviewer, reviewed_at=now, started_at=now,
+                            cwd_resolved=str(cwd_resolved), max_runtime_seconds=timeout,
+                            stdout_path=str(stdout_path), stderr_path=str(stderr_path)):
+                        raise HTTPException(status_code=409, detail={"code": "not_pending"})
+                    if job_entry is not None:
+                        job_entry["phase"] = "possible_launch"
+                        job_entry["captured_generation"] = control["generation"] if effective else None
+                        store.save_journal_uncommitted(control)
+                    payload = dict(script_request_id=job_id, cwd_resolved=str(cwd_resolved),
+                                   timeout_seconds=timeout, interpreter=record.interpreter.value)
+                    if trigger == "agent":
+                        payload.update(agent=reviewer, persistent=record.persistent)
+                    else:
+                        payload.update(reviewer=reviewer)
+                    org.db.insert_audit_log_uncommitted(record.task_id, reviewer,
+                        "job_auto_started" if trigger == "agent" else "job_run_started", payload)
+        try:
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            stdout_path.write_bytes(b"")
+            stderr_path.write_bytes(b"")
+        except OSError:
+            org.db.transition_job_to_terminal(job_id, status=JobStatus.FAILED,
+                exit_code=None, finished_at=_now_iso(), duration_ms=0,
+                stdout_head=None, stderr_head=None, reason="spawn_failed")
+            _settle_pause_job(org, record.task_id, job_id, no_launch_proven=True)
+            fire_resume_check_for_job(org, job_id)
+            raise
     else:
-        audit.log_job_run_started(
-            task_id=record.task_id, job_id=job_id, reviewer=reviewer,
-            cwd_resolved=str(cwd_resolved),
-            timeout_seconds=timeout,
-            interpreter=record.interpreter.value,
-        )
+        # Allocate output paths under <runtime>/orgs/<slug>/jobs/.
+        jobs_dir = org.root / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        stdout_path = jobs_dir / f"{job_id}.out"
+        stderr_path = jobs_dir / f"{job_id}.err"
+        stdout_path.write_bytes(b"")
+        stderr_path.write_bytes(b"")
+
+        now = _now_iso()
+        try:
+            org.db.transition_job_to_running(
+                job_id,
+                reviewer=reviewer,
+                reviewed_at=now,
+                started_at=now,
+                cwd_resolved=str(cwd_resolved),
+                max_runtime_seconds=timeout,
+                stdout_path=str(stdout_path),
+                stderr_path=str(stderr_path),
+            )
+        except ValueError:
+            raise HTTPException(status_code=409, detail={"code": "not_pending"})
+
+        audit = AuditLogger(org.db)
+        if trigger == "agent":
+            audit.log_job_auto_started(
+                task_id=record.task_id, job_id=job_id, agent=reviewer,
+                cwd_resolved=str(cwd_resolved),
+                timeout_seconds=timeout,
+                interpreter=record.interpreter.value,
+                persistent=record.persistent,
+            )
+        else:
+            audit.log_job_run_started(
+                task_id=record.task_id, job_id=job_id, reviewer=reviewer,
+                cwd_resolved=str(cwd_resolved),
+                timeout_seconds=timeout,
+                interpreter=record.interpreter.value,
+            )
+
 
     # Spawn the runner outside the request lifecycle.
     async def _run_and_persist() -> None:
@@ -962,6 +1130,7 @@ async def _run_job_core(
                 reason="spawn_failed",
             )
             # Bridge: terminal status committed — resume any tasks blocked on this job.
+            _settle_pause_job(org, record.task_id, job_id)
             fire_resume_check_for_job(org, job_id)
             return
         except Exception as exc:
@@ -980,6 +1149,7 @@ async def _run_job_core(
                 reason="internal_error",
             )
             # Bridge: terminal status committed — resume any tasks blocked on this job.
+            _settle_pause_job(org, record.task_id, job_id)
             fire_resume_check_for_job(org, job_id)
             return
 
@@ -999,6 +1169,9 @@ async def _run_job_core(
             return
 
         # Bridge: terminal status committed — resume any tasks blocked on this job.
+        # The current runner proves its direct process exit only. Its real
+        # result is settled normally while missing tree closure stays unknown.
+        _settle_pause_job(org, record.task_id, job_id)
         fire_resume_check_for_job(org, job_id)
 
         if result.status == "completed":

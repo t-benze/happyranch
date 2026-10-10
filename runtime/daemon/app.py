@@ -228,6 +228,10 @@ async def _lifespan(app: FastAPI):
                 trigger="startup_recovery", triggering_job_id=None,
             )
 
+    from runtime.orchestrator.task_pause import discover_pause_work
+    for org in state.orgs.values():
+        await discover_pause_work(org, state.queue)
+
     # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
     # BEFORE the thread workers start draining each org's queue, so retained
     # queued wakes and daemon_restart replacements are picked up exactly once

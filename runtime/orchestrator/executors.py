@@ -1027,6 +1027,7 @@ def _run_command(
     workspace.mkdir(parents=True, exist_ok=True)
 
     def _launch() -> ExecutorResult:
+        nonlocal cmd, input_text, recovery_deadline_monotonic
         start_time = time.monotonic()
         if running is not None:
             # ── THR-207 contained launch ──
@@ -1104,6 +1105,26 @@ def _run_command(
                     error="completion recovery live budget expired before provider launch",
                     failure_category="pre_launch",
                 )
+            from runtime.orchestrator.task_pause import current_invocation
+            invocation = current_invocation()
+            if invocation is not None:
+                if not invocation.attempt_committed:
+                    if not invocation.commit():
+                        raise RuntimeError("task launch cancelled before commitment")
+                    invocation.finalize()
+                final_spec = invocation.last_spec
+                cmd = list(final_spec.argv)
+                input_text = _SESSION_LIFETIME_PREAMBLE + invocation.prompt_reader() if input_text is not None else None
+                if invocation.owner == "recovery":
+                    # The task producer pins this only at real admission;
+                    # preclaim throttle/host waiting spends no opportunity.
+                    recovery_deadline_monotonic = invocation.recovery_deadline
+                    if recovery_deadline_monotonic is None or time.monotonic() >= recovery_deadline_monotonic:
+                        return ExecutorResult(
+                            success=False, duration_seconds=int(time.monotonic() - start_time), session_id=sid,
+                            error="completion recovery live budget expired before provider launch",
+                            failure_category="pre_launch",
+                        )
             try:
                 proc = isolation.launch_executor(
                     cmd,
@@ -1176,6 +1197,11 @@ def _run_command(
                 failure_category="post_launch_contract",
                 provider_launched=True,
             )
+        if running is None:
+            from runtime.orchestrator.task_pause import current_invocation
+            invocation = current_invocation()
+            if invocation is not None:
+                invocation.direct_terminal()
         full_stdout = stdout or ""
         full_stderr = stderr or ""
         stdout_tail = full_stdout[-_TAIL_BYTES:]
@@ -2246,6 +2272,7 @@ class CustomAdapterExecutor:
         workspace.mkdir(parents=True, exist_ok=True)
 
         def _launch() -> ExecutorResult:
+            nonlocal input_json
             start_time = time.monotonic()
 
             # ── Pre-launch integrity validation ────────────────────────
@@ -2301,6 +2328,18 @@ class CustomAdapterExecutor:
                     workspace=workspace, session_id=sid,
                 )
 
+                from runtime.orchestrator.task_pause import current_invocation
+                invocation = current_invocation()
+                if invocation is not None:
+                    if not invocation.attempt_committed:
+                        if not invocation.commit():
+                            raise RuntimeError("task launch cancelled before commitment")
+                        invocation.finalize()
+                    # Reuse the same validated adapter contract and executable;
+                    # only the prompt assembled after admission changes.
+                    adapter_input.prompt = _SESSION_LIFETIME_PREAMBLE + invocation.prompt_reader()
+                    input_json = adapter_input.model_dump_json()
+
                 try:
                     proc = subprocess.Popen(
                         [self._adapter_executable],
@@ -2354,6 +2393,11 @@ class CustomAdapterExecutor:
                     provider_launched=True,
                 )
 
+            if running is None:
+                from runtime.orchestrator.task_pause import current_invocation
+                invocation = current_invocation()
+                if invocation is not None:
+                    invocation.direct_terminal()
             full_stdout = stdout or ""
             full_stderr = stderr or ""
             stdout_tail = full_stdout[-_TAIL_BYTES:]

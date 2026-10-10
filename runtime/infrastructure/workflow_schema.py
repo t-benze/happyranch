@@ -1086,7 +1086,10 @@ def _validate_release_database(conn: sqlite3.Connection, layout: str) -> None:
     from runtime.orchestrator.authority import _release_schema_digest, _RELEASE_REFERENCE_HISTORIES
     rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name').fetchall()
     actual = hashlib.sha256('\n'.join(str(r[0]) for r in rows).encode()).hexdigest()
-    expected = tuple(_release_schema_digest(layout, history) for history in _RELEASE_REFERENCE_HISTORIES)
+    from runtime.infrastructure.task_pause_controls import validate_pause_schema
+    pause_layout = validate_pause_schema(conn, allow_absent=True)
+    expected = tuple(_release_schema_digest(layout, history, pause_layout=pause_layout)
+                     for history in _RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
         raise ValueError('workflow_submission_whole_database_mismatch')
 

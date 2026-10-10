@@ -156,3 +156,8 @@ more subtasks, more thread coordination, and more artifacts.
 - Jobs: `/orgs/:slug/jobs`, `/orgs/:slug/jobs/:job_id`, and `happyranch jobs ...`.
 - Retrieve: `/orgs/:slug/artifacts`, `happyranch artifacts ...`,
   `happyranch details`, and `happyranch recall`.
+
+
+## Pause and Resume
+
+Use `happyranch tasks --org ORG --pause-overview` for the read-only Task pause overview. It includes runnable Pending roots, Pausing blockers, Paused roots and separate terminal-drain diagnostics. --all-pages reads more bounded snapshots; incomplete evidence makes counts unavailable. `happyranch details TASK --org ORG --json` includes lifecycle and a separate pause projection. The overview never establishes that restarting is safe: other roots/background sessions may start. Controls use generation preconditions; on a stale conflict inspect again rather than automatically toggling. Persistence requires a pause-compatible runtime for rollback, even when controls are empty. Restart/deployment remains a separate operator action.

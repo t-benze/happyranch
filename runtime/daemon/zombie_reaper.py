@@ -132,6 +132,9 @@ def _sweep_org_zombies(
         if t is None:
             continue
 
+        from runtime.orchestrator.task_pause import pause_deferred_owner
+        if pause_deferred_owner(db, task_id):
+            continue
         from runtime.workflows.recovery import classify_task
         ownership = classify_task(db, task_id, org_slug=getattr(orchestrator, "_slug", None))
         if ownership.kind != "legacy":
@@ -345,6 +348,8 @@ async def zombie_reaper_loop(
 
         for org in list(state.orgs.values()):
             try:
+                from runtime.orchestrator.task_pause import discover_pause_work
+                await discover_pause_work(org, state.queue)
                 _sweep_org_zombies(
                     org.db,
                     now=now,

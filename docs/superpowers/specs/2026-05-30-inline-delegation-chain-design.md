@@ -1,5 +1,7 @@
 # Inline Delegation Chain — Design
 
+> Pause boundary superseded by [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md). Existing lifecycle, waiting and lineage meanings remain. A separate actual-root hold gates future commitment; committed sessions/results drain, deferred retries retain their owner, and unknown execution is not proof of quiescence. Cancel/stop/reject remain available. This annotation preserves the historical design below.
+
 > Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
 > are retired. Product invariants and acceptance obligations remain unchanged;
 > replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
