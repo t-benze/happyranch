@@ -1027,7 +1027,7 @@ def _run_command(
     workspace.mkdir(parents=True, exist_ok=True)
 
     def _launch() -> ExecutorResult:
-        nonlocal cmd, input_text
+        nonlocal cmd, input_text, recovery_deadline_monotonic
         start_time = time.monotonic()
         if running is not None:
             # ── THR-207 contained launch ──
