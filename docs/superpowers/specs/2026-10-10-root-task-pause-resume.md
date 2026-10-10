@@ -61,13 +61,28 @@ remaining schedule/budget and eligibility context. Retained v2 delivery carries 
 periodic discovery survive lost notifications and restart. They publish through
 the existing workflow/v2/ordinary owner paths, never an untagged substitute.
 Uncommitted callback recovery retains the actual original successful provider
-return and absolute recovery deadline; its opportunity is spent only by the
-final writer. Authentic late callbacks use existing INTEGER result consumers even while held, with no new provider launch;
+return, original/runtime provider SIDs and an unclaimed 120-second opportunity.
+Held deferral, preclaim checks, admission waits and restart do not start or
+expire that opportunity. The final real admission writer atomically pins its
+claim, binding, launch evidence and absolute deadline; the live monotonic
+budget and all launch/callback consumers use that same expiry. A claimed
+recovery never receives a new deadline on Resume, retry, duplicate delivery or
+restart; rollback before commitment leaves it unclaimed, while committed
+no-launch/crash cases remain spent under existing settlement rules. Authentic late callbacks use existing INTEGER result consumers even while held, with no new provider launch;
 consumed results are never replayed to create a continuation.
 
 A host lease, tracker registration, callback, task status or persisted PID is
 not running/quiescence proof. Real launch observation creates a drain blocker;
-actual compatible containment terminal/cleanup receipt can discharge it.
+actual compatible containment terminal/cleanup receipt can discharge only
+its own attempt. Before converting an original successful missing-callback
+return into recovery ownership, any unresolved original host/tree evidence
+is durably retained with its original session, owner, generation and context
+in a separate bounded unknown journal entry. It is no longer a producer.
+Held recovery deferral, another attempt's quiescent receipt, genuine callback
+settlement, terminal lifecycle and restart cannot discharge it. A genuinely
+settled known-quiescent original adds no unknown blocker; an unclaimed
+recovery alone is not execution, while actual recovery launch has its own
+drain evidence.
 Passthrough receipts describe absence of containment, not descendant cleanup.
 The existing job runner returns its genuine process status and streams, without a containment/tree receipt. Its terminal result settles normally while missing descendant closure remains an unknown job blocker. A failure before runner entry can discharge the proven no-launch reservation. Direct process communicate/wait closes that process only; missing tree evidence
 remains an explicit unknown blocker, including after terminal lifecycle or

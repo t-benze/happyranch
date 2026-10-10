@@ -1115,6 +1115,16 @@ def _run_command(
                 final_spec = invocation.last_spec
                 cmd = list(final_spec.argv)
                 input_text = _SESSION_LIFETIME_PREAMBLE + invocation.prompt_reader() if input_text is not None else None
+                if invocation.owner == "recovery":
+                    # The task producer pins this only at real admission;
+                    # preclaim throttle/host waiting spends no opportunity.
+                    recovery_deadline_monotonic = invocation.recovery_deadline
+                    if recovery_deadline_monotonic is None or time.monotonic() >= recovery_deadline_monotonic:
+                        return ExecutorResult(
+                            success=False, duration_seconds=int(time.monotonic() - start_time), session_id=sid,
+                            error="completion recovery live budget expired before provider launch",
+                            failure_category="pre_launch",
+                        )
             try:
                 proc = isolation.launch_executor(
                     cmd,

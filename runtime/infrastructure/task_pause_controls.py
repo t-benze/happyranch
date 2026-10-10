@@ -176,10 +176,13 @@ def decode_journal(raw: str) -> dict[str, Any]:
                 proof = context["recovery_return"]
                 if (not isinstance(proof, dict)
                         or set(proof) != {"origin_session_id", "provider_session_id", "duration_seconds", "recovery_session_id", "deadline_at"}
+                        or e["owner"] != "recovery"
+                        or (proof["deadline_at"] is None and e["phase"] in {"possible_launch", "running"})
                         or any(not isinstance(proof[k], str) or not proof[k] or len(proof[k]) > 1024
                                for k in ("origin_session_id", "provider_session_id", "recovery_session_id"))
-                        or not isinstance(proof["deadline_at"], str)
-                        or datetime.fromisoformat(proof["deadline_at"]).tzinfo is None
+                        or (proof["deadline_at"] is not None and
+                            (not isinstance(proof["deadline_at"], str)
+                             or datetime.fromisoformat(proof["deadline_at"]).tzinfo is None))
                         or type(proof["duration_seconds"]) not in (int, float)
                         or not math.isfinite(proof["duration_seconds"]) or proof["duration_seconds"] < 0):
                     raise ValueError("recovery return proof")
@@ -458,7 +461,7 @@ class TaskPauseStore:
             if row:
                 for entry in row["journal"]["entries"]:
                     if entry["context"].get("execution_unknown"):
-                        block("unknown", entry["task_id"], entry["owner"], "direct_tree_evidence_unavailable")
+                        block("unknown", entry["task_id"], entry["owner"], "execution_tree_evidence_unavailable")
                     if entry["phase"] in {"prepared", "pending_job", "retry_deferred", "recovery_deferred"}:
                         if entry["owner"] != "job":
                             covered.add(entry["task_id"])

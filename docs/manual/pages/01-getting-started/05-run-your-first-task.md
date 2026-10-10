@@ -82,3 +82,5 @@ Go to [Your First Task - End to End](../03-first-task-workflow/01-your-first-tas
 ## Pause and Resume
 
 After your root task is In Progress, `happyranch pause TASK --org ORG` holds future steps in that actual task tree. A Pending root cannot yet be paused. Already committed work finishes; Pausing shows remaining work or unknown evidence, while Paused requires complete drain evidence. `happyranch resume TASK --org ORG` releases the hold using the current generation; it does not restart a completed session. Controls are CLI/API in the backend unit; browser controls arrive separately.
+
+A successful session that omitted its callback keeps its one recovery opportunity while held. The 120-second deadline starts when that recovery is actually admitted, and Resume or restart cannot renew an admitted recovery. Missing closure evidence from the original execution remains visible even after a recovery finishes or the task reaches its terminal status.

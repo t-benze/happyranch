@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from copy import deepcopy
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -125,6 +126,7 @@ class TaskInvocation:
     unsettled: bool = False
     admitted: bool = False
     attempt_committed: bool = False
+    recovery_deadline: float | None = None
     admission_effects: Callable[[], None] | None = None
     publish_binding: Callable[[], None] | None = None
     final_prompt: Callable[[], Any] | None = None
@@ -169,8 +171,9 @@ class TaskInvocation:
             entry.update(facts)
             self.store.save_journal_uncommitted(row)
 
-    def _business_uncommitted(self, entry: dict) -> None:
+    def _business_uncommitted(self, entry: dict) -> float | None:
         db = self.orch._db
+        recovery_deadline = None
         current = db.get_task(self.task.id)
         if (current is None or fingerprint(current) != entry["fingerprint"]
                 or (self.owner != "recovery" and not eligible(self.orch, current))):
@@ -179,19 +182,22 @@ class TaskInvocation:
             import time
             if "authority_v2_generation" in entry["owner_identity"]:
                 _authenticate_deferred_v2(self.store, entry)
-            if time.monotonic() >= self.recovery_deadline:
-                raise RuntimeError("completion recovery live budget expired")
             proof = entry["context"]["recovery_return"]
             arguments = dict(task_id=self.task.id, agent=self.agent,
                              origin_session_id=proof["origin_session_id"], recovery_session_id=self.session_id)
             claimed_at = datetime.now(timezone.utc)
+            recovery_deadline = time.monotonic() + 120.0
+            expires_at = (claimed_at + timedelta(seconds=120)).isoformat()
             if not db._claim_task_completion_recovery_uncommitted(
                     **arguments, provider_session_id=proof["provider_session_id"],
-                    claimed_at=claimed_at.isoformat(),
-                    expires_at=(claimed_at + timedelta(seconds=max(0, self.recovery_deadline - time.monotonic()))).isoformat()):
+                    claimed_at=claimed_at.isoformat(), expires_at=expires_at):
                 raise DeferredRootPause("completion recovery no longer eligible")
             if not db._publish_task_completion_recovery_binding_uncommitted(**arguments):
                 raise DeferredRootPause("completion recovery owner lost")
+            # The claim ledger, binding and launch journal commit together.
+            # Held/preclaim waiting has no live deadline; an old unclaimed
+            # preparation's timestamp is not evidence of a spent episode.
+            proof["deadline_at"] = expires_at
         elif self.owner == "v2":
             generation = self.metadata["authority_v2_generation"]
             notification = db.get_authority_policy_v2_recovery_notification(generation)
@@ -236,6 +242,7 @@ class TaskInvocation:
         entry["context"]["audit_ids"] = audit_ids
         if self.admission_effects is not None:
             self.admission_effects()
+        return recovery_deadline
 
     def commit(self, ctx: Any = None) -> bool:
         if self.owner == "draft":
@@ -249,9 +256,15 @@ class TaskInvocation:
         sessions = self.orch._sessions
         lease = sessions.binding_lease(self.task.id, self.agent) if sessions else nullcontext()
         won = False
+        recovery_deadline = self.recovery_deadline
         def record_commit() -> None:
             if won:
                 self.admitted = self.attempt_committed = self.unsettled = True
+                if self.owner == "recovery":
+                    # Publish only the original live deadline of this actual
+                    # claim after COMMIT. Rollback publishes no budget, and
+                    # wall-clock movement cannot extend the live interval.
+                    self.recovery_deadline = recovery_deadline
                 if ctx is not None:
                     ctx._task_pause_launch_committed = True
         cancelled_binding = None
@@ -270,14 +283,20 @@ class TaskInvocation:
                 if ctx is not None and ctx._terminal_reason is not None:
                     return False
                 if not self.admitted:
-                    self._business_uncommitted(entry)
+                    recovery_deadline = self._business_uncommitted(entry)
                 else:
                     current = self.orch._db.get_task(self.task.id)
                     if (current is None or current.cancelled_at is not None
                             or current.current_session_id != self.session_id or current.assigned_agent != self.agent
                             or current.status != TaskStatus.IN_PROGRESS or current.block_kind is not None
-                            or current.orchestration_step_count != entry["fingerprint"]["count"] + 1):
+                            or current.orchestration_step_count != entry["fingerprint"]["count"] + (self.owner != "recovery")):
                         raise PauseControlError("pause_control_unavailable")
+                    if self.owner == "recovery":
+                        import time
+                        if (self.recovery_deadline is None or time.monotonic() >= self.recovery_deadline
+                                or not self.orch._db.task_completion_recovery_launch_allowed(
+                                    task_id=self.task.id, agent=self.agent, recovery_session_id=self.session_id)):
+                            raise DeferredRootPause("completion recovery ownership/budget lost")
                     if self.owner == "v2":
                         _authenticate_v2_retry(self.store, entry)
                     if self.orch._db.get_latest_task_result(self.task.id, self.agent, self.session_id) is not None:
@@ -309,9 +328,6 @@ class TaskInvocation:
 
     def recovery_prelaunch(self) -> None:
         """Before commitment, validate the original return's unchanged owner."""
-        import time
-        if time.monotonic() >= self.recovery_deadline:
-            raise RuntimeError("completion recovery live budget expired")
         with self.store.db._lock:
             root = self.store.root_uncommitted(self.task.id)
             row = self.store.row_uncommitted(root["id"])
@@ -328,14 +344,30 @@ class TaskInvocation:
         This records no result/consumption and spends no recovery opportunity.
         Only the original server-observed return reaches this producer.
         """
-        import time
         with self.store.writer(self.task.id) as (_, row):
             entry = self._entry(row)
             proof = entry["context"].get("recovery_return")
+            if self.admitted and self.owner == "recovery":
+                # Duplicate delivery must not convert a spent/live recovery
+                # back into an unclaimed preparation or erase its attempt.
+                raise PauseControlError("pause_control_unavailable")
             if proof is None:
+                if self.unsettled or entry["phase"] == "unknown" or entry["context"].get("execution_unknown"):
+                    # This actual return ends the original producer, not its
+                    # uncertain execution tree. Keep its original SID, owner,
+                    # generation and context in a separate bounded entry. A
+                    # recovery receipt can close only the recovery attempt.
+                    original = deepcopy(entry)
+                    original["id"] = uuid.uuid4().hex
+                    original["phase"] = "unknown"
+                    original["started_at"] = original["captured_generation"] = None
+                    original["context"].update(execution_unknown=True, producer_settled=True)
+                    row["journal"]["entries"].append(original)
+                    entry["context"].pop("execution_unknown", None)
+                    entry["context"].pop("producer_settled", None)
                 proof = dict(origin_session_id=result.session_id, provider_session_id=result.agent_session_id,
                              duration_seconds=result.duration_seconds, recovery_session_id=self.orch._build_session_id(),
-                             deadline_at=(datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat())
+                             deadline_at=None)
                 entry["context"]["recovery_return"] = proof
             current = self.orch._db.get_task(self.task.id)
             entry["phase"], entry["owner"] = "recovery_deferred", "recovery"
@@ -346,7 +378,6 @@ class TaskInvocation:
             self.store.save_journal_uncommitted(row)
         self.task, self.owner, self.session_id = current, "recovery", proof["recovery_session_id"]
         self.admitted = self.attempt_committed = self.unsettled = False
-        self.recovery_deadline = time.monotonic() + max(0.0, (datetime.fromisoformat(proof["deadline_at"]) - datetime.now(timezone.utc)).total_seconds())
         try:
             with self.store.db._lock:
                 self.store.held_uncommitted(self.task.id)
@@ -364,8 +395,7 @@ class TaskInvocation:
             recovery_result, recovery_report = self.orch._run_agent(
                 self.task.id, self.agent, prompt, runtime_session_id=self.session_id,
                 resume_session_id=proof["provider_session_id"], origin_runtime_session_id=proof["origin_session_id"],
-                timeout_seconds_override=max(0, int(self.recovery_deadline - time.monotonic())),
-                recovery_deadline_monotonic=self.recovery_deadline, recovery=True)
+                timeout_seconds_override=120, recovery=True)
             return self.admitted, recovery_result, recovery_report
         except DeferredRootPause:
             raise
@@ -561,6 +591,14 @@ def pause_deferred_owner(db: Any, task_id: str) -> bool:
         if task is not None and task.assigned_agent and task.current_session_id:
             if (db.get_latest_task_result(task_id, task.assigned_agent, task.current_session_id) is not None
                     or db.get_accepted_task_completion_recovery_result(task_id=task_id, agent=task.assigned_agent) is not None):
+                return False
+            recovery = db.get_claimed_task_completion_recovery(task_id=task_id, agent=task.assigned_agent)
+            if recovery is not None and task.current_session_id in {
+                    recovery["origin_session_id"], recovery["recovery_session_id"]}:
+                # An admitted episode belongs to the existing recovery-ledger
+                # settlement, including crash-before-launch. Unknown journal
+                # evidence remains a drain blocker, not a deferral that can
+                # hide the spent claim from startup forever.
                 return False
         root = store.root_uncommitted(task_id)
         row = store.row_uncommitted(root["id"])

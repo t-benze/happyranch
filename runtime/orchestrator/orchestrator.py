@@ -959,7 +959,9 @@ class Orchestrator:
                 if pause_invocation is not None and not pause_invocation.admitted:
                     pause_invocation.recovery_prelaunch()
                     return
-                if recovery_deadline_monotonic is not None and time.monotonic() >= recovery_deadline_monotonic:
+                deadline = (pause_invocation.recovery_deadline if pause_invocation is not None
+                            else recovery_deadline_monotonic)
+                if deadline is not None and time.monotonic() >= deadline:
                     raise RuntimeError("completion recovery live budget expired")
                 if not self._db.task_completion_recovery_launch_allowed(
                     task_id=task_id, agent=agent_name,
@@ -1253,7 +1255,7 @@ class Orchestrator:
                     )
                     if recovery:
                         with self._sessions._lock:
-                            self._sessions._recovery_deadlines[session_id] = recovery_deadline_monotonic
+                            self._sessions._recovery_deadlines[session_id] = pause_invocation.recovery_deadline
                 else:
                     cancelled = None
                 self._observe_memory_collection("binding")
@@ -1269,6 +1271,12 @@ class Orchestrator:
 
             def _final_prompt():
                 nonlocal full_prompt, cleanup_done, cleanup_suffix
+                nonlocal timeout_seconds, recovery_deadline_monotonic
+                if recovery:
+                    recovery_deadline_monotonic = pause_invocation.recovery_deadline
+                    if recovery_deadline_monotonic is None or time.monotonic() >= recovery_deadline_monotonic:
+                        raise RuntimeError("completion recovery live budget expired")
+                    timeout_seconds = max(0, int(recovery_deadline_monotonic - time.monotonic()))
                 from runtime.orchestrator.run_step import (
                     _build_agent_prompt, _prepare_workspace_cleanup_reclamation_context,
                 )
@@ -1675,7 +1683,8 @@ class Orchestrator:
                 resume_session_id=resume_session_id,
                 # Keep recovery fencing at the producer boundary; ordinary
                 # provider adapters must not receive a recovery-only kwarg.
-                **({"recovery_deadline_monotonic": recovery_deadline_monotonic}
+                **({"recovery_deadline_monotonic": (invocation.recovery_deadline if invocation is not None
+                                                     else recovery_deadline_monotonic)}
                    if recovery and provider == "codex" else {}),
             )
             return LaunchResult(
