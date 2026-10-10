@@ -11,9 +11,12 @@ import { renderHook, waitFor, act, render } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { server } from '@/test/server';
 import React, { useEffect } from 'react';
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router-dom';
+import type { ThreadListPage, ThreadRecord } from '@/lib/api/types';
+import type { ComposeArgs } from './DataContext';
 import { transferableAbortController } from 'node:util';
 
-// Use a real-ish slug for the router mock.
+// Each consumer resolves its slug through a real local route.
 const SLUG = 'test-org';
 const THREAD_ID = 'THR-098';
 
@@ -21,11 +24,6 @@ const THREAD_ID = 'THR-098';
 function seedToken() {
   sessionStorage.setItem('happyranch.token', 'mock-token');
 }
-
-vi.mock('react-router-dom', async () => {
-  const actual = await vi.importActual('react-router-dom');
-  return { ...actual, useParams: () => ({ slug: SLUG }) };
-});
 
 import { realThreadsApi } from './_real-threads';
 
@@ -47,9 +45,14 @@ function makeMessage(seq: number) {
   };
 }
 
-function wrapper(qc: QueryClient) {
+function wrapper(qc: QueryClient, slug = SLUG) {
   return function Wrapper({ children }: { children: React.ReactNode }) {
-    return React.createElement(QueryClientProvider, { client: qc }, children);
+    return React.createElement(QueryClientProvider, { client: qc },
+      React.createElement(MemoryRouter, { initialEntries: [`/orgs/${slug}/threads`], future: { v7_startTransition: true, v7_relativeSplatPath: true } },
+        React.createElement(Routes, null,
+          React.createElement(Route, { path: '/orgs/:slug/threads', element: children })),
+      ),
+    );
   };
 }
 
@@ -353,7 +356,7 @@ describe('useThreadMessages paging (THR-098)', () => {
     }
 
     const result = render(
-      React.createElement(QueryClientProvider, { client: qc },
+      React.createElement(wrapper(qc), null,
         React.createElement(MessagesConsumer),
       ),
     );
@@ -375,4 +378,238 @@ describe('useThreadMessages paging (THR-098)', () => {
     // Verify both pages were fetched (2 calls)
     expect(counter.getCallCount()).toBeGreaterThanOrEqual(2);
   });
+});
+
+// C6: fixed wire oracles, independent of the production paginator. Small is
+// genuinely exhausted; partial has two committed 50-row pages and a real tail.
+function membershipFixture(partial: boolean, action: 'compose' | 'online') {
+  const row = (id: string, status: 'open' | 'archived', dream = false): ThreadRecord => ({
+    thread_id: id, subject: id, status, started_at: '2026-10-08T00:00:00Z',
+    archived_at: status === 'archived' ? '2026-10-09T00:00:00Z' : null,
+    forwarded_from_id: null, forwarded_from_kind: null, turn_cap: 500, turns_used: 0,
+    summary: null, transcript_path: null, composed_from_dream_id: dream ? 'dream-1' : null,
+    last_speaker: null, pinned: false, pinned_at: null, last_activity_at: null, participants: [],
+  });
+  const ids = (start: number, end: number) => Array.from({ length: end - start + 1 }, (_, i) =>
+    `a${String(start + i).padStart(3, '0')}`);
+  const allIds = partial ? ids(1, 121) : ['a001', 'a002', 'a003'];
+  const openIds = partial ? ids(1, 113) : ['a001', 'a002'];
+  const archivedIds = partial ? ids(114, 121) : ['a003'];
+  const moved = partial ? 'a050' : 'a001';
+  const changedOpen = action === 'compose' ? ['a000', ...openIds] : openIds.filter((id) => id !== moved);
+  const changedArchived = action === 'compose' ? archivedIds : [moved, ...archivedIds];
+  const changedAll = action === 'compose' ? ['a000', ...allIds] : allIds;
+  const oldTotals = partial ? { open: 113, archived: 8, all: 121, dream_origin: 9 }
+    : { open: 2, archived: 1, all: 3, dream_origin: 1 };
+  const newTotals = partial
+    ? action === 'compose' ? { open: 114, archived: 8, all: 122, dream_origin: 9 }
+      : { open: 112, archived: 9, all: 121, dream_origin: 9 }
+    : action === 'compose' ? { open: 3, archived: 1, all: 4, dream_origin: 1 }
+      : { open: 1, archived: 2, all: 3, dream_origin: 1 };
+  type Bucket = 'all' | 'open' | 'archived';
+  const before: Record<Bucket, string[]> = { all: allIds, open: openIds, archived: archivedIds };
+  const after: Record<Bucket, string[]> = { all: changedAll, open: changedOpen, archived: changedArchived };
+  const maps = [before, after].map((buckets, generation) => {
+    const pages = new Map<string, ThreadListPage>();
+    for (const bucket of ['all', 'open', 'archived'] as const) {
+      const members = buckets[bucket];
+      const archiveMembers = generation === 0 ? archivedIds : changedArchived;
+      const tokens = ['first', `opaque-${generation}-${bucket}-x7`, `opaque-${generation}-${bucket}-q9`];
+      for (let offset = 0; offset < members.length; offset += 50) {
+        const next = offset + 50 < members.length ? tokens[offset / 50 + 1] : null;
+        pages.set(`${bucket}:${tokens[offset / 50]}`, {
+          threads: members.slice(offset, offset + 50).map((id) => row(id,
+            archiveMembers.includes(id) ? 'archived' : 'open',
+            partial ? ids(1, 9).includes(id) : id === 'a001')),
+          totals: generation === 0 ? oldTotals : newTotals, has_more: next !== null,
+          next_cursor: next, sampled_at: '2026-10-09T00:00:00Z',
+        });
+      }
+    }
+    return pages;
+  });
+  return { maps, before, after, oldTotals, newTotals, moved, row };
+}
+
+function deferredGate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+function useMembershipProbe() {
+  return {
+    all: realThreadsApi.useThreadsInfiniteList(),
+    open: realThreadsApi.useThreadsInfiniteList('open'),
+    archived: realThreadsApi.useThreadsInfiniteList('archived'),
+  };
+}
+
+it.each([
+  ['compose', false], ['compose', true], ['online', false], ['online', true],
+] as const)('C6 %s reconciles mounted lists (%s partial), stages each depth and fences old org work', async (action, partial) => {
+  seedToken();
+  const fixture = membershipFixture(partial, action);
+  const buckets = ['all', 'open', 'archived'] as const;
+  type Bucket = typeof buckets[number];
+  let generation = 0;
+  const postGate = deferredGate();
+  const oldGate = deferredGate();
+  const replacement = Object.fromEntries(buckets.map((bucket) => [bucket, [deferredGate(), deferredGate()]])) as Record<Bucket, ReturnType<typeof deferredGate>[]>;
+  const requests: string[] = [];
+  const completed: string[] = [];
+  const posts: { slug: string; body: unknown }[] = [];
+  const betaTotals = { open: 1, archived: 1, all: 2, dream_origin: 0 };
+  server.use(
+    http.get('/api/v1/orgs/:slug/threads', async ({ params, request }) => {
+      const url = new URL(request.url);
+      expect(url.searchParams.get('page_size')).toBe('50');
+      expect(url.searchParams.has('limit')).toBe(false);
+      const bucket = (url.searchParams.get('status') ?? 'all') as Bucket;
+      expect(buckets).toContain(bucket);
+      const cursor = url.searchParams.get('cursor') ?? 'first';
+      const ownGeneration = generation;
+      const key = `${params.slug}:${ownGeneration}:${bucket}:${cursor}`;
+      requests.push(key);
+      if (params.slug === 'beta') {
+        expect(cursor).toBe('first');
+        const betaIds = bucket === 'all' ? ['b001', 'b002'] : bucket === 'open' ? ['b001'] : ['b002'];
+        completed.push(key);
+        return HttpResponse.json({ threads: betaIds.map((id) => fixture.row(id, id === 'b002' ? 'archived' : 'open')),
+          totals: betaTotals, has_more: false, next_cursor: null, sampled_at: '2026-10-09T00:00:00Z' });
+      }
+      expect(params.slug).toBe('alpha');
+      const page = fixture.maps[ownGeneration].get(`${bucket}:${cursor}`);
+      expect(page, key).toBeDefined();
+      if (ownGeneration === 0 && cursor.endsWith('-q9')) {
+        await oldGate.promise;
+        completed.push(key);
+        return HttpResponse.json({ ...page, threads: [fixture.row('obsolete', 'open')],
+          totals: { open: 99, archived: 99, all: 99, dream_origin: 99 }, has_more: false, next_cursor: null });
+      }
+      if (ownGeneration === 1) await replacement[bucket][cursor === 'first' ? 0 : 1].promise;
+      completed.push(key);
+      return HttpResponse.json(page);
+    }),
+    http.post('/api/v1/orgs/:slug/threads', async ({ params, request }) => {
+      posts.push({ slug: String(params.slug), body: await request.json() });
+      await postGate.promise;
+      return HttpResponse.json({ thread_id: 'a000', started_at: '2026-10-09T00:00:00Z', pending_replies: [] });
+    }),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const added = vi.spyOn(window, 'addEventListener');
+  const removed = vi.spyOn(window, 'removeEventListener');
+  const alpha = renderHook(useMembershipProbe, { wrapper: wrapper(qc, 'alpha') });
+  const view = renderHook(() => ({ lists: useMembershipProbe(), compose: realThreadsApi.useComposeThread(), navigate: useNavigate() }),
+    { wrapper: wrapper(qc, 'alpha') });
+  const idsOf = (list: ReturnType<typeof useMembershipProbe>['all']) =>
+    list.data?.pages.flatMap((page) => page.threads.map((thread) => thread.thread_id));
+  const expectLists = (lists: ReturnType<typeof useMembershipProbe>, ids: Record<Bucket, string[]>, totals: typeof betaTotals) => {
+    for (const bucket of buckets) {
+      expect(idsOf(lists[bucket]), bucket).toEqual(ids[bucket]);
+      expect(lists[bucket].data?.pages.at(-1)?.totals, bucket).toEqual(totals);
+      expect(lists[bucket].isError, bucket).toBe(false);
+    }
+  };
+  const prefix = (members: Record<Bucket, string[]>) => Object.fromEntries(buckets.map((bucket) =>
+    [bucket, members[bucket].slice(0, partial && bucket !== 'archived' ? 100 : 50)])) as Record<Bucket, string[]>;
+  let old: Promise<unknown>[] = [];
+  let mutation: Promise<unknown> | undefined;
+  try {
+    await waitFor(() => expectLists(alpha.result.current,
+      Object.fromEntries(buckets.map((bucket) => [bucket, fixture.before[bucket].slice(0, 50)])) as Record<Bucket, string[]>, fixture.oldTotals));
+    if (partial) {
+      await act(async () => { await Promise.all([alpha.result.current.all.fetchNextPage(), alpha.result.current.open.fetchNextPage()]); });
+      expectLists(alpha.result.current, prefix(fixture.before), fixture.oldTotals);
+      act(() => { old = [alpha.result.current.all.fetchNextPage(), alpha.result.current.open.fetchNextPage()]; });
+      await waitFor(() => {
+        for (const bucket of ['all', 'open']) expect(requests).toContain(`alpha:0:${bucket}:opaque-0-${bucket}-q9`);
+      });
+    } else {
+      for (const bucket of buckets) expect(alpha.result.current[bucket].hasNextPage).toBe(false);
+    }
+    const committed = Object.fromEntries(buckets.map((bucket) => [bucket, alpha.result.current[bucket].data]));
+    const payload = { subject: 'new ordinary thread', recipients: ['dev_agent'], body_markdown: 'body' };
+    if (action === 'compose') {
+      const args: ComposeArgs & { destination: { slug: string } } = { ...payload, destination: { slug: 'alpha' } };
+      act(() => { mutation = view.result.current.compose.mutateAsync(args); });
+      await waitFor(() => expect(posts).toEqual([{ slug: 'alpha', body: payload }]));
+    }
+    // The original alpha observer stays mounted while the mutation view moves.
+    act(() => view.result.current.navigate('/orgs/beta/threads'));
+    const betaIds = { all: ['b001', 'b002'], open: ['b001'], archived: ['b002'] };
+    await waitFor(() => expectLists(view.result.current.lists, betaIds, betaTotals));
+    generation = 1;
+    if (action === 'compose') {
+      await act(async () => { postGate.release(); await mutation; });
+    } else {
+      act(() => window.dispatchEvent(new Event('online')));
+    }
+    await waitFor(() => {
+      for (const bucket of buckets) expect(requests).toContain(`alpha:1:${bucket}:first`);
+    });
+    for (const bucket of buckets) expect(alpha.result.current[bucket].data).toBe(committed[bucket]);
+    expectLists(alpha.result.current, prefix(fixture.before), fixture.oldTotals);
+    // Per-list staging: Archived can finish while All/Open still retain their
+    // complete committed depth. There is no cross-bucket atomicity assertion.
+    replacement.archived[0].release();
+    await waitFor(() => {
+      expect(idsOf(alpha.result.current.archived)).toEqual(fixture.after.archived);
+      expect(alpha.result.current.archived.data?.pages[0].totals).toEqual(fixture.newTotals);
+    });
+    for (const bucket of ['all', 'open'] as const) {
+      expect(alpha.result.current[bucket].data).toBe(committed[bucket]);
+      replacement[bucket][0].release();
+      if (partial) {
+        await waitFor(() => expect(requests).toContain(`alpha:1:${bucket}:opaque-1-${bucket}-x7`));
+        expect(alpha.result.current[bucket].data).toBe(committed[bucket]);
+        expect(qc.getQueryData(['threads', 'alpha', { status: bucket === 'all' ? undefined : bucket, page_size: 50 }]))
+          .toBe(committed[bucket]);
+        expect(alpha.result.current[bucket].data?.pages.at(-1)?.totals).toEqual(fixture.oldTotals);
+        replacement[bucket][1].release();
+      }
+      await waitFor(() => {
+        expect(idsOf(alpha.result.current[bucket])).toEqual(prefix(fixture.after)[bucket]);
+        expect(alpha.result.current[bucket].data?.pages.at(-1)?.totals).toEqual(fixture.newTotals);
+      });
+    }
+    await waitFor(() => expectLists(alpha.result.current, prefix(fixture.after), fixture.newTotals));
+    if (action === 'online') {
+      const changed = alpha.result.current.all.data?.pages.flatMap((page) => page.threads).find((thread) => thread.thread_id === fixture.moved);
+      expect(changed?.status).toBe('archived');
+      expect(posts).toEqual([]);
+    } else {
+      expect(posts).toEqual([{ slug: 'alpha', body: payload }]);
+      expect(idsOf(alpha.result.current.all)?.filter((id) => id === 'a000')).toHaveLength(1);
+      expect(idsOf(alpha.result.current.open)?.filter((id) => id === 'a000')).toHaveLength(1);
+      expect(idsOf(alpha.result.current.archived)).not.toContain('a000');
+    }
+    const accepted = Object.fromEntries(buckets.map((bucket) => [bucket, alpha.result.current[bucket].data]));
+    oldGate.release();
+    await act(async () => { await Promise.all(old); });
+    if (partial) await waitFor(() => {
+      for (const bucket of ['all', 'open']) expect(completed).toContain(`alpha:0:${bucket}:opaque-0-${bucket}-q9`);
+    });
+    for (const bucket of buckets) expect(alpha.result.current[bucket].data).toBe(accepted[bucket]);
+    expectLists(alpha.result.current, prefix(fixture.after), fixture.newTotals);
+    expectLists(view.result.current.lists, betaIds, betaTotals);
+    if (!partial) expect(requests.some((key) => !key.endsWith(':first'))).toBe(false);
+  } finally {
+    postGate.release(); oldGate.release();
+    for (const gates of Object.values(replacement)) for (const gate of gates) gate.release();
+    try {
+      await act(async () => { await Promise.allSettled([...old, ...(mutation ? [mutation] : [])]); });
+      await waitFor(() => expect([...completed].sort()).toEqual([...requests].sort()));
+    } finally {
+      alpha.unmount(); view.unmount(); qc.clear();
+      try {
+        for (const [name, callback] of added.mock.calls.filter(([name]) => name === 'online' || name === 'focus')) {
+          expect(removed.mock.calls.some(([removedName, removedCallback]) => removedName === name && removedCallback === callback)).toBe(true);
+        }
+      } finally {
+        added.mockRestore(); removed.mockRestore(); server.resetHandlers();
+      }
+    }
+  }
 });

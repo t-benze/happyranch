@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.daemon.org_state import OrgState
 
 import pytest
 
@@ -1040,3 +1046,453 @@ def test_threads_compose_agent_rejects_relative_from_file(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "absolute" in captured.err
     assert "thread-compose" in captured.err
+
+
+# C8 observes the installed candidate console and the shipping HTTP/DB seam.
+# These private helpers never implement filtering or pagination.
+def _seed_legacy_thread_list(org: OrgState) -> dict[str, list[dict]]:
+    from datetime import timedelta
+    from runtime.models import ThreadRecord, ThreadStatus
+
+    expected: dict[str, list[dict]] = {"all": [], "open": [], "archived": []}
+    # Input order is newest first; insert in a deliberately different order.
+    # Unique timestamps independently establish the legacy descending oracle.
+    for number in range(551, 0, -1):
+        status = "archived" if number % 3 == 0 else "open"
+        stamp = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=number)
+        subject = f"{org.slug} subject {number:04d} " + "x" * 70
+        tid = f"THR-{number:04d}"
+        participants = [] if number % 5 == 0 else [f"{org.slug}-current"]
+        wire = {
+            "thread_id": tid, "subject": subject, "status": status,
+            "started_at": stamp.isoformat(),
+            "archived_at": stamp.isoformat() if status == "archived" else None,
+            "forwarded_from_id": None, "forwarded_from_kind": None,
+            "turn_cap": 500, "turns_used": number % 7, "summary": None,
+            "transcript_path": None, "composed_by": "founder",
+            "composed_from_task_id": None, "composed_from_dream_id": None,
+            "last_speaker": None, "pinned": False, "pinned_at": None,
+            "last_activity_at": None, "participants": participants,
+        }
+        expected["all"].append(wire)
+        expected[status].append(wire)
+    # Interleave even/odd IDs so insertion order cannot supply the oracle.
+    for wire in expected["all"][::2] + expected["all"][1::2]:
+        org.db.insert_thread(ThreadRecord(
+            id=wire["thread_id"], subject=wire["subject"],
+            status=ThreadStatus(wire["status"]),
+            started_at=datetime.fromisoformat(wire["started_at"]),
+            archived_at=datetime.fromisoformat(wire["archived_at"]) if wire["archived_at"] else None,
+            turn_cap=500, turns_used=wire["turns_used"],
+        ))
+        for name in wire["participants"]:
+            assert org.db.add_thread_participant(wire["thread_id"], name, added_by="founder")
+        assert org.db.add_thread_participant(wire["thread_id"], f"{org.slug}-removed", added_by="founder")
+        assert org.db.remove_thread_participant(wire["thread_id"], f"{org.slug}-removed")
+    return expected
+
+
+# Context manager kept in this test owner rather than shared conftest.
+@contextmanager
+def _candidate_thread_list_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict]:
+    import os
+    import socket
+    import threading
+    import time
+    import sys
+    import uvicorn
+    from starlette.types import Message, Receive, Scope, Send
+    from runtime.config import Settings
+    from runtime.daemon.app import create_app
+    from runtime.daemon.org_state import OrgState
+    from runtime.daemon.paths import ensure_token
+    from runtime.daemon.state import DaemonState
+    from runtime.runtime import RuntimeDir
+
+    home = tmp_path / "home"
+    daemon_home = home / ".happyranch"
+    state = None
+    sock = None
+    server = None
+    worker = None
+    worker_started = False
+    stage = "private-home"
+    ledger: list[dict] = []
+    expected: dict[str, dict[str, list[dict]]] = {}
+    errors: list[str] = []
+    cleanup_errors: list[dict] = []
+    acquired_orgs: dict[str, OrgState] = {}
+    try:
+        daemon_home.mkdir(parents=True)
+        monkeypatch.setenv("HAPPYRANCH_DAEMON_HOME", str(daemon_home))
+        stage = "runtime-init"
+        runtime = RuntimeDir.init(tmp_path / "runtime")
+        (daemon_home / "runtimes.yaml").write_text("runtimes: []\n", encoding="utf-8")
+        (daemon_home / "executors.json").write_text("{}", encoding="utf-8")
+        stage = "private-token"
+        ensure_token()  # fixture credential is never a receipt field
+        stage = "state-init"
+        # Retain the allocated state if __post_init__ fails after one store
+        # has been attached. This invokes the unchanged shipping constructor.
+        state = DaemonState.__new__(DaemonState)
+        DaemonState.__init__(state, runtime=runtime, settings=Settings(project_root=runtime.root))
+        stage = "socket-create"
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        for slug in ("alpha", "beta"):
+            root = runtime.orgs_dir / slug
+            (root / "org").mkdir(parents=True)
+            (root / "org" / "teams.yaml").write_text("teams: {}\n", encoding="utf-8")
+            stage = f"org-load:{slug}"
+            org = OrgState.load(slug=slug, root=root, settings=state.settings)
+            acquired_orgs[slug] = org  # register before seeding or publication
+            state.orgs[slug] = org
+            stage = f"org-seed:{slug}"
+            expected[slug] = _seed_legacy_thread_list(org)
+        stage = "create-app"
+        app = create_app(state)
+
+        async def observed_app(scope: Scope, receive: Receive, send: Send) -> None:
+            # Transparent ASGI observation: forward every byte unchanged, then
+            # record only method/path/query/status/body, never request headers.
+            record = {"method": scope["method"], "path": scope["path"],
+                      "query": scope["query_string"].decode("ascii")}
+            chunks: list[bytes] = []
+            body_bytes = 0
+
+            async def observed_send(message: Message) -> None:
+                nonlocal body_bytes
+                if message["type"] == "http.response.start":
+                    record["status"] = message["status"]
+                elif message["type"] == "http.response.body":
+                    chunk = message.get("body", b"")
+                    body_bytes += len(chunk)
+                    if body_bytes > 1048576:
+                        raise RuntimeError("C8 HTTP observation cap")
+                    chunks.append(chunk)
+                await send(message)
+
+            try:
+                await app(scope, receive, observed_send)
+            finally:
+                primary = sys.exc_info()[1]
+                try:
+                    record["body"] = json.loads(b"".join(chunks)) if chunks else None
+                except BaseException as exc:
+                    record["body_error"] = type(exc).__name__
+                    if primary is None:
+                        raise
+                    primary.add_note("C8 HTTP observation failed: " + type(exc).__name__)
+                finally:
+                    ledger.append(record)
+
+        stage = "socket-bind"
+        sock.bind(("127.0.0.1", 0))
+        address = sock.getsockname()
+        (daemon_home / "daemon.port").write_text(str(address[1]), encoding="ascii")
+        server = uvicorn.Server(uvicorn.Config(
+            observed_app, host="127.0.0.1", port=address[1], lifespan="off",
+            access_log=False, log_level="error", timeout_graceful_shutdown=1,
+            loop="asyncio", http="h11", ws="none",
+        ))
+
+        def serve() -> None:
+            try:
+                server.run(sockets=[sock])
+            except BaseException as exc:
+                errors.append(type(exc).__name__)
+
+        worker = threading.Thread(target=serve, name="candidate-thread-list", daemon=True)
+        stage = "thread-start"
+        worker.start()
+        worker_started = True
+        stage = "readiness"
+        deadline = time.monotonic() + 5
+        while not server.started and worker.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server.started and worker.is_alive(), {"startup_errors": errors}
+        child_env = {
+            "PATH": os.pathsep.join((str(Path(sys.executable).parent), "/usr/bin", "/bin")),
+            "HOME": str(home), "HAPPYRANCH_DAEMON_HOME": str(daemon_home),
+            "HAPPYRANCH_ORG_SLUG": "", "TZ": "UTC", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+            "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1",
+            "NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost",
+        }
+        for name, leaf in (("XDG_CONFIG_HOME", "config"), ("XDG_CACHE_HOME", "cache"),
+                           ("XDG_DATA_HOME", "data"), ("TMPDIR", "tmp"), ("UV_CACHE_DIR", "uv-cache")):
+            path = tmp_path / leaf
+            path.mkdir()
+            child_env[name] = str(path)
+        stage = "body"
+        yield {"expected": expected, "ledger": ledger, "env": child_env,
+               "address": address, "socket_fd": sock.fileno(), "server_thread": worker.name, "server_pid": os.getpid()}
+    finally:
+        import sqlite3
+        primary = sys.exc_info()[1]
+        closed_dbs: list[str] = []
+        closed_stores: list[str] = []
+
+        def attempt(owner: str, close) -> None:
+            try:
+                close()
+            except BaseException as exc:
+                cleanup_errors.append({"owner": owner, "error": type(exc).__name__})
+
+        if server is not None:
+            attempt("server-stop", lambda: setattr(server, "should_exit", True))
+        # A start exception may occur after native thread creation. ident is
+        # checked independently; never join a merely allocated thread.
+        thread_live = False
+        if worker is not None:
+            worker_started = worker_started or worker.ident is not None
+            if worker_started:
+                attempt("thread-join", lambda: worker.join(timeout=3))
+                thread_live = worker.is_alive()
+                if thread_live:
+                    attempt("server-force-exit", lambda: setattr(server, "force_exit", True))
+        # Socket close also runs when stop/join fails, before the final join.
+        if sock is not None:
+            attempt("socket-close", sock.close)
+        if worker is not None and worker_started and thread_live:
+            attempt("thread-final-join", lambda: worker.join(timeout=2))
+        for slug, org in acquired_orgs.items():
+            attempt(f"org-db-close:{slug}", org.db.close)
+
+            def check_closed(org=org, slug=slug) -> None:
+                try:
+                    org.db._conn.execute("SELECT 1")
+                except sqlite3.ProgrammingError:
+                    closed_dbs.append(slug)
+                else:
+                    raise AssertionError("owned org DB remains open")
+
+            attempt(f"org-db-observe:{slug}", check_closed)
+        for name in ("metrics_store", "direct_connect_authority_store"):
+            store = getattr(state, name, None) if state is not None else None
+            if store is not None:
+                def close_store(store=store, name=name) -> None:
+                    store.close()
+                    closed_stores.append(name)
+                attempt(name, close_store)
+        teardown = {"server_stopped": worker is None or not worker_started or not worker.is_alive(),
+                    "thread_allocated": worker is not None, "thread_started": worker_started,
+                    "socket_closed": sock is None or sock.fileno() == -1,
+                    "server_errors": errors, "closed_org_dbs": closed_dbs,
+                    "acquired_org_dbs": list(acquired_orgs), "closed_stores": closed_stores,
+                    "stage": stage, "primary_error": None if primary is None else type(primary).__name__,
+                    "cleanup_errors": cleanup_errors,
+                    # A constructor that never returned keeps its internal
+                    # acquisition under its shipping owner; do not assert it
+                    # closed merely because no handle reached this fixture.
+                    "partial_acquisition": stage if primary is not None and stage in
+                        ("runtime-init", "state-init", "socket-create", "org-load:alpha", "org-load:beta") else None}
+        attempt("http-ledger-write", lambda: (tmp_path / "c8-http.json").write_text(
+            json.dumps(ledger, indent=2) + "\n", encoding="utf-8"))
+        attempt("teardown-write", lambda: (tmp_path / "c8-teardown.json").write_text(
+            json.dumps(teardown, indent=2) + "\n", encoding="utf-8"))
+        # All owners and diagnostics were attempted before closure assertions.
+        if primary is not None:
+            primary.add_note("C8 teardown: " + json.dumps(teardown))
+        else:
+            assert teardown["server_stopped"] and teardown["socket_closed"], teardown
+            assert closed_dbs == list(acquired_orgs), teardown
+            assert not errors and not cleanup_errors, teardown
+
+
+def _candidate_console_child(argv: list[str], *, source: Path, env: dict,
+                             deadline: float, receipt: dict, expected_kernel_argv=None) -> tuple[str, str]:
+    """Own one actual child, finite pipes, and independent finalization attempts."""
+    import os
+    import selectors
+    import subprocess
+    import sys
+    import time
+
+    process = None
+    selector = None
+    outputs = {"stdout": bytearray(), "stderr": bytearray()}
+    cleanup_errors: list[dict] = []
+    receipt.update(stage="spawn", reaped=False, cleanup_errors=cleanup_errors)
+    try:
+        process = subprocess.Popen(argv, cwd=source, env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        receipt.update(pid=process.pid, stage="kernel-identity")
+        if expected_kernel_argv is not None and sys.platform == "linux":
+            proc = Path(f"/proc/{process.pid}")
+            actual_executable = (proc / "exe").resolve(strict=True)
+            actual_argv = (proc / "cmdline").read_bytes().decode().rstrip("\0").split("\0")
+            receipt.update(actual_executable=str(actual_executable), actual_argv=actual_argv)
+            assert actual_executable == Path(sys.executable).resolve()
+            assert actual_argv == expected_kernel_argv, receipt
+        receipt["stage"] = "drain"
+        selector = selectors.DefaultSelector()
+        for name in outputs:
+            pipe = getattr(process, name)
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe, selectors.EVENT_READ, name)
+        child_deadline = min(deadline, time.monotonic() + 5)
+        while selector.get_map():
+            remaining = child_deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("C8 child output deadline")
+            for key, _events in selector.select(min(0.05, remaining)):
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                else:
+                    target = outputs[key.data]
+                    if len(target) + len(chunk) > 1048576:
+                        target.extend(chunk[:1048576 - len(target)])
+                        receipt["output_cap"] = key.data
+                        raise RuntimeError("C8 child output cap")
+                    target.extend(chunk)
+        remaining = child_deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("C8 child reap deadline")
+        process.wait(timeout=remaining)
+        receipt["stage"] = "finished"
+        return (outputs["stdout"].decode("utf-8"), outputs["stderr"].decode("utf-8"))
+    except BaseException as exc:
+        receipt["primary_error"] = type(exc).__name__
+        raise
+    finally:
+        primary = sys.exc_info()[1]
+
+        def attempt(owner: str, close) -> None:
+            try:
+                close()
+            except BaseException as exc:
+                cleanup_errors.append({"owner": owner, "error": type(exc).__name__})
+
+        if process is not None:
+            if process.poll() is None:
+                attempt("child-kill", process.kill)
+            attempt("child-reap", lambda: process.wait(timeout=min(2, max(0.01, deadline - time.monotonic()))))
+            # Each pipe close runs even when the other close/reap fails.
+            for name in outputs:
+                pipe = getattr(process, name, None)
+                if pipe is not None:
+                    attempt(name + "-close", pipe.close)
+            receipt.update(exit_code=process.returncode, reaped=process.poll() is not None,
+                           residual_pid=None if process.poll() is not None else process.pid)
+        if selector is not None:
+            attempt("selector-close", selector.close)
+        receipt.update(stdout=outputs["stdout"].decode("utf-8", errors="replace"),
+                       stderr=outputs["stderr"].decode("utf-8", errors="replace"))
+        if primary is not None:
+            primary.add_note("C8 child cleanup: " + json.dumps(cleanup_errors))
+        else:
+            assert receipt["reaped"] and not cleanup_errors, receipt
+
+
+def test_threads_list_legacy_transcript(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+    import os
+    import sys
+    import time
+    from urllib.parse import parse_qsl
+    import cli.main
+    import cli.client.client
+    import runtime.daemon.routes.threads
+    import runtime.infrastructure.database
+
+    source = Path(__file__).resolve().parents[1]
+    console = Path(sys.prefix) / "bin" / "happyranch"
+    # Fail closed on a foreign installed console/import, even with correct cwd.
+    for module in (cli.main, cli.client.client, runtime.daemon.routes.threads, runtime.infrastructure.database):
+        assert Path(module.__file__).resolve().is_relative_to(source), module.__name__
+    assert console.is_file() and os.access(console, os.X_OK)
+    shebang = console.read_text(encoding="utf-8").splitlines()[0]
+    assert shebang.startswith("#!"), "candidate console has no interpreter entry"
+    console_interpreter = Path(shebang[2:])
+    assert console_interpreter.is_absolute() and console_interpreter.samefile(sys.executable)
+    console_digest = hashlib.sha256(console.read_bytes()).hexdigest()
+    # Twelve inputs, each in both equal-ID orgs; one finite node, 24 real CLI
+    # processes. Oracles are input-derived, not candidate DB list results.
+    cases = [
+        ("default", [], [("limit", "50")], "all", 50),
+        ("open", ["--status", "open"], [("limit", "50"), ("status", "open")], "open", 50),
+        ("archived", ["--status", "archived"], [("limit", "50"), ("status", "archived")], "archived", 50),
+        ("zero", ["--limit", "0"], [("limit", "0")], "all", 0),
+        ("one", ["--limit", "1"], [("limit", "1")], "all", 1),
+        ("500", ["--limit", "500"], [("limit", "500")], "all", 500),
+        ("999", ["--limit", "999"], [("limit", "999")], "all", 500),
+        ("1000", ["--limit", "1000"], [("limit", "1000")], "all", 500),
+        ("negative1", ["--limit", "-1"], [("limit", "-1")], "all", 551),
+        ("negative2", ["--limit", "-2"], [("limit", "-2")], "all", 551),
+        ("unknown", ["--status", "unknown"], [("limit", "50"), ("status", "unknown")], "all", 0),
+        ("empty", ["--status", ""], [("limit", "50")], "all", 50),
+    ]
+    provenance_code = """
+import hashlib, importlib, json, pathlib, sys
+source = pathlib.Path(sys.argv[1]).resolve()
+# -c normally supplies cwd as sys.path[0]; installed console supplies bin.
+sys.path[0] = sys.argv[2]
+modules = {}
+for name in ('cli.main', 'cli.commands.threads', 'cli.client.client',
+             'runtime.runtime', 'runtime.daemon.routes.threads', 'runtime.infrastructure.database'):
+    module = importlib.import_module(name)
+    path = pathlib.Path(module.__file__).resolve()
+    assert path.is_relative_to(source), (name, str(path))
+    modules[name] = {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+print(json.dumps({'python': sys.executable, 'version': sys.version, 'modules': modules}))
+"""
+    deadline = time.monotonic() + 90
+    receipts: list[dict] = []
+    try:
+        with _candidate_thread_list_server(tmp_path, monkeypatch) as fixture:
+            provenance_argv = [sys.executable, "-c", provenance_code, str(source), str(console.parent)]
+            provenance_receipt = {"case": "console-import-provenance", "argv": provenance_argv}
+            receipts.append(provenance_receipt)
+            provenance_stdout, provenance_stderr = _candidate_console_child(
+                provenance_argv, source=source, env=fixture["env"], deadline=deadline,
+                receipt=provenance_receipt)
+            assert provenance_receipt["exit_code"] == 0 and provenance_stderr == "", provenance_receipt
+            json.loads(provenance_stdout)
+            for slug in ("alpha", "beta"):
+                for name, flags, query, bucket, count in cases:
+                    oracle = fixture["expected"][slug][bucket][:count]
+                    before = len(fixture["ledger"])
+                    argv = [str(console), "threads", "list", "--org", slug, *flags]
+                    receipt = {"case": name, "org": slug, "argv": argv, "cwd": str(source),
+                               "executable": str(console), "console_sha256": console_digest,
+                               "console_interpreter": str(console_interpreter),
+                               "loopback": fixture["address"], "socket_fd": fixture["socket_fd"],
+                               "server_thread": fixture["server_thread"], "server_pid": fixture["server_pid"],
+                               "child_env": fixture["env"]}
+                    receipts.append(receipt)
+                    stdout, stderr = _candidate_console_child(
+                        argv, source=source, env=fixture["env"], deadline=deadline,
+                        receipt=receipt, expected_kernel_argv=[str(console_interpreter), *argv])
+                    assert receipt["exit_code"] == 0, receipt
+                    assert stderr == "", receipt
+                    # Observation finishes after the ASGI app returns; do not
+                    # race its final ledger append against child process exit.
+                    until = time.monotonic() + 1
+                    while len(fixture["ledger"]) < before + 2 and time.monotonic() < until:
+                        time.sleep(0.01)
+                    observed = fixture["ledger"][before:]
+                    assert [(r["method"], r["path"]) for r in observed] == [
+                        ("GET", "/api/v1/orgs"), ("GET", f"/api/v1/orgs/{slug}/threads"),
+                    ]
+                    assert observed[0]["query"] == ""
+                    assert [r["status"] for r in observed] == [200, 200]
+                    assert [org["slug"] for org in observed[0]["body"]["orgs"]] == ["alpha", "beta"]
+                    assert observed[1]["query"] == "&".join(f"{key}={value}" for key, value in query)
+                    assert parse_qsl(observed[1]["query"], keep_blank_values=True) == query
+                    assert set(observed[1]["body"]) == {"threads"}  # legacy envelope, no page metadata
+                    assert observed[1]["body"]["threads"] == oracle  # order, fields, current/empty participants, org exclusion
+                    lines = [
+                        f"{row['thread_id']:10s}  {row['status']:12s}  "
+                        f"turns={row['turns_used']}/{row['turn_cap']}  "
+                        f"{datetime.fromisoformat(row['started_at']).strftime('%Y-%m-%d %H:%M:%S')}  {row['subject'][:60]}\n"
+                        for row in oracle
+                    ]
+                    assert stdout == "".join(lines), receipt
+    finally:
+        primary = sys.exc_info()[1]
+        try:
+            (tmp_path / "c8-console.json").write_text(json.dumps(receipts, indent=2) + "\n", encoding="utf-8")
+        except BaseException as exc:
+            if primary is None:
+                raise
+            primary.add_note("C8 console receipt write failed: " + type(exc).__name__)
