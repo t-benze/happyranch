@@ -51,6 +51,17 @@ disabled DERP or control-plane TCP.
 
 ## What the harness proves (semantically consumed from the contract)
 
+The route-policy pin includes the already merged route removals in
+[PR #754](https://github.com/t-benze/happyranch/pull/754)
+(`a8cf692e20010e233ff49163f511a4367de1c04c`, mention-routing) and
+[PR #1017](https://github.com/t-benze/happyranch/pull/1017)
+(`b3179b123fddbb0f0f604ed9e0d148f1b23455f3`, ten Assistant entries).
+Relative to the original `01ebc8b38` / `aa67985ff` fixture, only `allow`
+changed: eleven removals and no additions. The other three fixture pins are
+unchanged. A pin update requires provenance review of the merged fixture
+changes; a drift refusal alone is never authority to repin. Matching digests
+only admit preflight, not prove real isolation or cleanup.
+
 The harness reads `tests/contract/managed_remote_access/*.json` at runtime
 (read-only; pinned digests in `manifest.json`, drift fails closed):
 
