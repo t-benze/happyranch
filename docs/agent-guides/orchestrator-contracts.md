@@ -1,5 +1,10 @@
 # Orchestrator Contracts
 
+> Test-policy update (THR-291 seq40): former Python unit tests and unit-only
+> fixtures referenced in historical implementation evidence below are retired.
+> Product contracts are unchanged; replacement E2E is PENDING. See
+> [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
+
 **G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
 initializes the complete G layout before attachment. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.

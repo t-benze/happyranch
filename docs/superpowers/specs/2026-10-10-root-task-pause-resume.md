@@ -123,9 +123,10 @@ reader, even with empty controls. No live migration, restart or deployment is
 performed by delivering source.
 
 Backend transport is PR1; browser controls are a separate PR2. Source/static
-inspection is not behavioral acceptance. Python units/full/focused/RED-GREEN,
-keeper/mutation/repetition/duration remain SKIPPED NONBLOCKING under THR291 and
-primary THR228seq355; general integration is SKIPPED THR243seq42/THR211seq270–271.
+inspection is not behavioral acceptance. Python unit source and gates are RETIRED under THR291seq40; prior suspended
+unit/full/focused/RED-GREEN/keeper/mutation/repetition/duration receipts remain
+SKIPPED NONBLOCKING under THR291/THR228seq355, never PASS. Fresh product E2E
+remains PENDING; general integration is SKIPPED THR243seq42/THR211seq270–271.
 No replacement harness is assumed. Current Node24 Web, Python3.14 canonical and
 selected ordinary stub-Codex callback, macOS15 canonical, Docs Manual and actual
 path gates remain required. Final immutable-head independent review/QA, normal

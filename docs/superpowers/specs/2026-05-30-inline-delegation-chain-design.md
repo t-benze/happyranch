@@ -2,6 +2,10 @@
 
 > Pause boundary superseded by [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md). Existing lifecycle, waiting and lineage meanings remain. A separate actual-root hold gates future commitment; committed sessions/results drain, deferred retries retain their owner, and unknown execution is not proof of quiescence. Cancel/stop/reject remain available. This annotation preserves the historical design below.
 
+> Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
+> are retired. Product invariants and acceptance obligations remain unchanged;
+> replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
+
 **Date:** 2026-05-30
 **Status:** Design ratified; ready for implementation plan
 **Origin:** TASK-577 (engineering_head V1 web-app feature-complete driver) hit the 50-step orchestration cap with ~30 wakes of remaining work because every routine `dev_agent → senior_dev → qa_engineer → merge` gate transition consumed a manager wake. The founder ruled out raising the cap; the chosen lever is to let a manager declare a multi-leg workflow inline at delegation time, so the orchestrator auto-advances routine happy-path legs without a manager wake.

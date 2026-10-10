@@ -822,82 +822,36 @@ Merged source alone proves neither installed schema nor live settings repair.
 
 ## Running Tests
 
-For where new test files belong, see the forward-only
-[test-placement rule](project-layout.md#test-placement).
+For current retained-lane boundaries, see
+[test placement](project-layout.md#test-placement).
 
-The founder suspended Python unit-suite execution in THR-291 seq5
-(TASK-10169). While this pause applies, do not launch Python unit tests,
-including focused tests or duration measurements. The `python-unit` GitHub
-job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
-reports the same suspension before continuing Web CI. This also pauses the
-unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
-exit or an `all` receipt establishes only the remaining checks, never a unit
-PASS. Preserve test sources, selections and coverage definitions. Web,
-canonical validation and integration jobs retain their own existing contracts;
-no hook bypass is authorized. Existing historical workflow reruns and old
-checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after founder release of the
-stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The closed PR1011 finite entry below leaves ordinary Python,
-G and SIX suspended. The ordinary commands below describe the restored behavior.
+Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
+The former default `not integration` selection was deleted, including its
+unmarked component, contract and system acceptance cases. Git history preserves
+that source; do not restore it as a hidden unit or renamed E2E suite.
+`scripts/local_ci.sh python` refuses with exit 2. `all` runs the retained Web
+checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
+There is no default Python selection: pytest requires explicit existing canonical
+platform file selectors, or the isolated parent with `-m integration`.
 
-The manual `local-ci-all` workflow step invokes the fixed
-`uv run python scripts/nightly_local_ci_all.py` entry on ordinary refs. B2 uses
-`uv run --frozen --no-sync python scripts/nightly_local_ci_all.py` only for
-`t-benze/happyranch` + `workflow_dispatch` + `refs/heads/task/TASK-10034`.
-Its G follow-on retains the fixed unit-suspension guard and zero-child receipt;
-source provenance authenticates both this script and the workflow YAML.
-Source-copy keepers read the script from their own archived checkout. See
-[Local CI](../local-ci.md) for the retained dormant plan and source controls.
+Required active PR **and exact-merge main** checks are `Web (Node 24)`,
+`Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
+and applicable Docs/other retained path-specific checks. The Linux job includes
+its existing real Codex callback smoke. Unit checks are neither required nor
+passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
+Independent review, QA, exact-head/completed checks and normal hooks remain
+mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
+never PASS; integration requires a disposable authorized venue away from the live
+daemon host and deterministic external provider stubs.
 
-**PR1011 finite source/control boundary (THR278 seq40/49/72).** ROOT TASK-10330
-owns publication/dispatch on the retained ref, after exact accepted helper
-release, independent native exact-commit/tree/full-source-mode control APPROVE
-and supported task/session/result authentication and manager acceptance.
-Serialization continues THROUGH platform event creation; uncontrolled writers,
-missing/capped/stale review or changed commit prevent dispatch. Hosted SHA and
-checkout equality verify consistency only; they do not authenticate review.
-No new GitHub receipt, circular hash, selector/input, credential or lock service
-is introduced. The manager cross-checks actual run/head/attempt/full artifacts
-against that accepted binding, preserving any mismatch/possible spend.
-
-The closed driver explicitly validates repository/event/ref, platform/fetched
-retained HEAD, full tracked bytes/Git modes/symlinks, index/all nonignored
-untracked files and effective Python3.14/uv/node/npm/npx (Node24), then rechecks
-source and tools before the sole child. It launches exactly
-`uv run --frozen --no-sync pytest tests/ -v -n 4 --basetemp=<fresh-owned-path>`
-in the existing disposable Ubuntu venue. The prior single frozen sync and tool
-pins remain. Committed nonintegration addopts stay; fixed evidence-only
-`PYTEST_ADDOPTS` supplies external JUnit/cache paths. Owned HOME/XDG/cache/TMP,
-executor registry `{}`, port0 and admitted tool links exclude provider/live state.
-The branch exits before ordinary all/G/SIX and triggers zero helper repetitions
-for either `all_only` value. The ordinary global pause remains unchanged.
-
-FIVE socketless helper repetitions and ONE full run are separate finite proofs,
-reported 0/5 and 0/1 before execution, with no reset or exhaustive census claim.
-Actual launch spends on failure; uncertainty retains possible spend, with no
-rerun entitlement. Complete ordered compressed merged child streams, separate
-wrapper stderr, pre-removal JUnit, full source/tool/argv/environment/time/process
-and actual adopted-child waits/reaping evidence are required; wrapper wait or
-scratch absence alone proves no quiescence. Abrupt loss/incomplete evidence is
-inconclusive. Actual wrapper exit is separate; every nonzero wrapper result leaves
-signed child exit unknown, including encoded child signals such as wrapper247.
-Complete zero with empty wrapper stderr still requires all JUnit, source/tool
-postcheck, cleanup and other success gates. Existing 10s TERM/KILL waits,
-150-minute cap,1MiB tail,8MiB segments,
-128MiB member/512MiB archive bounds stay. See Local CI for the precise child-exit
-attribution and conservative cleanup contract. No execution occurs in source-only
-prepublication work. Final independent FULL review/executable QA/current CI/
-actual hosted Codex callback/guarded merge/active exact-merge checks and supported
-deployment/measured restart remain separate. General integration is SKIPPED,
-ordinary paused all proves Web only, reviewer settings are excluded, and historic
-offline timing/current health cannot close startup or promise <30s readiness.
-
-```bash
-uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
-uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only
-uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable only
-```
+The existing manual `local-ci-all` runner preserves its disposable environment,
+source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
+unit entry, G named-case controls/repetitions and lab unit preflight are removed.
+The existing `all_only` boolean is compatibility-only; every manual input runs
+retained Web checks, with separate integration skipped. Existing 150-minute manual
+and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+See [the reset coverage gap record](../python-test-reset.md) and
+[Local CI](../local-ci.md) for retained selectors and evidence limits.
 
 Direct pytest uses `tmp_path_retention_policy = "failed"`: passing `tmp_path`
 and `tmpdir` fixture directories are removed best effort; ordinary failed-call
@@ -907,7 +861,7 @@ uv environment (currently pytest 9.0.3); the option requires pytest 7.3+, while
 the declared `pytest>=7.0` range also admits unsupported 7.0–7.2. See
 [pytest scratch scope and limits](../local-ci.md#per-run-pytest-scratch-lifecycle)
 for factory directories, explicit basetemp, version compatibility and cleanup
-limits. Full unit selections containing real daemon/socket tests also belong
+limits. Unit selections are retired; retained integration belongs only
 in the documented disposable CI venue.
 
 Integration tests run real production orchestration with deterministic external
