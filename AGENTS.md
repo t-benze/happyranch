@@ -441,13 +441,25 @@ An operational accepted epoch and its independent within48h health duty are
 separate from source tests, review, CI and deployment. See the memory sections in
 `features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
 
-Integration collection and execution use deterministic external CLI stubs through
+Retained pytest integration collection and execution use deterministic external CLI stubs through
 `tests/helpers/integration_parent.py` before pytest/runtime imports. Use disposable
 GitHub runners or a separately authorized Mac Linux guest; the live Linux daemon
 host cannot run integration tests, including through jobs. See `docs/local-ci.md`
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
+
+THR-291's separately authorized standalone `e2e/run.py` uses public bootstrap,
+registered deterministic external stubs and actual CLI/HTTP/browser boundaries,
+without pytest, integration-parent monkeypatches or product hooks. It runs only
+on disposable GitHub Ubuntu with exact Python/browser inputs, Node24, bounded
+owned-process cleanup and complete variant/cell receipts. Retained pytest
+integration/platform/callback selections keep the existing parent fences.
+`Product E2E` workflow source is implemented; actual behavioral PASS and required
+ruleset enforcement remain unproven until source-bound receipts/readback exist.
+The aggregate also requires real TERM/INT launcher diagnostics with non-success
+and complete owned cleanup; product cancellation remains uncovered.
+See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.
 ### Finite document-review templates and initial drafts (THR-139 seq410)
 
 New `schema_version: 2` / `kind: document-review` definitions compile finite data:
@@ -490,7 +502,8 @@ Required active PR **and exact-merge main** checks are `Web (Node 24)`,
 `Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
 and applicable Docs/other retained path-specific checks. The Linux job includes
 its existing real Codex callback smoke. Unit checks are neither required nor
-passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
+passing. Fresh product E2E execution evidence is **PENDING**; standalone source
+wiring does not establish a ready/required check.
 Independent review, QA, exact-head/completed checks and normal hooks remain
 mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
 never PASS; integration requires a disposable authorized venue away from the live

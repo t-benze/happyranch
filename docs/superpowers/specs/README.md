@@ -18,7 +18,12 @@ For current behavior, use these sources before old specs:
 - [Python test reset](../../python-test-reset.md) for current test retirement and uncovered obligations.
   THR-291 seq40 supersedes Python unit execution/keeper requirements in all current
   specs. Historical test paths describe past evidence, not executable gates.
-  Product contracts and acceptance obligations remain unchanged; fresh E2E is PENDING.
+  Product contracts and acceptance obligations remain unchanged. Standalone E2E
+  source/case/matrix policy is in `e2e/README.md` and `docs/local-ci.md`; actual
+  behavioral evidence and required-check enforcement remain PENDING. This lane
+  uses public processes outside pytest; retained integration/platform/callback
+  selectors keep their mandatory isolated parent. Historical test recipes do
+  not authorize old-unit execution or weakening those fences.
 
 When a spec conflicts with those sources, treat the spec as historical unless this index marks it `current`.
 

@@ -2,7 +2,7 @@
 
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
-> Product contracts are unchanged; replacement E2E is PENDING. See
+> Product contracts are unchanged; standalone E2E execution evidence is PENDING. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
 ## Bundled skill sources and canonical delivery
@@ -506,7 +506,7 @@ architecture §2
 
 ## Deterministic integration executables
 
-All integration selections, including marked daemon/platform/remote-access siblings
+All retained pytest integration selections, including marked daemon/platform/remote-access siblings
 and the hosted Codex callback smoke, enter `tests/helpers/integration_parent.py`
 before importing pytest/runtime. The test-only fence retains production registry
 resolution and checks exact temporary stub paths/hashes, complete registry keys,
@@ -515,6 +515,18 @@ are unavailable until a separately authored deterministic fixture exists. No rea
 agent executable, model request, agentic download, production registry/configuration
 or credential inheritance is allowed. This test fence does not modify production
 permissions, resolver policy or `_nested_daemon_env`. See `docs/local-ci.md`.
+
+The separately authorized THR-291 standalone `e2e/run.py` lane is outside pytest.
+It uses public runtime/org/agent initialization and executor-binary registration,
+unchanged external stubs/guard checks, absolute interpreter and source/hash-bound
+callback wrappers, and an immutable finite external plan. It never loads
+`integration_parent`, sitecustomize or `guard.install`, and never replaces a
+product method. Only disposable GitHub Ubuntu runners are admitted; no real
+provider credentials or host executables are available. Read-only reopened
+SQLite and built-browser observations are independent oracles. Exact PID/start,
+native backend, cgroup/unit and port/socket/data cleanup evidence is mandatory.
+This exception does not weaken any retained pytest/callback fence. See
+`e2e/README.md` for cases, budgets and unfulfilled behavioral evidence.
 
 ## Spawn-Environment Invariant and Worktree Isolation
 

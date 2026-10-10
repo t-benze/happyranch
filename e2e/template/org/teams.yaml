@@ -1,0 +1,4 @@
+teams:
+  engineering:
+    manager: case_manager
+    workers: [case_worker, code_reviewer]
