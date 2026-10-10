@@ -328,7 +328,10 @@ check/apply/receipt. Header locale selection transfers focus to its trigger;
 modal external-tab locale updates preserve their focused drafts. Work Hours
 roster loading/error/Retry is distinct from empty. Emitted completion guidance
 references the canonical start-task skill: worker-owned roots have only
-server-authorized self decisions; manager-only operations stay restricted.
+server-authorized `done`, self-only `delegate` or `escalate` decisions;
+delegated leaves return plain completions. An attempted non-root founder
+escalation fails the child and wakes its parent; manager-only operations stay
+restricted.
 
 The bounded roster maintenance source pins effective registration and the clean
 Python3.14 reader, independently closes org/shared-store restore inventories,

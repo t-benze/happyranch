@@ -193,14 +193,23 @@ def main() -> int:
     registered_paths = {Path(manifest['runtime_root']) / 'happyranch.yaml',
                         *(Path(value) for value in manifest['registry_images'])}
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
-    if (len(command) < 2 or Path(command[0]).resolve(strict=True) != Path(sys.executable).resolve(strict=True)
-            or Path(command[1]).resolve(strict=True) != source / 'tests/helpers/roster_python_observer.py'):
+    if (len(command) < 3 or command[1] != '-I'
+            or command[2] != str(source / 'tests/helpers/roster_python_observer.py')
+            or Path(command[0]).resolve(strict=True) != Path(sys.executable).resolve(strict=True)
+            or Path(command[2]).resolve(strict=True) != source / 'tests/helpers/roster_python_observer.py'):
         raise ValueError('pinned_python_and_paired_frame_observer_required')
-    if '--script' not in command or command[command.index('--script') + 1] != str(source / 'scripts/migrate_human_team_roster.py'):
+    # Bind observer options before the utility's remainder, never utility argv.
+    paired = command[3:]
+    if '--' not in paired or paired.index('--') == len(paired) - 1:
         raise ValueError('only_bounded_roster_utility_may_be_observed')
-    for flag, expected in (('--source', str(source)), ('--source-sha', args.source_sha)):
-        if command.count(flag) != 1 or command[command.index(flag) + 1] != expected:
-            raise ValueError('paired_frame_source_binding_mismatch')
+    paired = paired[:paired.index('--')]
+    for flag, expected, refusal in (
+            ('--script', str(source / 'scripts/migrate_human_team_roster.py'), 'only_bounded_roster_utility_may_be_observed'),
+            ('--source', str(source), 'paired_frame_source_binding_mismatch'),
+            ('--source-sha', args.source_sha, 'paired_frame_source_binding_mismatch')):
+        if (paired.count(flag) != 1 or paired.index(flag) + 1 >= len(paired)
+                or paired[paired.index(flag) + 1] != expected):
+            raise ValueError(refusal)
     directory = args.receipt.parent.resolve(strict=True)
     if (not args.receipt.is_absolute() or args.receipt.is_symlink()
             or directory.stat().st_uid != os.getuid() or stat.S_IMODE(directory.stat().st_mode) != 0o700

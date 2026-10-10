@@ -2038,8 +2038,15 @@ class _MaintenanceCase:
             '--boundary', frame, '--receipt', str(frame_receipt), '--script', str(self.source / 'scripts/migrate_human_team_roster.py'), '--', *arguments]
         actual = subprocess.run(command, cwd=self.source, env=self.env, capture_output=True, text=True, timeout=120)
         # Mandatory receipts: inability/loss is an assertion failure, not a skip.
+        assert syscall_receipt.is_file() and frame_receipt.is_file(), ('paired observation never reached the utility', actual.returncode, actual.stderr)
         syscalls = [json.loads(line) for line in syscall_receipt.read_text().splitlines()]
         frames = [json.loads(line) for line in frame_receipt.read_text().splitlines()]
+        assert syscalls[0]['kind'] == frames[0]['kind'] == 'begin'
+        assert syscalls[0]['source_sha'] == frames[0]['source_sha'] == self.revision
+        assert syscalls[0]['manifest_sha256'] == self.digest
+        assert Path(syscalls[0]['effective_python']).resolve() == Path(sys.executable).resolve()
+        assert Path(frames[0]['effective_python']).resolve() == Path(sys.executable).resolve()
+        assert frames[0]['script_sha256'] == hashlib.sha256((self.source / 'scripts/migrate_human_team_roster.py').read_bytes()).hexdigest()
         assert syscalls[-1]['kind'] == 'terminal' and syscalls[-1]['complete'], (actual.stderr, syscalls[-1])
         assert [row['sequence'] for row in syscalls] == list(range(1, len(syscalls) + 1))
         assert [row['sequence'] for row in frames] == list(range(1, len(frames) + 1))
@@ -2183,6 +2190,11 @@ C8_M_REFUSALS = [
     'inaccessible-memory', 'unknown-reference', 'unexpected-grant', 'storage-bytes', 'storage-inodes',
     'restore-corrupt', 'restore-metadata', 'restore-alias', 'backup-CAS', 'open-WAL',
     'global-restore-CAS',
+    'observer-empty', 'observer-short', 'observer-no-isolation', 'observer-extra-flag',
+    'observer-wrong-interpreter',
+    'observer-wrong-script', 'observer-short-source', 'observer-short-source-sha',
+    'observer-short-script', 'observer-duplicate-script', 'observer-utility-binding',
+    'observer-no-separator', 'observer-empty-utility',
 ]
 
 
@@ -2190,6 +2202,56 @@ def _c8_maintenance_refusal(case, refusal):
     import copy
     import base64
     from scripts import migrate_human_team_roster as utility
+    if refusal.startswith('observer-'):
+        # Admit a complete paired observation of the genuine utility first.
+        # Admission negatives are observer refusals, never migration evidence.
+        arguments = ['--check', '--runtime-root', str(case.runtime), '--org', 'alpha', '--plan', str(case.plan)]
+        positive, syscalls, frames = case.observed(arguments, 'paired-positive')
+        assert positive.returncode == 0, positive.stderr
+        case.require_complete_observers(syscalls, frames)
+        assert json.loads(positive.stdout)['kind'] == 'THR296-checked-manifest-v1'
+        case.no_effects(syscalls, frames)
+        receipt = case.observers / 'paired-refused-syscalls.jsonl'
+        frame_receipt = case.observers / 'paired-refused-frames.jsonl'
+        paired = [sys.executable, '-I', str(case.source / 'tests/helpers/roster_python_observer.py'),
+            '--source', str(case.source), '--source-sha', case.revision, '--event-map', str(case.event_map),
+            '--boundary', 'observe-only', '--receipt', str(frame_receipt),
+            '--script', str(case.source / 'scripts/migrate_human_team_roster.py'), '--', *arguments]
+        expected = 'pinned_python_and_paired_frame_observer_required'
+        if refusal == 'observer-empty': paired = []
+        elif refusal == 'observer-short': paired = paired[:2]
+        elif refusal == 'observer-no-isolation': paired.pop(1)
+        elif refusal == 'observer-extra-flag': paired.insert(2, '-B')
+        elif refusal == 'observer-wrong-interpreter': paired[0] = str(case.source)
+        elif refusal == 'observer-wrong-script': paired[2] = str(case.source / 'tests/helpers/roster_syscall_observer.py')
+        elif refusal in ('observer-short-source', 'observer-short-source-sha', 'observer-short-script'):
+            flag = '--' + refusal.removeprefix('observer-short-')
+            index = paired.index(flag); del paired[index:index + 2]
+            index = paired.index('--'); paired[index:index] = [flag]
+            expected = ('only_bounded_roster_utility_may_be_observed' if flag == '--script'
+                        else 'paired_frame_source_binding_mismatch')
+        elif refusal in ('observer-no-separator', 'observer-empty-utility'):
+            index = paired.index('--')
+            paired = paired[:index] if refusal == 'observer-no-separator' else paired[:index + 1]
+            expected = 'only_bounded_roster_utility_may_be_observed'
+        elif refusal == 'observer-duplicate-script':
+            index = paired.index('--')
+            paired[index:index] = ['--script', str(case.source / 'scripts/migrate_human_team_roster.py')]
+            expected = 'only_bounded_roster_utility_may_be_observed'
+        elif refusal == 'observer-utility-binding':
+            index = paired.index('--script'); value = paired[index:index + 2]; del paired[index:index + 2]
+            paired.extend(value)
+            expected = 'only_bounded_roster_utility_may_be_observed'
+        else: raise AssertionError('unowned observer admission parameter: ' + refusal)
+        command = [sys.executable, '-I', str(case.source / 'tests/helpers/roster_syscall_observer.py'),
+            '--source', str(case.source), '--source-sha', case.revision, '--manifest', str(case.manifest_path),
+            '--expected-digest', case.digest, '--boundary', 'observe-only', '--receipt', str(receipt), '--', *paired]
+        before, rows = utility.preservation_inventory(case.root), case.rows()
+        refused = subprocess.run(command, cwd=case.source, env=case.env, capture_output=True, text=True, timeout=30)
+        assert refused.returncode == 86 and expected in refused.stderr, refused.stderr
+        assert not receipt.exists() and not frame_receipt.exists()
+        assert utility.preservation_inventory(case.root) == before and case.rows() == rows
+        return
     plan = json.loads(case.plan.read_bytes())
     mode = 'check'
     held = None
@@ -2759,6 +2821,16 @@ def _c7_launch_contract(actual: dict, binding: dict, runtime: Path, baseline: di
                         for p in sorted(bundled.rglob('*')) if p.is_file()}
             assert item['members'] == expected
         assert exposed == baseline['skills'][root]
+    # Inspect the actual emitted canonical skill bytes in BOTH provider roots.
+    for root in ('.agents/skills', '.claude/skills'):
+        skill = Path(actual['skill_manifests'][root]['start-task']['target']) / 'SKILL.md'
+        raw = skill.read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == actual['skill_manifests'][root]['start-task']['members']['SKILL.md']
+        guidance = raw.decode()
+        assert 'An ordinary worker root may use `done`, self-only `delegate` or `escalate`' in guidance
+        assert "a decision-owning root's request for founder intervention" in guidance
+        assert 'An attempted non-root founder escalation fails the child and wakes' in guidance
+        assert 'manager-only request for founder intervention' not in guidance
     # Generic guidance conditionally mentioning managers is shared with workers.
     # Positive manager grants in either the ACTUAL prompt or system body refuse.
     authority = actual['prompt'] + '\n' + files['AGENTS.md']['text']
@@ -2773,6 +2845,9 @@ def _c7_launch_contract(actual: dict, binding: dict, runtime: Path, baseline: di
         if actual['stage'] in ('self-delegate', 'current-after-stale'):
             assert 'you may only delegate sub-tasks to yourself.' in actual['prompt']
             assert 'NOT available in self-only mode.' in actual['prompt']
+            assert '**done** -- the whole task is complete:' in actual['prompt']
+            assert '**escalate** -- needs founder attention:' in actual['prompt']
+            assert '{"action": "escalate", "reason": "<why>"}' in actual['prompt']
     elif actual['kind'] == 'schedule':
         assert f'You are {agent} (worker) on the default team' in actual['prompt']
         # This shipping runner has no runtime session hint. Preserve the empty

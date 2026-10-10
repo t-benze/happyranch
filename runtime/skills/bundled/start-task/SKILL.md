@@ -195,7 +195,8 @@ Parameters:
    `reviewer_focus`, `confidence`, `output_dir`) may be omitted.
 
    Ordinary worker-owned root tasks also return a decision: task_type=task
-   defines the decision owner. A worker may delegate only to itself; it gains
+   defines the decision owner. A worker root may finish, self-delegate or escalate
+   within its server-authorized contract. It may delegate only to itself; it gains
    no peer/fanout, manager administration, policy or template rights. Human
    Founder manages the team but never executes as an agent. Worker-owned
    delegated leaves return plain completions. Their review_verdict records an
@@ -205,8 +206,9 @@ Parameters:
 
    **Decision-owning roots — add a `decision` field.** Alongside the prose
    `summary`, a root task owner includes the supported top-level `decision`.
-   An ordinary worker root may finish or delegate to itself, with no peer,
-   fanout or manager administration. Delegated worker leaves omit decisions.
+   An ordinary worker root may use `done`, self-only `delegate` or `escalate`
+   within its server-authorized contract, with no peer, fanout or manager
+   administration. Delegated worker leaves omit decisions.
    Team-manager roots retain their existing decision and escalation contract.
    See the response-format
    section of your role_guidance for the exact shapes. The runtime request models and transition handlers enforce the
@@ -256,7 +258,8 @@ Parameters:
      child through the ordinary terminal tail and wakes its parent to decide;
      no successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
-   - `escalate` — manager-only request for founder intervention; requires `reason`.
+   - `escalate` — a decision-owning root's request for founder intervention;
+     requires `reason`. Ordinary worker roots retain this server-authorized action.
      This founder-facing disposition is root-scoped: if a non-root task owner
      returns it, the runtime fails that child and wakes its parent to decide.
 
@@ -406,7 +409,10 @@ the fields your injected role contract requires:
   live job wait exists);
 - a **reviewer/QA** role additionally sends `"verdict": "<value>"` (its role
   contract defines the vocabulary);
-- a **team-manager** session additionally sends a top-level `"decision"` object.
+- a **decision-owning root**, including an ordinary worker root, additionally
+  sends a top-level `"decision"` object within its server-authorized contract.
+  A delegated worker leaf omits `decision`. Team-manager roots retain their
+  existing manager decision and policy contract.
   Its injected role guidance conditionally requires `manager_self_evaluation`
   for a versioned policy-bound escalation. When required, the active policy
   block is authoritative: it shows the exact required object and a filled
@@ -420,8 +426,10 @@ the fields your injected role contract requires:
   second evaluation. For decisions where the injected guidance
   does not require that assessment, omit the field.
   A worker must **never** manufacture a manager decision or manager policy
-  assessment. Its own root decision is limited to the supported finish/self
-  delegation contract; a delegated worker leaf omits `decision`.
+  assessment. Its own root decision is limited to the server-authorized `done`,
+  self-only `delegate` or `escalate` contract; a delegated worker leaf omits
+  `decision`. An attempted non-root founder escalation fails the child and wakes
+  its parent under the existing runtime contract.
 
 **Real waits only.** `waiting_on_job_ids` requires `status="blocked"` and must
 list only real, currently non-terminal jobs owned by this task. An explicitly

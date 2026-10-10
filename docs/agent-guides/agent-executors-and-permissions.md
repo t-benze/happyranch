@@ -5,7 +5,9 @@
 
 The generated task-completion section refers to the canonical start-task skill
 for task-owner decision scope. Ordinary worker roots may use only their
-server-authorized self decisions; delegated leaves return plain completions.
+server-authorized `done`, self-only `delegate` or `escalate` decisions;
+delegated leaves return plain completions. An attempted non-root founder
+escalation fails the child and wakes its parent.
 Manager-only operations remain restricted. This wording does not grant powers
 or change callback identity, ordering, schemas or materialization algorithms.
 

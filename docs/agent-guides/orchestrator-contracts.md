@@ -33,8 +33,9 @@ enablement, deployment or a Phase1-completion claim.
 
 
 Task-completion prompt wording follows the task owner: a worker-owned root may
-finish or self-delegate only as authorized by the server. Manager-only
-operations retain their restrictions; the canonical start-task skill owns the
+finish, self-delegate or escalate within its server-authorized contract. An
+attempted non-root founder escalation fails the child and wakes its parent.
+Manager-only operations retain their restrictions; the canonical start-task skill owns the
 payload guidance. Delegated leaves still omit decisions and callback identity
 and final-action ordering remain unchanged.
 

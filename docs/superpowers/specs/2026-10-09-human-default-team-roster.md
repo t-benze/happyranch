@@ -137,8 +137,10 @@ are separate from activeElement; editors regain focus through explicit normal
 interaction. Open modal external-tab locale updates have their separate focus
 contract. Work Hours roster availability is distinct from successful empty.
 Task-completion wording references the canonical start-task task-owner scope;
-worker roots retain only server-authorized self decisions, with manager-only
-operations restricted. No runtime transition or permission change follows.
+worker roots retain server-authorized `done`, self-only `delegate` or `escalate`
+decisions. Delegated worker leaves return plain completions; attempted non-root
+founder escalation fails the child and wakes its parent. Manager-only operations
+remain restricted. No runtime transition or permission change follows.
 
 THR291 seq40 orders retirement of the old Python unit set under TASK10476;
 this slice adds or maintains no Python unit cases and executes none. Integration
