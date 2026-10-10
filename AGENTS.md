@@ -373,8 +373,12 @@ complete selected-only history and separate guarded commits. The review/history
 precede the consumed marker. A finite process-local operation retains the same
 identity, phase and original parent effect through writer contention; 50ms
 outside-lock retries have no count cap. Pending is never settlement, and
-shutdown leaves authentic residue for next-start recovery. Finished same-result
-reentry renews the current owner/history checks; cached done is not authority. Agent-team and
+shutdown leaves authentic residue for next-start recovery. Native drain exception
+or cancellation retains the original exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns recovery_required without
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Healthy finished same-result reentry renews the current
+owner/history checks; cached done is not authority. Agent-team and
 completed-leaf transaction behavior is preserved. See the current THR296 spec
 and operator runbook; source authoring is not behavioral verification.
 

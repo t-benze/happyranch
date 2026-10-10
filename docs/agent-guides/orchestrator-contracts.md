@@ -63,8 +63,12 @@ Selected human failed-leaf recovery is result-scoped and conservatively refuses
 foreign/multiple/unreadable history. Separate evidence, chain, fanout, FAILED,
 review and marker commits remain separate; history and review precede marker.
 Retained loop retries wait 50ms outside locks without a retry cap. Busy/pending
-is not settlement; parent handoff follows genuine owned cleanup. Shutdown
-preserves accepted/consumed residue for existing next-start recovery. Finished
+is not settlement; parent handoff follows genuine owned cleanup. A native drain
+exception or cancellation retains the exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns `recovery_required` without new
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Pending callers join the original owner. Shutdown preserves
+accepted/consumed residue for existing next-start recovery. Healthy finished
 same-result reentry checks current ownership/history again; cancellation or a
 replacement binding cannot receive a cached done disposition.
 

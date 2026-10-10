@@ -1111,6 +1111,14 @@ def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str
             operations = orch._human_failed_recovery_operations = {}
         transport_key = (task_id, agent, session_id, result_id)
         existing = operations.get(transport_key)
+        if existing is not None and existing.disposition == "recovery_required":
+            # Settlement may already have marked the captured jobs FAILED
+            # before their native drain failed or was cancelled. Retain that
+            # exceptional owner/phase/controls for next-start discovery;
+            # replaying settlement could mistake those rows for a zero-job
+            # success. Refused callers must not add success-only bookkeeping.
+            operation.finish("recovery_required")
+            return
         if existing is not None and not existing.completion.done():
             if bookkeeping is not None:
                 existing.bookkeeping.append(bookkeeping)

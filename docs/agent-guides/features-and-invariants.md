@@ -50,6 +50,13 @@ already-cleared rows; equality alone supplies no no-helper/no-write proof.
 C6/C8/C9 source assertions and finite crash/localization selections remain
 unexecuted under the existing Python/M holds.
 
+Selected human failed-leaf recovery retains its original exceptional operation
+after native drain exception or cancellation. Same-process same-result reentry
+returns `recovery_required`, preserving its phase, jobs and control residue for
+next-start discovery; it performs no new settlement, parent effect or success
+bookkeeping. FAILED job rows alone do not prove native cleanup. Pending callers
+join the original owner; a distinct result identity uses its own operation.
+
 Human team leadership never adds an AgentDef or launch identity. Native
 thread-session invalidation atomically commits each consultant's resume reset
 and its audit, without changing delivery/breaker state, messages, memory or

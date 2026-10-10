@@ -30,6 +30,7 @@ pytestmark = pytest.mark.integration
 VERDICTS = [(None, 'none'), ('', 'blank'), ('CUSTOM_REVIEW_OUTCOME', 'custom'),
             ('APPROVE', 'approve'), ('PASS', 'pass'), ('REQUEST_CHANGES', 'request_changes'),
             ('REVISE', 'revise'), ('BLOCK', 'block')]
+C4_DRAIN_CUTS = ('native_drain_exception_same_result', 'native_drain_cancel_same_result')
 
 
 @pytest.fixture
@@ -62,7 +63,7 @@ def human_daemon(runtime: Path, request: pytest.FixtureRequest,
     # and abruptly exits only after the real separately committed effect. It
     # does not replace SQL, a method, an executor, or a final transition.
     launcher = r'''
-import asyncio,hashlib,json,marshal,os,runpy,sys,threading,types
+import ast,asyncio,hashlib,json,marshal,os,runpy,sys,threading,types
 from pathlib import Path
 source=Path(sys.argv[1]); revision=sys.argv[2]; cut=sys.argv[3]; receipt=Path(sys.argv[4])
 sys.dont_write_bytecode=True
@@ -81,6 +82,7 @@ codes=[code for code in members(compile(data,str(path),'exec',dont_inherit=True,
        if code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect']
 assert len(codes)==1
 expected=hashlib.sha256(marshal.dumps(codes[0])).hexdigest()
+drain_cuts={'native_drain_exception_same_result','native_drain_cancel_same_result'}
 writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_before_retry',
              'writer_cancelled_before_retry',
     'writer_busy_before_consumption-shared_loop', 'writer_busy_before_consumption-startup_loop',
@@ -89,7 +91,7 @@ writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_b
     'loss-before_consumption-cancel', 'loss-before_consumption-binding_replacement',
     'loss-after_job_drain-cancel', 'loss-after_job_drain-binding_replacement',
     'no_job_reentry_terminal_cancel_refusal', 'loss-no_job_reentry-cancel', 'loss-no_job_reentry-binding_replacement',
-    'shutdown_while_deferred', 'late_inline_unbound'}
+    'shutdown_while_deferred', 'late_inline_unbound'} | drain_cuts
 writer_path=source/'runtime/orchestrator/run_step.py'
 writer_data=writer_path.read_bytes()
 assert writer_data==subprocess.check_output(['git','-C',str(source),'show',revision+':runtime/orchestrator/run_step.py'])
@@ -110,6 +112,23 @@ for rel,qualnames in {
         if code.co_qualname in qualnames:
             extra_codes[(str(extra_path),code.co_qualname)]=hashlib.sha256(marshal.dumps(code)).hexdigest()
 assert len(extra_codes)==4
+jobs_path=source/'runtime/daemon/jobs_runner.py'
+# A finite test-side cut at the real SIGKILL statement; never replace the
+# runner, callback, SQL or control map. Cancellation uses the actual drain Task.
+jobs_tree=ast.parse(jobs_path.read_bytes())
+native_drains=[node for node in jobs_tree.body if isinstance(node,ast.AsyncFunctionDef) and node.name=='terminate_jobs_for_task']
+assert len(native_drains)==1
+kill_lines=[node.lineno for node in ast.walk(native_drains[0])
+    if isinstance(node,ast.Call) and isinstance(node.func,ast.Attribute)
+    and isinstance(node.func.value,ast.Name) and node.func.value.id=='os'
+    and node.func.attr=='killpg' and len(node.args)==2
+    and isinstance(node.args[1],ast.Attribute) and node.args[1].attr=='SIGKILL']
+assert len(kill_lines)==1
+grace_lines=[node.lineno for node in ast.walk(native_drains[0]) if isinstance(node,ast.Await)
+    and isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Attribute)
+    and isinstance(node.value.func.value,ast.Name) and node.value.func.value.id=='asyncio'
+    and node.value.func.attr=='sleep']
+assert len(grace_lines)==1
 writer_state={}
 def record_writer(event, **fields):
     target=receipt.with_name(receipt.name+'.'+event)
@@ -126,6 +145,58 @@ def selected_identity(orch,task_id,result_id):
     assert episode['accepted_result_id']==result_id and type(result_id) is int and result_id>0
     return {'task':task_id,'agent':episode['agent'],'origin':episode['origin_session_id'],
         'session':episode['recovery_session_id'],'result':result_id}
+def native_controls(targets):
+    from runtime.daemon.jobs_runner import _INFLIGHT
+    return [{'job':job,'pid':proc.pid,'returncode':proc.returncode,
+             'same_control':_INFLIGHT.get(job) is proc} for job,proc in targets]
+async def drain_pending_join(drain_task,targets):
+    from datetime import datetime,timezone
+    from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint
+    orch=writer_state['orch'];identity=writer_state['identity']
+    # Valid fixture marker through the native setter, then the actual reaper
+    # consumer owns its native success-only clear/audit closure.
+    flag=datetime.now(timezone.utc).isoformat()
+    orch._db.update_task(identity['task'],zombie_flagged_at=flag)
+    task=orch._db.get_task(identity['task'])
+    row=orch._db.get_latest_task_result(task.id,identity['agent'],identity['session'])
+    assert row['id']==identity['result']
+    joined=_consume_zombie_fingerprint(orch._db,task.id,row,task,orch)
+    writer_state['pending_join']=joined
+    record_writer('drain-pending-join',pending=not joined.completion.done(),zombie_flag=flag,
+        controls=native_controls(targets),**identity)
+    if cut=='native_drain_cancel_same_result':
+        record_writer('native-drain-fault',fault='cancel',controls=native_controls(targets),**identity)
+        assert drain_task.cancel()  # real cancellation of native grace await
+async def failed_drain_reentry():
+    from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint
+    orch=writer_state['orch'];identity=writer_state['identity']
+    pending=writer_state['pending_join']
+    assert await asyncio.wrap_future(pending.completion)=='recovery_required'
+    record_writer('drain-joined-finished',disposition=pending.disposition,**identity)
+    release=receipt.with_name(receipt.name+'.same-result-reentry')
+    while not release.exists():await asyncio.sleep(0.01)
+    task=orch._db.get_task(identity['task'])
+    row=orch._db.get_latest_task_result(task.id,identity['agent'],identity['session'])
+    assert row['id']==identity['result']
+    joined=_consume_zombie_fingerprint(orch._db,task.id,row,task,orch)
+    disposition=await asyncio.wrap_future(joined.completion)
+    retained=orch._human_failed_recovery_operations[(task.id,identity['agent'],identity['session'],identity['result'])]
+    from runtime.daemon.jobs_runner import _INFLIGHT
+    record_writer('same-result-reentered',disposition=disposition,phase=retained.phase,
+        retained=retained is writer_state['operation'],job_ids=list(retained.job_ids),
+        key=list(retained.key),controls=native_controls([(job,_INFLIGHT[job]) for job in retained.job_ids if job in _INFLIGHT]),
+        **identity)
+def observe_drain(frame,event,arg):
+    if frame.f_code.co_filename!=str(jobs_path) or frame.f_code.co_qualname!='terminate_jobs_for_task':return
+    assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==extra_codes[(str(jobs_path),'terminate_jobs_for_task')]
+    if (event=='line' and frame.f_lineno==kill_lines[0] and cut=='native_drain_exception_same_result'
+            and writer_state and frame.f_locals['task_id']==writer_state['identity']['task']
+            and 'fault' not in writer_state):
+        writer_state['fault']=True
+        record_writer('native-drain-fault',fault='exception',controls=native_controls(frame.f_locals['targets']),
+            **writer_state['identity'])
+        raise PermissionError('test-side native SIGKILL interruption')
+    return observe_drain
 async def shipping_caller(orch,caller):
     from runtime.orchestrator.orchestrator import completion_report_from_result_row
     from runtime.orchestrator.run_step import _consume_completion_report,_handoff_consumed_recovery_terminal_effects,_enqueue_parent_if_waiting
@@ -242,12 +313,14 @@ def observe_writer(frame,event,arg):
             writer_state['cancel_ready']=threading.Event()
             writer_state['late_cancel']=asyncio.run_coroutine_threadsafe(prepared_late_cancel(org),orch._main_loop)
             assert writer_state['cancel_ready'].wait(10),'actual cancel route did not traverse live child'
-        if 'after_job_drain' not in cut and cut!='loss-no_job_reentry-cancel':
+        if 'after_job_drain' not in cut and cut!='loss-no_job_reentry-cancel' and cut not in drain_cuts:
             writer_state['writer']=asyncio.run_coroutine_threadsafe(held_writer(org),orch._main_loop)
             assert writer_state['ready'].wait(10),'native writer did not acquire actual async interval'
     elif frame.f_code.co_qualname=='_drive_human_failed_recovery' and event=='return' and writer_state:
         operation=local['operation']
         if operation.task_id!=writer_state['identity']['task']:return
+        if cut in drain_cuts and 'operation' not in writer_state:
+            writer_state['operation']=operation
         if operation.disposition=='writer_busy' and 'deferred' not in writer_state:
             assert operation.timer is not None and not operation.completion.done()
             writer_state['deferred']=True
@@ -255,10 +328,13 @@ def observe_writer(frame,event,arg):
             record_writer('consumer-deferred',phase=operation.phase,**writer_state['identity'])
     elif frame.f_code.co_qualname=='_HumanFailedRecoveryOperation.finish' and event=='return' and writer_state:
         operation=local['self']
+        if cut in drain_cuts and operation is not writer_state.get('operation'):return
         if operation.task_id==writer_state['identity']['task'] and 'finished' not in writer_state:
             writer_state['finished']=True
             record_writer('consumer-finished',disposition=operation.disposition,phase=operation.phase,
                 key=list(operation.key) if operation.key is not None else None,**writer_state['identity'])
+            if cut in drain_cuts:
+                writer_state['reentry']=asyncio.get_running_loop().create_task(failed_drain_reentry())
 def observe(frame,event,arg):
     if (cut=='loss-no_job_reentry-cancel' and event=='return' and frame.f_code.co_filename==str(path)
             and frame.f_code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect'
@@ -278,7 +354,14 @@ def observe(frame,event,arg):
     if cut in writer_cuts and extra in extra_codes:
         assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==extra_codes[extra]
         local=frame.f_locals
-        if (extra[1]=='Database.admit_task_completion_callback' and event=='return' and arg
+        if (extra[1]=='terminate_jobs_for_task' and cut in drain_cuts and event=='return' and frame.f_lineno==grace_lines[0]
+                and writer_state and local.get('task_id')==writer_state['identity']['task']
+                and local.get('targets') and 'drain_join' not in writer_state):
+            # Actual native coroutine has yielded inside its grace await,
+            # after SIGTERM to real opaque controls. The job ignores TERM.
+            writer_state['drain_join']=asyncio.get_running_loop().create_task(
+                drain_pending_join(asyncio.current_task(),local['targets']))
+        elif (extra[1]=='Database.admit_task_completion_callback' and event=='return' and arg
                 and (cut.endswith(('shared_loop','startup_loop','zombie_loop','portability_loop'))
                      or cut=='late_inline_unbound') and not writer_state):
             db=local['self'];org=db._workflow_drafts.org;orch=org.orchestrator
@@ -330,6 +413,7 @@ def observe(frame,event,arg):
     os._exit(86)
 if cut!='none':
     sys.setprofile(observe);threading.setprofile(observe)
+if cut=='native_drain_exception_same_result':sys.settrace(observe_drain)
 if 'no_job_reentry' in cut and cut!='loss-no_job_reentry-cancel':
     # Actual cold compatible state + app/lifespan/queue/provider pipeline. This
     # specifically isolates consumed-child handoff: no generic parked-parent
@@ -513,12 +597,12 @@ else:
     payload.update(status=status, verdict=verdict, summary='child outcome')
 file = pathlib.Path(workspace) / ('completion-' + S + '.json')
 file.write_text(json.dumps(payload))
-if parent is not None and c4_cut is not None and ('after_job_drain' in c4_cut):
+if parent is not None and c4_cut is not None and ('after_job_drain' in c4_cut or c4_cut.startswith('native_drain_')):
     # Genuine task-owned runner jobs, separate from the blocked result's empty
     # wait list. The original failure is retained and one opaque job drains.
     import time
-    for suffix, script in [('prior', 'echo retained-failure >&2; sleep 30'),
-                           ('running', 'echo owned-running; while true; do sleep 1; done')]:
+    running_script = ("trap '' TERM; " if c4_cut.startswith('native_drain_') else '') + 'echo owned-running; while true; do sleep 1; done'
+    for suffix, script in [('prior', 'echo retained-failure >&2; sleep 30'), ('running', running_script)]:
         request = pathlib.Path(workspace) / ('job-' + suffix + '-' + S + '.json')
         request.write_text(json.dumps({'task_id': T, 'session_id': S, 'title': 'C4-' + suffix,
             'script': script, 'interpreter': 'bash', 'review_required': False, 'persistent': suffix == 'running',
@@ -536,6 +620,16 @@ if parent is not None and c4_cut is not None and ('after_job_drain' in c4_cut):
             time.sleep(0.05)
         assert job and job[0] == ('failed' if suffix == 'prior' else 'running'), job
         if suffix == 'prior': assert job[1] != 0 and 'retained-failure' in job[2]
+        if suffix == 'running' and c4_cut.startswith('native_drain_'):
+            # The real shell installed its TERM behavior before admission to
+            # the native drain. Status='running' alone is insufficient.
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
+                    log_path = observer.execute('SELECT stdout_path FROM jobs WHERE id=?', (job_ids[0],)).fetchone()[0]
+                if log_path and 'owned-running' in pathlib.Path(log_path).read_text(): break
+                time.sleep(0.01)
+            assert log_path and 'owned-running' in pathlib.Path(log_path).read_text()
 subprocess.run(['happyranch', 'report-completion', '--org', org, '--from-file', str(file)], check=True)
 if parent is not None and c4_cut is not None and (c4_cut.endswith(('shared_loop', 'startup_loop', 'zombie_loop', 'portability_loop'))
         or c4_cut == 'late_inline_unbound') and 'after_job_drain' not in c4_cut and 'no_job_reentry' not in c4_cut:
@@ -1085,7 +1179,7 @@ C4_SCENARIOS = [
     'loss-before_consumption-cancel', 'loss-before_consumption-binding_replacement',
     'loss-after_job_drain-cancel', 'loss-after_job_drain-binding_replacement',
     'no_job_reentry_terminal_cancel_refusal', 'loss-no_job_reentry-cancel', 'loss-no_job_reentry-binding_replacement',
-    'shutdown_while_deferred', 'late_inline_unbound')]
+    'shutdown_while_deferred', 'late_inline_unbound', *C4_DRAIN_CUTS)]
 
 
 @pytest.mark.parametrize('agent,recovery,status,cut', C4_SCENARIOS, ids=[
@@ -1107,6 +1201,9 @@ def test_c4_normal_and_recovered_verdict_attribution(
     reply = httpx.post(_base(port) + '/tasks', json={'team': 'default', 'owner': agent, 'brief': 'self child then final parent'}, headers=_auth_headers()).raise_for_status().json()
     original_review = None
     selected_before = None
+    if cut in C4_DRAIN_CUTS:
+        _c4_failed_drain_reentry(request, port, root, reply['task_id'], verdict)
+        return  # exceptional residue is preserved, never ordinary completion
     if cut is not None and cut not in ('fail', 'review', 'writer_busy_before_consumption-inline_worker',
             'writer_reacquired_before_retry', 'writer_cancelled_before_retry'):
         observed_cut = _c4_live_continuation_oracle(request, port, root, reply['task_id'], plan, cut, verdict)
@@ -3065,6 +3162,114 @@ def test_c7_both_resume_resets_and_worker_contexts(
                                    for path, (_, raw) in retained_memory.items()},
         'M_utility_reset_proof': 'HELD: C6 real check/apply/receipt same disposable fixture required; not established by L'}, sort_keys=True))
 
+
+
+def _c4_failed_drain_reentry(request: pytest.FixtureRequest, port: int, root: Path,
+                           parent_id: str, verdict: str | None) -> None:
+    """Finite native exception/cancellation -> actual same-result consumer.
+
+    AUTHORED ONLY: executable L, pre-fix RED/final GREEN and five isolated/sibling
+    repetitions remain HELD. Native job/callback/DB boundaries are never mocked.
+    """
+    owned = request.node._roster_fault_daemon
+    witness = owned['witness']
+    def record(event: str) -> dict:
+        path = witness.with_name(witness.name + '.' + event)
+        deadline = time.monotonic() + 30
+        while not path.exists() and time.monotonic() < deadline:
+            assert owned['process'].poll() is None, 'native drain daemon exited'
+            time.sleep(0.02)
+        assert path.exists(), f'missing actual native drain observation: {event}'
+        row = json.loads(path.read_text())
+        assert row['pid'] == owned['process'].pid
+        from tests.helpers.integration_stub_guard.guard import manifest
+        binding = manifest()
+        assert row['source_sha'] == binding['revision']
+        assert row['file_sha256'] == hashlib.sha256(
+            (Path(binding['source']) / 'runtime/orchestrator/run_step.py').read_bytes()).hexdigest()
+        return row
+    pending = record('drain-pending-join')
+    fault = record('native-drain-fault')
+    finished = record('consumer-finished')
+    joined = record('drain-joined-finished')
+    identity = [finished[key] for key in ('task', 'agent', 'origin', 'session', 'result')]
+    assert identity[1] == 'consultant_codex' and identity[2] != identity[3]
+    assert type(identity[4]) is int and identity[4] > 0
+    for row in (pending, fault, joined):
+        assert [row[key] for key in ('task', 'agent', 'origin', 'session', 'result')] == identity
+    assert pending['pending'] is True
+    assert finished['disposition'] == joined['disposition'] == 'recovery_required'
+    assert finished['phase'] == 'drain_jobs' and finished['key'] == identity
+    assert fault['fault'] == ('exception' if request.node.callspec.params['cut'] == C4_DRAIN_CUTS[0] else 'cancel')
+    assert len(pending['controls']) == len(fault['controls']) == 1
+    assert fault['controls'] == pending['controls']
+    control = fault['controls'][0]
+    assert control['same_control'] is True and control['returncode'] is None
+    assert type(control['pid']) is int and control['pid'] > 0
+    os.kill(control['pid'], 0)  # native-control witness, liveness only
+
+    def snapshot() -> dict:
+        with sqlite3.connect(root / 'happyranch.db') as observer:
+            return {
+                'selected': observer.execute('SELECT * FROM task_results WHERE id=?', (identity[4],)).fetchone(),
+                'child': observer.execute('SELECT status,cancelled_at,note,current_session_id,parent_task_id,zombie_flagged_at FROM tasks WHERE id=?', (identity[0],)).fetchone(),
+                'ledger': observer.execute('SELECT origin_session_id,recovery_session_id,accepted_result_id,state FROM task_completion_recoveries WHERE task_id=?', (identity[0],)).fetchone(),
+                'reviews': observer.execute("SELECT id,task_id,agent,action,payload,timestamp FROM audit_log WHERE task_id=? AND action='review_verdict' ORDER BY id", (identity[0],)).fetchall(),
+                'bookkeeping': observer.execute("SELECT * FROM audit_log WHERE task_id=? AND action='zombie_cleared'", (identity[0],)).fetchall(),
+                'prior_jobs': observer.execute("SELECT * FROM jobs WHERE task_id=? AND title='C4-prior'", (identity[0],)).fetchall(),
+                'jobs': observer.execute("SELECT id,status,reason,stdout_path,stderr_path,finished_at FROM jobs WHERE task_id=? AND title='C4-running'", (identity[0],)).fetchall(),
+                'parent': observer.execute('SELECT status,block_kind FROM tasks WHERE id=?', (parent_id,)).fetchone(),
+                'parent_results': observer.execute('SELECT * FROM task_results WHERE task_id=? ORDER BY id', (parent_id,)).fetchall(),
+            }
+    before = snapshot()
+    assert before['selected'] is not None
+    assert before['child'] == ('failed', None, 'self-blocked: child outcome', identity[3], parent_id, pending['zombie_flag'])
+    assert before['ledger'] == (identity[2], identity[3], identity[4], 'callback_consumed')
+    assert before['parent'] == ('in_progress', 'delegated') and len(before['parent_results']) == 1
+    assert before['bookkeeping'] == [] and len(before['reviews']) == 1
+    review = before['reviews'][0]
+    assert review[2] == identity[1] and json.loads(review[4]) == {
+        'verdict': verdict if verdict is not None else 'rejected',
+        'feedback': 'self-blocked: child outcome', 'reviewed_agent': identity[1]}
+    assert len(before['prior_jobs']) == len(before['jobs']) == 1
+    job = before['jobs'][0]
+    assert job[:3] == (control['job'], 'failed', 'task_ended') and job[5]
+    logs = {str(path): Path(path).read_bytes() for path in job[3:5]}
+    assert b'owned-running' in logs[job[3]]
+    # The genuine consumed selection above would return no RUNNING DB jobs.
+    # It still has a live native control, so replay must not become zero-job success.
+    with sqlite3.connect(root / 'happyranch.db') as observer:
+        assert observer.execute("SELECT id FROM jobs WHERE task_id=? AND status='running'", (identity[0],)).fetchall() == []
+    witness.with_name(witness.name + '.same-result-reentry').write_text('release actual selected reaper consumer\n')
+    reentered = record('same-result-reentered')
+    # Pre-fix intended RED: completed recovery_required is replaced and yields
+    # done/parent/bookkeeping here. Fixture/source admission failures are not RED.
+    assert reentered['disposition'] == 'recovery_required', reentered
+    assert reentered['retained'] is True and reentered['phase'] == 'drain_jobs'
+    assert reentered['key'] == identity and reentered['job_ids'] == [control['job']]
+    assert reentered['controls'] == fault['controls']
+    assert snapshot() == before
+    os.kill(control['pid'], 0)
+    assert {path: Path(path).read_bytes() for path in logs} == logs
+
+    # A different genuine root/child/result must not inherit the exceptional K.
+    # This traverses the same omission/callback/job/consumer pipeline; its real
+    # healthy drain must produce the second parent's actual final callback.
+    distinct = httpx.post(_base(port) + '/tasks', headers=_auth_headers(), json={
+        'team': 'default', 'owner': identity[1], 'brief': 'distinct identity healthy drain'}).raise_for_status().json()
+    assert distinct['task_id'] != parent_id
+    assert _wait_for_terminal(_base(port), distinct['task_id'])['task']['status'] == 'completed'
+    with sqlite3.connect(root / 'happyranch.db') as observer:
+        child = observer.execute('SELECT id,status FROM tasks WHERE parent_task_id=?', (distinct['task_id'],)).fetchall()
+        assert len(child) == 1 and child[0][0] != identity[0] and child[0][1] == 'failed'
+        selected = observer.execute('SELECT accepted_result_id,state FROM task_completion_recoveries WHERE task_id=?', (child[0][0],)).fetchone()
+        assert type(selected[0]) is int and selected[0] > 0 and selected[0] != identity[4] and selected[1] == 'callback_consumed'
+        results = observer.execute('SELECT id,session_id,agent FROM task_results WHERE task_id=? ORDER BY id', (distinct['task_id'],)).fetchall()
+        assert len(results) == 2 and all(type(row[0]) is int and row[0] > 0 and row[1] and row[2] == identity[1] for row in results)
+        assert results[0][1] != results[1][1]
+    assert snapshot() == before  # no parent effect or success-only zombie clear
+    os.kill(control['pid'], 0)
+    assert {path: Path(path).read_bytes() for path in logs} == logs
 
 
 def _c4_live_continuation_oracle(request: pytest.FixtureRequest, port: int, root: Path,

@@ -50,9 +50,16 @@ nonblocking publisher-before-DB attempts, async-writer exclusion and uncapped
 row/report, omission episode and parent/team relation before subsequent effects
 and native job-control admission. Loop scheduling refusal resolves to
 recovery-required, retaining durable residue. An ordinary failed verdict tail
-cannot append a review owned by that selected callback. Finished same-result
+cannot append a review owned by that selected callback. Healthy finished same-result
 reentry renews current ownership/history classification instead of returning
 cached done after cancellation or binding replacement.
+An exceptional native drain retains the original process-local operation,
+phase, captured jobs and controls. Exception or drain cancellation gives
+recovery_required on same-process same-K reentry, without reinstalling at
+evidence/settlement, parent handoff or success-only caller bookkeeping. FAILED
+job rows are not cleanup proof. Pending callers join the retained owner;
+distinct identities do not inherit its failure. Authentic residue remains for
+existing next-start discovery.
 Portability waits outside org.db_lock; pending is never success. Cancellation/owner drift/shutdown stop further effects and preserve
 truthful residue. Cold startup may reconcile durable evidence without signalling
 persisted PIDs. Completed-leaf and agent-team behavior remain unchanged.
