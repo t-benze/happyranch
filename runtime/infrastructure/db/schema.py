@@ -2011,6 +2011,9 @@ class SchemaMixin:
                 ON custom_skill_purge_events(org_slug, slug);
 
             """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_task_id ON audit_log(task_id)"
+        )
         for ddl in (
             "ALTER TABLE custom_skills ADD COLUMN purged_at TEXT",
             "ALTER TABLE custom_skills ADD COLUMN purge_id TEXT",
