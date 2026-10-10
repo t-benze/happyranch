@@ -100,3 +100,14 @@ shipping process/browser checks require the authorized disposable runner.
 Successful maintenance/reboot/compensation needs real M; old-reader execution
 is held. Missing traces/screenshots/RED/GREEN/repetitions are never PASS.
 See the operator runbook for candidate limitations and outstanding proof.
+
+
+C7 launch-context source retains ten L-only parameters and separately requires
+actual C6 check/apply/receipt provenance before any after-M claim. Same-task
+stale callback control uses admitted self-child continuation and the unchanged
+CLI's exact session mismatch; no identity/lifecycle rewrite. Full launch
+surfaces and literal worker expectations, per-agent reset/audit readback,
+nonempty unaffected cooldown/frozen history, original memory paths/hashes and
+provider-exit plus post-exit runner evidence are authored. Thread/dream/wake/
+schedule outcomes remain their own durable oracles. This is source progress,
+not executed C7 acceptance, M readiness or a live migration receipt.

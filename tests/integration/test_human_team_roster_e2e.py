@@ -17,6 +17,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 import signal
+from typing import Callable
 
 import httpx
 import pytest
@@ -2593,6 +2594,124 @@ CONTEXTS = [(agent, kind) for agent in ('consultant_head', 'consultant_codex')
             for kind in ('task', 'thread', 'dream', 'wake', 'schedule')]
 
 
+C7_ADVICE = ('Advise the founder and HappyRanch teams on product, services and business operations. '
+             'You are an individual consultant reporting directly to the founder.')
+C7_SKILLS = {'start-task', 'jobs', 'thread', 'dream', 'todos', 'workspace-cleanup'}
+
+
+def _c7_wait(probe: Callable[[], object], *, label: str, seconds: float = 150) -> object:
+    """Wait only on absent/in-flight evidence; assertion/errors never retry."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        value = probe()
+        if value:
+            return value
+        time.sleep(0.05)
+    pytest.fail('C7 observation deadline: ' + label)
+
+
+def _c7_launch_contract(actual: dict, binding: dict, runtime: Path, baseline: dict) -> None:
+    from runtime.orchestrator.agent_def import parse_agent_text
+    source = Path(binding['source'])
+    agent, provider = actual['agent'], actual['provider']
+    assert actual['source_sha'] == binding['revision']
+    assert actual['workspace'] == str(runtime / 'workspaces' / agent)
+    assert provider == ('claude' if agent == 'consultant_head' else 'codex')
+    assert actual['stub_path'] == binding['stubs'][provider]['path']
+    assert actual['stub_sha256'] == binding['stubs'][provider]['sha256']
+    assert actual['helper_sha256'] == hashlib.sha256((source / 'tests/helpers/human_team_context_plan.py').read_bytes()).hexdigest()
+    assert actual['plan_sha256'] == hashlib.sha256(Path(actual['plan_path']).read_bytes()).hexdigest()
+    assert actual['callback_sha256'] == binding['callback_sha256']
+    assert Path(actual['python_path']).resolve() == Path(binding['python']).resolve()
+    for rel, digest in actual['native_source_sha256'].items():
+        assert digest == hashlib.sha256((source / rel).read_bytes()).hexdigest()
+    assert actual['execution_environment']['HOME'] == str(Path(binding['root']) / 'home')
+    assert actual['execution_environment']['PATH'] == os.pathsep.join((str(Path(binding['root']) / 'bin'), '/usr/bin', '/bin'))
+    assert actual['prompt_sha256'] == hashlib.sha256(actual['prompt'].encode()).hexdigest()
+    definition = parse_agent_text(actual['definition_bytes'], expected_name=agent)
+    assert (definition.name, definition.team, definition.role, definition.executor, definition.allow_rules, definition.repos) == (
+        agent, 'default', 'worker', provider, (), {})
+    assert definition.system_prompt == C7_ADVICE + ('\n\n## Routine Tasks\n- C7 own routine' if baseline['wake'] else '')
+    files = actual['generated_files']
+    assert files['CLAUDE.md']['raw_link'] == 'AGENTS.md'
+    assert files['CLAUDE.md']['text'] == files['AGENTS.md']['text']
+    # Complete output equality to the prelaunch worker materialization is a
+    # continuity oracle, supplemented by literal supported worker expectations.
+    assert files == baseline['files']
+    assert files['AGENTS.md']['text'].startswith('# Agent: ' + agent + '\n\n## System Prompt\n\n' + definition.system_prompt + '\n')
+    if provider == 'claude':
+        assert json.loads(files['.claude/settings.json']['text']) == {
+            'permissions': {'allow': ['Bash(happyranch:*)']}, 'hooks': {}}
+        assert actual['stub_argv'] == ['-p', '--permission-mode', 'auto', '--allowedTools',
+                                       'Bash(happyranch *)', '--output-format', 'json']
+    else:
+        assert '.claude/settings.json' not in files
+        assert actual['stub_argv'] == ['exec', '--sandbox', 'workspace-write', '-c',
+            'sandbox_workspace_write.network_access=true', '--skip-git-repo-check', '--json', '-']
+    assert 'obsolete-' not in json.dumps(actual['stub_argv'])
+    for root in ('.agents/skills', '.claude/skills'):
+        exposed = actual['skill_manifests'][root]
+        assert set(exposed) == C7_SKILLS
+        for slug, item in exposed.items():
+            bundled = source / 'runtime/skills/bundled' / slug
+            expected = {str(p.relative_to(bundled)): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted(bundled.rglob('*')) if p.is_file()}
+            assert item['members'] == expected
+        assert exposed == baseline['skills'][root]
+    # Generic guidance conditionally mentioning managers is shared with workers.
+    # Positive manager grants in either the ACTUAL prompt or system body refuse.
+    authority = actual['prompt'] + '\n' + files['AGENTS.md']['text']
+    for forbidden in ('Team Head', '### Available Agents', 'You can also delegate work to your team.',
+                      '## [RESERVED] Active Team Escalation Policy', '<!-- BEGIN HAPPYRANCH ACTIVE TEAM POLICY -->',
+                      'happyranch manage-agent', 'happyranch workflows templates publish',
+                      'You are the Consultant Head. Analyze the brief above'):
+        assert forbidden not in authority, forbidden
+    assert not {'manage-agent', 'manage-repo', 'workflow-template'} & set(actual['skill_manifests']['.agents/skills'])
+    if actual['kind'] == 'task':
+        assert actual['runtime_session_hint'] == actual['identity']['session_id']
+        if actual['stage'] in ('self-delegate', 'current-after-stale'):
+            assert 'you may only delegate sub-tasks to yourself.' in actual['prompt']
+            assert 'NOT available in self-only mode.' in actual['prompt']
+    elif actual['kind'] == 'schedule':
+        assert f'You are {agent} (worker) on the default team' in actual['prompt']
+        # This shipping runner has no runtime session hint. Preserve the empty
+        # contract rather than inventing one from schedule/provider identity.
+        assert actual['runtime_session_hint'] == ''
+    else:
+        if actual['kind'] == 'wake':
+            assert f'You are {agent} (worker) on the default team' in actual['prompt']
+        assert actual['runtime_session_hint'].startswith('sess-')
+    assert actual['runtime_session_hint'] != 'c7-' + provider + '-' + str(actual['provider_pid'])
+
+
+def _c7_runner_exit(conn: sqlite3.Connection, actual: dict, exits: list[dict]) -> bool:
+    owned = [row for row in exits if row.get('kind') == 'context_provider_exit'
+             and row['pid'] == actual['provider_pid']]
+    if not owned:
+        return False
+    assert len(owned) == 1
+    exit_row = owned[0]
+    assert exit_row['status'] == 0
+    for key in ('source_sha', 'stub_sha256', 'plan_sha256'):
+        assert exit_row[key] == actual[key]
+    # This evidence is persisted by the runner AFTER waiting for the provider
+    # and supervised terminal cleanup, independently of callback or exit trap.
+    scope = {'task': 'task', 'thread': 'thread', 'dream': 'dream', 'wake': 'work_hour', 'schedule': 'schedule'}[actual['kind']]
+    identity = actual['identity']
+    scope_id = identity.get('task_id') or identity.get('thread_id') or identity['context_id']
+    session = actual['runtime_session_hint'] if actual['kind'] in ('task', 'thread') else exit_row['provider_session_id']
+    usage = conn.execute('SELECT agent,executor,session_id,input_tokens FROM session_token_usage WHERE scope_type=? AND scope_id=? AND session_id=?',
+                         (scope, scope_id, session)).fetchall()
+    if not usage:
+        return False
+    assert usage == [(actual['agent'], actual['provider'], session, 1000 if actual['provider'] == 'claude' else 1850)]
+    try:
+        os.kill(actual['provider_pid'], 0)
+    except ProcessLookupError:
+        return True
+    return False
+
+
 @pytest.mark.parametrize('agent,kind', CONTEXTS, ids=[
     ('head' if agent == 'consultant_head' else 'codex') + '-' + kind for agent, kind in CONTEXTS])
 def test_c7_both_resume_resets_and_worker_contexts(
@@ -2600,201 +2719,348 @@ def test_c7_both_resume_resets_and_worker_contexts(
     fake_claude_plan_env: Path, fake_codex_plan_env: Path,
     fake_claude_thread_plan_env: Path,
 ) -> None:
-    """L context proof through real producers, callbacks and final SQL.
+    """L-only real context proof; no already-human fixture is called migration.
 
-    Closed fixture setup invokes both native reset owners; it establishes no
-    successful operator migration, inhibition, backup or M receipt. The real M
-    utility/reset/crash proof is a separate prerequisite, never inferred here.
+    A combined after-M claim requires real C6 utility --check/exact-digest apply,
+    compatible readback and genuine operation receipt in the same supported M
+    fixture BEFORE release and these launches. M remains unprovisioned; this L
+    seed/reset does not satisfy that prerequisite or replace C6/C9/U9 oracles.
     """
+    from dataclasses import replace
+    from runtime.config import Settings
     from runtime.infrastructure.database import Database
+    from runtime.infrastructure.learnings_store import MemoryItem, MemoryStore
     from runtime.models import ScheduleKind, ThreadMessageKind, ThreadRecord, ThreadStatus
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
+    from runtime.orchestrator.context_builder import ContextBuilder
     from runtime.orchestrator.schedule_service import ScheduleService
+    from runtime.orchestrator.workspace_adapters import materialize_workspace_skills
+    from tests.helpers.human_team_context_plan import _outer_identity
     from tests.helpers.integration_stub_guard.guard import manifest
     binding = manifest()
     _seed_human_roster(runtime)
     retained_memory = {}
+    baseline = {}
     for name in ('consultant_head', 'consultant_codex'):
-        memory = runtime / 'workspaces' / name / 'learnings.md'
-        memory.write_text(f'# Retained memory: {name}\nC7 prior worker knowledge.\n')
-        retained_memory[memory] = memory.read_bytes()
+        definition_path = runtime / 'org/agents' / (name + '.md')
+        original = parse_agent_text(definition_path.read_text(), expected_name=name)
+        wake = kind == 'wake' and name == agent
+        body = C7_ADVICE + ('\n\n## Routine Tasks\n- C7 own routine' if wake else '')
+        definition_path.write_text(render_agent_text(replace(original, system_prompt=body)))
+        workspace = runtime / 'workspaces' / name
+        # Independent retained memory DATA, not synthetic launch/callback facts.
+        (workspace / 'learnings.md').write_text('C7 retained runtime memory\n')
+        memory_store = MemoryStore(workspace / 'memory')
+        memory_store.write_entry(MemoryItem(id=memory_store.next_id(), slug='c7-retained-knowledge',
+            title='Retained C7 worker knowledge', topic='fixture', body='C7 retained structured memory\n'), agent=name)
+        memory_store.regenerate_index()
+        provider_memory = workspace / '.provider-memory'
+        provider_memory.mkdir()
+        (provider_memory / 'prior-state').write_bytes(b'C7 retained provider knowledge')
+        # Real provider memory conventions in this owned HOME; fixture bytes
+        # remain DATA and are never exposed in the evidence or provider prompt.
+        home = Path(binding['root']) / 'home'
+        native_memory = (home / '.claude/projects' / str(workspace).replace('/', '-') / 'memory/MEMORY.md'
+                         if original.executor == 'claude' else home / '.codex/memories/memory_summary.md')
+        native_memory.parent.mkdir(parents=True, exist_ok=True)
+        native_memory.write_bytes(b'C7 retained native provider memory')
+        retained_memory[native_memory] = (native_memory.resolve(), native_memory.read_bytes())
+        ContextBuilder(Settings(), OrgPaths(root=runtime), slug=runtime.name).ensure_workspace_ready(
+            workspace, name, body, provider=original.executor)
+        # Native baseline materialization is fixture setup, not a launch. The
+        # unchanged runtime repeats its own integrity/materialization at launch.
+        materialize_workspace_skills(workspace, Settings(project_root=Path(binding['source'])),
+            slug=runtime.name, context='bootstrap', provider=original.executor, agent_name=name,
+            team='default', skills_root=Path(binding['source']) / 'runtime/skills', org_root=runtime)
+        for path in [workspace / 'learnings.md', *sorted((workspace / 'memory').rglob('*')),
+                     *sorted(provider_memory.rglob('*'))]:
+            if path.is_file():
+                retained_memory[path] = (path.resolve(), path.read_bytes())
+        files = {}
+        for rel in ('AGENTS.md', 'CLAUDE.md', '.claude/settings.json', 'opencode.json'):
+            path = workspace / rel
+            if path.exists():
+                files[rel] = {'text': path.read_text(), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                              'raw_link': os.readlink(path) if path.is_symlink() else None}
+        baseline[name] = {'wake': wake, 'files': files, 'skills': {}}
+        assert Settings().permission_mode == 'auto' and Settings().codex_sandbox_mode == 'workspace-write'
+        for root in ('.agents/skills', '.claude/skills'):
+            baseline[name]['skills'][root] = {p.name: {'raw_link': os.readlink(p), 'target': str(p.resolve()),
+                'members': {str(m.relative_to(p.resolve())): hashlib.sha256(m.read_bytes()).hexdigest()
+                            for m in sorted(p.resolve().rglob('*')) if m.is_file()}}
+                for p in sorted((workspace / root).iterdir())}
     attached = _attach_process(runtime)
     assert attached.returncode == 0, attached.stderr
-    # A meaningful retained archived episode is unrelated to the new eligible
-    # reply. The fixture may seed old continuity, never runtime results/claims.
     db = Database(runtime / 'happyranch.db')
     now = datetime.now(timezone.utc)
-    control = 'THR-001'
-    db.insert_thread(ThreadRecord(id=control, subject='retained control',
-                                  status=ThreadStatus.ARCHIVED, archived_at=now))
-    for name, provider in (('consultant_head', 'claude'), ('consultant_codex', 'codex'),
-                           ('dev_agent', 'claude')):
-        db._conn.execute('INSERT INTO thread_participants VALUES (?,?,?,?,?,?)',
-                         (control, name, now.isoformat(), 'founder', 'obsolete-' + name, 7))
-        db._conn.execute('''INSERT INTO thread_reply_delivery_state
-            (thread_id,agent_name,acknowledged_through_seq,required_through_seq,updated_at)
-            VALUES (?,?,?,?,?)''', (control, name, 7, 9, now.isoformat()))
-        db._conn.execute('''INSERT INTO thread_reply_breaker_episodes
-            (thread_id,agent_name,executor_key,episode_id,state,consecutive_failures,
-             opened_at,cooldown_until,last_failure_category,updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)''', (control, name, provider, 'retained-' + name,
-                'open', 3, now.isoformat(), (now + timedelta(days=1)).isoformat(),
-                'provider_failure', now.isoformat()))
-    db._conn.commit()
+    controls = ('THR-001', 'THR-002')
+    for control in controls:
+        db.insert_thread(ThreadRecord(id=control, subject='retained cooldown fixture DATA',
+                                      status=ThreadStatus.ARCHIVED, archived_at=now))
+        for index in range(7):
+            db.append_thread_message(thread_id=control, speaker='founder', kind=ThreadMessageKind.MESSAGE,
+                body_markdown='Retained frozen history DATA ' + str(index))
+        for name, provider in (('consultant_head', 'claude'), ('consultant_codex', 'codex'), ('dev_agent', 'claude')):
+            db._conn.execute('INSERT INTO thread_participants VALUES (?,?,?,?,?,?)',
+                (control, name, now.isoformat(), 'founder', 'obsolete-' + name + control, 7))
+            db._conn.execute('''INSERT INTO thread_reply_delivery_state
+                (thread_id,agent_name,acknowledged_through_seq,required_through_seq,updated_at)
+                VALUES (?,?,?,?,?)''', (control, name, 7, 9, now.isoformat()))
+            episode = 'retained-' + name + control
+            token = 'retained-history-' + name + control
+            db._conn.execute('''INSERT INTO thread_reply_breaker_episodes
+                (thread_id,agent_name,executor_key,episode_id,state,consecutive_failures,
+                 opened_at,cooldown_until,last_failure_category,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                (control, name, provider, episode, 'open', 3, now.isoformat(),
+                 (now + timedelta(days=1)).isoformat(), 'provider_failure', now.isoformat()))
+            db._conn.execute('INSERT INTO thread_reply_breaker_receipts VALUES (?,?,?,?,?)',
+                             (token, episode, 'failure', 'provider_failure', now.isoformat()))
+            db._conn.execute('''INSERT INTO thread_invocations
+                (thread_id,agent_name,invocation_token,triggering_seq,purpose,status,enqueued_at,consumed_at)
+                VALUES (?,?,?,?,?,?,?,?)''', (control, name, token, 7, 'reply', 'failed', now.isoformat(), now.isoformat()))
+        db._conn.execute('''INSERT INTO thread_reply_exchange
+            (thread_id,exchange_id,state,open_seq,close_seq,opened_at,last_activity_at,closed_at,close_reason,deferred_count)
+            VALUES (?,?,?,?,?,?,?,?,?,?)''', (control, 1, 'released', 1, 7, now.isoformat(), now.isoformat(), now.isoformat(), 'quiescence', 1))
+        db._conn.execute('''INSERT INTO thread_exchange_deferrals
+            (thread_id,exchange_id,agent_name,state,created_at,released_at,mint_token_prefix)
+            VALUES (?,?,?,?,?,?,?)''', (control, 1, 'consultant_codex', 'released', now.isoformat(), now.isoformat(), 'retained-frozen-' + control))
     eligible_thread = None
     if kind == 'thread':
-        eligible_thread = 'THR-002'
+        eligible_thread = 'THR-003'
         db.insert_thread(ThreadRecord(id=eligible_thread, subject='eligible full context'))
         for index in range(7):
-            db.append_thread_message(thread_id=eligible_thread, speaker='founder',
-                kind=ThreadMessageKind.MESSAGE,
+            db.append_thread_message(thread_id=eligible_thread, speaker='founder', kind=ThreadMessageKind.MESSAGE,
                 body_markdown='C7-EARLY-CONTEXT-MARKER' if index == 0 else f'retained context {index}')
         db._conn.execute('INSERT INTO thread_participants VALUES (?,?,?,?,?,?)',
             (eligible_thread, agent, now.isoformat(), 'founder', 'obsolete-' + agent, 7))
         db._conn.execute('''INSERT INTO thread_reply_delivery_state
             (thread_id,agent_name,acknowledged_through_seq,required_through_seq,updated_at)
             VALUES (?,?,?,?,?)''', (eligible_thread, agent, 7, 7, now.isoformat()))
-        db._conn.commit()
-    preserved_tables = ('threads', 'thread_messages', 'thread_invocations',
-                        'thread_reply_delivery_state', 'thread_reply_breaker_episodes',
-                        'thread_reply_breaker_receipts')
-    before = {table: db._conn.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
+    db._conn.commit()
+    preserved_tables = ('threads', 'thread_messages', 'thread_invocations', 'thread_reply_delivery_state',
+        'thread_reply_breaker_episodes', 'thread_reply_breaker_receipts', 'thread_reply_exchange',
+        'thread_exchange_deferrals', 'escalation_notifications')
+    before = {table: [tuple(row) for row in db._conn.execute(f'SELECT * FROM {table} ORDER BY rowid')]
               for table in preserved_tables}
-    third = tuple(db._conn.execute('SELECT * FROM thread_participants WHERE agent_name=?',
-                                  ('dev_agent',)).fetchone())
+    participants = [tuple(row) for row in db._conn.execute('SELECT * FROM thread_participants ORDER BY rowid')]
+    reset_receipts = []
     for name in ('consultant_head', 'consultant_codex'):
-        expected_rows = 2 if name == agent and kind == 'thread' else 1
+        expected_rows = 3 if name == agent and kind == 'thread' else 2
         assert db.reset_thread_sessions_for_agent(name, audit_scope_id='config:human-team-roster:C7',
-            audit_agent='founder', audit_reason='fixture demotion continuity') == expected_rows
-    assert {table: db._conn.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
-            for table in preserved_tables} == before
-    assert tuple(db._conn.execute('SELECT * FROM thread_participants WHERE agent_name=?',
-                                  ('dev_agent',)).fetchone()) == third
-    assert [tuple(row) for row in db._conn.execute('''SELECT agent_name,agent_session_id,last_resumed_seq
-        FROM thread_participants WHERE thread_id='THR-001' AND agent_name LIKE 'consultant_%' ORDER BY agent_name''')] == [
-        ('consultant_codex', None, 0), ('consultant_head', None, 0)]
-    invalidations = db._conn.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id",
-                                    ('config:human-team-roster:C7',)).fetchall()
-    assert [json.loads(row[0]) for row in invalidations] == [
-        {'reason': 'fixture demotion continuity', 'rows': 2 if name == agent and kind == 'thread' else 1, 'name': name}
-        for name in ('consultant_head', 'consultant_codex')]
+            audit_agent='founder', audit_reason='L fixture continuity reset; not M demotion') == expected_rows
+        # Each per-agent commit is inspected from a separate connection. The
+        # second agent remains unreset until its own audited helper commits.
+        with sqlite3.connect(runtime / 'happyranch.db') as observer:
+            observed = observer.execute('SELECT * FROM thread_participants ORDER BY rowid').fetchall()
+            updated = {item['name'] for item in reset_receipts} | {name}
+            assert observed == [row[:4] + ((None, 0) if row[1] in updated else row[4:]) for row in participants]
+            invalidations = observer.execute("SELECT payload FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id",
+                                           ('config:human-team-roster:C7',)).fetchall()
+            expected = reset_receipts + [{'reason': 'L fixture continuity reset; not M demotion', 'rows': expected_rows, 'name': name}]
+            assert [json.loads(row[0]) for row in invalidations] == expected
+            assert {table: observer.execute(f'SELECT * FROM {table} ORDER BY rowid').fetchall()
+                    for table in preserved_tables} == before
+            reset_receipts = expected
+    # Independent two-owner oracle: omitting either reset cannot make its
+    # loop-derived receipt list become the expected successful contract.
+    reset_participants = [row[:4] + ((None, 0) if row[1] in ('consultant_head', 'consultant_codex') else row[4:])
+                          for row in participants]
+    with sqlite3.connect(runtime / 'happyranch.db') as observer:
+        assert observer.execute('SELECT * FROM thread_participants ORDER BY rowid').fetchall() == reset_participants
+        assert [json.loads(row[0]) for row in observer.execute(
+            "SELECT payload FROM audit_log WHERE task_id=? AND action='thread_session_invalidated' ORDER BY id",
+            ('config:human-team-roster:C7',))] == [
+                {'reason': 'L fixture continuity reset; not M demotion',
+                 'rows': 3 if name == agent and kind == 'thread' else 2, 'name': name}
+                for name in ('consultant_head', 'consultant_codex')]
+    stable_timezone = 'UTC' if now.hour == 12 else f'Etc/GMT{now.hour - 12:+d}'
     if kind == 'dream':
         db.upsert_org_setting('dreaming', json.dumps({'enabled': True,
-            'schedule': {'time': '00:00', 'timezone': 'UTC', 'catch_up_on_startup': True},
+            'schedule': {'time': '00:00', 'timezone': stable_timezone, 'catch_up_on_startup': True},
             'agents': {'mode': 'whitelist', 'include': [agent]}}))
     if kind == 'wake':
-        definition = runtime / 'org/agents' / (agent + '.md')
-        definition.write_text(definition.read_text() + '\n## Routine Tasks\n- C7 own routine\n')
         db.upsert_org_setting('working_hours', json.dumps({'enabled': True,
             'agents': {'mode': 'whitelist', 'include': [agent]},
-            'default': {'mode': 'continuous', 'interval': '24h', 'timezone': 'UTC',
-                        'catch_up_on_startup': True}}))
+            'default': {'mode': 'continuous', 'interval': '24h', 'timezone': stable_timezone, 'catch_up_on_startup': True}}))
     schedule_id = None
     if kind == 'schedule':
-        schedule_id = ScheduleService(db).create(agent_name=agent, team='default',
-            kind=ScheduleKind.ONE_SHOT, fire_at=datetime.now(timezone.utc) + timedelta(seconds=1), recurrence=None,
-            timezone='UTC', normalized_brief='C7 own scheduled root',
+        schedule_id = ScheduleService(db).create(agent_name=agent, team='default', kind=ScheduleKind.ONE_SHOT,
+            fire_at=now + timedelta(seconds=1), recurrence=None, timezone='UTC', normalized_brief='C7 own scheduled root',
             source_instruction='explicit isolated fixture one-shot').id
     db.close()
     capture = tmp_path / 'actual-contexts.jsonl'
     helper = Path(binding['source']) / 'tests/helpers/human_team_context_plan.py'
-    for plan, provider in ((fake_claude_plan_env, 'claude'), (fake_claude_thread_plan_env, 'claude'),
-                           (fake_codex_plan_env, 'codex')):
-        # DeterministicPlan authenticates exact bytes before the real stub runs.
-        import shlex
-        plan.write_text('#!/usr/bin/env bash\nset -euo pipefail\npython ' +
-            shlex.quote(str(helper)) + ' --provider ' + provider + ' --capture ' +
-            shlex.quote(str(capture)) + '\n')
-    port = request.getfixturevalue('live_daemon')
-    base = _base(port)
-    task_id = thread_id = None
+    import shlex
+    for plan, provider in ((fake_claude_plan_env, 'claude'), (fake_claude_thread_plan_env, 'claude'), (fake_codex_plan_env, 'codex')):
+        plan.write_text('#!/usr/bin/env bash\nset -euo pipefail\npython ' + shlex.quote(str(helper)) +
+            ' --provider ' + provider + ' --capture ' + shlex.quote(str(capture)) +
+            (' --stale-task-root' if kind == 'task' else '') + '\n')
+    base = _base(request.getfixturevalue('live_daemon'))
+    task_id = None
     if kind == 'task':
         task_id = httpx.post(base + '/tasks', headers=_auth_headers(), json={
             'owner': agent, 'team': 'default', 'brief': 'C7 actual worker root'}).raise_for_status().json()['task_id']
-    if kind == 'thread':
-        thread_id = eligible_thread
-        httpx.post(base + f'/threads/{thread_id}/send', headers=_auth_headers(), json={
+        assert _wait_for_terminal(base, task_id)['task']['status'] == 'completed'
+    elif kind == 'thread':
+        httpx.post(base + f'/threads/{eligible_thread}/send', headers=_auth_headers(), json={
             'body_markdown': 'C7 actual founder sends next message'}).raise_for_status()
-    deadline = time.monotonic() + 150
-    records = []
-    while time.monotonic() < deadline:
-        if capture.exists():
-            records = [json.loads(line) for line in capture.read_text().splitlines() if line]
-            matching = [row for row in records if row['kind'] == kind and row['agent'] == agent]
-            if matching and matching[0]['callback_exit'] == 0:
-                break
-        time.sleep(0.1)
-    else:
-        pytest.fail(f'actual {kind} callback absent: {records}')
-    actual = matching[0]
-    assert actual['source_sha'] == binding['revision']
-    assert actual['workspace'] == str(runtime / 'workspaces' / agent)
-    assert actual['provider'] == ('claude' if agent == 'consultant_head' else 'codex')
-    assert 'obsolete-' not in json.dumps(actual['stub_argv'])
-    assert 'Team Head' not in actual['prompt']
-    assert 'role: worker' in actual['definition_bytes'] and 'team: default' in actual['definition_bytes']
-    assert actual['generated_files']['CLAUDE.md']['raw_link'] == 'AGENTS.md'
-    for provider_root in ('.agents/skills/', '.claude/skills/'):
-        assert any(path.startswith(provider_root) for path in actual['skill_links'])
-        assert not any(path == provider_root + 'manage-agent' for path in actual['skill_links'])
+    def captured() -> list[dict] | None:
+        if not capture.exists():
+            return None
+        rows = [json.loads(line) for line in capture.read_text().splitlines()]
+        matching = [row for row in rows if row['kind'] == kind and row['agent'] == agent]
+        if not matching:
+            return None
+        assert all(row['callback_exit'] == 0 for row in matching), matching
+        return rows
+    records = _c7_wait(captured, label='actual ' + kind + ' callback')
+    actual = next(row for row in records if row['kind'] == kind and row['agent'] == agent)
     with sqlite3.connect(runtime / 'happyranch.db') as conn:
-        for table in ('thread_reply_delivery_state', 'thread_reply_breaker_episodes'):
-            column_names = [column[0] for column in conn.execute(f'SELECT * FROM {table} LIMIT 0').description]
-            index = column_names.index('thread_id')
-            assert conn.execute(f'SELECT * FROM {table} WHERE thread_id=? ORDER BY rowid', (control,)).fetchall() == [tuple(row) for row in before[table] if row[index] == control]
-        if kind == 'thread':
-            token = actual['identity']['invocation_token']
-            assert actual['identity']['thread_id'] == thread_id
-            assert 'C7-EARLY-CONTEXT-MARKER' in actual['prompt']
-            # Callback commit precedes provider exit; wait for the real runner's
-            # consumption rather than declaring a successful callback terminal.
-            final_deadline = time.monotonic() + 30
-            while time.monotonic() < final_deadline:
-                invocation = conn.execute('SELECT status,reply_message_seq FROM thread_invocations WHERE invocation_token=?', (token,)).fetchone()
-                if invocation and invocation[0] == 'consumed':
-                    break
-                time.sleep(0.1)
-            assert invocation and invocation[0] == 'consumed', invocation
-            assert conn.execute('SELECT speaker,body_markdown FROM thread_messages WHERE thread_id=? AND seq=?',
-                                (thread_id, invocation[1])).fetchone() == (agent, 'C7 genuine current worker reply')
-        elif kind in ('dream', 'wake', 'schedule'):
+        if kind in ('dream', 'wake', 'schedule'):
             table = {'dream': 'dreams', 'wake': 'work_hours', 'schedule': 'schedules'}[kind]
             context_id = actual['identity']['context_id']
-            row = conn.execute(f'SELECT * FROM {table} WHERE id=?', (context_id,))
-            columns = [column[0] for column in row.description]
-            value = dict(zip(columns, row.fetchone(), strict=True))
-            assert value['agent_name'] == agent
-            assert value['status'] == ('fired' if kind == 'schedule' else 'completed')
+            def context_terminal() -> dict | None:
+                conn.row_factory = sqlite3.Row
+                values = conn.execute('SELECT * FROM ' + table + ' WHERE id=?', (context_id,)).fetchall()
+                conn.row_factory = None
+                if not values or values[0]['status'] in ('pending', 'running', 'firing'):
+                    return None
+                assert len(values) == 1 and values[0]['status'] == ('fired' if kind == 'schedule' else 'completed'), dict(values[0])
+                return dict(values[0])
+            value = _c7_wait(context_terminal, label='terminal ' + kind, seconds=30)
+            assert value['agent_name'] == agent and value['error'] is None
+            assert conn.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0] == 1
             transcript = Path(value['transcript_path'])
             if not transcript.is_absolute():
                 transcript = runtime / transcript
-            assert transcript.is_file() and transcript.read_text()
+            assert transcript.is_file()
+            text = transcript.read_text()
+            assert agent in text and context_id in text
+            summary = {'dream': 'C7 private worker reflection', 'wake': 'C7 current worker wake', 'schedule': 'C7 actual one-shot fire'}[kind]
+            assert summary in text
             if kind == 'dream':
-                assert value['ended_at'] and value['new_learnings_count'] == value['kb_candidate_count'] == 0
+                assert value['ended_at'] and value['summary'] == summary
+                assert value['new_learnings_count'] == value['kb_candidate_count'] == 0
                 assert value['founder_thread_id'] is None
                 assert conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == 0
+                assert conn.execute('SELECT COUNT(*) FROM dream_kb_candidates').fetchone()[0] == 0
             else:
                 spawned = json.loads(value['spawned_task_ids'])
                 assert len(spawned) == 1
                 task_id = spawned[0]
+                assert task_id in text
                 if kind == 'schedule':
                     assert context_id == schedule_id and value['active'] == 0 and value['fire_count'] == 1
+                    assert value['session_id'] is None and value['last_fired_at']
                 else:
-                    assert value['ended_at'] and value['spawned_task_count'] == 1
-    if task_id is not None:
-        final = _wait_for_terminal(base, task_id)
-        assert final['task']['status'] == 'completed'
-        with sqlite3.connect(runtime / 'happyranch.db') as conn:
-            assert conn.execute('SELECT assigned_agent,team FROM tasks WHERE id=?', (task_id,)).fetchone() == (agent, 'default')
-            results = conn.execute('SELECT id,agent,session_id FROM task_results WHERE task_id=?', (task_id,)).fetchall()
-            assert len(results) == 1 and type(results[0][0]) is int and results[0][0] > 0
-            assert results[0][1] == agent and results[0][2]
-    assert {path: path.read_bytes() for path in retained_memory} == retained_memory
+                    assert value['ended_at'] and value['spawned_task_count'] == 1 and value['summary'] == summary
+        if task_id is not None:
+            assert _wait_for_terminal(base, task_id)['task']['status'] == 'completed'
+            records = [json.loads(line) for line in capture.read_text().splitlines()]
+            tasks = conn.execute('SELECT id,parent_task_id,assigned_agent,team,status FROM tasks ORDER BY id').fetchall()
+            assert len(tasks) == (2 if kind == 'task' else 1)
+            assert all(row[2:] == (agent, 'default', 'completed') for row in tasks)
+            assert [row[0] for row in tasks if row[1] is None] == [task_id]
+            task_records = [row for row in records if row['kind'] == 'task']
+            results = conn.execute('SELECT id,task_id,agent,session_id FROM task_results ORDER BY id').fetchall()
+            assert len(results) == len(task_records) == (3 if kind == 'task' else 1)
+            assert all(type(row[0]) is int and row[0] > 0 for row in results)
+            assert conn.execute("SELECT COUNT(*) FROM task_results WHERE status!='completed'").fetchone()[0] == 0
+            assert {(row[1], row[2], row[3]) for row in results} == {
+                (row['identity']['task_id'], agent, row['identity']['session_id']) for row in task_records}
+            if kind == 'task':
+                stale_records = [row for row in records if row['stage'] == 'current-after-stale']
+                assert len(stale_records) == 1
+                stale = stale_records[0]['stale_control']
+                assert stale['earlier']['task_id'] == stale['current']['task_id'] == task_id
+                assert stale['earlier']['session_id'] != stale['current']['session_id']
+                assert stale['exit'] == 1 and stale['before_sha256'] == stale['after_sha256']
+                assert stale['stdout'].strip() == f"Session id mismatch — daemon expected {stale['current']['session_id']} but got {stale['earlier']['session_id']}."
+                assert conn.execute('SELECT current_session_id FROM tasks WHERE id=?', (task_id,)).fetchone() == (stale['current']['session_id'],)
+        if kind == 'thread':
+            token = actual['identity']['invocation_token']
+            assert actual['identity']['thread_id'] == eligible_thread
+            assert 'C7-EARLY-CONTEXT-MARKER' in actual['prompt']
+            assert 'Full message history follows.' in actual['prompt']
+            invocation = conn.execute('SELECT status,agent_name,triggering_seq,reply_message_seq FROM thread_invocations WHERE invocation_token=?', (token,)).fetchone()
+            assert invocation and invocation[:3] == ('consumed', agent, 8), invocation
+            assert invocation[3] == 9
+            assert conn.execute('SELECT speaker,body_markdown FROM thread_messages WHERE thread_id=? AND seq=?',
+                                (eligible_thread, 9)).fetchone() == (agent, 'C7 genuine current worker reply')
+            assert conn.execute('SELECT COUNT(*) FROM thread_invocations WHERE thread_id=?', (eligible_thread,)).fetchone()[0] == 1
+            assert conn.execute('SELECT COUNT(*) FROM thread_messages WHERE thread_id=?', (eligible_thread,)).fetchone()[0] == 9
+        witness = Path(os.environ['HAPPYRANCH_TEST_WITNESS_DIR']) / 'identities.jsonl'
+        def runner_settled() -> bool:
+            exits = [json.loads(line) for line in witness.read_text().splitlines()] if witness.exists() else []
+            return all(_c7_runner_exit(conn, row, exits) for row in records)
+        _c7_wait(runner_settled, label='all actual provider exits and post-exit runner usage', seconds=30)
+        for row in records:
+            _c7_launch_contract(row, binding, runtime, baseline[agent])
+        assert len(records) == (3 if kind == 'task' else 2 if kind in ('wake', 'schedule') else 1)
+        assert conn.execute('SELECT COUNT(*) FROM tasks').fetchone()[0] == (2 if kind == 'task' else 1 if kind in ('wake', 'schedule') else 0)
+        assert conn.execute('SELECT COUNT(*) FROM task_results').fetchone()[0] == (3 if kind == 'task' else 1 if kind in ('wake', 'schedule') else 0)
+        for other, table in (('dream', 'dreams'), ('wake', 'work_hours'), ('schedule', 'schedules')):
+            assert conn.execute('SELECT COUNT(*) FROM ' + table).fetchone()[0] == (1 if kind == other else 0)
+        # Once post-exit runner facts exist, separately inspect the thread's
+        # legitimate delivery settlement; reset's zero-effects assertion does
+        # not apply to this genuine new reply.
+        if kind == 'thread':
+            _c7_wait(lambda: conn.execute('SELECT acknowledged_through_seq,required_through_seq,running_invocation_token,queued_invocation_token FROM thread_reply_delivery_state WHERE thread_id=? AND agent_name=?',
+                (eligible_thread, agent)).fetchone() == (8, 8, None, None), label='owned reply delivery settlement', seconds=30)
+            _c7_wait(lambda: conn.execute('SELECT agent_session_id,last_resumed_seq FROM thread_participants WHERE thread_id=? AND agent_name=?',
+                (eligible_thread, agent)).fetchone() == ('c7-' + actual['provider'] + '-' + str(actual['provider_pid']), 8),
+                label='owned provider resume state after runner exit', seconds=30)
+        for table in preserved_tables:
+            # Ignore ONLY the expected eligible-thread changes, never archived
+            # cooldown/frozen/notification facts or new unrelated artifacts.
+            rows = conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')
+            columns = [column[0] for column in rows.description]
+            values = rows.fetchall()
+            if kind == 'thread' and 'thread_id' in columns:
+                index = columns.index('thread_id')
+                assert [row for row in values if row[index] != eligible_thread] == [row for row in before[table] if row[index] != eligible_thread]
+            elif kind == 'thread' and table == 'threads':
+                assert [row for row in values if row[0] != eligible_thread] == [row for row in before[table] if row[0] != eligible_thread]
+            elif kind == 'thread' and table == 'thread_reply_breaker_receipts':
+                assert [row for row in values if row[0] != token] == before[table]
+            else:
+                assert values == before[table]
+        assert conn.execute('SELECT * FROM thread_participants WHERE agent_name=? ORDER BY rowid', ('dev_agent',)).fetchall() == [row for row in participants if row[1] == 'dev_agent']
+        assert conn.execute('SELECT * FROM thread_participants WHERE thread_id IN (?,?) ORDER BY rowid', controls).fetchall() == [row for row in reset_participants if row[0] in controls]
+    # Parser refusal controls are source assertions, not independently observed
+    # callback evidence. Only the shipping CLI/DB path above proves settlement.
+    prompt = actual['prompt']
+    if kind == 'task':
+        line, field = '  session_id: ' + actual['identity']['session_id'], 'session'
+        wrong = '  session_id: sess-0000'
+        ignored = '\nSkill example:\n  task_id: TASK-999999\n  session_id: sess-0000\n'
+    elif kind == 'thread':
+        line, field = 'Your invocation_token for this turn is: ' + actual['identity']['invocation_token'], 'invocation_token'
+        wrong = 'Your invocation_token for this turn is: 0000'
+        # Examples INSIDE history cannot substitute for the outer callback ID.
+        ignored = ''
+        amended = prompt.replace('C7-EARLY-CONTEXT-MARKER', 'C7-EARLY-CONTEXT-MARKER\n' + wrong)
+        assert _outer_identity(amended, runtime.name) == (kind, actual['identity'])
+    else:
+        line = next(value for value in prompt.splitlines() if value.startswith('happyranch ' + {'dream': 'dreams complete', 'wake': 'work-hours spawn', 'schedule': 'schedules spawn'}[kind]))
+        field = kind + '_callback_id'
+        wrong = line.replace(actual['identity']['context_id'], 'WRONG-ID')
+        ignored = '\nSkill example:\n' + wrong + '\n'
+    for label, changed in (('missing', prompt.replace(line + '\n', '')),
+                           ('duplicate', prompt.replace(line, line + '\n' + line)),
+                           ('conflicting', prompt.replace(line, line + '\n' + wrong))):
+        with pytest.raises(ValueError, match='^' + label + '_' + field + '$'):
+            _outer_identity(changed, runtime.name)
+    assert _outer_identity(prompt + ignored, runtime.name) == (kind, actual['identity'])
+    assert {path: (path.resolve(), path.read_bytes()) for path in retained_memory} == retained_memory
     (tmp_path / 'C7-context-receipt.json').write_text(json.dumps({
-        'source_sha': binding['revision'], 'context': kind, 'agent': agent,
-        'captured_callback': actual, 'L_context_only': True,
-        'retained_memory_sha256': {str(path.relative_to(runtime)): hashlib.sha256(raw).hexdigest()
-                                   for path, raw in retained_memory.items()},
-        'M_utility_reset_proof': 'separate unexecuted prerequisite'}, sort_keys=True))
+        'source_sha': binding['revision'], 'context': kind, 'agent': agent, 'captured_launches': records,
+        'L_context_only': True, 'per_agent_reset_audits': reset_receipts,
+        'retained_memory_sha256': {str(path): hashlib.sha256(raw).hexdigest()
+                                   for path, (_, raw) in retained_memory.items()},
+        'M_utility_reset_proof': 'HELD: C6 real check/apply/receipt same disposable fixture required; not established by L'}, sort_keys=True))
+
 
 
 def _c4_live_continuation_oracle(request: pytest.FixtureRequest, port: int, root: Path,

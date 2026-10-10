@@ -182,21 +182,51 @@ a cooperative, explicitly inhibited disposable-VM operation: no host exactly
 once or hostile same-user exclusion claim follows. Actual M capability, reboot
 and independent complete launch-inventory evidence remain required.
 
-C7's closed test-side context plan is authored at
-`tests/helpers/human_team_context_plan.py`. Existing guarded fake binaries pass
-their full actual stdin and capture original argv without changing positional
-plan conventions or usage output. The helper binds genuine task/session,
-thread token/trigger sequence, dream, wake and schedule IDs; it calls the
-corresponding supported callback and records actual generated settings,
-instruction bytes and both skill-root links. It does not produce or settle a
-context, insert a result, or attest final behavior. Ten real producer/admission
-cases are authored in `test_c7_both_resume_resets_and_worker_contexts`, one per
-consultant and task/thread/dream/wake/schedule. They independently check the
-native resets, retained memory and archived delivery/breaker controls, full
-thread context, actual callback and durable context/task outcome. Their L
-fixture resets do not attest successful operator migration in M. Execution,
-causal controls and five repetitions remain unavailable; source alone does not
-close C7. Wbrowser's finite selection is now authored at
+C7's ten L-only context parameters remain in
+`test_c7_both_resume_resets_and_worker_contexts` (head/codex ×
+task/thread/dream/wake/schedule). Their closed test-side helper and registered
+provider stubs capture exact stdin (including final newlines), binary/argv,
+source/helper/plan hashes, actual workspace and runtime binding, complete
+AGENTS/CLAUDE/settings and both skill-root member manifests. Literal ordinary
+worker/advisory, self-only task decisions, supported sandbox/settings and
+six-contract no-repository union are checked independently of the captured
+values; native permission/eligibility algorithms remain unchanged. Generic
+conditional manager guidance is not itself an active manager grant.
+
+Two archived cooldown control threads have nonempty frozen exchange and breaker
+receipts; the eligible thread has retained ACK7 plus an earliest transcript
+marker. Each native per-agent reset is independently read with its own audit,
+with no claim of an atomic transaction across both agents. Reset creates no
+message, invocation or notification and leaves the third agent, watermarks,
+cooldown, frozen history and original runtime/provider memory paths/bytes
+unchanged. Later launches have separate legitimate-effect assertions.
+
+The task parameter uses genuine self-child continuation: the original admitted
+root session delegates to itself, the real child settles, and the same logical
+root is admitted with a new session. The original captured tuple is submitted
+through the unchanged CLI and must return its precise session-mismatch refusal
+without a result, recovery-consumption, audit or task mutation; only the current
+callback then succeeds. No current_session_id, runtime session or result is
+seeded. Thread consumes its exact real token with one owned reply. Dream has its
+own completed row/transcript, empty learnings/candidates and no founder thread;
+wake/schedule have their own transcript and exactly one genuine own-worker
+root/result, with one-shot schedule inactive, fired once and session cleared.
+Provider exit status and independent post-exit runner usage are both required,
+with bounded observation that fails at its deadline. Callback exit0 alone is
+not runner settlement. Missing/duplicate/conflicting outer IDs refuse; skill
+examples and transcript history cannot supply callback identity.
+
+These are AUTHORED assertions, not executed proof. L already-human seed/reset
+is explicitly not migration. An after-M claim requires the real C6 utility
+--check → exact-digest apply → compatible readback → genuine operation receipt
+in the same supported disposable M fixture before release and launches. That
+combined venue remains unprovisioned, including persistent inhibition and
+observer/reboot capabilities; no successful M receipt or demotion is inferred.
+Python collection/helper/case/causal execution and five-isolated/sibling
+repetitions remain SUSPENDED/HELD. The task evidence's existing C7 source map
+records producers, native readers, final oracles and inert restoration controls.
+Source authoring alone does not close C7 behavioral acceptance. Wbrowser's
+finite selection is now authored at
 `tests/integration/test_human_team_roster_browser.py`, using the built SPA and
 the fixture-owned loopback daemon with explicit loading/error/empty transport
 states. Browser capability, execution, screenshots and independent bilingual
@@ -243,7 +273,8 @@ profiles retain their actual owned same-machine dependency paths; no path rewrit
 or export/import API is invented. HAPPYRANCH_TEST_ROSTER_M_VENUE selects a root
 only and grants no authorization/capability. M remains unprovisioned/HELD. These
 assertions have not executed and provide no successful utility/restore receipt.
-TASK10461 extends C6/C8/C9 source below; the root still owns C7/C10 completion,
+TASK10461 extends C6/C8/C9 source below; the root still owns C7 execution and
+combined-M proof, C10 completion,
 actual old-reader/M/L/browser receipts, causal controls,
 five isolated/affected-sibling repetitions, independent final-head review/QA,
 publication/CI and operator acceptance. Python units/collection/control/repetition

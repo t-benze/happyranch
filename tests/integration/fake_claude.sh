@@ -45,7 +45,8 @@ done
 # THR-200: when -p carries no message argument, the CLI reads the sole user
 # prompt from stdin — mirror the real claude 2.1.241 behavior here.
 if [[ -z "$PROMPT" ]]; then
-    PROMPT="$(cat)"
+    PROMPT="$(cat; printf '\001')"
+    PROMPT="${PROMPT%$'\001'}"
 fi
 
 # Extract task_id, session_id, and agent name from the start-task SKILL's
@@ -80,7 +81,14 @@ if [[ -n "$THREAD_INVOCATION_TOKEN" ]]; then
         exit 86
     fi
     if [[ -n "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" ]]; then
-        python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_THREAD_PLAN" "${STUB_ARGV[@]}"
+        C7_PLAN=$(python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_THREAD_PLAN" "${STUB_ARGV[@]}")
+        if [[ "$C7_PLAN" == C7 ]]; then
+            export HAPPYRANCH_TEST_CONTEXT_STUB="$0"
+            export HAPPYRANCH_TEST_CONTEXT_PLAN="$FAKE_CLAUDE_THREAD_PLAN"
+            export HAPPYRANCH_TEST_CONTEXT_PROVIDER_PID="$$"
+            C7_PROVIDER_SESSION="c7-claude-$$"
+            trap 'C7_STATUS=$?; python "$HAPPYRANCH_TEST_STUB_GUARD" --context-exit "$0" claude "$FAKE_CLAUDE_THREAD_PLAN" "$C7_STATUS" "$$" "$C7_PROVIDER_SESSION" || exit 86; exit "$C7_STATUS"' EXIT
+        fi
     fi
     if [[ -n "${FAKE_CLAUDE_THREAD_PLAN:-}" && -f "$FAKE_CLAUDE_THREAD_PLAN" ]]; then
         printf '%s' "$PROMPT" | bash "$FAKE_CLAUDE_THREAD_PLAN" \
@@ -88,9 +96,13 @@ if [[ -n "$THREAD_INVOCATION_TOKEN" ]]; then
     fi
     # Emit the same JSON result blob the task path does — the executor parses it.
     if [[ "$JSON_OUTPUT" == 1 ]]; then
+        if [[ "${C7_PLAN:-}" == C7 ]]; then
+            printf '{"type":"result","result":"ok","session_id":"%s","model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":300,"cache_read_input_tokens":200}}\n' "$C7_PROVIDER_SESSION"
+        else
         cat <<'EOF'
 {"type":"result","result":"ok","model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":300,"cache_read_input_tokens":200}}
 EOF
+        fi
     fi
     exit 0
 fi
@@ -110,7 +122,14 @@ if [[ -z "${FAKE_CLAUDE_PLAN:-}" || ! -f "$FAKE_CLAUDE_PLAN" || ! -x "$FAKE_CLAU
         exit 86
     fi
     if [[ -n "${HAPPYRANCH_TEST_PARENT_MANIFEST:-}" ]]; then
-        python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_PLAN" "${STUB_ARGV[@]}"
+        C7_PLAN=$(python "$HAPPYRANCH_TEST_STUB_GUARD" "$0" claude "$FAKE_CLAUDE_PLAN" "${STUB_ARGV[@]}")
+        if [[ "$C7_PLAN" == C7 ]]; then
+            export HAPPYRANCH_TEST_CONTEXT_STUB="$0"
+            export HAPPYRANCH_TEST_CONTEXT_PLAN="$FAKE_CLAUDE_PLAN"
+            export HAPPYRANCH_TEST_CONTEXT_PROVIDER_PID="$$"
+            C7_PROVIDER_SESSION="c7-claude-$$"
+            trap 'C7_STATUS=$?; python "$HAPPYRANCH_TEST_STUB_GUARD" --context-exit "$0" claude "$FAKE_CLAUDE_PLAN" "$C7_STATUS" "$$" "$C7_PROVIDER_SESSION" || exit 86; exit "$C7_STATUS"' EXIT
+        fi
     fi
     if [[ -n "${FAKE_CLAUDE_PLAN:-}" && -f "$FAKE_CLAUDE_PLAN" ]]; then
     printf '%s' "$PROMPT" | bash "$FAKE_CLAUDE_PLAN" "$TASK_ID" "$SESSION_ID" "$AGENT" "$ORG_SLUG" 1>&2
@@ -121,9 +140,13 @@ fi
 # session_token_usage row. Without this, integration runs would never exercise
 # the parser and every fake-Claude session would leave the row table empty.
 if [[ "$JSON_OUTPUT" == 1 ]]; then
+    if [[ "${C7_PLAN:-}" == C7 ]]; then
+        printf '{"type":"result","result":"ok","session_id":"%s","model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":300,"cache_read_input_tokens":200}}\n' "$C7_PROVIDER_SESSION"
+    else
     cat <<'EOF'
 {"type":"result","result":"ok","model":"claude-sonnet-4-6","usage":{"input_tokens":1000,"output_tokens":500,"cache_creation_input_tokens":300,"cache_read_input_tokens":200}}
 EOF
+    fi
 fi
 
 exit 0
