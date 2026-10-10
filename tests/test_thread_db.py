@@ -31,6 +31,111 @@ from runtime.models import (
 )
 
 
+@pytest.mark.parametrize("bucket,expected", [
+    (None, ["THR-2", "THR-10", "THR-001", "THR-B", "THR-A"]),
+    ("open", ["THR-10", "THR-2", "THR-001"]),
+    ("archived", ["THR-A", "THR-B"]),
+])
+def test_thread_page_order_ties_pins_and_archived_fallback(tmp_path, bucket, expected):
+    db = Database(tmp_path / "pages.db")
+    for thread_id, start, archived, pinned in [
+        ("THR-A", 1, 5, True), ("THR-B", 2, None, False),
+        ("THR-001", 3, None, False), ("THR-2", 4, None, True),
+        ("THR-10", 4, None, True),
+    ]:
+        db.insert_thread(ThreadRecord(
+            id=thread_id, subject=thread_id,
+            status=ThreadStatus.ARCHIVED if thread_id in ("THR-A", "THR-B") else ThreadStatus.OPEN,
+            started_at=datetime(2026, 1, start, tzinfo=timezone.utc),
+            archived_at=datetime(2026, 1, archived, tzinfo=timezone.utc) if archived else None,
+            pinned_at=datetime(2026, 1, 1, tzinfo=timezone.utc) if pinned else None,
+        ))
+    ids = []
+    cursor = None
+    for _ in range(len(expected)):
+        page = db.list_threads_page(org="alpha", status=bucket, page_size=1, cursor=cursor)
+        ids.extend(t.id for t in page["threads"])
+        assert page["totals"] == {"open": 3, "archived": 2, "all": 5, "dream_origin": 0}
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            assert cursor is None
+            break
+    assert ids == expected
+    assert not db._conn.in_transaction
+
+
+@pytest.mark.parametrize("count", [0, 2, 3, 4])
+def test_thread_page_empty_exact_partial_termination(tmp_path, count):
+    db = Database(tmp_path / "pages.db")
+    for i in range(count):
+        db.insert_thread(ThreadRecord(id=f"THR-{i}", subject="x"))
+    page = db.list_threads_page(org="alpha", page_size=2)
+    assert len(page["threads"]) == min(count, 2)
+    assert page["has_more"] is (count > 2)
+    if count > 2:
+        page = db.list_threads_page(org="alpha", page_size=2, cursor=page["next_cursor"])
+        assert len(page["threads"]) == count - 2
+    assert page["has_more"] is False
+    assert page["next_cursor"] is None
+
+
+def test_thread_page_two_connection_snapshot_and_owned_savepoint(tmp_path, monkeypatch):
+    db = Database(tmp_path / "pages.db")
+    db._conn.execute("PRAGMA journal_mode=WAL")
+    db.insert_thread(ThreadRecord(id="THR-1", subject="before"))
+    db.add_thread_participant("THR-1", "alice", added_by="founder")
+    writer = sqlite3.connect(tmp_path / "pages.db")
+    from runtime.infrastructure import database as database_module
+    original_clock = database_module._now
+    def concurrent_write():
+        writer.execute("UPDATE threads SET subject='after'")
+        writer.execute("INSERT INTO threads (id, subject, started_at, status) VALUES ('THR-2', 'new', '2026-10-07T00:00:00+00:00', 'open')")
+        writer.execute("DELETE FROM thread_participants")
+        writer.commit()
+        return original_clock()
+    with monkeypatch.context() as patch:
+        patch.setattr(database_module, "_now", concurrent_write)
+        page = db.list_threads_page(org="alpha", page_size=100)
+    assert [t.id for t in page["threads"]] == ["THR-1"]
+    assert page["threads"][0].subject == "before"
+    assert page["participants"] == {"THR-1": ["alice"]}
+    assert page["totals"]["all"] == 1
+    assert not db._conn.in_transaction
+    assert db.get_thread("THR-1").subject == "after"
+    assert db.list_threads_page(org="alpha")["totals"]["all"] == 2
+
+    db._conn.execute("BEGIN")
+    db._conn.execute("UPDATE threads SET subject='ambient'")
+    def fail_projection(_ids):
+        raise RuntimeError("projection failed")
+    with monkeypatch.context() as patch:
+        patch.setattr(db, "list_thread_participant_names_for_threads", fail_projection)
+        with pytest.raises(RuntimeError, match="projection failed"):
+            db.list_threads_page(org="alpha")
+    assert db._conn.in_transaction
+    assert db.get_thread("THR-1").subject == "ambient"
+    db._conn.rollback()
+    assert db.get_thread("THR-1").subject == "after"
+    assert not db._conn.in_transaction
+    writer.close()
+
+
+def test_thread_page_deleted_anchor_and_live_insertions(tmp_path):
+    db = Database(tmp_path / "pages.db")
+    for i in (1, 3, 5):
+        db.insert_thread(ThreadRecord(id=f"THR-{i}", subject="x", started_at=datetime(2026, 1, i, tzinfo=timezone.utc)))
+    first = db.list_threads_page(org="alpha", page_size=1)
+    db._conn.execute("DELETE FROM threads WHERE id='THR-5'")
+    db._conn.commit()
+    for i in (2, 6):
+        db.insert_thread(ThreadRecord(id=f"THR-{i}", subject="x", started_at=datetime(2026, 1, i, tzinfo=timezone.utc)))
+    continuation = db.list_threads_page(org="alpha", page_size=1, cursor=first["next_cursor"])
+    assert [t.id for t in continuation["threads"]] == ["THR-3"]
+    fresh = db.list_threads_page(org="alpha", page_size=100)
+    assert [t.id for t in fresh["threads"]] == ["THR-6", "THR-3", "THR-2", "THR-1"]
+    assert fresh["totals"]["all"] == 4
+
+
 def test_thread_models_roundtrip():
     t = ThreadRecord(id="THR-001", subject="Refund policy")
     assert t.status is ThreadStatus.OPEN

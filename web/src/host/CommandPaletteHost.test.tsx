@@ -74,6 +74,22 @@ function fireCmdK() {
 }
 
 describe('CommandPaletteHost', () => {
+  it('reads committed infinite pages and legacy rows once for the active org without fetching', () => {
+    const { qc, getHttpHits } = setup({ route: '/orgs/alpha/threads' });
+    qc.setQueryData(['threads', 'alpha', { status: 'open', page_size: 50 }], {
+      pages: [{ threads: [{ thread_id: 'THR-1', subject: 'Old pinned subject' }] }, { threads: [{ thread_id: 'THR-2', subject: 'Older' }, { thread_id: 'THR-1', subject: 'New unpinned subject' }] }],
+      pageParams: [null, 'next'],
+    });
+    qc.setQueryData(['threads', 'alpha', { limit: 1 }], { threads: [{ thread_id: 'THR-1', subject: 'First' }] });
+    qc.setQueryData(['threads', 'beta'], { threads: [{ thread_id: 'THR-3', subject: 'Other org' }] });
+    const tr = (key: MessageKey, params?: MessageParams) => translate('en', key, params);
+    const section = buildSections(qc, 'alpha', tr).find((s) => s.label === 'Threads');
+    expect(section?.items.map((item) => [item.key, item.href, item.primary])).toEqual([
+      ['thread:THR-1', '/orgs/alpha/threads/THR-1', 'THR-1 · New unpinned subject'],
+      ['thread:THR-2', '/orgs/alpha/threads/THR-2', 'THR-2 · Older'],
+    ]);
+    expect(getHttpHits()).toBe(0);
+  });
   it('mounts inert — no fetch on render', async () => {
     const { getHttpHits } = setup({ route: '/orgs/demo/threads' });
     // Give microtasks a chance.

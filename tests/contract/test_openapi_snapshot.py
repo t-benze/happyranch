@@ -24,6 +24,84 @@ SNAPSHOT_PATH = Path(__file__).parent / "openapi.json"
 from scripts.generate_openapi_snapshot import _summarize
 
 
+def test_thread_list_full_operation_contract() -> None:
+    """Consume the full published GET contract, independently of the summary."""
+    schema = create_app(DaemonState.idle(Settings())).openapi()
+    operation = schema["paths"]["/api/v1/orgs/{slug}/threads"]["get"]
+
+    def resolve(value):
+        if "$ref" not in value:
+            return value
+        target = schema
+        assert value["$ref"].startswith("#/")
+        for segment in value["$ref"][2:].split("/"):
+            target = target[segment.replace("~1", "/").replace("~0", "~")]
+        return resolve(target)
+
+    def types(value):
+        value = resolve(value)
+        if "anyOf" in value or "oneOf" in value:
+            return set().union(*(types(branch) for branch in value.get("anyOf", value.get("oneOf"))))
+        return {value["type"]}
+
+    assert {"200", "400", "422"} <= operation["responses"].keys()
+    assert "invalid_thread_cursor" in operation["responses"]["400"]["description"]
+    success = resolve(operation["responses"]["200"]["content"]["application/json"]["schema"])
+    branches = [resolve(branch) for branch in success.get("anyOf", success.get("oneOf", []))]
+    assert len(branches) == 2
+    legacy = next(branch for branch in branches if set(branch["properties"]) == {"threads"})
+    page = next(branch for branch in branches if "totals" in branch["properties"])
+    assert set(legacy["required"]) == {"threads"}
+    assert legacy.get("additionalProperties") is not False
+    required = {"threads", "totals", "has_more", "next_cursor", "sampled_at"}
+    assert set(page["properties"]) == set(page["required"]) == required
+    assert types(page["properties"]["has_more"]) == {"boolean"}
+    assert types(page["properties"]["next_cursor"]) == {"string", "null"}
+    assert types(page["properties"]["sampled_at"]) == {"string"}
+    totals = resolve(page["properties"]["totals"])
+    assert set(totals["properties"]) == set(totals["required"]) == {"open", "archived", "all", "dream_origin"}
+    for value in totals["properties"].values():
+        assert types(value) == {"integer"}
+
+    row_types = {
+        **{key: {"string"} for key in ("thread_id", "subject", "status", "started_at")},
+        **{key: {"string", "null"} for key in (
+            "archived_at", "forwarded_from_id", "forwarded_from_kind", "summary", "transcript_path",
+            "composed_by", "composed_from_task_id", "composed_from_dream_id", "last_speaker", "pinned_at", "last_activity_at",
+        )},
+        "turn_cap": {"integer"}, "turns_used": {"integer"}, "pinned": {"boolean"}, "participants": {"array"},
+    }
+    for branch in (legacy, page):
+        array = resolve(branch["properties"]["threads"])
+        assert types(array) == {"array"}
+        row = resolve(array["items"])
+        assert set(row["properties"]) == set(row["required"]) == set(row_types)
+        assert row["additionalProperties"] is False
+        for key, expected in row_types.items():
+            assert types(row["properties"][key]) == expected, key
+        assert types(row["properties"]["participants"]["items"]) == {"string"}
+
+    params = {param["name"]: param for param in operation["parameters"] if param["in"] in ("path", "query")}
+    assert set(params) == {"slug", "status", "limit", "page_size", "cursor"}
+    assert params["slug"]["in"] == "path" and params["slug"]["required"] is True
+    assert types(params["slug"]["schema"]) == {"string"}
+    for name in ("status", "cursor", "page_size", "limit"):
+        assert params[name]["in"] == "query" and params[name]["required"] is False
+    assert types(params["page_size"]["schema"]) == {"integer", "null"}
+    size = next(branch for branch in params["page_size"]["schema"]["anyOf"] if branch.get("type") == "integer")
+    assert (size.get("minimum"), size.get("maximum")) == (1, 100)
+    assert params["page_size"]["schema"].get("default") is None
+    assert "limit" in params["page_size"]["description"]
+    for name in ("status", "cursor"):
+        assert types(params[name]["schema"]) == {"string", "null"}
+        assert params[name]["schema"].get("default") is None
+        assert not any("enum" in branch or "minLength" in branch or "maxLength" in branch for branch in params[name]["schema"]["anyOf"])
+    assert "page_size" in params["cursor"]["description"]
+    limit = resolve(params["limit"]["schema"])
+    assert types(limit) == {"integer"} and limit["default"] == 50
+    assert "minimum" not in limit and "maximum" not in limit
+
+
 def test_openapi_snapshot_matches() -> None:
     app = create_app(DaemonState.idle(Settings()))
     current = _summarize(app.openapi())

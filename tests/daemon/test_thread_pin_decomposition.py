@@ -33,7 +33,7 @@ AUDIT_TIME = "2026-10-06T05:00:01+00:00"
 OLD_PIN = "2026-01-02T00:00:00+00:00"
 # Complete 563-method inventory: all 561 prior signatures are unchanged;
 # approved memory collection evidence/transition APIs add two signatures.
-METHOD_SIGNATURE_SHA256 = "5de3142410bf4b59c4398d5efd9ddd547b2b0a601dec5e594b5d52833961f329"
+METHOD_SIGNATURE_SHA256 = "cbf5ef739eccdcb423eedfbd33a9a2b9b4a67fc7f4ff34d25b8488619de09fcc"
 # Actual protocol4 bytes frozen on pristine61319854 before relocation.
 PRISTINE_PICKLES = (
     "gASVMAAAAAAAAACMH3J1bnRpbWUuaW5mcmFzdHJ1Y3R1cmUuZGF0YWJhc2WUjAhEYXRhYmFzZZSTlC4=",
