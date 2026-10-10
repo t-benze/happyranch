@@ -1385,7 +1385,7 @@ def _c5_shipping_graph_process(tmp_path: Path, *, restore: bool, explicit_profil
     script = r'''
 import asyncio,copy,hashlib,json,os,shutil,sqlite3,stat,sys
 from dataclasses import asdict
-from contextlib import ExitStack
+from contextlib import ExitStack,closing
 from pathlib import Path
 source,revision,venue,restore,explicit=sys.argv[1:]
 source=Path(source);venue=Path(venue);restore=restore=='True';explicit=explicit=='True'
@@ -1421,7 +1421,9 @@ def checked(method,path,body=None,status=200):
     assert response.status_code==status,(path,response.status_code,response.text)
     return response.json()
 def rows(org):
-    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+    # Connection.__exit__ ends transactions; closing releases the owned reader.
+    # No reader may retain a WAL handle across the actual cold-reopen boundary.
+    with closing(sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True)) as reader:
         return {name:tuple(reader.execute('SELECT * FROM "'+name+'" ORDER BY rowid'))
                 for name, in reader.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")}
 # Independent fixture identities, never inferred from classifier output.
@@ -1480,7 +1482,7 @@ def measured_preflight(org,stage):
     return preflight
 def history(org):
     f=C5_SCHEMA1_HISTORY
-    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+    with closing(sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True)) as reader:
         assert reader.execute('SELECT snapshot_bytes,snapshot_digest FROM workflow_publication_journals WHERE id=?',('c5-fixed-schema1-history',)).fetchone()==(f['snapshot_bytes'],f['snapshot_digest'])
         for table,prefix in [('workflow_authorization_revisions','authorization'),('workflow_binding_snapshots','binding'),('workflow_contexts','context')]:
             column='authority' if prefix=='authorization' else prefix
@@ -1521,7 +1523,7 @@ def ready(org):
     assert next(row for row in value['teams'] if row['name']=='default')=={'name':'default','manager':{'kind':'human','principal':'founder'},'workers':['consultant_codex','consultant_head']}
     assert all(row['name']!='founder' for row in value['agents'])
     assert [row['profile_name'] for row in value['machine_global_profiles']]==(['c5-portable-profile'] if explicit else [])
-    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+    with closing(sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True)) as reader:
         pointer=reader.execute('SELECT current_generation,journal_id,snapshot_digest,state FROM workflow_authority_pointers WHERE namespace=?',(r.namespace,)).fetchone()
         assert pointer[0]==r.generation and pointer[2:]==(r.snapshot_digest,'ready')
         assert reader.execute('SELECT snapshot_bytes,snapshot_digest,state FROM workflow_publication_journals WHERE id=?',(pointer[1],)).fetchone()==(raw,r.snapshot_digest,'cache_installed')
@@ -1531,7 +1533,7 @@ try:
     checked('post','/api/v1/orgs',{'slug':'alpha'})
     org=state.orgs['alpha'];owned.append(org)
     # Actual empty-org attachment is valid, but no reviewer means no authority.
-    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+    with closing(sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True)) as reader:
         assert reader.execute("SELECT state FROM workflow_authority_pointers WHERE namespace='org/alpha'").fetchone()==('fenced',)
         assert reader.execute('SELECT COUNT(*) FROM tasks').fetchone()[0]==0
     try: org.workflow_authority.capture_admission()
@@ -1547,7 +1549,7 @@ try:
     assert {key:original[key] for key in f['receipt']}==f['receipt']
     assert original['state']=='completed' and original['pending'] is False
     from tests.helpers.human_team_history_fixture import C5_SCHEMA1_COMPLETED
-    with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+    with closing(sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True)) as reader:
         reader.row_factory=sqlite3.Row
         assert dict(reader.execute('SELECT * FROM task_results WHERE id=901').fetchone())==C5_SCHEMA1_COMPLETED['result']
     preserved=history(org)
@@ -1570,7 +1572,7 @@ try:
         current=checked('post',base+'/workflows/activations',request,201)
         assert current['root_task_id']!=f['receipt']['root_task_id']
         assert org.db.get_task(current['root_task_id']).assigned_agent=='consultant_head'
-        with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+        with closing(sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True)) as reader:
             raw,sha=reader.execute('SELECT context_bytes,context_digest FROM workflow_contexts WHERE id=(SELECT context_id FROM workflow_draft_dispatch_intents WHERE id=?)',(current['intent_id'],)).fetchone()
             assert hashlib.sha256(raw).hexdigest()==sha==current['context_digest']
             assert json.loads(raw)['authority_snapshot']==json.loads(r.snapshot_bytes)
@@ -1668,7 +1670,7 @@ try:
             fetched=checked('get',base+'/workflows/activations/'+receipt['activation_id'])
             assert fetched['context_digest']==receipt['context_digest']
         assert rows(reopened)==frozen
-        with sqlite3.connect(reopened.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
+        with closing(sqlite3.connect(reopened.db.path.resolve().as_uri()+'?mode=ro',uri=True)) as reader:
             assert reader.execute('SELECT COUNT(*) FROM task_results WHERE task_id IN (?,?)',(current['root_task_id'],sibling_receipt['root_task_id'])).fetchone()[0]==0
         preflight=measured_preflight(reopened,'after-reopen-replay')
         assert rows(reopened)==frozen

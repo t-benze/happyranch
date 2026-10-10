@@ -163,7 +163,10 @@ or additional rejection. File/link metadata and non-database contents plus
 logical database rows must remain unchanged across each read-only request;
 SQLite physical pages/sidecars and transient writes are not proved by readback.
 Every existing history/graph/profile/replay assertion still executes after
-closing all owners and reopening the same registered runtime. This is
+closing all owners, including each test-owned read-only SQLite connection,
+and reopening the same registered runtime. Connection transaction contexts
+alone do not close their handles; the unchanged no-WAL assertion precedes
+reopen. This is
 `current-graph-reopen`, never export/restore/migration eligibility or readiness.
 The HELD cross-root `restore=True` branch retains its own positive prerequisite.
 Old empty-rejections assertion failures remain failures at their actual heads.

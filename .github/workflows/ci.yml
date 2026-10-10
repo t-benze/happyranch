@@ -238,10 +238,23 @@ jobs:
               metadata = email.parser.Parser().parsestr(subprocess.check_output(['apt-cache','show','fonts-noto-cjk='+version], text=True).split('\n\n',1)[0])
               apt_show = email.parser.Parser().parsestr(subprocess.check_output(['apt','show','fonts-noto-cjk='+version], text=True))
               package_source = apt_show['APT-Sources']
+              # Retain the real metadata before any source refusal, including
+              # provisioning failures that occur before browser-binding.json.
+              origins['font'] = {'kind':'configured-package-selection','package':'fonts-noto-cjk',
+                                 'version':version,'apt_sources':package_source,'apt_policy':policy,
+                                 'apt_metadata':dict(metadata.items())}
+              (root/'tool-file-origins.json').write_text(json.dumps(origins, sort_keys=True))
+              print(json.dumps(origins['font'], sort_keys=True))
               assert metadata['Package']=='fonts-noto-cjk' and metadata['Version']==version
-              assert package_source and '/ubuntu ' in package_source
-              assert package_source.split()[1].split('/')[0] in ('jammy','jammy-updates','jammy-security')
-              assert '@' not in package_source and 'trusted=yes' not in package_source
+              from urllib.parse import urlsplit
+              source_parts = package_source.split() if package_source else []
+              assert len(source_parts)==4, package_source
+              archive_url = urlsplit(source_parts[0])
+              assert archive_url.scheme in ('http','https') and archive_url.hostname
+              assert archive_url.path.rstrip('/')=='/ubuntu' and not archive_url.query and not archive_url.fragment
+              assert archive_url.username is None and archive_url.password is None
+              assert source_parts[1].split('/')[0] in ('jammy','jammy-updates','jammy-security')
+              assert source_parts[2:] == ['amd64','Packages']
               source_policy = subprocess.check_output(['apt-cache','policy'], text=True).splitlines()
               source_index = next(i for i,line in enumerate(source_policy)
                                   if line.strip().partition(' ')[2] == package_source)
