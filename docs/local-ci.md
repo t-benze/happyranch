@@ -121,6 +121,24 @@ retained even on refusal, without a sandbox-disable fallback. Update
 notification is disabled. No project dependencies,
 global tooling or execution policy changes follow.
 
+W10 exposes invocation-owned `NotoSansCJK-Regular.ttc` and its OFL-1.1 copyright
+through a closed, hash-checked data-only font descriptor. It prefers the existing
+runner's `fonts-noto-cjk`; otherwise normal authenticated configured Ubuntu APT
+download verifies exact version/archive SHA256/size before `dpkg-deb -x` extracts
+data without package scripts or a global install. Package origin, integrity,
+license and font hashes are retained in `tool-file-origins.json`. The feature-only
+parent creates a private fontconfig mapping and cache (Chinese selects the SC
+family) while retaining isolated HOME/XDG/PATH, original guards, browser pins and
+sandbox. Malformed, mismatched or unowned font bindings refuse before pytest.
+Actual child fontconfig selection, painted-text platform fonts and PNGs remain
+separate evidence; glyph counts alone are not visual readability proof.
+
+The real C10 recipient boundary records both options' DOM, hidden ancestry,
+accessibility roles/names, exact accessible locator count and hit-test geometry
+before the original unforced click. Diagnostic JSON, CLI output and screenshots
+survive failure. Locator/component correction awaits that actual admitted
+observation; no hidden-role, force-click or synthetic submission fallback exists.
+
 The retained integration-only `tests/helpers/human_team_history_fixture.py`
 owns feature-authored C5 schema1 history DATA and unchanged seeding. Historical
 IDs, bytes and digests are fixed independently of current writers; they are not
@@ -136,8 +154,19 @@ release; this entry provides no M source-completeness or maintenance proof.
 
 C5 positive graph admission binds the actual existing fixture runtime
 container to its selected-source API state. Capture and unchanged-domain/file
-readbacks precede that separate graph setup; negative admission never enters
-it. Portability refusals from generated workspace links remain real failures.
+readbacks precede that separate graph setup; negative authority admission never
+enters it. TASK10394 corrects the two same-root current-graph preflight assertions:
+the exact eight generated `workspaces/<agent>/CLAUDE.md -> AGENTS.md` links are
+independently checked and must classify as `reject/nonregular`, with top-level
+`eligible=false`, quiescent nested liveness, exact empty blockers and no zombies
+or additional rejection. File/link metadata and non-database contents plus
+logical database rows must remain unchanged across each read-only request;
+SQLite physical pages/sidecars and transient writes are not proved by readback.
+Every existing history/graph/profile/replay assertion still executes after
+closing all owners and reopening the same registered runtime. This is
+`current-graph-reopen`, never export/restore/migration eligibility or readiness.
+The HELD cross-root `restore=True` branch retains its own positive prerequisite.
+Old empty-rejections assertion failures remain failures at their actual heads.
 
 The selected mode retains passing and failing temporary scenario evidence
 before parent teardown, including real screenshots, C5/C7/refusal receipts,

@@ -169,3 +169,25 @@ worker denial, and inert explicit-profile setup through existing stores/registry
 History DATA is separate from actual admission, graph, callback and reader proof.
 The two M-only retired source dependencies remain HELD and unresolved; no M source
 completion or portability-policy change follows from this reconciliation.
+
+
+### TASK10394 current-graph assertion erratum and W10 venue repair
+
+The two released same-root C5 graphs require the exact eight generated workspace
+CLAUDE symlink `reject/nonregular` classifications, top-level eligibility false,
+and quiescent nested liveness with empty blockers/no zombies. Their independent
+link/target checks and unchanged declared file metadata/non-database content and
+logical-row readbacks precede actual closed same-root reopen and every preserved
+history/graph/profile/replay assertion. This replaces the erroneous empty-rejection
+premise; old failures remain authentic. Classifier/materializer policy is unchanged.
+Cross-root restore/M retains its own HELD positive prerequisite; no export,
+restore, migration or physical transient no-write readiness follows.
+
+W10 owns only selected hash-bound Noto CJK data/copyright and private fontconfig
+mapping, preferring installed runner assets or authenticated Ubuntu APT data
+extraction without scripts/global installation. Child selection and actual
+painted fonts accompany screenshots; real PNG readability still needs review.
+The recipient boundary captures actual DOM/accessibility/hidden ancestry/hit
+testing before its original accessible unforced exact-worker click. Dependent
+locator/modal correction awaits that observation. All original C10 request,
+readback, locale/focus/draft/selection and viewport assertions remain.

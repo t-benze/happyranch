@@ -201,9 +201,31 @@ def roster_bindings(options, source: Path, python: Path) -> dict:
             raise ValueError("roster_private_browser_descriptor_required")
         browser = json.loads(descriptor.read_text())
         required = {"node", "node_sha256", "node_version", "cli_sha256", "browser", "browser_sha256",
-                    "browser_version", "browser_revision", "lock_sha256", "registry_integrities"}
+                    "browser_version", "browser_revision", "lock_sha256", "registry_integrities", "font"}
         if set(browser) != required:
             raise ValueError("roster_browser_descriptor_shape")
+        # Only selected owned font DATA reaches the child; no search-path grant.
+        font = browser["font"]
+        font_fields = {"path", "sha256", "license_path", "license_sha256", "package", "version", "license"}
+        if (not isinstance(font, dict) or set(font) != font_fields
+                or font["package"] != "fonts-noto-cjk" or font["license"] != "OFL-1.1"
+                or not isinstance(font["version"], str) or not 1 <= len(font["version"]) <= 128):
+            raise ValueError("roster_font_descriptor_shape")
+        fonts = private_directory(invocation / "fonts")
+        for field, hash_field, name, cap in (("path", "sha256", "NotoSansCJK-Regular.ttc", 32 * 1024 * 1024),
+                                            ("license_path", "license_sha256", "copyright", 1024 * 1024)):
+            if not isinstance(font[field], str) or Path(font[field]) != fonts / name:
+                raise ValueError("roster_owned_font_required")
+            path = Path(font[field])
+            info = path.lstat()
+            expected_hash = font[hash_field]
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                    or info.st_mode & (0o111 | 0o022) or path.resolve(strict=True) != path or not 0 < info.st_size <= cap
+                    or not isinstance(expected_hash, str) or len(expected_hash) != 64
+                    or any(ch not in "0123456789abcdef" for ch in expected_hash) or digest(path) != expected_hash):
+                raise ValueError("roster_font_file_binding_mismatch")
+        if "SIL OPEN FONT LICENSE Version 1.1" not in Path(font["license_path"]).read_text():
+            raise ValueError("roster_font_license_mismatch")
         tool = private_directory(invocation / "tools")
         node = Path(browser["node"])
         cli = tool / "node_modules/@playwright/cli/playwright-cli.js"
@@ -267,6 +289,23 @@ def expose_roster(root: Path, env: dict[str, str], binding: dict) -> None:
         browser["config_sha256"] = digest(config)
         env["PLAYWRIGHT_BROWSERS_PATH"] = str(Path(binding["output"]).parent / "browsers")
         env["NO_UPDATE_NOTIFIER"] = "1"
+        from xml.sax.saxutils import escape
+        font = browser["font"]
+        font_config = root / "fontconfig.xml"
+        font_cache = root / "cache/fontconfig"; font_cache.mkdir(mode=0o700)
+        # Supported fontconfig mapping exposes only this owned font data.
+        # HOME/XDG remain the original isolated paths; no ambient env is copied.
+        font_config.write_text('<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
+            '<fontconfig><dir>'
+            + escape(str(Path(font["path"]).parent)) + '</dir><cachedir>'
+            + escape(str(font_cache)) + '</cachedir>'
+            '<match target="pattern"><test name="lang" compare="contains"><string>zh</string></test>'
+            '<edit name="family" mode="prepend" binding="strong"><string>Noto Sans CJK SC</string></edit>'
+            '</match></fontconfig>\n')
+        font_config.chmod(0o600)
+        font["config"] = str(font_config)
+        font["config_sha256"] = digest(font_config)
+        env["FONTCONFIG_FILE"] = str(font_config)
     manifest_path = Path(env["HAPPYRANCH_TEST_PARENT_MANIFEST"])
     manifest = json.loads(manifest_path.read_text())
     manifest["roster"] = binding

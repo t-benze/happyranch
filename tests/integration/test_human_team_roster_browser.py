@@ -11,6 +11,7 @@ import hashlib
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -202,6 +203,22 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
     cli_version = subprocess.run([cli, '--version'], check=True, text=True, capture_output=True, timeout=15).stdout.strip()
     assert cli_version == '0.1.18'
 
+    font = selected['font']
+    assert os.environ.get('FONTCONFIG_FILE') == font['config']
+    for field, hash_field in (('path', 'sha256'), ('license_path', 'license_sha256'), ('config', 'config_sha256')):
+        assert hashlib.sha256(Path(font[field]).read_bytes()).hexdigest() == font[hash_field]
+    # Observe fontconfig under the actual closed child environment. No install,
+    # browser substitution or ambient HOME/PATH enters this readiness check.
+    actual_font = subprocess.run(['/usr/bin/fc-match', '-f', '%{file}\n%{family}\n%{charset}\n', ':lang=zh-cn'],
+                                 check=True, text=True, capture_output=True, timeout=15)
+    font_lines = actual_font.stdout.splitlines()
+    assert font_lines[0] == font['path'], actual_font.stdout
+    assert 'Noto Sans CJK SC' in font_lines[1], actual_font.stdout
+    (tmp_path / 'C10-font-readiness.json').write_text(json.dumps({
+        'source_sha': binding['revision'], 'font_binding': font, 'command': actual_font.args,
+        'exit': actual_font.returncode, 'stdout': actual_font.stdout,
+        'glyph_review': 'font selection only; actual platform fonts and PNGs remain separate evidence'}, sort_keys=True))
+
     port, root = human_daemon
     assert root.is_relative_to(Path(binding['root']))
     session = 'c10-' + hashlib.sha256(str(tmp_path).encode()).hexdigest()[:16]
@@ -272,11 +289,56 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
         display_locale = evaluate('document.documentElement.lang')
         assert display_locale in ('en', 'zh-CN')
         target = tmp_path / f'C10-{display_locale}-{viewport[0]}x{viewport[1]}-{view}-{state}.png'
+        painted_fonts = _result(pw('run-code', 'async page => {'
+            'const cdp=await page.context().newCDPSession(page);try{await cdp.send("DOM.enable");await cdp.send("CSS.enable");'
+            'const doc=await cdp.send("DOM.getFlattenedDocument",{depth:-1,pierce:true});'
+            'const texts=doc.nodes.filter(n=>n.nodeType===3&&/[\u3400-\u9fff]/.test(n.nodeValue));'
+            'const result=[];for(const n of texts){const f=await cdp.send("CSS.getPlatformFontsForNode",{nodeId:n.parentId});'
+            'if(f.fonts.some(p=>p.glyphCount>0))result.push({text:n.nodeValue,fonts:f.fonts});}'
+            'return JSON.stringify(result);}finally{await cdp.detach();}}'))
+        (tmp_path / (target.stem + '-fonts.json')).write_text(json.dumps({
+            'source_sha': binding['revision'], 'font_binding': font, 'painted_text_platform_fonts': painted_fonts,
+            'visual_glyph_review': 'PNG review required; platform glyph counts alone do not prove readability'},
+            sort_keys=True, ensure_ascii=False))
         pw('screenshot', '--filename=' + str(target))
         assert target.is_file() and target.stat().st_size > 0
+        if display_locale == 'zh-CN':
+            assert any('Noto Sans CJK' in f['familyName'] and f['glyphCount'] > 0
+                       for row in painted_fonts for f in row['fonts']), painted_fonts
         evidence.append({'view': view, 'state': state, 'locale': display_locale, 'parameter_locale': locale, 'screenshot': str(target),
                          'sha256': hashlib.sha256(target.read_bytes()).hexdigest(),
                          'geometry': geometry, 'action_visibility': visibility})
+
+    def recipient_diagnostics(agent: str):
+        # Read-only capture BEFORE the required accessible, unforced click.
+        # Keep the actual hidden ancestry and hit target even on a timeout.
+        dom = evaluate("""Array.from(document.querySelectorAll('[role=option]')).map(e=>{
+            const r=e.getBoundingClientRect(), x=r.left+r.width/2,y=r.top+r.height/2;
+            const hit=document.elementFromPoint(x,y), hidden=[];
+            for(let p=e;p;p=p.parentElement){const c=getComputedStyle(p);
+                if(p.hidden||p.inert||p.getAttribute('aria-hidden')==='true'||c.display==='none'||c.visibility==='hidden')
+                    hidden.push({tag:p.tagName,role:p.getAttribute('role'),ariaHidden:p.getAttribute('aria-hidden'),
+                        inert:p.inert,hidden:p.hidden,display:c.display,visibility:c.visibility});}
+            return {html:e.outerHTML,role:e.getAttribute('role'),text:e.textContent,ariaLabel:e.getAttribute('aria-label'),
+                hiddenAncestors:hidden,insideDialog:Boolean(e.closest('[role=dialog]')),
+                bounds:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height},
+                hit:hit===e||e.contains(hit),hitTarget:hit?{tag:hit.tagName,role:hit.getAttribute('role')}:null};})""")
+        target = tmp_path / ('C10-recipient-' + agent + '-diagnostic.json')
+        record = {'source_sha': binding['revision'], 'locale': evaluate('document.documentElement.lang'),
+                  'viewport': viewport, 'selected_agent': agent, 'dom': dom,
+                  'accessible_locator': {'role': 'option', 'name': agent + ' default', 'exact': True}}
+        target.write_text(json.dumps(record, sort_keys=True, ensure_ascii=False))
+        record['accessibility'] = _result(pw('run-code', 'async page => {'
+            'const cdp=await page.context().newCDPSession(page);try{'
+            'const doc=await cdp.send("DOM.getDocument");'
+            'const ids=await cdp.send("DOM.querySelectorAll",{nodeId:doc.root.nodeId,selector:"[role=option]"});'
+            'const ax=[];for(const nodeId of ids.nodeIds)ax.push(await cdp.send("Accessibility.getPartialAXTree",{nodeId,fetchRelatives:true}));'
+            'return JSON.stringify({optionAX:ax,listboxSnapshot:await page.locator("[role=listbox]").ariaSnapshot(),'
+            'accessibleOptionTexts:await page.getByRole("option").allTextContents(),'
+            'exactLocatorCount:await page.getByRole("option",{name:' + json.dumps(agent + ' default') + ',exact:true}).count()});'
+            '}finally{await cdp.detach();}}'))
+        target.write_text(json.dumps(record, sort_keys=True, ensure_ascii=False))
+        pw('screenshot', '--filename=' + str(tmp_path / ('C10-recipient-' + agent + '-before-click.png')))
 
     labels = {
         'en': {'founder': 'Managed by Founder', 'language': 'Language', 'model': 'Model', 'save': 'Save agent', 'startThread': 'Start Thread',
@@ -412,6 +474,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 assert evaluate('document.querySelector(' + json.dumps(recipient_selector) + ')===window.__c10Recipient&&document.activeElement===window.__c10Recipient&&window.__c10Recipient.value==="consultant_"&&window.__c10Recipient.selectionStart===11&&window.__c10Recipient.selectionEnd===11')
                 action('if(await page.getByRole("dialog").getByLabel(' + json.dumps(labels[next_locale]['subject']) + ',{exact:true}).inputValue()!==' + json.dumps(subject) + ')throw new Error("subject lost");'
                        'if(await page.getByRole("dialog").getByLabel(' + json.dumps(labels[next_locale]['body']) + ',{exact:true}).inputValue()!==' + json.dumps(body_text) + ')throw new Error("body lost");')
+                recipient_diagnostics(agent)
                 action('await page.getByRole("option",{name:' + json.dumps(agent + ' default') + ',exact:true}).click();')
                 wait('window.__c10Recipient.value===' + json.dumps(agent + ', '))
                 shot('worker-selector', 'filtered-selected-' + agent, (recipient_selector, '[role=dialog] > div.flex-row > button:last-child'))

@@ -394,8 +394,25 @@ history remains separate from real current template publication, activation,
 INTEGER callback, graph, old-reader and portability observations. Explicit C5
 profiles use a hash-pinned inert executable under the isolated daemon home,
 canonical adapter eligibility, durable store registration and cleanup of prior
-values. Generated CLAUDE symlink refusal remains a real C5 failure; no link is
-removed and no classification oracle is relaxed.
+values. TASK10394 corrects only the two same-root current-graph assertions:
+exactly eight independently named generated CLAUDE links must receive
+`reject/nonregular`, while nested liveness is eligible with empty blockers and
+no zombies. Top-level portability eligibility is false. No link or classifier
+changes; unexpected rejection or liveness debt still fails. Read-only requests
+preserve declared file/link metadata and non-database bytes plus logical rows;
+physical SQLite/transient no-write proof is separate. All cold same-root reopen,
+history, current graph, profile and replay assertions remain. This does not prove
+export/restore/migration readiness. HELD cross-root restore retains positive
+admission; old failures retain their authentic heads.
+
+W10's selected owned Noto CJK font/copyright hashes and private fontconfig mapping
+are feature-only venue inputs, never product dependencies or global installs.
+Actual child font selection, platform paint diagnostics and readable PNG review
+remain required. Recipient diagnostics precede the unchanged accessible unforced
+click, preserving exact worker/subject/body request and readback assertions.
+No concrete picker correction or hosted screenshot PASS is claimed before the
+admitted DOM/accessibility/geometry observation. See docs/local-ci.md for the
+bounded package provenance, binding refusals and retained evidence contract.
 
 The HELD `_MaintenanceCase` still depends on deleted
 `tests.workflows.test_authority_coordinator._seed_org`; its remote-lease branch

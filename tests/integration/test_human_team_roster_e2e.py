@@ -1424,6 +1424,60 @@ def rows(org):
     with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
         return {name:tuple(reader.execute('SELECT * FROM "'+name+'" ORDER BY rowid'))
                 for name, in reader.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")}
+# Independent fixture identities, never inferred from classifier output.
+expected_link_agents=('c5_unrelated_worker','code_reviewer','consultant_codex','consultant_head',
+                      'dev_agent','engineering_manager','product_lead','qa_engineer')
+expected_rejections=[dict(path='workspaces/'+agent+'/CLAUDE.md',classification='reject',reason='nonregular')
+                     for agent in expected_link_agents]
+preflight_observations=[]
+def preflight_files(org):
+    inventory=_closed_files(org.root)
+    db_rel=str(org.db.path.relative_to(org.root))
+    # Logical SQLite rows are the database oracle. Live SQLite pages/sidecars
+    # can change on reader bookkeeping; retain their metadata, not a false
+    # physical-byte/no-syscall claim. All other file/link contents stay exact.
+    for rel in (db_rel,db_rel+'-wal',db_rel+'-shm'):
+        if rel in inventory:
+            entry=inventory[rel]
+            assert entry[0]=='file'
+            inventory[rel]=(entry[0],'SQLite logical rows measured separately',*entry[2:])
+    return inventory
+def measured_preflight(org,stage):
+    row_before=rows(org)
+    file_before=preflight_files(org)
+    links={}
+    if not restore:
+        for agent in expected_link_agents:
+            link=org.root/'workspaces'/agent/'CLAUDE.md'
+            info=link.lstat()
+            assert stat.S_ISLNK(info.st_mode) and info.st_uid==os.getuid()
+            assert os.readlink(link)=='AGENTS.md'
+            target=link.parent/'AGENTS.md';target_info=target.lstat()
+            assert stat.S_ISREG(target_info.st_mode) and target_info.st_uid==os.getuid() and target_info.st_nlink==1
+            assert link.resolve(strict=True)==target
+            links[str(link.relative_to(org.root))]=dict(raw_target=os.readlink(link),
+                link_mode=stat.S_IMODE(info.st_mode),link_uid=info.st_uid,link_gid=info.st_gid,
+                target_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+                target_mode=stat.S_IMODE(target_info.st_mode),target_uid=target_info.st_uid,target_gid=target_info.st_gid)
+    preflight=checked('get',base+'/portability-preflight')
+    if restore:
+        # HELD cross-root/M requires its own positive admission before copying.
+        assert preflight['classification']['rejections']==[] and preflight['eligible'],preflight
+    else:
+        assert preflight['classification']['rejections']==expected_rejections,preflight
+        assert [entry for entry in preflight['classification']['entries'] if entry['classification']=='reject']==expected_rejections
+        assert preflight['eligible'] is False,preflight
+        assert preflight['eligibility']==dict(eligible=True,blockers=dict(tasks=[],active_sessions=0,
+            queued_items=0,pending_thread_invocations=0,active_jobs=[],active_dreams=[],active_work_hours=[],active_schedules=[]),
+            possible_zombies=[]),preflight
+        assert preflight['remedies']==[],preflight
+    assert rows(org)==row_before
+    assert preflight_files(org)==file_before
+    preflight_observations.append(dict(stage=stage,portability_preflight_eligible=preflight['eligible'],
+        eligibility=preflight['eligibility'],rejections=preflight['classification']['rejections'],generated_links=links,
+        logical_rows_and_declared_file_metadata_content_unchanged=True,
+        physical_no_write='not proved; transient writes require independent observers'))
+    return preflight
 def history(org):
     f=C5_SCHEMA1_HISTORY
     with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
@@ -1565,8 +1619,7 @@ try:
         # local queue notifications after both tasks are terminal; no launch.
         while not state.queue._queue.empty(): state.queue._queue.get_nowait()
         before=rows(org)
-        preflight=checked('get',base+'/portability-preflight')
-        assert preflight['classification']['rejections']==[] and preflight['eligible'],preflight
+        preflight=measured_preflight(org,'before-close')
         assert rows(org)==before
         retained=history(org);coherent=ready(org);retained_profiles=profile_closure()
         client.close()
@@ -1588,7 +1641,9 @@ try:
             registration=runtimes.load()
             assert registration.active==copied.resolve() and copied.resolve() in registration.registered
         else:
-            target=container
+            target=RuntimeDir.load(container.root)
+            registration=runtimes.load()
+            assert registration.active==container.root.resolve() and container.root.resolve() in registration.registered
         # Reconstruct the actual containing daemon/registration owner and its
         # machine profile coordinator, including every shared-store owner.
         state=DaemonState.from_runtime(target,settings)
@@ -1615,10 +1670,9 @@ try:
         assert rows(reopened)==frozen
         with sqlite3.connect(reopened.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
             assert reader.execute('SELECT COUNT(*) FROM task_results WHERE task_id IN (?,?)',(current['root_task_id'],sibling_receipt['root_task_id'])).fetchone()[0]==0
-        preflight=checked('get',base+'/portability-preflight')
-        assert preflight['eligible'] and preflight['classification']['rejections']==[],preflight
+        preflight=measured_preflight(reopened,'after-reopen-replay')
         assert rows(reopened)==frozen
-        print(json.dumps(dict(source_sha=revision,python=sys.executable,version=sys.version,action='compatible-closed-restore' if restore else 'current-graph-reopen',profile='explicit' if explicit else 'none',schema1=retained,schema2_digest=coherent.snapshot_digest,registered_root=str(runtimes.load().active),graph=current['activation_id'],actual_result_rows=0,execution='schema1 completed fixture data only; no current provider/callback or migration utility execution',physical_no_write='not proved by row/file readback'),sort_keys=True))
+        print(json.dumps(dict(source_sha=revision,python=sys.executable,version=sys.version,action='compatible-closed-restore' if restore else 'current-graph-reopen',portability_preflight_eligible=preflight['eligible'],portability_reason='eligible' if restore else 'eight generated CLAUDE.md -> AGENTS.md links rejected as nonregular',preflight_observations=preflight_observations,profile='explicit' if explicit else 'none',schema1=retained,schema2_digest=coherent.snapshot_digest,registered_root=str(runtimes.load().active),graph=current['activation_id'],actual_result_rows=0,execution='schema1 completed fixture data only; no current provider/callback or migration utility execution',physical_no_write='not proved by row/file readback'),sort_keys=True))
 finally:
     client.close()
     asyncio.run(state.close_all())
