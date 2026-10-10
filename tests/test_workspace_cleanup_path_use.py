@@ -9,10 +9,13 @@ member is unknown.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 import importlib.util
 import os
+import selectors
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -272,25 +275,196 @@ def _nested_git_worktree(tmp_path):
     return primary, linked
 
 
-def test_f1_real_git_nested_linked_cache_resolves_and_blocks(cpu, tmp_path):
+@contextmanager
+def _isolate_real_proc_enumeration(monkeypatch, scanner, generation: dict):
+    """Scope only native /proc population; retain all real member/ancestor reads."""
+    real_os = scanner.os
+    passes = []
+
+    class HolderEntries:
+        def __init__(self, native):
+            self.native = native
+            self.seen = []
+            self.closed = False
+
+        def __enter__(self):
+            self.native.__enter__()
+            return self
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            while True:
+                entry = next(self.native)
+                if entry.name == str(generation["pid"]):
+                    self.seen.append(entry.name)
+                    return entry
+
+        def close(self):
+            self.native.close()
+            self.closed = True
+
+        def __exit__(self, *args):
+            try:
+                return self.native.__exit__(*args)
+            finally:
+                self.closed = True
+
+    class NativeOS:
+        def __getattr__(self, name):
+            return getattr(real_os, name)
+
+        def scandir(self, path):
+            native = real_os.scandir(path)
+            if os.fspath(path) != "/proc":
+                return native
+            scoped = HolderEntries(native)
+            passes.append(scoped)
+            return scoped
+
+    with monkeypatch.context() as local:
+        local.setattr(scanner, "os", NativeOS())
+        try:
+            yield passes
+        finally:
+            print("scoped-owned-holder enumeration:", repr([
+                {"seen": item.seen, "closed": item.closed} for item in passes
+            ]))
+            assert all(item.closed for item in passes)
+
+
+def _read_owned_holder_ready(
+    holder: subprocess.Popen, deadline: float, reference: Path, kind: str,
+) -> dict:
+    """Bound readiness and bracket the direct child's actual native reference."""
+    assert holder.stdout is not None
+    fd = holder.stdout.fileno()
+    os.set_blocking(fd, False)
+    data = b""
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while b"\n" not in data:
+            assert holder.poll() is None, "holder exited before readiness"
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, "holder readiness deadline"
+            assert selector.select(remaining), "holder readiness timeout"
+            chunk = os.read(fd, 64 - len(data))
+            assert chunk, "holder readiness EOF"
+            data += chunk
+            assert len(data) < 64, "oversized holder readiness"
+    assert data == b"ready\n", data
+
+    def identity() -> dict:
+        proc = Path("/proc") / str(holder.pid)
+        before = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+        uid = proc.stat(follow_symlinks=False).st_uid
+        after = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
+        assert before[19] == after[19], "holder generation changed"
+        assert before[1:3] == after[1:3], "holder owner/group changed"
+        assert after[0] not in ("Z", "X"), "holder is not live"
+        return {"pid": holder.pid, "starttime": int(after[19]),
+                "ppid": int(after[1]), "pgid": int(after[2]), "uid": uid}
+
+    generation = identity()
+    assert generation["ppid"] == os.getpid()
+    assert generation["pgid"] == os.getpgrp()
+    assert generation["uid"] == os.getuid()
+    proc = Path("/proc") / str(holder.pid)
+    expected = reference.stat()
+    if kind == "cwd":
+        link = proc / "cwd"
+        assert Path(os.readlink(link)) == reference.resolve()
+        actual = link.stat()
+        assert (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino)
+    else:
+        hits = []
+        with os.scandir(proc / "fd") as entries:
+            for entry in entries:
+                try:
+                    if os.readlink(entry.path) == str(reference.resolve()):
+                        actual = os.stat(entry.path)
+                        hits.append((actual.st_dev, actual.st_ino))
+                except FileNotFoundError:
+                    continue
+        assert (expected.st_dev, expected.st_ino) in hits
+    assert identity() == generation, "reference bracket changed"
+    assert time.monotonic() <= deadline, "late holder readiness bracket"
+    print("owned holder ready:", repr(generation))
+    return generation
+
+
+def _finish_owned_holder(holder: subprocess.Popen) -> dict:
+    """Always settle only this Popen; emergency settlement remains a failure."""
+    record = {"pid": holder.pid, "errors": [], "emergency": False,
+              "natural_status": None, "natural_wait_completed_at": None}
+    deadline = time.monotonic() + 5.0
+    try:
+        for stream in (holder.stdin, holder.stdout, holder.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except BaseException as exc:
+                record["errors"].append(f"close:{type(exc).__name__}")
+        record["natural_status"] = holder.wait(timeout=max(0, deadline - time.monotonic()))
+        record["natural_wait_completed_at"] = time.monotonic()
+        if record["natural_wait_completed_at"] > deadline:
+            record["errors"].append("late natural wait")
+    except BaseException as exc:
+        record["errors"].append(f"natural wait:{type(exc).__name__}")
+    finally:
+        try:
+            if holder.poll() is None:
+                record["emergency"] = True
+                emergency_end = time.monotonic() + 5.0
+                holder.kill()
+                holder.wait(timeout=max(0, emergency_end - time.monotonic()))
+                if time.monotonic() > emergency_end:
+                    record["errors"].append("late emergency wait")
+        except BaseException as exc:
+            record["errors"].append(f"unsettled:{type(exc).__name__}")
+        finally:
+            for stream in (holder.stdin, holder.stdout, holder.stderr):
+                try:
+                    if stream is not None and not stream.closed:
+                        stream.close()
+                except BaseException as exc:
+                    record["errors"].append(f"final close:{type(exc).__name__}")
+    record["returncode"] = holder.returncode
+    record["streams_closed"] = all(
+        stream is None or stream.closed for stream in
+        (holder.stdin, holder.stdout, holder.stderr)
+    )
+    print("owned holder finalization:", repr(record))
+    return record
+
+
+def test_f1_real_git_nested_linked_cache_resolves_and_blocks(cpu, tmp_path, monkeypatch):
     primary, linked = _nested_git_worktree(tmp_path)
     cache = linked / ".venv"
     cache.mkdir()
+    finalization = None
     occupier = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], cwd=linked,
+        [sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.readline()"],
+        cwd=linked, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True,
     )
     try:
-        res = cpu.scan(
-            cache, proc=cpu.RealProc(), self_pid=os.getpid(),
-            agent_uid=os.getuid(), bounds=cpu.Bounds(deadline_seconds=10),
-        )
+        setup_end = time.monotonic() + 5.0
+        with ExitStack() as patches:
+            generation = _read_owned_holder_ready(occupier, setup_end, linked, "cwd")
+            patches.enter_context(_isolate_real_proc_enumeration(monkeypatch, cpu, generation))
+            try:
+                res = cpu.scan(
+                    cache, proc=cpu.RealProc(), self_pid=os.getpid(),
+                    agent_uid=os.getuid(), bounds=cpu.Bounds(deadline_seconds=10),
+                )
+                print("nested linked native scan:", res)
+            finally:
+                finalization = _finish_owned_holder(occupier)
     finally:
-        occupier.terminate()
-        try:
-            occupier.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            occupier.kill()
-            occupier.wait(timeout=5)
+        if finalization is None:
+            _finish_owned_holder(occupier)
 
     assert res.coverage["containing_worktree"] == str(linked.resolve())
     assert res.state == "blocked"
@@ -298,6 +472,9 @@ def test_f1_real_git_nested_linked_cache_resolves_and_blocks(cpu, tmp_path):
         hit["pid"] == str(occupier.pid) and hit["kind"] == "cwd"
         for hit in res.hits
     )
+    assert not finalization["errors"] and not finalization["emergency"]
+    assert finalization["streams_closed"]
+    assert occupier.returncode == 0
 
 
 def test_f1_real_git_cache_directly_under_primary_is_unknown(cpu, tmp_path):

@@ -19,18 +19,53 @@ import (
 )
 
 var (
-	ErrConfiguration = errors.New("sidecar: configuration invalid")
-	ErrCredential    = errors.New("sidecar: credential unavailable")
-	ErrEngine        = errors.New("sidecar: encrypted engine unavailable")
-	ErrConnector     = errors.New("sidecar: connector unavailable")
-	ErrListener      = errors.New("sidecar: listener unavailable")
+	ErrConfiguration   = errors.New("sidecar: configuration invalid")
+	ErrCredentialInput = errors.New("sidecar: credential input unavailable")
+	ErrEngineStart     = errors.New("sidecar: engine start unavailable")
+	ErrNetworkJoin     = errors.New("sidecar: network join unavailable")
+	ErrDurableCommit   = errors.New("sidecar: durable receipt unavailable")
+	ErrEngine          = errors.New("sidecar: encrypted engine unavailable")
+	ErrConnector       = errors.New("sidecar: connector unavailable")
+	ErrListener        = errors.New("sidecar: listener unavailable")
 )
+
+// NetworkJoinFailure retains only finite stage evidence, never an upstream
+// cause. Error and Unwrap preserve the existing public refusal contract.
+type NetworkJoinFailure struct{ SubReason string }
+
+func (e NetworkJoinFailure) Error() string { return ErrNetworkJoin.Error() }
+func (e NetworkJoinFailure) Unwrap() error { return ErrNetworkJoin }
+func (e NetworkJoinFailure) NetworkJoinSubReason() string {
+	switch e.SubReason {
+	case "context_cancelled", "deadline_exceeded", "up_backend_error", "up_no_ip",
+		"up_error_unclassified", "up_status_unavailable", "up_not_running",
+		"peer_status_error", "peer_status_unavailable", "peer_not_running",
+		"peer_wait_deadline", "expected_peer_missing":
+		return e.SubReason
+	default:
+		return "unclassified"
+	}
+}
+
+// NetworkJoinSubReason sanitizes metadata at both production consumers.
+func NetworkJoinSubReason(err error) string {
+	var failure NetworkJoinFailure
+	if errors.As(err, &failure) {
+		return failure.NetworkJoinSubReason()
+	}
+	var pointer *NetworkJoinFailure
+	if errors.As(err, &pointer) && pointer != nil {
+		return pointer.NetworkJoinSubReason()
+	}
+	return "unclassified"
+}
 
 const consumedMarker = "credential.consumed"
 
 type Config struct {
-	StateDir, CredentialFile, ControlURL, RoleIdentity  string
-	ExpectedPeer, ListenAddr, ConnectorAddr, DERPPolicy string
+	StateDir, CredentialFile, ControlURL, RoleIdentity string
+	ListenAddr, ConnectorAddr, DERPPolicy              string
+	ExpectedPeers                                      []string
 }
 
 func (c Config) Validate() error {
@@ -38,8 +73,16 @@ func (c Config) Validate() error {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || strings.EqualFold(u.Hostname(), "controlplane.tailscale.com") {
 		return ErrConfiguration
 	}
-	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || strings.TrimSpace(c.ExpectedPeer) == "" {
+	if !strings.HasPrefix(c.RoleIdentity, "home-sidecar-") || len(c.RoleIdentity) <= len("home-sidecar-") || len(c.ExpectedPeers) == 0 {
 		return ErrConfiguration
+	}
+	seen := map[string]bool{}
+	for _, peer := range c.ExpectedPeers {
+		peer = strings.TrimSpace(peer)
+		if peer == "" || seen[peer] {
+			return ErrConfiguration
+		}
+		seen[peer] = true
 	}
 	if c.DERPPolicy != "private-only" {
 		return ErrConfiguration
@@ -57,7 +100,10 @@ func (c Config) Validate() error {
 	return nil
 }
 
-type EngineConfig struct{ StateDir, ControlURL, RoleIdentity, ExpectedPeer string }
+type EngineConfig struct {
+	StateDir, ControlURL, RoleIdentity string
+	ExpectedPeers                      []string
+}
 type RedemptionReceipt struct{ Redeemed, Durable, ExpectedPeerVisible bool }
 type Engine interface {
 	Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error)
@@ -78,7 +124,7 @@ type Sidecar struct {
 	starting        bool
 	startDone       chan struct{}
 	stopping        bool
-	stopOnce        sync.Once
+	stopDone        chan struct{}
 	engineCloseOnce sync.Once
 	acceptWG        sync.WaitGroup
 	proxyWG         sync.WaitGroup
@@ -111,19 +157,32 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	}()
 	credential, err := consumeInput(s.cfg)
 	if err != nil {
-		return ErrCredential
+		return ErrCredentialInput
 	}
-	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeer}, credential)
+	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeers}, credential)
 	for i := range credential {
 		credential[i] = 0
 	}
-	if err != nil || !receipt.Redeemed || !receipt.Durable || !receipt.ExpectedPeerVisible {
+	if err != nil {
 		s.closeEngine()
-		return ErrCredential
+		if errors.Is(err, ErrNetworkJoin) {
+			return NetworkJoinFailure{SubReason: NetworkJoinSubReason(err)}
+		}
+		return ErrEngineStart
 	}
-	if err := commitConsumption(s.cfg); err != nil {
+	if !receipt.Redeemed || !receipt.Durable {
 		s.closeEngine()
-		return ErrCredential
+		return ErrDurableCommit
+	}
+	if !receipt.ExpectedPeerVisible {
+		s.closeEngine()
+		return NetworkJoinFailure{SubReason: "expected_peer_missing"}
+	}
+	if len(credential) != 0 {
+		if err := commitConsumption(s.cfg); err != nil {
+			s.closeEngine()
+			return ErrDurableCommit
+		}
 	}
 	probe, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
 	if err != nil || probe == nil || probe.Close() != nil {
@@ -153,22 +212,33 @@ func consumeInput(c Config) ([]byte, error) {
 	if err := noSymlinkPath(c.StateDir); err != nil {
 		return nil, err
 	}
-	if err := noSymlinkPath(c.CredentialFile); err != nil {
-		return nil, err
-	}
 	if err := requireOwnerDir(c.StateDir); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(filepath.Join(c.StateDir, consumedMarker)); err == nil || !os.IsNotExist(err) {
-		return nil, ErrCredential
+	_, markerErr := os.Lstat(filepath.Join(c.StateDir, consumedMarker))
+	_, credentialErr := os.Lstat(c.CredentialFile)
+	if markerErr == nil {
+		if credentialErr == nil || !os.IsNotExist(credentialErr) {
+			return nil, ErrCredentialInput
+		}
+		return nil, nil
+	}
+	if !os.IsNotExist(markerErr) {
+		return nil, ErrCredentialInput
+	}
+	if err := noSymlinkPath(c.CredentialFile); err != nil {
+		return nil, err
 	}
 	st, err := os.Lstat(c.CredentialFile)
-	if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() || st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st) {
-		return nil, ErrCredential
+	systemdCredential := isSystemdCredential(c.CredentialFile)
+	if err != nil || st.Mode()&os.ModeSymlink != 0 || !st.Mode().IsRegular() ||
+		(!systemdCredential && (st.Mode().Perm() != 0o600 || !ownedByCurrentUser(st))) ||
+		(systemdCredential && st.Mode().Perm()&0o022 != 0) {
+		return nil, ErrCredentialInput
 	}
 	b, err := os.ReadFile(c.CredentialFile)
 	if err != nil || len(strings.TrimSpace(string(b))) == 0 {
-		return nil, ErrCredential
+		return nil, ErrCredentialInput
 	}
 	return b, nil
 }
@@ -225,14 +295,21 @@ func commitConsumption(c Config) error {
 	if err = syncDir(c.StateDir); err != nil {
 		return err
 	}
-	if err = os.Remove(c.CredentialFile); err != nil {
-		return err
-	}
-	if err = syncDir(filepath.Dir(c.CredentialFile)); err != nil {
-		return err
+	if !isSystemdCredential(c.CredentialFile) {
+		if err = os.Remove(c.CredentialFile); err != nil {
+			return err
+		}
+		if err = syncDir(filepath.Dir(c.CredentialFile)); err != nil {
+			return err
+		}
 	}
 	ok = true
 	return nil
+}
+
+func isSystemdCredential(path string) bool {
+	dir := os.Getenv("CREDENTIALS_DIRECTORY")
+	return filepath.IsAbs(dir) && filepath.Clean(path) == filepath.Join(filepath.Clean(dir), "enrollment.key")
 }
 func syncDir(path string) error {
 	f, err := os.Open(path)
@@ -312,6 +389,9 @@ func (s *Sidecar) proxy(ctx context.Context, inbound net.Conn) {
 
 func (s *Sidecar) Stop() error {
 	s.shutdown(nil, false)
+	// An accept-owned teardown cannot join itself. Every external caller
+	// still waits for the accept loop to release its registration.
+	s.acceptWG.Wait()
 	s.mu.Lock()
 	err := s.stopErr
 	s.mu.Unlock()
@@ -322,43 +402,52 @@ func (s *Sidecar) closeEngine() {
 	s.engineCloseOnce.Do(func() { s.engineErr = s.engine.Close() })
 }
 
-// shutdown is the single listener-first teardown path. acceptCaller avoids
-// waiting on the accept goroutine that is currently executing this method.
+// shutdown is the single listener-first teardown path. A losing acceptCaller
+// must return instead of waiting on an owner that may be joining acceptWG.
+// External callers wait for the owner's completion, then Stop joins acceptWG.
 func (s *Sidecar) shutdown(cause error, acceptCaller bool) {
-	s.stopOnce.Do(func() {
-		s.mu.Lock()
-		s.stopping = true
-		startDone := s.startDone
-		starting := s.starting
+	s.mu.Lock()
+	if s.stopping {
+		done := s.stopDone
 		s.mu.Unlock()
-		if starting {
-			<-startDone
-		}
-		s.mu.Lock()
-		l := s.listener
-		s.listener = nil
-		s.mu.Unlock()
-		var teardownFailed bool
-		if l != nil {
-			teardownFailed = l.Close() != nil
-		}
-		s.mu.Lock()
-		for c := range s.active {
-			_ = c.Close()
-		}
-		s.mu.Unlock()
-		s.proxyWG.Wait()
 		if !acceptCaller {
-			s.acceptWG.Wait()
+			<-done
 		}
-		s.closeEngine()
-		teardownFailed = teardownFailed || s.engineErr != nil
-		s.mu.Lock()
-		if cause != nil {
-			s.stopErr = cause
-		} else if teardownFailed {
-			s.stopErr = ErrEngine
-		}
-		s.mu.Unlock()
-	})
+		return
+	}
+	s.stopping = true
+	s.stopDone = make(chan struct{})
+	startDone := s.startDone
+	starting := s.starting
+	s.mu.Unlock()
+	if starting {
+		<-startDone
+	}
+	s.mu.Lock()
+	l := s.listener
+	s.listener = nil
+	s.mu.Unlock()
+	var teardownFailed bool
+	if l != nil {
+		teardownFailed = l.Close() != nil
+	}
+	s.mu.Lock()
+	for c := range s.active {
+		_ = c.Close()
+	}
+	s.mu.Unlock()
+	s.proxyWG.Wait()
+	if !acceptCaller {
+		s.acceptWG.Wait()
+	}
+	s.closeEngine()
+	teardownFailed = teardownFailed || s.engineErr != nil
+	s.mu.Lock()
+	if cause != nil {
+		s.stopErr = cause
+	} else if teardownFailed {
+		s.stopErr = ErrEngine
+	}
+	close(s.stopDone)
+	s.mu.Unlock()
 }
