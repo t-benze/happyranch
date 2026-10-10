@@ -1390,6 +1390,12 @@ admission creates no activation/task and is distinct from a persisted queued or
 uncertain instance. Independent review/QA/CI, U3-U6, mounted UI and separate
 Founder Request changes/Sign off/operator observations remain acceptance gates.
 
+### Thread list counts and infinite loading (THR-289)
+
+The Web inbox reads one active Open, Archived or All stream in 50-row pages. Header/bucket/dream counts come from server totals, remain unknown before the first successful read, and show recorded values with updating/stale state during refresh/failure. All uses one global order. Search retains the literal case-insensitive subject-or-ID predicate; whitespace-only disables it, while every other filter serially exhausts the stream even when early matches fill the viewport. The ContentWrap sentinel and accessible Load more share one request latch. A failed continuation leaves rows navigable and pauses automatic demand until Retry.
+
+Refresh restarts at a null cursor, privately stages a prefix to prior depth and commits it together. Org/bucket/generation ownership and abort signals reject late results. Inbox reconnect/events, focus and local thread mutations reconcile rows and totals. Pin freezes paging, snapshots actual legacy/infinite/detail caches, reorders loaded Open rows only, conditionally rolls back owned writes and restarts authoritatively. Scoped scroll offset/anchor/depth survives detail/back; restoration waits for enough content or termination and retains its target through errors. User movement cancels pending restoration. Command palette reads only committed active-org caches without fetching. CLI calls retain the existing omitted-pagination contract.
+
 ### Manual local-CI receipt contract
 
 The nightly workflow's sole manual input is `all_only` (boolean, default false);

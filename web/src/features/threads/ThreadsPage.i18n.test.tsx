@@ -17,6 +17,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
@@ -33,6 +34,27 @@ vi.mock('mermaid', async () => {
 });
 
 const SLUG = 'alpha';
+
+/** Complete fixed server page for the existing small-list UI fixtures.
+ * The full store supplies totals independently of the selected bucket. */
+function threadListResponse(
+  body: { threads: ReturnType<typeof mkThread>[] },
+  source = body.threads,
+) {
+  return HttpResponse.json({
+    ...body,
+    totals: {
+      open: source.filter((row) => row.status === 'open').length,
+      archived: source.filter((row) => row.status === 'archived').length,
+      all: source.length,
+      dream_origin: source.filter((row) => row.composed_from_dream_id != null).length,
+    },
+    has_more: false,
+    next_cursor: null,
+    sampled_at: '2026-10-07T00:00:00Z',
+  });
+}
+
 const AUTHORED_SUBJECT = 'Ship `v2` — **now** (EN title kept)';
 const AUTHORED_BODY = 'Plan: **bold** and `code` for engineering_manager';
 
@@ -109,9 +131,9 @@ function stubList(threads: ReturnType<typeof mkThread>[]) {
   server.use(
     http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
       const status = new URL(request.url).searchParams.get('status');
-      return HttpResponse.json({
+      return threadListResponse({
         threads: status ? threads.filter((t) => t.status === status) : threads,
-      });
+      }, threads);
     }),
   );
 }
@@ -174,12 +196,19 @@ async function countRequests(fn: () => Promise<void>): Promise<string[]> {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('AbortController', function () { return transferableAbortController(); });
+  vi.stubGlobal('IntersectionObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
   sessionStorage.setItem('happyranch.token', 'tok');
   localStorage.clear();
   stubBase();
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -196,7 +225,7 @@ describe('ThreadsPage list i18n (zh-CN)', () => {
       http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
         await held;
         const status = new URL(request.url).searchParams.get('status');
-        return HttpResponse.json({ threads: threads.filter((t) => t.status === status) });
+        return threadListResponse({ threads: threads.filter((t) => t.status === status) }, threads);
       }),
     );
     stubDetail(threads[0], [mkMessage(1, 'founder', AUTHORED_BODY)]);
@@ -247,7 +276,7 @@ describe('ThreadsPage list i18n (zh-CN)', () => {
       http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
         if (fail) return HttpResponse.json({ detail: 'boom' }, { status: 500 });
         const status = new URL(request.url).searchParams.get('status');
-        return HttpResponse.json({ threads: threads.filter((t) => t.status === status) });
+        return threadListResponse({ threads: threads.filter((t) => t.status === status) }, threads);
       }),
     );
     const user = userEvent.setup();

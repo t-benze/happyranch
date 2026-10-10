@@ -1090,6 +1090,23 @@ class ThreadListResponse(BaseModel):
     threads: list[ThreadListRowResponse]
 
 
+class ThreadListTotals(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    open: int
+    archived: int
+    all: int
+    dream_origin: int
+
+
+class ThreadListPageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    threads: list[ThreadListRowResponse]
+    totals: ThreadListTotals
+    has_more: bool
+    next_cursor: str | None
+    sampled_at: str
+
+
 def _thread_row_to_dict(t: ThreadRecord, *, participants: list[str] | None = None) -> dict:
     return {
         "thread_id": t.id,
@@ -1170,13 +1187,32 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/threads", response_model=ThreadListResponse)
+@router.get(
+    "/threads", response_model=ThreadListResponse | ThreadListPageResponse,
+    responses={400: {"description": "invalid_thread_cursor: malformed or wrong-scope continuation"},
+               422: {"description": "Invalid query or pagination combination"}},
+)
 async def list_threads_endpoint(
     slug: str,
     org: OrgDep,
+    request: Request,
     status: str | None = None,
     limit: int = 50,
-) -> ThreadListResponse:
+    page_size: Annotated[int | None, Query(ge=1, le=100, description="Opt in to pages; cannot be combined with explicit limit")] = None,
+    cursor: Annotated[str | None, Query(description="Requires page_size; bound to org, bucket and page size")] = None,
+) -> ThreadListResponse | ThreadListPageResponse:
+    if (page_size is None and cursor is not None) or (page_size is not None and "limit" in request.query_params):
+        raise HTTPException(status_code=422, detail={"code": "invalid_thread_pagination"})
+    if page_size is not None:
+        if status not in (None, "open", "archived"):
+            raise HTTPException(status_code=422, detail={"code": "invalid_thread_bucket"})
+        try:
+            page = org.db.list_threads_page(org=slug, status=status, page_size=page_size, cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"code": "invalid_thread_cursor"}) from exc
+        participants = page.pop("participants")
+        page["threads"] = [_thread_row_to_dict(t, participants=participants[t.id]) for t in page["threads"]]
+        return ThreadListPageResponse(**page)
     rows = org.db.list_threads(status=status, limit=min(limit, 500))
     participants = org.db.list_thread_participant_names_for_threads([t.id for t in rows])
     return ThreadListResponse(

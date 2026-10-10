@@ -11,6 +11,7 @@ import type {
   ThreadDetailResponse,
   ThreadMessagesPage,
   ThreadRecord,
+  ThreadListPage,
 } from './types';
 
 /**
@@ -42,11 +43,23 @@ export const composeThread = (
 ): Promise<{ thread_id: string; started_at: string; pending_replies: number }> =>
   request(`/orgs/${slug}/threads`, { method: 'POST', body });
 
-export const listThreads = (
+export function listThreads(
+  slug: string,
+  params: { status?: 'open' | 'archived'; page_size: number; cursor?: string | null },
+  signal?: AbortSignal,
+): Promise<ThreadListPage>;
+export function listThreads(
   slug: string,
   params?: { status?: string; limit?: number },
-): Promise<{ threads: ThreadRecord[] }> =>
-  request(`/orgs/${slug}/threads`, { params });
+  signal?: AbortSignal,
+): Promise<{ threads: ThreadRecord[] }>;
+export function listThreads(
+  slug: string,
+  params?: { status?: string; limit?: number; page_size?: number; cursor?: string | null },
+  signal?: AbortSignal,
+): Promise<{ threads: ThreadRecord[] } | ThreadListPage> {
+  return request(`/orgs/${slug}/threads`, { params, signal });
+}
 
 export const getThread = (
   slug: string,

@@ -9,13 +9,18 @@ behavioral predicates are unchanged.
 
 ## Source inventory and retained boundaries
 
-At base `529a085dc09c1ca1aacf7cb563be9f2c37ed0621`, tracked source AST,
+At fresh base `ea559208b3f87ce3c3b17bd3b645dfafa4eef41b`, tracked source AST,
 pytest configuration, conftests, module/class/function markers and marker aliases
-resolve 9,994 test definitions: **9,617 deleted unit definitions**, **155 retained
+resolve 10,003 test definitions: **9,626 deleted unit definitions**, **155 retained
 integration definitions**, and **222 retained canonical platform definitions**.
 These are static class/function definitions, not expanded pytest items, executed
 results or coverage percentages. Parameter decorator expressions are inventoried
 without execution. Three test-named fixture definitions are not cases.
+The original base `529a085dc09c1ca1aacf7cb563be9f2c37ed0621` receipt of
+9,617 removed definitions and 472 deleted files remains historical. PR1010 adds
+nine unit definitions in eight already-deleted files; all are retired in this
+merge-forward. The 472-file deletion set and retained definition counts are
+unchanged. Upstream product, Web, shared OpenAPI and documentation changes remain.
 
 There are three mixed files: `tests/integration/test_nested_daemon_environment.py`
 and `tests/platform/test_{linux_systemd,macos_process_group}_backend.py`. The latter
@@ -28,7 +33,8 @@ unmarked tests.
 
 The maker exports exhaustive before/after case identities, parameter expressions,
 file deletions, marker overlap, fixtures, imports, resource consumers and changed
-symbols under `output/TASK-10478/`. Static extraction imports no old tests and
+symbols under `output/TASK-10522/`; `output/TASK-10478/` preserves the historical
+inventory. Static extraction imports no old tests and
 runs no pytest collection. Independent review/QA bind that evidence to the final
 head. Removal alone is not a passing test result.
 
