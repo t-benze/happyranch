@@ -81,7 +81,8 @@ Unproved candidate requirements remain explicit: receipt-loss reconstruction
 without another generation/reset/materializer invocation; complete
 supervisor and generated/global materializer closure; closed backup/restore
 metadata and preservation inventories; RF5/RF6/writer-busy causal process controls;
-M reboot/maintenance and zero-write replay; held old-reader and U9 localization;
+M reboot/maintenance and zero-write replay; current-head old-reader proof;
+former U1/U4/U5/U9 unit realizations RETIRED/unexecuted THR291seq40;
 bilingual viewport screenshots. This draft utility must not be accepted as
 canonical C6/C8/C9 completion while any of those source/proof gaps remains.
 
@@ -222,8 +223,9 @@ is explicitly not migration. An after-M claim requires the real C6 utility
 in the same supported disposable M fixture before release and launches. That
 combined venue remains unprovisioned, including persistent inhibition and
 observer/reboot capabilities; no successful M receipt or demotion is inferred.
-Python collection/helper/case/causal execution and five-isolated/sibling
-repetitions remain SUSPENDED/HELD. The task evidence's existing C7 source map
+Former Python unit collection/execution, causal controls and repetitions are
+RETIRED THR291seq40. Authorized finite hosted L/W proof remains required; M is
+HELD. The task evidence's existing C7 source map
 records producers, native readers, final oracles and inert restoration controls.
 Source authoring alone does not close C7 behavioral acceptance. Wbrowser's
 finite selection is now authored at
@@ -278,7 +280,7 @@ combined-M proof, C10 completion,
 actual old-reader/M/L/browser receipts, causal controls,
 five isolated/affected-sibling repetitions, independent final-head review/QA,
 publication/CI and operator acceptance. Python units/collection/control/repetition
-remain SUSPENDED THR291seq5/16; general integration remains SKIPPED THR243seq42.
+are RETIRED THR291seq40; general integration remains SKIPPED THR243seq42.
 
 
 C6/C8/C9 maintenance source (TASK10461) is AUTHORED / UNEXECUTED. This is
@@ -294,9 +296,9 @@ use the actual operated root. Fixture history is labelled synthetic DATA.
 | `test_c6_exact_manifest_apply_and_preservation` | no Default / correct empty human Default (2) | AUTHORED; M unavailable |
 | `test_c8_preflight_refusals_and_backup_cas` | 3 retained early controls + 50 single-condition M refusals | AUTHORED; each M refusal requires its real positive check first |
 | `test_c9_crash_recovery_and_replay` | 4 retained early controls + 279 M selections: 160 canonical/authority/receipt syscall cuts, 96 actual frame cuts, 4 finite checked generated/global path selections, 4 backup durability cuts, 8 shared-store directory-flush cuts, 3 observer loss/capability controls, 4 third states | AUTHORED; process SIGKILL, never guest reboot |
-| `test_c9_reset_atomic_boundary` | original 12 reset parameters unchanged | SUSPENDED THR291 |
-| `test_c9_publication_commit_boundary` | 7 actual journal/profile phases × before/after real COMMIT × complete/compensate (28) | SUSPENDED THR291; shared fixture also needs M |
-| `test_c9_replay_no_helpers` | ordinary / zero rows / initially NULL and zero (3), two actual replays each | SUSPENDED THR291; mandatory complete paired observers |
+| `test_c9_reset_atomic_boundary` | original 12 reset parameters unchanged | RETIRED/unexecuted THR291seq40 |
+| `test_c9_publication_commit_boundary` | 7 actual journal/profile phases × before/after real COMMIT × complete/compensate (28) | RETIRED/unexecuted THR291seq40; M independently HELD |
+| `test_c9_replay_no_helpers` | ordinary / zero rows / initially NULL and zero (3), two actual replays each | RETIRED/unexecuted THR291seq40; retained M requires complete paired observers |
 
 Generated `gN` and global `sN` cuts come only from sorted actual manifest paths,
 types and SHA256, saved in `checked-syscall-paths.json`; no unbounded discovery
@@ -384,3 +386,21 @@ no-write or successful check/apply. Existing reviewer TASK10517 BLOCK, prior
 failed10430/10452, and every adverse receipt stay attributed to their original
 source. Return the bounded outcome to SAME TASK10394; do not claim migration
 readiness, overall QA, deployment, live apply or completion.
+
+The current integration history owner is
+`tests/helpers/human_team_history_fixture.py`. It retains only feature-authored
+schema1 history DATA and unchanged seeding, plus bounded C3/C5 setup. Literal
+history remains separate from real current template publication, activation,
+INTEGER callback, graph, old-reader and portability observations. Explicit C5
+profiles use a hash-pinned inert executable under the isolated daemon home,
+canonical adapter eligibility, durable store registration and cleanup of prior
+values. Generated CLAUDE symlink refusal remains a real C5 failure; no link is
+removed and no classification oracle is relaxed.
+
+The HELD `_MaintenanceCase` still depends on deleted
+`tests.workflows.test_authority_coordinator._seed_org`; its remote-lease branch
+still depends on deleted `tests.infrastructure.test_remote_job_schema_migration`
+row helpers. Do not import or execute either path. Their redesign/release belongs
+to the root, alongside persistent ALL-launch inhibition, restore/reboot and
+paired-observer proof. Retired unit source is not a maintenance prerequisite to
+restore or execute.

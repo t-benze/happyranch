@@ -6,39 +6,8 @@ on:
     branches: [main]
 
 jobs:
-  python-unit:
-    # Suspended by founder THR-291 seq5 (TASK-10169); restore by reverting this pause.
-    # A skipped job is suspended coverage, never a unit-test PASS.
-    if: ${{ false }}
-    name: Python unit (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    # No Python linter configured in-repo; add ruff via founder approval to enable Python lint.
-    strategy:
-      fail-fast: false
-      matrix:
-        # PR CI: fast feedback on 3.14 only.
-        # Push to main: full 3.12/3.13/3.14 matrix.
-        # Matrix dimensions justified by pyproject requires-python = ">=3.12,<3.15".
-        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.14"]') || fromJSON('["3.12", "3.13", "3.14"]') }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - name: Install zsh (real-zsh cleanup regression)
-        run: sudo apt-get update && sudo apt-get install -y zsh
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          python-version: ${{ matrix.python-version }}
-      - name: Sync dependencies (frozen)
-        run: uv sync --frozen
-      # pyproject addopts = -m 'not integration', so this default run is unit-only.
-      # -n 4 matches the standard GitHub-hosted runner's vCPU count; validated
-      # locally as flake-free (higher worker counts induced contention in a
-      # couple of real-subprocess timeout tests).
-      - name: Run unit tests
-        run: uv run pytest tests/ -v -n 4
-
+  # THR-291 seq40: Python units and their gate are retired.
+  # Fresh product E2E coverage is PENDING, not a passing check.
   web:
     name: Web (Node 24)
     runs-on: ubuntu-latest
@@ -72,7 +41,7 @@ jobs:
 
   # ── Linux canonical skill store validation (same-owner, unconditional) ──
   # Runs the production canonical-store boundary against the real Linux
-  # adapter rather than relying only on the unit-suite launch double.
+  # adapter using the existing explicit platform selection.
   linux-canonical-validation:
     name: Linux Canonical Store Validation (Ubuntu)
     runs-on: ubuntu-latest

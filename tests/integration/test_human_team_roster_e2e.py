@@ -526,7 +526,7 @@ with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) a
         assert 'resume' in argv and accepted[2] in argv, (accepted, argv)
         assert prior == 0
 if administration:
-    import ast, httpx
+    import hashlib, httpx
     from runtime.daemon.paths import port_file, read_token
     base = 'http://127.0.0.1:' + port_file().read_text().strip() + '/api/v1/orgs/' + org
     token = read_token()
@@ -542,17 +542,14 @@ if administration:
         reply = httpx.post(base + '/agents/manage', json=body, headers=headers)
         assert reply.status_code == 403 and reply.json()['detail'] == 'manage-agent requires an active team-manager session', reply.text
         observed.append({'action': action, 'status': reply.status_code, 'detail': reply.json()['detail']})
-    # Reuse the independently literal existing valid fixture without importing
-    # or collecting its suspended unit owner. The real current session must
-    # reach manager_required, rather than unknown_session or invalid_request.
-    source = pathlib.Path(__import__('runtime').__file__).resolve().parent.parent
-    tree = ast.parse((source / 'tests/workflows/test_template_store.py').read_text())
-    definitions = [ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
-                   and any(isinstance(target, ast.Name) and target.id == 'VALID_DEFINITION' for target in node.targets)]
-    assert len(definitions) == 1
+    # Fixed valid product contract from feature-authored historical DATA.
+    # Actual current worker session must reach manager_required.
+    from tests.helpers.human_team_history_fixture import PRODUCT_DESIGN_DEFINITION
+    from runtime.workflows.templates import _validate_definition
+    assert hashlib.sha256(_validate_definition(PRODUCT_DESIGN_DEFINITION)).hexdigest() == '0d815497899d1e6f43022ec8c88574a36bbf295a05fbf00f411c8a8e324c7f57'
     reply = httpx.post(base + '/workflows/templates/publish', params={'session_id': S}, json={
         'operation_key': 'worker-denied-' + T, 'template_name': 'product-design',
-        'expected_current_version': 0, 'definition': definitions[0]})
+        'expected_current_version': 0, 'definition': PRODUCT_DESIGN_DEFINITION})
     assert reply.status_code == 403 and reply.json()['detail']['code'] == 'manager_required', reply.text
     observed.append({'action': 'template-publish', 'status': reply.status_code, 'detail': reply.json()['detail']})
     # Token here belongs solely to the synthetic fixture harness. It reaches
@@ -1407,7 +1404,7 @@ from runtime.daemon.state import DaemonState
 from runtime.runtime import RuntimeDir
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.draft_dispatch import DraftOwnershipError
-from tests.workflows.authority_test_support import C5_SCHEMA1_HISTORY,C5_SCHEMA1_COMPLETED,seed_c5_schema1_history
+from tests.helpers.human_team_history_fixture import C5_SCHEMA1_HISTORY,C5_SCHEMA1_COMPLETED,seed_c5_schema1_history
 from tests.helpers.human_team_incompatible_reader_probe import _closed_files
 home=venue/'daemon-home';home.mkdir(mode=0o700)
 os.environ['HAPPYRANCH_DAEMON_HOME']=str(home)
@@ -1495,16 +1492,16 @@ try:
     original=checked('post',base+'/workflows/activations',f['request'])
     assert {key:original[key] for key in f['receipt']}==f['receipt']
     assert original['state']=='completed' and original['pending'] is False
-    from tests.workflows.authority_test_support import C5_SCHEMA1_COMPLETED
+    from tests.helpers.human_team_history_fixture import C5_SCHEMA1_COMPLETED
     with sqlite3.connect(org.db.path.resolve().as_uri()+'?mode=ro',uri=True) as reader:
         reader.row_factory=sqlite3.Row
         assert dict(reader.execute('SELECT * FROM task_results WHERE id=901').fetchone())==C5_SCHEMA1_COMPLETED['result']
     preserved=history(org)
     with ExitStack() as profile_stack:
         if explicit:
-            # Existing finite profile fixture owner, not a profile-store seam.
-            from tests.workflows.authority_test_support import c5_profile_fixture
-            profile_stack.enter_context(c5_profile_fixture('c5-portable-profile'))
+            # Integration-owned inert adapter with real durable profile registration.
+            from tests.helpers.human_team_history_fixture import c5_profile_fixture
+            profile_stack.enter_context(c5_profile_fixture('c5-portable-profile', receipt_path=venue/'C5-profile-setup.json'))
             checked('put',base+'/agents/dev_agent/executor',{'executor':'c5-portable-profile'})
         for name in ('consultant_head','consultant_codex'):
             checked('post',base+'/agents',dict(name=name,team='default',role='worker',executor='codex' if name.endswith('codex') else 'claude',description='C5 worker',system_prompt='Bounded documents.'))
@@ -1892,7 +1889,7 @@ class _MaintenanceCase:
         from runtime.daemon import paths
         from runtime.daemon.app import create_app
         from runtime.daemon.state import DaemonState
-        from tests.workflows.authority_test_support import C5_SCHEMA1_HISTORY, seed_c5_schema1_history
+        from tests.helpers.human_team_history_fixture import C5_SCHEMA1_HISTORY, seed_c5_schema1_history
         containing = DaemonState.from_runtime(RuntimeDir.load(self.runtime), Settings(project_root=self.source))
         client = TestClient(create_app(containing), base_url='http://localhost')
         client.headers['Authorization'] = 'Bearer ' + paths.ensure_token()
@@ -2327,7 +2324,7 @@ def _c8_maintenance_refusal(case, refusal):
             from runtime.daemon.app import create_app
             from runtime.daemon.state import DaemonState
             from runtime.runtime import RuntimeDir
-            from tests.workflows.authority_test_support import C5_SCHEMA1_HISTORY
+            from tests.helpers.human_team_history_fixture import C5_SCHEMA1_HISTORY
             state = DaemonState.from_runtime(RuntimeDir.load(case.runtime), Settings(project_root=case.source))
             client = TestClient(create_app(state), base_url='http://localhost')
             client.headers['Authorization'] = 'Bearer ' + paths.ensure_token()

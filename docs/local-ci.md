@@ -1,44 +1,73 @@
 # Local CI
 
-A dependency-light local CI wrapper (`scripts/local_ci.sh`) mirrors GitHub
-Actions commands as closely as practical. Use it for pre-push feedback;
-**GitHub CI remains authoritative**. GitHub PR CI runs Python units on 3.14,
-Web CI on Node 24, Linux Canonical Store Validation (Ubuntu), and macOS
-Canonical Store Validation (macOS 15). After merges and pushes to main,
-GitHub CI runs the full Python 3.12/3.13/3.14 matrix. Nightly integration
-remains a separate job. A local pass is feedforward signal, not a substitute
-for the named hosted checks.
+Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
+The former default `not integration` selection was deleted, including its
+unmarked component, contract and system acceptance cases. Git history preserves
+that source; do not restore it as a hidden unit or renamed E2E suite.
+`scripts/local_ci.sh python` refuses with exit 2. `all` runs the retained Web
+checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
+There is no default Python selection: pytest requires explicit existing canonical
+platform file selectors, or the isolated parent with `-m integration`.
 
-The HappyRanch Linux daemon host is a special operational boundary: founder
-THR-211 seq270/271 prohibits every integration-marked test there, including
-direct pytest, `scripts/local_ci.sh integration`, and job-mediated runs.
-Trigger `.github/workflows/nightly-integration.yml` with `workflow_dispatch`
-on the exact candidate ref when execution is authorized. Manual dispatch exposes
-only `all_only` (boolean, default false), with no `run_integration` toggle. The
-existing manual `local-ci-all` job invokes the receipt-producing extracted
-`uv run python scripts/nightly_local_ci_all.py` runner on ordinary refs; the
-closed retained PR1011 path below uses the B2 frozen/no-sync outer invocation.
-The ordinary path runs the exact `scripts/local_ci.sh all` command on
-Python 3.14/Node 24, while the separate general integration job is SKIPPED.
-The manual lane has a finite 150-minute cap: the Python unit step alone took
-99 minutes in hosted run 37650992085, exceeding the former 60-minute cap.
-The separate nightly integration job retains its 30-minute cap.
-Record its actual checkout SHA, source/tool provenance and command exit from
-the uploaded receipt; submission or publication alone is not a pass. General
-integration runs only on scheduled events; manual dispatch skips it and the
-scheduled failure reporter. General integration remains SKIPPED under THR-243
-seq42 for tasks governed by that exception, never PASS. While the THR-291 pause
-applies, the manual `all` command reports Python SUSPENDED and runs only the
-remaining Web checks; an exit0 does not establish a Python unit PASS. The
-extracted runner's fixed suspension guard also prevents G collection, source
-controls and repetitions for every `all_only` value; their dormant definitions
-remain retained and unexecuted. No manual dispatch or rerun is required for the
-ordinary source-only merge-forward repair.
-Commands whose unit selection includes real
-socket/daemon cases, including `scripts/local_ci.sh all`, also require that
-disposable venue. On-host verification is limited to demonstrably pure offline
-units; Mac integration verification uses the separately authorized disposable
-container-VM path.
+Required active PR **and exact-merge main** checks are `Web (Node 24)`,
+`Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
+and applicable Docs/other retained path-specific checks. The Linux job includes
+its existing real Codex callback smoke. Unit checks are neither required nor
+passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
+Independent review, QA, exact-head/completed checks and normal hooks remain
+mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
+never PASS; integration requires a disposable authorized venue away from the live
+daemon host and deterministic external provider stubs.
+
+The existing manual `local-ci-all` runner preserves its disposable environment,
+source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
+unit entry, G named-case controls/repetitions and lab unit preflight are removed.
+The existing `all_only` boolean is compatibility-only; every manual input runs
+retained Web checks, with separate integration skipped. Existing 150-minute manual
+and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+See [the reset coverage gap record](python-test-reset.md) for uncovered
+obligations; retained selectors and evidence limits follow below.
+
+## Commands and retained lanes
+
+```bash
+scripts/local_ci.sh all          # retained Web checks; Node 24 required
+scripts/local_ci.sh web          # same Web checks without all's advisory
+scripts/local_ci.sh python       # RETIRED, exit 2; no Python execution
+scripts/local_ci.sh help
+# Only in an authorized disposable integration venue:
+scripts/local_ci.sh integration
+```
+
+`all`/`web` execute `npm ci`, the design-system colour gate, lint, typecheck,
+SPA build, Storybook build and non-watch `vitest run`. They do not establish
+Python or native coverage. Node must be exactly major 24 from `.nvmrc`;
+missing/wrong Node refuses before npm work. `npm ci` preserves lockfile parity.
+
+The two canonical hosted jobs retain exactly these existing Python platform
+files (222 static definitions; no parameter expansion implied):
+
+```text
+tests/test_canonical_skill_store.py
+tests/test_canonical_production_bound.py
+tests/test_skill_cutover_completeness.py
+tests/test_thr070_skill_freshness.py
+tests/test_system_contract_materialization.py
+tests/test_workspace_adapters.py
+tests/test_prelaunch_integrity_validation.py
+```
+
+They historically overlapped default units but now survive solely as the existing
+platform lane. Explicit one-or-more file/node selectors are required; the root
+conftest refuses bare pytest, directory/default selection and unrecognized marker
+expressions before test-module collection. Existing integration-marked cases,
+including outside `tests/integration`, retain `-m integration` selection.
+No new contract-unit tier exists. Do not run integration on the live daemon host,
+even through a job. The Linux canonical callback remains the explicit
+`tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback`
+selection through `tests/helpers/integration_parent.py`.
+
+## Integration environment and retained observations
 
 ## PR1022 finite roster L/W entry
 
@@ -48,7 +77,8 @@ THR296seq24, releases the finite selections in `pr1022-roster-selected` in
 with head branch `task/TASK-10430` run it. Normal publication starts it; it has
 no dispatch inputs, main-push execution or scheduled execution. Existing Web,
 Linux/macOS canonical and original callback checks remain separate. Python
-units stay SUSPENDED THR291seq5/16; broad integration stays SKIPPED THR243seq42.
+units and their gate are RETIRED THR291seq40; broad integration stays SKIPPED
+THR243seq42.
 The live daemon host cannot execute this entry, even through jobs.
 
 The seven disposable Ubuntu shards use actual PR-head checkout, frozen Python
@@ -90,6 +120,19 @@ launch must succeed before scenarios. Its command, exit and stdout/stderr are
 retained even on refusal, without a sandbox-disable fallback. Update
 notification is disabled. No project dependencies,
 global tooling or execution policy changes follow.
+
+The retained integration-only `tests/helpers/human_team_history_fixture.py`
+owns feature-authored C5 schema1 history DATA and unchanged seeding. Historical
+IDs, bytes and digests are fixed independently of current writers; they are not
+new callback or migration receipts. C3 uses its independently literal valid
+product-design definition and still requires the actual worker request to return
+403 `manager_required`. C5's explicit-profile case registers an owned inert
+executable through the existing adapter/profile stores and registry validation,
+records bytes/hash/mode and cleanup, and binds the profile through the real API.
+No retired unit module is imported or read by any released L/W selection.
+Two deleted fixture dependencies remain solely in HELD M paths: authority
+`_seed_org` and remote-runner row helpers. They must be resolved before any M
+release; this entry provides no M source-completeness or maintenance proof.
 
 C5 positive graph admission binds the actual existing fixture runtime
 container to its selected-source API state. Capture and unchanged-domain/file
@@ -137,7 +180,7 @@ through the test plan fixture and hash-approved; missing/stale/unexpected or
 nonexecutable identities fail visibly before execution. Intentional no-ops require
 explicit plans. Stub argv witnesses retain only fixed flags/counts and digests;
 callback witnesses bind the actual CLI source. No provider PATH fallback or model
-network request is permitted. The unit/Web targets keep their existing selections.
+network request is permitted. Web keeps its existing selection.
 The Mac definition-owned launcher names this parent explicitly inside its
 `run_bounded_output.py` child command, preserving the pytest arguments, exit and
 1 MiB log tail under the guest's shared deadline. The guest's direct pytest
@@ -147,11 +190,7 @@ installs `bash curl iproute2 git` with no recommends, validates Git through
 the existing bounded command, and records its version and resolved package
 identities. External installer stand-ins prove command composition only;
 actual apt/Git installation in the pinned arm64 image requires the authorized
-guest run. Focused launcher units
-include harmless real pytest/conftest subprocess collection and socket cases;
-run their complete files in the disposable manual lane. Stub-only launch controls
-are separate evidence and do not establish real pytest/conftest execution.
-Registered stubs restore the temporary callback/Python bin directory before the
+guest run. Registered stubs restore the temporary callback/Python bin directory before the
 unchanged identity gate, including after uv prepends the project environment.
 
 Only the original concurrent alpha/beta two-org case opts into the observational
@@ -183,69 +222,9 @@ shipping `remote_access.cli readiness` command (5-second deadline, 8192-byte cap
 closed gate categories/booleans and owned connector/fake-daemon state. Observation
 failure stays unavailable and preserves the original exception and finalizers;
 raw command output and configuration are never exported by this observation.
-Safe controls execute the unchanged acceptance owner body with external callouts
-doubled, checking primary identity and independent connector/daemon finalization
-attempts, including kill/reap on wait failure. These controls establish invocation
-and error preservation; actual resource absence requires disposable execution.
+Historical unit controls are retired; actual resource absence still requires
+disposable execution.
 
-The founder suspended Python unit-suite execution in THR-291 seq5
-(TASK-10169). While this pause applies, do not launch Python unit tests,
-including focused tests or duration measurements. The `python-unit` GitHub
-job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
-reports the same suspension before continuing Web CI. This also pauses the
-unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
-exit or an `all` receipt establishes only the remaining checks, never a unit
-PASS. Preserve test sources, selections and coverage definitions. Web,
-canonical validation and integration jobs retain their own existing contracts;
-no hook bypass is authorized. Existing historical workflow reruns and old
-checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after founder release of the
-stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
-
-## Prerequisites
-
-- Python 3.12+ and [uv](https://docs.astral.sh/uv/)
-- Node.js **exactly 24** (the repository `.nvmrc` declaration) and npm, for
-  the `web`/`all` targets. The wrapper verifies the effective Node major is
-  24 before any work and exits nonzero otherwise (see Caveats).
-- An up-to-date `uv.lock` file (run `uv lock` if you've changed
-  `pyproject.toml`; `uv sync --frozen` rejects a stale lock)
-- The `integration` target spawns an isolated daemon per test (tmp
-  `HAPPYRANCH_DAEMON_HOME` + ephemeral port via
-  `HAPPYRANCH_DAEMON_PORT=0`), so a running production daemon does NOT
-  conflict and does NOT need to be stopped. Both processes share
-  machine RAM — a production daemon with active Claude sessions can
-  inflate memory during the run.
-
-## Usage
-
-Run from the repo root. The local `all` target covers the Python and Web
-commands only; the canonical-store validations remain hosted PR checks.
-
-```bash
-scripts/local_ci.sh              # default: python + web (local PR-command coverage)
-scripts/local_ci.sh python       # Python unit tests only
-scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run)
-scripts/local_ci.sh integration  # Python integration tests (spawns daemon + fake CLIs)
-scripts/local_ci.sh help         # List targets and caveats
-```
-
-## Targets
-
-| Target | GHA job | Commands |
-|--------|---------|----------|
-| `all` (default) | `python-unit` + `web` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` then `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `python` | `python-unit` | `uv sync --frozen; uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>` |
-| `web` | `web` (Node 24) | `cd web; npm ci; npm run lint; npm run typecheck; npm run build; npx vitest run` |
-| `integration` | `nightly-integration` | `uv sync --frozen; uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration --basetemp <fresh per-run dir>` |
-
-Local commands run the same test commands as the corresponding GitHub Actions job
-on your installed Python interpreter (3.12+). They **cannot** select or replace
-the hosted version matrix or canonical-store validation. GitHub PR CI runs
-`python-unit` on Python **3.14**, `web` on Node 24, and Linux/macOS Canonical
-Store Validation on their named platforms; push-to-main runs the Python tests
-across **3.12/3.13/3.14**. GitHub CI is authoritative.
 
 ## Per-run pytest scratch lifecycle
 
@@ -282,9 +261,8 @@ or fails with `UsageError` under `--strict-config`, without providing retention.
 Those versions are not verified or supported for this feature.
 
 Pytest normally allocates its session base under
-`pytest-of-<user>/pytest-<n>` in `TMPDIR`. The existing `python`, `integration`,
-and `all` wrapper targets manage their own scratch by passing an
-explicit `--basetemp` to their single pytest invocation (integration enters the
+`pytest-of-<user>/pytest-<n>` in `TMPDIR`. The `integration` wrapper target manages its own scratch by passing an
+explicit `--basetemp` to its single pytest invocation (integration enters the
 preimport parent first):
 
 - The directory is freshly and uniquely created for that invocation with
@@ -300,7 +278,7 @@ preimport parent first):
   status.
 - Basetemp creation or cleanup failure is explicit and nonzero; it can never be
   reported as a clean local-CI pass.
-- `web`, `help`, and invalid targets create no pytest basetemp.
+- `all`, `web`, `python`, `help`, and invalid targets create no pytest basetemp.
 
 **Honesty boundary.** Cleanup is driven by a shell `EXIT` trap plus
 `HUP`/`INT`/`TERM` traps. It therefore cannot observe or clean up after
@@ -310,344 +288,24 @@ expected and is not handled automatically; the wrapper makes no guarantee
 about it. Nothing here inspects, moves, quarantines, restores, or deletes any
 other scratch, pre-existing `pytest-of-*` tree, or historical backlog.
 
-### `all` (default)
+## Git hooks and evidence
 
-Runs `python` followed by `web` and is the recommended pre-push target. It
-does **not** run the canonical-store validations or integration tests —
-integration is nightly in GitHub and runs an isolated daemon (no port conflict
-with a running production daemon).
+The project does not install/manage hooks for linked worktrees. Worktree-guard
+setup may remove only its known stale pre-PR607 injected hook configuration.
+Follow normal repository hooks; `--no-verify` and force push remain prohibited.
+Local CI gives pre-push feedback; hosted checks are authoritative. Every push
+renews independent reviewer/QA evidence at its exact head.
 
-### `python`
-
-Runs the full Python unit test suite with `uv sync --frozen` and
-`uv run pytest tests/ -v -n 4 --basetemp <fresh per-run dir>`. Uses your local
-installed Python interpreter;
-does **not** reproduce the GHA 3.12/3.13/3.14 matrix. `pyproject.toml`
-addopts exclude integration tests by default (`-m 'not integration'`), so
-this is unit-only. `-n 4` (pytest-xdist) runs the suite across 4 worker
-processes, matching the standard GitHub-hosted runner's vCPU count; the
-suite is written to be worker-safe (per-test `tmp_path`, no shared ports or
-fixed filesystem paths). The fresh `--basetemp` (see "Per-run pytest scratch
-lifecycle") is created under the effective `TMPDIR` and removed when the
-invocation ends.
-
-### `web`
-
-Runs the full Web CI pipeline in `web/`: `npm ci`, `npm run lint`,
-`npm run typecheck`, `npm run build`, `npm run build-storybook`, and
-`npx vitest run`. The two explicit build commands build the SPA and the
-deterministic static Storybook catalogue exactly once each.
-`vitest run` is non-watch mode; do not use bare `vitest` which enters watch
-mode and hangs.
-
-### `integration`
-
-Runs Python integration tests (`-m integration`). The target spawns its own
-isolated daemon (via HAPPYRANCH_DAEMON_HOME). The target is explicit — it is **not**
-included in the `all` default. Like `python`, it receives a fresh per-run
-`--basetemp` under the effective `TMPDIR` that is removed when the invocation
-ends (see "Per-run pytest scratch lifecycle").
-
-The hosted nightly publishes JUnit XML, a fixed-size pytest log tail, and a
-Markdown summary artifact on every outcome. The log artifact is capped at
-1 MiB (1,048,576 bytes); when pytest output exceeds that cap, the artifact
-starts with a truncation marker and retains the final output bytes within the
-same cap. The full stream remains visible in the hosted step log, and the
-wrapper returns pytest's own exit status. Its Actions job summary reports
-collected/passed/failed/skipped counts and failed test IDs. A failed scheduled
-run opens or comments on the single open issue labelled
-`nightly-integration-failure`; manually dispatched runs do not create or update
-that issue. This repository-local issue flow uses only the workflow token and
-does not send email, Feishu, Slack, webhook, or other external notifications.
-
-Manual dispatch of the same workflow runs only the exact `scripts/local_ci.sh all`
-command on its clean immutable checkout with Python 3.14 and Node 24. This
-lane installs the same real-zsh test prerequisite as the ordinary Python CI job.
-Its closed build-tool PATH includes the standard `/usr/local/bin` directory used
-by the ordinary unit lane; integration keeps its separate restricted PATH.
-The disposable lane clears inherited environment variables before test imports,
-uses fresh HOME/config/cache/registry/runtime directories and ordinary build/test
-tools, and preserves the default unit/Web selection definitions. During the
-THR-291 pause, units are SUSPENDED and only the remaining Web checks execute.
-The manual lane retains its finite 150-minute cap; scheduled integration retains
-its separate 30-minute cap. It uploads the command's
-actual exit status, checkout/ref/SHA, source digests and tool paths/versions with
-a 1 MiB log tail. A dispatch or an ordinary PR check is not an `all` pass: read
-the actual command receipt. The integration job runs only on `schedule` events;
-manual dispatch skips it and the scheduled failure reporter. Scheduled integration
-and the PR/main matrix remain unchanged. The live Linux daemon host must also
-avoid `python`/`all` when their selection includes real socket or daemon tests;
-use this disposable manual lane.
-
-## Git hooks
-
-This project does not install or manage Git hooks for linked worktrees. During
-worktree-guard `setup`, a worktree created before the 2026-08-07 PR #607 change
-may print a notice that it cleared the formerly injected mandatory pre-push hook.
-The self-heal only removes the known stale configuration from that worktree's
-own Git metadata. Follow the repository's documented Git-hook and
-publication-process requirements.
-
-**Policy constraints:**
-- `git push --no-verify` remains **prohibited** by engineering policy.
-- **GitHub CI is authoritative.** PR CI runs Python units on 3.14, Web CI on
-  Node 24, Linux Canonical Store Validation (Ubuntu), and macOS Canonical
-  Store Validation (macOS 15). After merges and pushes to main, the Python
-  unit matrix runs on 3.12/3.13/3.14; nightly integration is separate.
-  Local-CI is pre-push feedback only and does not replace either canonical-store
-  validation.
-- A pushed-PR completion must include the success-only `local_ci` receipt in
-  exactly this accepted shape: `{"command":"scripts/local_ci.sh all","exit_code":0}`.
-  Report failed, skipped, or other-target outcomes truthfully in normal
-  verification evidence, not in that field.
-
-## Caveats
-
-- **GitHub CI is authoritative.** The local wrapper gives fast feedback on
-  your machine. GitHub PR CI runs Python units on 3.14, Web CI on Node 24,
-  Linux Canonical Store Validation (Ubuntu), and macOS Canonical Store
-  Validation (macOS 15). After merges and pushes to main, GitHub CI runs the
-  Python 3.12/3.13/3.14 matrix. Nightly integration remains a separate job.
-  The PR checks run on their named Ubuntu or macOS platforms; local `all` does
-  not replace canonical-store validation.
-- **Single Python version.** `python` and `integration` targets use the
-  installed `uv` + Python interpreter. They do not reproduce the GHA
-  `python-version` matrix.
-- **Per-run pytest scratch.** `python`, `integration`, and `all` create a fresh
-  `--basetemp` under the effective `TMPDIR` and remove exactly that directory on
-  success, failure, and catchable `HUP`/`INT`/`TERM`. Uncatchable termination
-  (`SIGKILL`, power loss, kernel crash) is outside the guarantee. The wrapper
-  never touches `TMPDIR` itself, sibling content, pre-existing `pytest-of-*`
-  trees, or any historical backlog. See "Per-run pytest scratch lifecycle".
-- **Frozen lockfile.** `uv sync --frozen` requires an up-to-date
-  `uv.lock`. Run `uv lock` first if you've changed dependencies in
-  `pyproject.toml`.
-- **Integration daemon.** The `integration` target spawns an isolated daemon
-  per test (tmp `HAPPYRANCH_DAEMON_HOME` + ephemeral port via
-  `HAPPYRANCH_DAEMON_PORT=0`), so a running production daemon does NOT conflict
-  and does NOT need to be stopped. The two processes only share machine RAM — a
-  production daemon with active Claude sessions can inflate memory during the run.
-- **Vitest non-watch.** Web tests use `npx vitest run` (non-watch), not
-  bare `vitest` which enters interactive watch mode.
-- **Exact Node 24 runtime precondition.** `web` and `all` read the repository
-  `.nvmrc` declaration (Node 24, matching the GitHub "Web (Node 24)" job) and
-  verify the effective `node --version` major is exactly 24 **before** running
-  any `npm`/`uv` work. If the effective Node is missing, malformed, or a
-  different major, the wrapper prints a remediation (the `.nvmrc` declaration
-  plus the standard `nvm install 24 && nvm use 24` path) and exits nonzero.
-  When `nvm` is available it attempts `nvm use 24` and re-verifies first.
-- **npm ci, not npm install.** The web target uses `npm ci` to enforce
-  lockfile parity.
-- **Clean vs. dirty repo.** The script does not check for uncommitted
-  changes. The GitHub CI always runs on a clean checkout of the pushed
-  commit.
-
-
-The manual input `all_only` remains a boolean with default false. Founder
-THR139 seq420 limits `jobs.integration` to `github.event_name == 'schedule'`:
-schedule selects integration; manual default, explicit false and explicit true
-all skip it. The four event/input cases stay retained. Historical manual-default
-integration expectations and the old all-only predicate are superseded.
-General integration SUITE remains SKIPPED under THR139seq77/THR243seq42, never PASS.
-No manual dispatch or rerun is part of the current G source-delivery unit.
-
-### Closed retained PR1011 command and admission
-
-THR278 seq40/49/72 authorizes a finite entry in the same manual job, separately
-from the ordinary Python/G/SIX suspension. ROOT TASK-10330 exclusively owns the
-retained `task/TASK-10034` publication/dispatch interval. Accepted helper source
-is the exact released 64,462-byte dashboard test file (SHA256
-`356b62afef43bb972a05a30f90089646b2611cafaf907499a64348ce6d71624c`).
-Historical delayed-entry RED/GREEN/byte-mode restoration and no-worker proof
-remain TASK10120/TASK10214 evidence authenticated by TASK10341; source acceptance
-is neither a new repetition nor behavioral proof. Real W3/W4 retain worker AND
-shutdown entry, the 0.5s watchdog, both cleanup budgets/errors and complete
-cancel/reap/queue/session/thread assertions.
-
-The independent native reviewer produces an immutable exact-commit/tree/full
-source-mode control APPROVE. The supported task/session/result transport lets
-ROOT10330 authenticate reviewer identity, complete output, actual verdict and
-source before recording acceptance. Missing/malformed/wrong reviewer or PR,
-stale head, equal-tree/different-commit, capped or unavailable proof prevents
-dispatch. The manager verifies the accepted complete candidate against the
-remote retained ref and owns serialization THROUGH platform event creation.
-Uncontrolled writers prevent dispatch; this is an existing publication trust
-boundary, not a lock service or protection against a malicious privileged writer.
-No in-repository verdict, circular final self-hash, new GitHub reviewer receipt,
-credential, selector, input or event is used. Publication changing the commit
-requires renewed independent control review. Record native review/task binding,
-approved SHA/tree, workflow/ref and actual run ID/attempt in supported evidence.
-
-B2 changes only the conjunction `t-benze/happyranch` + `workflow_dispatch` +
-`refs/heads/task/TASK-10034` outer command to
-`uv run --frozen --no-sync python scripts/nightly_local_ci_all.py`. The existing
-single `uv sync --frozen`, tool pins, inputs, runner and 150-minute job cap stay.
-The hosted driver separately checks repository/manual event/retained ref,
-HEAD/platform SHA/fetched ref, full tracked bytes and Git modes, symlink contents,
-full index and all nonignored untracked files, effective Python3.14 and admitted
-uv/node/npm/npx links/versions/bytes (Node24). Explicit checks survive optimized
-Python. Source and tools are rechecked before the sole child seam. Clean checkout
-consistency does not authenticate independent review. Manager compares the actual
-hosted run/attempt/source artifacts with the prior native approval; a discovered
-mismatch invalidates evidence and retains possible spend, never authorizes rerun.
-
-The sole OS child command is
-`uv run --frozen --no-sync pytest tests/ -v -n 4 --basetemp=<fresh-owned-path>`.
-Committed default nonintegration addopts remain effective. Only driver-constructed
-evidence options enter `PYTEST_ADDOPTS`: external JUnit and pytest cache paths,
-with no inherited selector, marker/config/plugin override or collection/benchmark.
-The owned HOME/XDG/cache/TMP/daemon root has executor registry `{}`, port0 and
-admitted tool links. Provider/live-host state is absent from the closed environment.
-No `scripts/local_ci.sh all`, G/SIX or helper-repetition command is reachable from
-accepted or refused PR1011 entry; both `all_only` values use the same fixed path.
-Ordinary refs retain their existing Web-only all and suspended G behavior.
-
-Receipts retain exact argv/environment, full source/tool/run identity, UTC and
-monotonic timing, PID/start ticks/parent/group/session observations and exits.
-Full merged child stdout/stderr and separate wrapper stderr use ordered compressed
-members with raw/stored byte totals and SHA256; JUnit is captured before scratch
-removal, including available partial XML on failure. Linux driver subreaper
-readback and complete owned `/proc` parent closure include session-escaping
-orphans; pidfd signals and actual adopted-child waits record cleanup. The actual
-`wrapper_exit` is retained separately. Only complete zero with empty wrapper
-stderr supports `child_exit: 0` through the unchanged `process.wait`/`SystemExit`
-contract and observed child leader; this is not a direct driver wait on that
-leader. Every nonzero wrapper result leaves signed child exit unknown and the
-result inconclusive: wrapper247 can encode child SIGKILL -9. Exceptions/signals
-and incomplete capture/reaping also leave child exit unknown. Wrapper0 alone
-does not satisfy the JUnit, source/tool postcheck, cleanup and other success gates.
-Wrapper wait and directory absence alone never prove complete reaping.
-During census, `FileNotFoundError` (ENOENT) and `ProcessLookupError` (ESRCH)
-skip a disappeared stat entry. If owned cmdline or exe disappears after stat,
-the census retains pid, ppid, state, pgid, sid and start ticks with empty cmdline
-and null exe. Permission failures and other read or parsing errors propagate;
-they are not evidence of an empty census. Reaping still requires actual
-wait/ECHILD and an empty census. Stubbed-read regressions establish error
-classification only, never real Linux reaping.
-Source, tools and terminal evidence
-must remain consistent after the child. Unproven reaping defers scratch removal.
-
-Existing 10-second TERM/KILL waits, 1MiB tail, 8MiB raw segments, 128MiB stored
-member and 512MiB archive bounds remain; limits are not expanded. Reader errors,
-ordinary interruptions, failed finalizers and unavailable/unparseable JUnit keep
-failure/inconclusive receipts. Abrupt loss can leave only launch-boundary evidence;
-missing evidence never yields PASS. FIVE separate socketless repetitions and ONE
-full command remain distinct finite allocations, reported 0/5 and 0/1 before
-proof with no reset/exhaustive-hosted-census claim. Actual launch spends even on
-failure; ambiguous launch retains possible spend. This source-only implementation
-leg executes neither allocation and grants no dispatch.
-
-Final FULL independent code APPROVE, executable QA PASS, current exact-head
-CI/actual selected hosted Codex callback, guarded manager merge and active
-exact-merge checks remain. Supported deployment and measured restart separately
-establish installed source and readiness; source/merge/current health and historic
-offline 6.7s→0.09s are not startup closure. The 16.045s lock and 20.040s gap remain
-distinct; no <30s promise. Reviewer settings are excluded. General integration
-remains SKIPPED THR243seq42/THR211seq270–271, never PASS. The paused ordinary `all`
-receipt validates Web only. PR1010 authority, pins and proof allocations are separate.
-
-Python units remain SUSPENDED under THR291 seq5/16. In addition to the inherited
-`scripts/local_ci.sh all` pause, the G follow-on block in
-`scripts/nightly_local_ci_all.py` has a fixed local
-`PYTHON_UNIT_SUSPENDED = True` guard, with no operator override or input. It emits
-SUSPENDED / SKIPPED, NOT RUN and zero-child metadata before any G follow-on launch.
-The 101 selectors, 15 sibling files, 40 source controls and 580 repetition
-definitions remain source data; collection, proof and repetition invocations
-cannot fall through a successful Web-only all wrapper. Restore execution only
-after a new Founder release through ordinary review. For TASK10062 descendants,
-new test execution is also SKIPPED / FOUNDER-WAIVED THR139seq429. Inspection does
-not verify behavior. The following describes the retained dormant plan.
-
-The ordinary manual lane invokes `uv run python scripts/nightly_local_ci_all.py`
-from the checkout root, keeping the workflow run scalar below GitHub's observed
-21,000-character limit. The source manifest authenticates both the workflow YAML
-and this fixed script. Source-copy controls mutate and restore each declared path
-in their own archived checkout; the selection and preservation-plan controls
-reference the script, while input and integration-predicate controls reference YAML.
-The copied keeper reads that same checkout's script.
-
-The dormant G true plan runs the unchanged `scripts/local_ci.sh all` first and preserves
-its exit separately. Successful all is followed by the closed literal 101-node
-collection and five ordered fresh isolated and sibling rounds: 505 node processes
-plus 75 complete-file processes. No selector input or timeout increase is
-provided; all commands share the approved 150-minute manual job cap. The
-retained dormant phase and per-child bounds are unchanged. Every invocation
-owns a unique absolute basetemp, HOME/config/cache/daemon registry, JUnit,
-command/source/head/tree/runtime/status receipt and 1MiB output tail. Complete
-lossless gzip streams retain raw and stored byte counts and SHA256 in the same
-artifact, split into ordered 8MiB raw segments when needed. The merged child
-stdout/stderr on runner stdout is labeled honestly; runner stderr is captured
-separately. JUnit is captured losslessly before checking the command exit; its
-raw duplicate stays in owned temporary scratch. Compact per-case receipts name
-the authenticated JUnit manifest, ordinal and diagnostic byte/hash identity
-rather than copying entire tracebacks. Bounded errors reference retained evidence
-once. The unchanged acquisition limits are 128MiB per member and 512MiB expanded
-archive; bound refusals retain partial capture with complete=false and never PASS; short console receipts identify phase/node/round/exit. At most four
-independent children run concurrently. Each isolated phase completes before its
-sibling phase, and each entire round completes before the next. All started
-children are reaped and failures aggregated before another phase is admitted.
-Follow-on commands prohibit dependency sync and shared bytecode/pytest caches;
-each records actual imports from its intended source, with installed dependencies
-read-only. Failed, interrupted and unstarted commands
-are not passes. The seven selected keepers alone pair real existing E with
-fresh POST G; other 64 existing fixture consumers keep their original bodies
-and run fresh G. Collection records complete native parameter IDs. Separate
-causal controls must restore exact source bytes and modes before GREEN; source
-copies never mutate the immutable all checkout. No live-host platform probe or
-job submission substitutes for actual hosted evidence. Required PR checks and
-the selected actual hosted Codex callback remain separate gates.
-
-The fixed source controls run only after successful all and before repetitions,
-in separate archives of the authenticated committed head. The complete-object
-control accepts a differing layout before attempting row validation, so missing
-objects reach the unchanged refusal assertion (`DID NOT RAISE`) rather than an
-unrelated missing-table exception. The intact-layout path still validates rows.
-Fixed pytest commands use short tracebacks and assertion verbosity zero to avoid
-repeating entire nested layout diffs for every origin error. They retain the
-named assertion, observed/expected difference, JUnit cases and actual exits;
-all selectors and parameter dimensions remain unchanged. Each control records
-its exact source patch, original and restored SHA256 and modes, named-node RED
-JUnit and the identical-command restored GREEN. The 64 unchanged consumers use
-explicitly labeled origin-regression RED at their full-layout observer; setup or
-import errors never count as business RED. Controls refuse absent attribution,
-syntax errors, missing receipts, or failed restoration. After exact restoration
-and successful identical-command GREEN, an attribution failure is retained while
-the remaining independent controls run. Any such failure prevents the completion
-receipt and repetitions; a failed restored GREEN fails its control. Every started control is reaped and
-accounted for before the aggregated failure blocks repetitions. Each control
-owns a separate committed source archive, scratch, environment and logs within
-the same four-child bound. Actual source-control
-completion is recorded separately from all and from the 580-process repetitions.
-
-The G07 keeper distinguishes authentic compatible cold reopens from physical
-no-write validation/refusal boundaries. Successful old E and current G reopens
-compare independently observed complete SQL, all tables, rowids, storage types,
-raw values, file set/modes and non-database bytes after every closed reader.
-Validator-only success and intended schema-mismatch refusal retain entire
-file-byte/mode equality. The current-validator refusal keeper adds an unexpected
-workflow index on a workflow table and independently observes that object before
-validation, so it reaches the same workflow object-set mismatch boundary as
-the pinned readers. Fixed causal controls separately corrupt current G
-reopen identity, validator page preservation and refusal page preservation in
-owned source copies; each must reach its named assertion, restore exact source
-bytes AND modes, then pass the same command. The archives remain unchanged,
-and these additional controls do not trim the original 580 repeated processes
-or increase the approved 150-minute manual job cap. Their control-plan keeper is
-also mutated and restored. Submitted or statically inspected controls are not
-executed RED/GREEN evidence.
-
-The lost-notification control mutates only the first queued-draft
-`recover_owned_task` enqueue in a disposable source copy. Its retained cold
-`_sweep_on_startup` keeper requires queue size one and attributes observed zero
-to that exact business assertion, across both E/G origins. Published recovery
-and daemon sources stay unchanged. The event-revision control binds the exact
-collected keeper/source assertion and observed `{9}` versus expected `{4}`;
-pytest's rendered assertion does not need a literal `AssertionError`, while
-setup/import/unrelated failures remain refused. The manual-predicate control
-mutates the actual schedule comparison, retaining all four event/input cases.
-Prior over-bound artifacts, exit120 and four error objects remain failed
-evidence. The Jenkins inner-identity timing cause remains UNKNOWN; neither its
-keeper nor capture/production deadline is changed by this source correction.
+A pushed-PR completion's success-only `local_ci` receipt remains
+`{"command":"scripts/local_ci.sh all","exit_code":0}`. It establishes retained
+Web checks only. Failed, skipped or other-target outcomes belong in ordinary
+verification evidence. Record actual runtime path/version, source SHA, timing,
+command, exit and complete logs. Durable jobs are required for long checks and
+pushes with long hooks; authenticate the terminal receipt before publication.
+Manual hosted all still uses Python 3.14/Node 24 to run its stdlib receipt driver;
+that interpreter version is not a Python-suite result. Its `all_only` input cannot
+reactivate unit proofs. Scheduled integration remains separately owned and its
+failed/skipped outcomes cannot satisfy the required canonical callback check.
 
 ## System Assistant retirement artifact verification (THR-294)
 
@@ -686,15 +344,10 @@ supervisor/session/metrics behavior is changed to produce these observations.
 These receipts come from the real disposable daemon and ordinary executable
 stubs; they create no task/session/result or production observer seam. Separate
 same-root baseline/candidate characterization retains its actual failures.
-The general integration suite remains SKIPPED THR-243 seq42; Python unit/proof
-execution remains SUSPENDED THR-291 seq5/16. These selections do not release
-those lanes. Whole-repo collect-only discovery requires a complete import/global/
-decorator/conftest/plugin/hook side-effect audit and an isolated parent with
-observed zero test-body execution/real launches before this exact command:
-
-```bash
-uv run python tests/helpers/integration_parent.py -- pytest tests/ --collect-only -q -m ""
-```
+The general integration suite remains SKIPPED THR-243 seq42; Python unit/proof source and execution are RETIRED by THR-291 seq40.
+Broad unfiltered collection is no longer an entry point; the retained integration
+selection requires the isolated parent and explicit `-m integration`. No old unit
+collection or hidden legacy copy is a prerequisite.
 
 For wheel and frozen verification, use the existing Hatchling/PyInstaller/uv
 closure, with independently provisioned official CPython **3.14.4** and
@@ -887,8 +540,7 @@ and build groups agree, while the candidate has the accepted eight Assistant
 knowledge force-include removals. This overlay cannot change baseline runtime
 or CLI code. Native
 admission is a prerequisite, not source, wheel, frozen or browser readiness;
-source characterization failures remain failures. Whole-repo collection
-remains held for the complete import-side-effect audit and zero-body admission.
+source characterization failures remain failures. Any retained-lane collection remains subject to its isolated-parent admission.
 
 The concurrent org-read case captures both complete served A/B inventories
 before interleaving reads and swaps, including the existing `broken` field.

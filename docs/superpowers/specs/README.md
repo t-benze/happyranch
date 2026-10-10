@@ -16,7 +16,11 @@ For current behavior, use these sources before old specs:
   agent guide instead; the old in-spec pathname is historical design text.
 - Historical `protocol/` references identify documents retired after `01d5ede5`;
   use Git history for their original contents.
-- `tests/contract/openapi.json`, route tests, and implementation for executable truth.
+- `tests/contract/openapi.json`, retained lanes, and implementation for executable truth.
+- [Python test reset](../../python-test-reset.md) for current test retirement and uncovered obligations.
+  THR-291 seq40 supersedes Python unit execution/keeper requirements in all current
+  specs. Historical test paths describe past evidence, not executable gates.
+  Product contracts and acceptance obligations remain unchanged; fresh E2E is PENDING.
 
 When a spec conflicts with those sources, treat the spec as historical unless this index marks it `current`.
 

@@ -100,8 +100,8 @@ Runtime marker and registry before-images remain checked. Closed checkpointed
 readbacks use SQLite immutable reads; committed crash WAL must still be read.
 Both workers use the unchanged six-context skill union and integrity validator.
 
-C1–C10 and v24 evidence remain the accepted case record. Python units and U9
-localization are SUSPENDED THR291 seq5/16; general integration is SKIPPED
+C1–C10 and v24 evidence remain the accepted case record. Former U1/U4/U5/U9
+unit realizations are RETIRED/unexecuted under THR291 seq40; general integration is SKIPPED
 THR243 seq42 and live-host integration prohibited THR211 seq270/271. Finite new
 shipping process/browser checks require the authorized disposable runner.
 Successful maintenance/reboot/compensation needs real M. The finite hosted
@@ -161,3 +161,11 @@ stub-guard changes. Owned evidence survives parent cleanup. See `docs/local-ci.m
 for exact selection/tool/provenance and retention contracts. Baseline/failure is
 a real observation; it does not satisfy missing causal controls, repetitions,
 bilingual screenshot review, M capability or independent review/QA gates.
+
+Current C3/C5 fixture ownership is integration-only
+`tests/helpers/human_team_history_fixture.py`: preserved feature-authored schema1
+literal DATA/seed behavior, an independent valid product definition for the real
+worker denial, and inert explicit-profile setup through existing stores/registry.
+History DATA is separate from actual admission, graph, callback and reader proof.
+The two M-only retired source dependencies remain HELD and unresolved; no M source
+completion or portability-policy change follows from this reconciliation.

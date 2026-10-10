@@ -25,14 +25,15 @@ build = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",
-    "pytest-xdist>=3.8.0",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 tmp_path_retention_policy = "failed"
-addopts = "-m 'not integration'"
+# No default unit lane. tests/conftest.py requires explicit platform files
+# or -m integration through the isolated parent, before collection.
+addopts = ""
 markers = [
     "integration: end-to-end tests that spawn a real daemon",
 ]
