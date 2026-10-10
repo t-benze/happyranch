@@ -322,7 +322,7 @@ def _seed_org(paths: OrgPaths, tmp_path: Path, test_settings: Settings) -> None:
 def _make_orch(tmp_path: Path, backend: _FakeBackend, executor: _RecordingExecutor,
                monkeypatch, *, max_retry_attempts: int = 0, backoff_seconds=()):
     from runtime.daemon import task_scratch_report as reports
-    from tests.test_task_scratch_report import _proc
+    from tests.helpers.task_scratch import _proc
     monkeypatch.setattr(reports, "_PROC_ROOT", _proc(tmp_path))
     monkeypatch.setattr(reports, "_STARTED_MONOTONIC", 0)
     test_settings = Settings(project_root=tmp_path / "proj")
@@ -1072,7 +1072,7 @@ def test_supervisor_on_terminal_fires_on_cancelled_while_queued():
 def test_task_producer_real_scratch_report(tmp_path, monkeypatch, mode):
     from runtime.daemon import task_scratch_report as reports, task_scratch_reclamation
     from runtime.orchestrator import task_scratch
-    from tests.test_task_scratch_report import _snapshot
+    from tests.helpers.task_scratch import _snapshot
 
     backend = _FakeBackend()
     orch, supervisor, tracker, db = _make_orch(tmp_path, backend, _RecordingExecutor(), monkeypatch)

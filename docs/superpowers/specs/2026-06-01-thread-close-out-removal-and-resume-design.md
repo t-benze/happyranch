@@ -1,5 +1,9 @@
 # Thread close-out removal + resume — Design
 
+> Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
+> are retired. Product invariants and acceptance obligations remain unchanged;
+> replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
+
 ## Status
 Draft — 2026-06-01
 

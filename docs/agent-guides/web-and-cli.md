@@ -390,9 +390,9 @@ Current contract:
 
 Layer rules, boundary rules, and agent-callback omissions live in `web/ARCHITECTURE.md`. Full design: `docs/superpowers/specs/2026-05-14-web-ui-design.md`.
 
-Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. Two paired tests enforce this:
+Every browser-callable daemon route maps to one TypeScript function in `web/src/lib/api/`. The maintained snapshot and coverage consumer are:
 
-- Python: `tests/contract/test_openapi_snapshot.py` pins OpenAPI to `tests/contract/openapi.json`. Regenerate intentional changes with `uv run python scripts/generate_openapi_snapshot.py --write`.
+- Snapshot: `tests/contract/openapi.json`; its Python unit test is retired. Regenerate intentional changes with `uv run python scripts/generate_openapi_snapshot.py --write`.
 - TypeScript: `web/src/test/openapi-coverage.test.ts` asserts every documented path is either included with a TS mirror or excluded with justification.
 
 ### Tasks list
@@ -986,7 +986,9 @@ Two CLI entrypoints (invoked as jobs or on task resume, not as `happyranch` subc
 # Poll job (submitted via happyranch jobs submit):
 python -m runtime.daemon.pr_ci_waiter \
   --repo owner/repo --pr N --head-sha <40-char-sha> \
-  --expected-check "Python CI" --expected-check "Web CI" \
+  --expected-check "Web (Node 24)" \
+  --expected-check "Linux Canonical Store Validation (Ubuntu)" \
+  --expected-check "macOS Canonical Store Validation (macOS 15)" \
   --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
 
 # Merge (triggered by resumed task):
@@ -995,6 +997,10 @@ python -m runtime.daemon.pr_ci_merge \
   --merge-method squash --ci-verdict ci_pass \
   --review-task-id TASK-xxx --qa-task-id TASK-yyy
 ```
+
+For HappyRanch, include applicable Docs/other retained path-specific names too.
+The same active check policy applies to the exact merge on main. Python units
+are retired and fresh E2E is PENDING; other repositories use their own policy.
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
 The review/QA evidence extraction follows the **Merge-evidence contract** in
@@ -1392,19 +1398,17 @@ there is no `run_integration` toggle. It invokes the extracted receipt-producing
 which records actual checkout/source/tool provenance and the
 `scripts/local_ci.sh all` command exit. The manual cap is the approved 150
 minutes; general integration retains its 30-minute cap and exact schedule-only
-predicate, so all three manual input cases skip it. Under THR291, Python units
-and the runner's G collection/source-control/repetition follow-on remain
-SUSPENDED and unexecuted, including when `all_only` is true. A successful paused
-wrapper verifies only remaining Web checks; dormant keeper/proof edits are not
-behavioral PASS or RED/GREEN evidence. The current merge-forward repair requires
-no manual dispatch or rerun. General integration remains SKIPPED under
-THR243 seq42, never PASS. See `docs/local-ci.md` for the maintained CI contract.
+predicate, so all three manual input cases skip it. THR-291 seq40 retired
+Python unit source, G named-case controls/repetitions and the PR1011 unit entry.
+The wrapper verifies retained Web checks only, with units RETIRED and fresh E2E
+PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
+See `docs/local-ci.md` for current checks and selectors.
 
 ### OpenAPI snapshot operator
 
 `uv run python scripts/generate_openapi_snapshot.py --check` (also the default)
 compares exact summary bytes without writing or starting a daemon lifespan.
 After review, `uv run python scripts/generate_openapi_snapshot.py --write`
-atomically replaces `tests/contract/openapi.json`. The pure summarizer is shared
-with the retained contract test and preserves workflow input discriminators.
-Python unit execution remains suspended under THR-291; this operator does not run tests.
+atomically replaces `tests/contract/openapi.json`. The summarizer preserves workflow input discriminators. The former Python
+contract test is retired; Web/Swift still consume the snapshot and route
+classification. This operator does not run tests.
