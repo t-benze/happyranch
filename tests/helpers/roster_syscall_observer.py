@@ -227,15 +227,29 @@ def main() -> int:
     protected[org / 'org/.workflow-authority.json'] = 'authority'
     protected[Path(manifest['operation_dir']) / 'receipt.json'] = 'receipt'
     protected[Path(manifest['closed_database_backup'])] = 'backup_durable'
+    store = Path(manifest['canonical_store_root'])
+    protected[store] = 'global_store_root'
+    stage_aliases = {}
+    for rel in manifest['global_after']:
+        parts = Path(rel).parts
+        if len(parts) >= 3:
+            stage = str(Path(*parts[:2], '.tmp.' + parts[2][:8], *parts[3:]))
+            if stage not in manifest['global_staging_images']:
+                raise ValueError('checked_native_global_stage_alias_missing')
+            stage_aliases[store / stage] = store / rel
     backup_parent = Path(manifest['closed_database_backup']).parent
     last_rename = {}
 
     def boundary(pid: int, row: dict) -> str | None:
         paths = [Path(value) for value in row['paths']]
+        if row['syscall'] in ('fsync', 'fdatasync') and paths == [store]:
+            return 'global_store_root.dir_fsync'
         if row['syscall'] == 'rename' and paths[-1] in protected:
             return protected[paths[-1]] + '.rename'
         for path, family in protected.items():
             def sibling(target):
+                if stage_aliases.get(target) == path:
+                    return True
                 if target.parent != path.parent:
                     return False
                 if target == path or target.name.startswith('.' + path.name + '.roster-') or target.name.startswith(path.name + '.happyranch-') or path.parent.name == 'skills' and target.name == '.tmp.' + path.name:
@@ -251,7 +265,6 @@ def main() -> int:
                     return True
                 return False
             if row['syscall'] in ('write', 'pwrite', 'writev', 'pwritev', 'pwritev2', 'copy_write') and any(
-                    target.parent == path.parent and
                     sibling(target) for target in paths):
                 return family + '.stage_write'
             if row['syscall'] == 'symlink' and any(sibling(target) for target in paths):
@@ -275,7 +288,8 @@ def main() -> int:
         raise ValueError('boundary_not_in_finite_manifest_path_selection')
     emit(dict(kind='begin', source_sha=args.source_sha, manifest_sha256=args.expected_digest,
               boundary=args.boundary, effective_python=sys.executable, decoder='linux-x86_64',
-              protected_path_map={str(path): family for path, family in protected.items()}))
+              protected_path_map={str(path): family for path, family in protected.items()},
+              checked_native_stage_aliases={str(path):str(target) for path,target in stage_aliases.items()}))
     child = os.fork()
     if child == 0:
         try:

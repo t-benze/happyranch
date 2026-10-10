@@ -2356,6 +2356,8 @@ C9_M_CASES += [(default, direction, 'checked-paths', 'generated-and-global')
     for default in ('no-default', 'correct-empty-default') for direction in ('complete', 'compensate')]
 C9_M_CASES += [('no-default', 'complete', 'syscall', 'backup_durable.' + effect + '.' + side)
     for effect in ('file_fsync', 'dir_fsync') for side in ('before', 'after')]
+C9_M_CASES += [(default, direction, 'syscall', 'global_store_root.dir_fsync.' + side)
+    for default in ('no-default', 'correct-empty-default') for direction in ('complete', 'compensate') for side in ('before', 'after')]
 C9_M_CASES += [('no-default', 'complete', 'observer-control', value) for value in ('syscall-loss', 'frame-loss', 'source-capability')]
 C9_M_CASES += [('no-default', 'complete', 'third-state', value)
     for value in ('unknown-bytes', 'competing-writer', 'incomplete-backup', 'post-traffic')]
@@ -2498,8 +2500,14 @@ def _c9_maintenance_selection(case, selection):
         # their checked file descriptors. New-package staging is a different
         # unprovided preview prerequisite, never claimed from this fixture.
         for index, rel in enumerate(sorted(case.manifest['global_after'])):
-            if case.manifest['global_after'][rel]['kind'] == 'file':
-                paths.append((f's{index}', rel, case.manifest['global_after'][rel]['sha256'], 'file_fsync'))
+            after = case.manifest['global_after'][rel]
+            if after['kind'] == 'file':
+                effects = ['file_fsync']
+                if case.manifest['global_before'][rel]['kind'] == 'absent' and direction == 'complete':
+                    effects.append('stage_write')
+                paths.extend((f's{index}', rel, after['sha256'], effect) for effect in effects)
+            elif after['kind'] == 'directory' and len(Path(rel).parts) == 3 and case.manifest['global_before'][rel]['kind'] == 'absent' and direction == 'complete':
+                paths.extend((f's{index}', rel, None, effect) for effect in ('rename', 'dir_fsync'))
         assert paths, 'finite generated/global selection cannot be empty'
         (case.observers / 'checked-syscall-paths.json').write_text(json.dumps(paths))
         for family, rel, sha, effect in paths:

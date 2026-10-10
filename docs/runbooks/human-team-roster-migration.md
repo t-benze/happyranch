@@ -262,16 +262,17 @@ use the actual operated root. Fixture history is labelled synthetic DATA.
 | --- | --- | --- |
 | `test_c6_exact_manifest_apply_and_preservation` | no Default / correct empty human Default (2) | AUTHORED; M unavailable |
 | `test_c8_preflight_refusals_and_backup_cas` | 3 retained early controls + 50 single-condition M refusals | AUTHORED; each M refusal requires its real positive check first |
-| `test_c9_crash_recovery_and_replay` | 4 retained early controls + 271 M selections: 160 canonical/authority/receipt syscall cuts, 96 actual frame cuts, 4 finite checked generated/global path selections, 4 backup durability cuts, 3 observer loss/capability controls, 4 third states | AUTHORED; process SIGKILL, never guest reboot |
+| `test_c9_crash_recovery_and_replay` | 4 retained early controls + 279 M selections: 160 canonical/authority/receipt syscall cuts, 96 actual frame cuts, 4 finite checked generated/global path selections, 4 backup durability cuts, 8 shared-store directory-flush cuts, 3 observer loss/capability controls, 4 third states | AUTHORED; process SIGKILL, never guest reboot |
 | `test_c9_reset_atomic_boundary` | original 12 reset parameters unchanged | SUSPENDED THR291 |
 | `test_c9_publication_commit_boundary` | 7 actual journal/profile phases × before/after real COMMIT × complete/compensate (28) | SUSPENDED THR291; shared fixture also needs M |
 | `test_c9_replay_no_helpers` | ordinary / zero rows / initially NULL and zero (3), two actual replays each | SUSPENDED THR291; mandatory complete paired observers |
 
 Generated `gN` and global `sN` cuts come only from sorted actual manifest paths,
 types and SHA256, saved in `checked-syscall-paths.json`; no unbounded discovery
-campaign is implied. Existing package refresh is selected. New-package staging
-needs an independently constructed closed-store preview and is not covered by
-this fixture. Before-syscall cuts record an entry and explicit nonexecution;
+campaign is implied. Existing package refresh and shared-store directory flush are selected. Native
+new-package staging aliases/copy writes/package rename are mapped only when
+the actual manifest declares a new address; that positive selection still needs
+an independent closed-store preview and is not exercised by this fixture. Before-syscall cuts record an entry and explicit nonexecution;
 there is no invented return/exit. After cuts include the actual return and
 inode/path evidence. WAL flushes are never SQL COMMIT evidence. Immediate
 second-reader SQL prefix and normal exception unwind are distinguished.
