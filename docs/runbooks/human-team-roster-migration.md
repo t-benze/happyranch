@@ -21,7 +21,8 @@ Use an actual authorized disposable M venue before maintenance readiness:
    bytes/type/mode/owner/raw links, and verify an isolated restore with full
    retained history and FK/integrity checks. Do not publish private memory.
 3. Prepare real check input, rather than TASK10389's design JSON: operation_id,
-   private durable operation_dir outside runtime/workspaces/tmp, exact closed
+   private durable operation_dir outside runtime/workspaces/tmp, exact `reader_binding`
+   (resolved source root/clean HEAD, Python executable/hash/version), exact closed
    database backup inside an independently restored complete closed org copy
    (`closed_restore_root`), sole existing head manager sentence, actual persistent
    systemd user/system-unit and registry paths bound to the effective `daemon_home`, and independently inspected exact
@@ -91,6 +92,7 @@ observations and exact native outputs, **not an executable manifest or receipt**
 {
   "operation_id": "OPERATOR_ASSIGNED_UNIQUE_ID",
   "operation_dir": "/durable/private-operation",
+  "reader_binding": {"source_root": "MEASURED_ABSOLUTE_CANDIDATE_ROOT", "source_sha": "MEASURED_CLEAN_HEAD", "python": "MEASURED_RESOLVED_PYTHON314", "python_sha256": "MEASURED_EXECUTABLE_SHA256", "python_version": "MEASURED_SYS_VERSION"},
   "closed_restore_root": "/durable/verified-closed-org-copy",
   "closed_database_backup": "/durable/verified-closed-org-copy/happyranch.db",
   "closed_canonical_store_restore": "/durable/verified-closed-store-copy",
@@ -214,8 +216,9 @@ records actual entry/exit/path/fd/inode facts, and refuses unsupported descripto
 transfers, shared mappings, unresolved writers or incomplete tracking. Its
 currently authored finite cuts cover manifest-indexed canonical/generated
 stage-write/file-flush/rename/directory-flush paths. Authority/receipt-specific
-cuts, logical-line localization and full capability/loss/kill controls still
-require closure; an unsupported cut or observation is UNAVAILABLE, never PASS.
+cuts and pass-through real-transaction localization are authored in the finite
+source map below. Capability/loss/kill controls remain unexecuted; an unsupported
+cut or observation is UNAVAILABLE, never PASS.
 No helper was run on this host. Zero-row/already-null replay and M reboot proof
 remain outstanding even when final file hashes or audit counts agree.
 
@@ -240,7 +243,79 @@ profiles retain their actual owned same-machine dependency paths; no path rewrit
 or export/import API is invented. HAPPYRANCH_TEST_ROSTER_M_VENUE selects a root
 only and grants no authorization/capability. M remains unprovisioned/HELD. These
 assertions have not executed and provide no successful utility/restore receipt.
-The root still owns C6–C10, actual old-reader/M/L/browser receipts, causal controls,
+TASK10461 extends C6/C8/C9 source below; the root still owns C7/C10 completion,
+actual old-reader/M/L/browser receipts, causal controls,
 five isolated/affected-sibling repetitions, independent final-head review/QA,
 publication/CI and operator acceptance. Python units/collection/control/repetition
 remain SUSPENDED THR291seq5/16; general integration remains SKIPPED THR243seq42.
+
+
+C6/C8/C9 maintenance source (TASK10461) is AUTHORED / UNEXECUTED. This is
+not a successful M setup, observed migration or maintenance-readiness certificate.
+The shared `_MaintenanceCase` invokes the real utility check, stores its actual
+stdout manifest and digest, then invokes exact-manifest apply/recovery in new
+processes. Native preview is fixture setup, never a checked manifest or final
+roster oracle. Exact file/row/history comparisons and compatible cold readback
+use the actual operated root. Fixture history is labelled synthetic DATA.
+
+| Existing owner | Final finite selection | Proof status |
+| --- | --- | --- |
+| `test_c6_exact_manifest_apply_and_preservation` | no Default / correct empty human Default (2) | AUTHORED; M unavailable |
+| `test_c8_preflight_refusals_and_backup_cas` | 3 retained early controls + 50 single-condition M refusals | AUTHORED; each M refusal requires its real positive check first |
+| `test_c9_crash_recovery_and_replay` | 4 retained early controls + 271 M selections: 160 canonical/authority/receipt syscall cuts, 96 actual frame cuts, 4 finite checked generated/global path selections, 4 backup durability cuts, 3 observer loss/capability controls, 4 third states | AUTHORED; process SIGKILL, never guest reboot |
+| `test_c9_reset_atomic_boundary` | original 12 reset parameters unchanged | SUSPENDED THR291 |
+| `test_c9_publication_commit_boundary` | 7 actual journal/profile phases × before/after real COMMIT × complete/compensate (28) | SUSPENDED THR291; shared fixture also needs M |
+| `test_c9_replay_no_helpers` | ordinary / zero rows / initially NULL and zero (3), two actual replays each | SUSPENDED THR291; mandatory complete paired observers |
+
+Generated `gN` and global `sN` cuts come only from sorted actual manifest paths,
+types and SHA256, saved in `checked-syscall-paths.json`; no unbounded discovery
+campaign is implied. Existing package refresh is selected. New-package staging
+needs an independently constructed closed-store preview and is not covered by
+this fixture. Before-syscall cuts record an entry and explicit nonexecution;
+there is no invented return/exit. After cuts include the actual return and
+inode/path evidence. WAL flushes are never SQL COMMIT evidence. Immediate
+second-reader SQL prefix and normal exception unwind are distinguished.
+
+Replay verifies complete observer receipts before asserting no helpers/writes.
+Loss after durable completion reconstructs only the external receipt from real
+operation-owned rows/audits/journal/pointer. A successful `receipt.json` remains
+unchanged when explicit compensation publishes a NEW coherent original-roster
+generation; `compensation-receipt.json` records that later direction. Both
+resume resets and truthful audits remain. A compensated operation requires a
+fresh checked manifest for another apply. Unknown bytes/writers/history or an
+incomplete backup refuse without overwriting them.
+
+The external M input is a location/inventory declaration only:
+`HAPPYRANCH_TEST_ROSTER_M_INPUT=/durable/private-M-input.json`, with
+`kind: THR296-test-fixture-input-not-manifest`, a real owner-only `venue` outside
+`/tmp`, and `containment` matching the check-input example. It grants no
+permission or inhibition. Do not execute these commands while held; after the
+manager authorizes the exact existing M/node dispatch, concrete selections are:
+
+```sh
+uv run python tests/helpers/integration_parent.py -- pytest tests/integration/test_human_team_roster_e2e.py::test_c6_exact_manifest_apply_and_preservation -m integration
+uv run python tests/helpers/integration_parent.py -- pytest tests/integration/test_human_team_roster_e2e.py::test_c8_preflight_refusals_and_backup_cas -m integration
+uv run python tests/helpers/integration_parent.py -- pytest tests/integration/test_human_team_roster_e2e.py::test_c9_crash_recovery_and_replay -m integration
+```
+
+There is a precise positive-venue conflict. `containment()` refuses EVERY
+undeclared command-bearing system/user service. A usable M would require an
+external operator to provide a boot-persistent, independently evidenced closed
+launcher inventory in which every command-bearing service is declared and
+persistently masked/inactive, with system/user control still genuinely usable.
+This source cannot construct that state, mask host units, or accept executable/
+unit-name allowlists as exclusion proof. Normal systemd/D-Bus operation can also
+encounter descriptor-transfer syscalls rejected by the current observer; no
+capability PASS is asserted. Four adversarial conditions (unknown launcher,
+foreign owner, actual byte/inode scarcity) require actual external operator
+provisioning via the fixture's private request/ready handshake; the handshake
+never overrides native observed checks. Actual guest reboot and normal-start
+refusal need an external boot/launch witness surviving process loss; they are
+not implemented as a fake local signal/restart. These boundaries return to
+TASK10394. No infrastructure/host/enforcement mechanism is provisioned here.
+
+All Python execution, collection, mutation/RED/restoration/GREEN and five
+isolated/affected-sibling repetitions remain suspended/held under their existing
+owners and v24 record. The held b317 old-reader request remains one request;
+no live checked manifest exists. Static validation and supported OpenAPI/local
+CI are separate source/check evidence, never behavioral QA.

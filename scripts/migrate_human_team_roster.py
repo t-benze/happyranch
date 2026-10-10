@@ -25,6 +25,9 @@ import yaml
 
 from runtime.orchestrator.agent_def import parse_agent_text
 from runtime.orchestrator.teams import TeamsRegistry
+from runtime.orchestrator.org_validation import OrgConsistencyError
+from runtime.workflows.authority import WorkflowAuthorityError
+from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 
 AGENTS = ("consultant_head", "consultant_codex")
 CANONICAL = ("org/agents/consultant_head.md", "org/agents/consultant_codex.md", "org/teams.yaml")
@@ -260,11 +263,48 @@ def close_native_authority_residue(root: Path, manifest: dict) -> None:
         durable_replace(root / rel, {'kind': 'absent'})
 
 
+def owned_replacement_residue(root: Path, manifest: dict) -> dict:
+    """Exact mkstemp prefixes require this OP's committed native fence."""
+    found = {}
+    for rel in manifest['before']:
+        path = root / rel
+        if not path.parent.is_dir():
+            continue
+        for sibling in path.parent.iterdir():
+            if re.fullmatch(r'\.' + re.escape(path.name) + r'\.roster-[a-z0-9_]{8}', sibling.name) is None:
+                continue
+            with read_db(root / 'happyranch.db') as conn:
+                verify_owned_publication(conn, manifest)
+                baseline = set(manifest['control_row_hashes']['workflow_publication_journals'])
+                if not any(digest(repr(tuple(row)).encode()) not in baseline
+                           for row in conn.execute('SELECT * FROM workflow_publication_journals')):
+                    raise ValueError('replacement_prefix_without_owned_fence')
+            value = image(sibling)
+            targets = (manifest['before'][rel], manifest['after'][rel])
+            if (value.get('uid') != os.getuid() or value.get('gid') != os.getgid()
+                    or not any(target['kind'] in ('file', 'link') and (
+                        value['kind'] == 'file' and value['mode'] in (0o600, target['mode'])
+                        and (target['kind'] == 'link' and base64.b64decode(value['bytes']) == b''
+                             or target['kind'] == 'file' and base64.b64decode(target['bytes']).startswith(base64.b64decode(value['bytes'])))
+                        or value['kind'] == 'link' and value == target) for target in targets)):
+                raise ValueError('unknown_owned_replacement_prefix')
+            found[str(sibling.relative_to(root))] = value
+    return found
+
+
+def close_owned_replacement_residue(root: Path, manifest: dict) -> None:
+    for rel, expected in owned_replacement_residue(root, manifest).items():
+        if image(root / rel) != expected:
+            raise ValueError('replacement_prefix_CAS_lost')
+        durable_replace(root / rel, {'kind': 'absent'})
+
+
 def verify_preserved_paths(root: Path, manifest: dict) -> None:
     expected = manifest["preservation_inventory"]
     actual = preservation_inventory(root)
     mutable = set(manifest["before"]) | set(native_workspace_residue(root, manifest)) | {"happyranch.db", "happyranch.db-wal", "happyranch.db-shm", "org/.workflow-authority.json"}
     mutable.update(native_authority_residue(root, manifest))
+    mutable.update(owned_replacement_residue(root, manifest))
     for rel in set(expected) | set(actual):
         if rel in mutable:
             continue
@@ -427,6 +467,120 @@ def source_identity() -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=SOURCE, text=True).strip()
 
 
+def reader_binding() -> dict:
+    """Bind the effective offline reader, rather than an installed-path label."""
+    executable = Path(sys.executable).resolve(strict=True)
+    if sys.version_info[:2] != (3, 14):
+        raise ValueError("effective_python314_required")
+    return {"source_root": str(SOURCE), "source_sha": source_identity(),
+            "python": str(executable), "python_sha256": digest(executable.read_bytes()),
+            "python_version": sys.version}
+
+
+def registered_runtime(runtime: Path) -> None:
+    from runtime.runtime import daemon_home, RuntimeDir
+    RuntimeDir.load(runtime)
+    registry = daemon_home() / "runtimes.yaml"
+    if registry.is_symlink():
+        raise ValueError("effective_runtime_registration_redirected")
+    state = yaml.safe_load(registry.read_bytes())
+    registered = state.get("registered") if isinstance(state, dict) else None
+    if (not isinstance(registered, list) or state.get("active") is not None
+            or any(not isinstance(value, str) or not Path(value).is_absolute()
+                   or Path(value).is_symlink() or Path(value).resolve(strict=True) != Path(value)
+                   for value in registered)
+            or len(registered) != len(set(registered)) or registered.count(str(runtime)) != 1):
+        raise ValueError("effective_runtime_registration_mismatch")
+
+
+def restore_verified(manifest: dict) -> None:
+    """Recheck both independently closed backups before any mutation/replay."""
+    if preservation_inventory(Path(manifest["closed_restore_root"])) != manifest["preservation_inventory"]:
+        raise ValueError("closed_restore_changed")
+    if preservation_inventory(Path(manifest["closed_canonical_store_restore"])) != manifest["canonical_store_inventory"]:
+        raise ValueError("closed_canonical_store_restore_changed")
+    backup = Path(manifest["closed_database_backup"])
+    if backup != Path(manifest["closed_restore_root"]) / "happyranch.db" or image(backup) != manifest["closed_backup_image"]:
+        raise ValueError("closed_backup_changed")
+    with read_db(backup) as restored:
+        if domain_signature(restored) != manifest["domain_signature"]:
+            raise ValueError("backup_restore_history_mismatch")
+    closed_backup_flush(backup)
+
+
+def closed_backup_flush(backup: Path) -> None:
+    """Flush the verified external closed copy; never checkpoint the source."""
+    with backup.open('rb') as copied:
+        os.fsync(copied.fileno())
+    fd = os.open(backup.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def roster_delta(text: str, expected: dict) -> bytes:
+    """Replace only approved YAML nodes, preserving unrelated literal text.
+
+    Flow/alias/duplicate layouts cannot safely identify a three-file text delta
+    and refuse instead of silently normalizing the entire canonical document.
+    """
+    document = yaml.compose(text)
+    if not isinstance(document, yaml.MappingNode) or document.flow_style:
+        raise ValueError("literal_block_roster_required")
+    def mapping(node):
+        if not isinstance(node, yaml.MappingNode) or node.flow_style:
+            raise ValueError("literal_block_roster_required")
+        result = {key.value: (key, value) for key, value in node.value}
+        if len(result) != len(node.value):
+            raise ValueError("duplicate_roster_key")
+        return result
+    top = mapping(document)
+    teams = mapping(top["teams"][1])
+    edits = []
+    def replace_value(node, replacement):
+        if node.start_mark.line != node.end_mark.line:
+            raise ValueError("literal_single_line_roster_value_required")
+        edits.append((node.start_mark.index, node.end_mark.index, replacement))
+    consultant_key, consultant_value = teams["consultant"]
+    if "default" not in teams:
+        # Preserve the original block and every unrelated comment/blank byte.
+        edits.append((consultant_key.start_mark.index, consultant_key.end_mark.index, "default"))
+        children = mapping(consultant_value)
+        replace_value(children["manager"][1], "{kind: human, principal: founder}")
+        replace_value(children["workers"][1], "[consultant_head, consultant_codex]")
+    else:
+        # Remove only this closed obsolete block. Comments have no ownership
+        # meaning and remain literal text, including comments before next key.
+        start = consultant_key.start_mark.index - consultant_key.start_mark.column
+        end = consultant_value.end_mark.index - consultant_value.end_mark.column
+        if end <= start:
+            raise ValueError("unbounded_roster_text_delta")
+        comments = []
+        for line in text[start:end].splitlines(keepends=True):
+            if "#" in line:
+                prefix, comment = line.split("#", 1)
+                comments.append(line if not prefix.strip() else " " * consultant_key.start_mark.column + "#" + comment)
+            elif not line.strip():
+                comments.append(line)
+        edits.append((start, end, "".join(comments)))
+        children = mapping(teams["default"][1])
+        replace_value(children["workers"][1], "[consultant_head, consultant_codex]")
+    for name, value in (("default_team", "default"), ("task_default_team", "engineering")):
+        if name in top:
+            node = top[name][1]
+            if not isinstance(node, yaml.ScalarNode):
+                raise ValueError("literal_roster_pointer_required")
+            edits.append((node.start_mark.index, node.end_mark.index, value))
+        else:
+            edits.append((len(text), len(text), ("" if text.endswith("\n") else "\n") + name + ": " + value + "\n"))
+    for start, end, replacement in sorted(edits, reverse=True):
+        text = text[:start] + replacement + text[end:]
+    if yaml.safe_load(text) != expected:
+        raise ValueError("literal_roster_delta_not_exact")
+    return text.encode()
+
+
 def containment(plan: dict, runtime: Path) -> dict:
     """Observe actual persistent masks, registry detachment and no daemon.
 
@@ -436,6 +590,8 @@ def containment(plan: dict, runtime: Path) -> dict:
     declaration = plan.get("containment")
     if not isinstance(declaration, dict) or not declaration.get("systemd_user_units") or not declaration.get("registry_paths"):
         raise ValueError("actual_persistent_restart_inhibition_required")
+    if (len(declaration["registry_paths"]) != len(set(declaration["registry_paths"]))):
+        raise ValueError("duplicate_registry_inventory")
     from runtime.runtime import daemon_home
     home = daemon_home().resolve(strict=True)
     if declaration.get("daemon_home") != str(home) or str(home / "runtimes.yaml") not in declaration["registry_paths"]:
@@ -714,6 +870,8 @@ def require_quiescence(conn: sqlite3.Connection, root: Path, org: str) -> str:
         "workflow_instances": "status NOT IN ('complete','cancelled')",
         "workflow_dispatch_outbox": "state NOT IN ('completed','cancelled')",
         "workflow_request_task_bridges": "state NOT IN ('completed','cancelled')",
+        "remote_job_attempts": "state!='terminal'",
+        "remote_runner_workspaces": "active_attempt_id IS NOT NULL OR state IN ('leased','recreate_pending','uncertain')",
     }
     if layout in ('E', 'G'):
         predicates['workflow_draft_dispatch_intents'] = "state NOT IN ('completed','cancelled','failed')"
@@ -726,6 +884,27 @@ def require_quiescence(conn: sqlite3.Connection, root: Path, org: str) -> str:
     return layout
 
 
+def final_cas(runtime: Path, root: Path, manifest: dict) -> None:
+    """Last read-only pre-reset guard; no discovery runs under mutation leases."""
+    registered_runtime(runtime)
+    restore_verified(manifest)
+    if (image(runtime / "happyranch.yaml") != manifest["runtime_marker"]
+            or any(image(Path(path)) != expected for path, expected in manifest["registry_images"].items())):
+        raise ValueError("runtime_registration_before_image_CAS_lost")
+    if any(image(root / rel) != expected for rel, expected in manifest["before"].items()):
+        raise ValueError("apply_before_image_CAS: use explicit owned recovery for a partial prefix")
+    verify_preserved_paths(root, manifest)
+    verify_global_assets(manifest, initial=True)
+    with read_db(root / "happyranch.db") as conn:
+        require_quiescence(conn, root, manifest["org"])
+        if control_signature(conn) != manifest["control_signature"]:
+            raise ValueError("publication_profile_or_audit_before_image_CAS_lost")
+        if domain_signature(conn) != manifest["domain_signature"]:
+            raise ValueError("traffic_or_history_changed_forward_repair_required")
+        if image(root / "happyranch.db") != manifest["closed_backup_image"]:
+            raise ValueError("database_closed_before_image_CAS_lost")
+
+
 def check(args: argparse.Namespace) -> dict:
     plan = json.loads(args.plan.read_bytes())
     runtime, root = paths(args)
@@ -733,6 +912,10 @@ def check(args: argparse.Namespace) -> dict:
     source = source_identity()
     if sys.version_info[:2] != (3, 14):
         raise ValueError("effective_python314_required")
+    reader = reader_binding()
+    if plan.get("reader_binding") != reader:
+        raise ValueError("effective_reader_binding_mismatch")
+    registered_runtime(runtime)
     from runtime.orchestrator._paths import OrgPaths
     from runtime.orchestrator.org_validation import validate_team_membership
     validate_team_membership(OrgPaths(root=root), TeamsRegistry.load(root))
@@ -823,6 +1006,7 @@ def check(args: argparse.Namespace) -> dict:
         raise ValueError("database_not_closed_checkpointed")
     if backup.is_relative_to(runtime) or backup.is_symlink() or backup.read_bytes() != db_path.read_bytes():
         raise ValueError("exact_closed_backup_required")
+    closed_backup_flush(backup)
     with read_db(db_path) as current, read_db(backup) as restored:
         if domain_signature(current) != domain_signature(restored):
             raise ValueError("backup_restore_history_mismatch")
@@ -906,7 +1090,7 @@ def check(args: argparse.Namespace) -> dict:
     roster["teams"]["default"] = {"manager": {"kind": "human", "principal": "founder"}, "workers": list(AGENTS)}
     roster.update(default_team="default", task_default_team="engineering")
     TeamsRegistry._from_layout(roster["teams"], metadata={k: v for k, v in roster.items() if k != "teams"})
-    data = yaml.safe_dump(roster, sort_keys=False).encode()
+    data = roster_delta(base64.b64decode(before[CANONICAL[2]]["bytes"]).decode(), roster)
     after[CANONICAL[2]] = {**before[CANONICAL[2]], "bytes": base64.b64encode(data).decode(), "sha256": digest(data)}
     generated = plan.get("generated_after_images")
     if not isinstance(generated, dict) or not generated:
@@ -961,9 +1145,20 @@ def check(args: argparse.Namespace) -> dict:
                 or after.get(link, {}).get("kind") != "link"
                 or base64.b64decode(after[link]["bytes"]) != b"AGENTS.md"):
             raise ValueError("both_complete_native_instruction_pairs_required")
+        settings_rel = f"workspaces/{agent}/.claude/settings.json"
+        if settings_rel in after and before[settings_rel]["kind"] == after[settings_rel]["kind"] == "file":
+            prior = json.loads(base64.b64decode(before[settings_rel]["bytes"]))
+            target = json.loads(base64.b64decode(after[settings_rel]["bytes"]))
+            if not set(target.get("permissions", {}).get("allow", [])).issubset(prior.get("permissions", {}).get("allow", [])):
+                raise ValueError("unexpected_generated_permission_grant")
+        for provider in (".claude", ".agents"):
+            prefix = f"workspaces/{agent}/{provider}/skills/"
+            if any(rel.startswith(prefix) and expected["kind"] == "link" and before[rel]["kind"] != "link"
+                   for rel, expected in after.items()):
+                raise ValueError("unexpected_generated_skill_grant")
     return dict(kind="THR296-checked-manifest-v1", operation_id=operation,
                 operation_dir=str(operation_dir), runtime_root=str(runtime), org=args.org,
-                source_sha=source, plan_sha=digest(args.plan.read_bytes()), containment=plan["containment"],
+                source_sha=source, reader_binding=reader, plan_sha=digest(args.plan.read_bytes()), containment=plan["containment"],
                 runtime_marker=image(runtime / "happyranch.yaml"),
                 registry_images={value: image(Path(value)) for value in plan["containment"]["registry_paths"]},
                 containment_observation=observation, before=before, after=after,
@@ -986,6 +1181,8 @@ def finished_state(root: Path, manifest: dict, *, direction: str) -> dict | None
     This is not host/process/reboot proof; those require separate observations.
     """
     residue = native_workspace_residue(root, manifest)
+    if owned_replacement_residue(root, manifest):
+        return None
     if any(not entry["backup"] or entry["observed"] != entry["complete"]
            for entry in residue.values()) or direction == "compensate" and residue:
         return None
@@ -1057,6 +1254,9 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         raise ValueError("real_checked_manifest_and_exact_candidate_required")
     if manifest["runtime_root"] != str(runtime) or manifest["org"] != args.org:
         raise ValueError("manifest_owner_mismatch")
+    if manifest.get("reader_binding") != reader_binding():
+        raise ValueError("effective_reader_binding_mismatch")
+    registered_runtime(runtime)
     if containment(manifest, runtime) != manifest["containment_observation"]:
         raise ValueError("persistent_containment_observation_changed")
     if (image(runtime / "happyranch.yaml") != manifest["runtime_marker"]
@@ -1073,8 +1273,7 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
         validate_image(value)
     verify_preserved_paths(root, manifest)
     verify_global_assets(manifest)
-    if preservation_inventory(Path(manifest["closed_restore_root"])) != manifest["preservation_inventory"]:
-        raise ValueError("closed_restore_changed")
+    restore_verified(manifest)
     operation_dir = Path(manifest["operation_dir"])
     if (not operation_dir.is_absolute() or operation_dir.is_symlink() or operation_dir.resolve() != operation_dir
             or operation_dir.is_relative_to(runtime) or operation_dir.is_relative_to(Path("/tmp"))
@@ -1083,22 +1282,42 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
     operation_id = manifest["operation_id"]
     if args.recover and args.operation_id != operation_id:
         raise ValueError("recovery_operation_mismatch")
-    receipt = operation_dir / "receipt.json"
+    primary_receipt = operation_dir / "receipt.json"
+    compensation_receipt = operation_dir / "compensation-receipt.json"
+    receipt = compensation_receipt if compensation_receipt.exists() else primary_receipt
     manifest_digest = args.expected_digest
     if receipt.exists():
         result = json.loads(receipt.read_bytes())
-        if result["manifest_sha256"] != manifest_digest:
+        if (result.get("manifest_sha256") != manifest_digest
+                or result.get("operation_id") != operation_id
+                or result.get("direction") not in ("complete", "compensate")
+                or receipt == compensation_receipt and result.get("direction") != "compensate"
+                or result.get("traffic_released") is not False):
             raise ValueError("receipt_request_mismatch")
-        desired = manifest["before"] if result["direction"] == "compensate" else manifest["after"]
-        if any(image(root / rel) != target for rel, target in desired.items()):
-            raise ValueError("completed_receipt_state_drift")
         if result["direction"] == "compensate" and not (args.recover and args.direction == "compensate"):
             raise ValueError("fresh_operation_required_after_compensation")
-        actual = finished_state(root, manifest, direction=result["direction"])
-        if actual is None or {**actual, "manifest_sha256": manifest_digest} != result:
-            raise ValueError("completed_receipt_readiness_drift")
-        return result  # read-only DB; no reset helper, publication or protected write
+        if result["direction"] == "complete" and args.recover and args.direction == "compensate":
+            # Preserve a successful external receipt. Its genuine original
+            # journal authenticates completion even during a later owned
+            # compensation prefix; the new compensation gets a separate file.
+            with read_db(root / "happyranch.db") as conn:
+                journal = conn.execute("SELECT * FROM workflow_publication_journals WHERE namespace=? AND publisher=? AND generation=? AND snapshot_digest=? AND state='cache_installed'",
+                    (f"org/{args.org}", f"THR296:{operation_id}:ready:complete", result["generation"], result["snapshot_digest"])).fetchall()
+                if len(journal) != 1 or digest(bytes(journal[0]["snapshot_bytes"])) != result["snapshot_digest"]:
+                    raise ValueError("completed_receipt_history_drift")
+            receipt = compensation_receipt
+        else:
+            desired = manifest["before"] if result["direction"] == "compensate" else manifest["after"]
+            if any(image(root / rel) != target for rel, target in desired.items()):
+                raise ValueError("completed_receipt_state_drift")
+            actual = finished_state(root, manifest, direction=result["direction"])
+            if actual is None or {**actual, "manifest_sha256": manifest_digest} != result:
+                raise ValueError("completed_receipt_readiness_drift")
+            return result  # no reset, materializer, publication or protected write
     desired = manifest["before"] if args.recover and args.direction == "compensate" else manifest["after"]
+    compensated = finished_state(root, manifest, direction="compensate")
+    if compensated is not None and not (args.recover and args.direction == "compensate"):
+        raise ValueError("fresh_operation_required_after_compensation")
     for rel in manifest["before"]:
         if not known_output_prefix(root, manifest, rel):
             raise ValueError(f"unknown_third_state:{rel}")
@@ -1120,20 +1339,13 @@ def apply(args: argparse.Namespace, manifest: dict) -> dict:
     if not args.recover:
         # Authenticate an already completed operation before this first-apply
         # gate, so a lost external receipt does not cause another mutation.
-        if any(image(root / rel) != value for rel, value in manifest["before"].items()):
-            raise ValueError("apply_before_image_CAS: use explicit owned recovery for a partial prefix")
-        verify_global_assets(manifest, initial=True)
-        with read_db(root / "happyranch.db") as conn:
-            require_quiescence(conn, root, args.org)
-            if control_signature(conn) != manifest["control_signature"]:
-                raise ValueError("publication_profile_or_audit_before_image_CAS_lost")
-            if image(root / "happyranch.db") != manifest["closed_backup_image"]:
-                raise ValueError("database_closed_before_image_CAS_lost")
+        final_cas(runtime, root, manifest)
     else:
         # Only explicit owned recovery closes a staged prefix. Check/first
         # apply never adopt a sibling left by an unrelated earlier operation.
         close_native_workspace_residue(root, manifest, compensate=direction == "compensate")
         close_native_authority_residue(root, manifest)
+        close_owned_replacement_residue(root, manifest)
     # Existing native coordinators, no startup attachment/publication shortcut.
     from runtime.config import Settings
     from runtime.infrastructure.database import Database
@@ -1308,7 +1520,8 @@ def main(argv: list[str] | None = None) -> int:
             result = apply(args, json.loads(raw))
         print(json.dumps(result, sort_keys=True))
         return 0
-    except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError, subprocess.SubprocessError, yaml.YAMLError) as exc:
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.DatabaseError, subprocess.SubprocessError,
+            yaml.YAMLError, OrgConsistencyError, WorkflowAuthorityError, ProfileCoordinatorError) as exc:
         print(f"refused: {exc}; retain restart inhibition and resolve the named boundary", file=sys.stderr)
         return 1
 

@@ -2,6 +2,12 @@
 
 ## Founder-managed Default (THR296)
 
+Maintenance rejects unexpected generated permission/skill grants before
+mutation; it does not change the native permission/materializer algorithms.
+Generated/global fault cuts name only checked finite paths. The paired observer
+refuses unsupported descriptor transfers or lost receipts; it is not an executor
+enforcement mechanism or a positive M inhibition certificate.
+
 Moving consultant_head and consultant_codex changes their current roster
 membership and demotes the former manager. Canonical names, providers,
 workspaces, runtime/provider memory, Git registrations and history remain in

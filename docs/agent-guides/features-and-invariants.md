@@ -35,6 +35,13 @@ For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/
 
 ## Founder-managed Default (THR296)
 
+The bounded roster utility preserves unrelated canonical literal text and
+closed memory/history/thread delivery/breaker/frozen evidence. Completed replay
+requires operation-specific audit/journal/pointer facts, including zero rows and
+already-cleared rows; equality alone supplies no no-helper/no-write proof.
+C6/C8/C9 source assertions and finite crash/localization selections remain
+unexecuted under the existing Python/M holds.
+
 Human team leadership never adds an AgentDef or launch identity. Native
 thread-session invalidation atomically commits each consultant's resume reset
 and its audit, without changing delivery/breaker state, messages, memory or

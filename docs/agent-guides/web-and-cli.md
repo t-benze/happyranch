@@ -31,6 +31,13 @@ enablement, deployment or a Phase1-completion claim.
 
 ## Founder-managed Default (THR296)
 
+The offline roster utility remains operator-only. Its real checked manifest
+binds clean candidate/Python3.14 reader and detached runtime registration;
+apply/recovery requires that exact digest. Compensation retains the original
+successful receipt and records a new coherent original-roster generation in
+`compensation-receipt.json`. No transfer UI/API or startup migration is added.
+See the migration runbook for commands and AUTHORED-versus-executed case maps.
+
 GET teams/settings retain string manager names for agent teams; human rows
 carry manager:null, manager_kind:human, human_manager:founder and is_default.
 Both TypeScript wire types and existing real/mock providers accept this shape.

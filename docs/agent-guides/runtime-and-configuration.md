@@ -31,6 +31,14 @@ enablement, deployment or a Phase1-completion claim.
 
 ## Founder-managed Default (THR296)
 
+Offline roster check/apply pins the real detached registered RuntimeDir and
+resolved candidate/interpreter bytes. Both closed org and canonical-store
+restore inventories are independently checked before apply; final pre-reset
+CAS includes canonical/generated metadata and authority/profile controls.
+Persistent launcher inhibition is externally owned and remains required across
+process loss/reboot. The current adapter cannot certify ordinary unmasked
+command-bearing units; see the bounded migration runbook.
+
 `teams.yaml` preserves default_team and task_default_team. Existing missing
 task pointers retain Engineering routing. Proven fresh org creation writes an
 empty Founder-managed Default and explicitly sets both pointers to Default.

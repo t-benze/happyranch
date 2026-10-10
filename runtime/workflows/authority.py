@@ -405,7 +405,12 @@ class WorkflowAuthorityCoordinator:
                 conn.rollback()
                 raise
             else:
-                conn.commit()
+                try:
+                    conn.commit()
+                except BaseException:
+                    # This context owns the transaction; do not leak a failed commit.
+                    conn.rollback()
+                    raise
 
     @staticmethod
     def _pointer(conn: sqlite3.Connection, namespace: str) -> tuple[int, str | None, str | None, str, int]:

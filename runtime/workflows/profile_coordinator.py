@@ -379,7 +379,12 @@ class ProfileCoordinator:
                 conn.rollback()
                 raise
             else:
-                conn.commit()
+                try:
+                    conn.commit()
+                except BaseException:
+                    # This context owns the transaction; do not leak a failed commit.
+                    conn.rollback()
+                    raise
 
     def _max_generation(self, profile_name: str) -> int:
         generation = 0

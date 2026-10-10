@@ -105,9 +105,14 @@ def decode(pid: int, regs: Registers) -> dict | None:
     a, b, c, d, e, f = regs.rdi, regs.rsi, regs.rdx, regs.r10, regs.r8, regs.r9
     # Socket/pipe descriptors cannot reference protected regular files, but a
     # transferred descriptor or kernel-assisted file write needs full decoding.
-    if number in (40, 46, 47, 133, 188, 189, 190, 191, 192, 193, 197, 198, 199,
+    if number in (46, 47, 133, 188, 189, 190, 191, 192, 193, 197, 198, 199,
                   259, 275, 276, 278, 285, 299, 307, 327, 437):
         raise ValueError(f'unsupported_descriptor_or_writer_syscall:{number}')
+    if number in (40, 326):  # sendfile / copy_file_range: actual destination fd
+        output = a if number == 40 else c
+        path = descriptor(pid, output)
+        info = os.stat(f'/proc/{pid}/fd/{signed(output)}')
+        return dict(syscall='copy_write', paths=[str(path)], identity=[info.st_dev, info.st_ino], descriptor=signed(output))
     if number == 16:  # ioctl may mutate regular-file metadata/content
         raw = os.readlink(f'/proc/{pid}/fd/{signed(a)}')
         if raw.startswith('/') and stat.S_ISREG(os.stat(f'/proc/{pid}/fd/{signed(a)}').st_mode):
@@ -217,6 +222,12 @@ def main() -> int:
                  for rel in ('org/agents/consultant_head.md', 'org/agents/consultant_codex.md', 'org/teams.yaml')}
     for index, rel in enumerate(sorted(set(manifest['after']) - {'org/agents/consultant_head.md', 'org/agents/consultant_codex.md', 'org/teams.yaml'})):
         protected[org / rel] = f'g{index}'
+    for index, rel in enumerate(sorted(manifest['global_after'])):
+        protected[Path(manifest['canonical_store_root']) / rel] = f's{index}'
+    protected[org / 'org/.workflow-authority.json'] = 'authority'
+    protected[Path(manifest['operation_dir']) / 'receipt.json'] = 'receipt'
+    protected[Path(manifest['closed_database_backup'])] = 'backup_durable'
+    backup_parent = Path(manifest['closed_database_backup']).parent
     last_rename = {}
 
     def boundary(pid: int, row: dict) -> str | None:
@@ -224,14 +235,32 @@ def main() -> int:
         if row['syscall'] == 'rename' and paths[-1] in protected:
             return protected[paths[-1]] + '.rename'
         for path, family in protected.items():
-            if row['syscall'] in ('write', 'pwrite', 'writev', 'pwritev', 'pwritev2') and any(
+            def sibling(target):
+                if target.parent != path.parent:
+                    return False
+                if target == path or target.name.startswith('.' + path.name + '.roster-') or target.name.startswith(path.name + '.happyranch-') or path.parent.name == 'skills' and target.name == '.tmp.' + path.name:
+                    return True
+                if family == 'authority' and target.name.startswith(path.name + '.WAJ-') and target.name.endswith('.staging'):
+                    # Names alone are insufficient. Bind the actual committed
+                    # native reservation to this checked operation before cut.
+                    journal_id = target.name[len(path.name) + 1:-len('.staging')]
+                    with __import__('sqlite3').connect((org / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as reader:
+                        found = reader.execute('SELECT namespace,publisher,state FROM workflow_publication_journals WHERE id=?', (journal_id,)).fetchone()
+                    if found is None or found[0] != 'org/' + manifest['org'] or not found[1].startswith('THR296:' + manifest['operation_id'] + ':') and found[1] != 'THR296:' + manifest['operation_id']:
+                        raise ValueError('unowned_authority_syscall_path')
+                    return True
+                return False
+            if row['syscall'] in ('write', 'pwrite', 'writev', 'pwritev', 'pwritev2', 'copy_write') and any(
                     target.parent == path.parent and
-                    (target == path or target.name.startswith('.' + path.name + '.roster-')
-                     or target.name.startswith(path.name + '.happyranch-')) for target in paths):
+                    sibling(target) for target in paths):
                 return family + '.stage_write'
+            if row['syscall'] == 'symlink' and any(sibling(target) for target in paths):
+                return family + '.symlink'
             if row['syscall'] in ('fsync', 'fdatasync'):
-                if any(target == path or target.parent == path.parent and target.name.startswith('.' + path.name + '.roster-') for target in paths):
+                if any(sibling(target) for target in paths):
                     return family + '.file_fsync'
+        if row['syscall'] in ('fsync', 'fdatasync') and paths == [backup_parent]:
+            return 'backup_durable.dir_fsync'
         if row['syscall'] in ('fsync', 'fdatasync') and pid in last_rename:
             target = last_rename[pid]
             if paths == [target.parent]:
@@ -239,7 +268,7 @@ def main() -> int:
         return None
 
     allowed = {'observe-only'} | {family + '.' + effect + '.' + side
-        for family in protected.values() for effect in ('stage_write', 'file_fsync', 'rename', 'dir_fsync')
+        for family in protected.values() for effect in ('stage_write', 'file_fsync', 'rename', 'dir_fsync', 'symlink')
         for side in ('before', 'after')}
     if args.boundary not in allowed:
         os.close(fd)
@@ -315,6 +344,15 @@ def main() -> int:
                 ptrace(GETREGS, pid, 0, ctypes.byref(regs))
                 if operation == 1:
                     row = decode(pid, regs)
+                    if row is not None:
+                        row['entry_sequence'] = sequence + 1
+                        row['path_identities_before'] = []
+                        for value in row['paths']:
+                            try:
+                                info = Path(value).lstat()
+                                row['path_identities_before'].append([info.st_dev, info.st_ino, info.st_mode])
+                            except FileNotFoundError:
+                                row['path_identities_before'].append(None)
                     pending[pid] = row
                     if row is not None:
                         selected = boundary(pid, row)
@@ -323,7 +361,7 @@ def main() -> int:
                         emit(dict(kind='syscall-entry', pid=pid, protected=relevant, boundary=selected, **row))
                         if selected is not None and args.boundary == selected + '.before':
                             fault = True
-                            emit(dict(kind='selected-fault', pid=pid, boundary=args.boundary))
+                            emit(dict(kind='selected-fault', pid=pid, boundary=args.boundary, entry_sequence=row['entry_sequence'], paths=row['paths'], path_identities_before=row['path_identities_before'], syscall_return=None, syscall_entered=False))
                             kill_owned()
                             continue
                 else:
@@ -335,12 +373,19 @@ def main() -> int:
                             row = {**row, 'opened_path': str(descriptor(pid, result)),
                                    'identity': [opened.st_dev, opened.st_ino]}
                         selected = boundary(pid, row)
+                        row['path_identities_after'] = []
+                        for value in row['paths']:
+                            try:
+                                info = Path(value).lstat()
+                                row['path_identities_after'].append([info.st_dev, info.st_ino, info.st_mode])
+                            except FileNotFoundError:
+                                row['path_identities_after'].append(None)
                         emit(dict(kind='syscall-exit', pid=pid, result=result, successful=result >= 0, boundary=selected, **row))
                         if result >= 0 and row['syscall'] == 'rename' and Path(row['paths'][-1]) in protected:
                             last_rename[pid] = Path(row['paths'][-1])
                         if result >= 0 and selected is not None and args.boundary == selected + '.after':
                             fault = True
-                            emit(dict(kind='selected-fault', pid=pid, boundary=args.boundary, result=result))
+                            emit(dict(kind='selected-fault', pid=pid, boundary=args.boundary, entry_sequence=row['entry_sequence'], paths=row['paths'], path_identities_after=row['path_identities_after'], result=result, syscall_entered=True))
                             kill_owned()
                             continue
             # New descendants stop with SIGSTOP; other genuine signals retain

@@ -1647,14 +1647,660 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
          'receipt': receipt}, sort_keys=True))
 
 
-@pytest.mark.parametrize('refusal', ['no-inhibition', 'design-plan-not-manifest', 'wrong-digest'])
-def test_c8_preflight_refusals_and_backup_cas(runtime: Path, tmp_path: Path, refusal: str) -> None:
+
+# C6/C8/C9 share this finite owned setup. It provisions fixture data only; the
+# externally operated M machine must supply actual persistent launch inhibition.
+# No environment variable certifies inhibition, and containment is never patched.
+class _MaintenanceCase:
+    def __init__(self, directory: Path, declaration: dict, default_shape: str, row_shape: str):
+        import copy
+        import uuid
+        from runtime.config import Settings
+        from runtime.daemon import runtimes
+        from runtime.daemon.org_state import OrgState
+        from runtime.infrastructure.database import Database
+        from runtime.models import TaskRecord, TaskStatus, ThreadRecord, ThreadStatus
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.agent_def import AgentDef, render_agent_text
+        from runtime.orchestrator.context_builder import ContextBuilder
+        from runtime.orchestrator.prompt_loader import load_agent
+        from runtime.orchestrator.workspace_adapters import materialize_workspace_skills_union, validate_workspace_skills_integrity
+        from runtime.runtime import RuntimeDir
+        from runtime.skills.canonical_store import _get_canonical_store_root
+        from runtime.workflows.profile_coordinator import ProfileCoordinator
+        from scripts import migrate_human_team_roster as utility
+        from tests.workflows.test_authority_coordinator import _seed_org
+        self.source = Path(__file__).resolve().parents[2]
+        self.revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=self.source, text=True).strip()
+        assert not subprocess.check_output(['git', 'status', '--porcelain'], cwd=self.source).strip()
+        assert sys.version_info[:2] == (3, 14)
+        assert utility.SOURCE == self.source
+        self.directory = directory
+        self.runtime = RuntimeDir.init(directory / 'runtime').root
+        self.root = self.runtime / 'orgs/alpha'
+        self.home = Path(declaration['daemon_home'])
+        self.env = {**os.environ, 'HAPPYRANCH_DAEMON_HOME': str(self.home), 'PYTHONDONTWRITEBYTECODE': '1'}
+        assert Path(os.environ['HAPPYRANCH_DAEMON_HOME']).resolve() == self.home.resolve()
+        _seed_org(self.root)
+        # Proven fresh fixture database: native complete initialization precedes attachment.
+        from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
+        assert not (self.root / 'happyranch.db').exists()
+        fresh = Database(self.root / 'happyranch.db')
+        try: initialize_complete_org_schema(fresh, expected_org_slug='alpha')
+        finally: fresh.close()
+        teams_path = self.root / 'org/teams.yaml'
+        teams_path.write_text(teams_path.read_text().replace('workers: [dev_agent, code_reviewer]', 'workers: [dev_agent, code_reviewer, qa_engineer]') + '  product:\n    manager: product_lead\n    workers: []\n' + '# unrelated literal engineering metadata remains\n'
+            + '  consultant:\n    manager: consultant_head\n    workers: [consultant_codex]\n'
+            + ('  default:\n    manager: {kind: human, principal: founder}\n    workers: []\n' if default_shape == 'correct-empty-default' else '')
+            + 'default_team: engineering # preserve this pointer comment\n'
+            + 'task_default_team: engineering\n')
+        self.manager_sentence = 'You lead the Consultant team and manage its workers.'
+        for agent in utility.AGENTS:
+            definition = AgentDef(name=agent, team='consultant',
+                role='manager' if agent == 'consultant_head' else 'worker',
+                executor='claude' if agent == 'consultant_head' else 'codex',
+                description='Retained consultant', allow_rules=('git',), repos={},
+                enrolled_by='founder', enrolled_at_task='TASK-C6-FIXTURE',
+                enrolled_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+                system_prompt=(self.manager_sentence if agent == 'consultant_head' else 'Advise the founder.') + '\nRetained advisory context.')
+            (self.root / 'org/agents' / (agent + '.md')).write_text(render_agent_text(definition))
+            workspace = self.root / 'workspaces' / agent
+            (workspace / 'memory').mkdir(parents=True)
+            (workspace / 'memory/_index.md').write_text('# Synthetic retained memory index\nMEM-C6\n')
+            (workspace / 'memory/MEM-C6.md').write_text('Synthetic retained memory body; hash only in evidence.\n')
+            (workspace / '.provider-memory').mkdir()
+            (workspace / '.provider-memory/prior-state').write_bytes(b'synthetic-provider-history')
+            (workspace / 'task_history.md').write_text('TASK-C6-HISTORY Consultant historical label\n')
+            repo = workspace / 'repos/preserved'; repo.mkdir(parents=True)
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            (repo / 'retained.txt').write_text('retained repository output\n')
+            subprocess.run(['git', '-C', str(repo), 'add', 'retained.txt'], check=True)
+            subprocess.run(['git', '-C', str(repo), '-c', 'user.name=C6 fixture', '-c', 'user.email=c6@example.invalid', 'commit', '-qm', 'retained fixture'], check=True)
+            worktree = workspace / '.claude/worktrees/C6-preserved'
+            worktree.parent.mkdir(parents=True)
+            subprocess.run(['git', '-C', str(repo), 'worktree', 'add', '-q', '-b', 'c6-preserved', str(worktree)], check=True)
+            (workspace / 'output').mkdir()
+            (workspace / 'output/prior.txt').write_text('retained artifact\n')
+        for name, team, role in [('qa_engineer', 'engineering', 'worker'), ('product_lead', 'product', 'manager')]:
+            definition = AgentDef(name=name, team=team, role=role, executor='claude', description='retained fixture',
+                allow_rules=(), repos={}, enrolled_by='founder', enrolled_at_task='TASK-C6-FIXTURE',
+                enrolled_at=datetime(2026, 10, 1, tzinfo=timezone.utc), system_prompt='Document only.')
+            (self.root / 'org/agents' / (name + '.md')).write_text(render_agent_text(definition))
+        org = OrgState.load(slug='alpha', root=self.root, settings=Settings(project_root=self.source))
+        profiles = ProfileCoordinator(daemon_home=self.home, orgs={'alpha': org})
+        org.workflow_authority._profile_coordinator = profiles
+        profiles.reconcile_startup()
+        org.workflow_authority.verify_admission_ready()
+        now = datetime.now(timezone.utc)
+        for index, status in enumerate((ThreadStatus.OPEN, ThreadStatus.ARCHIVED)):
+            thread = 'THR-C6-' + str(index)
+            org.db.insert_thread(ThreadRecord(id=thread, subject='retained continuity', status=status))
+            for agent in (*utility.AGENTS, 'dev_agent'):
+                if row_shape == 'zero_rows' and agent in utility.AGENTS:
+                    continue
+                org.db._conn.execute('INSERT INTO thread_participants VALUES (?,?,?,?,?,?)',
+                    (thread, agent, now.isoformat(), 'founder', None if row_shape == 'already_null' and agent in utility.AGENTS else 'prior-' + agent,
+                     0 if row_shape == 'already_null' and agent in utility.AGENTS else 7))
+                org.db._conn.execute('''INSERT INTO thread_reply_delivery_state
+                    (thread_id,agent_name,acknowledged_through_seq,required_through_seq,updated_at)
+                    VALUES (?,?,?,?,?)''', (thread, agent, 7, 7, now.isoformat()))
+                org.db._conn.execute('''INSERT INTO thread_reply_breaker_episodes
+                    (thread_id,agent_name,executor_key,episode_id,state,consecutive_failures,opened_at,cooldown_until,last_failure_category,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?)''', (thread, agent, 'codex' if agent.endswith('codex') else 'claude',
+                        'prior-' + thread + '-' + agent, 'open', 3, now.isoformat(), (now + timedelta(days=1)).isoformat(), 'provider_failure', now.isoformat()))
+        # Nonempty immutable conversation/exchange/invocation history makes
+        # the retained delivery/frozen oracle meaningful. These are labelled
+        # synthetic fixture records, never callback execution evidence.
+        for index in range(2):
+            thread = 'THR-C6-' + str(index)
+            org.db._conn.execute('INSERT INTO thread_messages(thread_id,seq,speaker,kind,body_markdown,created_at) VALUES (?,?,?,?,?,?)',
+                (thread, 7, 'consultant_head', 'reply', 'Retained Consultant fixture conversation', now.isoformat()))
+            org.db._conn.execute('INSERT INTO thread_invocations(thread_id,agent_name,invocation_token,triggering_seq,purpose,status,enqueued_at,consumed_at,reply_message_seq) VALUES (?,?,?,?,?,?,?,?,?)',
+                (thread, 'consultant_head', 'retained-' + thread, 7, 'reply', 'consumed', now.isoformat(), now.isoformat(), 7))
+            org.db._conn.execute('INSERT INTO thread_reply_exchange(thread_id,exchange_id,state,open_seq,close_seq,opened_at,last_activity_at,closed_at,close_reason) VALUES (?,?,?,?,?,?,?,?,?)',
+                (thread, 1, 'released', 1, 7, now.isoformat(), now.isoformat(), now.isoformat(), 'quiescence'))
+            org.db._conn.execute('INSERT INTO thread_exchange_deferrals(thread_id,exchange_id,agent_name,state,created_at,released_at,mint_token_prefix) VALUES (?,?,?,?,?,?,?)',
+                (thread, 1, 'consultant_codex', 'released', now.isoformat(), now.isoformat(), 'retained-frozen-' + thread))
+        org.db._conn.commit()
+        # This is explicitly old fixture DATA, never an observed callback.
+        org.db.insert_task(TaskRecord(id='TASK-C6-HISTORY', assigned_agent='consultant_head',
+            team='consultant', status=TaskStatus.COMPLETED, brief='Retained Consultant record', completed_at=now,
+            current_session_id='retained-fixture-session', note='Retained Consultant historical note'))
+        org.db.insert_audit_log(task_id='TASK-C6-HISTORY', agent='consultant_head', action='fixture_history', payload={'team': 'consultant'})
+        self._materialize(org)
+        org.close()
+        from fastapi.testclient import TestClient
+        from runtime.daemon import paths
+        from runtime.daemon.app import create_app
+        from runtime.daemon.state import DaemonState
+        from tests.workflows.authority_test_support import C5_SCHEMA1_HISTORY, seed_c5_schema1_history
+        containing = DaemonState.from_runtime(RuntimeDir.load(self.runtime), Settings(project_root=self.source))
+        client = TestClient(create_app(containing), base_url='http://localhost')
+        client.headers['Authorization'] = 'Bearer ' + paths.ensure_token()
+        try:
+            response = client.post('/api/v1/orgs/alpha/workflows/templates/publish', json=dict(operation_key='c6-template', team_slug='product', template_name='product-design', expected_current_version=0, definition=json.loads(C5_SCHEMA1_HISTORY['context_bytes'])['template']))
+            assert response.status_code == 201, response.text
+            enabled = client.post('/api/v1/orgs/alpha/workflows/cutover/requests', json={'operation_key': 'c6-enable', 'action': 'enable', 'expected_generation': 1})
+            assert enabled.status_code == 200, enabled.text
+            old = containing.orgs['alpha']
+            historical = seed_c5_schema1_history(old, completed=True)
+            old.db._conn.execute("UPDATE workflow_instances SET status='complete' WHERE id=?", (historical['receipt']['instance_id'],))
+            old.db._conn.execute("INSERT INTO task_results(task_id,agent,session_id,status,output_summary,created_at) VALUES ('TASK-C6-HISTORY','consultant_head','retained-fixture-session','completed','historical Consultant fixture data','2026-10-01')")
+            old.db._conn.commit()
+        finally:
+            client.close()
+            import asyncio
+            asyncio.run(containing.close_all())
+        runtimes.register(self.runtime)
+        state = runtimes.load()
+        runtimes._save(runtimes.RegistryState(active=None, registered=state.registered))
+        self.store = _get_canonical_store_root(Settings(project_root=self.source)).resolve(strict=True)
+        self.original_files = utility.preservation_inventory(self.root)
+        self.original_store = utility.preservation_inventory(self.store)
+        self.closed = directory / 'closed-org'; self.closed_store = directory / 'closed-store'
+        shutil.copytree(self.root, self.closed, symlinks=True)
+        shutil.copytree(self.store, self.closed_store, symlinks=True)
+        assert utility.preservation_inventory(self.closed) == self.original_files
+        assert utility.preservation_inventory(self.closed_store) == self.original_store
+        # Actual native preview at the same synthetic absolute paths. Restore
+        # the complete closed before-copy before the measured real check. The
+        # preview is setup data, never the final roster oracle or a manifest.
+        self.canonical_before = {rel: (self.root / rel).read_bytes() for rel in utility.CANONICAL}
+        for agent in utility.AGENTS:
+            p = self.root / 'org/agents' / (agent + '.md')
+            text = p.read_text().replace('team: consultant\n', 'team: default\n', 1)
+            if agent == 'consultant_head':
+                text = text.replace('role: manager\n', 'role: worker\n', 1).replace(self.manager_sentence, utility.ADVICE, 1)
+            p.write_text(text)
+        proposed = yaml.safe_load(teams_path.read_bytes())
+        del proposed['teams']['consultant']
+        proposed['teams']['default'] = {'manager': {'kind': 'human', 'principal': 'founder'}, 'workers': list(utility.AGENTS)}
+        proposed.update(default_team='default', task_default_team='engineering')
+        teams_path.write_text(yaml.safe_dump(proposed, sort_keys=False))
+        preview = OrgState.load(slug='alpha', root=self.root, settings=Settings(project_root=self.source))
+        try:
+            start = preview.db._conn.execute('SELECT COALESCE(MAX(id),0) FROM skill_validation_events').fetchone()[0]
+            self._materialize(preview)
+            event_shapes = []
+            for row in preview.db._conn.execute('SELECT * FROM skill_validation_events WHERE id>?', (start,)):
+                value = dict(row); value.pop('id'); value.pop('created_at')
+                if value not in event_shapes: event_shapes.append(value)
+        finally:
+            preview.close()
+        from runtime.daemon.routes.agents import _BOOTSTRAP_OWNED_FILES
+        generated = {}
+        for agent in utility.AGENTS:
+            for rel in (*_BOOTSTRAP_OWNED_FILES, '.claude', '.agents', '.claude/skills', '.agents/skills'):
+                path = self.root / 'workspaces' / agent / rel
+                value = utility.image(path)
+                if value['kind'] != 'absent': generated[str(path.relative_to(self.root))] = value
+            for provider in ('.claude', '.agents'):
+                for path in sorted((self.root / 'workspaces' / agent / provider / 'skills').iterdir()):
+                    generated[str(path.relative_to(self.root))] = utility.image(path)
+        after_store = utility.preservation_inventory(self.store)
+        global_images = {rel: utility.image(self.store / rel) for rel in after_store if rel != '.'}
+        shutil.rmtree(self.root)
+        shutil.copytree(self.closed, self.root, symlinks=True)
+        # Preview may add native immutable-addressed packages. This fixture
+        # deliberately retains them before check, so global refresh fsync is
+        # exercised; it makes no new-package-stage crash claim.
+        assert after_store == self.original_store, 'a new preview package requires an independent closed-store setup'
+        self.operation_dir = directory / 'operation'; self.operation_dir.mkdir(mode=0o700)
+        self.observers = directory / 'observers'; self.observers.mkdir(mode=0o700)
+        self.plan = self.operation_dir / 'check-input.json'
+        self.plan.write_text(json.dumps(dict(operation_id='C6-' + uuid.uuid4().hex,
+            operation_dir=str(self.operation_dir), closed_restore_root=str(self.closed),
+            closed_database_backup=str(self.closed / 'happyranch.db'), closed_canonical_store_restore=str(self.closed_store),
+            head_manager_sentence=self.manager_sentence, containment=copy.deepcopy(declaration),
+            reader_binding=utility.reader_binding(), generated_after_images=generated,
+            canonical_store_after_images=global_images, materialization_event_shapes=event_shapes), sort_keys=True))
+        self.baseline_rows = self.rows()
+        self.baseline = utility.preservation_inventory(self.root)
+        self.manifest_path = self.operation_dir / 'manifest.json'
+        positive = self.run('--check', '--plan', str(self.plan))
+        assert positive.returncode == 0, ('M prerequisite/positive check failed', positive.stderr)
+        self.manifest_path.write_bytes(positive.stdout.encode())
+        self.digest = hashlib.sha256(self.manifest_path.read_bytes()).hexdigest()
+        self.manifest = json.loads(self.manifest_path.read_bytes())
+        assert self.manifest['kind'] == 'THR296-checked-manifest-v1'
+        assert self.manifest['source_sha'] == self.revision
+        assert utility.preservation_inventory(self.root) == self.baseline
+        assert self.rows() == self.baseline_rows
+        self.event_map = self.observers / 'source-map.json'
+        self.event_map.write_text(json.dumps(self.frame_map(), sort_keys=True))
+
+    def _materialize(self, org):
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.context_builder import ContextBuilder
+        from runtime.orchestrator.prompt_loader import load_agent
+        from runtime.orchestrator.workspace_adapters import materialize_workspace_skills_union, validate_workspace_skills_integrity
+        for agent in ('consultant_head', 'consultant_codex'):
+            definition = load_agent(OrgPaths(root=org.root), agent)
+            workspace = org.root / 'workspaces' / agent
+            ContextBuilder(org.settings, OrgPaths(root=org.root), slug='alpha').ensure_workspace_ready(workspace, agent, definition.system_prompt, provider=definition.executor)
+            specs = materialize_workspace_skills_union(workspace, org.settings, slug='alpha',
+                contexts=['task', 'thread', 'wake', 'dream', 'schedule', 'bootstrap'], provider=definition.executor,
+                agent_name=agent, team=definition.team, skills_root=self.source / 'runtime/skills', org_root=org.root, db=org.db)
+            validate_workspace_skills_integrity(workspace, expected_specs=specs, settings=org.settings, db=org.db, agent_name=agent)
+
+    def rows(self):
+        from scripts import migrate_human_team_roster as utility
+        with utility.read_db(self.root / 'happyranch.db') as conn:
+            return {name: sorted(tuple(row) for row in conn.execute('SELECT * FROM "' + name + '"'))
+                for name, in conn.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")}
+
+    def run(self, *arguments):
+        launcher = "import runpy,sys;from pathlib import Path;s=Path(sys.argv[1]);sys.dont_write_bytecode=True;sys.path.insert(0,str(s));p=s/'scripts/migrate_human_team_roster.py';sys.argv=[str(p),*sys.argv[2:]];runpy.run_path(str(p),run_name='__main__')"
+        return subprocess.run([sys.executable, '-I', '-c', launcher, str(self.source),
+            '--runtime-root', str(self.runtime), '--org', 'alpha', *arguments], cwd=self.source,
+            env=self.env, capture_output=True, text=True, timeout=120)
+
+    def apply_arguments(self, direction=None):
+        result = ['--recover' if direction else '--apply', '--runtime-root', str(self.runtime), '--org', 'alpha',
+            '--manifest', str(self.manifest_path), '--expected-digest', self.digest]
+        if direction: result += ['--operation-id', self.manifest['operation_id'], '--direction', direction]
+        return result
+
+    def frame_map(self):
+        owners = {
+            'scripts/migrate_human_team_roster.py': ['restore_verified', 'final_cas', 'durable_replace', 'write_receipt'],
+            'runtime/infrastructure/db/sessions.py': ['SessionsMixin.reset_thread_sessions_for_agent', 'SessionsMixin._reset_thread_sessions_for_agent_uncommitted'],
+            'runtime/orchestrator/teams.py': ['TeamsRegistry.load'],
+            'runtime/orchestrator/context_builder.py': ['ContextBuilder.ensure_workspace_ready'],
+            'runtime/orchestrator/workspace_adapters.py': ['materialize_workspace_skills_union'],
+            'runtime/workflows/profile_coordinator.py': ['ProfileCoordinator._capture_org_dependencies', 'ProfileCoordinator.reconcile_supported_roster_batch'],
+            'runtime/workflows/authority.py': ['WorkflowAuthorityCoordinator._begin_publication_fence', 'WorkflowAuthorityCoordinator._publish_current_locked', 'WorkflowAuthorityCoordinator.publish_after_supported_change'],
+        }
+        sites = [dict(file=rel, sha256=hashlib.sha256((self.source / rel).read_bytes()).hexdigest(), qualname=name, events=['call', 'return']) for rel, names in owners.items() for name in names]
+        cuts = {}
+        for name, rel, qualname, agent in [
+            ('restore_verified', 'scripts/migrate_human_team_roster.py', 'restore_verified', None),
+            ('final_cas', 'scripts/migrate_human_team_roster.py', 'final_cas', None),
+            ('head_reset', 'runtime/infrastructure/db/sessions.py', 'SessionsMixin.reset_thread_sessions_for_agent', 'consultant_head'),
+            ('codex_reset', 'runtime/infrastructure/db/sessions.py', 'SessionsMixin.reset_thread_sessions_for_agent', 'consultant_codex'),
+            ('registry_reload', 'runtime/orchestrator/teams.py', 'TeamsRegistry.load', None),
+            ('profile_capture', 'runtime/workflows/profile_coordinator.py', 'ProfileCoordinator._capture_org_dependencies', None),
+            ('profile_reconcile', 'runtime/workflows/profile_coordinator.py', 'ProfileCoordinator.reconcile_supported_roster_batch', None),
+            ('head_refresh', 'runtime/orchestrator/context_builder.py', 'ContextBuilder.ensure_workspace_ready', 'consultant_head'),
+            ('codex_refresh', 'runtime/orchestrator/context_builder.py', 'ContextBuilder.ensure_workspace_ready', 'consultant_codex'),
+            ('publication_prepare', 'runtime/workflows/authority.py', 'WorkflowAuthorityCoordinator._begin_publication_fence', None),
+            ('publication', 'runtime/workflows/authority.py', 'WorkflowAuthorityCoordinator._publish_current_locked', None),
+            ('receipt', 'scripts/migrate_human_team_roster.py', 'write_receipt', None)]:
+            for event in ('call', 'return'): cuts[name + '.' + event] = dict(file=rel, qualname=qualname, event=event, agent=agent)
+        return dict(source_sha=self.revision, sites=sites, cuts=cuts)
+
+    def observed(self, arguments, label, syscall='observe-only', frame='observe-only'):
+        syscall_receipt = self.observers / (label + '-syscalls.jsonl')
+        frame_receipt = self.observers / (label + '-frames.jsonl')
+        command = [sys.executable, '-I', str(self.source / 'tests/helpers/roster_syscall_observer.py'),
+            '--source', str(self.source), '--source-sha', self.revision, '--manifest', str(self.manifest_path),
+            '--expected-digest', self.digest, '--boundary', syscall, '--receipt', str(syscall_receipt), '--',
+            sys.executable, '-I', str(self.source / 'tests/helpers/roster_python_observer.py'),
+            '--source', str(self.source), '--source-sha', self.revision, '--event-map', str(self.event_map),
+            '--boundary', frame, '--receipt', str(frame_receipt), '--script', str(self.source / 'scripts/migrate_human_team_roster.py'), '--', *arguments]
+        actual = subprocess.run(command, cwd=self.source, env=self.env, capture_output=True, text=True, timeout=120)
+        # Mandatory receipts: inability/loss is an assertion failure, not a skip.
+        syscalls = [json.loads(line) for line in syscall_receipt.read_text().splitlines()]
+        frames = [json.loads(line) for line in frame_receipt.read_text().splitlines()]
+        assert syscalls[-1]['kind'] == 'terminal' and syscalls[-1]['complete'], (actual.stderr, syscalls[-1])
+        assert [row['sequence'] for row in syscalls] == list(range(1, len(syscalls) + 1))
+        assert [row['sequence'] for row in frames] == list(range(1, len(frames) + 1))
+        if syscall != 'observe-only':
+            assert actual.returncode == 0 and syscalls[-1]['selected_fault']
+            assert syscalls[-1]['target'] == {'signal': signal.SIGKILL}
+            assert any(row['kind'] == 'selected-fault' and row['boundary'] == syscall for row in syscalls)
+        elif frame != 'observe-only':
+            assert syscalls[-1]['target'] == {'signal': signal.SIGKILL}
+            assert frames[-1]['kind'] == 'selected-fault' and frames[-1]['boundary'] == frame
+        else:
+            assert frames[-1]['kind'] == 'terminal' and frames[-1]['complete'], frames[-1]
+            assert syscalls[-1]['target'] == {'exit': actual.returncode}
+        return actual, syscalls, frames
+
+    @staticmethod
+    def require_complete_observers(syscalls, frames):
+        for rows in (syscalls, frames):
+            assert rows and rows[-1]['kind'] == 'terminal' and rows[-1]['complete'], 'observer proof unavailable/incomplete'
+            assert [row['sequence'] for row in rows] == list(range(1, len(rows) + 1)), 'observer receipt loss'
+
+    def no_effects(self, syscalls, frames):
+        self.require_complete_observers(syscalls, frames)
+        forbidden = {'SessionsMixin.reset_thread_sessions_for_agent', 'SessionsMixin._reset_thread_sessions_for_agent_uncommitted',
+            'ContextBuilder.ensure_workspace_ready', 'materialize_workspace_skills_union',
+            'ProfileCoordinator.reconcile_supported_roster_batch', 'WorkflowAuthorityCoordinator._begin_publication_fence',
+            'WorkflowAuthorityCoordinator._publish_current_locked', 'WorkflowAuthorityCoordinator.publish_after_supported_change'}
+        assert not [row for row in frames if row['kind'] == 'frame' and row['event'] == 'call' and row['qualname'] in forbidden]
+        assert not [row for row in syscalls if row['kind'] == 'syscall-entry' and row['protected']
+                    and row['syscall'] not in ('fsync', 'fdatasync')]
+
+    def preservation(self, direction='complete'):
+        from scripts import migrate_human_team_roster as utility
+        after = self.rows()
+        excluded = {'sqlite_sequence', 'audit_log', 'thread_participants', 'workflow_authority_pointers',
+            'workflow_publication_journals', 'workflow_publication_leases', 'workflow_profile_leases', 'skill_validation_events'}
+        for table, before in self.baseline_rows.items():
+            if table not in excluded: assert after[table] == before, table
+        for before, current in zip(self.baseline_rows['thread_participants'], after['thread_participants'], strict=True):
+            assert current == (*before[:4], None, 0) if before[1] in utility.AGENTS else current == before
+        audit_before = self.baseline_rows['audit_log']
+        assert after['audit_log'][:len(audit_before)] == audit_before
+        for agent in utility.AGENTS:
+            affected = [row for row in after['thread_participants'] if row[1] == agent]
+            rows = [row for row in after['audit_log'] if row[1] == f"config:THR296:{self.manifest['operation_id']}:{agent}"]
+            assert len(rows) == bool(affected)
+        raw = (self.root / 'org/.workflow-authority.json').read_bytes()
+        pointer = after['workflow_authority_pointers'][0]
+        assert hashlib.sha256(raw).hexdigest() == pointer[3] and pointer[4] == 'ready'
+        selected = [row for row in after['workflow_publication_journals'] if row[0] == pointer[2]][0]
+        assert selected[4] == raw and selected[5] == pointer[3] and selected[9] == 'cache_installed'
+        assert selected[6] == f"THR296:{self.manifest['operation_id']}:ready:{direction}"
+        assert pointer[1] > self.baseline_rows['workflow_authority_pointers'][0][1]
+        for rel in utility.CANONICAL[:2]:
+            text = (self.root / rel).read_text()
+            before = self.canonical_before[rel].decode()
+            expected = before.replace('team: consultant\n', 'team: default\n', 1)
+            if rel.endswith('consultant_head.md'):
+                expected = expected.replace('role: manager\n', 'role: worker\n', 1).replace(self.manager_sentence, utility.ADVICE, 1)
+            assert text == (before if direction == 'compensate' else expected)
+        roster = yaml.safe_load((self.root / 'org/teams.yaml').read_bytes())
+        old = yaml.safe_load(self.canonical_before['org/teams.yaml'])
+        if direction == 'complete':
+            assert roster['teams']['default'] == {'manager': {'kind': 'human', 'principal': 'founder'}, 'workers': ['consultant_head', 'consultant_codex']}
+            assert 'consultant' not in roster['teams'] and roster['default_team'] == 'default' and roster['task_default_team'] == 'engineering'
+            for team, value in old['teams'].items():
+                if team not in ('consultant', 'default'): assert roster['teams'][team] == value
+            assert '# unrelated literal engineering metadata remains' in (self.root / 'org/teams.yaml').read_text()
+            assert '# preserve this pointer comment' in (self.root / 'org/teams.yaml').read_text()
+        else: assert (self.root / 'org/teams.yaml').read_bytes() == self.canonical_before['org/teams.yaml']
+        utility.verify_preserved_paths(self.root, self.manifest)
+        utility.verify_global_assets(self.manifest)
+        # Ordinary source-bound compatible cold reopen, not an after-roster mock.
+        launcher = "import sys,json;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from runtime.config import Settings;from runtime.daemon.org_state import OrgState;from runtime.workflows.profile_coordinator import ProfileCoordinator;o=OrgState.load(slug='alpha',root=Path(sys.argv[2]),settings=Settings(project_root=Path(sys.argv[1])));p=ProfileCoordinator(daemon_home=Path(sys.argv[3]),orgs={'alpha':o});p.reconcile_startup();o.workflow_authority.capture_admission();assert o.db.get_task('TASK-C6-HISTORY').team=='consultant';assert o.db.get_task('TASK-C6-HISTORY').current_session_id=='retained-fixture-session';r=o.db.get_recall_payload('TASK-C6-HISTORY');assert r['assigned_agent']=='consultant_head' and r['output_summary']=='Retained Consultant historical note';assert o.db.get_task_results('TASK-C6-HISTORY')[0]['session_id']=='retained-fixture-session';assert o.db.get_audit_logs('TASK-C6-HISTORY');o.close()"
+        reopened = subprocess.run([sys.executable, '-I', '-c', launcher, str(self.source), str(self.root), str(self.home)],
+            env=self.env, cwd=self.source, capture_output=True, text=True, timeout=60)
+        assert reopened.returncode == 0, reopened.stderr
+        assert self.rows() == after
+
+
+@pytest.fixture
+def maintenance_case(request, monkeypatch):
+    """M location input is not authorization or a containment certificate.
+
+    The external operator prepares the real unit inventory/inhibition and this
+    private input file. This test does not stop/mask services or operate a guest.
+    """
+    import uuid
+    supplied = os.environ.get('HAPPYRANCH_TEST_ROSTER_M_INPUT')
+    assert supplied, 'M unprovisioned: externally authorized inhibition/input required'
+    input_path = Path(supplied).resolve(strict=True)
+    declaration = json.loads(input_path.read_bytes())
+    venue = Path(declaration['venue']).resolve(strict=True)
+    assert venue.is_absolute() and not venue.is_relative_to(Path('/tmp'))
+    assert venue.stat().st_uid == os.getuid() and (venue.stat().st_mode & 0o777) == 0o700
+    assert declaration['kind'] == 'THR296-test-fixture-input-not-manifest'
+    home = Path(declaration['containment']['daemon_home']).resolve(strict=True)
+    assert home.is_relative_to(venue)
+    monkeypatch.setenv('HAPPYRANCH_DAEMON_HOME', str(home))
+    monkeypatch.setenv('HAPPYRANCH_CANONICAL_STORE_ROOT', str(home / 'canonical-skills'))
+    params = getattr(getattr(request.node, 'callspec', None), 'params', {})
+    directory = venue / ('case-' + uuid.uuid4().hex); directory.mkdir(mode=0o700)
+    default_shape = params.get('default_shape', params['refusal'][0] if isinstance(params.get('refusal'), tuple) else 'no-default')
+    case = _MaintenanceCase(directory, declaration['containment'], default_shape, params.get('row_shape', 'ordinary_rows'))
+    yield case
+    # Preserve owned adverse/cut receipts for independent assessment. No broad
+    # teardown sweep or production worktree cleanup is performed by this fixture.
+
+
+@pytest.mark.parametrize('default_shape', ['no-default', 'correct-empty-default'])
+def test_c6_exact_manifest_apply_and_preservation(maintenance_case, default_shape):
+    case = maintenance_case
+    applied, syscalls, frames = case.observed(case.apply_arguments(), 'apply')
+    assert applied.returncode == 0, applied.stderr
+    actual = json.loads(applied.stdout.splitlines()[-1])
+    assert actual['operation_id'] == case.manifest['operation_id'] and actual['manifest_sha256'] == case.digest
+    assert actual['direction'] == 'complete' and actual['traffic_released'] is False
+    case.preservation()
+    receipt = (case.operation_dir / 'receipt.json').read_bytes()
+    from scripts import migrate_human_team_roster as utility
+    for index in range(2):
+        before = utility.preservation_inventory(case.root); rows = case.rows()
+        repeated, syscalls, frames = case.observed(case.apply_arguments(), 'replay-' + str(index))
+        assert repeated.returncode == 0 and json.loads(repeated.stdout.splitlines()[-1]) == actual
+        case.no_effects(syscalls, frames)
+        assert case.rows() == rows and utility.preservation_inventory(case.root) == before
+        assert (case.operation_dir / 'receipt.json').read_bytes() == receipt
+
+
+
+# Each M row follows an actual successful check, then changes one condition.
+# Earlier containment failures cannot stand in for these later guards.
+C8_M_REFUSALS = [
+    'pending-child', 'pending-ancestor', 'chain', 'fanout', 'callback', 'recovery',
+    'invocation', 'delivery', 'probe', 'exchange', 'deferred-exchange', 'job', 'dream', 'wake', 'schedule',
+    'schedule-session', 'enrollment', 'workflow-owner', 'unrelated-draft', 'remote-lease',
+    'active-launch', 'unknown-launch', 'wrong-root', 'wrong-reader', 'registry-CAS',
+    'canonical-hash', 'canonical-mode', 'canonical-type', 'generated-hash', 'generated-mode',
+    'generated-type', 'generated-owner', 'authority-CAS', 'profile-CAS', 'foreign-journal',
+    'foreign-lease', 'conflicting-default', 'duplicate-membership', 'incomplete-inventory',
+    'inaccessible-memory', 'unknown-reference', 'unexpected-grant', 'storage-bytes', 'storage-inodes',
+    'restore-corrupt', 'restore-metadata', 'restore-alias', 'backup-CAS', 'open-WAL',
+    'global-restore-CAS',
+]
+
+
+def _c8_maintenance_refusal(case, refusal):
+    import copy
+    import base64
+    from scripts import migrate_human_team_roster as utility
+    plan = json.loads(case.plan.read_bytes())
+    mode = 'check'
+    held = None
+    child = None
+    expected = None
+    # Explicit SQL records below are synthetic pending-owner DATA, not actual
+    # accepted callback/result/runner receipts. Real utility inventory owns the
+    # observed refusal. Closed restore is renewed after fixture setup only.
+    sql = {
+        'invocation': ("UPDATE thread_invocations SET status='pending' WHERE invocation_token='retained-THR-C6-0'", (), 'thread_invocations'),
+        'chain': ("UPDATE tasks SET active_chain='{}' WHERE id='TASK-C6-HISTORY'", (), 'tasks'),
+        'fanout': ("UPDATE tasks SET active_fanout='{}' WHERE id='TASK-C6-HISTORY'", (), 'tasks'),
+        'callback': ("INSERT INTO task_completion_recoveries(task_id,agent,origin_session_id,recovery_session_id,provider_session_id,claimed_at,expires_at,state) VALUES ('TASK-C6-HISTORY','consultant_head','fixture-origin','fixture-recovery','fixture-provider','2026-10-01','2026-10-31','callback_accepted')", (), 'task_completion_recoveries'),
+        'recovery': ("INSERT INTO task_completion_recoveries(task_id,agent,origin_session_id,recovery_session_id,provider_session_id,claimed_at,expires_at,state) VALUES ('TASK-C6-HISTORY','consultant_head','fixture-origin','fixture-recovery','fixture-provider','2026-10-01','2026-10-31','claimed')", (), 'task_completion_recoveries'),
+        'delivery': ("UPDATE thread_reply_delivery_state SET required_through_seq=8 WHERE thread_id='THR-C6-0' AND agent_name='consultant_head'", (), 'thread_reply_delivery_state'),
+        'probe': ("UPDATE thread_reply_breaker_episodes SET state='probe',probe_lease_id='fixture-probe' WHERE thread_id='THR-C6-0' AND agent_name='consultant_head'", (), 'thread_reply_breaker_episodes'),
+        'job': ("INSERT INTO jobs(id,task_id,agent_name,title,script_text,interpreter,status,created_at) VALUES ('JOB-C8','TASK-C6-HISTORY','consultant_head','fixture pending','true','bash','pending','2026-10-01')", (), 'jobs'),
+        'dream': ("INSERT INTO dreams(id,agent_name,local_date,scheduled_for,window_end,status,created_at) VALUES ('DREAM-C8','consultant_head','2026-10-01','2026-10-01','2026-10-02','pending','2026-10-01')", (), 'dreams'),
+        'wake': ("INSERT INTO work_hours(id,agent_name,local_date,slot,mode,scheduled_for,status,created_at) VALUES ('WAKE-C8','consultant_head','2026-10-01','09:00','routine','2026-10-01','pending','2026-10-01')", (), 'work_hours'),
+        'schedule': ("INSERT INTO schedules(id,agent_name,kind,fire_at,normalized_brief,source_instruction,status,active,created_at,updated_at) VALUES ('SCHEDULE-C8','consultant_head','one_shot','2026-10-01','fixture','fixture','armed',1,'2026-10-01','2026-10-01')", (), 'schedules'),
+        'schedule-session': ("INSERT INTO schedules(id,agent_name,kind,fire_at,normalized_brief,source_instruction,status,active,session_id,created_at,updated_at) VALUES ('SCHEDULE-C8','consultant_head','one_shot','2026-10-01','fixture','fixture','paused',0,'fixture-running','2026-10-01','2026-10-01')", (), 'schedules'),
+    }
+    try:
+        if refusal in ('pending-child', 'pending-ancestor'):
+            from runtime.infrastructure.database import Database
+            from runtime.models import TaskRecord, TaskStatus
+            db = Database(case.root / 'happyranch.db')
+            try:
+                db.insert_task(TaskRecord(id='TASK-C8-PENDING', status=TaskStatus.PENDING,
+                    assigned_agent='consultant_codex', team='consultant', brief='Synthetic pending owner',
+                    parent_task_id='TASK-C6-HISTORY' if refusal == 'pending-child' else None,
+                    task_type='subtask' if refusal == 'pending-child' else 'task'))
+                if refusal == 'pending-ancestor':
+                    db.update_task('TASK-C6-HISTORY', parent_task_id='TASK-C8-PENDING')
+            finally: db.close()
+            expected = 'nonquiescent_tasks'
+        elif refusal in sql:
+            statement, parameters, table = sql[refusal]
+            with sqlite3.connect(case.root / 'happyranch.db') as conn: conn.execute(statement, parameters)
+            expected = 'nonquiescent_' + table
+        elif refusal in ('exchange', 'deferred-exchange'):
+            with sqlite3.connect(case.root / 'happyranch.db') as conn:
+                conn.execute("UPDATE thread_reply_exchange SET state=? WHERE thread_id='THR-C6-0' AND exchange_id=1", ('open' if refusal == 'exchange' else 'released',))
+                if refusal == 'deferred-exchange':
+                    conn.execute("UPDATE thread_exchange_deferrals SET state='held' WHERE thread_id='THR-C6-0' AND exchange_id=1 AND agent_name='consultant_codex'")
+            expected = 'nonquiescent_' + ('thread_reply_exchange' if refusal == 'exchange' else 'thread_exchange_deferrals')
+        elif refusal in ('workflow-owner', 'unrelated-draft'):
+            # Valid native producer, not an invented pending workflow row.
+            from fastapi.testclient import TestClient
+            from runtime.config import Settings
+            from runtime.daemon import paths
+            from runtime.daemon.app import create_app
+            from runtime.daemon.state import DaemonState
+            from runtime.runtime import RuntimeDir
+            from tests.workflows.authority_test_support import C5_SCHEMA1_HISTORY
+            state = DaemonState.from_runtime(RuntimeDir.load(case.runtime), Settings(project_root=case.source))
+            client = TestClient(create_app(state), base_url='http://localhost')
+            client.headers['Authorization'] = 'Bearer ' + paths.ensure_token()
+            try:
+                base = '/api/v1/orgs/alpha'
+                request = copy.deepcopy(C5_SCHEMA1_HISTORY['request'])
+                ready = state.orgs['alpha'].workflow_authority.capture_admission().ready
+                request.update(operation_key='c8-pending-document', instance_id='c8-pending-document')
+                request['authority'] = dict(namespace=ready.namespace, generation=ready.generation, snapshot_digest=ready.snapshot_digest)
+                request['bindings']['product-lead'] = dict(kind='agent', principal='product_lead' if refusal == 'unrelated-draft' else 'consultant_head', team='product' if refusal == 'unrelated-draft' else 'consultant')
+                graph = client.post(base + '/workflows/activations', json=request)
+                assert graph.status_code == 201, graph.text
+                assert graph.json()['root_task_id']
+            finally:
+                client.close()
+                import asyncio
+                asyncio.run(state.close_all())
+            expected = 'nonquiescent_tasks'
+        elif refusal == 'remote-lease':
+            # A terminal local job is no proof that its remote workspace is
+            # quiescent. Use the existing remote-store fixture owner.
+            from tests.infrastructure.test_remote_job_schema_migration import _insert_runner, _insert_workspace
+            with sqlite3.connect(case.root / 'happyranch.db') as conn:
+                _insert_runner(conn, 'C8-fixture-runner')
+                _insert_workspace(conn, 'workspace-1', 'C8-fixture-runner', agent='consultant_head', state='uncertain')
+            expected = 'nonquiescent_remote_runner_workspaces'
+        elif refusal == 'enrollment':
+            pending = case.root / 'org/agents/_pending'; pending.mkdir(exist_ok=True)
+            (pending / 'fixture.md').write_text('pending fixture data\n')
+            expected = 'pending_or_uninspectable_enrollment'
+        elif refusal == 'active-launch':
+            child = subprocess.Popen([sys.executable, '-I', '-c', 'import time;time.sleep(120)'], cwd=case.root)
+            expected = 'runtime_or_daemon_process_present'
+        elif refusal in ('unknown-launch', 'generated-owner', 'storage-bytes', 'storage-inodes'):
+            # These require an externally operated adverse condition. Merely
+            # naming it does not fabricate unit/proc/owner/statvfs evidence.
+            request = case.observers / ('operator-' + refusal + '.request')
+            request.write_text(json.dumps({'condition': refusal, 'runtime': str(case.runtime), 'operation_dir': str(case.operation_dir), 'generated': str(case.root / 'workspaces/consultant_head/AGENTS.md')}))
+            done = request.with_suffix('.ready')
+            deadline = time.monotonic() + 30
+            while not done.exists() and time.monotonic() < deadline: time.sleep(0.05)
+            assert done.exists(), 'external adverse M condition unavailable: ' + refusal
+            expected = {'unknown-launch': 'unproven_supervisor_launch_closure', 'generated-owner': 'preservation_owner_not_restorable',
+                        'storage-bytes': 'insufficient_operation_storage_bytes_or_inodes', 'storage-inodes': 'insufficient_operation_storage_bytes_or_inodes'}[refusal]
+            if refusal.startswith('storage-'):
+                facts = os.statvfs(case.operation_dir)
+                assert facts.f_bavail * facts.f_frsize == 0 if refusal == 'storage-bytes' else facts.f_favail == 0
+        elif refusal in ('wrong-root', 'wrong-reader', 'registry-CAS'):
+            mode = 'apply'
+            if refusal == 'wrong-reader':
+                changed = copy.deepcopy(case.manifest); changed['reader_binding']['source_sha'] = '0' * 40
+                case.manifest_path.write_text(json.dumps(changed)); case.digest = hashlib.sha256(case.manifest_path.read_bytes()).hexdigest()
+                expected = 'effective_reader_binding_mismatch'
+            else:
+                registry = case.home / 'runtimes.yaml'; raw = yaml.safe_load(registry.read_bytes())
+                if refusal == 'wrong-root': raw['registered'].remove(str(case.runtime)); expected = 'effective_runtime_registration_mismatch'
+                else: raw['fixture_comment'] = 'changed'; expected = 'runtime_registration_before_image_CAS_lost'
+                registry.write_text(yaml.safe_dump(raw))
+        elif refusal.startswith(('canonical-', 'generated-')):
+            mode = 'apply'
+            path = case.root / ('org/agents/consultant_head.md' if refusal.startswith('canonical-') else 'workspaces/consultant_head/AGENTS.md')
+            if refusal.endswith('-hash'): path.write_bytes(path.read_bytes() + b'\nthird-state\n')
+            elif refusal.endswith('-mode'): path.chmod(path.stat().st_mode ^ 0o100)
+            elif refusal.endswith('-type'): path.unlink(); path.symlink_to('third-state')
+            expected = 'canonical_path_redirected' if refusal == 'canonical-type' else 'unknown_third_state'
+        elif refusal in ('authority-CAS', 'profile-CAS', 'foreign-journal', 'foreign-lease'):
+            mode = 'apply'
+            with sqlite3.connect(case.root / 'happyranch.db') as conn:
+                if refusal == 'authority-CAS':
+                    conn.execute("UPDATE workflow_authority_pointers SET profile_fence=profile_fence+1 WHERE namespace='org/alpha'")
+                    expected = 'publication_profile_or_audit_before_image_CAS_lost'
+                elif refusal == 'profile-CAS':
+                    conn.execute("INSERT INTO workflow_profile_dependencies VALUES ('org/alpha','foreign-profile','consultant_head',1,'unbound')")
+                    expected = 'retained_profile_dependencies_changed'
+                elif refusal == 'foreign-lease':
+                    conn.execute("INSERT INTO workflow_profile_leases VALUES ('foreign-profile','foreign-operation',?)", (os.getpid(),))
+                    expected = 'foreign_profile_lease'
+                else:
+                    conn.execute("INSERT INTO workflow_publication_journals SELECT 'WAJ-c8-foreign',namespace,generation,expected_generation,snapshot_bytes,snapshot_digest,'foreign-operation',publisher_invocation,profile_fence,state,recovery_owner,file_phase_owner FROM workflow_publication_journals LIMIT 1")
+                    expected = 'unowned_publication_residue'
+        elif refusal in ('conflicting-default', 'duplicate-membership'):
+            path = case.root / 'org/teams.yaml'; roster = yaml.safe_load(path.read_bytes())
+            roster['teams']['default'] = {'manager': {'kind': 'human', 'principal': 'founder'}, 'workers': ['consultant_codex'] if refusal == 'duplicate-membership' else ['dev_agent']}
+            if refusal == 'conflicting-default':
+                # Valid membership, wrong allowed empty-Default before-image.
+                roster['teams']['engineering']['workers'].remove('dev_agent')
+                agent = case.root / 'org/agents/dev_agent.md'; agent.write_text(agent.read_text().replace('team: engineering', 'team: default'))
+            path.write_text(yaml.safe_dump(roster))
+            expected = 'conflicting_Default' if refusal == 'conflicting-default' else 'duplicate team memberships'
+        elif refusal == 'incomplete-inventory':
+            plan['generated_after_images'].pop('workspaces/consultant_codex/CLAUDE.md')
+            expected = 'both_complete_native_instruction_pairs_required'
+        elif refusal == 'inaccessible-memory':
+            (case.root / 'workspaces/consultant_head/memory/MEM-C6.md').chmod(0)
+            expected = 'Permission denied'
+        elif refusal == 'unknown-reference':
+            entry = dict(plan['generated_after_images']['workspaces/consultant_head/CLAUDE.md'])
+            data = b'../../unknown-reference'; entry.update(bytes=base64.b64encode(data).decode(), sha256=hashlib.sha256(data).hexdigest())
+            plan['generated_after_images']['workspaces/consultant_head/.agents/skills/unknown'] = entry
+            expected = 'skill_link_outside_original_canonical_package'
+        elif refusal == 'unexpected-grant':
+            rel = 'workspaces/consultant_head/.claude/settings.json'; entry = plan['generated_after_images'][rel]
+            settings = json.loads(base64.b64decode(entry['bytes'])); settings['permissions']['allow'].append('Bash(sudo:*)')
+            raw = json.dumps(settings).encode(); entry.update(bytes=base64.b64encode(raw).decode(), sha256=hashlib.sha256(raw).hexdigest())
+            expected = 'unexpected_generated_permission_grant'
+        elif refusal.startswith('restore-') or refusal in ('backup-CAS', 'global-restore-CAS', 'open-WAL'):
+            mode = 'apply'
+            if refusal == 'restore-corrupt': (case.closed / 'happyranch.db').write_bytes(b'truncated closed backup')
+            elif refusal == 'restore-metadata': (case.closed / 'workspaces/consultant_head/memory/MEM-C6.md').chmod(0o600)
+            elif refusal == 'restore-alias':
+                plan['closed_restore_root'] = str(case.root); plan['closed_database_backup'] = str(case.root / 'happyranch.db'); mode = 'check'
+            elif refusal == 'global-restore-CAS':
+                path = next(p for p in case.closed_store.rglob('*') if p.is_file() and not p.is_symlink())
+                path.chmod(0o600); path.write_bytes(path.read_bytes() + b'third-state')
+            elif refusal == 'open-WAL':
+                mode = 'check'; held = sqlite3.connect(case.root / 'happyranch.db'); held.execute('PRAGMA journal_mode=WAL')
+                held.execute("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) VALUES ('config:c8','founder','fixture','{}','2026-10-01')"); held.commit()
+            else:
+                (case.closed / 'happyranch.db').write_bytes((case.closed / 'happyranch.db').read_bytes() + b'stale')
+            expected = ('independent_closed_restore_required' if refusal == 'restore-alias' else 'database_not_closed_checkpointed' if refusal == 'open-WAL'
+                        else 'canonical_store_closed_restore_changed' if refusal == 'global-restore-CAS' else 'closed_restore_changed')
+        else: raise AssertionError('unowned C8 parameter: ' + refusal)
+        if mode == 'check' and not refusal.startswith('restore-') and refusal not in ('global-restore-CAS', 'inaccessible-memory', 'generated-owner'):
+            # This is fixture backup of the single varied condition, never
+            # recovery of a foreign operation or cancellation-as-preflight.
+            shutil.rmtree(case.closed); shutil.copytree(case.root, case.closed, symlinks=True)
+        encoded = json.dumps(plan, sort_keys=True)
+        if case.plan.read_text() != encoded: case.plan.write_text(encoded)
+        before = utility.preservation_inventory(case.root) if refusal not in ('inaccessible-memory', 'generated-owner') else None
+        rows = case.rows()
+        arguments = case.apply_arguments() if mode == 'apply' else ['--check', '--runtime-root', str(case.runtime), '--org', 'alpha', '--plan', str(case.plan)]
+        actual, syscalls, frames = case.observed(arguments, 'refusal-' + refusal)
+        assert actual.returncode == 1 and expected in actual.stderr, (refusal, expected, actual.stdout, actual.stderr)
+        case.no_effects(syscalls, frames)
+        assert case.rows() == rows
+        if before is not None: assert utility.preservation_inventory(case.root) == before
+        assert not (case.operation_dir / 'receipt.json').exists()
+    finally:
+        if held is not None: held.close()
+        if child is not None:
+            child.terminate(); child.wait(timeout=10)
+
+
+@pytest.mark.parametrize('refusal', ['no-inhibition', 'design-plan-not-manifest', 'wrong-digest', *C8_M_REFUSALS])
+def test_c8_preflight_refusals_and_backup_cas(runtime: Path, tmp_path: Path, refusal: str, request: pytest.FixtureRequest) -> None:
     """L-only early input refusals through the genuine standalone utility.
 
     These controls require no systemd/process census or M simulation. Complete
     checked-backup CAS, mutation syscall/frame witnesses and successful recovery
     remain separate M/capability cases. Byte equality is not no-write proof.
     """
+    if refusal in C8_M_REFUSALS:
+        _c8_maintenance_refusal(request.getfixturevalue('maintenance_case'), refusal)
+        return
     from tests.helpers.human_team_incompatible_reader_probe import _closed_files
     from tests.helpers.integration_stub_guard.guard import manifest
     binding = manifest()
@@ -1696,17 +2342,202 @@ runpy.run_path(str(script),run_name='__main__')
          'transient_write_proof': 'separate observer required', 'M_success': 'not attempted'}, sort_keys=True))
 
 
-@pytest.mark.parametrize('refusal', ['missing-direction', 'missing-operation', 'wrong-digest',
-                                   'design-plan-not-manifest'])
-def test_c9_crash_recovery_and_replay(runtime: Path, tmp_path: Path, refusal: str) -> None:
-    """L-only recovery command refusal and repeated input preservation.
 
-    These are process/argument subcases, not a successful maintenance/crash
-    replay. M cuts, actual checked-manifest recovery, reboot and transient
-    zero-write proof still require the independently authorized M capability.
+C9_M_CASES = [(default, direction, 'syscall', family + '.' + effect + '.' + side)
+    for default in ('no-default', 'correct-empty-default') for direction in ('complete', 'compensate')
+    for family in ('head_replace', 'codex_replace', 'teams_replace', 'authority', 'receipt')
+    for effect in ('stage_write', 'file_fsync', 'rename', 'dir_fsync') for side in ('before', 'after')]
+C9_M_CASES += [(default, direction, 'frame', family + '.' + event)
+    for default in ('no-default', 'correct-empty-default') for direction in ('complete', 'compensate')
+    for family in ('restore_verified', 'final_cas', 'head_reset', 'codex_reset', 'registry_reload',
+                   'head_refresh', 'codex_refresh', 'profile_capture', 'profile_reconcile', 'publication_prepare', 'publication', 'receipt')
+    for event in ('call', 'return')]
+C9_M_CASES += [(default, direction, 'checked-paths', 'generated-and-global')
+    for default in ('no-default', 'correct-empty-default') for direction in ('complete', 'compensate')]
+C9_M_CASES += [('no-default', 'complete', 'syscall', 'backup_durable.' + effect + '.' + side)
+    for effect in ('file_fsync', 'dir_fsync') for side in ('before', 'after')]
+C9_M_CASES += [('no-default', 'complete', 'observer-control', value) for value in ('syscall-loss', 'frame-loss', 'source-capability')]
+C9_M_CASES += [('no-default', 'complete', 'third-state', value)
+    for value in ('unknown-bytes', 'competing-writer', 'incomplete-backup', 'post-traffic')]
+
+
+def _c9_partial_attachment_controls(case):
+    """Every proper inconsistent subset is tested in its own closed copy."""
+    import base64
+    from scripts import migrate_human_team_roster as utility
+    original = {rel: (case.root / rel).read_bytes() for rel in utility.CANONICAL}
+    try:
+        for mask in range(1, 7):
+            for index, rel in enumerate(utility.CANONICAL):
+                (case.root / rel).write_bytes(base64.b64decode(case.manifest['after' if mask & (1 << index) else 'before'][rel]['bytes']))
+            before = utility.preservation_inventory(case.root); rows = case.rows()
+            attached = _attach_process(case.root, slug='alpha')
+            assert attached.returncode == 1 and 'org content is inconsistent' in attached.stderr, attached.stderr
+            assert utility.preservation_inventory(case.root) == before and case.rows() == rows
+    finally:
+        for rel, raw in original.items(): (case.root / rel).write_bytes(raw)
+
+
+def _c9_process_case(case, direction, kind, boundary):
+    from scripts import migrate_human_team_roster as utility
+    if (case.operation_dir / 'receipt.json').exists():
+        import uuid
+        directory = case.directory.parent / ('capability-' + uuid.uuid4().hex)
+        directory.mkdir(mode=0o700)
+        default = 'correct-empty-default' if 'default' in yaml.safe_load(case.canonical_before['org/teams.yaml'])['teams'] else 'no-default'
+        case = _MaintenanceCase(directory, case.manifest['containment'], default, 'ordinary_rows')
+    # Normal observer capability is a mandatory positive, then actual process
+    # loss is selected. A Linux process kill is never called a guest reboot.
+    observed, syscalls, frames = case.observed(case.apply_arguments(), 'capability-apply')
+    assert observed.returncode == 0, observed.stderr
+    assert any(row['kind'] == 'syscall-entry' and row['protected'] for row in syscalls)
+    assert any(row['kind'] == 'syscall-exit' and row['successful'] and row.get('identity') for row in syscalls)
+    assert {row['agent'] for row in frames if row['kind'] == 'frame' and row['event'] == 'call'
+            and row['qualname'] == 'SessionsMixin.reset_thread_sessions_for_agent'} == {'consultant_head', 'consultant_codex'}
+    case.preservation()
+    # A NEW operation/fixture follows capability proof; do not rewind a real
+    # operated DB, pointer, history or successful receipt to inject a cut.
+    directory = case.directory.parent / (case.directory.name + '-cut-' + hashlib.sha256(boundary.encode()).hexdigest()[:12])
+    directory.mkdir(mode=0o700)
+    default = 'correct-empty-default' if 'default' in yaml.safe_load(case.canonical_before['org/teams.yaml'])['teams'] else 'no-default'
+    cut = _MaintenanceCase(directory, case.manifest['containment'], default, 'ordinary_rows')
+    _c9_partial_attachment_controls(cut)
+    result, syscalls, frames = cut.observed(cut.apply_arguments(), 'selected-cut',
+        syscall=boundary if kind == 'syscall' else 'observe-only', frame=boundary if kind == 'frame' else 'observe-only')
+    # Capture true operated prefix after all traced processes stopped. Per-agent
+    # reset and native publication rows are inspected; no COMMIT is inferred
+    # from any observed WAL fsync. Interior SQL cuts belong to U9 below.
+    prefix = cut.rows()
+    prefix_files = utility.preservation_inventory(cut.root)
+    (cut.observers / 'true-prefix.json').write_text(json.dumps({'source_sha': cut.revision,
+        'manifest_sha256': cut.digest, 'boundary': boundary, 'direction': direction,
+        'publication': prefix['workflow_publication_journals'], 'pointer': prefix['workflow_authority_pointers'],
+        'reset': prefix['thread_participants'], 'audit_ids': [row[0] for row in prefix['audit_log']],
+        'files': prefix_files, 'sql_commit_inferred_from_syscalls': False}, default=lambda value: hashlib.sha256(value).hexdigest() if isinstance(value, bytes) else str(value), sort_keys=True))
+    completed_receipt = (cut.operation_dir / 'receipt.json').read_bytes() if (cut.operation_dir / 'receipt.json').exists() else None
+    recovered, recovery_syscalls, recovery_frames = cut.observed(cut.apply_arguments(direction), 'actual-recovery')
+    if kind == 'frame' and boundary == 'receipt.call' and direction == 'complete':
+        # Durable completion is independently recorded in the prefix; only the
+        # external operation receipt may be reconstructed by this new process.
+        cut.require_complete_observers(recovery_syscalls, recovery_frames)
+        forbidden = {'SessionsMixin.reset_thread_sessions_for_agent', 'SessionsMixin._reset_thread_sessions_for_agent_uncommitted',
+            'ContextBuilder.ensure_workspace_ready', 'materialize_workspace_skills_union',
+            'ProfileCoordinator.reconcile_supported_roster_batch', 'WorkflowAuthorityCoordinator._begin_publication_fence',
+            'WorkflowAuthorityCoordinator._publish_current_locked', 'WorkflowAuthorityCoordinator.publish_after_supported_change'}
+        assert not [row for row in recovery_frames if row['kind'] == 'frame' and row['event'] == 'call' and row['qualname'] in forbidden]
+        assert not [row for row in recovery_syscalls if row['kind'] == 'syscall-entry' and row['protected']
+            and row['syscall'] not in ('fsync', 'fdatasync')
+            and any(Path(value).is_relative_to(cut.root) or Path(value).is_relative_to(cut.store) for value in row['paths'])]
+        assert cut.rows()['workflow_authority_pointers'] == prefix['workflow_authority_pointers']
+    assert recovered.returncode == 0, recovered.stderr
+    cut.preservation(direction)
+    if completed_receipt is not None:
+        assert (cut.operation_dir / 'receipt.json').read_bytes() == completed_receipt
+    for index in range(2):
+        before = utility.preservation_inventory(cut.root); rows = cut.rows()
+        repeated, syscalls, frames = cut.observed(cut.apply_arguments(direction), 'replay-' + str(index))
+        assert repeated.returncode == 0, repeated.stderr
+        cut.no_effects(syscalls, frames)
+        assert cut.rows() == rows and utility.preservation_inventory(cut.root) == before
+    if direction == 'compensate':
+        refusal, syscalls, frames = cut.observed(cut.apply_arguments(), 'compensated-fresh-required')
+        assert refusal.returncode == 1 and 'fresh_operation_required_after_compensation' in refusal.stderr
+        cut.no_effects(syscalls, frames)
+    if kind == 'frame' and boundary == 'receipt.call' and direction == 'complete':
+        # Loss after durable completion before its receipt must reconstruct only
+        # that external receipt. Observe this separately from later replay.
+        # The two later replays enter neither receipt writer nor product helper.
+        assert not any(row['kind'] == 'frame' and row['event'] == 'call'
+                       and row['qualname'] == 'write_receipt' for row in frames)
+
+
+def _c9_maintenance_selection(case, selection):
+    default, direction, kind, boundary = selection
+    if kind in ('syscall', 'frame'):
+        _c9_process_case(case, direction, kind, boundary)
+    elif kind == 'observer-control':
+        from scripts import migrate_human_team_roster as utility
+        applied, _, _ = case.observed(case.apply_arguments(), 'observer-positive-apply')
+        assert applied.returncode == 0, applied.stderr
+        case.preservation()
+        replay, syscalls, frames = case.observed(case.apply_arguments(), 'observer-positive-replay')
+        assert replay.returncode == 0, replay.stderr
+        case.no_effects(syscalls, frames)
+        if boundary == 'syscall-loss':
+            with pytest.raises(AssertionError, match='observer proof unavailable/incomplete'):
+                case.no_effects(syscalls[:-1], frames)
+        elif boundary == 'frame-loss':
+            with pytest.raises(AssertionError, match='observer proof unavailable/incomplete'):
+                case.no_effects(syscalls, frames[:-1])
+        else:
+            original = case.event_map.read_bytes()
+            wrong = json.loads(original); wrong['sites'][0]['sha256'] = '0' * 64
+            before = utility.preservation_inventory(case.root); rows = case.rows()
+            try:
+                # Map scratch mutation invalidates the real observer before
+                # product entry; no mock profile or fabricated receipt.
+                case.event_map.write_text(json.dumps(wrong))
+                with pytest.raises((AssertionError, FileNotFoundError), match='.*'):
+                    case.observed(case.apply_arguments(), 'observer-invalid-source')
+            finally:
+                case.event_map.write_bytes(original)
+            assert utility.preservation_inventory(case.root) == before and case.rows() == rows
+    elif kind == 'checked-paths':
+        # g/s IDs are bound to real checked path/hash/type images, never a live
+        # hand-built manifest or an unbounded workspace discovery campaign.
+        paths = []
+        canonical = {'org/agents/consultant_head.md', 'org/agents/consultant_codex.md', 'org/teams.yaml'}
+        for index, rel in enumerate(sorted(set(case.manifest['after']) - canonical)):
+            before, after = case.manifest['before'][rel], case.manifest['after'][rel]
+            if after == before or after['kind'] == 'directory': continue
+            effects = ('symlink', 'rename', 'dir_fsync') if after['kind'] == 'link' else ('stage_write', 'file_fsync', 'rename', 'dir_fsync')
+            # settings.json is the unchanged in-place writer: it has no rename.
+            if rel.endswith('.claude/settings.json'): effects = ('stage_write', 'file_fsync')
+            paths += [(f'g{index}', rel, after['sha256'], effect) for effect in effects]
+        # Existing package addresses are reused; the actual utility flushes
+        # their checked file descriptors. New-package staging is a different
+        # unprovided preview prerequisite, never claimed from this fixture.
+        for index, rel in enumerate(sorted(case.manifest['global_after'])):
+            if case.manifest['global_after'][rel]['kind'] == 'file':
+                paths.append((f's{index}', rel, case.manifest['global_after'][rel]['sha256'], 'file_fsync'))
+        assert paths, 'finite generated/global selection cannot be empty'
+        (case.observers / 'checked-syscall-paths.json').write_text(json.dumps(paths))
+        for family, rel, sha, effect in paths:
+            for side in ('before', 'after'):
+                _c9_process_case(case, direction, 'syscall', family + '.' + effect + '.' + side)
+    else:
+        from scripts import migrate_human_team_roster as utility
+        _, _, _ = case.observed(case.apply_arguments(), 'third-state-positive')
+        assert (case.operation_dir / 'receipt.json').exists()
+        if boundary == 'unknown-bytes': (case.root / 'org/agents/consultant_head.md').write_bytes(b'unknown third state')
+        elif boundary == 'competing-writer':
+            with sqlite3.connect(case.root / 'happyranch.db') as conn:
+                conn.execute("INSERT INTO workflow_profile_leases VALUES ('foreign-profile','competing-writer',?)", (os.getpid(),))
+        elif boundary == 'incomplete-backup': (case.closed / 'happyranch.db').write_bytes(b'incomplete retained backup')
+        else:
+            with sqlite3.connect(case.root / 'happyranch.db') as conn:
+                conn.execute("UPDATE tasks SET note='real later traffic fixture' WHERE id='TASK-C6-HISTORY'")
+        before = utility.preservation_inventory(case.root); rows = case.rows()
+        refused, syscalls, frames = case.observed(case.apply_arguments('complete'), 'third-state-refusal')
+        assert refused.returncode == 1 and 'refused:' in refused.stderr, refused.stderr
+        case.no_effects(syscalls, frames)
+        assert utility.preservation_inventory(case.root) == before and case.rows() == rows
+
+
+@pytest.mark.parametrize('refusal', ['missing-direction', 'missing-operation', 'wrong-digest',
+                                   'design-plan-not-manifest', *C9_M_CASES], ids=lambda value: '-'.join(value) if isinstance(value, tuple) else value)
+def test_c9_crash_recovery_and_replay(runtime: Path, tmp_path: Path, refusal: str, request: pytest.FixtureRequest) -> None:
+    """Retained L command refusals plus externally held real M source selections.
+
+    The original argument controls do not attest migration. New M process cuts
+    require the real positive check and complete paired observers. Guest reboot
+    and successful transient proof still require independent M capability.
     The distinct C8 risk is apply/check admission; C9 must reject recovery's
     absent direction/operation without treating a prior plan as owned state.
     """
+    if isinstance(refusal, tuple):
+        _c9_maintenance_selection(request.getfixturevalue('maintenance_case'), refusal)
+        return
     from tests.helpers.human_team_incompatible_reader_probe import _closed_files
     from tests.helpers.integration_stub_guard.guard import manifest
     binding = manifest()

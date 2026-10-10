@@ -310,6 +310,14 @@ There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
 ## Founder-managed teams (THR296)
 
+The bounded roster maintenance source pins effective registration and the clean
+Python3.14 reader, independently closes org/shared-store restore inventories,
+and performs final pre-reset CAS. Complete/compensate and two same-manifest
+replays retain native reset/publication ownership; compensation preserves the
+original receipt and records its NEW coherent generation separately. C6/C8/C9
+source and 28 publication/3 replay localizations are AUTHORED, not executed.
+M launch/observer/reboot capability remains unproved; see the operator runbook.
+
 Team managers may be existing agent names or closed tagged principals
 `{kind: agent|human, principal: ...}`. The sole human principal is `founder`;
 its executable manager is absent. Founder never enters AgentDef, all_agents,

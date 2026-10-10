@@ -62,6 +62,17 @@ same retained operation retries only its original parent handoff. Cold authority
 recovery flushes staged/installed bytes and the containing directory before
 advancing publication state; matching bytes do not prove a prior flush.
 
+TASK10461 maintenance source adds the real check/apply C6 owner (two Default
+inputs), positively controlled C8 conditions, finite syscall/frame C9 process
+loss and 28 pass-through SQL commit/3 replay localization parameters. Effective
+registration/reader and independently closed backup/restore CAS precede reset.
+Canonical edits preserve unrelated literal fields/text. A successful receipt
+is immutable; later compensation has its own receipt and NEW coherent
+original-roster generation, retaining resets/audits. No product fault seam,
+transaction protocol, host inhibition or schema is added. These sources remain
+UNEXECUTED; ordinary command-bearing service closure, observer capability,
+new-package staging and actual reboot witnesses are explicit M boundaries.
+
 Migration is an explicit bounded operator utility, never startup/enable/live
 maintenance. It requires persistent external restart inhibition, complete
 quiescence, closed backups/restore validation, exact metadata/image CAS, native

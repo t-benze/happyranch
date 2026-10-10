@@ -31,6 +31,13 @@ enablement, deployment or a Phase1-completion claim.
 
 ## Founder-managed Default (THR296)
 
+Offline roster recovery uses the retained native operation/journal/request
+identity. Replay performs no reset/materializer/publication when actual durable
+completion is already established. Explicit compensation publishes a new
+coherent original-roster generation, retaining cleared resumes and audits; the
+original successful receipt is preserved. C6/C8/C9 observers/localizations are
+authored source, with M/guest-reboot behavior unexecuted.
+
 Attachment and executable authority are distinct. An exactly registered pending
 bootstrap manager can attach without a current manager grant; owner admission and
 workflow capture still require its ordinary supported promotion to ACTIVE. Active/
