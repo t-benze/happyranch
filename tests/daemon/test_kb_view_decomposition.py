@@ -337,7 +337,19 @@ def _compatibility(order: str, owned: Path, expected_owner: str) -> None:
              "type_exports": {name: [value.__module__, value.__qualname__] for name, value in vars(facade).items()
                               if isinstance(value, type)}}
     shape_sha = hashlib.sha256(json.dumps(shape, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    assert shape_sha == _PRISTINE_FACADE_SHAPE_SHA256, "pristine complete facade method/signature/MRO/type-export map"
+    from tests.daemon.test_thread_decline_decomposition import _expected_facade, _PRISTINE_FACADE
+
+    def expected_shape(facade_contract: dict) -> dict:
+        return {"methods": {name: row[1] for name, row in facade_contract["members"].items()
+                            if row[0] == "method"},
+                "mro": facade_contract["mro"], "type_exports": facade_contract["types"]}
+
+    def shape_digest(facade_contract: dict) -> str:
+        return hashlib.sha256(json.dumps(expected_shape(facade_contract), sort_keys=True,
+                                         separators=(",", ":")).encode()).hexdigest()
+
+    assert shape_digest(_PRISTINE_FACADE) == _PRISTINE_FACADE_SHAPE_SHA256
+    assert shape_sha == shape_digest(_expected_facade()), "pristine complete facade method/signature/MRO/type-export map"
     owners = [owner.__name__ for owner in facade.Database.__mro__ if "record_kb_view" in vars(owner)]
     assert owners == [expected_owner], ("KBVIEW unique selected owner", owners, [expected_owner])
     assert facade.Database is importlib.import_module("runtime.infrastructure.database").Database

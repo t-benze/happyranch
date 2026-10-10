@@ -738,6 +738,21 @@ def _facade() -> dict:
     }
 
 
+def _expected_facade() -> dict:
+    """Accepted full 3.14 literal plus independently proven stdlib metadata.
+
+    CPython 3.12 lacks object class-method text signatures; 3.13 exports
+    Path from pathlib._local. Keep every entry and all non-stdlib values.
+    """
+    expected = deepcopy(_PRISTINE_FACADE)
+    if sys.version_info[:2] == (3, 12):
+        expected["members"]["__init_subclass__"] = ["method", "builtin-no-signature"]
+        expected["members"]["__subclasshook__"] = ["method", "builtin-no-signature"]
+    if sys.version_info[:2] == (3, 13):
+        expected["types"]["Path"] = ["pathlib._local", "Path"]
+    return expected
+
+
 def _fresh(order: str, owned: Path, destination: Path) -> None:
     # The caller imports facade/threads in the chosen order BEFORE this module.
     from tests.daemon import conftest as fixtures
@@ -756,7 +771,7 @@ def _fresh(order: str, owned: Path, destination: Path) -> None:
     _compare(observed, expected, destination)
     # Structural checks follow the FIRST complete actual shipping assertion.
     actual = _facade()
-    expected_facade = deepcopy(_PRISTINE_FACADE)
+    expected_facade = _expected_facade()
     owner = os.environ.get("DECLINE_EXPECT_OWNER", "ThreadsMixin")
     if owner not in ("Database", "ThreadsMixin"):
         raise RuntimeError("invalid source-stage diagnostic")
