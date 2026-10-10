@@ -31,6 +31,13 @@ enablement, deployment or a Phase1-completion claim.
 
 ## Founder-managed Default (THR296)
 
+
+Task-completion prompt wording follows the task owner: a worker-owned root may
+finish or self-delegate only as authorized by the server. Manager-only
+operations retain their restrictions; the canonical start-task skill owns the
+payload guidance. Delegated leaves still omit decisions and callback identity
+and final-action ordering remain unchanged.
+
 Offline roster recovery uses the retained native operation/journal/request
 identity. Replay performs no reset/materializer/publication when actual durable
 completion is already established. Explicit compensation publishes a new

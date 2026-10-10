@@ -320,6 +320,16 @@ There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
 ## Founder-managed teams (THR296)
 
+
+C10 uses the existing built SPA and isolated integration fixture, with en/zh-CN
+at 390×844 and 1440×900. Authored availability/empty-team projections are UI
+boundaries; real after-migration browser acceptance requires the actual C6 M
+check/apply/receipt. Header locale selection transfers focus to its trigger;
+modal external-tab locale updates preserve their focused drafts. Work Hours
+roster loading/error/Retry is distinct from empty. Emitted completion guidance
+references the canonical start-task skill: worker-owned roots have only
+server-authorized self decisions; manager-only operations stay restricted.
+
 The bounded roster maintenance source pins effective registration and the clean
 Python3.14 reader, independently closes org/shared-store restore inventories,
 and performs final pre-reset CAS. Complete/compensate and two same-manifest

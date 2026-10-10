@@ -1833,6 +1833,8 @@ export const en = {
   'workHours.noTeams': 'no teams',
   'workHours.empty.title': 'No agents',
   'workHours.empty.body': 'This org has no agents yet. Enroll agents to configure work hours.',
+  'workHours.roster.loading': 'Loading the Work Hours roster…',
+  'workHours.roster.loadError': 'Could not load the Work Hours roster.',
   'workHours.roster.agent': 'Agent',
   'workHours.roster.team': 'Team',
   'workHours.roster.mode': 'Mode',

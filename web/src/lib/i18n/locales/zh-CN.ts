@@ -1731,6 +1731,8 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'workHours.noTeams': '无团队',
   'workHours.empty.title': '暂无智能体',
   'workHours.empty.body': '该组织还没有智能体。登记智能体后即可配置工时。',
+  'workHours.roster.loading': '正在加载工时名册…',
+  'workHours.roster.loadError': '无法加载工时名册。',
   'workHours.roster.agent': '智能体',
   'workHours.roster.team': '团队',
   'workHours.roster.mode': '模式',

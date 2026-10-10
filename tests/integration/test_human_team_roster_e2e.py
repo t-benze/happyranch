@@ -2635,6 +2635,10 @@ def _c7_launch_contract(actual: dict, binding: dict, runtime: Path, baseline: di
     files = actual['generated_files']
     assert files['CLAUDE.md']['raw_link'] == 'AGENTS.md'
     assert files['CLAUDE.md']['text'] == files['AGENTS.md']['text']
+    assert 'the task-owner `decision` scope' in files['AGENTS.md']['text']
+    assert 'Worker-owned roots use only server-authorized self decisions;' in files['AGENTS.md']['text']
+    assert 'manager-only operations remain restricted.' in files['AGENTS.md']['text']
+    assert 'the manager-only `decision` block' not in files['AGENTS.md']['text']
     # Complete output equality to the prelaunch worker materialization is a
     # continuity oracle, supplemented by literal supported worker expectations.
     assert files == baseline['files']

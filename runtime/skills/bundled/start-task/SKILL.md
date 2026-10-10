@@ -250,13 +250,13 @@ Parameters:
      failure cannot be bypassed with a remote historical link. A repeated
      failed slice wakes its owning manager for a revised-work or escalation
      decision; no runtime retry-ceiling successor is created.
-   - `supersede` — root-only replanning; requires `successor_brief`, `rationale`,
+   - `supersede` — manager-only root replanning; requires `successor_brief`, `rationale`,
      and the validated recovery attestation. This replanning disposition is
      root-scoped: if a non-root task owner returns it, the runtime fails that
      child through the ordinary terminal tail and wakes its parent to decide;
      no successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
-   - `escalate` — the task needs founder intervention; requires `reason`.
+   - `escalate` — manager-only request for founder intervention; requires `reason`.
      This founder-facing disposition is root-scoped: if a non-root task owner
      returns it, the runtime fails that child and wakes its parent to decide.
 

@@ -2,6 +2,13 @@
 
 ## Founder-managed Default (THR296)
 
+
+The generated task-completion section refers to the canonical start-task skill
+for task-owner decision scope. Ordinary worker roots may use only their
+server-authorized self decisions; delegated leaves return plain completions.
+Manager-only operations remain restricted. This wording does not grant powers
+or change callback identity, ordering, schemas or materialization algorithms.
+
 Maintenance rejects unexpected generated permission/skill grants before
 mutation; it does not change the native permission/materializer algorithms.
 Generated/global fault cuts name only checked finite paths. The paired observer

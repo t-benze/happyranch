@@ -31,6 +31,14 @@ enablement, deployment or a Phase1-completion claim.
 
 ## Founder-managed Default (THR296)
 
+
+C10's browser-owned pre-attach fixture adds Product/product_head alongside the
+unchanged Engineering/engineering_head and Content/content_manager controls.
+HTTP availability is modeled at its owned proxy; normal actions settle through
+the real isolated daemon. Empty Default is a coherent transport projection,
+not a migration receipt. Existing startup and operator-maintenance gates stay
+unchanged; no browser invocation on the development host is authorized.
+
 Offline roster check/apply pins the real detached registered RuntimeDir and
 resolved candidate/interpreter bytes. Both closed org and canonical-store
 restore inventories are independently checked before apply; final pre-reset

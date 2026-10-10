@@ -111,3 +111,30 @@ nonempty unaffected cooldown/frozen history, original memory paths/hashes and
 provider-exit plus post-exit runner evidence are authored. Thread/dream/wake/
 schedule outcomes remain their own durable oracles. This is source progress,
 not executed C7 acceptance, M readiness or a live migration receipt.
+
+
+## C10 source continuation and completion guidance
+
+The existing C10 browser case retains four parameters (en/zh-CN × 390×844 /
+1440×900), with finite view/state/action screenshot names and actual action
+visibility/hit testing. Both consultants, populated/empty human Default and
+unchanged legacy controls are represented. Empty-agent and empty-team transport
+projections are distinct; neither executes migration. The existing Web cases
+own coherent demotion/cache refresh, worker recipient filtering, preserved
+model/schedule/policy drafts and exact original write payloads. Browser source
+owns real isolated daemon settlement and independent API/row readback, pending
+its released venue. Real after-M acceptance still depends on actual C6 evidence.
+
+Header locale selection correctly focuses its trigger. Preserved DOM/ranges
+are separate from activeElement; editors regain focus through explicit normal
+interaction. Open modal external-tab locale updates have their separate focus
+contract. Work Hours roster availability is distinct from successful empty.
+Task-completion wording references the canonical start-task task-owner scope;
+worker roots retain only server-authorized self decisions, with manager-only
+operations restricted. No runtime transition or permission change follows.
+
+THR291 seq40 orders retirement of the old Python unit set under TASK10476;
+this slice adds or maintains no Python unit cases and executes none. Integration
+C10 remains a separate authored lane whose browser execution is HELD. Web remains
+authorized. Historical adverse receipts, C1 erratum and held L/M/old-reader
+boundaries remain preserved; a design JSON is not a checked manifest or receipt.

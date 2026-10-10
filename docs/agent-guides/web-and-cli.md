@@ -31,6 +31,17 @@ enablement, deployment or a Phase1-completion claim.
 
 ## Founder-managed Default (THR296)
 
+
+C10 covers the existing views in English and Chinese. The shipped header locale
+control receives focus after selection; returning to an editor is an explicit
+user focus transfer. Open modal drafts use the supported external-tab locale
+mirror because the header is outside their focus trap. Locale changes make no
+API request or mutation; bounded observations distinguish already-due polling.
+Work Hours shows roster loading/error/Retry separately from empty. Engineering's
+current v2 editor retains exact text and target through locale/query changes;
+Stay/Discard and confirmation remain required. Browser geometry, screenshots
+and real after-M acceptance are held independently of mounted Web tests.
+
 The offline roster utility remains operator-only. Its real checked manifest
 binds clean candidate/Python3.14 reader and detached runtime registration;
 apply/recovery requires that exact digest. Compensation retains the original

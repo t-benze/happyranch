@@ -351,3 +351,18 @@ isolated/affected-sibling repetitions remain suspended/held under their existing
 owners and v24 record. The held b317 old-reader request remains one request;
 no live checked manifest exists. Static validation and supported OpenAPI/local
 CI are separate source/check evidence, never behavioral QA.
+
+
+## C10 source and venue boundary
+
+The existing C10 test authors both locales at 390×844 and 1440×900 against the
+built SPA. Its valid browser-only pre-attach Product control preserves the shared
+Engineering/Content fixtures. Proxy availability and coherent empty Default are
+labeled UI projections. Normal model/enrollment/compose/v2 policy actions use
+real isolated daemon responses and independent canonical readback. Screenshots
+name case/locale/viewport/view/state and assert reachable actions and geometry.
+Coherent consultant demotion/cache refresh in mounted Web tests is not an
+executed migration. Real after-M browser proof requires the actual C6 M receipt.
+Browser invocation, L/M, old-reader, live roster/policy actions and maintenance
+remain HELD; no source completion releases them. TASK10476 owns THR291 seq40
+Python-unit retirement. Do not resurrect retired source while reconciling main.
