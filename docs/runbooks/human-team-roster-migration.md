@@ -346,9 +346,11 @@ refusal need an external boot/launch witness surviving process loss; they are
 not implemented as a fake local signal/restart. These boundaries return to
 TASK10394. No infrastructure/host/enforcement mechanism is provisioned here.
 
-All Python execution, collection, mutation/RED/restoration/GREEN and five
-isolated/affected-sibling repetitions remain suspended/held under their existing
-owners and v24 record. The held b317 old-reader request remains one request;
+Python unit execution/collection/controls/repetitions remain suspended. Only
+the finite L/W selections released by TASK10394 may run on disposable GitHub
+Ubuntu through the PR1022-only job; its independently pinned b317 selection
+renews the old-reader binding to the actual candidate. Required causal and
+repetition evidence remains outstanding until genuinely observed;
 no live checked manifest exists. Static validation and supported OpenAPI/local
 CI are separate source/check evidence, never behavioral QA.
 
@@ -363,6 +365,22 @@ real isolated daemon responses and independent canonical readback. Screenshots
 name case/locale/viewport/view/state and assert reachable actions and geometry.
 Coherent consultant demotion/cache refresh in mounted Web tests is not an
 executed migration. Real after-M browser proof requires the actual C6 M receipt.
-Browser invocation, L/M, old-reader, live roster/policy actions and maintenance
-remain HELD; no source completion releases them. TASK10476 owns THR291 seq40
+TASK10394 releases only the finite hosted L/W/browser/old-reader entry described
+in `docs/local-ci.md`. M, compatible restore, reboot, live roster/policy actions
+and maintenance remain HELD; source completion supplies no execution receipt.
+TASK10476 owns THR291 seq40
 Python-unit retirement. Do not resurrect retired source while reconciling main.
+
+
+## TASK10394 finite hosted proof disposition
+
+Normal nonforce PR1022 publication starts the seven selected L/W shards. They
+retain actual commands/exits, source/interpreter/module/tool origins, native
+C4 witnesses and final readbacks, C5 positive/refusal observations, C7 emitted
+surfaces and C10 screenshots/action/persistence evidence. Independent English/
+Chinese screenshot assessment and accepted causal/restoration/repetition proof
+still require actual receipts. Early L8/L9 CLI refusals never establish M
+no-write or successful check/apply. Existing reviewer TASK10517 BLOCK, prior
+failed10430/10452, and every adverse receipt stay attributed to their original
+source. Return the bounded outcome to SAME TASK10394; do not claim migration
+readiness, overall QA, deployment, live apply or completion.

@@ -1,11 +1,11 @@
-"""Source-pinned C5 admission probe; old-source execution remains HELD.
+"""Source-pinned C5 admission probe for the finite authorized disposable release.
 
 Run only in the manager-authorized disposable venue. This invokes the selected
 reader's real public admission capture without changing its measured inputs or
 replacing its validator. Baseline equality is readback, not syscall/no-write
 proof. The optional positive graph uses real selected-source routes as a
 separate action after capture; it never runs on a negative input. External
-observation and genuine old-source execution remain held gates.
+observation and genuine old-source execution require authentic receipts.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def main() -> int:
     parser.add_argument("--operation", choices=["capture-admission"], required=True)
     parser.add_argument("--expect", choices=["admitted", "workflow_activation_authority_stale"], required=True)
     parser.add_argument("--snapshot-digest", required=True)
-    parser.add_argument("--positive-graph", action="store_true", help="Separate positive-control graph setup/admission after the measured capture; old-source execution remains held")
+    parser.add_argument("--positive-graph", action="store_true", help="Separate positive-control graph setup/admission after the measured capture; old-source execution requires the finite disposable release")
     args = parser.parse_args()
     if args.positive_graph and args.expect != "admitted":
         raise ValueError("negative_probe_cannot_write_a_graph")
@@ -219,7 +219,10 @@ def main() -> int:
                 assert filename is not None and Path(filename).resolve().is_relative_to(source), name
                 origins[name] = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
         print(json.dumps(dict(reader_source_sha=source_sha, effective_python=sys.executable,
-                              python_version=sys.version, imported_source_hashes=origins,
+                              python_version=sys.version,
+                              python_sha256=hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest(),
+                              imported_source_files={name: str(Path(sys.modules[name].__file__).resolve()) for name in origins},
+                              imported_source_hashes=origins,
                               snapshot_digest=args.snapshot_digest, setup=outcome,
                               action=args.operation, actual=actual,
                               persisted_readback_unchanged=True,

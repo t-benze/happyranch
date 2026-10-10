@@ -321,6 +321,14 @@ There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
 ## Founder-managed teams (THR296)
 
+TASK10394 releases only the finite L1/L4/L5/L7/L8/L9/W10 roster selections on
+same-repository PR1022's `task/TASK-10430` branch through the extra hosted CI
+job. It uses the closed integration parent, independently pinned b317 reader
+and transient exact browser tooling; see `docs/local-ci.md`. Existing checks,
+unit suspension and broad-integration exclusion remain. M, compatible restore,
+reboot, live operations and after-M acceptance remain held. Submission/source
+checks are not behavioral proof; retain actual exits and missing v24 evidence.
+
 
 C10 uses the existing built SPA and isolated integration fixture, with en/zh-CN
 at 390×844 and 1440×900. Authored availability/empty-team projections are UI

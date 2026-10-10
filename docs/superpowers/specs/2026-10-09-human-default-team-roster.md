@@ -104,8 +104,10 @@ C1–C10 and v24 evidence remain the accepted case record. Python units and U9
 localization are SUSPENDED THR291 seq5/16; general integration is SKIPPED
 THR243 seq42 and live-host integration prohibited THR211 seq270/271. Finite new
 shipping process/browser checks require the authorized disposable runner.
-Successful maintenance/reboot/compensation needs real M; old-reader execution
-is held. Missing traces/screenshots/RED/GREEN/repetitions are never PASS.
+Successful maintenance/reboot/compensation needs real M. The finite hosted
+L/W entry, including independently pinned old-reader controls, is released by
+TASK10394; actual results and v24 evidence remain required. Missing traces,
+screenshots, RED/GREEN and repetitions are never PASS.
 See the operator runbook for candidate limitations and outstanding proof.
 
 
@@ -144,6 +146,18 @@ remain restricted. No runtime transition or permission change follows.
 
 THR291 seq40 orders retirement of the old Python unit set under TASK10476;
 this slice adds or maintains no Python unit cases and executes none. Integration
-C10 remains a separate authored lane whose browser execution is HELD. Web remains
-authorized. Historical adverse receipts, C1 erratum and held L/M/old-reader
+C10 has a finite disposable hosted entry under TASK10394; baseline outcomes,
+screenshots and v24 evidence remain unobserved until genuine execution. Web
+remains authorized. Historical adverse receipts, C1 erratum and held M/live
 boundaries remain preserved; a design JSON is not a checked manifest or receipt.
+
+
+## Finite hosted verification entry (TASK10394)
+
+The extra PR1022-only CI job selects L1/L4/L5/L7/L8/L9/W10 through the existing
+closed parent at the actual PR head. Explicit validated b317 reader and pinned
+browser/Node bindings reach C5/C10 without ambient PATH/config inheritance or
+stub-guard changes. Owned evidence survives parent cleanup. See `docs/local-ci.md`
+for exact selection/tool/provenance and retention contracts. Baseline/failure is
+a real observation; it does not satisfy missing causal controls, repetitions,
+bilingual screenshot review, M capability or independent review/QA gates.

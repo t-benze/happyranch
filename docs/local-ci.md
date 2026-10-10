@@ -40,6 +40,64 @@ disposable venue. On-host verification is limited to demonstrably pure offline
 units; Mac integration verification uses the separately authorized disposable
 container-VM path.
 
+## PR1022 finite roster L/W entry
+
+Engineering_manager TASK10394's current scope-bound brief, citing Founder
+THR296seq24, releases the finite selections in `pr1022-roster-selected` in
+`.github/workflows/ci.yml`. Only same-repository pull requests numbered 1022
+with head branch `task/TASK-10430` run it. Normal publication starts it; it has
+no dispatch inputs, main-push execution or scheduled execution. Existing Web,
+Linux/macOS canonical and original callback checks remain separate. Python
+units stay SUSPENDED THR291seq5/16; broad integration stays SKIPPED THR243seq42.
+The live daemon host cannot execute this entry, even through jobs.
+
+The seven disposable Ubuntu shards use actual PR-head checkout, frozen Python
+3.14 dependencies and Node24. L1 includes all accepted C1/C2/C3 parameters;
+L4 includes all accepted C4 parameters; L5 includes exactly six non-restore
+parameters; L7 includes all ten contexts; L8/L9 include only their three/four
+early CLI argument refusals; W10 includes all four locale/viewport parameters.
+Verbose pytest output and JUnit record expanded IDs and actual outcomes. These
+early refusals are not successful maintenance or physical no-write proof.
+
+The existing parent accepts optional `--roster-output`, `--roster-old-reader`
+and `--roster-browser-tools` before `-- pytest -m integration <explicit nodes>`.
+That mode refuses whole-file/directory, unit, M and unknown selections before
+pytest imports. The output must be an empty private `evidence` directory under
+an explicitly selected, private `happyranch-roster-*` invocation directory.
+The old reader must be its independent clean `old-reader` checkout at exact
+b3179b123fddbb0f0f604ed9e0d148f1b23455f3. Parent and real C5 child record and
+compare git, imported module and interpreter origins. Ambient old-reader env
+alone is never propagated. Default parent invocations are unchanged.
+
+W10 installs @playwright/cli **0.1.18**, playwright and playwright-core
+**1.63.0-alpha-2026-08-05** (Apache-2.0) only into invocation-owned `tools`;
+the actual supported Playwright install command places Chromium in its owned
+`browsers`. Registry integrities, the actual transient dependency lock, package
+versions, browser revision, executable paths/hashes/versions and explicit
+browser config are retained. Its closed `browser-binding.json` is validated
+before launch; malformed/mismatched descriptors must refuse before pytest.
+Private `node`/`playwright-cli` shims preserve the parent's original closed PATH,
+provider stubs and callback. The selected browser uses the isolated built SPA
+and fixture API; update notification is disabled. No project dependencies,
+global tooling or execution policy changes follow.
+
+The selected mode retains passing and failing temporary scenario evidence
+before parent teardown, including real screenshots, C5/C7/refusal receipts,
+native C4 witnesses and independent final durable readbacks. It exports an
+artifact inventory with original paths, hashes and byte sizes, actual child
+exit, source and tool bindings. Fixture credentials/config/DB files themselves
+are excluded. Each shard uploads adverse and successful logs/receipts with
+run/attempt identity. Missing/incompatible tooling is an environment failure;
+submission, metadata, a prior-head receipt or binding refusal is not scenario
+PASS or a causal RED.
+
+This entry first collects genuine finite baseline/failure. Accepted causal
+controls, byte-restoration/GREEN, five isolated and five affected-sibling
+repetitions, screenshot inspection and independent exact-head review/QA remain
+separate required evidence, never inferred from a baseline. No M selection,
+compatible restore, systemd service/mask operation, reboot, live migration,
+new-package-positive closure or after-M browser proof is released here.
+
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
 fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.

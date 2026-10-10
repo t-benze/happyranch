@@ -1671,7 +1671,13 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
     old_control = reader_kind == 'pinned-b317-schema1-control'
     if reader_kind != 'current':
         supplied = os.environ.get('HAPPYRANCH_TEST_ROSTER_OLD_READER_SOURCE')
-        assert supplied, 'HELD: manager must authorize and provide independently owned exact b317 reader source'
+        assert supplied, 'explicit independently selected exact b317 reader source required'
+        selected = binding['roster']['old_reader']
+        assert selected['source'] == supplied and selected['revision'] == old_sha
+        assert binding['roster']['python'] == str(Path(sys.executable).resolve())
+        assert binding['roster']['python_sha256'] == hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+        for relative, expected_hash in selected['modules'].items():
+            assert hashlib.sha256((Path(supplied) / relative).read_bytes()).hexdigest() == expected_hash
         reader_source, reader_sha = Path(supplied), old_sha
         assert reader_source.is_absolute() and not reader_source.is_symlink()
         assert reader_source.resolve(strict=True) != Path(binding['source']).resolve(strict=True)
@@ -1739,6 +1745,11 @@ def test_c5_schema_history_publication_and_portability(runtime: Path, tmp_path: 
     else:
         assert receipt['positive_graph_receipt'] is None
     assert receipt['reader_source_sha'] == reader_sha
+    assert Path(receipt['effective_python']).resolve() == Path(sys.executable).resolve()
+    assert receipt['python_sha256'] == hashlib.sha256(Path(sys.executable).read_bytes()).hexdigest()
+    assert receipt['imported_source_files']
+    assert all(Path(filename).resolve().is_relative_to(reader_source.resolve())
+               for filename in receipt['imported_source_files'].values())
     assert receipt['snapshot_digest'] == hashlib.sha256(raw).hexdigest()
     (tmp_path / 'C5-current-reader-receipt.json').write_text(json.dumps(
         {'command': command, 'daemon_home': str(reader_home), 'exit': actual.returncode,

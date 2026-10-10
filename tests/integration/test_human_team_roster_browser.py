@@ -1,6 +1,6 @@
 """C10: existing built SPA and real isolated daemon; four finite parameters.
 
-SOURCE ONLY until the parent releases the named browser venue. Transport
+Run only through TASK10394's finite disposable-hosted browser release. Transport
 availability/empty projections are labelled explicitly; they are not migration
 receipts. No browser/download/new runner is invoked by authoring this file.
 """
@@ -185,7 +185,20 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
     assert (dist / 'index.html').is_file(), 'existing supported Web build required'
     cli = shutil.which('playwright-cli')
     assert cli is not None, 'existing authorized disposable browser/CLI required; no download/fallback'
+    selected = binding['roster']['browser']
+    assert cli == str(Path(binding['root']) / 'bin/playwright-cli')
+    assert hashlib.sha256(Path(cli).read_bytes()).hexdigest() == selected['playwright-cli_shim_sha256']
+    node = shutil.which('node')
+    assert node == str(Path(binding['root']) / 'bin/node')
+    assert hashlib.sha256(Path(node).read_bytes()).hexdigest() == selected['node_shim_sha256']
+    assert hashlib.sha256(Path(selected['cli']).read_bytes()).hexdigest() == selected['cli_sha256']
+    assert hashlib.sha256(Path(selected['node']).read_bytes()).hexdigest() == selected['node_sha256']
+    assert hashlib.sha256(Path(selected['browser']).read_bytes()).hexdigest() == selected['browser_sha256']
+    assert hashlib.sha256(Path(selected['config']).read_bytes()).hexdigest() == selected['config_sha256']
+    assert subprocess.run([node, '--version'], check=True, text=True, capture_output=True, timeout=15).stdout.strip() == selected['node_version']
     cli_version = subprocess.run([cli, '--version'], check=True, text=True, capture_output=True, timeout=15).stdout.strip()
+    assert cli_version == '0.1.18'
+
     port, root = human_daemon
     assert root.is_relative_to(Path(binding['root']))
     session = 'c10-' + hashlib.sha256(str(tmp_path).encode()).hexdigest()[:16]
@@ -316,8 +329,8 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 'authority_policy_active_selector_history', 'authority_policy_v2_control_audit')}
 
     with _spa(dist, port) as (base, fixture):
-        pw('open')
         try:
+            pw('open', '--config=' + selected['config'])
             pw('resize', str(viewport[0]), str(viewport[1]))
             pw('goto', base + '/orgs/test/agents/consultant_head')
             pw('localstorage-set', 'happyranch.ui.locale', locale)
@@ -676,7 +689,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
             expected_roster['teams']['default']['workers'].append('browser_worker')
             assert yaml.safe_load((root / 'org/teams.yaml').read_text()) == expected_roster
             (tmp_path / 'C10-browser-receipt.json').write_text(json.dumps({
-                'source_sha': binding['revision'], 'cli': cli, 'cli_version': cli_version,
+                'source_sha': binding['revision'], 'cli': cli, 'cli_version': cli_version, 'selected_tools': selected,
                 'browser_user_agent': evaluate('navigator.userAgent'), 'screenshots': evidence,
                 'requests': fixture['requests'], 'worker_retention': retention, 'locale_windows': locale_windows,
                 'denials': denials, 'enrollment_draft_retention': preserved_enrollment,
