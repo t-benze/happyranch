@@ -147,6 +147,7 @@ def journey(c: Controller, *, lost: bool) -> None:
     c.stores["alpha"].result(final)
     c.release(m2)
     c.finish("alpha", task)
+    require(c.stores["alpha"].result(first) == original, "original M1 row retained through terminal consumption")
     compare_public(c, "alpha", task, [first, worker_payload, final], [m1, worker, m2], worker["task"])
     if not lost:
         c.browser.completed("alpha", task, "ALPHA_ROOT", "ALPHA_ROOT_SENTINEL", child=worker["task"],

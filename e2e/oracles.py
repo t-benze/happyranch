@@ -69,6 +69,8 @@ class Store:
                 require(row[key] is None, f"terminal {key} cleared", row[key])
             require(row["assigned_agent"] == ("case_manager" if task_id == root else "case_worker"),
                     "task owner retained", row)
+            latest = next(p for p in reversed(payloads) if p["task_id"] == task_id)
+            require(row["current_session_id"] == latest["session_id"], "durable current generation", row)
         require(tasks[root]["parent_task_id"] is None, "root linkage", tasks[root])
         require(tasks[root]["orchestration_step_count"] == (2 if child else 1), "decision step count", tasks[root])
         if child:
