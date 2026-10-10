@@ -1,0 +1,70 @@
+name: Product E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'release/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cells:
+    name: Product E2E (Python ${{ matrix.python }}, Node 24)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ github.event_name == 'pull_request' && fromJSON('["3.12","3.14"]') || fromJSON('["3.12","3.13","3.14"]') }}
+    steps:
+      - name: Start cleanup-inclusive clock
+        run: python3 -c 'import time; print("E2E_STARTED_MONOTONIC=" + str(time.monotonic()))' >> "$GITHUB_ENV"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Execute standalone public-process E2E
+        run: python3 e2e/run.py --python "$(uv python find '${{ matrix.python }}')" --artifacts "$RUNNER_TEMP/e2e-${{ matrix.python }}"
+      - name: Publish sanitized observations and absence receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-${{ matrix.python }}
+          path: ${{ runner.temp }}/e2e-${{ matrix.python }}
+          if-no-files-found: error
+          retention-days: 7
+
+  aggregate:
+    name: Product E2E
+    if: always()
+    needs: [cells]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: e2e-*
+          path: e2e-results
+      - name: Prove gate refusal controls
+        if: always()
+        run: python3 e2e/aggregate.py --controls
+      - name: Require exact source, all cells and variants, zero skips and cleanup
+        if: always()
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT: ${{ github.event_name }}
+          MATRIX_RESULT: ${{ needs.cells.result }}
+        run: python3 e2e/aggregate.py --artifacts e2e-results --source "$SOURCE_SHA" --event "$EVENT" --matrix-result "$MATRIX_RESULT"

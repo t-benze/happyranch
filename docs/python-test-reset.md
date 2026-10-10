@@ -54,7 +54,8 @@ Required active PR and exact-merge main checks: Web (Node 24), Linux Canonical
 Store Validation (Ubuntu), macOS Canonical Store Validation (macOS 15), plus
 applicable Docs and other retained path-specific checks. The Linux canonical
 job still requires the explicit existing real callback smoke. Units are RETIRED,
-not skipped-pass; new product E2E is **PENDING**, not implemented or PASS.
+not skipped-pass; new standalone product E2E source is implemented under `e2e/`,
+while behavioral execution and required-check enforcement remain **PENDING**.
 
 Bare/default/directory Python selection refuses before test-module collection.
 The existing explicit platform files and isolated-parent `-m integration` entry
@@ -97,11 +98,16 @@ merge remain mandatory. Every push renews review/QA. No deployment is included.
 TASK-10476 owns merge/closeout and the freshly authored isolated browser → daemon
 → executable provider stub → actual CLI callback → independent durable/audit
 readback harness. First cases cover task completion, identical and lost-response
-replay, changed-payload conflict, known-task stale/fabricated-session denial,
+replay, changed-payload retention under an ordinary static binding, known-task stale/fabricated-session denial,
 missing/wrong bearer, colliding IDs across two orgs, and UI org switching.
 Jobs, threads, cancellation/late callback and actual daemon restart/recovery
-follow. None is claimed delivered here. Proposed future Python E2E matrices are
-PR 3.12/3.14 and main/release 3.12/3.13/3.14; they are not installed checks.
+follow. The first eight cases are implemented in the separately authorized
+standalone lane; [its case record](../e2e/README.md) distinguishes source from
+actual execution/authoring evidence. Python matrices are wired as PR 3.12/3.14
+and main/release 3.12/3.13/3.14. The aggregate requires every cell/variant, exact
+source, zero skips and cleanup; no installed ruleset enforcement is inferred.
+Public API creates ordinary tasks; the built browser verifies lifecycle and
+alpha-beta-alpha isolation. No ordinary-task creation UI is added or covered.
 
 Parent must coordinate stale `engineering-team-workflow` unit-always wording,
 local-CI/test-authoring KB entries, engineering charters and delivered skill

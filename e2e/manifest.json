@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "design_sha256": "bc4c4c9d50a73ce45085ed6b5edcae572cdf75e8e26e3b583e6b7728037fd564",
+  "pr_python": ["3.12", "3.14"],
+  "main_python": ["3.12", "3.13", "3.14"],
+  "node_major": 24,
+  "target_seconds": 600,
+  "stop_actions_seconds": 720,
+  "hard_seconds": 900,
+  "variants": [
+    "E02.lifecycle-browser", "E06.literal-active", "E06.literal-terminal",
+    "E06.committed-response-lost", "E06.changed-active", "E06.changed-terminal",
+    "E03.stale", "E03.fabricated", "E03.no-slot", "E03.unknown-task",
+    "E03.bearer-get-absent", "E03.bearer-get-wrong",
+    "E03.bearer-post-absent", "E03.bearer-post-wrong",
+    "E03.bearer-get-valid", "E03.bearer-post-valid",
+    "E03.cross-alpha-beta", "E03.cross-beta-alpha",
+    "E03.genuine-alpha", "E03.genuine-beta",
+    "E03.browser-alpha", "E03.browser-beta", "E03.browser-alpha-return"
+  ]
+}

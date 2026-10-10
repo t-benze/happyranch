@@ -13,7 +13,8 @@ Required active PR **and exact-merge main** checks are `Web (Node 24)`,
 `Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
 and applicable Docs/other retained path-specific checks. The Linux job includes
 its existing real Codex callback smoke. Unit checks are neither required nor
-passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
+passing. Fresh product E2E execution evidence is **PENDING**; standalone source
+wiring does not establish a ready/required check.
 Independent review, QA, exact-head/completed checks and normal hooks remain
 mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
 never PASS; integration requires a disposable authorized venue away from the live
@@ -37,12 +38,35 @@ scripts/local_ci.sh python       # RETIRED, exit 2; no Python execution
 scripts/local_ci.sh help
 # Only in an authorized disposable integration venue:
 scripts/local_ci.sh integration
+# Separately authorized disposable GitHub Ubuntu only:
+scripts/local_ci.sh e2e --python /absolute/python --artifacts /new/e2e-output
 ```
 
 `all`/`web` execute `npm ci`, the design-system colour gate, lint, typecheck,
 SPA build, Storybook build and non-watch `vitest run`. They do not establish
 Python or native coverage. Node must be exactly major 24 from `.nvmrc`;
 missing/wrong Node refuses before npm work. `npm ci` preserves lockfile parity.
+
+The new standalone E02/E03/E06 lane is outside pytest and is not part of `all`.
+Its public-process launcher is `e2e/run.py`; `.github/workflows/e2e.yml` selects
+Python 3.12/3.14 on PRs and 3.12/3.13/3.14 on main/release, each with Node24 and
+hash-locked Chromium tooling. See [the exact case record](../e2e/README.md).
+It uses complete tiny declarative org templates through public CLI setup and
+registration, with no seeded authority rows, product monkeypatches or real model
+calls. Existing pytest integration/platform/callback selections still require
+`tests/helpers/integration_parent.py`. No fixture/interpreter or Jenkins repair
+is included in this standalone lane.
+
+Execution requires durable job/workflow ownership on a disposable GitHub Ubuntu
+runner. The cleanup-inclusive target is 600s/hard 900s; stop new actions at 720s.
+Missing case/variant/cell evidence, skips, failure, timeout or unknown cleanup
+returns nonzero. `Product E2E` aggregates exact-source cells and requires zero
+skips and verified cleanup. Bounded aggregate refusal controls are harness
+evidence only. A YAML check name is not branch-protection enforcement; read
+actual rulesets and exact-head check runs before claiming a required gate.
+Existing retained checks remain mandatory at PR and merge heads. New behavioral
+RED/restore/GREEN and timing/process/port repetition evidence remain separately
+required; static syntax and design acceptance cannot replace them.
 
 The two canonical hosted jobs retain exactly these existing Python platform
 files (222 static definitions; no parameter expansion implied):

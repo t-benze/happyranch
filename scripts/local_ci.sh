@@ -375,6 +375,8 @@ show_help() {
   echo "               (npm ci + colour gate + lint + typecheck + build + build-storybook + vitest run)"
   echo "  integration  Run Python integration tests"
   echo "               (isolated parent -> pytest tests/ -v -m integration)"
+  echo "  e2e          Standalone E02/E03/E06 (disposable GitHub Ubuntu only)"
+  echo "               --python ABS --artifacts NEW_DIRECTORY; 900s hard cap"
   echo "  all          Default: runs retained Web checks; E2E coverage PENDING"
   echo "  help         Show this help"
   echo ""
@@ -384,7 +386,7 @@ show_help() {
   echo "    job); the wrapper verifies this before any work and exits nonzero"
   echo "    otherwise."
   echo "  - Retained integration uses the installed uv + Python interpreter, not the"
-  echo "    future E2E matrix (which remains PENDING)."
+  echo "    standalone E2E matrix (whose execution evidence remains PENDING)."
   echo "  - Integration requires an authorized disposable venue; never the live daemon host."
   echo "  - Web CI runs vitest run (non-watch mode), matching GHA behavior."
   echo "  - uv sync --frozen ensures lockfile parity; run 'uv lock' first if"
@@ -399,6 +401,7 @@ case "${1:-all}" in
   python)       run_python ;;
   web)          run_web ;;
   integration)  run_integration ;;
+  e2e)          shift; python3 e2e/run.py "$@" ;;
   all)          run_all ;;
   help|-h|--help) show_help ;;
   *)
