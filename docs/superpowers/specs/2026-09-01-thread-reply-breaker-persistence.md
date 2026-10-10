@@ -1,5 +1,9 @@
 # Thread reply breaker persistence and compatibility substrate
 
+> Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
+> are retired. Product invariants and acceptance obligations remain unchanged;
+> replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
+
 > Status: current
 > Current Source: `runtime/infrastructure/database.py`
 > Notes: PR A defines persistence/compatibility; serial PR B activates runtime behavior without API/web expansion.

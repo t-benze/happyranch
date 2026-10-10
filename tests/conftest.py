@@ -1,9 +1,11 @@
-# The integration invocation MUST enter the stdlib test parent before pytest.
-# This refusal occurs before any runtime imports or module collection here.
+# Python units were deleted by THR-291 seq40. Lane admission occurs before
+# test-module collection; integration still requires the isolated parent.
+# Keep integration parent validation ahead of runtime imports as well as the
+# effective-config check below (which handles pytest's final parsed options).
 import os
 import sys
 
-expression = "not integration"
+expression = ""
 for index, argument in enumerate(sys.argv[1:], 1):
     if argument in ("-m", "--markexpr"):
         expression = sys.argv[index + 1]
@@ -11,7 +13,7 @@ for index, argument in enumerate(sys.argv[1:], 1):
         expression = argument.split("=", 1)[1]
     elif argument.startswith("-m"):
         expression = argument[2:].removeprefix("=")
-if expression != "not integration" and "HAPPYRANCH_TEST_PARENT_MANIFEST" not in os.environ:
+if expression not in ("", "not integration") and "HAPPYRANCH_TEST_PARENT_MANIFEST" not in os.environ:
     raise RuntimeError("use tests/helpers/integration_parent.py before integration collection")
 
 if "HAPPYRANCH_TEST_PARENT_MANIFEST" in os.environ:
@@ -41,9 +43,42 @@ _TEST_AGENT_NAMES = (
 )
 
 
+# This explicit existing lane is the only unmarked Python selection left.
+# Default/broad invocations must refuse before collecting any test modules.
+_PLATFORM_FILES = frozenset((
+    'tests/test_canonical_production_bound.py',
+    'tests/test_canonical_skill_store.py',
+    'tests/test_prelaunch_integrity_validation.py',
+    'tests/test_skill_cutover_completeness.py',
+    'tests/test_system_contract_materialization.py',
+    'tests/test_thr070_skill_freshness.py',
+    'tests/test_workspace_adapters.py',
+))
+
+
 def pytest_configure(config):
-    if config.getoption("markexpr") != "not integration" and "HAPPYRANCH_TEST_PARENT_MANIFEST" not in os.environ:
-        raise pytest.UsageError("integration collection requires tests/helpers/integration_parent.py")
+    import os
+
+    expression = config.getoption("markexpr")
+    if expression == "integration":
+        if "HAPPYRANCH_TEST_PARENT_MANIFEST" not in os.environ:
+            raise pytest.UsageError("integration collection requires tests/helpers/integration_parent.py")
+        from tests.helpers.integration_stub_guard.guard import require_parent_environment
+        require_parent_environment()
+        return
+    root = Path(__file__).resolve().parents[1]
+    selected = []
+    for argument in config.args:
+        path = Path(argument.split("::", 1)[0]).resolve()
+        try:
+            selected.append(path.relative_to(root).as_posix())
+        except ValueError:
+            raise pytest.UsageError("Python platform selection must stay inside this checkout") from None
+    if expression not in ("", "not integration") or not selected or not set(selected) <= _PLATFORM_FILES:
+        raise pytest.UsageError(
+            "Python units RETIRED (THR-291 seq40); use explicit canonical platform files "
+            "or the approved integration parent with -m integration. Fresh E2E coverage is PENDING."
+        )
 
 
 def seed_test_agents(paths: OrgPaths, names: tuple[str, ...] | None = None) -> None:
@@ -96,7 +131,7 @@ def _test_mode_platform_isolation(monkeypatch):
     import sys
 
     class _TestPlatformIsolation(_PosixSameOwnerIsolation):
-        """Test-mode same-owner isolation for unit tests.
+        """Test-mode same-owner isolation for retained platform tests.
 
         The test process runs as both daemon and executor — the executor
         and daemon share the same OS identity.
@@ -104,7 +139,7 @@ def _test_mode_platform_isolation(monkeypatch):
         The link-writer surface (``create_relative_symlink``,
         ``withdraw_workspace_link``, ``admit_skills_directory``,
         ``verify_workspace_link``) is INHERITED from the production POSIX
-        implementation so the unit suite exercises the REAL THR-190 PR-B
+        implementation so the retained platform lane exercises the REAL THR-190 PR-B
         containment enforcement (no-follow admission, resolved-parent
         containment, atomic pinned-dirfd writes). A test-only writer that
         bypassed containment would create a false green — deliberately not
@@ -220,12 +255,12 @@ def db(tmp_dir: Path) -> Iterator[Database]:
 @pytest.fixture(autouse=True)
 def _deterministic_throttle():
     """Install a no-spacing, no-backoff, roomy-ceiling executor throttle for the
-    whole unit suite (issue #85).
+    retained lanes (issue #85).
 
     The real defaults (spacing 1.5s, backoff [5,15,45]) would make any test that
-    launches a provider subprocess sleep on real wall-clock time. The dedicated
-    throttle tests construct their own ``ProviderThrottle`` instances, so this
-    global neutralization doesn't weaken their coverage.
+    launches a provider subprocess sleep on real wall-clock time. The global
+    throttle is still neutralized for the preserved fixtures. This is not
+    evidence of production throttle behavior.
     """
     from runtime.orchestrator import throttle
 
@@ -245,10 +280,9 @@ def _isolate_org_slug():
     The CLI's ``resolve_org_slug`` checks HAPPYRANCH_ORG_SLUG before falling
     back to the mock-controlled available-orgs list.  An ambient value (e.g.
     ``happyranch`` from a developer shell) overrides test mocks and causes
-    org-slug mismatches in 10 test_cli tests.
+    org-slug mismatches in retained fixtures.
 
-    Dedicated resolve-org-slug tests that need the env var set it explicitly
-    via monkeypatch and are unaffected.
+    Cases that need an org slug set it explicitly via monkeypatch.
     """
     import os
     old = os.environ.get("HAPPYRANCH_ORG_SLUG")

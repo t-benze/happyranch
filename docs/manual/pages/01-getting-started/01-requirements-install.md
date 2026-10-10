@@ -44,17 +44,14 @@ do not need a global `pip` install.
 
 ## Verify the Install
 
-Run:
+Check that the installed CLI starts and displays its commands:
 
 ```bash
-uv run pytest tests/ -v -n 4
+uv run happyranch --help
 ```
 
-If you want a faster first check, skip integration tests:
-
-```bash
-uv run pytest tests/ -v -m "not integration"
-```
+This verifies CLI availability. It does not start a daemon or prove end-to-end
+operation; the quick start walks through creating your first runtime and org.
 
 ## What You Have Now
 

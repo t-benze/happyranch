@@ -1,18 +1,22 @@
 # Managed Remote Access — Normative Contract
 
+> Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
+> are retired. Product invariants and acceptance obligations remain unchanged;
+> replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
+
 > **Status:** current
 > **Date:** 2026-08-26
 > **Merge unit:** A — normative contracts and threat fixtures only (TASK-5771)
 > **Governing design:** `output/TASK-5724/managed-remote-access-architecture.md` (TASK-5724)
 > **Founder authority:** THR-097 seq59 (operate Headscale + DERP ourselves), seq82 approval of seq78 items 1–3 as clarified at seq80, and seq360 (N0 no-external-Tailscale managed-topology contract only)
-> **Machine-readable contract:** `tests/contract/managed_remote_access/*.json`, validated by `tests/contract/test_managed_remote_access_contract.py`
+> **Machine-readable retained inputs:** the four JSON fixtures read by `labs/tenant_isolation/harness/contract.py`. The Python validator and unused topology/lifecycle fixture copies are retired; the product requirements below remain normative.
 > **Scope fence:** this document and the fixtures specify *required behavior*. No production Python, Swift, Go, or web behavior is implemented or changed by this PR. Merge units B–D (connector skeleton, hostile runtime harness, lab capacity spike) and all provisioning/deployment/defaults remain explicitly outside this PR.
 
 ## 1. Purpose
 
 This is the normative contract for the HappyRanch-managed remote-access lane: the supervised portable home connector, the one-Headscale-cell-per-customer tenant boundary, the shared ciphertext-only DERP fleet, the loopback-only daemon boundary, the credential taxonomy, and the hostile threat matrix that later implementation merge units must satisfy. It corrects known weaknesses in the legacy Swift `HomeConnector`/`SurfaceAllowList` implementation rather than canonizing them (see §11).
 
-The contract is executable: the fixtures under `tests/contract/managed_remote_access/` encode the normative decision order, allow-list, forbidden classes, credential classes, failure/audit categories, and threat cases, and the validator tests reject fixtures that omit, duplicate, malformed, or secretly violate them.
+The four retained fixtures under `tests/contract/managed_remote_access/` encode the decision order, allow-list, forbidden classes, credential classes, failure/audit categories and threat cases consumed by the hostile lab. The former unit-validator coverage is absent; deletion does not validate completeness or product compatibility.
 
 ## 2. Fixed invariants (load-bearing — do not bend)
 

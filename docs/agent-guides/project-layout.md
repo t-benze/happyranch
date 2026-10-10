@@ -157,24 +157,14 @@ recorded in
 
 ## Test placement
 
-Test placement is forward-only. New tests mirror the production package and
-module they exercise: for example, `runtime/daemon/<x>.py` maps to
-`tests/daemon/test_<x>.py`, `runtime/orchestrator/<x>.py` maps to
-`tests/orchestrator/test_<x>.py`, and CLI package paths map to the corresponding
-`tests/` subpackage. Existing domain directories include `daemon`,
-`orchestrator`, `infrastructure`, `platform`, `client`, `unit`, `remote_access`,
-`remote_jobs`, and `workflows`. Use an existing mirror when it matches the
-production surface; if no mirror exists yet (for example, `cli/commands/` has no
-`tests/commands/` directory), the first new test for that area creates it.
-
-Cross-surface contract tests, including the OpenAPI snapshot and route
-classification coverage, belong in `tests/contract/`. True end-to-end tests
-that run a real daemon with fake CLIs and carry the `integration` marker belong
-in `tests/integration/`.
-
-At adoption, 187 legacy tests remain as flat `tests/test_*.py` files. Move a
-legacy flat test only when its production area is already being changed in the
-same PR; do not perform a mass move. This rule governs new work going forward.
+THR-291 seq40 retires the Python unit tree and its mirror-by-module placement
+rule. Existing integration cases keep their original paths and markers, including
+those outside `tests/integration/`. Seven explicit canonical platform files remain
+in `tests/`; they are an existing platform lane, not a retained contract-unit tier.
+`tests/contract/` holds only fixtures with actual Web/native/lab consumers.
+Fresh E2E harness/scenario placement is pending the parent implementation; do not
+copy or relabel retired unit cases. See [coverage gaps](../python-test-reset.md)
+and [Local CI](../local-ci.md). Product packages and assets remain unchanged.
 
 The tracked skill-eligibility fixture lives at
 `tests/fixtures/skill_eligibility/config.yaml` and is read by
