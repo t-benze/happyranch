@@ -11,6 +11,10 @@ def main() -> None:
     task, session, agent, org = sys.argv[1:]
     if org not in {"alpha", "beta"} or agent not in {"case_manager", "case_worker"}:
         raise RuntimeError("unexpected external invocation")
+    # Model a provider descendant outside the daemon's process group. This
+    # changes only this test-owned executable; production still selects and
+    # owns its real containment backend (including the inherited cgroup).
+    os.setsid()
     with socket.socket(socket.AF_UNIX) as connection:
         connection.settimeout(300)
         connection.connect(os.environ["E2E_SOCKET"])

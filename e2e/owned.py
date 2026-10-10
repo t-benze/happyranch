@@ -7,6 +7,7 @@ import signal
 import subprocess
 import threading
 import time
+import traceback
 from pathlib import Path
 
 
@@ -14,7 +15,7 @@ def identity(pid: int) -> str | None:
     try:
         # comm may contain spaces or parentheses; fields after the final ')' start at 3.
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return None
 
 
@@ -76,8 +77,15 @@ class Owned:
             if provider_file.exists():
                 import json
                 for pid in json.loads(provider_file.read_text()):
-                    if pid not in self.providers and identity(pid) is not None:
-                        self.register_provider(pid)
+                    start = identity(pid)
+                    if pid not in self.providers and start is not None:
+                        try:
+                            self.register_provider(pid)
+                        except (FileNotFoundError, ProcessLookupError):
+                            # A just-exited provider may vanish between proc
+                            # reads. Only proven disappearance is benign.
+                            if identity(pid) == start:
+                                raise
             pending = [os.getpid(), *self.pids]
             seen: set[int] = set()
             while pending:
@@ -92,8 +100,9 @@ class Owned:
                         for child in (task / "children").read_text().split():
                             child_pid = int(child)
                             self.add(child_pid)
-                            pending.append(child_pid)
-                except FileNotFoundError:
+                            if child_pid in self.pids:
+                                pending.append(child_pid)
+                except (FileNotFoundError, ProcessLookupError):
                     continue
             for group in self.groups:
                 directory = Path("/sys/fs/cgroup") / group.lstrip("/")
@@ -108,7 +117,7 @@ class Owned:
             try:
                 self.sample()
             except Exception as exc:
-                self.errors.append(repr(exc))
+                self.errors.append(f"{exc!r}\n{traceback.format_exc()}")
                 return
 
     def signal(self, pid: int, sig: int) -> None:

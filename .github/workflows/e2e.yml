@@ -33,7 +33,11 @@ jobs:
         with:
           node-version: 24
       - name: Execute standalone public-process E2E
-        run: python3 e2e/run.py --python "$(uv python find '${{ matrix.python }}')" --artifacts "$RUNNER_TEMP/e2e-${{ matrix.python }}"
+        run: |
+          set -euo pipefail
+          uv python install '${{ matrix.python }}'
+          e2e_python="$(uv python find '${{ matrix.python }}')"
+          python3 e2e/run.py --python "$e2e_python" --artifacts "$RUNNER_TEMP/e2e-${{ matrix.python }}"
       - name: Publish sanitized observations and absence receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

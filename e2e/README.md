@@ -37,12 +37,26 @@ before dropping one downstream response. The next CLI invocation retries the
 same payload bytes. SQL is read-only and assertions use fixed scenario data,
 never product serializers as expected-value generators.
 
+Lifecycle final-state readback uses a normal browser refresh after durable
+completion, waiting for real detail and Recall responses in the same browser
+session. The shipping detail/Recall queries do not poll while mounted; this
+case does not establish automatic live-view refresh. The independent populated
+alpha-beta-alpha cache case never reloads during org switching. Assertions use
+the shipping English heading `Recall tree` and raw status label `completed`.
+The workflow explicitly installs its selected Python before resolving the
+absolute interpreter; installation remains inside the cleanup-inclusive clock.
+
 The outer watcher registers before launch, acts as a Linux subreaper, observes
 only its descendants and exact admitted provider PID/start identities, and
 tracks production-created per-session cgroups/units where present. It uses
 pidfd signaling after identity checks, covers providers outside daemon PGID,
 and requires process/unit/cgroup/port/socket/data absence. It does not provision
-systemd or sweep unrelated host processes. Missing backend capability fails
+systemd or force a production backend: the test-owned provider descendant calls
+`setsid()` before its launch witness so out-of-daemon-PGID coverage is exercised.
+This retains the production-created containment membership. The watcher tolerates
+only vanished proc entries during observation; other observation errors retain
+full tracebacks and fail cleanup. It never sweeps unrelated host processes.
+Missing backend capability fails
 setup; unavailable/unknown cleanup fails the run. Catchable cancellation runs
 cleanup; SIGKILL/runner loss cannot produce a successful receipt.
 

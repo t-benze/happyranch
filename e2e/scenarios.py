@@ -151,7 +151,7 @@ def journey(c: Controller, *, lost: bool) -> None:
     compare_public(c, "alpha", task, [first, worker_payload, final], [m1, worker, m2], worker["task"])
     if not lost:
         c.browser.completed("alpha", task, "ALPHA_ROOT", "ALPHA_ROOT_SENTINEL", child=worker["task"],
-                            child_summary="ALPHA_CHILD_OUTCOME", shot="lifecycle")
+                            child_summary="ALPHA_CHILD_OUTCOME", shot="lifecycle", refresh=True)
         c.mark("E02.lifecycle-browser")
         terminal = dict(code="task_not_active", task_id=task, status="completed", cancelled=False)
         deny(c, "E06.literal-terminal", "alpha", final, 409, terminal)

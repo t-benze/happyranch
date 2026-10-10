@@ -51,13 +51,22 @@ class Browser:
         expect(main.get_by_text(brief, exact=False).first).to_be_visible()
 
     def completed(self, org: str, task: str, brief: str, summary: str, *, child: str | None = None,
-                  child_summary: str | None = None, alien: str | None = None, shot: str) -> None:
+                  child_summary: str | None = None, alien: str | None = None, shot: str,
+                  refresh: bool = False) -> None:
+        if refresh:
+            # Task/Recall queries do not poll while mounted. A normal user
+            # refresh observes final state through the real browser transport;
+            # this makes no claim about automatic live-view invalidation.
+            require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "refresh owns expected task")
+            self.events.append(dict(event="navigation", action="reload", org=org, task=task))
+            with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
+                self.page.reload()
         main = self.page.get_by_role("main")
         expect(main.get_by_text(brief, exact=False).first).to_be_visible()
         expect(main.get_by_text(summary, exact=True).first).to_be_visible()
-        expect(main.get_by_text("Completed", exact=True).first).to_be_visible()
+        expect(main.get_by_text("completed", exact=True).first).to_be_visible()
         # Recall heading and its containing section own their own assertions.
-        recall_heading = main.get_by_role("heading", name="Recall", exact=True)
+        recall_heading = main.get_by_role("heading", name="Recall tree", exact=True)
         expect(recall_heading).to_be_visible()
         recall = recall_heading.locator("..")
         expect(recall.get_by_text("Outcome", exact=True).first).to_be_visible()
@@ -66,7 +75,7 @@ class Browser:
         if child:
             expect(recall.locator(f'a[href="/orgs/{org}/tasks/{child}"]')).to_be_visible()
             expect(recall.get_by_text(child_summary, exact=True)).to_be_visible()
-            expect(recall.get_by_text("Completed", exact=True)).to_have_count(2)
+            expect(recall.get_by_text("completed", exact=True)).to_have_count(2)
         if alien:
             expect(main.get_by_text(alien, exact=False)).to_have_count(0)
             other = "beta" if org == "alpha" else "alpha"
