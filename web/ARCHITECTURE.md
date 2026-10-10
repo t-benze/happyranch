@@ -321,3 +321,11 @@ route/state/persistence contracts are unchanged.
 System Assistant is retired (THR-294): no dock, settings, API domain or Cmd/Ctrl-K
 binding. Legacy files remain inert. Shared Composer and TypingBubble remain for
 ordinary threads.
+
+## Thread list cache ownership (THR-289)
+
+`useThreadsInfiniteList` observes committed page data under each provider's existing thread-list key family; legacy `useThreadsList` remains available. Real keys include org/status/page size, and the prototype uses its isolated provider client/module store. Shared request ownership is scoped to the QueryClient/key and survives multiple mounted consumers. Refresh stages to prior depth outside the query cache and commits the replacement together. Only committed pages/summary enter palette reads; optimistic pin retains shape and metadata and fences paging until authoritative reconciliation. No change to transcript queries or other domain caches.
+
+Loaded inbox rows keep the newest accepted projection for each repeated thread ID, then use the complete active bucket comparator before literal subject-or-ID filtering. Open uses pin/numeric-ID/start/ID rank; Archived uses archive-or-start/ID rank; All uses global start/ID rank. This projection preserves each committed page’s authoritative totals, sample, cursor and termination metadata. Live movement can repeat IDs; only quiescent refresh/traversal promises the complete current set.
+
+The palette also chooses the newest repeated-ID projection within each committed page stream before its existing cross-cache deduplication; legacy array extraction stays unchanged and performs no fetch.

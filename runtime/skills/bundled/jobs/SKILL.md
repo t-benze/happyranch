@@ -270,7 +270,8 @@ For HappyRanch, add applicable Docs/other retained path-specific checks to the
 three active names above, on both PR and exact-merge main. THR-291 seq40 retired
 Python units; no unit PASS may be claimed. The standalone `Product E2E` workflow
 adds Python 3.12/3.14 PR cells and 3.12/3.13/3.14 main/release cells with Node24 and
-a complete-variant/cleanup aggregate. Add its stable aggregate to applicable
+a complete-variant/cleanup aggregate, including separate real TERM/INT launcher
+cleanup diagnostics (not product cancellation). Add its stable aggregate to applicable
 exact-head evidence; source wiring alone does not prove execution or installed
 required-check enforcement. Its `scripts/local_ci.sh e2e` command is disposable
 GitHub Ubuntu only, through a durable job/workflow, with a cleanup-inclusive

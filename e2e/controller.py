@@ -366,29 +366,70 @@ class Controller:
         (self.root / "scenario.json").write_text(json.dumps(dict(variants=self.results, scenario_phases=self.phases)))
 
 
+def cancellation_hold(controller: Controller) -> None:
+    """Hold a real callback-completed provider for external launcher cancellation."""
+    from browser import Browser
+    from owned import identity
+    controller.browser = Browser(controller)
+    task = controller.create("alpha", "E2E owned launcher cancellation")
+    start = controller.start("alpha", task, "case_manager")
+    payload = controller.payload(start, "CANCELLATION-HOLD", {"action": "done", "summary": "CANCELLATION-HOLD"})
+    callback = controller.callback("alpha", payload)
+    controller.stores["alpha"].result(payload)
+    require(identity(start["pid"]) == start["pid_start"], "provider active after actual callback")
+    require(start["pgid"] != os.getpgid(controller.daemon.pid), "provider outside daemon PGID")
+    controller.evidence()
+    witness = dict(provider=start, callback=callback, daemon=dict(pid=controller.daemon.pid,
+                   start=identity(controller.daemon.pid)), controller=dict(pid=os.getpid(), start=identity(os.getpid())),
+                   ports=[controller.port, controller.relay.port], socket=str(controller.socket_path),
+                   browser_started=True, at=time.monotonic())
+    temporary = controller.root / "cancellation-ready.tmp"
+    temporary.write_text(json.dumps(witness))
+    temporary.replace(controller.root / "cancellation-ready.json")
+    # No product cancellation operation or callback mutation. External supervisor
+    # must signal the launcher; returning normally is a failed diagnostic.
+    while controller.remaining(1):
+        time.sleep(0.05)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--deadline", type=float, required=True)
-    controller = Controller(parser.parse_args())
+    parser.add_argument("--exercise", choices=["baseline", "cancellation"], default="baseline")
+    args = parser.parse_args()
+    controller = Controller(args)
+    def interrupted(signum: int, _frame: object) -> None:
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)
+        raise RuntimeError(f"controller interrupted by signal {signum}")
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, interrupted)
     try:
         begin = time.monotonic()
         controller.bootstrap()
         controller.phases.append(dict(name="setup", seconds=time.monotonic() - begin))
         from scenarios import exercise
         begin = time.monotonic()
-        exercise(controller)
-        controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
+        try:
+            if args.exercise == "cancellation":
+                cancellation_hold(controller)
+            else:
+                exercise(controller)
+        finally:
+            controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException:
         (controller.root / "raw" / "failure.txt").write_text(traceback.format_exc())
         raise
     finally:
         try:
             begin = time.monotonic()
-            controller.close()
-            controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
+            try:
+                controller.close()
+            finally:
+                controller.phases.append(dict(name="cleanup-drain", seconds=time.monotonic() - begin))
         finally:
             controller.evidence()
 

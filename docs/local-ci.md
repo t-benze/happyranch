@@ -61,7 +61,10 @@ Execution requires durable job/workflow ownership on a disposable GitHub Ubuntu
 runner. The cleanup-inclusive target is 600s/hard 900s; stop new actions at 720s.
 Missing case/variant/cell evidence, skips, failure, timeout or unknown cleanup
 returns nonzero. `Product E2E` aggregates exact-source cells and requires zero
-skips and verified cleanup. Bounded aggregate refusal controls are harness
+skips and verified cleanup. Separate Python3.12/TERM and3.14/INT launcher
+diagnostics must record actual delivery during held provider work, launcher
+exit1 and complete owned closure. These are not product-cancellation cases.
+Bounded aggregate refusal controls are harness
 evidence only. A YAML check name is not branch-protection enforcement; read
 actual rulesets and exact-head check runs before claiming a required gate.
 Existing retained checks remain mandatory at PR and merge heads. New behavioral

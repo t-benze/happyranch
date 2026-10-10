@@ -29,6 +29,7 @@ class Owned:
         self.lock = threading.RLock()
         self.stop = threading.Event()
         self.errors: list[str] = []
+        self.reaped: list[dict] = []
         if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
             raise RuntimeError("runner subreaper unavailable")
         descriptor = os.pidfd_open(os.getpid())
@@ -142,12 +143,17 @@ class Owned:
             until = time.monotonic() + seconds
             while time.monotonic() < until:
                 try:
-                    while os.waitpid(-1, os.WNOHANG)[0]:
-                        pass
+                    while True:
+                        pid, status = os.waitpid(-1, os.WNOHANG)
+                        if not pid:
+                            break
+                        self.reaped.append(dict(pid=pid, wait_status=status, exit=os.waitstatus_to_exitcode(status)))
                 except ChildProcessError:
                     pass
                 self.sample()
-                if not any(identity(pid) == start for pid, start in self.pids.items()):
+                with self.lock:
+                    observed = dict(self.pids)
+                if not any(identity(pid) == start for pid, start in observed.items()):
                     break
                 self.stop.wait(0.05)
         self.stop.set()
@@ -163,5 +169,5 @@ class Owned:
         groups = {group: (Path("/sys/fs/cgroup") / group.lstrip("/")).exists() for group in self.groups}
         absent = not survivors and not any(groups.values()) and all(
             "LoadState=not-found" in row["stdout"] for row in units.values())
-        return dict(ok=absent and not self.errors, survivors=survivors, units=units, groups=groups,
-                    errors=self.errors, identities=self.pids, seconds=time.monotonic() - started)
+        return dict(ok=absent and not self.errors and not self.thread.is_alive(), survivors=survivors, units=units, groups=groups,
+                    errors=self.errors, identities=self.pids, reaped=self.reaped, watcher_stopped=not self.thread.is_alive(), seconds=time.monotonic() - started)

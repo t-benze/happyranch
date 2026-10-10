@@ -15,13 +15,14 @@ import time
 import traceback
 from pathlib import Path
 
-from owned import Owned
+from owned import Owned, identity
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", required=True, help="absolute supported interpreter")
     parser.add_argument("--artifacts", type=Path, required=True)
+    parser.add_argument("--exercise", choices=["baseline", "cancellation"], default="baseline")
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[1]
     output = args.artifacts.resolve()
@@ -30,12 +31,15 @@ def main() -> int:
     if not 0 <= time.monotonic() - started < 720:
         raise RuntimeError("invalid or exhausted cleanup-inclusive start clock")
     receipt = dict(schema=1, status="ENVIRONMENT_FAILURE", cleanup={"ok": False}, skipped=0,
-                   variants={}, phases=[], source_sha=None, python=None)
+                   variants={}, phases=[], source_sha=None, python=None,
+                   exercise=args.exercise, signals=[])
     root = None
     owner = None
     logs = []
 
     def interrupted(signum: int, _frame: object) -> None:
+        receipt["signals"].append(dict(signal=signum, at=time.monotonic(),
+                                       pid=os.getpid(), start=identity(os.getpid())))
         raise RuntimeError(f"runner interrupted by signal {signum}")
 
     # Register before dependencies, daemon, browser or any other child launch.
@@ -92,8 +96,32 @@ def main() -> int:
             with log.open("w") as stream:
                 process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT)
                 owner.add(process.pid)
-                code = process.wait(timeout=min(240, max(1, started + 720 - time.monotonic())))
-            receipt["phases"].append(dict(name=name, argv=argv, exit=code, seconds=time.monotonic() - begin))
+                active_phase = dict(name=name, argv=argv, pid=process.pid, exit=None)
+                receipt["phases"].append(active_phase)
+                end = min(begin + 240, started + 720)
+                try:
+                    while process.poll() is None:
+                        if time.monotonic() >= end:
+                            raise TimeoutError(f"{name} action deadline")
+                        ready = root / "cancellation-ready.json"
+                        if args.exercise == "cancellation" and ready.exists() and not (output / "active.json").exists():
+                            witness = json.loads(ready.read_text())
+                            owner.sample()
+                            with owner.lock:
+                                if (owner.pids.get(witness["provider"]["pid"]) == witness["provider"]["pid_start"]
+                                        and owner.units and owner.groups):
+                                    active = dict(witness, launcher=dict(pid=os.getpid(), start=identity(os.getpid())),
+                                                  owned=dict(identities=dict(owner.pids), units=sorted(owner.units),
+                                                             groups=sorted(owner.groups)), source_sha=receipt["source_sha"])
+                                    temporary = output / "active.tmp"
+                                    temporary.write_text(json.dumps(active, indent=2))
+                                    temporary.replace(output / "active.json")
+                        time.sleep(0.02)
+                    code = process.returncode
+                    active_phase["exit"] = code
+                finally:
+                    active_phase["seconds"] = time.monotonic() - begin
+                    active_phase["interrupted"] = process.poll() is None
             if code:
                 raise RuntimeError(f"{name} exited {code}")
 
@@ -107,7 +135,8 @@ def main() -> int:
         # separate real processes. No runtime/pytest import in the controller.
         command("scenarios", [python, "-I", str(source / "e2e" / "controller.py"),
                               "--root", str(root), "--source", str(source),
-                              "--sha", receipt["source_sha"], "--deadline", str(started + 720)])
+                              "--sha", receipt["source_sha"], "--deadline", str(started + 720),
+                              "--exercise", args.exercise])
         result = json.loads((root / "scenario.json").read_text())
         receipt.update(result)
         receipt["status"] = "PASS"
@@ -117,12 +146,16 @@ def main() -> int:
     finally:
         # No new actions after 720. Teardown is independently bounded to 60s;
         # remaining 120s is reserved for diagnostics and artifact publication.
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)
         signal.alarm(60)
+        evidence_started = time.monotonic()
         try:
             try:
                 receipt["cleanup"] = owner.cleanup() if owner else {"ok": False, "reason": "setup did not admit containment"}
             except Exception:
                 receipt["cleanup"] = dict(ok=False, error=traceback.format_exc())
+            evidence_started = time.monotonic()
             if root:
                 token_file = root / "daemon" / "daemon.token"
                 token = token_file.read_text().strip() if token_file.exists() else ""
@@ -154,10 +187,11 @@ def main() -> int:
         except BaseException:
             receipt["cleanup"] = dict(ok=False, error=traceback.format_exc())
         signal.alarm(0)
+        receipt["evidence_seconds"] = time.monotonic() - evidence_started
         receipt["total_seconds"] = time.monotonic() - started
         receipt["target_exceeded"] = receipt["total_seconds"] > 600
         manifest = json.loads((source / "e2e" / "manifest.json").read_text())
-        if (not receipt["cleanup"]["ok"] or receipt["total_seconds"] > 900
+        if (args.exercise != "baseline" or receipt["signals"] or not receipt["cleanup"]["ok"] or receipt["total_seconds"] > 900
                 or set(receipt["variants"]) != set(manifest["variants"])
                 or any(row["status"] != "PASS" for row in receipt["variants"].values())):
             receipt["status"] = "FAIL"

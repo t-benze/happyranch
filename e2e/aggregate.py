@@ -4,6 +4,9 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import signal
+
+from cancellation import validate as validate_cancellation
 from pathlib import Path
 
 
@@ -67,6 +70,49 @@ def controls() -> dict:
         else:
             raise AssertionError(f"gate incorrectly accepted {name}")
     validate(valid, MANIFEST["pr_python"], source, "success")
+    results.update(cancellation_controls())
+    return results
+
+
+def cancellation_controls() -> dict:
+    """Synthetic refusal controls; these never count as actual signal evidence."""
+    source = "1" * 40
+    phases = [dict(name=n, exit=0) for n in ("dependencies", "browser-dependencies", "browser-install", "web-dependencies", "web-build")]
+    phases.append(dict(name="scenarios", exit=None, interrupted=True))
+    fixture = dict(source_sha=source, launcher_exit=1, launcher_absent=True,
+                   identities_live_at_signal=True, total_seconds=10,
+                   sent=dict(signal=15, at=2, pid=10, start="100"),
+                   active=dict(source_sha=source, at=1, launcher=dict(pid=10, start="100"),
+                               provider=dict(pid=11, pid_start="101"), browser_started=True,
+                               callback=dict(status=200, response={"ok": True}, dropped=False), ports=[1234, 1235],
+                               owned=dict(identities={"11": "101"}, units=["happyranch-example.service"], groups=["/example"])),
+                   launcher_result=dict(source_sha=source, python="3.12", exercise="cancellation", status="FAIL", skipped=0,
+                                        signals=[dict(signal=15, at=3, pid=10, start="100")], total_seconds=10, phases=phases,
+                                        cleanup=dict(ok=True, data_absent=True, sockets_absent=True, watcher_stopped=True,
+                                                     survivors={}, errors=[], identities={"11": "101"},
+                                                     units={"happyranch-example.service": {"stdout": "LoadState=not-found"}},
+                                                     groups={"/example": False}, ports_absent={"1234": True, "1235": True})))
+    validate_cancellation(fixture, source, "3.12", 15)
+    results = {}
+    for name in ("no-delivery", "wrong-signal", "false-success", "not-active", "missing-identity", "missing-unit", "live-cgroup", "missing-port", "data-residue", "setup-failure"):
+        row = copy.deepcopy(fixture)
+        result = row["launcher_result"]
+        if name == "no-delivery": result["signals"] = []
+        elif name == "wrong-signal": result["signals"][0]["signal"] = 2
+        elif name == "false-success": row["launcher_exit"] = 0
+        elif name == "not-active": row["identities_live_at_signal"] = False
+        elif name == "missing-identity": result["cleanup"]["identities"] = {}
+        elif name == "missing-unit": result["cleanup"]["units"] = {}
+        elif name == "live-cgroup": result["cleanup"]["groups"]["/example"] = True
+        elif name == "missing-port": result["cleanup"]["ports_absent"] = {}
+        elif name == "data-residue": result["cleanup"]["data_absent"] = False
+        elif name == "setup-failure": result["phases"][0]["exit"] = 1
+        try:
+            validate_cancellation(row, source, "3.12", 15)
+        except ValueError as exc:
+            results["cancellation-" + name] = str(exc)
+        else:
+            raise AssertionError(f"cancellation validator accepted {name}")
     return results
 
 
@@ -77,16 +123,31 @@ def main() -> None:
     parser.add_argument("--source")
     parser.add_argument("--event", choices=["pull_request", "push", "workflow_dispatch"])
     parser.add_argument("--matrix-result")
+    parser.add_argument("--cancellation-result")
     args = parser.parse_args()
     if args.controls:
         print(json.dumps(controls(), indent=2))
         return
-    if not all((args.artifacts, args.source, args.event, args.matrix_result)):
-        parser.error("artifacts, source, event and matrix-result are required")
-    rows = [json.loads(path.read_text()) for path in args.artifacts.rglob("result.json")]
+    if not all((args.artifacts, args.source, args.event, args.matrix_result, args.cancellation_result)):
+        parser.error("artifacts, source, event, matrix-result and cancellation-result are required")
+    rows = [json.loads(path.read_text()) for path in args.artifacts.glob("e2e-[0-9]*/result.json")]
     expected = MANIFEST["pr_python" if args.event == "pull_request" else "main_python"]
     validate(rows, expected, args.source, args.matrix_result)
-    print(json.dumps(dict(status="PASS", source_sha=args.source, cells=expected)))
+    if args.cancellation_result != "success":
+        raise ValueError("cancellation jobs did not succeed")
+    cancellation = sorted(args.artifacts.glob("e2e-cancel-*/cancellation.json"))
+    if len(cancellation) != 2:
+        raise ValueError("missing or duplicate cancellation cell")
+    seen = set()
+    for path in cancellation:
+        row = json.loads(path.read_text())
+        signum = row["sent"]["signal"]
+        if signum in seen or signum not in {int(signal.SIGTERM), int(signal.SIGINT)} or row["status"] != "PASS":
+            raise ValueError("unexpected or failed cancellation cell")
+        seen.add(signum)
+        python = "3.12" if signum == signal.SIGTERM else "3.14"
+        validate_cancellation(row, args.source, python, signum)
+    print(json.dumps(dict(status="PASS", source_sha=args.source, cells=expected, cancellation=sorted(seen))))
 
 
 if __name__ == "__main__":
