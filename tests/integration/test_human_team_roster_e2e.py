@@ -477,6 +477,9 @@ def _seed_human_roster(runtime: Path) -> None:
                                  'workers': ['consultant_head', 'consultant_codex']}
     roster.update(default_team='default', task_default_team='engineering')
     (runtime / 'org/teams.yaml').write_text(yaml.safe_dump(roster))
+    # The legacy C2 positive controls execute the persisted Engineering owner.
+    # A definition alone does not meet the native workspace launch precondition.
+    seed_workspace(runtime, 'engineering_head')
     seed_workspace(runtime, 'consultant_head')
     seed_workspace(runtime, 'consultant_codex', executor='codex')
 
@@ -630,7 +633,14 @@ if parent is not None and c4_cut is not None and ('after_job_drain' in c4_cut or
                 if log_path and 'owned-running' in pathlib.Path(log_path).read_text(): break
                 time.sleep(0.01)
             assert log_path and 'owned-running' in pathlib.Path(log_path).read_text()
-subprocess.run(['happyranch', 'report-completion', '--org', org, '--from-file', str(file)], check=True)
+command = ['happyranch', 'report-completion', '--org', org, '--from-file', str(file)]
+actual = subprocess.run(command, capture_output=True, text=True, timeout=30)
+with pathlib.Path(str(witness) + '.callback.calls.jsonl').open('a') as out:
+    out.write(json.dumps({'command': command, 'exit': actual.returncode,
+        'stdout': actual.stdout, 'stderr': actual.stderr, 'task': T, 'session': S, 'agent': agent}) + '\\n')
+print(actual.stdout, end='')
+print(actual.stderr, end='', file=sys.stderr)
+actual.check_returncode()
 if parent is not None and c4_cut is not None and (c4_cut.endswith(('shared_loop', 'startup_loop', 'zombie_loop', 'portability_loop'))
         or c4_cut == 'late_inline_unbound') and 'after_job_drain' not in c4_cut and 'no_job_reentry' not in c4_cut:
     # Callback is genuinely accepted; executor remains alive so a shared
@@ -922,7 +932,7 @@ def test_c2_owner_required_before_persistence(human_daemon: tuple[int, Path],
             task_ids = re.findall(r'Submitted (TASK-[0-9]+)', actual.stdout)
             assert len(task_ids) == 1, actual.stdout
             final = _wait_for_terminal(_base(port), task_ids[0])
-            assert final['task']['status'] == 'completed'
+            assert final['task']['status'] == 'completed', final
             with sqlite3.connect(root / 'happyranch.db') as observer:
                 assert observer.execute('SELECT team,assigned_agent FROM tasks WHERE id=?', (task_ids[0],)).fetchone() == (
                     ('default', 'consultant_codex') if owner == 'cli-worker' else ('engineering', 'engineering_head'))

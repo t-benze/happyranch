@@ -260,7 +260,8 @@ def expose_roster(root: Path, env: dict[str, str], binding: dict) -> None:
             browser[name + "_shim_sha256"] = digest(shim)
         config = root / "browser-config.json"
         config.write_text(json.dumps({"browser": {"browserName": "chromium", "isolated": True,
-            "launchOptions": {"headless": True, "executablePath": browser["browser"]}}}))
+            "launchOptions": {"headless": True, "chromiumSandbox": True,
+                              "executablePath": browser["browser"]}}}))
         config.chmod(0o600)
         browser["config"] = str(config)
         browser["config_sha256"] = digest(config)
@@ -280,7 +281,8 @@ def retain_roster(root: Path, binding: dict, source: Path, revision: str, code: 
     for path in sorted((root / "tmp").rglob("*")):
         if (path.is_symlink() or not path.is_file() or path.stat().st_uid != os.getuid()
                 or not ((path.name.startswith("C") and path.suffix in (".json", ".png"))
-                        or path.name in ("identities.jsonl", "actual-contexts.jsonl")
+                        or path.name in ("identities.jsonl", "actual-contexts.jsonl",
+                                         "C-fixture-daemon.log", "real-failed-daemon.log")
                         or path.name.endswith(".calls.jsonl")
                         or path.name.startswith("real-failed-cut.json"))):
             continue
@@ -289,7 +291,10 @@ def retain_roster(root: Path, binding: dict, source: Path, revision: str, code: 
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
         inventory.append({"original_path": str(path), "path": str(target.relative_to(output)), "sha256": digest(target), "bytes": target.stat().st_size})
-    if ROSTER_E2E + "test_c4_normal_and_recovered_verdict_attribution" in binding["selections"]:
+    c4_selected = ROSTER_E2E + "test_c4_normal_and_recovered_verdict_attribution" in binding["selections"]
+    if c4_selected or any(node.startswith(ROSTER_E2E + name) for node in binding["selections"]
+                         for name in ("test_c2_owner_required_before_persistence",
+                                      "test_c7_both_resume_resets_and_worker_contexts")):
         # Independent final durable readback after the actual child/fixture tail;
         # native cut witnesses above retain earlier phases. This is not PASS.
         for db in sorted((root / "tmp").rglob("happyranch.db")):
@@ -299,7 +304,8 @@ def retain_roster(root: Path, binding: dict, source: Path, revision: str, code: 
                 reader.row_factory = sqlite3.Row
                 tables = {name: [dict(row) for row in reader.execute('SELECT * FROM "' + name + '" ORDER BY rowid')]
                           for name in ("tasks", "task_results", "audit_log", "task_completion_recoveries", "jobs")}
-            target = output / "scenarios" / db.relative_to(root / "tmp").parent / "C4-final-durable-readback.json"
+            name = "C4-final-durable-readback.json" if c4_selected else "C-fixture-final-durable-readback.json"
+            target = output / "scenarios" / db.relative_to(root / "tmp").parent / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps({"database": str(db), "source_sha": revision, "tables": tables,
                 "meaning": "actual final readback; see child exit/assertions and native witnesses"},

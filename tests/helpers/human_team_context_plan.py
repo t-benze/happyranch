@@ -101,14 +101,10 @@ def main() -> int:
     if not workspace.is_relative_to(parent_root) or workspace.parent.name != 'workspaces':
         raise ValueError('original_parent_owned_workspace_required')
     root, org = workspace.parent.parent, workspace.parent.parent.name
+    # Shipping _callee_env prepares the executor's cache under its workspace;
+    # HOME/config retain the isolated parent's exact binding.
     expected_environment = {'HOME': parent_root / 'home', 'XDG_CONFIG_HOME': parent_root / 'config',
-                            'XDG_CACHE_HOME': parent_root / 'cache'}
-    if (any(os.environ.get(key) != str(value) for key, value in expected_environment.items())
-            or os.environ.get('PATH') != os.pathsep.join((str(parent_root / 'bin'), '/usr/bin', '/bin'))
-            or os.environ.get('HAPPYRANCH_ORG_SLUG') != org
-            or any(key in os.environ for key in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_HOME',
-                                                 'CLAUDE_CONFIG_DIR', 'HAPPYRANCH_RUNTIME', 'HAPPYRANCH_DAEMON_TOKEN'))):
-        raise ValueError('closed_actual_executor_environment_required')
+                            'XDG_CACHE_HOME': workspace / '.happyranch/cache/xdg'}
     stub = os.environ['HAPPYRANCH_TEST_CONTEXT_STUB']
     plan = os.environ['HAPPYRANCH_TEST_CONTEXT_PLAN']
     validate_stub(args.provider, stub, binding)
@@ -127,6 +123,22 @@ def main() -> int:
             or not capture.parent.resolve(strict=True).is_relative_to(parent_root)):
         raise ValueError('owned_fixture_capture_required')
     prompt = sys.stdin.read()
+    # Retain this registered fixture invocation even if parsing/setup refuses
+    # before the callback record. Never export ambient env or provider memory.
+    launch = capture.parent / ('C7-outer-prompt-' + str(os.getpid()) + '.json')
+    fd = os.open(launch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump({'source_sha': binding['revision'], 'provider': args.provider,
+            'workspace': str(workspace), 'prompt': prompt,
+            'execution_environment': {key: os.environ.get(key) for key in
+                ('HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'PATH')},
+            'meaning': 'actual registered launch input; callback not yet attempted'}, output, sort_keys=True)
+    if (any(os.environ.get(key) != str(value) for key, value in expected_environment.items())
+            or os.environ.get('PATH') != os.pathsep.join((str(parent_root / 'bin'), '/usr/bin', '/bin'))
+            or os.environ.get('HAPPYRANCH_ORG_SLUG') != org
+            or any(key in os.environ for key in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_HOME',
+                                                 'CLAUDE_CONFIG_DIR', 'HAPPYRANCH_RUNTIME', 'HAPPYRANCH_DAEMON_TOKEN'))):
+        raise ValueError('closed_actual_executor_environment_required')
     kind, identity = _outer_identity(prompt, org)
     runtime_hint = os.environ.get('HAPPYRANCH_RUNTIME_SESSION_ID')
     stale = None

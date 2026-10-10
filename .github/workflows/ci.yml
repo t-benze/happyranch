@@ -170,7 +170,7 @@ jobs:
           && github.event.pull_request.head.repo.full_name == github.repository
           && github.event.pull_request.head.ref == 'task/TASK-10430' }}
     name: PR1022 Roster L/W (${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.shard == 'W10' && 'ubuntu-22.04' || 'ubuntu-latest' }}
     timeout-minutes: 90
     permissions:
       contents: read

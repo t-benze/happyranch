@@ -56,6 +56,9 @@ The seven disposable Ubuntu shards use actual PR-head checkout, frozen Python
 L4 includes all accepted C4 parameters; L5 includes exactly six non-restore
 parameters; L7 includes all ten contexts; L8/L9 include only their three/four
 early CLI argument refusals; W10 includes all four locale/viewport parameters.
+Only W10 selects the standard GitHub-hosted Ubuntu 22.04 image; the L shards
+retain `ubuntu-latest`. The actual runner image appears in the hosted setup
+log, alongside the existing Python/Node and selected browser/tool receipts.
 Verbose pytest output and JUnit record expanded IDs and actual outcomes. These
 early refusals are not successful maintenance or physical no-write proof.
 
@@ -82,7 +85,10 @@ The parent retains its non-group/world-writable file checks. Its closed
 before launch; malformed/mismatched descriptors must refuse before pytest.
 Private `node`/`playwright-cli` shims preserve the parent's original closed PATH,
 provider stubs and callback. The selected browser uses the isolated built SPA
-and fixture API; update notification is disabled. No project dependencies,
+and fixture API with explicit `chromiumSandbox: true`; the real owned CLI
+launch must succeed before scenarios. Its command, exit and stdout/stderr are
+retained even on refusal, without a sandbox-disable fallback. Update
+notification is disabled. No project dependencies,
 global tooling or execution policy changes follow.
 
 C5 positive graph admission binds the actual existing fixture runtime
@@ -92,7 +98,11 @@ it. Portability refusals from generated workspace links remain real failures.
 
 The selected mode retains passing and failing temporary scenario evidence
 before parent teardown, including real screenshots, C5/C7/refusal receipts,
-native C4 witnesses and independent final durable readbacks. It exports an
+native C4 witnesses, feature-owned daemon logs and independent final
+task/result/audit/recovery/job readbacks for selected C2/C4/C7. The feature
+provisions the actual Engineering manager workspace for its legacy C2 controls;
+C7 verifies the shipping workspace-owned XDG cache while retaining exact
+parent HOME/config/PATH and original stub/identity gates. It exports an
 artifact inventory with original paths, hashes and byte sizes, actual child
 exit, source and tool bindings. Fixture credentials/config/DB files themselves
 are excluded. Each shard uploads adverse and successful logs/receipts with

@@ -195,6 +195,9 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
     assert hashlib.sha256(Path(selected['node']).read_bytes()).hexdigest() == selected['node_sha256']
     assert hashlib.sha256(Path(selected['browser']).read_bytes()).hexdigest() == selected['browser_sha256']
     assert hashlib.sha256(Path(selected['config']).read_bytes()).hexdigest() == selected['config_sha256']
+    launch_options = json.loads(Path(selected['config']).read_text())['browser']['launchOptions']
+    assert launch_options['chromiumSandbox'] is True
+    assert launch_options['executablePath'] == selected['browser']
     assert subprocess.run([node, '--version'], check=True, text=True, capture_output=True, timeout=15).stdout.strip() == selected['node_version']
     cli_version = subprocess.run([cli, '--version'], check=True, text=True, capture_output=True, timeout=15).stdout.strip()
     assert cli_version == '0.1.18'
@@ -207,7 +210,13 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
 
     def pw(*arguments: str) -> str:
         actual = subprocess.run([cli, '-s=' + session, *arguments], text=True, capture_output=True, timeout=40)
-        assert actual.returncode == 0, (arguments[0], actual.returncode, actual.stderr)
+        # Retain the real CLI status before assertions/teardown, including a
+        # sandbox launch refusal. These are fixture calls, never ambient logs.
+        with (tmp_path / 'C10-cli.calls.jsonl').open('a') as output:
+            output.write(json.dumps({'command': actual.args, 'exit': actual.returncode,
+                'stdout': actual.stdout, 'stderr': actual.stderr,
+                'source_sha': binding['revision'], 'launch_options': launch_options}) + '\n')
+        assert actual.returncode == 0, (arguments[0], actual.returncode, actual.stdout, actual.stderr)
         return actual.stdout
 
     def evaluate(expression: str):
@@ -329,8 +338,10 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 'authority_policy_active_selector_history', 'authority_policy_v2_control_audit')}
 
     with _spa(dist, port) as (base, fixture):
+        opened = False
         try:
             pw('open', '--config=' + selected['config'])
+            opened = True
             pw('resize', str(viewport[0]), str(viewport[1]))
             pw('goto', base + '/orgs/test/agents/consultant_head')
             pw('localstorage-set', 'happyranch.ui.locale', locale)
@@ -700,4 +711,5 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
         finally:
             for key in ('release', 'teams_release', 'settings_release', 'policy_release'):
                 fixture[key].set()
-            pw('close')
+            if opened:
+                pw('close')

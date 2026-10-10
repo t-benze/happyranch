@@ -318,6 +318,14 @@ def live_daemon(
 
     finally:
         subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
+        # Only the selected roster feature retains its fixture-owned daemon
+        # stderr. Default/canonical callback fixtures keep their original tail.
+        if request.node.path.name in ("test_human_team_roster_e2e.py", "test_human_team_roster_browser.py"):
+            log_path = paths_mod.log_file()
+            if (log_path.is_file() and not log_path.is_symlink()
+                    and log_path.resolve().is_relative_to(tmp_home.resolve())
+                    and log_path.stat().st_uid == os.getuid()):
+                (tmp_home.parent / "C-fixture-daemon.log").write_bytes(log_path.read_bytes())
         if capture_binding is not None:
             from scripts.jenkins_mac_guest import _read_two_org_prelaunch_exception
             import json
