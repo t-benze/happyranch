@@ -177,9 +177,17 @@ def exercise(c: Controller) -> None:
     compare_public(c, "alpha", control, [payload], [start])
     c.mark("E03.bearer-post-valid")
     for index, (org, task) in enumerate((("alpha", alpha), ("beta", beta), ("alpha", alpha))):
-        c.browser.open_task(org, task, org.upper() + "_COLLISION", switch=index > 0)
+        alien = ("BETA" if org == "alpha" else "ALPHA") + "_COLLISION"
+        c.browser.open_task(org, task, org.upper() + "_COLLISION", switch=index > 0,
+                            cached_recall=index == 2, alien=alien)
         c.browser.completed(org, task, org.upper() + "_COLLISION", org.upper() + "_COLLISION_OUTCOME",
-                            alien=("BETA" if org == "alpha" else "ALPHA") + "_COLLISION", shot=f"org-switch-{index}")
+                            alien=alien, shot=f"org-switch-{index}")
+        if index == 2:
+            # First prove the populated-cache return, then also preserve the
+            # accepted fresh target-org HTTP + rendered-content oracle.
+            c.browser.revisit_after_cache_expiry(org, task)
+            c.browser.completed(org, task, "ALPHA_COLLISION", "ALPHA_COLLISION_OUTCOME",
+                                alien=alien, shot="org-switch-return-revalidated")
         c.mark(("E03.browser-alpha", "E03.browser-beta", "E03.browser-alpha-return")[index])
     require(len(c.starts) == 9, "exact whole-run launch count", c.starts)
     for org, tasks, results in (("alpha", 6, 8), ("beta", 1, 1)):

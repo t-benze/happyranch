@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import time
+from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
 
 from playwright.sync_api import expect, sync_playwright
@@ -34,7 +36,8 @@ class Browser:
     def response(self, path: str) -> Any:
         return self.page.expect_response(lambda response: response.url.split("?")[0] == self.base + path and response.status == 200)
 
-    def open_task(self, org: str, task: str, brief: str, *, switch: bool = False) -> None:
+    def open_task(self, org: str, task: str, brief: str, *, switch: bool = False,
+                  cached_recall: bool = False, alien: str | None = None) -> None:
         roots = f"/api/v1/orgs/{org}/tasks/roots"
         with self.response(roots):
             if switch:
@@ -44,11 +47,43 @@ class Browser:
                 self.page.goto(f"{self.base}/orgs/{org}/tasks")
         main = self.page.get_by_role("main")
         expect(main.get_by_text(brief, exact=False).first).to_be_visible()
+        if alien:
+            expect(main.get_by_text(alien, exact=False)).to_have_count(0)
+            other = "beta" if org == "alpha" else "alpha"
+            expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0)
         link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first
         expect(link).to_be_visible()
-        with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
+        detail_path = f"/api/v1/orgs/{org}/tasks/{task}"
+        recall_path = detail_path + "/recall"
+        with ExitStack() as responses:
+            if cached_recall:
+                # The explicit round-trip return may reuse the real response
+                # previously observed in this context. Rendering is asserted by
+                # completed(), before a separate fresh-HTTP revisit below.
+                for path in (detail_path, recall_path):
+                    require(any(row.get("event") == "response" and row.get("path") == path
+                                and row.get("status") == 200 for row in self.events),
+                            "cached detail/Recall has target-org real HTTP provenance", path)
+                self.events.append(dict(event="navigation", action="cached-return", org=org, task=task))
+            else:
+                responses.enter_context(self.response(detail_path))
+                responses.enter_context(self.response(recall_path))
             link.click()
         expect(main.get_by_text(brief, exact=False).first).to_be_visible()
+
+    def revisit_after_cache_expiry(self, org: str, task: str) -> None:
+        # AppProvider's shipping staleTime is 30s. Keep this same populated
+        # context and navigate normally; never evict cache or change its clock.
+        require(self.controller.remaining(32) >= 31, "cache revisit fits action budget")
+        begin = time.monotonic()
+        main = self.page.get_by_role("main")
+        main.locator(f'a[href="/orgs/{org}/tasks"]').first.click()
+        self.page.wait_for_timeout(31000)
+        self.controller.remaining()
+        self.events.append(dict(event="navigation", action="cache-expired-revisit", org=org, task=task))
+        with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
+            main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click()
+        self.controller.phases.append(dict(name="browser-cache-revisit", seconds=time.monotonic() - begin))
 
     def completed(self, org: str, task: str, brief: str, summary: str, *, child: str | None = None,
                   child_summary: str | None = None, alien: str | None = None, shot: str,

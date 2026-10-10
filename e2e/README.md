@@ -41,7 +41,15 @@ Lifecycle final-state readback uses a normal browser refresh after durable
 completion, waiting for real detail and Recall responses in the same browser
 session. The shipping detail/Recall queries do not poll while mounted; this
 case does not establish automatic live-view refresh. The independent populated
-alpha-beta-alpha cache case never reloads during org switching. Assertions use
+alpha-beta-alpha cache case never reloads during org switching. The return
+first verifies the cached rendered alpha state with its prior real HTTP200
+provenance. It then navigates to the list, waits 31s for the shipping 30s query
+staleness window, and revisits the detail through its real link, requiring new
+detail/Recall HTTP200 and the same render/isolation assertions. No query cache,
+clock or product state is changed. This explicit extra phase retains both the
+populated-cache and fresh-response oracles; the case's original 30s target may
+be exceeded, while the complete run retains its 600s target/900s hard cap.
+Assertions cover alien task content/links in both list and detail. Assertions use
 the shipping English heading `Recall tree` and raw status label `completed`.
 The workflow explicitly installs its selected Python before resolving the
 absolute interpreter; installation remains inside the cleanup-inclusive clock.
