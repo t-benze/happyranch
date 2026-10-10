@@ -249,10 +249,31 @@ jobs:
               from urllib.parse import urlsplit
               source_parts = package_source.split() if package_source else []
               assert len(source_parts)==4, package_source
-              archive_url = urlsplit(source_parts[0])
-              assert archive_url.scheme in ('http','https') and archive_url.hostname
-              assert archive_url.path.rstrip('/')=='/ubuntu' and not archive_url.query and not archive_url.fragment
-              assert archive_url.username is None and archive_url.password is None
+              # Hosted jammy selects APT's configured mirror list. Preserve
+              # that authenticated transport rather than changing sources.
+              archive_uris = [source_parts[0]]
+              mirror_source = None
+              if source_parts[0] == 'mirror+file:/etc/apt/apt-mirrors.txt':
+                  mirror_file = pathlib.Path('/etc/apt/apt-mirrors.txt')
+                  mirror_info = mirror_file.lstat()
+                  assert stat.S_ISREG(mirror_info.st_mode) and mirror_info.st_uid == 0
+                  assert not stat.S_IMODE(mirror_info.st_mode) & 0o022
+                  assert mirror_file.resolve(strict=True) == mirror_file
+                  mirror_bytes = mirror_file.read_bytes()
+                  mirror_text = mirror_bytes.decode('utf-8')
+                  archive_uris = [line.split()[0] for line in mirror_text.splitlines()
+                                  if line.strip() and not line.lstrip().startswith('#')]
+                  assert archive_uris
+                  mirror_source = {'path':str(mirror_file), 'sha256':hashlib.sha256(mirror_bytes).hexdigest(),
+                                   'content':mirror_text, 'owner_uid':mirror_info.st_uid,
+                                   'mode':stat.S_IMODE(mirror_info.st_mode), 'archive_uris':archive_uris}
+                  origins['font']['mirror_source'] = mirror_source
+                  (root/'tool-file-origins.json').write_text(json.dumps(origins, sort_keys=True))
+              for archive_uri in archive_uris:
+                  archive_url = urlsplit(archive_uri)
+                  assert archive_url.scheme in ('http','https') and archive_url.hostname
+                  assert archive_url.path.rstrip('/')=='/ubuntu' and not archive_url.query and not archive_url.fragment
+                  assert archive_url.username is None and archive_url.password is None
               assert source_parts[1].split('/')[0] in ('jammy','jammy-updates','jammy-security')
               assert source_parts[2:] == ['amd64','Packages']
               source_policy = subprocess.check_output(['apt-cache','policy'], text=True).splitlines()
@@ -281,6 +302,7 @@ jobs:
               copyright_path = unpacked / 'usr/share/doc/fonts-noto-cjk/copyright'
               origin = {'kind':'authenticated-configured-ubuntu-package','package':'fonts-noto-cjk','version':version,
                         'apt_sources':package_source,'apt_policy':policy,'ubuntu_release_origin':release_origin,'download_command':command,
+                        'mirror_source':mirror_source,
                         'archive_sha256':sha(archive),'archive_bytes':archive.stat().st_size,
                         'integrity_method':'normal APT authenticated metadata plus exact archive SHA256/size'}
           copyright_text = copyright_path.read_text()

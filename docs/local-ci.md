@@ -125,7 +125,12 @@ W10 exposes invocation-owned `NotoSansCJK-Regular.ttc` and its OFL-1.1 copyright
 through a closed, hash-checked data-only font descriptor. It prefers the existing
 runner's `fonts-noto-cjk`; otherwise normal authenticated configured Ubuntu APT
 download verifies exact version/archive SHA256/size before `dpkg-deb -x` extracts
-data without package scripts or a global install. Package origin, integrity,
+data without package scripts or a global install. The runner's configured
+`mirror+file:/etc/apt/apt-mirrors.txt` transport
+requires that exact root-owned regular file without group/other write access;
+its complete bytes/hash and validated Ubuntu archive URIs are retained. APT
+authentication and Ubuntu release-origin checks still apply. No source is replaced.
+Package origin, integrity,
 license and font hashes are retained in `tool-file-origins.json`. The feature-only
 parent creates a private fontconfig mapping and cache (Chinese selects the SC
 family) while retaining isolated HOME/XDG/PATH, original guards, browser pins and
