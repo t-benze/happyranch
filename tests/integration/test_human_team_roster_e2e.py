@@ -2811,7 +2811,8 @@ def _c7_launch_contract(actual: dict, binding: dict, runtime: Path, baseline: di
     definition = parse_agent_text(actual['definition_bytes'], expected_name=agent)
     assert (definition.name, definition.team, definition.role, definition.executor, definition.allow_rules, definition.repos) == (
         agent, 'default', 'worker', provider, (), {})
-    assert definition.system_prompt == C7_ADVICE + ('\n\n## Routine Tasks\n- C7 own routine' if baseline['wake'] else '')
+    # AgentDef's canonical parser/render pair retains the final newline.
+    assert definition.system_prompt == C7_ADVICE + ('\n\n## Routine Tasks\n- C7 own routine' if baseline['wake'] else '') + '\n'
     files = actual['generated_files']
     assert files['CLAUDE.md']['raw_link'] == 'AGENTS.md'
     assert files['CLAUDE.md']['text'] == files['AGENTS.md']['text']

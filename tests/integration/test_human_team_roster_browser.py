@@ -323,11 +323,13 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
     def switch(old: str, new: str):
         settled()
         index = len(fixture['requests'])
-        trigger = '[aria-label=' + json.dumps(labels[old]['language']) + ']'
+        # CSS consumes the inner quoted value; JSON Unicode escapes are JS,
+        # not CSS escapes. Preserve literal labels before the outer JS quoting.
+        trigger = '[aria-label=' + json.dumps(labels[old]['language'], ensure_ascii=False) + ']'
         action('await page.locator(' + json.dumps(trigger) + ').click();')
         click('option', '简体中文' if new == 'zh-CN' else 'English')
         wait('document.documentElement.lang===' + json.dumps(new))
-        focused = wait('document.activeElement===document.querySelector(' + json.dumps('[aria-label=' + json.dumps(labels[new]['language']) + ']') + ')')
+        focused = wait('document.activeElement===document.querySelector(' + json.dumps('[aria-label=' + json.dumps(labels[new]['language'], ensure_ascii=False) + ']') + ')')
         time.sleep(0.2)
         locale_window(index, old, new, 'shipped header trigger focused: ' + str(focused))
 
@@ -350,7 +352,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
             # original Save causes a genuine roster-query refresh after write.
             for agent in ('consultant_head', 'consultant_codex'):
                 pw('goto', base + '/orgs/test/agents/' + agent)
-                selector = 'input[aria-label=' + json.dumps(text['model']) + ']'
+                selector = 'input[aria-label=' + json.dumps(text['model'], ensure_ascii=False) + ']'
                 wait('document.documentElement.lang===' + json.dumps(locale) + ' && Boolean(document.querySelector(' + json.dumps(selector) + '))')
                 assert evaluate(contains(text['founder']))
                 assert not evaluate('Boolean(document.querySelector("[data-testid=team-escalation-policy]"))')
@@ -362,7 +364,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 assert evaluate('document.activeElement===window.__c10Model')
                 next_locale = 'zh-CN' if locale == 'en' else 'en'
                 switch(locale, next_locale)
-                next_selector = 'input[aria-label=' + json.dumps(labels[next_locale]['model']) + ']'
+                next_selector = 'input[aria-label=' + json.dumps(labels[next_locale]['model'], ensure_ascii=False) + ']'
                 retained = evaluate('({same:document.querySelector(' + json.dumps(next_selector) + ')===window.__c10Model,value:window.__c10Model.value,start:window.__c10Model.selectionStart,end:window.__c10Model.selectionEnd,editorFocused:document.activeElement===window.__c10Model,selected:location.pathname})')
                 assert retained == {'same': True, 'value': draft, 'start': 2, 'end': 6,
                                     'editorFocused': False, 'selected': '/orgs/test/agents/' + agent}
@@ -571,7 +573,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 wait('Boolean(document.querySelector("table")) && ' + contains('consultant_codex'))
                 shot('work-hours', mode + '-recovered')
             # Keyboard scrolling proves that the final column can be reached.
-            region = '[role=region][aria-label=' + json.dumps(text['whRegion']) + ']'
+            region = '[role=region][aria-label=' + json.dumps(text['whRegion'], ensure_ascii=False) + ']'
             action('await page.locator(' + json.dumps(region) + ').focus();for(let i=0;i<30;i++) await page.locator(' + json.dumps(region) + ').press("ArrowRight");')
             wait('(() => {const e=document.querySelector(' + json.dumps(region) + '),r=e.getBoundingClientRect(),h=e.querySelector("thead th:last-child").getBoundingClientRect();return document.activeElement===e&&h.right<=r.right&&h.left>=r.left;})()')
             shot('work-hours', 'last-column-reachable', (region,))

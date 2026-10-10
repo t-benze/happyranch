@@ -102,8 +102,11 @@ native C4 witnesses, feature-owned daemon logs and independent final
 task/result/audit/recovery/job readbacks for selected C2/C4/C7. The feature
 provisions the actual Engineering manager workspace for its legacy C2 controls;
 C7 verifies the shipping workspace-owned XDG cache while retaining exact
-parent HOME/config/PATH and original stub/identity gates. It exports an
-artifact inventory with original paths, hashes and byte sizes, actual child
+parent HOME/config/PATH and original stub/identity gates.
+The C7 complete prompt expectation includes the canonical AgentDef final newline.
+Localized browser CSS selectors preserve literal label text before JavaScript
+quoting so Chinese labels reach the existing exact focus/model/geometry oracles.
+It exports an artifact inventory with original paths, hashes and byte sizes, actual child
 exit, source and tool bindings. Fixture credentials/config/DB files themselves
 are excluded. Each shard uploads adverse and successful logs/receipts with
 run/attempt identity. Missing/incompatible tooling is an environment failure;
