@@ -380,11 +380,10 @@ def get_pause_overview(org: OrgDep, limit: int = Query(20, ge=1, le=100),
 async def _control_pause(task_id: str, body: TaskPauseControlRequest,
                          org: OrgState, *, held: bool) -> dict:
     from runtime.infrastructure.task_pause_controls import PauseControlError
-    running = frozenset(org.sessions.iter_active())
     try:
         async with org.db_lock:
             changed = org.db._task_pause_store.control(task_id, held=held,
-                expected_generation=body.expected_generation, actor="founder", running=running)
+                expected_generation=body.expected_generation, actor="founder", sessions=org.sessions)
     except PauseControlError as exc:
         raise HTTPException(status_code=404 if exc.detail["code"] == "unknown_task" else 409,
                             detail=exc.detail) from exc

@@ -89,6 +89,8 @@ remains an explicit unknown blocker, including after terminal lifecycle or
 restart. Interrupted possible launch or cleanup ACTION never becomes safe zero
 or an automatic retry merely because a PID is absent. An interrupted result-processing tail also remains unknown until authentic settlement is observed; settlement retires producer ownership without erasing unknown tree evidence.
 
+Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
+
 Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by this pause generation may
 submit and auto-run its already-authorized unreviewed jobs while held, with
 fresh exact SID/task/agent validation. Prepared, committed-but-not-running,

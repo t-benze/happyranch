@@ -368,10 +368,16 @@ class TaskPauseStore:
                               (raw, row["root_task_id"]))
 
     def control(self, task_id: str, *, held: bool, expected_generation: int,
-                actor: str, running: frozenset[tuple[str, str, str]] = frozenset()) -> bool:
+                actor: str, sessions: Any) -> bool:
         if type(expected_generation) is not int or not 0 <= expected_generation <= MAX_GENERATION or not actor:
             raise PauseControlError("pause_control_unavailable")
-        with self.writer(task_id) as (root, row):
+        running: set[tuple[str, str, str]] = set()
+        # iter_active() is advisory: admission/binding/running can move before
+        # root arbitration. Read current bindings only after acquiring the
+        # root/DB writer, and freeze publication/clear through its COMMIT.
+        # This leaf tracker mutex never acquires a binding lease in reverse.
+        capture_guard = sessions._pause_capture_guard(running) if held else None
+        with self.writer(task_id, commit_guard=capture_guard) as (root, row):
             if root["id"] != task_id:
                 raise PauseControlError("root_task_required", root_task_id=root["id"])
             if root["status"] in TERMINAL:
