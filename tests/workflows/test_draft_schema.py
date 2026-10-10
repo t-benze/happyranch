@@ -625,6 +625,21 @@ assert_pinned_imports()
         finally:
             conn.close()
     before = snapshot()
+    additive_indexes = (
+        ('index', 'idx_audit_log_task_id', 'audit_log',
+         'CREATE INDEX idx_audit_log_task_id ON audit_log(task_id)'),
+        ('index', 'idx_cleanup_tasks_agent_created_id', 'tasks',
+         'CREATE INDEX idx_cleanup_tasks_agent_created_id ON tasks(assigned_agent,created_at DESC,id DESC)'),
+        ('index', 'idx_cleanup_trigger_task_agent', 'audit_log',
+         "CREATE INDEX idx_cleanup_trigger_task_agent ON audit_log(task_id,agent) WHERE action='workspace_cleanup_triggered'"),
+        ('index', 'idx_cleanup_results_task_agent_id', 'task_results',
+         'CREATE INDEX idx_cleanup_results_task_agent_id ON task_results(task_id,agent,id DESC)'),
+    )
+    assert not {row[1] for row in before[0]} & {row[1] for row in additive_indexes}
+    # Independent reviewed declarations: the authentic predecessor lacks all
+    # four indexes; main4cc1 shipped the three cleanup indexes. SQLite stores
+    # CREATE INDEX without IF NOT EXISTS. No expectations derive from actual DB.
+    expected_schema = tuple(sorted((*before[0], *additive_indexes), key=lambda row: row[1]))
     for _ in range(2):
         org = OrgState.load(slug='alpha',root=root,settings=Settings())
         try:
@@ -634,7 +649,11 @@ assert_pinned_imports()
             assert schema.validate_workflow_schema(org.db._conn,expected_org_slug='alpha') == 'F'
         finally:
             org.close()
-        assert snapshot() == before
+        after_schema, after_data = snapshot()
+        assert after_schema == expected_schema
+        assert set(after_schema) - set(before[0]) == set(additive_indexes)
+        assert len(after_schema) == len(before[0]) + 4
+        assert after_data == before[1]
     migrated = _run(runtime.root)
     assert migrated.returncode == 0 and 'migrated:' in migrated.stdout, migrated.stderr
     org = OrgState.load(slug='alpha',root=root,settings=Settings())

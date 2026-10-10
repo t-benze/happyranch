@@ -1,4 +1,5 @@
 import concurrent.futures, gzip, hashlib, io, json, os, pathlib, shutil, signal, subprocess, sys, tempfile, threading
+import ctypes, datetime, re, shlex, stat, time, xml.etree.ElementTree as ET
 
 
 MAX_MEMBER_BYTES = 128 * 1024 * 1024
@@ -127,6 +128,476 @@ def compact_error(exc):
             'message_bytes': len(raw), 'message_sha256': hashlib.sha256(raw).hexdigest(),
             'message_manifest': str(directory / 'error.txt.json'), 'message_complete': capture['complete'],
             'evidence_root': str(evidence)}
+
+
+PR1011_REF = 'refs/heads/task/TASK-10034'
+
+
+def pr1011_require(condition, reason):
+    # Admission checks must survive python -O. No assertion grants execution.
+    if not condition:
+        raise RuntimeError('PR1011 refusal: ' + reason)
+
+
+def pr1011_error(exc):
+    try:
+        return compact_error(exc)  # Complete bounded compressed error text.
+    except BaseException as capture_error:
+        return {'type': type(exc).__name__, 'message': str(exc)[:1024],
+                'message_complete': False, 'capture_error': type(capture_error).__name__}
+
+
+def pr1011_write(path, value):
+    data = (json.dumps(value, indent=2) + '\n').encode()
+    with artifact_lock:
+        existing = sum(p.stat().st_size for p in evidence.rglob('*') if p.is_file() and p != path
+                       and 'scratch' not in p.relative_to(evidence).parts)
+        pr1011_require(len(data) <= MAX_MEMBER_BYTES, 'receipt member bound')
+        pr1011_require(existing + artifact_reserved + len(data) <= MAX_ARCHIVE_BYTES, 'receipt archive bound')
+        path.write_bytes(data)
+
+
+def pr1011_source():
+    """Checkout consistency; native independent review is consumed by ROOT10330."""
+    def git(*args):
+        return subprocess.check_output(['git', *args], cwd=source)
+    pr1011_require(git('rev-parse', '--show-toplevel').decode().strip() == str(source), 'checkout root')
+    observed_head = git('rev-parse', 'HEAD').decode().strip()
+    platform_head = os.environ.get('GITHUB_SHA', '')
+    pr1011_require(re.fullmatch('[0-9a-f]{40}', platform_head) and observed_head == platform_head,
+                   'HEAD/platform SHA mismatch')
+    retained = git('rev-parse', 'refs/remotes/origin/task/TASK-10034').decode().strip()
+    pr1011_require(retained == observed_head, 'fetched retained ref/platform SHA mismatch')
+    pr1011_require(not git('diff', '--no-ext-diff', '--raw', '-z', 'HEAD', '--'), 'tracked/index dirt')
+    pr1011_require(not git('diff', '--cached', '--no-ext-diff', '--raw', '-z', 'HEAD', '--'), 'staged dirt')
+    pr1011_require(not git('ls-files', '--others', '--exclude-standard', '-z'), 'nonignored untracked paths')
+    committed = git('ls-tree', '-rz', '--full-tree', observed_head).split(b'\0')
+    indexed = git('ls-files', '--stage', '-z').split(b'\0')
+    expected_index, actual_index, files = {}, {}, []
+    for row in indexed:
+        if not row:
+            continue
+        fields, name = row.split(b'\t', 1)
+        mode, blob, stage = fields.split()
+        pr1011_require(stage == b'0', 'unmerged index: ' + os.fsdecode(name))
+        actual_index[name] = (mode, blob)
+    for row in committed:
+        if not row:
+            continue
+        fields, name = row.split(b'\t', 1)
+        mode, kind, blob = fields.split()
+        label = os.fsdecode(name)
+        pr1011_require(kind == b'blob' and mode in (b'100644', b'100755', b'120000'),
+                       'unsupported tracked mode: ' + label)
+        expected_index[name] = (mode, blob)
+        path = source / label
+        pr1011_require(path.parent.resolve().is_relative_to(source), 'escaping tracked parent: ' + label)
+        info = path.lstat()
+        if mode == b'120000':
+            pr1011_require(stat.S_ISLNK(info.st_mode), 'tracked symlink type: ' + label)
+            data = os.fsencode(os.readlink(path))
+        else:
+            pr1011_require(stat.S_ISREG(info.st_mode), 'tracked file type: ' + label)
+            pr1011_require(bool(info.st_mode & 0o111) == (mode == b'100755'), 'tracked executable mode: ' + label)
+            data = path.read_bytes()
+        expected = git('cat-file', 'blob', blob.decode())
+        pr1011_require(data == expected, 'tracked bytes/symlink contents: ' + label)
+        files.append({'path': label, 'mode': mode.decode(), 'blob': blob.decode(),
+                      'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()})
+    pr1011_require(expected_index == actual_index, 'full index/tree identity')
+    return {'head': observed_head, 'retained_ref_sha': retained,
+            'tree': git('rev-parse', 'HEAD^{tree}').decode().strip(), 'files': files}
+
+
+def pr1011_tools(root, env):
+    tools = {}
+    python = source / '.venv/bin/python'
+    pr1011_require(python.is_file() and python.resolve() == pathlib.Path(sys.executable).resolve(),
+                   'effective project interpreter')
+    pr1011_require(sys.version_info[:2] == (3, 14), 'effective Python 3.14')
+    for tool in ('uv', 'node', 'npm', 'npx'):
+        link = root / 'bin' / tool
+        resolved = shutil.which(tool, path=env['PATH'])
+        pr1011_require(resolved == str(link) and link.is_symlink(), 'effective tool link: ' + tool)
+        target = link.resolve(strict=True)
+        pr1011_require(target.is_file() and os.access(target, os.X_OK), 'tool executable: ' + tool)
+        version = subprocess.check_output([str(link), '--version'], env=env, text=True).strip()
+        pattern = {'uv': r'uv \d+\.\d+\.\d+.*', 'node': r'v24\.\d+\.\d+',
+                   'npm': r'\d+\.\d+\.\d+', 'npx': r'\d+\.\d+\.\d+'}[tool]
+        pr1011_require(re.fullmatch(pattern, version), 'effective tool version: ' + tool)
+        tools[tool] = {'link': str(link), 'path': str(target), 'version': version,
+                       'sha256': hashlib.sha256(target.read_bytes()).hexdigest()}
+    pr1011_require(tools['npm']['version'] == tools['npx']['version'], 'npm/npx version mismatch')
+    tools['python'] = {'path': str(python.resolve()), 'version': sys.version,
+                       'sha256': hashlib.sha256(python.resolve().read_bytes()).hexdigest()}
+    pytest = source / '.venv/bin/pytest'
+    pr1011_require(pytest.is_file() and os.access(pytest, os.X_OK)
+                   and pytest.resolve().parent == (source / '.venv/bin').resolve(), 'effective project pytest entry')
+    tools['pytest'] = {'path': str(pytest.resolve()), 'mode': oct(pytest.stat().st_mode & 0o777),
+                       'sha256': hashlib.sha256(pytest.read_bytes()).hexdigest()}
+    return tools
+
+
+def pr1011_descendants():
+    """Complete /proc parent closure, including session-escaping adopted children."""
+    rows = {}
+    for entry in pathlib.Path('/proc').iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            raw = (entry / 'stat').read_text()
+            fields = raw[raw.rfind(')') + 2:].split()
+            row = {'pid': int(entry.name), 'ppid': int(fields[1]), 'state': fields[0],
+                   'pgid': int(fields[2]), 'sid': int(fields[3]), 'start_ticks': int(fields[19])}
+            rows[row['pid']] = row
+        except (FileNotFoundError, ProcessLookupError):
+            continue  # This proc entry exited during the complete enumeration.
+    owners = {os.getpid()}
+    while True:
+        added = {pid for pid, row in rows.items() if row['ppid'] in owners} - owners
+        if not added:
+            break
+        owners.update(added)
+    result = []
+    for pid in sorted(owners - {os.getpid()}):
+        row = rows[pid]
+        try:
+            row['cmdline'] = [os.fsdecode(part) for part in
+                              (pathlib.Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')[:-1]]
+            row['exe'] = os.readlink(pathlib.Path('/proc') / str(pid) / 'exe')
+        except (FileNotFoundError, ProcessLookupError):
+            row['cmdline'] = []  # Terminal/just-exited identity remains in the census.
+            row['exe'] = None
+        result.append(row)
+    return result
+
+
+def pr1011_run(argv, env, receipt, persist):
+    """PR1011-only wrapper capture/finalizer; ordinary all/G paths stay unchanged."""
+    # Ubuntu/Linux adoption lets this driver actually wait escaped/orphaned
+    # descendants. No generic supervisor or wrapper change is introduced.
+    libc = ctypes.CDLL(None, use_errno=True)
+    pr1011_require(libc.prctl(36, 1, 0, 0, 0) == 0, 'Linux child-subreaper setup')
+    adopted = ctypes.c_int()
+    pr1011_require(libc.prctl(37, ctypes.byref(adopted), 0, 0, 0) == 0 and adopted.value == 1,
+                   'Linux child-subreaper readback')
+    pr1011_require(not pr1011_descendants(), 'preexisting driver children')
+    run = {'argv': argv, 'cwd': str(source), 'environment': env,
+           'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           'started_monotonic': time.monotonic(), 'driver_pid': os.getpid(),
+           'subreaper': True, 'launch': 'possible_spend', 'wrapper_exit': None,
+           'child_exit': None, 'streams': {}, 'observed_processes': {}, 'reaped': [],
+           'signals': [], 'tree_reaped': False,
+           'stdout_contract': 'complete merged child stdout/stderr via wrapper stdout',
+           'stderr_contract': 'separately captured wrapper stderr',
+           'child_wait_contract': 'unchanged run_bounded_output.run returns process.wait through SystemExit; '
+                                  'only complete zero with empty wrapper stderr supports child exit zero; '
+                                  'nonzero wrapper status leaves signed child exit unknown'}
+    receipt['run'] = run
+    persist()  # Persist uncertainty BEFORE Popen; loss never authorizes retry.
+    process, futures, readers = None, {}, []
+    def observe():
+        rows = pr1011_descendants()
+        for row in rows:
+            key = str(row['pid']) + ':' + str(row['start_ticks'])
+            if key not in run['observed_processes']:
+                run['observed_processes'][key] = row
+            cmdline = row['cmdline']
+            uv_child = (cmdline and pathlib.Path(cmdline[0]).name == 'uv' and cmdline[1:] == argv[1:])
+            pytest_child = (len(cmdline) >= 2 and row['exe'] == str(pathlib.Path(sys.executable).resolve())
+                            and pathlib.Path(cmdline[1]) == source / '.venv/bin/pytest' and cmdline[2:] == argv[5:])
+            if process is not None and row['ppid'] == process.pid and (uv_child or pytest_child):
+                run['child_leader'] = row
+                run['launch'] = 'child_observed_spent'
+        return rows
+    def reap():
+        if process is not None:
+            process.poll()  # Popen owns the wrapper's wait, not waitpid(-1).
+            if process.returncode is None:
+                # Reap adopted orphans by their actual parent relationship,
+                # never steal a concurrently terminating wrapper from Popen.
+                for row in observe():
+                    if row['ppid'] == os.getpid() and row['pid'] != process.pid:
+                        try:
+                            pid, status = os.waitpid(row['pid'], os.WNOHANG)
+                        except ChildProcessError:
+                            continue
+                        if pid:
+                            run['reaped'].append({'pid': pid, 'wait_status': status,
+                                                  'exit_code': os.waitstatus_to_exitcode(status)})
+                return False
+        while True:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return True
+            if not pid:
+                return False
+            run['reaped'].append({'pid': pid, 'wait_status': status,
+                                  'exit_code': os.waitstatus_to_exitcode(status)})
+    def terminate_tree():
+        # Both original ten-second TERM/KILL waits are retained. A PID is
+        # signalled only through a live pidfd, protecting against PID reuse.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            deadline = time.monotonic() + 10
+            while True:
+                rows = observe()
+                for row in rows:
+                    if row['state'] == 'Z':
+                        continue
+                    try:
+                        fd = os.pidfd_open(row['pid'])
+                        try:
+                            current = {r['pid']: r for r in pr1011_descendants()}.get(row['pid'])
+                            if current is not None and current['start_ticks'] == row['start_ticks']:
+                                signal.pidfd_send_signal(fd, sig)
+                                run['signals'].append({'pid': row['pid'], 'start_ticks': row['start_ticks'],
+                                                       'signal': int(sig)})
+                        finally:
+                            os.close(fd)
+                    except ProcessLookupError:
+                        pass
+                no_children = reap()
+                remaining = observe()
+                if no_children and not remaining:
+                    run['tree_reaped'] = True
+                    run['final_process_snapshot'] = []
+                    return
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.05)
+        run['final_process_snapshot'] = observe()
+        raise RuntimeError('PR1011 incomplete owned process-tree reaping')
+    try:
+        # This is the last source check before the sole child-launch seam.
+        root = pathlib.Path(env['HOME']).parent
+        pr1011_require(pr1011_tools(root, env) == receipt['tools'], 'immediate pre-child tool drift')
+        pr1011_require(pr1011_source() == receipt['source'], 'immediate pre-child source drift')
+        pr1011_require(not pr1011_descendants(), 'pre-child preparation left descendants')
+        run.update(popen_started_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   popen_started_monotonic=time.monotonic())
+        process = subprocess.Popen([sys.executable, str(source / 'scripts/run_bounded_output.py'),
+            '--output', str(evidence / 'local-ci-all.log'), '--max-bytes', '1048576', '--', *argv],
+            cwd=source, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        run.update(wrapper_pid=process.pid, wrapper_pgid=process.pid, launch='wrapper_started_possible_spend',
+                   popen_returned_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   popen_returned_monotonic=time.monotonic())
+        def capture(name, reader, stem):
+            future = futures[name]
+            try:
+                future.set_result(capture_stream(reader, directory=evidence, stem=stem))
+            except BaseException as exc:
+                future.set_exception(exc)
+        for name, reader, stem in (('stdout', process.stdout, 'full.log'),
+                                   ('stderr', process.stderr, 'runner-stderr.log')):
+            futures[name] = concurrent.futures.Future()
+            thread = threading.Thread(target=capture, args=(name, reader, stem), daemon=True)
+            readers.append(thread)
+            thread.start()
+        persist()
+        while True:
+            observe()
+            for name, future in futures.items():
+                if future.done():
+                    run['streams'][name] = future.result()
+            wrapper_exit = process.poll()
+            if wrapper_exit is not None:
+                run['wrapper_exit'] = wrapper_exit
+                run['residual_at_wrapper_exit'] = observe()
+                break
+            time.sleep(0.05)
+    except BaseException as exc:
+        run['error'] = pr1011_error(exc)
+        raise
+    finally:
+        receipt['finalizing'] = True  # Further ordinary signals are recorded, not raised.
+        try:
+            terminate_tree()
+        except BaseException as exc:
+            run['reap_error'] = pr1011_error(exc)
+        if process is not None:
+            run['wrapper_exit'] = process.poll()
+        # After a proven reap, every writer is gone and readers can reach EOF.
+        # On incomplete reaping never block shutdown on an unowned pipe writer.
+        for name, future in futures.items():
+            if run['tree_reaped'] or future.done():
+                try:
+                    run['streams'][name] = future.result()
+                except BaseException as exc:
+                    run.setdefault('capture_errors', {})[name] = pr1011_error(exc)
+        if run['tree_reaped']:
+            for reader in readers:
+                reader.join()
+        run['capture_readers_joined'] = all(not reader.is_alive() for reader in readers)
+        if process is not None and run['tree_reaped']:
+            process.stdout.close()
+            process.stderr.close()
+        for name, stem in (('stdout', 'full.log'), ('stderr', 'runner-stderr.log')):
+            manifest_path = evidence / (stem + '.json')
+            if manifest_path.exists():
+                run['streams'][name] = json.loads(manifest_path.read_text())
+        run.update(ended_utc=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   ended_monotonic=time.monotonic())
+        run['complete'] = (run['tree_reaped'] and not run.get('residual_at_wrapper_exit')
+                           and run['capture_readers_joined'] and 'child_leader' in run
+                           and len(run['streams']) == 2
+                           and all(v['complete'] for v in run['streams'].values())
+                           and 'error' not in run and 'capture_errors' not in run)
+        # SystemExit can encode child -9 as wrapper 247; nonzero wrapper status
+        # cannot authenticate signed child exit, even with empty stderr.
+        if run['complete'] and run['wrapper_exit'] == 0 and run['streams']['stderr']['raw_bytes'] == 0:
+            run['child_exit'] = 0
+            run['child_exit_evidence'] = 'complete zero wrapper return / pinned process.wait and SystemExit contract'
+        pr1011_write(evidence / 'full-log.json', run)
+        persist()
+
+
+def pr1011_entry():
+    global source, evidence
+    source = pathlib.Path.cwd().resolve()
+    receipt = {'state': 'refused_before_child', 'scoped_children': 0, 'all_children': 0,
+               'g_six_children': 0, 'helper_repetitions': 0,
+               'review_admission': 'native independent reviewer -> supported task/session/result -> '
+                                   'ROOT10330 exact-commit acceptance and serialized publication THROUGH platform event creation',
+               'hosted_check': 'checkout/platform source consistency; does not authenticate independent review',
+               'allocations': 'FIVE separate helper and ONE full run; launch/unknown spends, no retry entitlement',
+               'platform': {k: os.environ.get(k) for k in ('GITHUB_REPOSITORY', 'GITHUB_EVENT_NAME', 'GITHUB_REF',
+                   'GITHUB_REF_NAME', 'GITHUB_SHA', 'GITHUB_WORKFLOW', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT')}}
+    root, receipt_path = None, None
+    interrupted, finalizing = [], False
+    previous = {}
+    def persist():
+        if receipt_path is not None:
+            pr1011_write(receipt_path, receipt)
+    def stop(signum, frame):
+        interrupted.append(signum)
+        receipt['interruptions'] = interrupted
+        if not finalizing and not receipt.get('finalizing'):
+            raise InterruptedError('PR1011 interrupted by signal ' + str(signum))
+    try:
+        temp = pathlib.Path(os.environ.get('RUNNER_TEMP', ''))
+        pr1011_require(temp.is_absolute() and temp.resolve() == temp and temp.is_dir()
+                       and temp.stat().st_uid == os.getuid(), 'owned literal RUNNER_TEMP')
+        evidence = temp / 'local-ci-all'
+        evidence.mkdir(mode=0o700)  # Collision refuses; never overwrite prior evidence.
+        receipt_path = evidence / 'provenance.json'
+        persist()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            previous[sig] = signal.signal(sig, stop)
+        for key, expected in (('GITHUB_REPOSITORY', 't-benze/happyranch'),
+                              ('GITHUB_EVENT_NAME', 'workflow_dispatch'), ('GITHUB_REF', PR1011_REF),
+                              ('GITHUB_WORKFLOW', 'Nightly integration'), ('GITHUB_JOB', 'local-ci-all')):
+            pr1011_require(os.environ.get(key) == expected, key + ' expected ' + expected)
+        pr1011_require(sys.platform == 'linux' and os.environ.get('RUNNER_OS') == 'Linux', 'existing Ubuntu/Linux venue')
+        for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
+            pr1011_require(re.fullmatch('[1-9][0-9]*', os.environ.get(key, '')), key)
+        receipt['source'] = pr1011_source()
+        scratch = evidence / 'scratch'
+        scratch.mkdir(mode=0o700)
+        root = pathlib.Path(tempfile.mkdtemp(prefix='pr1011-', dir=scratch))
+        receipt['owned_root'] = str(root)
+        for name in ('home', 'config', 'cache', 'tmp', 'daemon', 'bin'):
+            (root / name).mkdir(mode=0o700)
+        (root / 'daemon/executors.json').write_text('{}')
+        for tool in ('uv', 'node', 'npm', 'npx'):
+            resolved = shutil.which(tool)
+            pr1011_require(resolved is not None, 'missing tool: ' + tool)
+            (root / 'bin' / tool).symlink_to(pathlib.Path(resolved).resolve(strict=True))
+        junit = root / 'junit.xml'
+        env = {'HOME': str(root / 'home'), 'XDG_CONFIG_HOME': str(root / 'config'),
+               'XDG_CACHE_HOME': str(root / 'cache'), 'TMPDIR': str(root / 'tmp'),
+               'TMP': str(root / 'tmp'), 'TEMP': str(root / 'tmp'),
+               'HAPPYRANCH_DAEMON_HOME': str(root / 'daemon'), 'HAPPYRANCH_DAEMON_PORT': '0',
+               'PATH': os.pathsep.join((str(root / 'bin'), str(source / '.venv/bin'), '/usr/local/bin', '/usr/bin', '/bin')),
+               'UV_PYTHON': sys.executable, 'UV_PYTHON_DOWNLOADS': 'never', 'UV_NO_SYNC': '1',
+               'UV_CACHE_DIR': str(root / 'cache/uv'), 'PYTHONNOUSERSITE': '1', 'PYTHONDONTWRITEBYTECODE': '1',
+               'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8', 'CI': 'true',
+               'PYTEST_ADDOPTS': shlex.join(['--junitxml=' + str(junit), '-o', 'cache_dir=' + str(root / 'cache/pytest')])}
+        receipt['environment'] = env
+        receipt['tools'] = pr1011_tools(root, env)
+        argv = ['uv', 'run', '--frozen', '--no-sync', 'pytest', 'tests/', '-v', '-n', '4',
+                '--basetemp=' + str(root / 'basetemp')]
+        receipt['argv'] = argv
+        pr1011_require(not (root / 'basetemp').exists(), 'fresh basetemp')
+        persist()
+        receipt['state'] = 'launch_boundary_possible_spend'
+        persist()
+        pr1011_run(argv, env, receipt, persist)
+        receipt['scoped_children'] = 1 if any(row['cmdline'] == argv or row['cmdline'][1:] == argv[1:]
+            for row in receipt['run']['observed_processes'].values()) else 'unknown_possible_spend'
+        receipt['state'] = 'child_returned_pending_finalizers'
+    except BaseException as exc:
+        receipt['failure'] = pr1011_error(exc)
+        receipt['state'] = 'failed_or_inconclusive' if 'run' in receipt else 'refused_before_child'
+    finally:
+        finalizing = True
+        if 'run' in receipt:
+            receipt['scoped_children'] = 'launched_or_possible_spend'
+        if root is not None:
+            # Capture complete or partial XML before removing owned scratch.
+            try:
+                junit = root / 'junit.xml'
+                if junit.is_file():
+                    with junit.open('rb') as reader:
+                        receipt['junit'] = capture_stream(reader, directory=evidence, stem='junit.xml')
+                    with junit.open('rb') as reader:
+                        suites = []
+                        for _, element in ET.iterparse(reader, events=('end',)):
+                            if element.tag == 'testsuite':
+                                suites.append({k: element.get(k) for k in ('name', 'tests', 'failures', 'errors', 'skipped')})
+                            element.clear()
+                    receipt['junit_suites'] = suites
+                    pr1011_require(bool(suites), 'JUnit missing testsuite')
+                    for suite in suites:
+                        for key in ('tests', 'failures', 'errors', 'skipped'):
+                            pr1011_require(re.fullmatch('[0-9]+', suite[key] or ''), 'JUnit count: ' + key)
+                        pr1011_require(int(suite['skipped']) <= int(suite['tests']), 'JUnit skipped count')
+                    pr1011_require(sum(int(suite['tests']) for suite in suites) > 0, 'JUnit zero tests')
+                else:
+                    receipt['junit_missing'] = True
+            except BaseException as exc:
+                receipt['junit_error'] = pr1011_error(exc)
+            try:
+                receipt['post_source'] = pr1011_source()
+                pr1011_require(receipt['post_source'] == receipt['source'], 'post-child source drift')
+                pr1011_require(pr1011_tools(root, receipt['environment']) == receipt['tools'], 'post-child tool drift')
+            except BaseException as exc:
+                receipt['postcheck_error'] = pr1011_error(exc)
+            # Never remove a live child's files or infer quiescence from absence.
+            if 'run' not in receipt or receipt['run']['tree_reaped']:
+                try:
+                    shutil.rmtree(root)
+                    receipt['cleanup_exit'] = 0 if not root.exists() else None
+                except BaseException as exc:
+                    receipt['cleanup_error'] = pr1011_error(exc)
+            else:
+                receipt['cleanup_deferred'] = 'incomplete process-tree evidence'
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        run = receipt.get('run', {})
+        # Unknown child status (including every nonzero wrapper result) stays
+        # INCONCLUSIVE; complete zero still needs all terminal evidence below.
+        conclusive = (run.get('complete') and run.get('child_exit') is not None
+                      and receipt.get('junit', {}).get('complete') and receipt.get('junit_suites')
+                      and receipt.get('cleanup_exit') == 0 and not interrupted
+                      and not any(k in receipt for k in ('failure', 'junit_error', 'postcheck_error', 'cleanup_error')))
+        passed = conclusive and run['child_exit'] == 0
+        if passed:
+            passed = all(s['failures'] == '0' and s['errors'] == '0' for s in receipt['junit_suites'])
+        receipt['state'] = ('PASS' if passed else 'FAILED' if conclusive else
+                            'INCONCLUSIVE' if run else 'refused_before_child')
+        receipt['driver_exit'] = 0 if passed else 1
+        persist()
+        print(json.dumps({'state': receipt['state'], 'driver_exit': receipt['driver_exit'],
+                          'receipt': str(receipt_path), 'failure': receipt.get('failure'),
+                          'launch': run.get('launch', 'not_started')}, sort_keys=True), flush=True)
+    return receipt['driver_exit']
+
+
+# The retained branch itself selects this closed entry; ALL_ONLY adds no authority.
+# Malformed ref with the retained ref_name still refuses here, without fallthrough.
+if os.environ.get('GITHUB_REF') == PR1011_REF or os.environ.get('GITHUB_REF_NAME') == 'task/TASK-10034':
+    raise SystemExit(pr1011_entry())
 
 
 source = pathlib.Path.cwd()

@@ -823,6 +823,7 @@ def _bounded_lifespan_context(
     org_slug: str,
     shutdown_entered: "threading.Event | None" = None,
     shutdown_release: "threading.Event | None" = None,
+    startup_timeout_seconds: float = 10.0,
 ) -> None:
     """Enter the real FastAPI TestClient lifespan in a NON-DAEMON thread
     with a bounded-join watchdog.  On success the function returns normally.
@@ -872,7 +873,7 @@ def _bounded_lifespan_context(
     def _runner() -> None:
         try:
             with TestClient(app) as client:
-                assert compose_entered.wait(timeout=10), (
+                assert compose_entered.wait(timeout=startup_timeout_seconds), (
                     "compose_dashboard_summary must be entered by "
                     "lifespan's initial warm task"
                 )
@@ -895,8 +896,10 @@ def _bounded_lifespan_context(
     # The forced-watchdog control must only begin its deadline after the real
     # lifespan shutdown has entered the injected cancellation boundary.  This
     # keeps the test's expiry ordering independent of startup/GET scheduling.
+    # Setup has its own finite bound; a deliberately short shutdown watchdog
+    # must not consume the time needed to observe a genuinely started worker.
     if shutdown_entered is not None and not shutdown_entered.wait(
-        timeout=deadline_seconds,
+        timeout=startup_timeout_seconds,
     ):
         _release_and_reap(
             diagnostic=(
@@ -1099,6 +1102,7 @@ def test_shutdown_handshake_timeout_releases_and_reaps_owned_context(
             compose_unblock=compose_unblock,
             compose_done=compose_done,
             deadline_seconds=0.1,
+            startup_timeout_seconds=0.1,
             auth_headers={},
             org_slug="isolated",
             shutdown_entered=shutdown_entered,
@@ -1109,6 +1113,157 @@ def test_shutdown_handshake_timeout_releases_and_reaps_owned_context(
     assert shutdown_release.is_set()
     assert compose_done.is_set()
     assert owned_threads and all(not thread.is_alive() for thread in owned_threads)
+
+
+def test_startup_failure_without_worker_releases_and_reaps_context(monkeypatch) -> None:
+    """A failed context entry owns no compose worker or completion signal."""
+    import threading
+    import pytest
+
+    compose_entered = threading.Event()
+    compose_unblock = threading.Event()
+    compose_done = threading.Event()
+    shutdown_entered = threading.Event()
+    shutdown_release = threading.Event()
+    owned_threads = []
+
+    class FailedClient:
+        def __init__(self, app) -> None:
+            owned_threads.append(threading.current_thread())
+
+        def __enter__(self):
+            assert shutdown_release.wait(timeout=5)
+            raise RuntimeError("test-owned context startup failed")
+
+        def __exit__(self, *args) -> None:
+            raise AssertionError("failed context entry must not exit a context")
+
+    monkeypatch.setitem(globals(), "TestClient", FailedClient)
+    try:
+        with pytest.raises(AssertionError) as caught:
+            _bounded_lifespan_context(
+                app=object(),
+                compose_entered=compose_entered,
+                compose_unblock=compose_unblock,
+                compose_done=compose_done,
+                deadline_seconds=0.5,
+                startup_timeout_seconds=0.1,
+                auth_headers={},
+                org_slug="isolated",
+                shutdown_entered=shutdown_entered,
+                shutdown_release=shutdown_release,
+            )
+        assert str(caught.value) == (
+            "lifespan shutdown did not enter the injected cancellation "
+            "boundary before the watchdog deadline"
+        )
+        assert compose_unblock.is_set() and shutdown_release.is_set()
+        assert not compose_entered.is_set() and not compose_done.is_set()
+        assert len(owned_threads) == 1
+        assert all(not thread.is_alive() for thread in owned_threads)
+    finally:
+        compose_unblock.set()
+        shutdown_release.set()
+        for thread in owned_threads:
+            thread.join(timeout=5)
+        assert all(not thread.is_alive() for thread in owned_threads)
+
+
+def test_delayed_start_preserves_both_cleanup_timeout_details(monkeypatch) -> None:
+    """Delayed test-owned startup must precede the short shutdown watchdog.
+
+    This socket-free control owns a real worker and context thread; W4 owns
+    the corresponding daemon-lifespan resource and cancel/reap assertions.
+    """
+    import threading
+    import pytest
+
+    compose_entered = threading.Event()
+    compose_unblock = threading.Event()
+    compose_done = threading.Event()
+    shutdown_entered = threading.Event()
+    shutdown_release = threading.Event()
+    startup_entered = threading.Event()
+    startup_release = threading.Event()
+    outer_release = threading.Event()
+    owned_threads = []
+
+    def worker() -> None:
+        compose_entered.set()
+        assert compose_unblock.wait(timeout=10)
+        assert outer_release.wait(timeout=10)
+        compose_done.set()
+
+    class DelayedClient:
+        def __init__(self, app) -> None:
+            owned_threads.append(threading.current_thread())
+
+        def __enter__(self):
+            startup_entered.set()
+            assert startup_release.wait(timeout=10)
+            self.worker = threading.Thread(target=worker, daemon=False)
+            owned_threads.append(self.worker)
+            self.worker.start()
+            return self
+
+        def get(self, *args, **kwargs):
+            assert compose_entered.is_set()
+            return type(
+                "Response", (), {
+                    "status_code": 503,
+                    "json": lambda self: {"detail": "not yet available"},
+                },
+            )()
+
+        def __exit__(self, *args) -> None:
+            shutdown_entered.set()
+            assert shutdown_release.wait(timeout=10)
+            assert outer_release.wait(timeout=10)
+            self.worker.join(timeout=5)
+
+    def release_delayed_start() -> None:
+        assert startup_entered.wait(timeout=5)
+        # Hold genuine startup past the old 0.5s setup/expiry coupling.
+        assert not startup_release.wait(timeout=0.75)
+        startup_release.set()
+
+    releaser = threading.Thread(target=release_delayed_start, daemon=False)
+    monkeypatch.setitem(globals(), "TestClient", DelayedClient)
+    releaser.start()
+    try:
+        with pytest.raises(AssertionError) as caught:
+            _bounded_lifespan_context(
+                app=object(),
+                compose_entered=compose_entered,
+                compose_unblock=compose_unblock,
+                compose_done=compose_done,
+                deadline_seconds=0.5,
+                auth_headers={},
+                org_slug="isolated",
+                shutdown_entered=shutdown_entered,
+                shutdown_release=shutdown_release,
+            )
+        assert str(caught.value) == (
+            "Watchdog cleanup incomplete: cannot terminally own all resources"
+            "; worker compose_done timed out during cleanup"
+            "; TestClient thread did not exit during cleanup"
+        )
+        assert compose_entered.is_set() and shutdown_entered.is_set()
+        assert compose_unblock.is_set() and shutdown_release.is_set()
+        assert not compose_done.is_set()
+        assert any(thread.is_alive() for thread in owned_threads)
+    finally:
+        startup_release.set()
+        compose_unblock.set()
+        shutdown_release.set()
+        outer_release.set()
+        releaser.join(timeout=5)
+        for thread in owned_threads:
+            thread.join(timeout=5)
+        assert not releaser.is_alive()
+        assert compose_done.is_set()
+        assert len(owned_threads) == 2
+        assert all(not thread.is_alive() for thread in owned_threads)
 
 
 def test_forced_watchdog_regression_cleanup_ownership(

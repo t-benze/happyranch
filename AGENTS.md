@@ -48,6 +48,16 @@ HappyRanch is an org-agnostic runtime for operating a multi-agent organization s
 
 Keep this file short. It is loaded at the start of every Claude Code session. Detailed reference lives in `docs/agent-guides/`; read only the guide that matches the files you are touching.
 
+**Task-scoped audit lookup (THR-278).** Generic `Database` initialization installs
+the nonunique, nonpartial `idx_audit_log_task_id` on `audit_log(task_id)` for fresh
+and existing databases. Literal task/config/thread/artifact scope values, audit
+IDs, payload decoding and ascending-ID results remain unchanged. The index is
+included in independent complete legacy v1 schema references and actual
+observed-only v2 schema diagnostics. Failed-claim residue and malformed-attempt
+startup fences retain their existing behavior. Source delivery, installed
+schema, live startup timing and reviewer settings are separate evidence;
+installation and compatible-code rollback guidance is in the runtime guide.
+
 ## Read When Touching
 
 | Surface | Read |
@@ -440,14 +450,15 @@ For authorized integration-skipped clean-head `scripts/local_ci.sh all`, dispatc
 the existing manual nightly workflow on the exact candidate ref when execution is
 authorized. Its sole input is `all_only` (boolean, default false), with no
 `run_integration` toggle. The receipt-producing extracted runner is
-`uv run python scripts/nightly_local_ci_all.py`; authenticate its actual
+`uv run python scripts/nightly_local_ci_all.py` on the ordinary path; the closed
+PR1011 path below uses the frozen/no-sync outer invocation. Authenticate its actual
 local-ci-all checkout/source/tool provenance, command exit and separate
 integration SKIPPED result. The manual job retains the approved 150-minute cap;
 schedule-only integration retains 30 minutes. While the THR-291 pause applies,
 `all` reports Python SUSPENDED and verifies only the remaining Web checks. The
 extracted runner's fixed guard also suspends G collection, source controls and
 repetitions for every input value. Dormant keeper/proof edits remain unexecuted;
-no manual dispatch or rerun is required for the current merge-forward repair.
+No ordinary manual dispatch or rerun is required for a source-only merge-forward repair.
 
 ### Finite document-review templates and initial drafts (THR-139 seq410)
 
@@ -491,7 +502,53 @@ no hook bypass is authorized. Existing historical workflow reruns and old
 checkouts do not acquire this pause automatically and must not be used to
 launch the unit suite. Restore execution only after founder release of the
 stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
+review and merge. The separately authorized closed PR1011 entry below does not
+restore ordinary Python, G or SIX execution. The ordinary commands below
+describe the restored behavior.
+
+**Closed PR1011 finite entry (THR278 seq40/49/72).** Only ROOT TASK-10330 owns
+publication and dispatch on `task/TASK-10034`. After the exact accepted helper
+release, independent native immutable control APPROVE and manager acceptance,
+the manager serializes exact-commit publication THROUGH platform event creation.
+The reviewer result travels through supported task/session/result evidence;
+checkout equality and platform SHA are separate source-consistency checks,
+never independent review authentication. Missing, stale, capped or conflicting
+native evidence or uncontrolled writers prevent dispatch. Every new commit
+requires renewed immutable control review before launch.
+
+The existing manual Ubuntu/Python3.14/Node24 workflow uses the B2 conjunction
+(repository `t-benze/happyranch`, `workflow_dispatch`, retained ref) for outer
+`uv run --frozen --no-sync python scripts/nightly_local_ci_all.py`. Its one
+frozen dependency sync, inputs, pins and 150-minute cap remain unchanged.
+The driver explicitly refuses identity, full tracked byte/Git-mode/symlink,
+index/untracked or effective-tool drift and rechecks immediately before child.
+It launches only `uv run --frozen --no-sync pytest tests/ -v -n 4 --basetemp=<fresh-owned-path>`;
+committed nonintegration addopts stay. Fixed evidence-only `PYTEST_ADDOPTS`
+provides external JUnit/cache paths. The entry launches zero all/G/SIX commands
+and zero helper repetitions, for either `all_only` value, with no fallback.
+
+FIVE separate socketless helper repetitions and ONE full run are distinct
+allocations, reported 0/5 and 0/1 before proof; no reset or exhaustive census is
+claimed. Launch failure or uncertainty retains spend/possible spend, never a
+rerun entitlement. Complete ordered compressed merged child streams, separate
+wrapper stderr, pre-removal JUnit, source/tool/environment/timing/exit and actual
+owned process adoption/census/wait/reaping evidence are required. Wrapper wait
+or scratch absence alone never proves quiescence. Incomplete capture, abrupt
+loss, uncertain child exit or cleanup is inconclusive. Actual wrapper exit is
+separate; every nonzero wrapper result leaves signed child exit unknown.
+Complete zero with empty wrapper stderr still requires all JUnit, source/tool
+postcheck, cleanup and other success gates. Existing 10-second
+TERM/KILL waits, 1MiB tail, 8MiB segments, 128MiB member and 512MiB archive limits
+remain. See `docs/local-ci.md` for admission and evidence attribution.
+
+This source entry grants no execution in a prepublication implementation leg.
+Final FULL code APPROVE, executable QA PASS, current exact-head CI and actual
+selected hosted Codex callback, guarded manager merge and active exact-merge
+checks, supported deployment and measured restart remain separate required
+gates. General integration remains SKIPPED THR243seq42/THR211seq270–271;
+paused ordinary all proves Web only. Reviewer settings are excluded. Historical
+offline timing and current health do not close startup; the 16.045s lock and
+20.040s gap are distinct, with no <30s promise.
 
 ## Commands
 
