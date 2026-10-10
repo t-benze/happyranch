@@ -184,6 +184,11 @@ def _sweep_on_startup(
         # a persisted PID; terminal-child handling below reconstructs its wake.
         selected_owner = selected_recovery_owners.get(task_id)
         if selected_owner is not None and orchestrator is not None:
+            if t.task_type == "subtask" and selected_owner["status"] == TaskStatus.FAILED.value:
+                from runtime.orchestrator.run_step import _submit_human_failed_recovery
+                _submit_human_failed_recovery(orchestrator, task_id, selected_owner["agent"],
+                    selected_owner["recovery_session_id"], selected_owner["accepted_result_id"])
+                continue
             # The task/ledger ownership is already durable, but the ordinary
             # cleanup helper below is deliberately asynchronous.  Record its
             # owned-job backstop before returning to the lifespan, whose
@@ -543,8 +548,8 @@ def _build_state(settings: Settings) -> DaemonState:
         # or silently selecting legacy. A refusal propagates out of
         # ``_build_state`` so the daemon never binds the API or admits launch.
         for team in org.teams.teams():
-            manager = org.teams.manager_for_team(team).name
-            if is_eligible_policy_manager(
+            manager = org.teams.executable_manager_for_team(team)
+            if manager is not None and is_eligible_policy_manager(
                 root=org.root, agent_name=manager, team=team, teams=org.teams,
             ):
                 org.workflow_authority.ensure_authority_selector(

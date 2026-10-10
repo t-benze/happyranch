@@ -2,6 +2,8 @@
 
 This directory is append-only design history. Specs capture intent, alternatives, and decisions at the time they were written; they are not automatically updated when the implementation evolves.
 
+- **current**: [Human-managed Default roster](2026-10-09-human-default-team-roster.md) — THR296 accepted contract; execution/readiness gates remain.
+
 ## Source Of Truth
 
 For current behavior, use these sources before old specs:

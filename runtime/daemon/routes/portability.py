@@ -284,6 +284,7 @@ async def reconcile_portability(
         org.workflow_drafts.reconcile(task_id)
         raise HTTPException(status_code=409, detail={"code": "workflow_host_quiescence_unavailable"})
 
+    consumption = None
     async with org.db_lock:
         task = org.db.get_task(task_id)
         if task is None:
@@ -324,7 +325,7 @@ async def reconcile_portability(
                 )
             # Shared result seam: the same orphaned-result consumption the
             # ongoing zombie reaper uses.
-            _consume_zombie_fingerprint(org.db, task_id, fingerprint, task, org.orchestrator)
+            consumption = _consume_zombie_fingerprint(org.db, task_id, fingerprint, task, org.orchestrator)
         else:  # cancel — the reaper's terminalization sequence
             now_iso = now.isoformat()
             org.db.update_task(
@@ -345,6 +346,19 @@ async def reconcile_portability(
                 )
                 _reclaim_terminal_task_worktree(org.orchestrator, task_id)
 
+    from runtime.orchestrator.run_step import _HumanFailedRecoveryOperation
+    if isinstance(consumption, _HumanFailedRecoveryOperation):
+        import asyncio
+        disposition = await asyncio.shield(asyncio.wrap_future(consumption.completion))
+        if disposition != "done":
+            raise HTTPException(status_code=409, detail={"code": "recovery_not_consumed", "reason": disposition})
+    elif consumption == "lost_owner":
+        raise HTTPException(status_code=409, detail={"code": "recovery_not_consumed", "reason": consumption})
+    async with org.db_lock:
+        if isinstance(consumption, _HumanFailedRecoveryOperation) and not org.db.consumed_task_completion_recovery_owner_is_current(
+                task_id=task_id, agent=consumption.agent, recovery_session_id=consumption.session_id,
+                result_row_id=consumption.result_id, terminal_status=TaskStatus.FAILED.value):
+            raise HTTPException(status_code=409, detail={"code": "recovery_not_consumed", "reason": "lost_owner"})
         after = _task_state_summary(org.db.get_task(task_id))
         AuditLogger(org.db).log_portability_reconciled(
             task_id=task_id,

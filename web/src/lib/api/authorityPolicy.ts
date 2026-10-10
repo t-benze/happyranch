@@ -729,7 +729,7 @@ export const isEligiblePolicyManager = (agent: {
   name: string;
   team: string;
   role: string;
-} | undefined, teams: Array<{ name: string; manager: string }> | undefined): boolean => {
+} | undefined, teams: Array<{ name: string; manager: string | null }> | undefined): boolean => {
   if (!agent || agent.role !== 'manager' || !teams) return false;
   const registrations = teams.filter((team) => team.manager === agent.name);
   return registrations.length === 1 && registrations[0].name === agent.team;

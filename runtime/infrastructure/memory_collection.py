@@ -892,7 +892,8 @@ def loaded_identity(org: Any) -> dict:
                    "workers": sorted(org.teams.manager_for_team(team).workers)} for team in org.teams.teams()]
     disk_teams = yaml.safe_load(read(org.root / "org" / "teams.yaml", limit=1024 * 1024))
     layout = disk_teams.get("teams") or {}
-    disk_registered = [{"team": team, "manager": entry["manager"],
+    disk_registered = [{"team": team, "manager": (entry["manager"] if isinstance(entry["manager"], str) else
+                                    entry["manager"]["principal"] if entry["manager"]["kind"] == "agent" else None),
                         "workers": sorted(entry.get("workers") or [])} for team, entry in sorted(layout.items())]
     if registered != disk_registered:
         raise IdentityUnavailable("identity_cohort_mismatch")
@@ -1653,7 +1654,8 @@ def _registered_cohort(org: Any) -> list[dict]:
     disk = yaml.safe_load(_identity_bytes(org.root / "org" / "teams.yaml", budget))
     expected = {team: {"manager": org.teams.manager_for_team(team).name,
                        "workers": sorted(org.teams.manager_for_team(team).workers)} for team in org.teams.teams()}
-    if {team: {"manager": body["manager"], "workers": sorted(body.get("workers") or [])}
+    if {team: {"manager": (body["manager"] if isinstance(body["manager"], str) else
+                              body["manager"]["principal"] if body["manager"]["kind"] == "agent" else None), "workers": sorted(body.get("workers") or [])}
             for team, body in disk["teams"].items()} != expected:
         raise AcceptanceUnavailable("acceptance_role_registration_drift")
     for name in names:

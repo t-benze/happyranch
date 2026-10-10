@@ -130,3 +130,343 @@ jobs:
             tests/test_workspace_adapters.py \
             tests/test_prelaunch_integrity_validation.py \
             -v --tb=short
+
+  # TASK10394 / Founder THR296seq24: finite disposable L/W release only.
+  # This extra job never replaces existing checks or resumes units/general integration.
+  pr1022-roster-selected:
+    if: >-
+      ${{ github.event_name == 'pull_request' && github.event.pull_request.number == 1022
+          && github.event.pull_request.head.repo.full_name == github.repository
+          && github.event.pull_request.head.ref == 'task/TASK-10430' }}
+    name: PR1022 Roster L/W (${{ matrix.shard }})
+    runs-on: ${{ matrix.shard == 'W10' && 'ubuntu-22.04' || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [L1, L4, L5, L7, L8, L9, W10]
+    steps:
+      - name: Checkout actual PR source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: Frozen Python and invocation-owned evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          uv sync --frozen
+          invocation=$(mktemp -d /tmp/happyranch-roster-XXXXXXXX)
+          mkdir "$invocation/evidence"
+          echo "ROSTER_INVOCATION=$invocation" >> "$GITHUB_ENV"
+          git rev-parse HEAD HEAD^{tree}
+          sha256sum uv.lock pyproject.toml .github/workflows/ci.yml tests/helpers/integration_parent.py
+          uv run python -c 'import sys; assert sys.version_info[:2] == (3,14); print(sys.executable, sys.version)'
+          node --version
+      - name: Independently pinned old reader
+        if: matrix.shard == 'L5'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init "$ROSTER_INVOCATION/old-reader"
+          git -C "$ROSTER_INVOCATION/old-reader" remote add origin https://github.com/t-benze/happyranch.git
+          git -C "$ROSTER_INVOCATION/old-reader" fetch --depth=1 origin b3179b123fddbb0f0f604ed9e0d148f1b23455f3
+          git -C "$ROSTER_INVOCATION/old-reader" checkout --detach FETCH_HEAD
+          test "$(git -C "$ROSTER_INVOCATION/old-reader" rev-parse HEAD)" = b3179b123fddbb0f0f604ed9e0d148f1b23455f3
+          test -z "$(git -C "$ROSTER_INVOCATION/old-reader" status --porcelain)"
+      - name: Build existing SPA and provision exact transient browser tools
+        if: matrix.shard == 'W10'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          npm --prefix web ci
+          npm --prefix web run build
+          mkdir "$ROSTER_INVOCATION/tools" "$ROSTER_INVOCATION/browsers"
+          printf '%s\n' '{"private":true,"dependencies":{"@playwright/cli":"0.1.18"}}' > "$ROSTER_INVOCATION/tools/package.json"
+          npm --prefix "$ROSTER_INVOCATION/tools" install --package-lock-only --ignore-scripts
+          npm --prefix "$ROSTER_INVOCATION/tools" ci --ignore-scripts
+          export PLAYWRIGHT_BROWSERS_PATH="$ROSTER_INVOCATION/browsers"
+          export NO_UPDATE_NOTIFIER=1
+          node "$ROSTER_INVOCATION/tools/node_modules/playwright/cli.js" install chromium
+          uv run python - <<'PY'
+          import hashlib, json, os, pathlib, shutil, stat, subprocess
+          root = pathlib.Path(os.environ['ROSTER_INVOCATION'])
+          tools = root / 'tools'
+          core = tools / 'node_modules/playwright-core'
+          selected_node = pathlib.Path(subprocess.check_output(['which', 'node'], text=True).strip()).resolve()
+          node = tools / 'node'
+          shutil.copyfile(selected_node, node)
+          node.chmod(0o700)
+          cli = tools / 'node_modules/@playwright/cli/playwright-cli.js'
+          browser = pathlib.Path(subprocess.check_output([str(node), '-e', 'console.log(require(process.argv[1]).chromium.executablePath())', str(core)], text=True).strip())
+          sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          assert sha(node) == sha(selected_node)
+          origins = {'node': {'selected_source': str(selected_node), 'source_sha256': sha(selected_node),
+                             'owned_copy': str(node), 'copy_sha256': sha(node)}}
+          # Data-only CJK provisioning belongs to this invocation, never apt install.
+          fonts = root / 'fonts'; fonts.mkdir(mode=0o700)
+          existing = pathlib.Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
+          installed = existing.is_file() and not existing.is_symlink()
+          if installed:
+              version = subprocess.check_output(['dpkg-query','-W','-f=${Version}','fonts-noto-cjk'], text=True).strip()
+              owner = subprocess.check_output(['dpkg-query','-S',str(existing)], text=True).strip()
+              assert owner.startswith('fonts-noto-cjk: ')
+              source_font = existing
+              copyright_path = pathlib.Path('/usr/share/doc/fonts-noto-cjk/copyright')
+              origin = {'kind':'existing-runner-package','package':'fonts-noto-cjk','version':version,
+                        'package_owner':owner,'source_font':str(existing)}
+          else:
+              # APT verifies the configured repository metadata/signatures. Never
+              # allow unauthenticated/insecure archives or run package scripts.
+              import email.parser
+              policy = subprocess.check_output(['apt-cache','policy','fonts-noto-cjk'], text=True)
+              version = next(line.split(':',1)[1].strip() for line in policy.splitlines() if line.strip().startswith('Candidate:'))
+              assert version and version != '(none)'
+              metadata = email.parser.Parser().parsestr(subprocess.check_output(['apt-cache','show','fonts-noto-cjk='+version], text=True).split('\n\n',1)[0])
+              apt_show = email.parser.Parser().parsestr(subprocess.check_output(['apt','show','fonts-noto-cjk='+version], text=True))
+              package_source = apt_show['APT-Sources']
+              # Retain the real metadata before any source refusal, including
+              # provisioning failures that occur before browser-binding.json.
+              origins['font'] = {'kind':'configured-package-selection','package':'fonts-noto-cjk',
+                                 'version':version,'apt_sources':package_source,'apt_policy':policy,
+                                 'apt_metadata':dict(metadata.items())}
+              (root/'tool-file-origins.json').write_text(json.dumps(origins, sort_keys=True))
+              print(json.dumps(origins['font'], sort_keys=True))
+              assert metadata['Package']=='fonts-noto-cjk' and metadata['Version']==version
+              from urllib.parse import urlsplit
+              source_parts = package_source.split() if package_source else []
+              assert len(source_parts)==4, package_source
+              # Hosted jammy selects APT's configured mirror list. Preserve
+              # that authenticated transport rather than changing sources.
+              archive_uris = [source_parts[0]]
+              mirror_source = None
+              if source_parts[0] == 'mirror+file:/etc/apt/apt-mirrors.txt':
+                  mirror_file = pathlib.Path('/etc/apt/apt-mirrors.txt')
+                  mirror_info = mirror_file.lstat()
+                  assert stat.S_ISREG(mirror_info.st_mode) and mirror_info.st_uid == 0
+                  assert not stat.S_IMODE(mirror_info.st_mode) & 0o022
+                  assert mirror_file.resolve(strict=True) == mirror_file
+                  mirror_bytes = mirror_file.read_bytes()
+                  mirror_text = mirror_bytes.decode('utf-8')
+                  archive_uris = [line.split()[0] for line in mirror_text.splitlines()
+                                  if line.strip() and not line.lstrip().startswith('#')]
+                  assert archive_uris
+                  mirror_source = {'path':str(mirror_file), 'sha256':hashlib.sha256(mirror_bytes).hexdigest(),
+                                   'content':mirror_text, 'owner_uid':mirror_info.st_uid,
+                                   'mode':stat.S_IMODE(mirror_info.st_mode), 'archive_uris':archive_uris}
+                  origins['font']['mirror_source'] = mirror_source
+                  (root/'tool-file-origins.json').write_text(json.dumps(origins, sort_keys=True))
+              for archive_uri in archive_uris:
+                  archive_url = urlsplit(archive_uri)
+                  assert archive_url.scheme in ('http','https') and archive_url.hostname
+                  assert archive_url.path.rstrip('/')=='/ubuntu' and not archive_url.query and not archive_url.fragment
+                  assert archive_url.username is None and archive_url.password is None
+              assert source_parts[1].split('/')[0] in ('jammy','jammy-updates','jammy-security')
+              assert source_parts[2:] == ['amd64','Packages']
+              source_policy = subprocess.check_output(['apt-cache','policy'], text=True).splitlines()
+              source_index = next(i for i,line in enumerate(source_policy)
+                                  if line.strip().partition(' ')[2] == package_source)
+              release_origin = source_policy[source_index+1].strip()
+              assert release_origin.startswith('release ') and 'o=Ubuntu' in release_origin.split(' ',1)[1].split(',')
+              import re
+              source_files = [pathlib.Path('/etc/apt/sources.list'), *pathlib.Path('/etc/apt/sources.list.d').glob('*.list'),
+                              *pathlib.Path('/etc/apt/sources.list.d').glob('*.sources')]
+              for source_file in source_files:
+                  if source_file.exists():
+                      assert not re.search(r'trusted\s*[=:]\s*yes', source_file.read_text(), re.IGNORECASE)
+              download = root / 'font-package'; download.mkdir(mode=0o700)
+              command = ['apt-get','-o','APT::Get::AllowUnauthenticated=false',
+                         '-o','Acquire::AllowInsecureRepositories=false',
+                         '-o','Acquire::AllowDowngradeToInsecureRepositories=false','download','fonts-noto-cjk='+version]
+              subprocess.run(command, cwd=download, check=True, timeout=120)
+              archives = list(download.glob('*.deb')); assert len(archives)==1
+              archive = archives[0]
+              assert sha(archive)==metadata['SHA256'] and archive.stat().st_size==int(metadata['Size'])
+              unpacked = root / 'font-package-data'
+              # dpkg-deb -x extracts data only; no maintainer script executes.
+              subprocess.run(['dpkg-deb','-x',str(archive),str(unpacked)], check=True, timeout=30)
+              source_font = unpacked / 'usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+              copyright_path = unpacked / 'usr/share/doc/fonts-noto-cjk/copyright'
+              origin = {'kind':'authenticated-configured-ubuntu-package','package':'fonts-noto-cjk','version':version,
+                        'apt_sources':package_source,'apt_policy':policy,'ubuntu_release_origin':release_origin,'download_command':command,
+                        'mirror_source':mirror_source,
+                        'archive_sha256':sha(archive),'archive_bytes':archive.stat().st_size,
+                        'integrity_method':'normal APT authenticated metadata plus exact archive SHA256/size'}
+          copyright_text = copyright_path.read_text()
+          assert 'SIL OPEN FONT LICENSE Version 1.1' in copyright_text
+          font = fonts / 'NotoSansCJK-Regular.ttc'
+          assert source_font.is_file() and not source_font.is_symlink()
+          shutil.copyfile(source_font,font); font.chmod(0o600)
+          license_file = fonts / 'copyright'; license_file.write_text(copyright_text); license_file.chmod(0o600)
+          assert sha(font)==sha(source_font)
+          origin.update(license='OFL-1.1',source_font_sha256=sha(source_font),font_sha256=sha(font),
+                        copyright_sha256=sha(license_file),font_bytes=font.stat().st_size)
+          origins['font'] = origin
+          font_binding = {'path':str(font),'sha256':sha(font),'license_path':str(license_file),
+                          'license_sha256':sha(license_file),'package':'fonts-noto-cjk','version':version,'license':'OFL-1.1'}
+          # npm/Chromium archives retain their published modes despite umask.
+          # Prepare only our regular owned files; preserve bytes and the guard.
+          for name, path in (('cli', cli), ('browser', browser)):
+              info = path.lstat()
+              assert stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
+              assert path.resolve(strict=True) == path and path.is_relative_to(root)
+              before_hash = sha(path)
+              path.chmod(0o700)
+              assert sha(path) == before_hash
+              origins[name] = {'path': str(path), 'sha256': before_hash,
+                               'original_mode': stat.S_IMODE(info.st_mode), 'prepared_mode': 0o700,
+                               'owner_uid': info.st_uid}
+          (root / 'tool-file-origins.json').write_text(json.dumps(origins, sort_keys=True))
+          print(json.dumps({'tool_file_origins': origins}, sort_keys=True))
+          pins = {'@playwright/cli':'0.1.18', 'playwright':'1.63.0-alpha-2026-08-05', 'playwright-core':'1.63.0-alpha-2026-08-05'}
+          registry = {name: json.loads(subprocess.check_output(['npm','view',name+'@'+version,'dist.integrity','--json','--fetch-retries=0','--fetch-timeout=15000'], text=True)) for name,version in pins.items()}
+          (root / 'registry-integrities.json').write_text(json.dumps(registry, sort_keys=True))
+          record = {'node':str(node), 'node_sha256':sha(node), 'node_version':subprocess.check_output([str(node),'--version'], text=True).strip(),
+                    'cli_sha256':sha(cli), 'browser':str(browser), 'browser_sha256':sha(browser),
+                    'browser_version':subprocess.check_output([str(browser),'--version'], text=True).strip(),
+                    'browser_revision':next(row['revision'] for row in json.loads((core/'browsers.json').read_text())['browsers'] if row['name']=='chromium'),
+                    'lock_sha256':sha(tools/'package-lock.json'), 'registry_integrities':registry,'font':font_binding}
+          (root/'browser-binding.json').write_text(json.dumps(record, sort_keys=True))
+          print(json.dumps(record, sort_keys=True))
+          PY
+      - name: Execute only the finite released shard through the real parent
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          uv run python - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, sys
+          root = pathlib.Path(os.environ['ROSTER_INVOCATION'])
+          shard = os.environ['SHARD']
+          source = pathlib.Path.cwd()
+          e2e = 'tests/integration/test_human_team_roster_e2e.py::'
+          selections = {
+              'L1':[e2e+name for name in ('test_c1_registry_and_attachment','test_c1_settings_save_and_rollback','test_c2_owner_required_before_persistence','test_c3_worker_lifecycle_and_denials')],
+              'L4':[e2e+'test_c4_normal_and_recovered_verdict_attribution'],
+              'L5':[e2e+'test_c5_schema_history_publication_and_portability['+value+']' for value in ('human-current','legacy-agent-current','current-graph','current-graph-explicit-profile','b317-schema2-refusal','b317-schema1-control')],
+              'L7':[e2e+'test_c7_both_resume_resets_and_worker_contexts'],
+              'L8':[e2e+'test_c8_preflight_refusals_and_backup_cas['+value+']' for value in ('no-inhibition','design-plan-not-manifest','wrong-digest')],
+              'L9':[e2e+'test_c9_crash_recovery_and_replay['+value+']' for value in ('missing-direction','missing-operation','wrong-digest','design-plan-not-manifest')],
+              'W10':['tests/integration/test_human_team_roster_browser.py::test_c10_bilingual_existing_views']}
+          command = [sys.executable, str(source/'tests/helpers/integration_parent.py'), '--roster-output', str(root/'evidence')]
+          if shard == 'L5': command += ['--roster-old-reader',str(root/'old-reader')]
+          if shard == 'W10': command += ['--roster-browser-tools',str(root/'browser-binding.json')]
+          command += ['--','pytest','-m','integration',*selections[shard],'-vv','--tb=short']
+          # These are binding refusal observations, never product causal RED.
+          refusals = []
+          if shard == 'L5':
+              malformed = list(command)
+              malformed[malformed.index('--roster-old-reader')+1] = 'old-reader'
+              result = subprocess.run(malformed, text=True, capture_output=True)
+              refusals.append({'kind':'relative-old-reader','command':malformed,'exit':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+              (root/'binding-refusals.json').write_text(json.dumps(refusals, sort_keys=True))
+              print(json.dumps(refusals[-1], sort_keys=True), flush=True)
+              assert result.returncode != 0 and 'roster_independent_old_reader_required' in result.stderr
+              assert not (root/'evidence/pytest.xml').exists()
+              old = root/'old-reader'
+              old_pin = 'b3179b123fddbb0f0f604ed9e0d148f1b23455f3'
+              product_files = subprocess.check_output(['git','-C',str(old),'ls-files','-z']).decode().split('\0')
+              before = {name:hashlib.sha256((old/name).read_bytes()).hexdigest() for name in product_files if name and not (old/name).is_symlink()}
+              candidate = subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+              subprocess.run(['git','-C',str(old),'fetch','--depth=1',str(source),candidate],check=True)
+              try:
+                  subprocess.run(['git','-C',str(old),'checkout','--detach',candidate],check=True)
+                  result = subprocess.run(command, text=True, capture_output=True)
+                  refusals.append({'kind':'wrong-old-reader-pin','observed_pin':candidate,'command':command,'exit':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+                  (root/'binding-refusals.json').write_text(json.dumps(refusals, sort_keys=True))
+                  print(json.dumps(refusals[-1], sort_keys=True), flush=True)
+                  assert result.returncode != 0 and 'roster_clean_pinned_old_reader_required' in result.stderr
+                  assert not (root/'evidence/pytest.xml').exists()
+              finally:
+                  subprocess.run(['git','-C',str(old),'checkout','--detach',old_pin],check=True)
+                  assert subprocess.check_output(['git','-C',str(old),'rev-parse','HEAD'],text=True).strip() == old_pin
+                  assert not subprocess.check_output(['git','-C',str(old),'status','--porcelain'])
+                  assert {name:hashlib.sha256((old/name).read_bytes()).hexdigest() for name in before} == before
+              marker = root/'old-reader/.roster-binding-negative'
+              marker.write_text('intentional untracked binding mismatch\n')
+              try:
+                  result = subprocess.run(command, text=True, capture_output=True)
+                  refusals.append({'kind':'dirty-old-reader','command':command,'exit':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+                  (root/'binding-refusals.json').write_text(json.dumps(refusals, sort_keys=True))
+                  print(json.dumps(refusals[-1], sort_keys=True), flush=True)
+                  assert result.returncode != 0 and 'roster_clean_pinned_old_reader_required' in result.stderr
+                  assert not (root/'evidence/pytest.xml').exists()
+              finally: marker.unlink()
+          if shard == 'W10':
+              descriptor = root/'browser-binding.json'
+              original = descriptor.read_bytes()
+              try:
+                  altered = json.loads(original); altered['cli_sha256'] = '0'*64
+                  descriptor.write_text(json.dumps(altered))
+                  result = subprocess.run(command, text=True, capture_output=True)
+                  refusals.append({'kind':'mismatched-cli','command':command,'exit':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+                  (root/'binding-refusals.json').write_text(json.dumps(refusals, sort_keys=True))
+                  print(json.dumps(refusals[-1], sort_keys=True), flush=True)
+                  assert result.returncode != 0 and 'roster_browser_file_binding_mismatch' in result.stderr
+                  assert not (root/'evidence/pytest.xml').exists()
+                  for kind, font_delta, diagnostic in (
+                      ('mismatched-font', {'sha256':'0'*64}, 'roster_font_file_binding_mismatch'),
+                      ('malformed-font', {'unknown':True}, 'roster_font_descriptor_shape'),
+                      ('unowned-font-path', {'path':'/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'}, 'roster_owned_font_required')):
+                      altered = json.loads(original); altered['font'].update(font_delta)
+                      descriptor.write_text(json.dumps(altered))
+                      result = subprocess.run(command, text=True, capture_output=True)
+                      refusals.append({'kind':kind,'command':command,'exit':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+                      (root/'binding-refusals.json').write_text(json.dumps(refusals, sort_keys=True))
+                      print(json.dumps(refusals[-1], sort_keys=True), flush=True)
+                      assert result.returncode != 0 and diagnostic in result.stderr
+                      assert not (root/'evidence/pytest.xml').exists()
+                  altered = json.loads(original); altered['unknown'] = True
+                  descriptor.write_text(json.dumps(altered))
+                  result = subprocess.run(command, text=True, capture_output=True)
+                  refusals.append({'kind':'malformed-browser','command':command,'exit':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+                  (root/'binding-refusals.json').write_text(json.dumps(refusals, sort_keys=True))
+                  print(json.dumps(refusals[-1], sort_keys=True), flush=True)
+                  assert result.returncode != 0 and 'roster_browser_descriptor_shape' in result.stderr
+                  assert not (root/'evidence/pytest.xml').exists()
+              finally:
+                  descriptor.write_bytes(original)
+                  assert hashlib.sha256(descriptor.read_bytes()).digest() == hashlib.sha256(original).digest()
+          (root/'binding-refusals.json').write_text(json.dumps(refusals, sort_keys=True))
+          record = {'shard':shard,'command':command,'source':str(source),'head':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+                    'tree':subprocess.check_output(['git','rev-parse','HEAD^{tree}'],text=True).strip(),'python':sys.executable,'python_version':sys.version,
+                    'python_sha256':hashlib.sha256(pathlib.Path(sys.executable).read_bytes()).hexdigest()}
+          print(json.dumps(record, sort_keys=True), flush=True)
+          (root/'command.json').write_text(json.dumps(record, sort_keys=True))
+          with (root/'pytest-output.log').open('w') as log:
+              process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              for line in process.stdout:
+                  print(line, end='', flush=True); log.write(line); log.flush()
+              record['exit'] = process.wait()
+          (root/'command.json').write_text(json.dumps(record, sort_keys=True))
+          raise SystemExit(record['exit'])
+          PY
+      - name: Retain success and adverse receipts
+        if: always() && env.ROSTER_INVOCATION != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr1022-roster-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          path: |
+            ${{ env.ROSTER_INVOCATION }}/evidence
+            ${{ env.ROSTER_INVOCATION }}/command.json
+            ${{ env.ROSTER_INVOCATION }}/pytest-output.log
+            ${{ env.ROSTER_INVOCATION }}/binding-refusals.json
+            ${{ env.ROSTER_INVOCATION }}/browser-binding.json
+            ${{ env.ROSTER_INVOCATION }}/registry-integrities.json
+            ${{ env.ROSTER_INVOCATION }}/tool-file-origins.json
+            ${{ env.ROSTER_INVOCATION }}/tools/package-lock.json

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import sqlite3
 import time
 from pathlib import Path
 from textwrap import dedent
@@ -292,13 +294,33 @@ def test_register_and_run_completes_via_codex_callback(
     # This manager becomes active after daemon startup. Use the supported
     # bootstrap-manager approval lifecycle instead of an uncoordinated direct
     # write into the active AgentDef roster.
-    _write_agent_config(runtime, "engineering_head", "codex", pending=True)
+    # The runtime fixture stages the matching pending manager before attachment.
+    # It remains non-executable until the ordinary authenticated approval.
+    assert not (runtime / "org/agents/engineering_head.md").exists()
+    pending_bytes = (runtime / "org/agents/_pending/engineering_head.md").read_bytes()
+    with sqlite3.connect(runtime / "happyranch.db") as reader:
+        before_tasks = reader.execute("SELECT * FROM tasks ORDER BY id").fetchall()
+    refused = httpx.post(f"{base}/tasks", headers=headers,
+                        json={"brief": "pending bootstrap must not execute"}, timeout=5.0)
+    assert refused.status_code == 400 and refused.json()["detail"]["code"] == "unknown_owner", refused.text
+    with sqlite3.connect(runtime / "happyranch.db") as reader:
+        assert reader.execute("SELECT * FROM tasks ORDER BY id").fetchall() == before_tasks
+        assert reader.execute("SELECT COUNT(*) FROM task_results").fetchone()[0] == 0
+        assert reader.execute("SELECT COUNT(*) FROM authority_policy_active_selector WHERE team='engineering'").fetchone()[0] == 0
     approved = httpx.post(
         f"{base}/agents/engineering_head/approve",
         headers=headers,
         timeout=30.0,
     )
     assert approved.status_code == 200, approved.text
+    assert (runtime / "org/agents/engineering_head.md").read_bytes() == pending_bytes
+    assert not (runtime / "org/agents/_pending/engineering_head.md").exists()
+    with sqlite3.connect(runtime / "happyranch.db") as reader:
+        pointer = reader.execute("SELECT current_generation,snapshot_digest,state FROM workflow_authority_pointers WHERE namespace='org/test'").fetchone()
+        snapshot = (runtime / "org/.workflow-authority.json").read_bytes()
+        assert pointer[2] == "ready" and pointer[1] == hashlib.sha256(snapshot).hexdigest()
+        agents = json.loads(snapshot)["agents"]
+        assert next(row for row in agents if row["name"] == "engineering_head")["status"] == "active"
     _init_agent(base, "engineering_head", headers)
 
     _write_plan(

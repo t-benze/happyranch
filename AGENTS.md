@@ -320,6 +320,81 @@ serializes connection access; removal can cause a logged sweep error. Cancellati
 can leave a worker running or a committed pending token for later recovery.
 There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
+## Founder-managed teams (THR296)
+
+TASK10394 releases only the finite L1/L4/L5/L7/L8/L9/W10 roster selections on
+same-repository PR1022's `task/TASK-10430` branch through the extra hosted CI
+job. It uses the closed integration parent, independently pinned b317 reader
+and transient exact browser tooling; see `docs/local-ci.md`. Existing checks,
+unit suspension and broad-integration exclusion remain. M, compatible restore,
+reboot, live operations and after-M acceptance remain held. Submission/source
+checks are not behavioral proof; retain actual exits and missing v24 evidence.
+
+
+C10 uses the existing built SPA and isolated integration fixture, with en/zh-CN
+at 390×844 and 1440×900. Authored availability/empty-team projections are UI
+boundaries; real after-migration browser acceptance requires the actual C6 M
+check/apply/receipt. Header locale selection transfers focus to its trigger;
+modal external-tab locale updates preserve their focused drafts. Work Hours
+roster loading/error/Retry is distinct from empty. Emitted completion guidance
+references the canonical start-task skill: worker-owned roots have only
+server-authorized `done`, self-only `delegate` or `escalate` decisions;
+delegated leaves return plain completions. An attempted non-root founder
+escalation fails the child and wakes its parent; manager-only operations stay
+restricted.
+
+The bounded roster maintenance source pins effective registration and the clean
+Python3.14 reader, independently closes org/shared-store restore inventories,
+and performs final pre-reset CAS. Complete/compensate and two same-manifest
+replays retain native reset/publication ownership; compensation preserves the
+original receipt and records its NEW coherent generation separately. C6/C8/C9
+source and 28 publication/3 replay localizations are AUTHORED, not executed.
+M launch/observer/reboot capability remains unproved; see the operator runbook.
+
+Team managers may be existing agent names or closed tagged principals
+`{kind: agent|human, principal: ...}`. The sole human principal is `founder`;
+its executable manager is absent. Founder never enters AgentDef, all_agents,
+workspace, callback or executor identity. Attachment validates duplicates and
+both directions of active/pending roster and AgentDef role/team agreement.
+An exactly registered pending bootstrap manager may attach only with matching
+team/manager role and a unique active-or-pending identity. It stays absent from
+the active launch roster and current policy eligibility; workflow authority
+remains fenced until ordinary authenticated approval publishes an ACTIVE manager.
+Missing/mismatched definitions and active/pending duplicates refuse attachment.
+HTTP removal of a still-active declared worker is invalid and rolls back; native
+registry add/remove roundtrips are separate serialization coverage.
+
+Existing omitted task routing defaults to Engineering unless an explicit
+`task_default_team` is present. Proven fresh org creation adds empty human
+Default and writes both `default_team` and `task_default_team` as Default.
+Selecting a human team requires an active executable owner before task,
+attachment or queue persistence (`422 owner_required_for_human_team`). Malformed
+active definitions after attachment also refuse owner admission before allocation. Workers
+remain ordinary decision owners of roots, with self-only decomposition.
+
+New workflow authority uses schema2 typed managers and both routing pointers;
+retained schema1 bytes/digests and pinned workflow contexts keep their original
+interpretation. Human manager principals are never executable role candidates
+or policy-selector managers. Startup never moves or reconstructs the roster.
+Human delegated outcomes name the valid persisted executable parent owner, or
+`unknown_manager` on invalid ancestry. Only absent verdict maps implicitly;
+blank/custom/standard strings remain exact. These are agent outcome records,
+not authenticated Founder approval.
+
+Selected human failed-leaf recovery uses exact positive INTEGER result identity,
+complete selected-only history and separate guarded commits. The review/history
+precede the consumed marker. A finite process-local operation retains the same
+identity, phase and original parent effect through writer contention; 50ms
+outside-lock retries have no count cap. Pending is never settlement, and
+shutdown leaves authentic residue for next-start recovery. Native drain exception
+or cancellation retains the original exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns recovery_required without
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Healthy finished same-result reentry renews the current
+owner/history checks; cached done is not authority. Agent-team and
+completed-leaf transaction behavior is preserved. See the current THR296 spec
+and operator runbook; source authoring is not behavioral verification.
+
 ## Workflow authority publication (U2A)
 
 `WorkflowAuthorityCoordinator` owns the org-scoped producer half of the

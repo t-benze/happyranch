@@ -176,8 +176,8 @@ class DaemonState:
             )
             try:
                 for team in org.teams.teams():
-                    manager = org.teams.manager_for_team(team).name
-                    if is_eligible_policy_manager(
+                    manager = org.teams.executable_manager_for_team(team)
+                    if manager is not None and is_eligible_policy_manager(
                         root=org.root,
                         agent_name=manager,
                         team=team,
@@ -245,8 +245,8 @@ class DaemonState:
             )
             try:
                 for team in org.teams.teams():
-                    manager = org.teams.manager_for_team(team).name
-                    if is_eligible_policy_manager(
+                    manager = org.teams.executable_manager_for_team(team)
+                    if manager is not None and is_eligible_policy_manager(
                         root=org.root,
                         agent_name=manager,
                         team=team,

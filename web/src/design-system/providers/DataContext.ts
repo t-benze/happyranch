@@ -329,7 +329,9 @@ export interface AgentsApi {
   useReadAgentSystemPrompt: () => MutationLike<
     { slug: string; agentName: string }, import('@/lib/api/types').AgentSummary | undefined
   >;
-  useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
+  useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }> & {
+    refetch: () => Promise<unknown>;
+  };
   /** Pending enrollments — `status` filter narrows the file scan. */
   useEnrollmentsList: (
     params?: { status?: 'pending' | 'approved' },
@@ -415,7 +417,9 @@ export interface AgentsRoutes {
 // ---------------------------------------------------------------------------
 
 export interface TeamsApi {
-  useTeamsList: () => QueryLike<{ teams: import('@/lib/api/teams').TeamSummary[] }>;
+  useTeamsList: () => QueryLike<{ teams: import('@/lib/api/teams').TeamSummary[] }> & {
+    refetch: () => Promise<unknown>;
+  };
 }
 
 // ---------------------------------------------------------------------------

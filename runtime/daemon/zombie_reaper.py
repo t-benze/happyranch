@@ -211,9 +211,14 @@ def _sweep_org_zombies(
             # dead-pid), so clear MUST be paired with consumption.
             if fingerprint is not None:
                 if orchestrator is not None:
-                    _consume_zombie_fingerprint(
+                    consumption = _consume_zombie_fingerprint(
                         db, task_id, fingerprint, t, orchestrator,
                     )
+                    from runtime.orchestrator.run_step import _HumanFailedRecoveryOperation
+                    if isinstance(consumption, _HumanFailedRecoveryOperation) or consumption == "lost_owner":
+                        # The exact selected operation owns legacy bookkeeping;
+                        # pending/loss must never clear through this fallback.
+                        continue
                     if policy_family == "v2":
                         # The real common consumer committed first.  The
                         # Database-owned CAS now re-reads the exact immutable
@@ -296,7 +301,7 @@ def _consume_zombie_fingerprint(
     fingerprint: dict,
     task,
     orchestrator: Orchestrator,
-) -> None:
+) -> object:
     """Consume an orphaned task_result discovered by the ongoing zombie reaper.
 
     Mirrors the Track A _sweep_on_startup orphaned-result consumption path:
@@ -311,11 +316,20 @@ def _consume_zombie_fingerprint(
         fallback_agent=task.assigned_agent or "unknown",
     )
     from runtime.orchestrator.run_step import _consume_completion_report
-    _consume_completion_report(
+    def bookkeeping() -> None:
+        current = db.get_task(task_id)
+        if (current is not None and current.assigned_agent == task.assigned_agent
+                and current.current_session_id == task.current_session_id
+                and current.zombie_flagged_at == task.zombie_flagged_at
+                and current.zombie_flagged_at is not None):
+            db.update_task(task_id, zombie_flagged_at=None)
+            AuditLogger(db).log_zombie_cleared(task_id, task.assigned_agent or "unknown")
+    return _consume_completion_report(
         orchestrator, task_id, orphaned_report,
         result_row_id=fingerprint.get("id"),
         recovery_reentry=True,
         reclaim_terminal_worktree=False,
+        after_human_recovery=bookkeeping,
     )
 
 

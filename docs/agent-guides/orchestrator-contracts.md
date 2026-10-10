@@ -34,6 +34,50 @@ still pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
+## Founder-managed Default (THR296)
+
+
+Task-completion prompt wording follows the task owner: a worker-owned root may
+finish, self-delegate or escalate within its server-authorized contract. An
+attempted non-root founder escalation fails the child and wakes its parent.
+Manager-only operations retain their restrictions; the canonical start-task skill owns the
+payload guidance. Delegated leaves still omit decisions and callback identity
+and final-action ordering remain unchanged.
+
+Offline roster recovery uses the retained native operation/journal/request
+identity. Replay performs no reset/materializer/publication when actual durable
+completion is already established. Explicit compensation publishes a new
+coherent original-roster generation, retaining cleared resumes and audits; the
+original successful receipt is preserved. C6/C8/C9 observers/localizations are
+authored source, with M/guest-reboot behavior unexecuted.
+
+Attachment and executable authority are distinct. An exactly registered pending
+bootstrap manager can attach without a current manager grant; owner admission and
+workflow capture still require its ordinary supported promotion to ACTIVE. Active/
+pending duplicate identities or mismatched pending manager role/team refuse.
+
+Founder-managed teams use a human principal without an executable manager.
+Explicit active worker owners may run ordinary roots and self-decompose; they
+have no peer/fanout, manager administration, policy or template authority.
+Missing owners for a human team are refused before persistence. Malformed active
+definitions after attachment produce the existing unknown_owner admission refusal
+before task/attachment allocation. Delegated
+outcomes use a valid persisted executable parent owner, with unknown_manager
+for invalid ancestry. Null verdict uses the native implicit mapping; blank and
+custom strings remain exact. This audit is an agent outcome, never human approval.
+Selected human failed-leaf recovery is result-scoped and conservatively refuses
+foreign/multiple/unreadable history. Separate evidence, chain, fanout, FAILED,
+review and marker commits remain separate; history and review precede marker.
+Retained loop retries wait 50ms outside locks without a retry cap. Busy/pending
+is not settlement; parent handoff follows genuine owned cleanup. A native drain
+exception or cancellation retains the exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns `recovery_required` without new
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Pending callers join the original owner. Shutdown preserves
+accepted/consumed residue for existing next-start recovery. Healthy finished
+same-result reentry checks current ownership/history again; cancellation or a
+replacement binding cannot receive a cached done disposition.
+
 ## Conventions
 
 - Type hints on all function signatures.

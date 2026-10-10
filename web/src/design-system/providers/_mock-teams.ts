@@ -9,6 +9,8 @@ import type { TeamSummary } from '@/lib/api/teams';
 import type { TeamsApi } from './DataContext';
 
 const MOCK_TEAMS: TeamSummary[] = [
+  { name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder', is_default: true,
+    workers: ['consultant_head', 'consultant_codex'] },
   { name: 'content', manager: 'content_manager', workers: ['content_writer', 'content_qa'] },
   { name: 'engineering', manager: 'engineering_head', workers: ['product_manager', 'dev_agent'] },
 ];

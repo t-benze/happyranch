@@ -69,6 +69,137 @@ selection through `tests/helpers/integration_parent.py`.
 
 ## Integration environment and retained observations
 
+## PR1022 finite roster L/W entry
+
+Engineering_manager TASK10394's current scope-bound brief, citing Founder
+THR296seq24, releases the finite selections in `pr1022-roster-selected` in
+`.github/workflows/ci.yml`. Only same-repository pull requests numbered 1022
+with head branch `task/TASK-10430` run it. Normal publication starts it; it has
+no dispatch inputs, main-push execution or scheduled execution. Existing Web,
+Linux/macOS canonical and original callback checks remain separate. Python
+units and their gate are RETIRED THR291seq40; broad integration stays SKIPPED
+THR243seq42.
+The live daemon host cannot execute this entry, even through jobs.
+
+The seven disposable Ubuntu shards use actual PR-head checkout, frozen Python
+3.14 dependencies and Node24. L1 includes all accepted C1/C2/C3 parameters;
+L4 includes all accepted C4 parameters; L5 includes exactly six non-restore
+parameters; L7 includes all ten contexts; L8/L9 include only their three/four
+early CLI argument refusals; W10 includes all four locale/viewport parameters.
+Only W10 selects the standard GitHub-hosted Ubuntu 22.04 image; the L shards
+retain `ubuntu-latest`. The actual runner image appears in the hosted setup
+log, alongside the existing Python/Node and selected browser/tool receipts.
+Verbose pytest output and JUnit record expanded IDs and actual outcomes. These
+early refusals are not successful maintenance or physical no-write proof.
+
+The existing parent accepts optional `--roster-output`, `--roster-old-reader`
+and `--roster-browser-tools` before `-- pytest -m integration <explicit nodes>`.
+That mode refuses whole-file/directory, unit, M and unknown selections before
+pytest imports. The output must be an empty private `evidence` directory under
+an explicitly selected, private `happyranch-roster-*` invocation directory.
+The old reader must be its independent clean `old-reader` checkout at exact
+b3179b123fddbb0f0f604ed9e0d148f1b23455f3. Parent and real C5 child record and
+compare git, imported module and interpreter origins. Ambient old-reader env
+alone is never propagated. Default parent invocations are unchanged.
+
+W10 installs @playwright/cli **0.1.18**, playwright and playwright-core
+**1.63.0-alpha-2026-08-05** (Apache-2.0) only into invocation-owned `tools`;
+the actual supported Playwright install command places Chromium in its owned
+`browsers`. Registry integrities, the actual transient dependency lock, package
+versions, browser revision, executable paths/hashes/versions and explicit
+browser config are retained. `tool-file-origins.json` records a byte-identical
+private Node copy and before/after modes for the invocation-owned unpacked
+CLI and Chromium executable, prepared with mode0700 without changing bytes.
+The parent retains its non-group/world-writable file checks. Its closed
+`browser-binding.json` is validated
+before launch; malformed/mismatched descriptors must refuse before pytest.
+Private `node`/`playwright-cli` shims preserve the parent's original closed PATH,
+provider stubs and callback. The selected browser uses the isolated built SPA
+and fixture API with explicit `chromiumSandbox: true`; the real owned CLI
+launch must succeed before scenarios. Its command, exit and stdout/stderr are
+retained even on refusal, without a sandbox-disable fallback. Update
+notification is disabled. No project dependencies,
+global tooling or execution policy changes follow.
+
+W10 exposes invocation-owned `NotoSansCJK-Regular.ttc` and its OFL-1.1 copyright
+through a closed, hash-checked data-only font descriptor. It prefers the existing
+runner's `fonts-noto-cjk`; otherwise normal authenticated configured Ubuntu APT
+download verifies exact version/archive SHA256/size before `dpkg-deb -x` extracts
+data without package scripts or a global install. The runner's configured
+`mirror+file:/etc/apt/apt-mirrors.txt` transport
+requires that exact root-owned regular file without group/other write access;
+its complete bytes/hash and validated Ubuntu archive URIs are retained. APT
+authentication and Ubuntu release-origin checks still apply. No source is replaced.
+Package origin, integrity,
+license and font hashes are retained in `tool-file-origins.json`. The feature-only
+parent creates a private fontconfig mapping and cache (Chinese selects the SC
+family) while retaining isolated HOME/XDG/PATH, original guards, browser pins and
+sandbox. Malformed, mismatched or unowned font bindings refuse before pytest.
+Actual child fontconfig selection, painted-text platform fonts and PNGs remain
+separate evidence; glyph counts alone are not visual readability proof.
+
+The real C10 recipient boundary records both options' DOM, hidden ancestry,
+accessibility roles/names, exact accessible locator count and hit-test geometry
+before the original unforced click. Diagnostic JSON, CLI output and screenshots
+survive failure. Locator/component correction awaits that actual admitted
+observation; no hidden-role, force-click or synthetic submission fallback exists.
+
+The retained integration-only `tests/helpers/human_team_history_fixture.py`
+owns feature-authored C5 schema1 history DATA and unchanged seeding. Historical
+IDs, bytes and digests are fixed independently of current writers; they are not
+new callback or migration receipts. C3 uses its independently literal valid
+product-design definition and still requires the actual worker request to return
+403 `manager_required`. C5's explicit-profile case registers an owned inert
+executable through the existing adapter/profile stores and registry validation,
+records bytes/hash/mode and cleanup, and binds the profile through the real API.
+No retired unit module is imported or read by any released L/W selection.
+Two deleted fixture dependencies remain solely in HELD M paths: authority
+`_seed_org` and remote-runner row helpers. They must be resolved before any M
+release; this entry provides no M source-completeness or maintenance proof.
+
+C5 positive graph admission binds the actual existing fixture runtime
+container to its selected-source API state. Capture and unchanged-domain/file
+readbacks precede that separate graph setup; negative authority admission never
+enters it. TASK10394 corrects the two same-root current-graph preflight assertions:
+the exact eight generated `workspaces/<agent>/CLAUDE.md -> AGENTS.md` links are
+independently checked and must classify as `reject/nonregular`, with top-level
+`eligible=false`, quiescent nested liveness, exact empty blockers and no zombies
+or additional rejection. File/link metadata and non-database contents plus
+logical database rows must remain unchanged across each read-only request;
+SQLite physical pages/sidecars and transient writes are not proved by readback.
+Every existing history/graph/profile/replay assertion still executes after
+closing all owners, including each test-owned read-only SQLite connection,
+and reopening the same registered runtime. Connection transaction contexts
+alone do not close their handles; the unchanged no-WAL assertion precedes
+reopen. This is
+`current-graph-reopen`, never export/restore/migration eligibility or readiness.
+The HELD cross-root `restore=True` branch retains its own positive prerequisite.
+Old empty-rejections assertion failures remain failures at their actual heads.
+
+The selected mode retains passing and failing temporary scenario evidence
+before parent teardown, including real screenshots, C5/C7/refusal receipts,
+native C4 witnesses, feature-owned daemon logs and independent final
+task/result/audit/recovery/job readbacks for selected C2/C4/C7. The feature
+provisions the actual Engineering manager workspace for its legacy C2 controls;
+C7 verifies the shipping workspace-owned XDG cache while retaining exact
+parent HOME/config/PATH and original stub/identity gates.
+The C7 complete prompt expectation includes the canonical AgentDef final newline.
+Localized browser CSS selectors preserve literal label text before JavaScript
+quoting so Chinese labels reach the existing exact focus/model/geometry oracles.
+It exports an artifact inventory with original paths, hashes and byte sizes, actual child
+exit, source and tool bindings. Fixture credentials/config/DB files themselves
+are excluded. Each shard uploads adverse and successful logs/receipts with
+run/attempt identity. Missing/incompatible tooling is an environment failure;
+submission, metadata, a prior-head receipt or binding refusal is not scenario
+PASS or a causal RED.
+
+This entry first collects genuine finite baseline/failure. Accepted causal
+controls, byte-restoration/GREEN, five isolated and five affected-sibling
+repetitions, screenshot inspection and independent exact-head review/QA remain
+separate required evidence, never inferred from a baseline. No M selection,
+compatible restore, systemd service/mask operation, reboot, live migration,
+new-package-positive closure or after-M browser proof is released here.
+
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
 fresh temporary HOME/config/cache/daemon registry before pytest or runtime imports.

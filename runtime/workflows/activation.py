@@ -1,6 +1,8 @@
 """Founder-authorized exact-version activation and authentic initial task admission."""
 from __future__ import annotations
 
+from runtime.workflows.authority import snapshot_team_agents, validate_authority_snapshot
+
 import base64
 import json
 import sqlite3
@@ -317,6 +319,7 @@ class WorkflowActivationStore:
 
     def _roles(self, request: ActivationRequest, snapshot: dict,
                template: WorkflowTemplateVersion | None = None) -> dict:
+        validate_authority_snapshot(snapshot)
         if isinstance(request, DocumentActivationRequest):
             if template is None:
                 raise WorkflowActivationError("workflow_activation_invalid_request")
@@ -352,7 +355,7 @@ class WorkflowActivationStore:
                     team = teams.get(candidate["team"])
                     if (candidate["kind"] != "agent" or agent is None or team is None
                             or agent["team"] != candidate["team"]
-                            or candidate["principal"] not in [team["manager"], *team["workers"]]
+                            or candidate["principal"] not in snapshot_team_agents(snapshot, team)
                             or candidate["principal"] in [bindings[key]["principal"] for key in kinds if key != role]):
                         raise WorkflowActivationError("role_binding_not_authorized")
             return bindings
@@ -374,7 +377,7 @@ class WorkflowActivationStore:
                 team = teams.get(candidate["team"])
                 if (candidate["kind"] != "agent" or agent is None or team is None
                         or agent["team"] != candidate["team"]
-                        or candidate["principal"] not in [team["manager"], *team["workers"]]):
+                        or candidate["principal"] not in snapshot_team_agents(snapshot, team)):
                     raise WorkflowActivationError("role_binding_not_authorized")
                 # A replacement cannot erase contributor independence. Later
                 # replacement admission remains a separate U4/U5 operation.

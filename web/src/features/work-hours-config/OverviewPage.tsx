@@ -162,7 +162,8 @@ export function OverviewPage(): JSX.Element {
                 )}
                 {teamNames.map((name) => (
                   <SelectItem key={name} value={name}>
-                    {name}
+                    {name}{teamsQuery.data?.teams.some((entry) => entry.name === name && entry.manager_kind === 'human')
+                      ? ` · ${t('agents.team.founderManaged')}` : ''}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -170,8 +171,21 @@ export function OverviewPage(): JSX.Element {
           </div>
         </div>
 
-        {/* Roster */}
-        {agents.length === 0 ? (
+        {/* Roster fetches are distinct from a successful empty roster. Keep
+            the tier editor mounted during background query errors/retries. */}
+        {agentsQuery.isLoading || teamsQuery.isLoading ? (
+          <p role="status" aria-label={t('workHours.roster.loading')} className="text-text-muted text-sm">
+            {t('workHours.roster.loading')}
+          </p>
+        ) : agentsQuery.isError || teamsQuery.isError ? (
+          <div role="alert" className="space-y-2">
+            <p className="text-text-muted text-sm">{t('workHours.roster.loadError')}</p>
+            <Button variant="outline" size="sm" onClick={() => {
+              if (agentsQuery.isError) void agentsQuery.refetch();
+              if (teamsQuery.isError) void teamsQuery.refetch();
+            }}>{t('common.retry')}</Button>
+          </div>
+        ) : agents.length === 0 ? (
           <EmptyState
             title={t('workHours.empty.title')}
             body={t('workHours.empty.body')}

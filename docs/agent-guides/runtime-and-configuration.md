@@ -29,6 +29,38 @@ still pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
+## Founder-managed Default (THR296)
+
+
+C10's browser-owned pre-attach fixture adds Product/product_head alongside the
+unchanged Engineering/engineering_head and Content/content_manager controls.
+HTTP availability is modeled at its owned proxy; normal actions settle through
+the real isolated daemon. Empty Default is a coherent transport projection,
+not a migration receipt. Existing startup and operator-maintenance gates stay
+unchanged; no browser invocation on the development host is authorized.
+
+Offline roster check/apply pins the real detached registered RuntimeDir and
+resolved candidate/interpreter bytes. Both closed org and canonical-store
+restore inventories are independently checked before apply; final pre-reset
+CAS includes canonical/generated metadata and authority/profile controls.
+Persistent launcher inhibition is externally owned and remains required across
+process loss/reboot. The current adapter cannot certify ordinary unmasked
+command-bearing units; see the bounded migration runbook.
+
+`teams.yaml` preserves default_team and task_default_team. Existing missing
+task pointers retain Engineering routing. Proven fresh org creation writes an
+empty Founder-managed Default and explicitly sets both pointers to Default.
+Attachment validates duplicate memberships and both registry→definition and
+definition→registry team/role agreement; pending enrollment keeps its supported
+semantics. Exactly matching pending bootstrap managers may attach, while missing,
+wrong-team/role and duplicate active/pending identities refuse. Pending managers
+remain non-executable and cannot make workflow authority ready; ordinary approval
+must promote them and publish the coherent active roster. Startup performs no roster move. Tagged managers have exactly kind
+and principal; human principal is founder and has no executable-agent name.
+New workflow authority snapshots use schema2 typed principals and pointers.
+Historical schema1 snapshots/bindings retain their original bytes and digests;
+version-aware readers exclude human principals from executable membership.
+
 ## Settings
 
 Bundled skill sources resolve under the selected package root at
