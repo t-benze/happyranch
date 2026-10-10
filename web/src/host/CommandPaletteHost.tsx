@@ -17,7 +17,7 @@ import {
 } from '@/design-system/patterns/CommandPalette';
 import { useTranslation } from '@/hooks/i18n';
 import type { MessageKey, MessageParams } from '@/lib/i18n';
-// ⌘K hotkey is now owned by AssistantDockHost (design-overhaul v1).
+// Cmd/Ctrl-K is unbound; the palette retains its explicit trigger.
 // The pre-overhaul command palette is retained but opened via a different
 // trigger; remove its ⌘K hotkey to avoid conflicts.
 // import { useCommandPaletteHotkey } from '@/hooks/command-palette';
@@ -188,7 +188,7 @@ export function CommandPaletteHost(): JSX.Element {
   const { t } = useTranslation();
 
   // const toggle = React.useCallback(() => setOpen((o) => !o), []);
-  // useCommandPaletteHotkey(toggle); — disabled: ⌘K now opens AssistantDock.
+  // The palette opens through its existing explicit trigger.
 
   React.useEffect(() => {
     if (!open) return;

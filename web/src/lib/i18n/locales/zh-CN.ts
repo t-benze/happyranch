@@ -298,7 +298,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'shell.title.settings': '设置',
   'shell.title.jobs': '作业',
   'shell.title.runtimeHealth': '运行状况',
-  'shell.title.assistant': '助手',
   'shell.title.getStarted': '开始使用',
 
   'shell.nav.home': '首页',
@@ -328,7 +327,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'shell.account.you': '你',
   'shell.account.founder': '创始人',
 
-  'shell.openAssistant': '打开助手',
   'shell.switchToLight': '切换到浅色主题',
   'shell.switchToDark': '切换到深色主题',
   // Native endonyms remain recognizable in either interface language.
@@ -370,7 +368,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'help.tab.kb': '知识库',
   'help.tab.agents': '智能体',
   'help.tab.audit': '审计',
-  'help.shortcut.openAssistant': '打开助手面板',
   'help.shortcut.showHelp': '显示此帮助',
   'help.shortcut.closeAny': '关闭任何对话框、抽屉或面板',
   'help.shortcut.jumpDashboard': '跳转到仪表盘',
@@ -563,11 +560,9 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.page.loadError': '无法加载设置。',
   'settings.nav.heading': '配置',
   'settings.nav.daemonCapacity': '容量',
-  'settings.nav.assistant': '助手',
   'settings.nav.organization': '组织',
   'settings.nav.executors': '执行器',
   'settings.nav.preferences': '偏好设置',
-  'settings.panel.assistant.title': '系统助手',
   'settings.panel.organization.title': '组织',
   'settings.panel.organization.description':
     '组织级设置。更改即时生效——守护进程会自动热加载。',
@@ -587,54 +582,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.preferences.coverageDisclosure': '支持英语和简体中文。优先使用你保存的语言；未保存时使用浏览器语言。',
   // @w2c-end:preferences
 
-  // --- W2c: settings/assistant (anchor; keys go below) ---
-  'settings.assistant.state.uninitialized': '未初始化',
-  'settings.assistant.state.configured': '已配置',
-  'settings.assistant.state.staleOrBroken': '已过期或损坏',
-  'settings.assistant.loading': '正在加载…',
-  'settings.assistant.loadError': '无法加载助手状态。',
-  'settings.assistant.status.aria': '助手状态',
-  'settings.assistant.status.state': '状态',
-  'settings.assistant.executor': '执行器',
-  'settings.assistant.status.workspace': '工作区',
-  'settings.assistant.setup.aria': '设置操作',
-  'settings.assistant.setup.title': '设置',
-  'settings.assistant.setup.uninitializedBody':
-    '准备注册工作区，然后在下方注册一个执行器，或在该工作区中启动你的 CLI 并让它自行注册。',
-  'settings.assistant.setup.initializing': '正在初始化…',
-  'settings.assistant.setup.initialize': '初始化工作区',
-  'settings.assistant.setup.selfRegistration.title': '自行注册',
-  'settings.assistant.setup.selfRegistration.step1':
-    '在上方显示的工作区中打开你的智能体 CLI（claude、codex、opencode、pi 等）。',
-  'settings.assistant.setup.selfRegistration.step2': '让它注册自己；它会运行 {command}。',
-  'settings.assistant.setup.staleBody':
-    '工作区与已保存的配置不一致。修复会根据记录的执行器重建工作区，且不会清除你的注册。',
-  'settings.assistant.setup.repairing': '正在修复…',
-  'settings.assistant.setup.repair': '修复',
-  'settings.assistant.setup.configuredBody':
-    '重新配置会关闭所有打开的会话并清除已保存的配置，以便你从头注册另一个执行器。',
-  'settings.assistant.setup.reconfigure': '重新配置…',
-  'settings.assistant.reconfigure.title': '要重新配置助手吗？',
-  'settings.assistant.reconfigure.body':
-    '这会关闭所有打开的助手会话并清除已保存的配置。你需要重新注册执行器。',
-  'settings.assistant.reconfigure.confirming': '正在重新配置…',
-  'settings.assistant.reconfigure.confirm': '重新配置',
-  'settings.assistant.register.title': '注册执行器',
-  'settings.assistant.register.switchTitle': '切换执行器',
-  'settings.assistant.register.preserveNote':
-    '重新注册会保留工作区——服务器根据运行时根目录推导工作区，而不是根据此处的任何输入——并且同一时间只有一个执行器处于活动状态，因此注册会替换当前执行器。',
-  'settings.assistant.register.noRestart': '注册立即生效，无需重启守护进程。',
-  'settings.assistant.register.other': '其他…',
-  'settings.assistant.register.executorName': '执行器名称',
-  'settings.assistant.register.command': '命令',
-  'settings.assistant.register.argv': 'Argv（可选——默认为该命令）',
-  'settings.assistant.register.argvHint': '以空格分隔。留空则不带额外参数启动该命令。',
-  'settings.assistant.register.errorNoExecutor': '请选择或命名一个执行器。',
-  'settings.assistant.register.errorNoCommand': '请输入要启动的命令。',
-  'settings.assistant.register.errorHttp': '注册失败（HTTP {status}）。',
-  'settings.assistant.register.registering': '正在注册…',
-  'settings.assistant.register.submit': '注册',
-  // @w2c-end:assistant
 
   // --- W2c: settings/organization (anchor; keys go below) ---
   'settings.organization.saveFailed': '保存失败：{detail}',
@@ -826,7 +773,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'settings.capacity.workersHelp':
     'HappyRanch 在所有组织中可同时运行的任务会话最大数量。HappyRanch 或服务提供方的其他限制可能会减少实际运行数量。',
   'settings.capacity.capHelp':
-    '任务、线程、梦境、唤醒和计划工作的会话总数上限。它不会限制机器上的所有进程，也不包括后台 Assistant 或作业进程。',
+    '任务、线程、梦境、唤醒和计划工作的会话总数上限。它不会限制机器上的所有进程，也不包括作业进程。',
   'settings.capacity.draft.changes': '你的编辑与已保存的值不同',
   'settings.capacity.draft.matches': '你的输入与已保存的值一致',
   'settings.capacity.draft.capLabel': '会话总上限',
@@ -2558,45 +2505,6 @@ export const zhCN: Record<MessageKey, MessageValue> = {
 
 
   // Mounted System Assistant dock and conversation controls (THR-118).
-  'assistantDock.title': "牧场助手",
-  'assistantDock.conversations': "会话",
-  'assistantDock.close': "关闭助手",
-  'assistantDock.conversationError': "无法加载会话。",
-  'assistantDock.loading': "加载中…",
-  'assistantDock.loadingLabel': "加载中",
-  'assistantDock.notReady': "助手尚未就绪。请在设置 → 助手中进行配置。",
-  'assistantDock.statusError': "无法加载助手状态。",
-  'assistantDock.empty': "向助手提问，或输入 / 运行命令。",
-  'assistantDock.placeholder': "向助手提问，或输入 / 运行命令…",
-  'assistantDock.composer': "助手输入框",
-  'assistantDock.send': "发送",
-  'assistantDock.sendHint': "发送",
-  'assistantDock.newlineHint': "换行",
-  'assistantDock.speaker': "助手",
-  'assistantDock.you': "你",
-  'assistantDock.toolActivity': "工具活动",
-  'assistantDock.genericTool': "工具",
-  'assistantDock.replyingCaption': "正在回复… {elapsed}",
-  'assistantDock.replyingLabel': "{speaker}正在回复",
-  'assistantDock.notConfigured': "助手尚未配置。请在设置中进行配置。",
-  'assistantDock.assistantError': "助手出错。",
-  'assistantDock.unknownError': "未知错误",
-  'assistantDock.socketError': "WebSocket 连接失败。",
-  'assistantDock.connectionError': "连接失败：{detail}",
-  'assistantDock.disconnected': "尚未连接。请重新打开助手面板以连接。",
-  'assistantDock.closeConversations': "关闭会话列表",
-  'assistantDock.newConversation': "新建会话",
-  'assistantDock.loadingConversations': "正在加载会话…",
-  'assistantDock.noConversations': "暂无会话。",
-  'assistantDock.conversationList': "会话列表",
-  'assistantDock.conversationTitle': "会话标题",
-  'assistantDock.saveTitle': "保存标题",
-  'assistantDock.cancelRename': "取消重命名",
-  'assistantDock.deleteConfirm': "删除“{title}”？",
-  'assistantDock.delete': "删除",
-  'assistantDock.cancel': "取消",
-  'assistantDock.renameTitle': "重命名 {title}",
-  'assistantDock.deleteTitle': "删除 {title}",
 };
 
 export default zhCN;

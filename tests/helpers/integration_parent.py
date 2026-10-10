@@ -80,10 +80,49 @@ def build_environment(root: Path, source: Path, python: Path, uv: Path,
         "HAPPYRANCH_TEST_STUB_GUARD": str(guard / "guard.py"),
         "CANDIDATE_PY": str(python), "EXPECTED_SOURCE": str(source), "EXPECTED_SHA": revision,
         "UV_NO_SYNC": "1", "UV_PYTHON_DOWNLOADS": "never",
+        "UV_PYTHON": str(python), "UV_NO_CONFIG": "1",
+        "UV_CACHE_DIR": str(root / "cache" / "uv"),
     }
+    # Preserve the interpreter's own venv, never an ambient VIRTUAL_ENV.
+    # uv cannot discover a provisioned interpreter through the shell shims.
+    prefix = python.parent.parent
+    if (prefix / "pyvenv.cfg").is_file():
+        env["VIRTUAL_ENV"] = env["UV_PROJECT_ENVIRONMENT"] = str(prefix)
     if real_platform:
         env["HAPPYRANCH_TEST_REAL_PLATFORM"] = "1"
+    # Test-only evidence descriptor; never copy ambient runner env wholesale.
+    # The retirement fixture authenticates it before any elevated observer.
+    if "HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT" in os.environ:
+        receipt = json.loads(os.environ["HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT"])
+        assert set(receipt) == {"path", "sha256"}
+        receipt_path = Path(receipt["path"])
+        assert receipt_path.is_absolute() and not receipt_path.is_symlink()
+        assert not receipt_path.stat().st_mode & 0o022
+        assert digest(receipt_path) == receipt["sha256"]
+        env["HAPPYRANCH_TEST_NATIVE_OBSERVER_RECEIPT"] = json.dumps(receipt)
     return env
+
+
+def verify_interpreter_binding(env: dict[str, str], python: Path, uv: Path,
+                               source: Path, revision: str) -> None:
+    """Observe nested uv's ordinary interpreter before pytest/product imports."""
+    expected = {"executable": str(python.resolve()), "sha256": digest(python),
+                "prefix": sys.prefix, "version": list(sys.version_info[:3])}
+    code = ("import hashlib,json,pathlib,sys; p=pathlib.Path(sys.executable).resolve(); "
+            "print(json.dumps({'executable':str(p),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),"
+            "'prefix':sys.prefix,'version':list(sys.version_info[:3])},sort_keys=True))")
+    result = subprocess.run([str(uv), "run", "python", "-I", "-c", code],
+                            cwd=source, env=env, capture_output=True, text=True,
+                            timeout=15)
+    if result.returncode or len(result.stdout) > 65536:
+        raise SystemExit("integration parent uv interpreter observation refused: "
+                         + result.stderr[:4096])
+    observed = json.loads(result.stdout)
+    if observed != expected:
+        raise SystemExit("integration parent uv interpreter binding differs: "
+                         + json.dumps({"expected": expected, "observed": observed}, sort_keys=True))
+    print(json.dumps({"kind": "integration-parent-interpreter", "source": str(source),
+                      "revision": revision, "binding": observed}, sort_keys=True), flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -102,6 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="happyranch-test-parent-") as directory:
         env = build_environment(Path(directory), source, Path(sys.executable), Path(uv).resolve(), revision,
                                 real_platform=os.environ.get("HAPPYRANCH_TEST_REAL_PLATFORM") == "1")
+        verify_interpreter_binding(env, Path(sys.executable), Path(uv).resolve(), source, revision)
         child = subprocess.Popen([sys.executable, "-m", "pytest", *args[1:]], env=env,
                                  cwd=source, start_new_session=True)
         previous = {}

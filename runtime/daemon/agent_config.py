@@ -11,8 +11,8 @@ moved to AgentDef frontmatter.  The ``load_agent_config`` reader remains for
 the one-shot migration (``migrate_agent_yaml_to_frontmatter``) and for the
 ``set_agent_executor`` route's before/after display.
 
-System assistant (runtime/system_assistant.py) writes its own agent.yaml
-directly and has no org/agents/<name>.md — it is unaffected by this module.
+Retired system_assistant workspaces keep legacy agent.yaml inert. The reserved
+name is excluded before any YAML read or migration sentinel write.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def _migrate_agent_yaml_to_frontmatter(
     reviewer-proven breach where a stale/edited agent.yaml could re-win
     on subsequent startups.
 
-    FENCE: system_assistant writes its own agent.yaml directly and is NOT
+    FENCE: retired system_assistant legacy data is inert and is NOT
     an org agent — it is always skipped.
 
     Returns a dict of agent_name -> outcome for logging.
@@ -132,9 +132,9 @@ def _migrate_agent_yaml_to_frontmatter(
             continue
 
         try:
-            # FENCE system_assistant: it writes its own agent.yaml directly
-            # and is NOT an org agent in the migration scope.  Leave its
-            # agent.yaml completely untouched.
+            # FENCE retired system_assistant before any YAML read. Preserve
+            # legacy bytes and links; never consume or repair this reserved
+            # workspace name or create its migration sentinel.
             if agent_name == "system_assistant":
                 results[agent_name] = "skipped (system_assistant)"
                 continue

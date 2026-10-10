@@ -2761,7 +2761,7 @@ describe('19 — cache scoping and route geometry', () => {
     const content = screen.getByTestId('settings-content');
     const subnav = within(content).getByRole('complementary');
     expect(within(subnav).getAllByRole('link').map((l) => l.textContent)).toEqual([
-      'Capacity', 'Assistant', 'Organization', 'Executors', 'Preferences',
+      'Capacity', 'Organization', 'Executors', 'Preferences',
     ]);
     // The standalone mock's extra menu entries are deliberately NOT reproduced,
     // and the visible entry is the renamed `Capacity` label (never `Daemon / Capacity`).

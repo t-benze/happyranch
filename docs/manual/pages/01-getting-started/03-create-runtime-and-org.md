@@ -25,13 +25,6 @@ happyranch orgs init my-company
 happyranch init-agent
 ```
 
-Recommended optional step:
-
-```bash
-happyranch assistant init
-happyranch assistant status
-```
-
 What each command does:
 
 | Command | What happens |
@@ -39,7 +32,6 @@ What each command does:
 | `happyranch init ~/happyranch-runtime` | Creates and activates the runtime container |
 | `happyranch orgs init my-company` | Creates the first org |
 | `happyranch init-agent` | Initializes agent workspaces for the org |
-| `happyranch assistant init` | Prepares the runtime-global assistant for the Cmd-K dock |
 
 Org slugs are lowercase letters, digits, and hyphens, 1-40 characters.
 
@@ -73,8 +65,6 @@ Your runtime now has a structure like:
 ```text
 ~/happyranch-runtime/
 ├── happyranch.yaml
-├── system/
-│   └── assistant/
 └── orgs/
     └── my-company/
         ├── happyranch.db

@@ -48,6 +48,16 @@ HappyRanch is an org-agnostic runtime for operating a multi-agent organization s
 
 Keep this file short. It is loaded at the start of every Claude Code session. Detailed reference lives in `docs/agent-guides/`; read only the guide that matches the files you are touching.
 
+**Task-scoped audit lookup (THR-278).** Generic `Database` initialization installs
+the nonunique, nonpartial `idx_audit_log_task_id` on `audit_log(task_id)` for fresh
+and existing databases. Literal task/config/thread/artifact scope values, audit
+IDs, payload decoding and ascending-ID results remain unchanged. The index is
+included in independent complete legacy v1 schema references and actual
+observed-only v2 schema diagnostics. Failed-claim residue and malformed-attempt
+startup fences retain their existing behavior. Source delivery, installed
+schema, live startup timing and reviewer settings are separate evidence;
+installation and compatible-code rollback guidance is in the runtime guide.
+
 ## Read When Touching
 
 | Surface | Read |
@@ -69,7 +79,7 @@ Skill delivery uses a **canonical skill store** — hash-addressed packages outs
 - **Delivery model:** The executor and daemon share the same OS identity. There is NO OS-level isolation. A same-UID process may mutate, race validation, and affect active/overlapping sessions. Integrity checks are DETECTION-ONLY with FAIL-CLOSED refusal — do NOT claim immutable, protected, read-only, OS-enforced isolation, or automatic repair.
 - **Integrity verification:** Before each launch the daemon validates every resolved package member's bytes against the ledger-declared SHA-256 hashes. Pre-launch and retry-time manifest/member-hash plus both-root link validation occurs at real Popen/run seams. On mismatch the daemon emits a durable visible integrity event and refuses the session before Popen/retry. A mismatched existing canonical package is NEVER automatically rebuilt, copied, replaced, or healed from same-UID local source. First-ever materialization of an absent package remains allowed; valid existing packages may be reused. Recovery is manual, operator-invoked only: `happyranch skills recover <slug> <version> <content_hash>` (accepts only the eligible current B2 version, validates its artifact provenance and all member SHA-256 hashes before deletion, and refuses already-valid targets). This command requires a preceding authoritative external re-sync/redeploy of release or custom artifacts. No automatic repair from same-UID local source. `set-executor` may repair links only after byte integrity passes — it never repairs bytes. Policy withdrawal and atomic link repair remain safe.
 - **Session union:** All contexts (task, thread, wake, dream, schedule, bootstrap, executor-switch) use one fail-closed canonical verify/refuse boundary before launch. System-contract links are unioned across all ordinary session contexts so a later single-context launch never withdraws a valid link belonging to another context; release-managed and B2 custom-skill links remain policy-reconciled and withdrawable.
-- **System assistant:** Supported assistant register and repair bootstrap the runtime-global workspace with the same canonical ordinary-context system-contract union in both discovery roots. Because that workspace has no repository or org database, its exact set is `dream`, `jobs`, `start-task`, `thread`, `todos`, and `workspace-cleanup`; repo-gated and custom skills remain excluded. Before any assistant workspace write, bootstrap read-only preflights both roots and every existing canonical target. Unsafe/non-link/wrong-target entries and corrupt content or tree hashes therefore refuse with the complete assistant workspace unchanged; if a later materializer-only failure occurs, bootstrap removes only links and empty parent directories proven absent before that call. Existing corrupt canonical packages are never rebuilt, and pre-existing operator content is never deleted or rewritten on refusal.
+- **Retired System Assistant:** no feature routes, CLI, dock, bootstrap or config reader/writer. Preserve inert legacy files/links and historical records; keep the reserved `system_assistant` migration exclusion.
 - **Custom-skill logical purge:** A founder may permanently tombstone only an already-retired current-v2 custom skill after exact-slug confirmation. Tombstones reserve ID/slug and permanently deny resolution, restore, mutation, and serving while retaining all versions, evidence, artifacts, canonical packages, and historical links. The default custom catalog excludes tombstones; explicit `view=removed` lists only tombstones, and direct detail receipts remain reachable. Recreating a tombstoned slug returns `409 slug_permanently_reserved`. Current eligibility rules are withdrawn by supersession, retaining their historical rows and making the preserved old resolver return `no_eligibility_policy`. At the unified canonical publication seam, one narrow per-org barrier spans the final authoritative tombstone/current-version re-read and both provider-root repairs; a purge committed during selection/build therefore excludes that stale spec from the returned set and both roots. Candidate construction and launch remain outside: there is no launch fence or running-session revocation, already published/running work is not recalled, no data is physically erased, and subsequent materialization remains fail-closed. Because `retired_at` remains set, downgrade alone cannot resurrect a tombstone; the deliberate pre-purge-binary limitation requires both operator downgrade and explicit restore of that exact skill, after which the policy-withdrawal latch still denies serving it.
 - **Legacy fallback:** Permanently documented but cannot activate — link validation/repair, unsupported OS, or launch fail without catch-and-copy.
 - **Residual risk:** Same-UID TOCTOU, active, and overlapping-session residual risk is accurately noted. Do not describe byte targets, local sources, ArtifactStore, or links as OS-immutable, ACL-protected, trusted, executor-only writable/unwritable, or automatically recovered.
@@ -441,14 +451,15 @@ For authorized integration-skipped clean-head `scripts/local_ci.sh all`, dispatc
 the existing manual nightly workflow on the exact candidate ref when execution is
 authorized. Its sole input is `all_only` (boolean, default false), with no
 `run_integration` toggle. The receipt-producing extracted runner is
-`uv run python scripts/nightly_local_ci_all.py`; authenticate its actual
+`uv run python scripts/nightly_local_ci_all.py` on the ordinary path; the closed
+PR1011 path below uses the frozen/no-sync outer invocation. Authenticate its actual
 local-ci-all checkout/source/tool provenance, command exit and separate
 integration SKIPPED result. The manual job retains the approved 150-minute cap;
 schedule-only integration retains 30 minutes. While the THR-291 pause applies,
 `all` reports Python SUSPENDED and verifies only the remaining Web checks. The
 extracted runner's fixed guard also suspends G collection, source controls and
 repetitions for every input value. Dormant keeper/proof edits remain unexecuted;
-no manual dispatch or rerun is required for the current merge-forward repair.
+No ordinary manual dispatch or rerun is required for a source-only merge-forward repair.
 
 ### Finite document-review templates and initial drafts (THR-139 seq410)
 
@@ -490,45 +501,61 @@ PASS. Preserve test sources, selections and coverage definitions. Web,
 canonical validation and integration jobs retain their own existing contracts;
 no hook bypass is authorized. Existing historical workflow reruns and old
 checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after a new founder verdict releases
-the stop instruction, through normal review and merge of source restoration for
-both the ordinary unit/wrapper pause and the separate focused-prerequisite guard
-and provenance. Reverting the TASK-10169 pause commit (`22af7c72`) alone does not
-restore the added focused prerequisites: their fixed false branch and suspended
-provenance must also be restored in the reviewed change after the new verdict.
-The ordinary commands below describe the restored behavior.
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The separately authorized closed PR1011 entry below does not
+restore ordinary Python, G or SIX execution. The ordinary commands below
+describe the restored behavior.
 
-Founder THR289 seq33 approving seq31 releases only PR1010's literal 13-node,
-29-case UNIT acceptance in the existing disposable manual `local-ci-all` job.
-The extracted runner selects it only for `refs/heads/task/TASK-10008`, the exact
-clean `GITHUB_SHA` checkout and literal reviewed-integration48fb/accepted-main4cc1
-merge parents, in that order, preserving original retained29e2 ancestry; mismatches
-refuse. The first parent has independent unpublished STATIC CONTROL approval,
-not final published-head FULL approval. Renew independent control review for the
-new composition before publication or execution. Its
-frozen/no-sync Python3.14 command runs serially with a 300-second child bound
-(360-second native-job bound), complete stream/hash/exit and cleanup receipts.
-It exits before `all` or G follow-ons. Ordinary units/wrapper, historical SIX
-serial/parallel prerequisites and fixed G remain SUSPENDED/NOT RUN; this is no
-general THR291 release or THR139seq429 waiver. Other refs retain the default path.
+**Closed PR1011 finite entry (THR278 seq40/49/72).** Only ROOT TASK-10330 owns
+publication and dispatch on `task/TASK-10034`. After the exact accepted helper
+release, independent native immutable control APPROVE and manager acceptance,
+the manager serializes exact-commit publication THROUGH platform event creation.
+The reviewer result travels through supported task/session/result evidence;
+checkout equality and platform SHA are separate source-consistency checks,
+never independent review authentication. Missing, stale, capped or conflicting
+native evidence or uncontrolled writers prevent dispatch. Every new commit
+requires renewed immutable control review before launch.
 
-For PR1010 only, Founder THR289 seq45 approving seq44 and seq40–41 permits
-independently audited exact finite verification to satisfy local verification
-and publication instead of a fresh `scripts/local_ci.sh all`. Authenticate the
-complete immutable candidate through supported transport and obtain independent
-changed-control audit before publication or execution. Then normally push the
-retained `task/TASK-10008` ref with hooks and without force while canonical maker
-completion remains pending, execute the exact finite command through the existing
-reviewed isolated driver, and report canonical maker completion with actual
-command/head/source/tool/stream/exit evidence. Omit success-only `local_ci` unless
-the actual `all` command exited0; neither finite nor historical receipts belong
-there. Preparation and initial control audit are not final APPROVE or PASS, and
-publication is not acceptance. Renew independent FULL published-head review,
-complete behavioral QA, applicable CI including the actual selected hosted Codex
-callback, guarded manager merge and post-main gates. Browser/CLI acceptance and
-all continuing suspension controls remain required as documented above.
+The existing manual Ubuntu/Python3.14/Node24 workflow uses the B2 conjunction
+(repository `t-benze/happyranch`, `workflow_dispatch`, retained ref) for outer
+`uv run --frozen --no-sync python scripts/nightly_local_ci_all.py`. Its one
+frozen dependency sync, inputs, pins and 150-minute cap remain unchanged.
+The driver explicitly refuses identity, full tracked byte/Git-mode/symlink,
+index/untracked or effective-tool drift and rechecks immediately before child.
+It launches only `uv run --frozen --no-sync pytest tests/ -v -n 4 --basetemp=<fresh-owned-path>`;
+committed nonintegration addopts stay. Fixed evidence-only `PYTEST_ADDOPTS`
+provides external JUnit/cache paths. The entry launches zero all/G/SIX commands
+and zero helper repetitions, for either `all_only` value, with no fallback.
+
+FIVE separate socketless helper repetitions and ONE full run are distinct
+allocations, reported 0/5 and 0/1 before proof; no reset or exhaustive census is
+claimed. Launch failure or uncertainty retains spend/possible spend, never a
+rerun entitlement. Complete ordered compressed merged child streams, separate
+wrapper stderr, pre-removal JUnit, source/tool/environment/timing/exit and actual
+owned process adoption/census/wait/reaping evidence are required. Wrapper wait
+or scratch absence alone never proves quiescence. Incomplete capture, abrupt
+loss, uncertain child exit or cleanup is inconclusive. Actual wrapper exit is
+separate; every nonzero wrapper result leaves signed child exit unknown.
+Complete zero with empty wrapper stderr still requires all JUnit, source/tool
+postcheck, cleanup and other success gates. Existing 10-second
+TERM/KILL waits, 1MiB tail, 8MiB segments, 128MiB member and 512MiB archive limits
+remain. See `docs/local-ci.md` for admission and evidence attribution.
+
+This source entry grants no execution in a prepublication implementation leg.
+Final FULL code APPROVE, executable QA PASS, current exact-head CI and actual
+selected hosted Codex callback, guarded manager merge and active exact-merge
+checks, supported deployment and measured restart remain separate required
+gates. General integration remains SKIPPED THR243seq42/THR211seq270–271;
+paused ordinary all proves Web only. Reviewer settings are excluded. Historical
+offline timing and current health do not close startup; the 16.045s lock and
+20.040s gap are distinct, with no <30s promise.
 
 ## Commands
+
+OpenAPI operator (no tests/lifespan): `uv run python scripts/generate_openapi_snapshot.py --check`
+(default, non-writing), or explicit reviewed `uv run python scripts/generate_openapi_snapshot.py --write`
+(atomic snapshot replacement).
 
 ```bash
 uv run python -m pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
@@ -610,7 +637,7 @@ change must not trigger a request, mutation or transport restart. See
 
 - Python snapshot: `tests/contract/test_openapi_snapshot.py`.
 - TS coverage: `web/src/test/openapi-coverage.test.ts`.
-- Regenerate intentional OpenAPI changes with `HAPPYRANCH_REGEN_OPENAPI=1 uv run python -m pytest tests/contract/test_openapi_snapshot.py`.
+- Regenerate reviewed intentional OpenAPI changes with `uv run python scripts/generate_openapi_snapshot.py --write` (explicit atomic write; default/`--check` never writes).
 
 ## Native Impact Evidence
 

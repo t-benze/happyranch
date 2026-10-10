@@ -19,18 +19,13 @@ withdrawable. A tombstone committed during selection excludes the skill at the
 publication barrier; it does not recall already-running work. Canonical-store,
 production-boundary, and materialization tests own these guarantees.
 
-The runtime-global system assistant joins this same delivery path during
-supported register and repair. Its workspace has no repository and the call
-supplies no org database or managed catalog, so both discovery roots receive
-exactly `dream`, `jobs`, `start-task`, `thread`, `todos`, and
-`workspace-cleanup`; custom, managed, and repo-gated skills are not projected.
-Repeated repair is idempotent. Bootstrap read-only preflights the complete set
-in both roots and validates every existing canonical target before writing
-assistant metadata or skills. An unsafe, non-link, wrong-target, content-hash,
-or tree-hash refusal leaves the complete assistant workspace unchanged. If a
-failure can surface only during materialization, bootstrap removes only links
-and empty parent directories recorded as absent before that call; pre-existing
-operator content is not changed.
+System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
+settings, dock and Cmd/Ctrl-K binding are removed. Existing assistant config,
+conversations, workspace files and skill links remain inert and are not cleaned
+or migrated. Provider conversation roles and ordinary org-agent capabilities
+remain supported. The reserved `system_assistant` workspace name stays excluded
+from the org-agent YAML migration, preventing legacy YAML reads or sentinel
+writes. Historical database, audit and token records remain readable.
 
 The daemon and executor share one OS identity. Integrity checks detect mismatches
 and refuse launches; they do not provide OS isolation or close same-UID TOCTOU
@@ -680,7 +675,7 @@ management reads/writes, not registration):
 
 All executors converge on `executors._run_command`, which runs every launch under the **per-provider throttle** (`runtime/orchestrator/throttle.py`, issue #85): a `threading.BoundedSemaphore` ceiling per provider string, an inter-launch spacing gate, and slot-releasing 429 backoff. Each executor passes its own `provider` string (the profile name — `"claude"`, `"codex"`, `"opencode"`, `"pi"`, or a custom profile name) and an optional `on_throttle_event` audit callback. The throttle never touches the permission surface — it is purely a launch-timing wrapper. See [runtime-and-configuration.md → Executor Throttle](./runtime-and-configuration.md#executor-throttle) and `docs/adr/0001-per-provider-executor-throttle.md`.
 
-Codex: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The workspace-write sandbox blocks localhost by default, which would prevent `happyranch report-completion` callbacks to `127.0.0.1`. The system assistant does not go through `CodexExecutor` — it launches its executor headlessly via the A-mode structured-WebSocket surface (`runtime/daemon/routes/assistant_a_mode.py`) — so `_build_session_launch_argv` in `runtime/daemon/headless_assistant.py` re-injects the same `-c sandbox_workspace_write.network_access=true` override (as a global codex option, immediately after the executable) when, and only when, the assistant executor is `codex`. Same rationale; without it the assistant's `happyranch` CLI calls die with the same localhost `ConnectError`.
+Codex: `CodexExecutor.run` passes `-c sandbox_workspace_write.network_access=true` on every invocation. The workspace-write sandbox blocks localhost by default, which would prevent `happyranch report-completion` callbacks to `127.0.0.1`.
 
 opencode: `OpencodeWorkspaceAdapter.write_opencode_json` writes a strict default denying `*` and allowing `happyranch *` plus per-agent allow rules. Do not pass `--dangerously-skip-permissions`; it bypasses `opencode.json`.
 

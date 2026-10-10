@@ -48,12 +48,9 @@ import type {
   ValidateSkillResponse,
   ValidationEvent,
 } from '@/lib/api/skills';
-import type { ConversationSummary } from '@/lib/api/assistant';
 import type { ThreadTaskSummary } from '@/lib/api/threads';
 import type { workHours as workHoursApi } from '@/lib/api';
 import type {
-  AssistantRegisterBody,
-  AssistantStatus,
   DashboardSummaryResponse,
   JobListResponse,
   JobRecord,
@@ -297,40 +294,6 @@ export interface OrgsApi {
 
 export interface HealthApi {
   useHealth: () => QueryLike<HealthResponse>;
-}
-
-// ---------------------------------------------------------------------------
-// AssistantApi — the global (non-org-scoped) System Assistant surface:
-// status poll + init/register/repair mutations + the A-mode WebSocket session.
-// ---------------------------------------------------------------------------
-
-export interface AssistantApi {
-  useAssistantStatus: (enabled: boolean) => QueryLike<AssistantStatus>;
-  useInitAssistant: () => MutationLike<{ reconfigure: boolean }, AssistantStatus>;
-  useRegisterAssistant: () => MutationLike<AssistantRegisterBody, AssistantStatus>;
-  useRepairAssistant: () => MutationLike<void, AssistantStatus>;
-  /**
-   * Opens the A-mode WebSocket — the structured `TurnFrame` stream that drives
-   * the thread-style dock. Imperative and real-only; the mock rejects.
-   */
-  openAModeSession: () => Promise<WebSocket>;
-  /**
-   * Multi-conversation switcher (THR-056 STEP-B). N conversations live UNDER
-   * the one runtime-global assistant. The list is newest-first; exactly one is
-   * `active` at a time and the A-mode WS attaches to it on (re)connect.
-   *
-   * `enabled` gates the poll so the list is only fetched while the dock is
-   * open and the assistant is configured. Every mutation invalidates the list
-   * cache so the `active` flag reflects the server after new/switch/delete.
-   */
-  useListConversations: (enabled: boolean) => QueryLike<ConversationSummary[]>;
-  useCreateConversation: () => MutationLike<void, ConversationSummary>;
-  useActivateConversation: () => MutationLike<string, { success: boolean }>;
-  useRenameConversation: () => MutationLike<
-    { id: string; title: string },
-    { success: boolean }
-  >;
-  useDeleteConversation: () => MutationLike<string, { success: boolean }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -653,7 +616,6 @@ export interface DataContextValue {
   kb: KbApi;
   teams: TeamsApi;
   health: HealthApi;
-  assistant: AssistantApi;
   jobs: JobsApi;
   dashboard: DashboardApi;
   settings: SettingsApi;

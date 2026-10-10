@@ -83,10 +83,12 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     }
     for (const identity of [
       'SettingsPage.tsx:index',
+      'SettingsPage.tsx:assistant',
       'SettingsPage.tsx:system',
       'SettingsPage.tsx:agents',
       'SettingsPage.tsx:*',
       'system',
+      'assistant',
     ]) {
       expect(classifyRouteIdentity(identity)?.status, identity).toBe('not-applicable');
     }
@@ -95,7 +97,6 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
   it('classifies the W2c Settings copy-bearing subroutes (incl. gated preferences) translated', () => {
     for (const token of [
       'settings/*',
-      'assistant',
       'daemon-capacity',
       'organization',
       'executors',
@@ -117,9 +118,9 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
     ]);
   });
 
-  it('marks the migrated route namespaces and proven mounted Assistant translated without changing other classifications', () => {
+  it('marks the migrated route namespaces translated without changing other classifications', () => {
     const summary = coverageSummary();
-    expect(summary.translated).toBeGreaterThanOrEqual(21);
+    expect(summary.translated).toBeGreaterThanOrEqual(20);
     expect(summary.notApplicable).toBeGreaterThanOrEqual(3);
     expect(summary.total).toBe(summary.translated + summary.englishOnly + summary.notApplicable);
     const translated = COVERAGE_MANIFEST.filter((entry) => entry.status === 'translated')
@@ -141,14 +142,12 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
       'root-shell',
       'settings',
       'skills',
-      'system-assistant',
       'tasks',
       'threads',
       'todos',
       'usage',
       'work-hours',
     ]));
-    expect(namespaceStatus('system-assistant')).toBe('translated');
     for (const entry of COVERAGE_MANIFEST) {
       expect(['translated', 'english-only', 'not-applicable']).toContain(entry.status);
       if (NOT_APPLICABLE_NAMESPACES.includes(entry.namespace)) {
@@ -165,12 +164,6 @@ describe('coverage manifest (W1 acceptance case 7)', () => {
 
   it('anchors every manifest dialog surface to a real mounted consumer', () => {
     expect(fullReleaseIssues(scannedInventory())).toEqual([]);
-  });
-
-  it('anchors the Assistant dock and conversation switcher to actual mounted consumers', () => {
-    expect(read('src/routes.tsx')).toMatch(/<AssistantDockHost\s*\/>/);
-    expect(read('src/features/system-assistant/AssistantDockHost.tsx')).toMatch(/<ConversationSwitcher\b/);
-    expect(surfacesFor('system-assistant')).toEqual(['AssistantDockHost', 'ConversationSwitcher']);
   });
 
   it('contains no invented dialog/overlay names', () => {

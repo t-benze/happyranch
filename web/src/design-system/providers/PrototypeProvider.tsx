@@ -18,7 +18,6 @@ import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockAgentsApi } from './_mock-agents';
 import { mockAuthorityPolicyApi } from './_mock-authority-policy';
-import { mockAssistantApi } from './_mock-assistant';
 import { mockAuditApi } from './_mock-audit';
 import { mockDashboardApi } from './_mock-dashboard';
 import { mockHealthApi } from './_mock-health';
@@ -65,7 +64,6 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
           skills: mockSkillsApi,
           teams: mockTeamsApi,
           health: mockHealthApi,
-          assistant: mockAssistantApi,
           jobs: mockJobsApi,
           settings: mockSettingsApi,
           workHours: mockWorkHoursApi,

@@ -254,16 +254,13 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
     namespace: 'settings',
     surfaceOwners: {
-      ReconfigureDialog: 'src/features/settings/sections/AssistantSection.tsx',
       EligibilityEditorDialog: 'src/shared/work-hours/EligibilityEditorDialog.tsx',
     },
-    // The outer wildcard owns loading/error chrome; the nested wildcard is
-    // the historical copy-free redirect. Actual AST ancestry distinguishes it.
-    qualifiedRouteTokens: ['src/features/settings/SettingsPage.tsx#root:*'],
+    // Explicit panels own loading/error chrome; compatibility routes below
+    // remain copy-free redirects outside the settings API gate.
     // `preferences` (W2c) is mounted in ordinary production builds since W3b-2.
     routeTokens: [
       'settings/*',
-      'assistant',
       'daemon-capacity',
       'organization',
       'executors',
@@ -273,26 +270,25 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     surfaces: [
       'SettingsPage',
       'SettingsSubNav',
-      'AssistantSection',
       'DaemonCapacitySection',
       'OrganizationSection',
       'ExecutorsSection',
       'PreferencesSection',
-      'ReconfigureDialog',
       'EligibilityEditorDialog',
     ],
   },
   {
     namespace: 'settings-redirects',
-    routeTokens: ['system'],
+    routeTokens: ['system', 'assistant'],
     status: 'not-applicable',
     qualifiedRouteTokens: [
       'SettingsPage.tsx:index',
+      'SettingsPage.tsx:assistant',
       'SettingsPage.tsx:system',
       'SettingsPage.tsx:agents',
       'SettingsPage.tsx:*',
     ],
-    surfaces: ['settings index/system/agents/* redirects'],
+    surfaces: ['settings index/assistant/system/agents/* redirects'],
   },
   {
     namespace: 'app-shell',
@@ -306,14 +302,6 @@ export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
     routeTokens: [],
     status: 'translated',
     surfaces: ['HelpDrawerHost', 'CommandPaletteHost'],
-  },
-  {
-    // Mounted dock body and conversation controls have their own copy evidence.
-    namespace: 'system-assistant',
-    surfaceOwners: { AssistantDockHost: 'src/features/system-assistant/AssistantDockHost.tsx' },
-    routeTokens: [],
-    status: 'translated',
-    surfaces: ['AssistantDockHost', 'ConversationSwitcher'],
   },
   {
     namespace: 'prototypes',

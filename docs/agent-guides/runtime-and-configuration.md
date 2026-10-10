@@ -320,43 +320,15 @@ When `since` and `until` are both omitted, returns the `limit` most recent rows.
 When the daemon state is idle (`metrics_store` is `None`), returns
 `{"snapshots": []}` gracefully (never 500).
 
-## System Assistant
+## Retired System Assistant
 
-The system assistant is runtime-global and lives under `<runtime>/system/assistant/`.
-It is not an org agent and must not appear in `org/agents/` or `teams.yaml`.
-
-Initialize or repair it on the active runtime:
-
-```bash
-happyranch assistant init
-happyranch assistant init --repair
-happyranch assistant init --reconfigure
-```
-
-Onboarding is by self-registration. `happyranch assistant init` prepares or
-repairs the assistant workspace and writes registration instructions; the
-founder opens their own agentic CLI there and it completes configuration by
-calling back `happyranch assistant register --from-file <payload>` declaring an
-agent-chosen `{executor, command, argv}`. The daemon validates the payload
-structurally only (non-empty fields and `shutil.which(argv[0])` resolves; this
-is self-registration, not executor-binary resolution — the THR-107 seq155
-registration-only cutover applies to *executor launch*, not assistant
-self-registration) — then auto-configures with no separate approval.
-`happyranch assistant` tells the user to run `happyranch assistant init` when
-no assistant config exists.
-
-Register and repair also reconcile the canonical system-contract union into
-both `<workspace>/.agents/skills/` and `<workspace>/.claude/skills/`. The
-runtime-global assistant has no repository or org custom-skill context, so the
-exact set is `dream`, `jobs`, `start-task`, `thread`, `todos`, and
-`workspace-cleanup`. Repeated repair preserves the instruction pair, config,
-knowledge, learnings, logs, and other assistant workspace content. Existing
-corrupt canonical packages and unsafe, non-link, or wrong-target skill entries
-are detected by a read-only preflight before any workspace write. Refusal leaves
-both skill roots, instructions, metadata, knowledge, learnings, logs, and config
-unchanged. A later materializer-only failure removes only links and empty parent
-directories that were absent before that call; bootstrap never reconstructs a
-corrupt package or rewrites/removes pre-existing operator content on refusal.
+System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
+settings, dock and Cmd/Ctrl-K binding are removed. Existing assistant config,
+conversations, workspace files and skill links remain inert and are not cleaned
+or migrated. Provider conversation roles and ordinary org-agent capabilities
+remain supported. The reserved `system_assistant` workspace name stays excluded
+from the org-agent YAML migration, preventing legacy YAML reads or sentinel
+writes. Historical database, audit and token records remain readable.
 
 entry keyed by the profile name before launch (THR-107 seq155). Custom-adapter
 profiles (``command_adapter_id: custom-adapter:<id>``) are an exception — they
@@ -635,9 +607,9 @@ The workspace ``agent.yaml`` file is **no longer read or written** by any
 org-agent path. A one-shot startup migration (``migrate_agent_yaml_to_frontmatter``,
 idempotent, runs on every daemon start) copies any residual ``agent.yaml``
 values into their owning ``.md`` exactly once, then deletes ``agent.yaml`` and
-writes the ``.agent_yaml_consumed`` sentinel. The system assistant (``runtime/system_assistant.py``) is a
-**separate subsystem** and writes its own ``agent.yaml`` directly — it has no
-``org/agents/`` file and is unaffected.
+writes the ``.agent_yaml_consumed`` sentinel. The reserved legacy name
+``system_assistant`` is excluded before any YAML read or sentinel write.
+Retired assistant workspaces remain inert; startup never repairs or consumes them.
 
 See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
 `docs/agent-guides/agent-executors-and-permissions.md` (executor surface).
@@ -819,6 +791,35 @@ fallback to the fresh `daemon.port` file.
 
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
+### Task-scoped audit index installation (THR-278)
+
+`Database` uses its existing connection and initialization path to install one
+nonunique, nonpartial `idx_audit_log_task_id ON audit_log(task_id)` after the
+audit table exists. It applies to fresh and existing databases and is idempotent
+on reopen. It preserves historical rows, raw scopes, payload bytes, IDs and
+writer transaction boundaries; it adds no `task_results` index.
+
+For a separately authorized operator, install the reviewed source using the
+deployment procedure for that runtime, with its locked dependencies and
+compatible binaries. Before the ordinary restart, drain active consumers and
+take the normal consistent database backup. Use `scripts/daemon.sh start` and
+`scripts/daemon.sh status` under that operational authorization; the existing
+startup initializer installs the index. No standalone live SQL repair is needed.
+Verify the installed source revision, normal health/readiness and each org's
+ready/fenced receipt separately. With a read-only SQLite inspection, verify the
+exact index SQL, `PRAGMA index_list('audit_log')` nonunique/nonpartial flags and
+`PRAGMA index_info('idx_audit_log_task_id')` single `task_id` key; the unchanged
+task-scoped query should report `SEARCH audit_log USING INDEX
+idx_audit_log_task_id` without a temporary ORDER BY tree. Read back retained
+audit IDs/raw scopes and actual decoded results. Measure live startup after
+installation before claiming readiness within the default 30 seconds.
+
+Rollback uses a reviewed compatible release that understands the complete
+indexed schema and preserves the index/history. A preceding reader whose v1
+reference lacks the index can refuse full-schema comparison; do not claim it
+is downgrade compatible, drop the index live, or rewrite failed attempt residue.
+Merged source alone proves neither installed schema nor live settings repair.
+
 ## Running Tests
 
 For where new test files belong, see the forward-only
@@ -835,51 +836,62 @@ PASS. Preserve test sources, selections and coverage definitions. Web,
 canonical validation and integration jobs retain their own existing contracts;
 no hook bypass is authorized. Existing historical workflow reruns and old
 checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after a new founder verdict releases
-the stop instruction, through normal review and merge of source restoration for
-both the ordinary unit/wrapper pause and the separate focused-prerequisite guard
-and provenance. Reverting the TASK-10169 pause commit (`22af7c72`) alone does not
-restore the added focused prerequisites: their fixed false branch and suspended
-provenance must also be restored in the reviewed change after the new verdict.
-The ordinary commands below describe the restored behavior.
-
-The bounded THR289 seq33/seq31 release covers only PR1010's literal 13-node,
-29-case UNIT acceptance through the existing extracted manual runner. It admits
-`refs/heads/task/TASK-10008` only with the exact clean `GITHUB_SHA`, candidate
-Python3.14 and literal reviewed-integration48fb/accepted-main4cc1 merge parents,
-in that order, preserving original retained29e2 ancestry. The first parent has
-independent unpublished STATIC CONTROL approval, not final published-head FULL
-approval; renew independent control review for the new composition before
-publication or execution. It then uses the
-existing disposable environment, frozen/no-sync dependencies, serial `-n 0`,
-300-second child/360-second native-job bounds and complete stream/hash/exit and
-cleanup provenance. Independent control review precedes execution. It exits
-before broad `all` and G follow-ons; ordinary unit/wrapper, historical SIX and
-fixed G suspension stay intact. Other refs retain the existing default path.
-
-For PR1010 only, Founder THR289 seq45 approving seq44 and seq40–41 permits
-independently audited exact finite verification instead of a fresh
-`scripts/local_ci.sh all` for local verification and publication. Authenticate
-the complete immutable candidate through supported transport and obtain
-independent changed-control audit before publication or execution. Normally push
-retained `task/TASK-10008` with hooks and without force while canonical maker
-completion remains pending, execute the exact 13-definition/29-case command
-through the existing reviewed isolated driver, then report canonical maker
-completion with actual command/head/tree/source/tool/stream/hash/exit evidence.
-Omit success-only `local_ci` unless actual `all` exited0; finite and historical
-receipts never belong there. Preparation and initial audit are not final
-APPROVE/PASS, and publication is not acceptance. Renew independent FULL
-published-head review, complete actual behavioral QA including browser/CLI,
-applicable CI with the actual selected hosted Codex callback, guarded manager
-merge and post-main gates. This changes no receipt schema, hook or continuing
-ordinary-unit/SIX/G suspension. See the PR1010 exception in `docs/local-ci.md`.
+launch the unit suite. Restore execution only after founder release of the
+stop instruction, by reverting the TASK-10169 pause commit through normal
+review and merge. The closed PR1011 finite entry below leaves ordinary Python,
+G and SIX suspended. The ordinary commands below describe the restored behavior.
 
 The manual `local-ci-all` workflow step invokes the fixed
-`uv run python scripts/nightly_local_ci_all.py` entry from the checkout root.
+`uv run python scripts/nightly_local_ci_all.py` entry on ordinary refs. B2 uses
+`uv run --frozen --no-sync python scripts/nightly_local_ci_all.py` only for
+`t-benze/happyranch` + `workflow_dispatch` + `refs/heads/task/TASK-10034`.
 Its G follow-on retains the fixed unit-suspension guard and zero-child receipt;
 source provenance authenticates both this script and the workflow YAML.
 Source-copy keepers read the script from their own archived checkout. See
 [Local CI](../local-ci.md) for the retained dormant plan and source controls.
+
+**PR1011 finite source/control boundary (THR278 seq40/49/72).** ROOT TASK-10330
+owns publication/dispatch on the retained ref, after exact accepted helper
+release, independent native exact-commit/tree/full-source-mode control APPROVE
+and supported task/session/result authentication and manager acceptance.
+Serialization continues THROUGH platform event creation; uncontrolled writers,
+missing/capped/stale review or changed commit prevent dispatch. Hosted SHA and
+checkout equality verify consistency only; they do not authenticate review.
+No new GitHub receipt, circular hash, selector/input, credential or lock service
+is introduced. The manager cross-checks actual run/head/attempt/full artifacts
+against that accepted binding, preserving any mismatch/possible spend.
+
+The closed driver explicitly validates repository/event/ref, platform/fetched
+retained HEAD, full tracked bytes/Git modes/symlinks, index/all nonignored
+untracked files and effective Python3.14/uv/node/npm/npx (Node24), then rechecks
+source and tools before the sole child. It launches exactly
+`uv run --frozen --no-sync pytest tests/ -v -n 4 --basetemp=<fresh-owned-path>`
+in the existing disposable Ubuntu venue. The prior single frozen sync and tool
+pins remain. Committed nonintegration addopts stay; fixed evidence-only
+`PYTEST_ADDOPTS` supplies external JUnit/cache paths. Owned HOME/XDG/cache/TMP,
+executor registry `{}`, port0 and admitted tool links exclude provider/live state.
+The branch exits before ordinary all/G/SIX and triggers zero helper repetitions
+for either `all_only` value. The ordinary global pause remains unchanged.
+
+FIVE socketless helper repetitions and ONE full run are separate finite proofs,
+reported 0/5 and 0/1 before execution, with no reset or exhaustive census claim.
+Actual launch spends on failure; uncertainty retains possible spend, with no
+rerun entitlement. Complete ordered compressed merged child streams, separate
+wrapper stderr, pre-removal JUnit, full source/tool/argv/environment/time/process
+and actual adopted-child waits/reaping evidence are required; wrapper wait or
+scratch absence alone proves no quiescence. Abrupt loss/incomplete evidence is
+inconclusive. Actual wrapper exit is separate; every nonzero wrapper result leaves
+signed child exit unknown, including encoded child signals such as wrapper247.
+Complete zero with empty wrapper stderr still requires all JUnit, source/tool
+postcheck, cleanup and other success gates. Existing 10s TERM/KILL waits,
+150-minute cap,1MiB tail,8MiB segments,
+128MiB member/512MiB archive bounds stay. See Local CI for the precise child-exit
+attribution and conservative cleanup contract. No execution occurs in source-only
+prepublication work. Final independent FULL review/executable QA/current CI/
+actual hosted Codex callback/guarded merge/active exact-merge checks and supported
+deployment/measured restart remain separate. General integration is SKIPPED,
+ordinary paused all proves Web only, reviewer settings are excluded, and historic
+offline timing/current health cannot close startup or promise <30s readiness.
 
 ```bash
 uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)

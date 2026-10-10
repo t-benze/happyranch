@@ -9,7 +9,6 @@
  *
  * Pure prop-driven. The owner computes the in-flight agent list and the shared
  * `nowMs` tick; this component only renders. Reused by the threads transcript
- * and the System Assistant dock (THR-056).
  */
 import type { ReactNode } from 'react';
 import { formatElapsed } from '@/lib/elapsed';
@@ -30,7 +29,6 @@ export function TypingBubble({
   /**
    * Optional generic inline control rendered at the far right of the header
    * row, next to the "replying…" caption. Omitted by most consumers (e.g. the
-   * System Assistant dock) so their layout is unchanged. Note: the threads
    * "Abort reply" control now lives inside the Composer input pill — thread
    * abort is no longer a TypingBubble `trailing` use.
    */
@@ -41,7 +39,6 @@ export function TypingBubble({
    * state and passes an honest caption such as "queued · 4 messages coalesced
    * · messages 19–22" or "replying… 12s · messages 19–22". When omitted the
    * default "replying… <elapsed>" / "queued" caption is used, keeping the
-   * System Assistant dock unchanged.
    */
   caption?: string;
   /**
@@ -61,7 +58,7 @@ export function TypingBubble({
     // Compact inline indicator (a-thread-detail `.replying`): a bold name row
     // with the "replying…" caption + an optional generic trailing control, above
     // a small chat-bubble that holds only the animated dots. No heavy card — the
-    // sender avatar (TurnAvatar / dock) already carries identity beside it.
+    // sender avatar already carries identity beside it.
     <article
       className="min-w-0"
       aria-label={ariaLabel ?? `${agentName} is ${working ? 'replying' : 'queued'}`}

@@ -169,20 +169,10 @@ def test_source_relocation_preserves_hash_but_member_mutation_does_not(tmp_path:
     assert _compute_dir_hash(source) != _compute_dir_hash(relocated)
 
 
-def test_assistant_discovery_uses_stable_source_marker() -> None:
-    from runtime.system_assistant import _KNOWLEDGE_SOURCES, _source_knowledge_root
-
-    root = _source_knowledge_root()
-    assert (root / "runtime/config.py").is_file()
-    assert not (root / "protocol").exists()
-    for source, _target in _KNOWLEDGE_SOURCES:
-        assert not source.startswith("protocol/")
-        assert (root / source).is_file()
 
 
-def test_frozen_release_data_contains_skills_and_assistant_knowledge(tmp_path: Path) -> None:
+def test_frozen_release_data_contains_ordinary_skills(tmp_path: Path) -> None:
     """Evaluate the real packaging recipe without running a native compiler."""
-    from runtime.system_assistant import _KNOWLEDGE_SOURCES
 
     checkout = Path(__file__).resolve().parents[1]
     build_root = tmp_path / "release-source"
@@ -215,8 +205,6 @@ def test_frozen_release_data_contains_skills_and_assistant_knowledge(tmp_path: P
                         shipped[str(Path(destination) / member.relative_to(source))] = member
             else:
                 shipped[str(Path(destination) / source.name)] = source
-        for source_rel, _target in _KNOWLEDGE_SOURCES:
-            assert f"runtime/system_knowledge/{source_rel}" in shipped
         for member in bundled_skills_dir().rglob("*"):
             if member.is_file():
                 assert f"runtime/skills/bundled/{member.relative_to(bundled_skills_dir())}" in shipped

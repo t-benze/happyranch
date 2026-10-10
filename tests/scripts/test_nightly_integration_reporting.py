@@ -15,6 +15,97 @@ WORKFLOW = ROOT / ".github" / "workflows" / "nightly-integration.yml"
 ALL_RUNNER = ROOT / "scripts" / "nightly_local_ci_all.py"
 
 
+@pytest.fixture
+def proc_census():
+    import ast
+    import os
+    from pathlib import PurePosixPath
+    from types import SimpleNamespace
+
+    # Load the shipping body only: the script's top-level launches CI.
+    tree = ast.parse(ALL_RUNNER.read_text(encoding="utf-8"))
+    function = next(node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == "pr1011_descendants")
+    failures = {}
+    reads = []
+    stats = {
+        "201": "201 (healthy worker) " + " ".join(["S", "100", "201", "301", *(["0"] * 15), "9001"]),
+        "202": "202 (owned child) " + " ".join(["Z", "100", "202", "302", *(["0"] * 15), "9002"]),
+        "303": "303 (unrelated) " + " ".join(["S", "999", "303", "403", *(["0"] * 15), "9003"]),
+    }
+
+    def read(path):
+        key = str(path)
+        reads.append(key)
+        if key in failures:
+            raise failures[key]
+        if path.name == "stat":
+            return stats[path.parent.name]
+        if path.name == "cmdline":
+            return b"python\0worker.py\0"
+        assert path.name == "exe"
+        return "/fixture/python"
+
+    class ProcPath(PurePosixPath):
+        def iterdir(self):
+            assert str(self) == "/proc"
+            return iter([self / "201", self / "202", self / "303"])
+
+        def read_text(self):
+            return read(self)
+
+        def read_bytes(self):
+            return read(self)
+
+    namespace = {
+        "pathlib": SimpleNamespace(Path=ProcPath),
+        "os": SimpleNamespace(getpid=lambda: 100, fsdecode=os.fsdecode, readlink=read),
+    }
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(ALL_RUNNER), "exec"), namespace)
+    return namespace["pr1011_descendants"], failures, reads
+
+
+@pytest.mark.parametrize("stage,error_number", [
+    (None, None),
+    ("stat", "ESRCH"), ("stat", "ENOENT"), ("stat", "EACCES"), ("stat", "EIO"),
+    ("cmdline", "ESRCH"), ("cmdline", "ENOENT"), ("cmdline", "EACCES"), ("cmdline", "EIO"),
+    ("exe", "ESRCH"), ("exe", "ENOENT"), ("exe", "EACCES"), ("exe", "EIO"),
+], ids=[
+    "healthy", "stat-esrch", "stat-enoent", "stat-eacces", "stat-eio",
+    "cmdline-esrch", "cmdline-enoent", "cmdline-eacces", "cmdline-eio",
+    "exe-esrch", "exe-enoent", "exe-eacces", "exe-eio",
+])
+def test_pr1011_descendants_classifies_proc_read_errors(proc_census, stage, error_number) -> None:
+    import errno
+
+    census, failures, reads = proc_census
+    if stage is not None:
+        path = f"/proc/{'303' if stage == 'stat' else '202'}/{stage}"
+        error = OSError(getattr(errno, error_number), "fixture proc read", path)
+        failures[path] = error
+    if error_number in ("EACCES", "EIO"):
+        with pytest.raises(OSError) as raised:
+            census()
+        assert raised.value is error
+        assert raised.value.errno == getattr(errno, error_number)
+        assert reads[-1] == path
+    else:
+        expected = [
+            {"pid": 201, "ppid": 100, "state": "S", "pgid": 201, "sid": 301,
+             "start_ticks": 9001, "cmdline": ["python", "worker.py"], "exe": "/fixture/python"},
+            {"pid": 202, "ppid": 100, "state": "Z", "pgid": 202, "sid": 302,
+             "start_ticks": 9002, "cmdline": ["python", "worker.py"], "exe": "/fixture/python"},
+        ]
+        if stage in ("cmdline", "exe"):
+            expected[1]["cmdline"] = []
+            expected[1]["exe"] = None
+        assert census() == expected
+        if stage is not None:
+            assert path in reads
+    if stage == "exe":
+        assert reads.index("/proc/202/cmdline") < reads.index("/proc/202/exe")
+
+
 def test_manual_local_ci_preserves_schedule_only_integration() -> None:
     # GitHub consumes these exact YAML keys and expression bytes. BaseLoader
     # preserves the workflow's `on` key instead of YAML 1.1 boolean coercion.
@@ -40,7 +131,15 @@ def test_manual_local_ci_preserves_schedule_only_integration() -> None:
     assert manual_steps["Set up Node"]["with"]["node-version"] == "24"
     assert manual_steps["Sync dependencies (frozen)"]["run"] == "uv sync --frozen"
     local_all = manual_steps["Run exact local CI all in a clean test environment"]
-    assert local_all["run"] == "uv run python scripts/nightly_local_ci_all.py\n"
+    assert local_all["run"] == (
+        'if [ "$GITHUB_REPOSITORY" = "t-benze/happyranch" ] && '
+        '[ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && '
+        '[ "$GITHUB_REF" = "refs/heads/task/TASK-10034" ]; then\n'
+        '  uv run --frozen --no-sync python scripts/nightly_local_ci_all.py\n'
+        'else\n'
+        '  uv run python scripts/nightly_local_ci_all.py\n'
+        'fi\n'
+    )
     assert local_all["env"]["ALL_ONLY"] == "${{ inputs.all_only }}"
     # Receipt production moved out of the workflow scalar. Inspect its actual
     # owner without importing/executing it; Python keeper proof stays suspended.
@@ -314,7 +413,15 @@ def test_nightly_workflow_all_only_selection(event, all_only, expected_integrati
     step = next(step for step in document['jobs']['local-ci-all']['steps'] if step.get('name') == 'Run exact local CI all in a clean test environment')
     assert step['env']['ALL_ONLY'] == '${{ inputs.all_only }}'
     assert document['jobs']['local-ci-all']['if'] == "${{ github.event_name == 'workflow_dispatch' }}"
-    assert step['run'] == 'uv run python scripts/nightly_local_ci_all.py\n'
+    assert step['run'] == (
+        'if [ "$GITHUB_REPOSITORY" = "t-benze/happyranch" ] && '
+        '[ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && '
+        '[ "$GITHUB_REF" = "refs/heads/task/TASK-10034" ]; then\n'
+        '  uv run --frozen --no-sync python scripts/nightly_local_ci_all.py\n'
+        'else\n'
+        '  uv run python scripts/nightly_local_ci_all.py\n'
+        'fi\n'
+    )
     assert all(len(actual_step['run']) < 21000
                for actual_job in document['jobs'].values()
                for actual_step in actual_job['steps'] if 'run' in actual_step)
