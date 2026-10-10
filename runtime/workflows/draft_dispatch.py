@@ -171,6 +171,8 @@ class WorkflowDraftDispatcher:
         if orch._host_supervisor is None or orch._main_loop is None:
             return
         try:
+            if getattr(self.db, "_task_pause_store", None) is not None:
+                return self._dispatch_pause_owned(task_id)
             claim = self._on_loop(self.claim(task_id))
             if claim is None:
                 return
@@ -193,6 +195,98 @@ class WorkflowDraftDispatcher:
         except DraftOwnershipError:
             # Ineligibility is a durable queued intent, not a fabricated run.
             return
+
+    def _dispatch_pause_owned(self, task_id: str) -> None:
+        """Prepare a queued intent; final host arbitration owns every mutation."""
+        from runtime.orchestrator.task_pause import TaskInvocation, DeferredRootPause, _invocation
+        from runtime.infrastructure.task_pause_controls import PauseControlError
+        with self._live_lock:
+            if task_id in self._live:
+                return
+        with self.db._lock:
+            intent = self._intent(self.db._conn, task_id)
+            if intent["state"] != "queued":
+                return
+            key = intent["host_execution_key"]
+        task = self.db.get_task(task_id)
+        invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
+                                    self.org.orchestrator._build_session_id(), owner="draft")
+        invocation.draft_request_key = key
+        try:
+            invocation.prepare()
+        except PauseControlError as exc:
+            if exc.detail["code"] == "root_paused":
+                return
+            raise
+        except DeferredRootPause:
+            return
+        token = _invocation.set(invocation)
+        try:
+            self.org.orchestrator._run_agent(task_id, task.assigned_agent, task.brief)
+        except DeferredRootPause:
+            invocation.close()
+        except BaseException:
+            if invocation.admitted:
+                invocation.phase("unknown")
+            else:
+                invocation.close()
+            raise
+        else:
+            # A terminal uncertain intent is retained as the authoritative drain
+            # blocker; it must never be retried through ordinary task admission.
+            invocation.close()
+        finally:
+            from runtime.orchestrator.task_pause import release_live
+            release_live(invocation)
+            _invocation.reset(token)
+            with self._live_lock:
+                self._live.pop(task_id, None)
+            self.reconcile(task_id)
+
+    async def _commit_pause_launch(self, invocation: Any, ctx: Any) -> bool:
+        # Capture every external read before synchronous ownership. Async locks
+        # are acquired before entering the original synchronous fence interval;
+        # no synchronous lock/lease crosses an event-loop wait.
+        capture = self.org.workflow_authority.capture_admission()
+        active_sessions = tuple(self.org.sessions.iter_active())
+        with self._live_lock:
+            if invocation.task.id in self._live:
+                raise DraftOwnershipError("workflow_claim_unavailable")
+        async with self.org.workflow_authority._async_writer_lock:
+            async with self.org.db_lock:
+                authority = self.org.workflow_authority
+                with authority._admission_ownership(capture):
+                    invocation.draft_capture = capture
+                    invocation.draft_sessions = active_sessions
+                    committed = invocation._commit_local(ctx)
+        if committed:
+            with self._live_lock:
+                if invocation.task.id in self._live:
+                    raise DraftOwnershipError("workflow_claim_stale")
+                self._live[invocation.task.id] = (invocation.draft_claim, invocation.session_id, None)
+        return committed
+
+    def _claim_launch_uncommitted(self, invocation: Any) -> None:
+        """Reuse the original intent checks/events in the final task writer."""
+        conn = self.db._conn
+        capture = invocation.draft_capture
+        self.org.workflow_authority._validate_admission_uncommitted(conn, capture)
+        intent = self._intent(conn, invocation.task.id)
+        if (intent["state"] != "queued" or intent["host_launch_started"]
+                or intent["assigned_principal"] != invocation.agent
+                or intent["host_execution_key"] != invocation.draft_request_key):
+            raise DraftOwnershipError("workflow_claim_stale")
+        self._eligible(conn, intent, capture, invocation.draft_sessions)
+        claim = uuid.uuid4().hex
+        self._event(conn, intent, "claimed", changes={"state": "claimed", "claim_token": claim,
+                                                    "claim_owner": "workflow_dispatcher"})
+        intent = self._intent(conn, invocation.task.id)
+        self._event(conn, intent, "launch_reserved", changes={"host_launch_started": 1,
+                                                              "session_id": invocation.session_id})
+        conn.execute("UPDATE tasks SET status='in_progress',updated_at=? WHERE id=?",
+                     (datetime.now(timezone.utc).isoformat(), invocation.task.id))
+        validate_workflow_schema(conn, expected_org_slug=self.org.slug)
+        invocation.draft_claim = claim
 
     def notify_queued(self, task_id: str, queue: Any) -> None:
         """Rediscover eligible durable work on the periodic daemon sweep.
@@ -222,6 +316,13 @@ class WorkflowDraftDispatcher:
                         or intent["host_execution_id"] is not None
                         or intent["final_result_id"] is not None):
                     return
+                store = getattr(self.db, "_task_pause_store", None)
+                if store is not None:
+                    from runtime.infrastructure.task_pause_controls import PauseControlError
+                    try:
+                        store.held_uncommitted(task_id)
+                    except PauseControlError:
+                        return
                 self._eligible(conn, intent, capture, active_sessions)
         except (DraftOwnershipError, WorkflowActivationError,
                 WorkflowAuthorityError, ProfileCoordinatorError):

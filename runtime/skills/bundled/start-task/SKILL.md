@@ -448,3 +448,8 @@ executor-specific effects — Claude applies a new `allow_rules` entry on the ne
 session, opencode stays inert until a bootstrap-forcing refresh, and Codex/Pi
 are not covered by that rail — are documented in the **manage-agent** skill and
 `docs/agent-guides/agent-executors-and-permissions.md`.
+
+
+## Root task Pause outcomes
+
+A root Pause holds future task execution, not your already running callback. Complete truthful progress/completion for your original task/session and preserve real job evidence. A held-root deferred invocation is not an execution failure, and Resume grants no new session, step, budget or permission. Only the server-captured ordinary-purpose actual running session (including a normal v2-admitted manager session) may auto-run its already-authorized unreviewed jobs while held; recovery sessions retain their existing purpose restrictions.

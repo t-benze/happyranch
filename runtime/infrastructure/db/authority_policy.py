@@ -816,47 +816,54 @@ class AuthorityPolicyMixin:
         if not isinstance(binding, AuthorityPolicyV2SessionBinding):
             binding = AuthorityPolicyV2SessionBinding.model_validate(binding)
         with self._authority_write_transaction():
-            self._authenticate_v2_session_binding_uncommitted(binding)
-            existing = self._conn.execute(
-                "SELECT * FROM authority_policy_v2_session_bindings "
-                "WHERE root_task_id=? AND manager_agent=? AND manager_session_id=?",
-                (binding.root_task_id, binding.manager_agent, binding.manager_session_id),
-            ).fetchone()
-            if existing is not None:
-                prior = self._authority_policy_v2_session_binding_from_row(existing)
-                if prior.binding_id != binding.binding_id:
-                    raise ValueError(
-                        "v2 session binding conflicts with an existing binding"
-                    )
-                return prior
-            legacy_rows = self._legacy_session_binding_rows_uncommitted(
-                binding.root_task_id, binding.manager_agent, binding.manager_session_id
-            )
-            if legacy_rows:
+            return self._bind_authority_policy_v2_session_uncommitted(binding)
+
+    def _bind_authority_policy_v2_session_uncommitted(
+        self, binding: AuthorityPolicyV2SessionBinding,
+    ) -> AuthorityPolicyV2SessionBinding:
+        if not self._conn.in_transaction:
+            raise RuntimeError("binding composition requires a writer transaction")
+        self._authenticate_v2_session_binding_uncommitted(binding)
+        existing = self._conn.execute(
+            "SELECT * FROM authority_policy_v2_session_bindings "
+            "WHERE root_task_id=? AND manager_agent=? AND manager_session_id=?",
+            (binding.root_task_id, binding.manager_agent, binding.manager_session_id),
+        ).fetchone()
+        if existing is not None:
+            prior = self._authority_policy_v2_session_binding_from_row(existing)
+            if prior.binding_id != binding.binding_id:
                 raise ValueError(
-                    "v2 session binding conflicts with a legacy session binding"
+                    "v2 session binding conflicts with an existing binding"
                 )
-            snapshot = binding.model_dump(mode="json")
-            self._conn.execute(
-                """INSERT INTO authority_policy_v2_session_bindings
-                   (binding_id,team,root_task_id,manager_agent,manager_session_id,
-                    selector_id,activation_epoch,release_id,policy_version,policy_digest,
-                    activation_id,contract_id,contract_version,contract_digest,
-                    provider_id,executor_kind,model_id,canonical_payload_json,created_at)
-                   VALUES (:binding_id,:team,:root_task_id,:manager_agent,
-                           :manager_session_id,:selector_id,:activation_epoch,:release_id,
-                           :policy_version,:policy_digest,:activation_id,:contract_id,
-                           :contract_version,:contract_digest,:provider_id,:executor_kind,
-                           :model_id,:canonical_payload_json,:created_at)""",
-                {
-                    **snapshot,
-                    "binding_id": binding.binding_id,
-                    "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
-                        snapshot
-                    ).decode("utf-8"),
-                },
+            return prior
+        legacy_rows = self._legacy_session_binding_rows_uncommitted(
+            binding.root_task_id, binding.manager_agent, binding.manager_session_id
+        )
+        if legacy_rows:
+            raise ValueError(
+                "v2 session binding conflicts with a legacy session binding"
             )
-            return binding
+        snapshot = binding.model_dump(mode="json")
+        self._conn.execute(
+            """INSERT INTO authority_policy_v2_session_bindings
+               (binding_id,team,root_task_id,manager_agent,manager_session_id,
+                selector_id,activation_epoch,release_id,policy_version,policy_digest,
+                activation_id,contract_id,contract_version,contract_digest,
+                provider_id,executor_kind,model_id,canonical_payload_json,created_at)
+               VALUES (:binding_id,:team,:root_task_id,:manager_agent,
+                       :manager_session_id,:selector_id,:activation_epoch,:release_id,
+                       :policy_version,:policy_digest,:activation_id,:contract_id,
+                       :contract_version,:contract_digest,:provider_id,:executor_kind,
+                       :model_id,:canonical_payload_json,:created_at)""",
+            {
+                **snapshot,
+                "binding_id": binding.binding_id,
+                "canonical_payload_json": authority_policy_v2_canonical_json_bytes(
+                    snapshot
+                ).decode("utf-8"),
+            },
+        )
+        return binding
 
     def _legacy_session_binding_rows_uncommitted(
         self, task_id: str, agent_name: str, session_id: str
@@ -894,45 +901,56 @@ class AuthorityPolicyMixin:
         conflicting v2 binding for the session refuses without partial writes.
         """
         with self._authority_write_transaction():
-            v2 = self.get_authority_policy_v2_session_binding(
-                root_task_id=task_id, manager_agent=agent_name,
-                manager_session_id=session_id,
+            return self._bind_authority_policy_legacy_session_uncommitted(
+                task_id=task_id, agent_name=agent_name, session_id=session_id,
+                legacy_payload=legacy_payload, selector_payload=selector_payload,
             )
-            if v2 is not None:
-                raise ValueError(
-                    "legacy session binding conflicts with a v2 session binding"
+
+    def _bind_authority_policy_legacy_session_uncommitted(
+        self, *, task_id: str, agent_name: str, session_id: str,
+        legacy_payload: dict, selector_payload: dict | None,
+    ) -> None:
+        if not self._conn.in_transaction:
+            raise RuntimeError("binding composition requires a writer transaction")
+        v2 = self.get_authority_policy_v2_session_binding(
+            root_task_id=task_id, manager_agent=agent_name,
+            manager_session_id=session_id,
+        )
+        if v2 is not None:
+            raise ValueError(
+                "legacy session binding conflicts with a v2 session binding"
+            )
+        legacy_rows = self._legacy_session_binding_rows_uncommitted(
+            task_id, agent_name, session_id
+        )
+        selector_rows = self._selector_session_binding_rows_uncommitted(
+            task_id, agent_name, session_id
+        )
+        if legacy_rows or selector_rows:
+            selector_ok = (
+                (selector_payload is None and not selector_rows)
+                or (
+                    selector_payload is not None
+                    and len(selector_rows) == 1
+                    and selector_rows[0].get("payload") == selector_payload
                 )
-            legacy_rows = self._legacy_session_binding_rows_uncommitted(
-                task_id, agent_name, session_id
             )
-            selector_rows = self._selector_session_binding_rows_uncommitted(
-                task_id, agent_name, session_id
-            )
-            if legacy_rows or selector_rows:
-                selector_ok = (
-                    (selector_payload is None and not selector_rows)
-                    or (
-                        selector_payload is not None
-                        and len(selector_rows) == 1
-                        and selector_rows[0].get("payload") == selector_payload
-                    )
-                )
-                if (
-                    len(legacy_rows) != 1
-                    or legacy_rows[0].get("payload") != legacy_payload
-                    or not selector_ok
-                ):
-                    raise ValueError("session policy binding is ambiguous")
-                return
+            if (
+                len(legacy_rows) != 1
+                or legacy_rows[0].get("payload") != legacy_payload
+                or not selector_ok
+            ):
+                raise ValueError("session policy binding is ambiguous")
+            return
+        self.insert_audit_log_uncommitted(
+            task_id, agent_name,
+            _AUTHORITY_POLICY_SESSION_BINDING_ACTION, legacy_payload,
+        )
+        if selector_payload is not None:
             self.insert_audit_log_uncommitted(
                 task_id, agent_name,
-                _AUTHORITY_POLICY_SESSION_BINDING_ACTION, legacy_payload,
+                _AUTHORITY_POLICY_SELECTOR_SESSION_BINDING_ACTION, selector_payload,
             )
-            if selector_payload is not None:
-                self.insert_audit_log_uncommitted(
-                    task_id, agent_name,
-                    _AUTHORITY_POLICY_SELECTOR_SESSION_BINDING_ACTION, selector_payload,
-                )
 
     def _authority_policy_selector_from_row(self, row) -> AuthorityPolicySelector:
         try:

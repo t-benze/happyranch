@@ -857,6 +857,11 @@ class Orchestrator:
         # A recovery has a new daemon invocation identity.  The provider's
         # opaque conversation identity is deliberately passed separately.
         session_id = runtime_session_id or self._build_session_id()
+        from runtime.orchestrator.task_pause import current_invocation
+        pause_invocation = current_invocation()
+        if pause_invocation is not None:
+            session_id = pause_invocation.session_id
+
         self._observe_memory_collection(
             "identity", session_id=session_id, executor=provider, model=model_name,
             parent_task_id=task.parent_task_id if task is not None else None,
@@ -951,6 +956,9 @@ class Orchestrator:
         def _recovery_launch_validator() -> None:
             """Fence recovery ownership/budget at its actual launch seam."""
             if recovery:
+                if pause_invocation is not None and not pause_invocation.admitted:
+                    pause_invocation.recovery_prelaunch()
+                    return
                 if recovery_deadline_monotonic is not None and time.monotonic() >= recovery_deadline_monotonic:
                     raise RuntimeError("completion recovery live budget expired")
                 if not self._db.task_completion_recovery_launch_allowed(
@@ -1104,7 +1112,7 @@ class Orchestrator:
                 root_task_id=task_id, manager_session_id=session_id,
             ) if policy_snapshot is not None else ""
         )
-        if policy_team == team:
+        if policy_team == team and pause_invocation is None:
             persist_session_policy_binding(
                 db=self._db, task_id=task_id, session_id=session_id,
                 agent_name=agent_name, snapshot=policy_snapshot,
@@ -1125,87 +1133,179 @@ class Orchestrator:
             active_policy_section=(f"\n{active_policy_section}" if active_policy_section else ""),
         )
 
-        # Publish the durable invocation fence before exposing this generation
-        # to callback routes.  A route can therefore never observe a tracker
-        # generation that has no matching tasks.current_session_id yet.
-        if recovery:
-            publish = lambda: self._db.publish_task_completion_recovery_binding(
-                task_id=task_id, agent=agent_name,
-                # Provider conversation identity is not the daemon's
-                # invocation identity.  The durable claim compares the latter.
-                origin_session_id=origin_runtime_session_id or "",
-                recovery_session_id=session_id,
-            )
-            published = (
-                self._sessions.publish_recovery_session(
-                    task_id, agent_name, session_id, org_slug=self._slug,
-                    publish=publish, recovery_deadline_monotonic=recovery_deadline_monotonic,
-                ) if self._sessions is not None else publish()
-            )
-            if not published:
-                return ExecutorResult(
-                    success=False, duration_seconds=0, session_id=session_id,
-                    error="completion recovery ownership lost before publication",
-                ), None
-        else:
-            drafts = getattr(self, "_workflow_drafts", None)
-            from runtime.workflows.recovery import classify_task
-            ownership = classify_task(self._db, task_id, org_slug=self._slug)
-            if ownership.kind == "draft" and drafts is not None:
-                drafts.bind_session(task_id, agent_name, session_id)
-            elif ownership.kind != "legacy":
-                raise ValueError("workflow_reconciliation_required")
+        if pause_invocation is None:
+            # Publish the durable invocation fence before exposing this generation
+            # to callback routes.  A route can therefore never observe a tracker
+            # generation that has no matching tasks.current_session_id yet.
+            if recovery:
+                publish = lambda: self._db.publish_task_completion_recovery_binding(
+                    task_id=task_id, agent=agent_name,
+                    # Provider conversation identity is not the daemon's
+                    # invocation identity.  The durable claim compares the latter.
+                    origin_session_id=origin_runtime_session_id or "",
+                    recovery_session_id=session_id,
+                )
+                published = (
+                    self._sessions.publish_recovery_session(
+                        task_id, agent_name, session_id, org_slug=self._slug,
+                        publish=publish, recovery_deadline_monotonic=recovery_deadline_monotonic,
+                    ) if self._sessions is not None else publish()
+                )
+                if not published:
+                    return ExecutorResult(
+                        success=False, duration_seconds=0, session_id=session_id,
+                        error="completion recovery ownership lost before publication",
+                    ), None
             else:
-                self._db.update_task(
-                    task_id, assigned_agent=agent_name, current_session_id=session_id,
-                )
-        if self._sessions is not None:
+                drafts = getattr(self, "_workflow_drafts", None)
+                from runtime.workflows.recovery import classify_task
+                ownership = classify_task(self._db, task_id, org_slug=self._slug)
+                if ownership.kind == "draft" and drafts is not None:
+                    drafts.bind_session(task_id, agent_name, session_id)
+                elif ownership.kind != "legacy":
+                    raise ValueError("workflow_reconciliation_required")
+                else:
+                    self._db.update_task(
+                        task_id, assigned_agent=agent_name, current_session_id=session_id,
+                    )
+            if self._sessions is not None:
+                if not recovery:
+                    self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
+            self._observe_memory_collection("binding")
+            if on_session_started is not None:
+                on_session_started(task_id, agent_name, session_id)
+
+            # THR-091 Slice 2: emit exactly one memory_digest_impression audit
+            # event per non-empty digest injected into the agent prompt, AFTER
+            # the trusted session binding exists but BEFORE executor launch.
+            # The impression carries the shown digest's memory IDs plus agent,
+            # task_id, and session_id.  No digest text, titles, or bodies.
+            # Empty/None digest => no impression event.
+            if memory_digest and memory_render is not None:
+                digest_ids = list(memory_render.digest_ids)
+                if digest_ids:
+                    self._audit.log_memory_digest_impression(
+                        agent=agent_name,
+                        task_id=task_id,
+                        session_id=session_id,
+                        digest_ids=digest_ids,
+                        budget=budget,
+                        memory_telemetry_version=1,
+                        pointer_ids=list(memory_render.pointer_ids),
+                        full_body_ids=list(memory_render.full_body_ids),
+                    )
+
+            if recovery:
+                invocation_purpose = "unattributed"
+            elif task is not None and task.task_type == "task":
+                invocation_purpose = "manager_decision"
+            elif task is not None and task.task_type == "subtask":
+                invocation_purpose = "worker_execution"
+            else:
+                invocation_purpose = "unattributed"
+            self._audit.log_session_start(
+                task_id,
+                agent_name,
+                str(workspace),
+                session_id=session_id,
+                invocation_purpose=invocation_purpose,
+                executor=provider,
+                model=model_name,
+            )
             if not recovery:
-                self._sessions.set_active(task_id, agent_name, session_id, org_slug=self._slug)
-        self._observe_memory_collection("binding")
-        if on_session_started is not None:
-            on_session_started(task_id, agent_name, session_id)
+                self._db.update_task(task_id, assigned_agent=agent_name)
 
-        # THR-091 Slice 2: emit exactly one memory_digest_impression audit
-        # event per non-empty digest injected into the agent prompt, AFTER
-        # the trusted session binding exists but BEFORE executor launch.
-        # The impression carries the shown digest's memory IDs plus agent,
-        # task_id, and session_id.  No digest text, titles, or bodies.
-        # Empty/None digest => no impression event.
-        if memory_digest and memory_render is not None:
-            digest_ids = list(memory_render.digest_ids)
-            if digest_ids:
-                self._audit.log_memory_digest_impression(
-                    agent=agent_name,
-                    task_id=task_id,
-                    session_id=session_id,
-                    digest_ids=digest_ids,
-                    budget=budget,
-                    memory_telemetry_version=1,
-                    pointer_ids=list(memory_render.pointer_ids),
-                    full_body_ids=list(memory_render.full_body_ids),
+        else:
+            from runtime.orchestrator.active_authority_policy import _persist_session_policy_binding_uncommitted
+
+            def _admission_effects() -> None:
+                if policy_team == team:
+                    _persist_session_policy_binding_uncommitted(
+                        db=self._db, task_id=task_id, session_id=session_id,
+                        agent_name=agent_name, snapshot=policy_snapshot,
+                        provider_id=provider, executor_kind=provider,
+                        model_id=model_name or "default",
+                    )
+                purpose = ("unattributed" if recovery else "manager_decision" if task.task_type == "task"
+                           else "worker_execution" if task.task_type == "subtask" else "unattributed")
+                self._db.insert_audit_log_uncommitted(
+                    task_id, agent_name, "session_start",
+                    {"workspace": str(workspace), "session_id": session_id,
+                     "invocation_purpose": purpose, "executor": provider, "model": model_name},
+                )
+                if memory_digest and memory_render is not None and memory_render.digest_ids:
+                    self._db.insert_audit_log_uncommitted(
+                        task_id, agent_name, "memory_digest_impression",
+                        {"agent": agent_name, "session_id": session_id,
+                         "digest_ids": list(memory_render.digest_ids),
+                         "digest_count": len(memory_render.digest_ids), "budget": budget,
+                         "memory_telemetry_version": 1,
+                         "pointer_ids": list(memory_render.pointer_ids),
+                         "full_body_ids": list(memory_render.full_body_ids)},
+                    )
+
+            def _publish_binding() -> None:
+                # commit() owns the existing binding lease. Reacquiring it
+                # through set_active would deadlock; use its original primitive.
+                if self._sessions is not None:
+                    cancelled = self._sessions._set_active_locked(
+                        task_id, agent_name, session_id, org_slug=self._slug, recovery=recovery,
+                    )
+                    if recovery:
+                        with self._sessions._lock:
+                            self._sessions._recovery_deadlines[session_id] = recovery_deadline_monotonic
+                else:
+                    cancelled = None
+                self._observe_memory_collection("binding")
+                if on_session_started is not None:
+                    on_session_started(task_id, agent_name, session_id)
+                return cancelled
+
+            with pause_invocation.store.db._lock:
+                pause_row = pause_invocation.store.row_uncommitted(pause_invocation.store.root_uncommitted(task_id)["id"])
+                cleanup_facts = pause_invocation._entry(pause_row)["context"].get("cleanup")
+            cleanup_done = cleanup_facts is not None
+            cleanup_suffix = "".join(cleanup_facts["suffix_lines"]) if cleanup_done else ""
+
+            def _final_prompt():
+                nonlocal full_prompt, cleanup_done, cleanup_suffix
+                from runtime.orchestrator.run_step import (
+                    _build_agent_prompt, _prepare_workspace_cleanup_reclamation_context,
+                )
+                if pause_invocation.owner in {"ordinary", "v2"} and not cleanup_done:
+                    pause_invocation.phase("action_started")
+                    cleanup_suffix = _prepare_workspace_cleanup_reclamation_context(
+                        self, pause_invocation.task, agent_name,
+                        stale_orchestration_step_count=pause_invocation.task.orchestration_step_count,
+                        claimed_next_step_count=pause_invocation.task.orchestration_step_count + 1,
+                    )
+                    cleanup_done = True
+                    # The suffix contains bounded cleanup facts, never the
+                    # complete prompt or user/provider output.
+                    with pause_invocation.store.writer(task_id) as (_, row):
+                        entry = pause_invocation._entry(row)
+                        entry["context"]["cleanup"] = {"suffix_lines": cleanup_suffix.splitlines(keepends=True)}
+                        entry["phase"] = "possible_launch"
+                        pause_invocation.store.save_journal_uncommitted(row)
+                role = (_build_agent_prompt(self, pause_invocation.task, agent_name) + cleanup_suffix
+                        if pause_invocation.owner in {"ordinary", "v2"} else prompt)
+                if not recovery:
+                    full_prompt = self._build_agent_prompt(
+                        provider, agent_name, task_id, session_id, brief, role,
+                        memory_digest=memory_digest, managed_skills_index=managed_skills_index,
+                        repo_refresh_note=repo_refresh_note, attachments_block=attachments_block,
+                        active_policy_section=(f"\n{active_policy_section}" if active_policy_section else ""),
+                    )
+                return executor.build_launch_spec(
+                    workspace=workspace, prompt=full_prompt, session_id=session_id,
+                    model=model_name, org_slug=self._slug, timeout_seconds=timeout_seconds,
+                    resume_session_id=resume_session_id,
                 )
 
-        if recovery:
-            invocation_purpose = "unattributed"
-        elif task is not None and task.task_type == "task":
-            invocation_purpose = "manager_decision"
-        elif task is not None and task.task_type == "subtask":
-            invocation_purpose = "worker_execution"
-        else:
-            invocation_purpose = "unattributed"
-        self._audit.log_session_start(
-            task_id,
-            agent_name,
-            str(workspace),
-            session_id=session_id,
-            invocation_purpose=invocation_purpose,
-            executor=provider,
-            model=model_name,
-        )
-        if not recovery:
-            self._db.update_task(task_id, assigned_agent=agent_name)
-
+            pause_invocation.admission_effects = _admission_effects
+            pause_invocation.publish_binding = _publish_binding
+            pause_invocation.final_prompt = _final_prompt
+            pause_invocation.prompt_reader = lambda: full_prompt
         # Capture pid into SessionTracker the moment Popen returns so the
         # /cancel route can cancel the subprocess mid-session without racing
         # the set_active() call above. Works for every executor because they
@@ -1216,6 +1316,8 @@ class Orchestrator:
         launch_observation = _memory_collection_invocation.get()
 
         def _on_started(pid: int) -> None:
+            if pause_invocation is not None:
+                pause_invocation.started(pid)
             if self._sessions is not None:
                 self._sessions.set_pid(task_id, agent_name, session_id, pid)
             # THR-079: persist executor OS pid for daemon-restart liveness probe.
@@ -1269,6 +1371,9 @@ class Orchestrator:
             )
         finally:
             reset_task_scratch(scratch_token)
+        if pause_invocation is not None:
+            pause_invocation.phase("unknown" if pause_invocation.unsettled else "result_processing",
+                                   started_at=None, captured_generation=None)
         # Observation follows scratch-context teardown and is intentionally
         # outside completion/session/containment ownership.
         try:
@@ -1431,6 +1536,7 @@ class Orchestrator:
             LaunchResult,
         )
         from runtime.platform.session_backend import RunningHandle
+        from runtime.orchestrator.task_pause import current_invocation
 
         from runtime.workflows.recovery import WorkflowTaskOwnership, classify_task
         task_db = getattr(self, "_db", None)
@@ -1444,6 +1550,16 @@ class Orchestrator:
                                   error="workflow_reconciliation_required")
 
         token = CancellationToken()
+        invocation = current_invocation()
+        if invocation is not None:
+            invocation.cancel_control = token.cancel
+            def _register_committed_control() -> None:
+                if self._sessions is not None:
+                    self._sessions.set_cancel_control(task_id, agent_name, session_id, token.cancel)
+                task = self._db.get_task(task_id)
+                if task is None or task.cancelled_at is not None:
+                    token.cancel()
+            invocation.after_binding = _register_committed_control
         # Opaque cancellation/cleanup control registered BEFORE admission so
         # the cancel route can cancel a queued request (nothing launches) or
         # drive containment teardown for a running one. The PID is registered
@@ -1519,6 +1635,9 @@ class Orchestrator:
                 drafts.reserve_launch(task_id, agent_name, session_id)
 
         def _on_terminal(outcome: Any) -> None:
+            invocation = current_invocation()
+            if invocation is not None:
+                invocation.host_terminal(outcome)
             try:
                 if drafts is not None:
                     drafts.terminal(task_id, agent_name, session_id, outcome, expected_request=host_request)
@@ -1536,9 +1655,12 @@ class Orchestrator:
             # internal 429 retry disabled so the supervisor owns the
             # finish/release/sleep/reacquire lifecycle.
             contained = running.process is not None
+            from runtime.orchestrator.task_pause import current_invocation
+            invocation = current_invocation()
+            actual_prompt = invocation.prompt_reader() if invocation is not None else full_prompt
             result = executor.run(
                 workspace=workspace,
-                prompt=full_prompt,
+                prompt=actual_prompt,
                 session_id=session_id,
                 timeout_seconds=timeout_seconds,
                 on_started=on_started if not contained else None,
@@ -1569,7 +1691,8 @@ class Orchestrator:
         host_request = AdmissionRequest(
             org=self._slug,
             invocation_kind="task",
-            logical_id=(drafts.host_request_key(task_id, agent_name, session_id)
+            logical_id=(current_invocation().draft_request_key if drafts is not None and current_invocation() is not None
+                        else drafts.host_request_key(task_id, agent_name, session_id)
                         if drafts is not None else task_id),
             executor_profile=provider,
             enqueued_at=time.monotonic(),
@@ -1588,7 +1711,8 @@ class Orchestrator:
             # prepare. Ordinary task integrity validation keeps its existing
             # single pre-prepare timing/count.
             final_prelaunch_validator=(
-                _final_prelaunch_validator if recovery or drafts is not None else None
+                current_invocation()
+                or (_final_prelaunch_validator if recovery or drafts is not None else None)
             ),
             on_terminal=_on_terminal,
             # The one-shot Codex completion recovery is one provider

@@ -77,3 +77,8 @@ so a task whose session is alive but silent is immediately visible.
 ## Next
 
 Go to [Your First Task - End to End](../03-first-task-workflow/01-your-first-task-end-to-end.md).
+
+
+## Pause and Resume
+
+After your root task is In Progress, `happyranch pause TASK --org ORG` holds future steps in that actual task tree. A Pending root cannot yet be paused. Already committed work finishes; Pausing shows remaining work or unknown evidence, while Paused requires complete drain evidence. `happyranch resume TASK --org ORG` releases the hold using the current generation; it does not restart a completed session. Controls are CLI/API in the backend unit; browser controls arrive separately.

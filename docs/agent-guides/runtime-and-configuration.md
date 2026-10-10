@@ -964,3 +964,8 @@ under workflow_recovery and blocks drain until genuine containment evidence exis
 Disable fences new admission/prelaunch and preserves ownership of already admitted
 work. No startup deployment, live migration, enable, assignment or restart follows
 from publishing S2 source.
+
+
+## Root task Pause and Resume (THR-292)
+
+The supported single daemon per org owns task_pause_controls installation/complete validation before recovery/admission; fresh org creation initializes the same literal extension. Generic Database and runtime-audit remain pause-free. No new config, dependency or permission switch is introduced. Durable holds/release intent and deferred original owners survive lost notifications. Startup preserves possible-launch/ACTION uncertainty and uses actual existing callback consumers, never consumed-result replay. Complete independent schema references include the pause dimension without weakening F/E/G/H comparisons; v2 raw schema is still observed-only. Rollback requires compatible code, including for an empty extension. Deployment/restart/live migration require their separate operator authority. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).

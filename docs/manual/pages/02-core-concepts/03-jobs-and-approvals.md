@@ -44,3 +44,8 @@ A review-required job is a specific kind of approval: "may I run this command?"
 - Jobs routes: `/orgs/:slug/jobs`, `/orgs/:slug/jobs/:job_id`.
 - Job CLI verbs are under `happyranch jobs ...`.
 - The `review_required` job policy flag holds execution for founder approval.
+
+
+## Pause and Resume
+
+While a task root is held, existing jobs can finish and you can stop/reject jobs. Approve/run waits for Resume. An already-authorized unreviewed job may auto-run only for the ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation, with the same current task, agent and session; queued, retry-waiting, recovery and workflow sessions have no exception. Other automatic submissions can remain Pending. A Pending job is not a failed command, and Resume is not approval for a review-required job.

@@ -360,3 +360,8 @@ to append to a thread remains **post-as-agent** (attributed to you) or
   purely visual. TASK_FOLLOWUP and BOOTSTRAP wakes are never mention-routed.
 - Do NOT share or persist your `invocation_token` outside the current
   subprocess — it's single-use and turn-scoped.
+
+
+## Root task Pause outcomes
+
+Root Pause refuses work-starting Continue/supersede/revisit and thread dispatch(resolves) at the actual origin before mutation/token consumption. Thread Continue remains retired410. Resume does not consume an invocation or invent a successor. A genuine accepted manager supersession retains its separately created NULL-parent unheld root; root holds do not propagate through thread/revisit/supersession history. Existing thread callback/session rules remain.

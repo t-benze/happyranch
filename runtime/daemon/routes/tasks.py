@@ -35,8 +35,9 @@ from runtime.infrastructure.task_attachment_store import (
     resolve_content_type,
     sanitize_display_name,
 )
-from runtime.models import BlockKind, TaskAttachmentRecord, TaskAttachmentRef, TaskRecord, TaskStatus
+from runtime.models import BlockKind, TaskAttachmentRecord, TaskAttachmentRef, TaskRecord, TaskStatus, TaskPauseControlRequest, TaskPauseControlResponse, TaskPauseOverview
 from runtime.orchestrator.escalation_reason import derive_current_escalation_reason
+from runtime.orchestrator.task_pause import assert_origin_unheld, origin_guard
 
 logger = logging.getLogger(__name__)
 
@@ -312,7 +313,7 @@ def list_tasks(
     )
     next_cursor = tasks[-1].id if len(tasks) == limit else None
     return {
-        "tasks": [_task_to_dict(t) for t in tasks],
+        "tasks": [{**_task_to_dict(t), "pause": _pause_projection(org, t.id)} for t in tasks],
         "next_cursor": next_cursor,
     }
 
@@ -346,6 +347,7 @@ def list_roots(
     result_tasks: list[dict] = []
     for t in tasks:
         d = _task_to_dict(t)
+        d["pause"] = _pause_projection(org, t.id)
         d["severity_rollup"] = getattr(t, '_severity_rollup', t.status.value)
         d["direct_revisits"] = revisits_map.get(t.id, [])
         result_tasks.append(d)
@@ -353,6 +355,55 @@ def list_roots(
         "tasks": result_tasks,
         "next_cursor": next_cursor,
     }
+
+
+def _pause_projection(org: OrgState, task_id: str) -> dict:
+    from runtime.infrastructure.task_pause_controls import PauseControlError
+    try:
+        return org.db._task_pause_store.projection(task_id)
+    except PauseControlError as exc:
+        raise HTTPException(status_code=404 if exc.detail["code"] == "unknown_task" else 409,
+                            detail=exc.detail) from exc
+
+
+@router.get("/tasks/pause-overview", response_model=TaskPauseOverview)
+def get_pause_overview(org: OrgDep, limit: int = Query(20, ge=1, le=100),
+                       before: str | None = Query(None, max_length=256)) -> dict:
+    from runtime.infrastructure.task_pause_controls import PauseControlError
+    from runtime.orchestrator.task_pause import pause_overview
+    try:
+        return pause_overview(org, limit=limit, before=before)
+    except PauseControlError as exc:
+        raise HTTPException(status_code=409, detail=exc.detail) from exc
+
+
+async def _control_pause(task_id: str, body: TaskPauseControlRequest,
+                         org: OrgState, *, held: bool) -> dict:
+    from runtime.infrastructure.task_pause_controls import PauseControlError
+    running = frozenset(org.sessions.iter_active())
+    try:
+        async with org.db_lock:
+            changed = org.db._task_pause_store.control(task_id, held=held,
+                expected_generation=body.expected_generation, actor="founder", running=running)
+    except PauseControlError as exc:
+        raise HTTPException(status_code=404 if exc.detail["code"] == "unknown_task" else 409,
+                            detail=exc.detail) from exc
+    # Durable release intent is the recovery backstop. No publication occurs
+    # for duplicates; queueing never grants authority to launch.
+    if changed and not held:
+        from runtime.orchestrator.task_pause import discover_pause_work
+        await discover_pause_work(org, org.orchestrator._queue)
+    return {"changed": changed, "pause": _pause_projection(org, task_id)}
+
+
+@router.post("/tasks/{task_id}/pause", response_model=TaskPauseControlResponse)
+async def pause_task(task_id: str, body: TaskPauseControlRequest, org: OrgDep) -> dict:
+    return await _control_pause(task_id, body, org, held=True)
+
+
+@router.post("/tasks/{task_id}/resume", response_model=TaskPauseControlResponse)
+async def resume_task(task_id: str, body: TaskPauseControlRequest, org: OrgDep) -> dict:
+    return await _control_pause(task_id, body, org, held=False)
 
 
 @router.get("/tasks/{task_id}")
@@ -425,6 +476,7 @@ def get_task(task_id: str, org: OrgDep) -> dict:
         # (session_start / progress) — no schema, no synthetic audits, no
         # background monitor. See runtime/daemon/work_status.py.
         "work_status": derive_work_status(task, audit_log),
+        "pause": _pause_projection(org, task_id),
     }
 
 
@@ -1064,6 +1116,7 @@ async def resolve_escalation_in_process(
     task = org.db.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+    assert_origin_unheld(org, task_id)
     # Path B: an escalated task is status=ESCALATED.
     is_escalated = task.status == TaskStatus.ESCALATED
     if not is_escalated:
@@ -1094,46 +1147,47 @@ async def resolve_escalation_in_process(
                 },
             )
         async with org.db_lock:
-            audit = AuditLogger(org.db)
-            successor_id = org.db.next_task_id()
-            org.db.insert_task(TaskRecord(
-                id=successor_id,
-                brief=successor_brief,
-                team=task.team,
-                assigned_agent=task.assigned_agent,
-                parent_task_id=task.parent_task_id,
-                dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
-            ))
-            note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
-            if trimmed:
-                note_suffix += f" — {trimmed}"
-            # Canonical supersede tail: closes predecessor + revisit family,
-            # wakes parents, emits thread followups (THR-080 #4).
-            # Replaces the old manual _supersede_predecessor_locked + tail.
-            _close_predecessor_family_and_run_tail(
-                org, audit,
-                predecessor=task,
-                successor_root=successor_id,
-                pred_block_kind=pred_block_kind,
-                actor=actor,
-                note_suffix=note_suffix,
-                thread_id=thread_id,
-                close_revisit_family=True,
-            )
-            # Also log escalation_resolved for the audit trail.
-            audit.log_escalation_resolved(
-                task_id=task_id,
-                decision=decision,
-                rationale=rationale,
-                actor=actor,
-                thread_id=thread_id, resolution_path=resolution_path,
-            )
-            # Best-effort: consume any open notification rows not already
-            # consumed by _supersede_predecessor_locked inside the helper.
-            for nrow in org.db.list_open_notifications_for_task(task_id):
-                org.db.consume_escalation_notification(
-                    nrow["feishu_message_id"], consumed_by="superseded",
+            with origin_guard(org, task_id):
+                audit = AuditLogger(org.db)
+                successor_id = org.db.next_task_id()
+                org.db.insert_task(TaskRecord(
+                    id=successor_id,
+                    brief=successor_brief,
+                    team=task.team,
+                    assigned_agent=task.assigned_agent,
+                    parent_task_id=task.parent_task_id,
+                    dispatched_from_thread_id=thread_id or task.dispatched_from_thread_id,
+                ))
+                note_suffix = f"resolved by {actor}" + (f" via thread {thread_id}" if thread_id else "")
+                if trimmed:
+                    note_suffix += f" — {trimmed}"
+                # Canonical supersede tail: closes predecessor + revisit family,
+                # wakes parents, emits thread followups (THR-080 #4).
+                # Replaces the old manual _supersede_predecessor_locked + tail.
+                _close_predecessor_family_and_run_tail(
+                    org, audit,
+                    predecessor=task,
+                    successor_root=successor_id,
+                    pred_block_kind=pred_block_kind,
+                    actor=actor,
+                    note_suffix=note_suffix,
+                    thread_id=thread_id,
+                    close_revisit_family=True,
                 )
+                # Also log escalation_resolved for the audit trail.
+                audit.log_escalation_resolved(
+                    task_id=task_id,
+                    decision=decision,
+                    rationale=rationale,
+                    actor=actor,
+                    thread_id=thread_id, resolution_path=resolution_path,
+                )
+                # Best-effort: consume any open notification rows not already
+                # consumed by _supersede_predecessor_locked inside the helper.
+                for nrow in org.db.list_open_notifications_for_task(task_id):
+                    org.db.consume_escalation_notification(
+                        nrow["feishu_message_id"], consumed_by="superseded",
+                    )
         # Post-tail specifics: kill jobs and enqueue the successor.
         _kill_jobs_for_terminating_task(org.orchestrator, task_id)
         if state.queue is not None:
@@ -1156,18 +1210,19 @@ async def resolve_escalation_in_process(
     verb = "continued"
     resolved_note = f"{actor} {verb}: {trimmed}" if trimmed else f"{actor} {verb}"
     async with org.db_lock:
-        new_status = TaskStatus.PENDING
-        org.db.update_task(task_id, status=new_status, block_kind=None, note=resolved_note)
-        AuditLogger(org.db).log_escalation_resolved(
-            task_id=task_id, decision=decision, rationale=rationale,
-            actor=actor, thread_id=thread_id, resolution_path=resolution_path,
-        )
-        # Best-effort: mark any open notification rows for this task
-        # consumed, so they don't dangle.
-        for nrow in org.db.list_open_notifications_for_task(task_id):
-            org.db.consume_escalation_notification(
-                nrow["feishu_message_id"], consumed_by="cli-fallback",
+        with origin_guard(org, task_id):
+            new_status = TaskStatus.PENDING
+            org.db.update_task(task_id, status=new_status, block_kind=None, note=resolved_note)
+            AuditLogger(org.db).log_escalation_resolved(
+                task_id=task_id, decision=decision, rationale=rationale,
+                actor=actor, thread_id=thread_id, resolution_path=resolution_path,
             )
+            # Best-effort: mark any open notification rows for this task
+            # consumed, so they don't dangle.
+            for nrow in org.db.list_open_notifications_for_task(task_id):
+                org.db.consume_escalation_notification(
+                    nrow["feishu_message_id"], consumed_by="cli-fallback",
+                )
     # Re-enqueue self. The manager's next step sees the rationale via the
     # escalation-resolved prompt header.
     if state.queue is not None:
@@ -1558,6 +1613,7 @@ async def revisit_from_notification(
     if flagged is None:
         raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
+    assert_origin_unheld(org, task_id)
     # Walk to the predecessor root. Defensive bound guards against corrupt cycles.
     try:
         chain = org.db.walk_ancestors(task_id, max_hops=20)
@@ -1609,77 +1665,78 @@ async def revisit_from_notification(
         else predecessor.session_timeout_seconds
     )
     async with org.db_lock:
-        new_id = org.db.next_task_id()
-        # Track family tasks closed during the db lock so tail handling
-        # (parent-wake, thread-followup) can be applied after release.
-        family_closed: list[str] = []
-        org.db.insert_task(TaskRecord(
-            id=new_id,
-            brief=predecessor.brief,
-            team=predecessor.team,
-            assigned_agent=predecessor.assigned_agent,
-            status=TaskStatus.PENDING,
-            parent_task_id=None,
-            revisit_of_task_id=predecessor.id,
-            session_timeout_seconds=new_timeout,
-        ))
-        audit = AuditLogger(org.db)
-        audit.log_revisit_of(
-            task_id=new_id,
-            predecessor_root=predecessor.id,
-            flagged=task_id,
-            cascade=cascade,
-            prior_status=prior_status,
-            founder_note=founder_note,
-            actor=actor,
-        )
-        audit.log_revisit_spawned(
-            predecessor_task_id=predecessor.id, new_root=new_id,
-        )
-        # §3(a) forcing function: an escalated or in_progress(delegated) predecessor is
-        # auto-resolved to the terminal SUPERSEDED — block_kind
-        # cleared, audit citing the new continuation root (the maker-checker
-        # evidence). It is NOT re-enqueued (that would spawn a wasted manager
-        # session); parent-wake is preserved below. Distinct from the founder's
-        # manual `resolve-escalation continue`, which intentionally re-runs work.
-        if prior_status in ("blocked-escalated", "blocked-delegated"):
-            prior_block_kind = (
-                "escalated" if prior_status == "blocked-escalated" else "delegated"
-            )
-            _supersede_predecessor_locked(
-                org, audit,
-                predecessor_id=predecessor.id,
-                successor_root=new_id,
-                prior_block_kind=prior_block_kind,
+        with origin_guard(org, task_id):
+            new_id = org.db.next_task_id()
+            # Track family tasks closed during the db lock so tail handling
+            # (parent-wake, thread-followup) can be applied after release.
+            family_closed: list[str] = []
+            org.db.insert_task(TaskRecord(
+                id=new_id,
+                brief=predecessor.brief,
+                team=predecessor.team,
+                assigned_agent=predecessor.assigned_agent,
+                status=TaskStatus.PENDING,
+                parent_task_id=None,
+                revisit_of_task_id=predecessor.id,
+                session_timeout_seconds=new_timeout,
+            ))
+            audit = AuditLogger(org.db)
+            audit.log_revisit_of(
+                task_id=new_id,
+                predecessor_root=predecessor.id,
+                flagged=task_id,
+                cascade=cascade,
+                prior_status=prior_status,
+                founder_note=founder_note,
                 actor=actor,
-                note_suffix=founder_note,
             )
-            # THR-046 msg127: broader revisit-family closure — also supersede
-            # eligible sibling/ancestor revisits in the same revisit family.
-            for family_task in _collect_eligible_revisit_family(
-                org,
-                explicit_predecessor_id=predecessor.id,
-                successor_root=new_id,
-            ):
-                family_block_kind = _eligible_supersede_block_kind(org, family_task)
+            audit.log_revisit_spawned(
+                predecessor_task_id=predecessor.id, new_root=new_id,
+            )
+            # §3(a) forcing function: an escalated or in_progress(delegated) predecessor is
+            # auto-resolved to the terminal SUPERSEDED — block_kind
+            # cleared, audit citing the new continuation root (the maker-checker
+            # evidence). It is NOT re-enqueued (that would spawn a wasted manager
+            # session); parent-wake is preserved below. Distinct from the founder's
+            # manual `resolve-escalation continue`, which intentionally re-runs work.
+            if prior_status in ("blocked-escalated", "blocked-delegated"):
+                prior_block_kind = (
+                    "escalated" if prior_status == "blocked-escalated" else "delegated"
+                )
                 _supersede_predecessor_locked(
                     org, audit,
-                    predecessor_id=family_task.id,
+                    predecessor_id=predecessor.id,
                     successor_root=new_id,
-                    prior_block_kind=family_block_kind,
+                    prior_block_kind=prior_block_kind,
                     actor=actor,
                     note_suffix=founder_note,
                 )
-                family_closed.append(family_task.id)
-        # When the founder revisits via CLI, any open failure notification row
-        # for this task is implicitly resolved — consume it with cli-fallback
-        # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.
-        if actor == "cli":
-            for nrow in org.db.list_open_notifications_for_task(task_id):
-                if nrow.get("kind") == "failure":
-                    org.db.consume_escalation_notification(
-                        nrow["feishu_message_id"], consumed_by="cli-fallback",
+                # THR-046 msg127: broader revisit-family closure — also supersede
+                # eligible sibling/ancestor revisits in the same revisit family.
+                for family_task in _collect_eligible_revisit_family(
+                    org,
+                    explicit_predecessor_id=predecessor.id,
+                    successor_root=new_id,
+                ):
+                    family_block_kind = _eligible_supersede_block_kind(org, family_task)
+                    _supersede_predecessor_locked(
+                        org, audit,
+                        predecessor_id=family_task.id,
+                        successor_root=new_id,
+                        prior_block_kind=family_block_kind,
+                        actor=actor,
+                        note_suffix=founder_note,
                     )
+                    family_closed.append(family_task.id)
+            # When the founder revisits via CLI, any open failure notification row
+            # for this task is implicitly resolved — consume it with cli-fallback
+            # so it doesn't dangle. Mirrors resolve_escalation_in_process's behavior.
+            if actor == "cli":
+                for nrow in org.db.list_open_notifications_for_task(task_id):
+                    if nrow.get("kind") == "failure":
+                        org.db.consume_escalation_notification(
+                            nrow["feishu_message_id"], consumed_by="cli-fallback",
+                        )
 
     enqueue_task(state, org.slug, new_id)
 
@@ -1826,7 +1883,9 @@ async def cancel_task(
                 cancelled_at=now,
                 completed_at=now,
             )
+            from runtime.orchestrator.task_pause import prepared_cancel_controls
             controls_by_agent = dict(org.sessions.iter_task_cancel_controls(tid))
+            controls_by_agent.update(prepared_cancel_controls(org.db, tid))
             for agent, control in controls_by_agent.items():
                 controls_to_invoke.append((tid, agent, control))
             # THR-207: a wired session's PID is diagnostic/restart evidence

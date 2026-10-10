@@ -1,5 +1,7 @@
 # Task Status Redesign: Unified Async Execution + Structured Blocking
 
+> Pause boundary superseded by [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md). Existing lifecycle, waiting and lineage meanings remain. A separate actual-root hold gates future commitment; committed sessions/results drain, deferred retries retain their owner, and unknown execution is not proof of quiescence. Cancel/stop/reject remain available. This annotation preserves the historical design below.
+
 **Status:** Design approved, ready for implementation plan
 **Date:** 2026-04-19
 **Branch:** `feature/task-status-redesign`

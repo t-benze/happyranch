@@ -129,6 +129,9 @@ def _sweep_on_startup(
         _enqueue_parent_if_waiting,
     )
 
+    if orchestrator is not None:
+        from runtime.orchestrator.task_pause import restore_pause_preparations
+        restore_pause_preparations(orchestrator)
     audit = AuditLogger(db)
 
     import json as _json
@@ -171,6 +174,9 @@ def _sweep_on_startup(
     for task_id in task_ids:
         t = db.get_task(task_id)
         if t is None:
+            continue
+        from runtime.orchestrator.task_pause import pause_deferred_owner
+        if pause_deferred_owner(db, task_id):
             continue
         from runtime.workflows.recovery import recover_owned_task
         if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):

@@ -1,5 +1,7 @@
 # Sub-tasks / Type-Driven Orchestration — Design
 
+> Pause boundary superseded by [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md). Existing lifecycle, waiting and lineage meanings remain. A separate actual-root hold gates future commitment; committed sessions/results drain, deferred retries retain their owner, and unknown execution is not proof of quiescence. Cancel/stop/reject remain available. This annotation preserves the historical design below.
+
 **Date:** 2026-06-03
 **Status:** Design ratified; ready for implementation plan
 **Origin:** Today the capability to orchestrate a multi-step workstream is welded to `role: manager` — only managers' completion output is parsed as a `NextStep` decision (`run_step.py:299`), only managers get the orchestration prompt, and only managers spawn child tasks. The founder wants orchestration driven by the **task** rather than the **manager role**: any agent that owns a top-level task should be able to spawn sub-tasks, drive their completion, and be woken when each sub-task terminates — without a manager in the loop.

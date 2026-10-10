@@ -70,8 +70,8 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone, timedelta
 from typing import Any, Protocol
 
 from runtime.platform.session_backend import (
@@ -1376,7 +1376,23 @@ class HostSessionSupervisor:
         never break the exactly-once lease release."""
 
         grace = self._policy.cleanup_grace_seconds if grace_seconds is None else grace_seconds
+        task_invocation = final_prelaunch_validator if hasattr(final_prelaunch_validator, "_task_pause_commit") else None
         attempt = 0
+        retry_limit = self._max_retry_attempts
+        retry_schedule = tuple(self._backoff_seconds[i] if i < len(self._backoff_seconds) else 0.0 for i in range(retry_limit))
+        if task_invocation is not None:
+            with task_invocation.store.db._lock:
+                row = task_invocation.store.row_uncommitted(task_invocation.store.root_uncommitted(task_invocation.task.id)["id"])
+                retry = task_invocation._entry(row)["retry"]
+            if retry and retry["boundary"] == "host":
+                attempt = retry["ordinal"]
+                retry_limit, retry_schedule = retry["budget"], tuple(retry["schedule"])
+                age = max(0.0, (datetime.now(timezone.utc) - datetime.fromisoformat(retry["enqueued_at"])).total_seconds())
+                request = replace(request, enqueued_at=self._monotonic() - age, retry_attempt=attempt)
+            elif task_invocation.owner not in {"draft", "recovery"}:
+                age = max(0.0, self._monotonic() - request.enqueued_at) if request.enqueued_at is not None else 0.0
+                task_invocation.retry_attempt(boundary="host", ordinal=0, budget=retry_limit, schedule=retry_schedule,
+                    enqueued_at=(datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat())
         while True:
             lease = self._admission.acquire(request, timeout=timeout)
             if lease is None:
@@ -1416,18 +1432,22 @@ class HostSessionSupervisor:
                 # containment/reconcile/publish and BEFORE lease release.
                 if on_terminal is not None and not (
                     allow_retries and outcome.retry_worthy
-                    and attempt < self._max_retry_attempts
+                    and attempt < retry_limit
                 ):
                     self._invoke_terminal_hook(on_terminal, outcome)
             finally:
                 lease.release()
             if (
                 allow_retries and outcome.retry_worthy
-                and attempt < self._max_retry_attempts
+                and attempt < retry_limit
             ):
                 attempt += 1
                 idx = attempt - 1
-                backoff = self._backoff_seconds[idx] if idx < len(self._backoff_seconds) else 0.0
+                backoff = retry_schedule[idx] if idx < len(retry_schedule) else 0.0
+                if task_invocation is not None:
+                    task_invocation.host_terminal(outcome)
+                    task_invocation.retry_attempt(boundary="host", ordinal=attempt,
+                                                  budget=retry_limit, backoff=backoff, schedule=retry_schedule)
                 if backoff > 0:
                     self._sleep(backoff)
                 request = request.with_retry_attempt(attempt)
@@ -1515,21 +1535,37 @@ class HostSessionSupervisor:
         # replacement/cancellation. This hook deliberately runs after that
         # window, and immediately before the existing atomic commitment. It
         # is opt-in so ordinary callers do not re-run their validators here.
-        if final_prelaunch_validator is not None:
+        task_commit = getattr(final_prelaunch_validator, "_task_pause_commit", None)
+        if task_commit is not None:
+            from runtime.orchestrator.task_pause import DeferredRootPause
             try:
-                final_prelaunch_validator()
-            except Exception as exc:
-                ctx.freeze_terminal(TerminalReason.FAILURE)
-                ctx.set_error(f"final pre-launch validation failed: {exc}")
-                # Keep the actionable validation error; _abandon_pre_launch
-                # intentionally replaces it with the concurrent terminal
-                # winner's generic text for cancellation/shutdown paths.
+                finalized = task_commit(ctx)
+            except DeferredRootPause:
                 self._safe_abandon(self._backend, pending)
+                raise
+            except BaseException:
+                self._safe_abandon(self._backend, pending)
+                raise
+            if finalized is None:
+                self._abandon_pre_launch(ctx, pending, attempt)
                 return self._outcome(request, ctx, attempt)
-        # ── launch commitment: the single atomic gate ──
-        if not ctx.commit_launch():
-            self._abandon_pre_launch(ctx, pending, attempt)
-            return self._outcome(request, ctx, attempt)
+            launch_spec = finalized
+        else:
+            if final_prelaunch_validator is not None:
+                try:
+                    final_prelaunch_validator()
+                except Exception as exc:
+                    ctx.freeze_terminal(TerminalReason.FAILURE)
+                    ctx.set_error(f"final pre-launch validation failed: {exc}")
+                    # Keep the actionable validation error; _abandon_pre_launch
+                    # intentionally replaces it with the concurrent terminal
+                    # winner's generic text for cancellation/shutdown paths.
+                    self._safe_abandon(self._backend, pending)
+                    return self._outcome(request, ctx, attempt)
+            # ── launch commitment: the single atomic gate ──
+            if not ctx.commit_launch():
+                self._abandon_pre_launch(ctx, pending, attempt)
+                return self._outcome(request, ctx, attempt)
         # ── launch ──
         try:
             running = self._backend.launch(pending, launch_spec)

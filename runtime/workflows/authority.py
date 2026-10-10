@@ -1072,13 +1072,12 @@ class WorkflowAuthorityCoordinator:
                 raise
 
     @contextmanager
-    def admission_writer(self, capture: AuthorityAdmissionCapture) -> Iterator[sqlite3.Connection]:
-        """Consume captured bytes under profile→org→SQLite ownership.
+    def _admission_ownership(self, capture: AuthorityAdmissionCapture) -> Iterator[None]:
+        """Own captured profile/publisher fences without a business writer.
 
-        Async consumers acquire their coroutine locks before entering. All
-        discovery/effective profile reads precede this context. The yielded
-        connection is the sole admission transaction; no await or host work
-        may occur until this context exits.
+        Lease acquisition and release each finish their own short transaction.
+        Callers must finish (or roll back) the business writer before leaving;
+        no await, discovery, file read or host operation belongs in this scope.
         """
         coordinator = self._profile_coordinator
         if coordinator is None:
@@ -1091,34 +1090,57 @@ class WorkflowAuthorityCoordinator:
             owner = f"workflow-admission:{uuid.uuid4().hex}"
             self._acquire_lease(owner)
             try:
-                with self._admission_transaction() as conn:
-                    pointer = self._pointer(conn, self.namespace)
-                    if pointer != capture.pointer or self._active_journal(conn, self.namespace) is not None:
-                        raise WorkflowAuthorityError("workflow_activation_authority_stale")
-                    generation, journal_id, digest, state, _fence = pointer
-                    if state != "ready" or journal_id is None or self._cache.get(self.namespace) != (generation, digest):
-                        raise WorkflowAuthorityError("authority_pointer_not_ready")
-                    journal = self._journal(conn, journal_id)
-                    if (journal["state"] != "cache_installed" or journal["generation"] != generation
-                            or journal["snapshot_digest"] != digest
-                            or bytes(journal["snapshot_bytes"]) != capture.ready.snapshot_bytes
-                            or _digest(capture.ready.snapshot_bytes) != digest):
-                        raise WorkflowAuthorityError("authority_pointer_not_ready")
-                    # SELECT-only projection and mirror checks consume captured
-                    # global digests; never call the file-reading readiness or
-                    # effective-profile resolver under these ownership scopes.
-                    org = coordinator.orgs[self._org_slug]
-                    if coordinator._dependency_mirror_snapshot(org) != capture.profile_mirror:
-                        raise WorkflowAuthorityError("workflow_activation_authority_stale")
-                    profiles = self._profile_projection()
-                    if (tuple(sorted(item["profile_name"] for item in profiles)) != capture.profile_names
-                            or profiles != json.loads(capture.ready.snapshot_bytes)["machine_global_profiles"]
-                            or any(dict(capture.profile_digests)[item["profile_name"]] != item["profile_digest"]
-                                   for item in profiles)):
-                        raise WorkflowAuthorityError("workflow_activation_authority_stale")
-                    yield conn
+                yield
             finally:
                 self._release_lease(owner)
+
+    def _validate_admission_uncommitted(
+        self, conn: sqlite3.Connection, capture: AuthorityAdmissionCapture,
+    ) -> None:
+        """Consume captured values under admission ownership and its writer.
+
+        This is the sole final validator, shared by the public admission writer
+        and the private task composition. It neither commits nor takes a lease.
+        """
+        coordinator = self._profile_coordinator
+        pointer = self._pointer(conn, self.namespace)
+        if pointer != capture.pointer or self._active_journal(conn, self.namespace) is not None:
+            raise WorkflowAuthorityError("workflow_activation_authority_stale")
+        generation, journal_id, digest, state, _fence = pointer
+        if state != "ready" or journal_id is None or self._cache.get(self.namespace) != (generation, digest):
+            raise WorkflowAuthorityError("authority_pointer_not_ready")
+        journal = self._journal(conn, journal_id)
+        if (journal["state"] != "cache_installed" or journal["generation"] != generation
+                or journal["snapshot_digest"] != digest
+                or bytes(journal["snapshot_bytes"]) != capture.ready.snapshot_bytes
+                or _digest(capture.ready.snapshot_bytes) != digest):
+            raise WorkflowAuthorityError("authority_pointer_not_ready")
+        # SELECT-only projection and mirror checks consume captured
+        # global digests; never call the file-reading readiness or
+        # effective-profile resolver under these ownership scopes.
+        org = coordinator.orgs[self._org_slug]
+        if coordinator._dependency_mirror_snapshot(org) != capture.profile_mirror:
+            raise WorkflowAuthorityError("workflow_activation_authority_stale")
+        profiles = self._profile_projection()
+        if (tuple(sorted(item["profile_name"] for item in profiles)) != capture.profile_names
+                or profiles != json.loads(capture.ready.snapshot_bytes)["machine_global_profiles"]
+                or any(dict(capture.profile_digests)[item["profile_name"]] != item["profile_digest"]
+                       for item in profiles)):
+            raise WorkflowAuthorityError("workflow_activation_authority_stale")
+
+    @contextmanager
+    def admission_writer(self, capture: AuthorityAdmissionCapture) -> Iterator[sqlite3.Connection]:
+        """Consume captured bytes under the original admission ownership.
+
+        Async consumers acquire their coroutine locks before entering. All
+        discovery/effective profile reads precede this context. The yielded
+        connection is the sole admission transaction; no await or host work
+        may occur until this context exits.
+        """
+        with self._admission_ownership(capture):
+            with self._admission_transaction() as conn:
+                self._validate_admission_uncommitted(conn, capture)
+                yield conn
 
     def recover(self) -> str:
         """Reconcile one interrupted publisher using only durable ownership."""

@@ -2099,3 +2099,12 @@ requested F/E/G installer on its own disposable database; the comparison
 includes every SQL object. A candidate never supplies a baseline, and any
 required reference failure or unrelated object still refuses. This changes
 no observed-only authority-v2 claim rule.
+
+
+## Root task Pause and Resume (THR-292)
+
+Pause gates future execution commitment of the actual root tree, not the lifecycle or accepted-result consumer. Pure preparation precedes the short final admission writer. The existing workflow authority validator is shared by public admission_writer and private draft composition; profile/publisher ownership and short lease transactions precede binding/root/DB/terminal ownership, with rollback before release and no ownership across waits. Final admitted cleanup ACTION runs unlocked under its real scheduler owner; known prompt suffix is retained and interrupted ACTION stays unknown. SAME-owner retry/recovery retains original identity and budgets and is durably rediscovered. Genuine manager supersession keeps its separate NULL-parent unheld successor; a held predecessor does not hold that root. Terminal cleanup refuses uncertain/held execution. Details: [current Pause contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+
+Retained Pause retries admitted through v2 preserve their original tagged generation and authenticate full already-settled proof at rediscovery, adoption and final commitment. Ordinary-purpose running entitlement includes normal v2-admitted managers; workflow document-only and completion-recovery sessions remain excluded. Unheld pending auto-jobs require the original server submission audit and immutable job digest after session settlement. Late genuine callbacks use existing result consumers while held without launching a provider. Interrupted result-processing tails retain unknown tree evidence after producer settlement.
+
+The existing job runner has no descendant-tree quiescence receipt: actual job terminal status still settles waits, while its committed launch journal becomes an unknown drain blocker. Only affirmative failure before runner entry closes a no-launch reservation. No PID absence, terminal row or caught runner exception establishes tree closure.
