@@ -132,7 +132,11 @@ class Controller:
                         FAKE_CLAUDE_PLAN=str(plan), HAPPYRANCH_TEST_PARENT_MANIFEST=str(path),
                         HAPPYRANCH_TEST_STUB_GUARD=str(guard), HAPPYRANCH_TEST_WITNESS_DIR=str(self.root / "witness"))
         self.bindings = {str(p): sha(p) for p in [*binary.iterdir(), plan, Path(str(plan) + ".sha256"), path]}
+        interpreter = Path(self.python).resolve()
+        require(Path(sys.executable).resolve() == interpreter, "controller uses bound interpreter")
+        self.bindings[str(interpreter)] = sha(interpreter)
         self.durable.append(dict(executable_manifest=manifest, wrappers=self.bindings))
+        self.durable.append(dict(python_executable=sys.executable, python_real=str(interpreter), python_version=sys.version))
 
     def validate_bindings(self) -> None:
         for path, digest in self.bindings.items():

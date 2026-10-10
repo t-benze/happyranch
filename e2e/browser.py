@@ -17,6 +17,8 @@ class Browser:
         self.controller = controller
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.launch()
+        from importlib.metadata import version
+        self.controller.durable.append(dict(playwright_version=version("playwright"), chromium_version=self.browser.version))
         self.context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
         self.page = self.context.new_page()
         self.page.set_default_timeout(15000)
