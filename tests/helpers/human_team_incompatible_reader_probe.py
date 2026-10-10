@@ -165,7 +165,12 @@ def main() -> int:
             from runtime.daemon import paths as daemon_paths
             from runtime.daemon.app import create_app
             from runtime.daemon.state import DaemonState
-            state = DaemonState(runtime=None, settings=settings, orgs={args.org: org}, profile_coordinator=profiles)
+            from runtime.runtime import RuntimeDir
+            # Use the genuine existing fixture container. An idle state cannot
+            # serve the selected source's ordinary org routes.
+            container = RuntimeDir.load(root.parent.parent)
+            assert container.root / "orgs" / args.org == root
+            state = DaemonState(runtime=container, settings=settings, orgs={args.org: org}, profile_coordinator=profiles)
             client = TestClient(create_app(state))
             client.headers.update({"Authorization": "Bearer " + daemon_paths.ensure_token()})
             base = "/api/v1/orgs/" + args.org
@@ -211,6 +216,10 @@ def main() -> int:
                 assert _domain(db) == frozen
             finally:
                 client.close()
+                if state.metrics_store is not None:
+                    state.metrics_store.close()
+                if state.direct_connect_authority_store is not None:
+                    state.direct_connect_authority_store.close()
         # Late imports also belong to the selected source; no candidate runtime
         # can silently satisfy a pinned pre-feature control.
         for name, module in tuple(sys.modules.items()):

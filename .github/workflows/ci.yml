@@ -233,14 +233,34 @@ jobs:
           export NO_UPDATE_NOTIFIER=1
           node "$ROSTER_INVOCATION/tools/node_modules/playwright/cli.js" install chromium
           uv run python - <<'PY'
-          import hashlib, json, os, pathlib, subprocess
+          import hashlib, json, os, pathlib, shutil, stat, subprocess
           root = pathlib.Path(os.environ['ROSTER_INVOCATION'])
           tools = root / 'tools'
           core = tools / 'node_modules/playwright-core'
-          node = pathlib.Path(subprocess.check_output(['which', 'node'], text=True).strip()).resolve()
+          selected_node = pathlib.Path(subprocess.check_output(['which', 'node'], text=True).strip()).resolve()
+          node = tools / 'node'
+          shutil.copyfile(selected_node, node)
+          node.chmod(0o700)
           cli = tools / 'node_modules/@playwright/cli/playwright-cli.js'
           browser = pathlib.Path(subprocess.check_output([str(node), '-e', 'console.log(require(process.argv[1]).chromium.executablePath())', str(core)], text=True).strip())
           sha = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+          assert sha(node) == sha(selected_node)
+          origins = {'node': {'selected_source': str(selected_node), 'source_sha256': sha(selected_node),
+                             'owned_copy': str(node), 'copy_sha256': sha(node)}}
+          # npm/Chromium archives retain their published modes despite umask.
+          # Prepare only our regular owned files; preserve bytes and the guard.
+          for name, path in (('cli', cli), ('browser', browser)):
+              info = path.lstat()
+              assert stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_nlink == 1
+              assert path.resolve(strict=True) == path and path.is_relative_to(root)
+              before_hash = sha(path)
+              path.chmod(0o700)
+              assert sha(path) == before_hash
+              origins[name] = {'path': str(path), 'sha256': before_hash,
+                               'original_mode': stat.S_IMODE(info.st_mode), 'prepared_mode': 0o700,
+                               'owner_uid': info.st_uid}
+          (root / 'tool-file-origins.json').write_text(json.dumps(origins, sort_keys=True))
+          print(json.dumps({'tool_file_origins': origins}, sort_keys=True))
           pins = {'@playwright/cli':'0.1.18', 'playwright':'1.63.0-alpha-2026-08-05', 'playwright-core':'1.63.0-alpha-2026-08-05'}
           registry = {name: json.loads(subprocess.check_output(['npm','view',name+'@'+version,'dist.integrity','--json','--fetch-retries=0','--fetch-timeout=15000'], text=True)) for name,version in pins.items()}
           (root / 'registry-integrities.json').write_text(json.dumps(registry, sort_keys=True))
@@ -366,4 +386,5 @@ jobs:
             ${{ env.ROSTER_INVOCATION }}/binding-refusals.json
             ${{ env.ROSTER_INVOCATION }}/browser-binding.json
             ${{ env.ROSTER_INVOCATION }}/registry-integrities.json
+            ${{ env.ROSTER_INVOCATION }}/tool-file-origins.json
             ${{ env.ROSTER_INVOCATION }}/tools/package-lock.json

@@ -74,12 +74,21 @@ W10 installs @playwright/cli **0.1.18**, playwright and playwright-core
 the actual supported Playwright install command places Chromium in its owned
 `browsers`. Registry integrities, the actual transient dependency lock, package
 versions, browser revision, executable paths/hashes/versions and explicit
-browser config are retained. Its closed `browser-binding.json` is validated
+browser config are retained. `tool-file-origins.json` records a byte-identical
+private Node copy and before/after modes for the invocation-owned unpacked
+CLI and Chromium executable, prepared with mode0700 without changing bytes.
+The parent retains its non-group/world-writable file checks. Its closed
+`browser-binding.json` is validated
 before launch; malformed/mismatched descriptors must refuse before pytest.
 Private `node`/`playwright-cli` shims preserve the parent's original closed PATH,
 provider stubs and callback. The selected browser uses the isolated built SPA
 and fixture API; update notification is disabled. No project dependencies,
 global tooling or execution policy changes follow.
+
+C5 positive graph admission binds the actual existing fixture runtime
+container to its selected-source API state. Capture and unchanged-domain/file
+readbacks precede that separate graph setup; negative admission never enters
+it. Portability refusals from generated workspace links remain real failures.
 
 The selected mode retains passing and failing temporary scenario evidence
 before parent teardown, including real screenshots, C5/C7/refusal receipts,
