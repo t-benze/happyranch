@@ -1316,10 +1316,20 @@ def _candidate_console_child(argv: list[str], *, source: Path, env: dict,
         process = subprocess.Popen(argv, cwd=source, env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         receipt.update(pid=process.pid, stage="kernel-identity")
+        child_deadline = min(deadline, time.monotonic() + 5)
         if expected_kernel_argv is not None and sys.platform == "linux":
             proc = Path(f"/proc/{process.pid}")
             actual_executable = (proc / "exe").resolve(strict=True)
-            actual_argv = (proc / "cmdline").read_bytes().decode().rstrip("\0").split("\0")
+            raw_cmdline = (proc / "cmdline").read_bytes()
+            # exec can briefly expose an empty cmdline. Observe the same child
+            # within its existing budget; never accept missing identity data.
+            while not raw_cmdline and process.poll() is None and time.monotonic() < child_deadline:
+                time.sleep(0.001)
+                raw_cmdline = (proc / "cmdline").read_bytes()
+            assert raw_cmdline.endswith(b"\0"), receipt
+            # Remove only the record terminator: --status "" has a real final
+            # empty argument, which rstrip would silently discard.
+            actual_argv = raw_cmdline[:-1].decode().split("\0")
             receipt.update(actual_executable=str(actual_executable), actual_argv=actual_argv)
             assert actual_executable == Path(sys.executable).resolve()
             assert actual_argv == expected_kernel_argv, receipt
@@ -1329,7 +1339,6 @@ def _candidate_console_child(argv: list[str], *, source: Path, env: dict,
             pipe = getattr(process, name)
             os.set_blocking(pipe.fileno(), False)
             selector.register(pipe, selectors.EVENT_READ, name)
-        child_deadline = min(deadline, time.monotonic() + 5)
         while selector.get_map():
             remaining = child_deadline - time.monotonic()
             if remaining <= 0:
