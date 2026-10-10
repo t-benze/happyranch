@@ -250,6 +250,21 @@ export interface TaskRecallNode {
 // Threads
 // ---------------------------------------------------------------------------
 
+export interface ThreadListTotals {
+  open: number;
+  archived: number;
+  all: number;
+  dream_origin: number;
+}
+
+export interface ThreadListPage {
+  threads: ThreadRecord[];
+  totals: ThreadListTotals;
+  has_more: boolean;
+  next_cursor: string | null;
+  sampled_at: string;
+}
+
 export interface ThreadRecord {
   thread_id: string;
   subject: string;

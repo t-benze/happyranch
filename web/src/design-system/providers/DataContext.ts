@@ -26,6 +26,7 @@ import type {
   ThreadDetailResponse,
   ThreadMessagesPage,
   ThreadRecord,
+  ThreadListPage,
 } from '@/lib/api/types';
 import type { threads as threadsApi } from '@/lib/api';
 import type { tasks as tasksApi } from '@/lib/api';
@@ -82,6 +83,13 @@ export interface InfiniteQueryLike<TPage> {
   isFetchingNextPage: boolean;
 }
 
+export interface ThreadListQueryLike extends InfiniteQueryLike<ThreadListPage> {
+  isRefreshing: boolean;
+  isStale: boolean;
+  retry: () => Promise<unknown>;
+  refresh: () => Promise<unknown>;
+}
+
 export interface MutationLike<TArgs, TResult> {
   mutateAsync: (args: TArgs) => Promise<TResult>;
   isPending: boolean;
@@ -119,6 +127,7 @@ export type SetThreadPinArgs = { pinned: boolean };
 export type SetThreadPinResult = Awaited<ReturnType<typeof threadsApi.setThreadPinned>>;
 
 export interface ThreadsApi {
+  useThreadsInfiniteList: (status?: 'open' | 'archived') => ThreadListQueryLike;
   // Reads
   useThreadsList: (
     params?: { status?: string; limit?: number },

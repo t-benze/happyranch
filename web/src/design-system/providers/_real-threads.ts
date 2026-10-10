@@ -9,14 +9,15 @@
  * from `useRealOrgSlug()` (URL via react-router) instead of being passed as
  * an argument — that's how the public hook surface stays provider-agnostic.
  */
-import type { InfiniteData } from '@tanstack/react-query';
+import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import {
   useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  skipToken,
 } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { subscribeSSE, threads as threadsApi } from '@/lib/api';
 import type {
@@ -24,6 +25,7 @@ import type {
   ThreadMessage,
   ThreadMessagesPage,
   ThreadRecord,
+  ThreadListPage,
   ThreadTailEvent,
 } from '@/lib/api/types';
 import type {
@@ -38,6 +40,7 @@ import type {
   SendFollowUpArgs,
   SetThreadPinArgs,
   ThreadsApi,
+  ThreadListQueryLike,
 } from './DataContext';
 
 /**
@@ -65,6 +68,202 @@ function useThreadsList(
     queryFn: () => threadsApi.listThreads(slug, params),
     enabled: !!slug,
   });
+}
+
+interface ThreadPageOwner {
+  users: number;
+  listeners: Set<() => void>;
+  runners: Map<() => void, (kind: 'next' | 'refresh') => Promise<void>>;
+  generation: number;
+  controller: AbortController | null;
+  operation: 'next' | 'refresh' | null;
+  dirty: boolean;
+  failure: 'next' | 'refresh' | null;
+  error: Error | null;
+}
+const threadPageOwners = new WeakMap<QueryClient, Map<string, ThreadPageOwner>>();
+
+/** Shared committed-page ownership for daemon and prototype transports.
+ * Refresh pages stay private until the entire prior depth is replaced. */
+export function useCommittedThreadPages(
+  scope: string,
+  queryKey: readonly unknown[],
+  load: (cursor: string | null, signal: AbortSignal) => Promise<ThreadListPage>,
+  pinKey: readonly unknown[],
+): ThreadListQueryLike {
+  const qc = useQueryClient();
+  const identity = JSON.stringify(queryKey);
+  const key = useMemo(() => JSON.parse(identity) as unknown[], [identity]);
+  const pinIdentity = JSON.stringify(pinKey);
+  const pinnedQueryKey = useMemo(() => JSON.parse(pinIdentity) as unknown[], [pinIdentity]);
+  const currentIdentity = useRef(identity);
+  currentIdentity.current = identity;
+  const owner = useMemo(() => {
+    let owners = threadPageOwners.get(qc);
+    if (!owners) { owners = new Map(); threadPageOwners.set(qc, owners); }
+    let existing = owners.get(identity);
+    if (!existing) {
+      existing = { users: 0, listeners: new Set(), runners: new Map(), generation: 0, controller: null,
+        operation: null, dirty: false, failure: null, error: null };
+      owners.set(identity, existing);
+    }
+    return existing;
+  }, [qc, identity]);
+  const [, render] = useState(0);
+  const notify = useCallback(() => render((n) => n + 1), []);
+  const notifyOwners = useCallback(() => owner.listeners.forEach((listener) => listener()), [owner]);
+  const q = useQuery<InfiniteData<ThreadListPage, string | null>>({
+    queryKey: key, queryFn: skipToken, enabled: false, retry: false,
+  });
+  const active = useCallback(() => currentIdentity.current === identity, [identity]);
+  const paused = useCallback(() => !!qc.getQueryData<number>(pinnedQueryKey), [qc, pinnedQueryKey]);
+  const run = useCallback(async (kind: 'next' | 'refresh') => {
+    if (!scope || !active() || paused() || owner.failure) return;
+    if (owner.operation) {
+      if (kind !== 'refresh') return;
+      if (owner.operation === 'refresh') {
+        owner.dirty = true;
+        return;
+      }
+      // Fence a pending continuation before aborting it; a late success cannot
+      // resurrect rows or counts from the generation being replaced.
+      owner.generation++;
+      owner.controller?.abort();
+      owner.operation = null;
+      owner.controller = null;
+    }
+    const previous = qc.getQueryData<InfiniteData<ThreadListPage, string | null>>(key);
+    const tail = previous?.pages.at(-1);
+    if (kind === 'next' && !tail?.has_more) return;
+    const ctl = new AbortController();
+    const generation = ++owner.generation;
+    owner.controller = ctl;
+    owner.operation = kind;
+    owner.error = null;
+    owner.failure = null;
+    notifyOwners();
+    const owned = () => owner.users > 0 && generation === owner.generation && !ctl.signal.aborted;
+    try {
+      const staged: InfiniteData<ThreadListPage, string | null> = kind === 'next'
+        ? { pages: [...(previous?.pages ?? [])], pageParams: [...(previous?.pageParams ?? [])] }
+        : { pages: [], pageParams: [] };
+      let cursor = kind === 'next' ? tail!.next_cursor : null;
+      const depth = kind === 'refresh' ? Math.max(1, previous?.pages.length ?? 0) : staged.pages.length + 1;
+      const seen = new Set(staged.pageParams.filter((p): p is string => p !== null));
+      while (staged.pages.length < depth) {
+        const page = await load(cursor, ctl.signal);
+        if (!owned()) return;
+        if (!Array.isArray(page.threads) || !page.totals || typeof page.has_more !== 'boolean'
+            || (page.has_more ? typeof page.next_cursor !== 'string' || !page.next_cursor : page.next_cursor !== null)
+            || (page.next_cursor !== null && (seen.has(page.next_cursor) || page.next_cursor === cursor))) {
+          throw new Error('invalid_thread_page');
+        }
+        if (cursor !== null) seen.add(cursor);
+        staged.pageParams.push(cursor);
+        staged.pages.push(page);
+        if (!page.has_more) break;
+        cursor = page.next_cursor;
+      }
+      if (owned() && !paused() && !owner.dirty) qc.setQueryData(key, staged);
+    } catch (error) {
+      if (owned()) {
+        owner.failure = kind;
+        owner.error = error instanceof Error ? error : new Error(String(error));
+      }
+    } finally {
+      if (owned()) {
+        owner.operation = null;
+        owner.controller = null;
+        const dirty = owner.dirty;
+        owner.dirty = false;
+        notifyOwners();
+        if (dirty && !owner.failure && !paused()) void owner.runners.values().next().value?.('refresh');
+      }
+    }
+  }, [scope, owner, qc, key, load, notifyOwners, active, paused]);
+  useEffect(() => {
+    owner.users++;
+    owner.listeners.add(notify);
+    owner.runners.set(notify, run);
+    if (scope && owner.users === 1 && !owner.operation) {
+      owner.failure = null;
+      void run('refresh');
+    }
+    const leader = () => owner.listeners.values().next().value === notify;
+    const unsubscribe = qc.getQueryCache().subscribe((event) => {
+      if (event.type !== 'updated' || !leader()) return;
+      if (JSON.stringify(event.query.queryKey) === identity && event.action.type === 'invalidate') {
+        void run('refresh');
+      }
+      if (JSON.stringify(event.query.queryKey) === pinIdentity) {
+        if (paused()) {
+          // Pin owns a generation fence before its optimistic cache writes.
+          owner.generation++;
+          owner.controller?.abort();
+          owner.controller = null;
+          owner.operation = null;
+          owner.dirty = true;
+          owner.failure = null;
+          owner.error = null;
+          notifyOwners();
+        } else if (owner.dirty) {
+          owner.dirty = false;
+          void run('refresh');
+        }
+      }
+    });
+    const refresh = () => { if (leader()) void run('refresh'); };
+    window.addEventListener('focus', refresh);
+    window.addEventListener('online', refresh);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refresh);
+      owner.users--;
+      owner.listeners.delete(notify);
+      owner.runners.delete(notify);
+      if (owner.users === 0) {
+        owner.generation++;
+        owner.controller?.abort();
+        owner.controller = null;
+        owner.operation = null;
+        owner.dirty = false;
+      }
+    };
+  }, [scope, identity, owner, qc, key, run, paused, pinIdentity, notify, notifyOwners]);
+  return {
+    data: q.data,
+    isLoading: !q.data && !owner.error,
+    isError: !!owner.error, error: owner.error,
+    hasNextPage: !!q.data?.pages.at(-1)?.has_more,
+    isFetchingNextPage: owner.operation === 'next',
+    isRefreshing: owner.operation === 'refresh' && !!q.data,
+    isStale: !!owner.error && !!q.data,
+    fetchNextPage: () => run('next'),
+    refresh: () => { owner.failure = null; return run('refresh'); },
+    retry: () => {
+      const kind = owner.failure ?? 'refresh';
+      owner.failure = null;
+      return run(kind);
+    },
+  };
+}
+
+function useThreadsInfiniteList(status?: 'open' | 'archived'): ThreadListQueryLike {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  const load = useCallback((cursor: string | null, signal: AbortSignal) =>
+    threadsApi.listThreads(slug, { status, page_size: 50, cursor }, signal), [slug, status]);
+  const pages = useCommittedThreadPages(slug, ['threads', slug, { status, page_size: 50 }], load, ['thread-list-pin', slug]);
+  return {
+    ...pages,
+    retry: () => {
+      // Preserve the list retry's org-wide cache reconciliation. The failed
+      // owner stays latched during invalidation, then retries its own operation.
+      void qc.invalidateQueries({ queryKey: ['threads', slug] });
+      return pages.retry();
+    },
+  };
 }
 
 function useThread(threadId: string | undefined) {
@@ -120,6 +319,9 @@ function useThreadsInboxSSE(): void {
     const ctl = new AbortController();
     subscribeSSE<ThreadInboxEvent>(threadsApi.threadInboxEventsPath(slug), {
       signal: ctl.signal,
+      onOpen: () => {
+        qc.invalidateQueries({ queryKey: ['threads', slug] });
+      },
       onMessage: () => {
         qc.invalidateQueries({ queryKey: ['threads', slug] });
       },
@@ -306,6 +508,7 @@ function useInviteAgent(threadId: string): MutationLike<
       threadsApi.inviteToThread(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['threads', slug] });
     },
   });
 }
@@ -321,6 +524,7 @@ function useRemoveParticipant(threadId: string): MutationLike<
       threadsApi.removeParticipantFromThread(slug, threadId, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+      qc.invalidateQueries({ queryKey: ['threads', slug] });
     },
   });
 }
@@ -405,8 +609,8 @@ export function numericThreadId(threadId: string): number {
 }
 
 /**
- * Client mirror of the server's OPEN-list ordering rule — used ONLY for the
- * optimistic open-list cache reorder in useSetThreadPinned so the UI never
+ * Client mirror of the server's OPEN-list ordering rule — used for loaded
+ * list projection and optimistic cache reorder in useSetThreadPinned so the UI never
  * diverges from the server contract between click and refetch:
  *
  *   1. pinned threads first;
@@ -426,9 +630,11 @@ export function reorderOpenThreads<
     const bPinned = b.pinned ? 0 : 1;
     if (aPinned !== bPinned) return aPinned - bPinned;
     if (aPinned === 0) {
-      return numericThreadId(b.thread_id) - numericThreadId(a.thread_id);
+      const delta = numericThreadId(b.thread_id) - numericThreadId(a.thread_id);
+      if (delta) return delta;
     }
-    return b.started_at.localeCompare(a.started_at);
+    if (a.started_at !== b.started_at) return a.started_at > b.started_at ? -1 : 1;
+    return a.thread_id === b.thread_id ? 0 : a.thread_id > b.thread_id ? -1 : 1;
   });
 }
 
@@ -438,67 +644,59 @@ function useSetThreadPinned(threadId: string): MutationLike<
 > {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: SetThreadPinArgs) =>
-      threadsApi.setThreadPinned(slug, threadId, body),
-    // Optimistic pin/unpin: flip the flag in every cached list + the detail
-    // row before the write lands; roll back to the snapshot on failure.
-    onMutate: async (body) => {
+  type ListCache = { threads: ThreadRecord[] } | InfiniteData<ThreadListPage, string | null>;
+  const mutation = useMutation({
+    mutationFn: (variables: { body: SetThreadPinArgs; slug: string; threadId: string }) =>
+      threadsApi.setThreadPinned(variables.slug, variables.threadId, variables.body),
+    onMutate: async ({ body, slug, threadId }) => {
+      const pinKey = ['thread-list-pin', slug];
+      qc.setQueryData<number>(pinKey, (n) => (n ?? 0) + 1);
       await qc.cancelQueries({ queryKey: ['threads', slug] });
       await qc.cancelQueries({ queryKey: ['thread', slug, threadId] });
-      const prevLists = qc.getQueriesData<{ threads: ThreadRecord[] }>({
-        queryKey: ['threads', slug],
-      });
-      const prevDetail = qc.getQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
-        ['thread', slug, threadId],
-      );
-      for (const [key, data] of prevLists) {
-        if (!data) continue;
-        // TASK-5987 (PR #758 fix-forward): after flipping the flag, cached
-        // OPEN lists are reordered immediately to the exact server rule
-        // (reorderOpenThreads) so pinning THR-10 while THR-2 is pinned
-        // renders THR-10 above THR-2 BEFORE the response/refetch, and
-        // unpinning re-inserts the row into ordinary started_at-desc order.
-        // Only `params.status === 'open'` variants qualify: archived and
-        // status-less/all cached views keep their ordinary order and no pin
-        // presentation, exactly like the server. The mutation/audit/persistence
-        // wire behavior is unchanged.
+      const prevLists = qc.getQueriesData<ListCache>({ queryKey: ['threads', slug] });
+      const detailKey = ['thread', slug, threadId];
+      const prevDetail = qc.getQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(detailKey);
+      const writes = prevLists.map(([key, data]) => {
+        if (!data) return { key, before: data, after: data };
         const params = key[2] as { status?: string } | undefined;
-        const isOpenList = params?.status === 'open';
-        const threads = data.threads.map((t) =>
-          t.thread_id === threadId
-            ? { ...t, pinned: body.pinned, pinned_at: body.pinned ? t.pinned_at ?? new Date().toISOString() : null } : t,
-        );
-        qc.setQueryData<{ threads: ThreadRecord[] }>(key, {
-          threads: isOpenList ? reorderOpenThreads(threads) : threads,
-        });
-      }
-      if (prevDetail) {
-        qc.setQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
-          ['thread', slug, threadId],
-          { ...prevDetail, pinned: body.pinned, pinned_at: body.pinned ? prevDetail.pinned_at ?? new Date().toISOString() : null },
-        );
-      }
-      return { prevLists, prevDetail };
+        const flip = (t: ThreadRecord) => t.thread_id === threadId
+          ? { ...t, pinned: body.pinned, pinned_at: body.pinned ? t.pinned_at ?? new Date().toISOString() : null } : t;
+        let after: ListCache;
+        if ('pages' in data) {
+          const rows = data.pages.flatMap((page) => page.threads).map(flip);
+          const ordered = params?.status === 'open' ? reorderOpenThreads(rows) : rows;
+          let offset = 0;
+          after = { ...data, pages: data.pages.map((page) => {
+            const threads = ordered.slice(offset, offset + page.threads.length);
+            offset += page.threads.length;
+            return { ...page, threads };
+          }) };
+        } else {
+          const rows = data.threads.map(flip);
+          after = { ...data, threads: params?.status === 'open' ? reorderOpenThreads(rows) : rows };
+        }
+        const applied = qc.setQueryData(key, after);
+        return { key, before: data, after: applied };
+      });
+      const nextDetail = prevDetail ? { ...prevDetail, pinned: body.pinned, pinned_at: body.pinned ? prevDetail.pinned_at ?? new Date().toISOString() : null } : undefined;
+      const appliedDetail = nextDetail ? qc.setQueryData(detailKey, nextDetail) : undefined;
+      return { writes, prevDetail, nextDetail: appliedDetail, detailKey, pinKey, slug };
     },
     onError: (_err, _vars, ctx) => {
-      // Roll back every optimistic write.
       if (!ctx) return;
-      for (const [key, data] of ctx.prevLists) {
-        qc.setQueryData<{ threads: ThreadRecord[] }>(key, data);
+      for (const { key, before, after } of ctx.writes) {
+        if (qc.getQueryData(key) === after) qc.setQueryData(key, before);
       }
-      if (ctx.prevDetail) {
-        qc.setQueryData<Awaited<ReturnType<typeof threadsApi.getThread>>>(
-          ['thread', slug, threadId],
-          ctx.prevDetail,
-        );
-      }
+      if (ctx.prevDetail && qc.getQueryData(ctx.detailKey) === ctx.nextDetail) qc.setQueryData(ctx.detailKey, ctx.prevDetail);
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: ['threads', slug] });
-      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
+    onSettled: (_data, _error, _vars, ctx) => {
+      if (!ctx) return;
+      qc.invalidateQueries({ queryKey: ['threads', ctx.slug] });
+      qc.invalidateQueries({ queryKey: ctx.detailKey });
+      qc.setQueryData<number>(ctx.pinKey, (n) => Math.max(0, (n ?? 1) - 1));
     },
   });
+  return { mutateAsync: (body) => mutation.mutateAsync({ body, slug, threadId }), isPending: mutation.isPending };
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +704,7 @@ function useSetThreadPinned(threadId: string): MutationLike<
 // ---------------------------------------------------------------------------
 
 export const realThreadsApi: ThreadsApi = {
+  useThreadsInfiniteList,
   useThreadsList,
   useThread,
   useThreadMessages,

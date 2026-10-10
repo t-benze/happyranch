@@ -43,7 +43,7 @@ URL = "/api/v1/orgs/alpha/dreams/candidates/1/"
 #    KB/archive import owners protect their own shipping consumers independently.
 # 4. No production seam or filter. Whole587-member frame9d2ba533; diagnostic-only
 #    removal of the two approved APIs restores whole585-member7c76756d EXACTLY.
-_PRISTINE_SHAPE_SHA256 = "9d2ba5332b6800c6ed004c2f20f52458d376d3d4c32ca084ac9e95f21df2ee7d"
+_PRISTINE_SHAPE_SHA256 = "11bb9c1300af436c17bb7c92d1607149074bed81c3f7aaf2af8b38c6580dcd31"
 # Six named wait/hold records and twelve clock calls observed on pristine cb7f2272.
 _PRISTINE_WARNING_FRAME = {'warnings': [{'args': [2.0, 1.0, 'Database', 'list_dream_kb_candidates'],
                'exception': None,

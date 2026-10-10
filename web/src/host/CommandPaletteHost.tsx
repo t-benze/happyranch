@@ -75,13 +75,19 @@ export function buildSections(
   }
 
   // Threads
-  const threadEntries = qc.getQueriesData<{ threads: ThreadRecord[] }>({
+  const threadEntries = qc.getQueriesData<unknown>({
     queryKey: ['threads', slug],
   });
   const threads = mergeCacheLists<ThreadRecord>(
     threadEntries,
     'thread_id',
-    (data) => (data as { threads?: ThreadRecord[] })?.threads,
+    (data) => {
+      const cache = data as { threads?: ThreadRecord[]; pages?: { threads: ThreadRecord[] }[] } | undefined;
+      return cache?.pages
+        ? [...new Map(cache.pages.flatMap((page) => page.threads)
+          .map((row) => [row.thread_id, row] as const)).values()]
+        : cache?.threads;
+    },
   );
   if (threads.length) {
     sections.push({

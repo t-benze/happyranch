@@ -3,16 +3,48 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient } from '@tanstack/react-query';
 import { http, HttpResponse } from 'msw';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { transferableAbortController } from 'node:util';
 import { AppRoutes } from '@/routes';
 import { AppProvider, makeQueryClient } from '@/design-system/providers/AppProvider';
 import { I18nTestBoundary, renderWithProviders } from '@/test/render';
 import { server } from '@/test/server';
 
 const SLUG = 'alpha';
+
+/** Complete fixed server page for the existing small-list UI fixtures.
+ * The full store supplies totals independently of the selected bucket. */
+function threadListResponse(
+  body: { threads: ReturnType<typeof mkThread>[] },
+  source = body.threads,
+) {
+  return HttpResponse.json({
+    ...body,
+    totals: {
+      open: source.filter((row) => row.status === 'open').length,
+      archived: source.filter((row) => row.status === 'archived').length,
+      all: source.length,
+      dream_origin: source.filter((row) => row.composed_from_dream_id != null).length,
+    },
+    has_more: false,
+    next_cursor: null,
+    sampled_at: '2026-10-07T00:00:00Z',
+  });
+}
+
 const NativeRequest = globalThis.Request;
 
+beforeEach(() => {
+  vi.stubGlobal('AbortController', function () { return transferableAbortController(); });
+  vi.stubGlobal('IntersectionObserver', class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+});
+
 afterEach(() => {
+  vi.unstubAllGlobals();
   globalThis.Request = NativeRequest;
 });
 
@@ -24,6 +56,11 @@ function mountAt(route: string) {
     http.get('/api/v1/orgs/:slug/agents', () =>
       HttpResponse.json({ agents: [] }),
     ),
+    http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json({
+      heartbeat: [], narrative_counts: { completed_today: 0, failed_today: 0, escalated_open: 0, kb_added_today: 0, agents_active_now: 0, spend_today_usd: 0 }, escalations: [],
+      pending_review_jobs: [], active_by_team: [], recent_activity: [], updates_this_week: [], org_pulse: [],
+      org_age_days: 0, server_now: '2026-10-07T00:00:00Z', generated_at: null,
+    })),
   );
   return renderWithProviders(<AppRoutes />, { route });
 }
@@ -68,6 +105,7 @@ function mkThread(
     started_at: string;
     archived_at: string | null;
     pinned: boolean;
+    pinned_at: string | null;
     last_activity_at: string | null;
   }>,
 ) {
@@ -111,6 +149,266 @@ function mkMessage(
   };
 }
 
+test.each(['open', 'all', 'archived'] as const)('adopts the latest repeated projection and active bucket order before filtering (%s)', async (bucket) => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const old = mkThread('THR-10', 'Old pinned subject', {
+    pinned: true, pinned_at: '2026-01-01T00:00:00Z', started_at: '2026-01-01T00:00:00Z',
+    status: bucket === 'archived' ? 'archived' : 'open', archived_at: null,
+  });
+  const fresh = { ...old, subject: 'New unpinned subject', pinned: false, pinned_at: null };
+  const anchor = mkThread('THR-20', 'Ordinary anchor', {
+    started_at: '2026-01-03T00:00:00Z', status: old.status, archived_at: null,
+  });
+  const tie = mkThread('THR-30', 'Ordinary tie', {
+    started_at: anchor.started_at, status: old.status,
+    archived_at: bucket === 'archived' ? anchor.started_at : null,
+  });
+  let quiescent = false;
+  const requests: string[] = [];
+  server.use(
+    http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+      const url = new URL(request.url);
+      const cursor = url.searchParams.get('cursor');
+      const status = url.searchParams.get('status') ?? 'all';
+      requests.push(`${status}:${quiescent ? 'refresh' : cursor ?? 'first'}`);
+      return HttpResponse.json({
+        threads: quiescent ? [tie, anchor, { ...fresh, subject: 'Quiescent renamed subject' }] : cursor ? [fresh, tie] : [old, anchor],
+        totals: { open: bucket === 'archived' ? 0 : 3, archived: bucket === 'archived' ? 3 : 0, all: 3, dream_origin: 0 },
+        has_more: !quiescent && !cursor, next_cursor: !quiescent && !cursor ? 'after-anchor' : null,
+        sampled_at: '2026-10-07T00:00:00Z',
+      });
+    }),
+    http.get(`/api/v1/orgs/${SLUG}/threads/events`, () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  mountAt(`/orgs/${SLUG}/threads`);
+  await screen.findByRole('link', { name: /Old pinned subject/ });
+  if (bucket !== 'open') {
+    await userEvent.setup().click(screen.getByRole('tab', { name: bucket === 'all' ? /^All/ : /^Archived/ }));
+    await waitFor(() => expect(requests).toContain(`${bucket}:first`));
+    await screen.findByRole('link', { name: /Old pinned subject/ });
+  }
+  fireEvent.click(screen.getByRole('button', { name: 'Load more threads' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more threads' })).not.toBeInTheDocument());
+  expect(screen.getByRole('link', { name: /New unpinned subject/ })).toBeVisible();
+  expect(screen.queryByRole('link', { name: /Old pinned subject/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Pinned' })).not.toBeInTheDocument();
+  const hrefs = () => screen.queryAllByRole('link').map((link) => link.getAttribute('href')).filter((href) => /\/threads\/THR-/.test(href ?? ''));
+  const expected = ['THR-30', 'THR-20', 'THR-10'].map((id) => `/orgs/${SLUG}/threads/${id}`);
+  expect(hrefs()).toEqual(expected);
+  const filter = screen.getByRole('textbox', { name: /filter threads/i });
+  fireEvent.change(filter, { target: { value: 'Old pinned subject' } });
+  expect(hrefs()).toEqual([]);
+  fireEvent.change(filter, { target: { value: 'New unpinned' } });
+  expect(hrefs()).toEqual([expected[2]]);
+  fireEvent.change(filter, { target: { value: 'THR-10' } });
+  expect(screen.getByRole('link', { name: /New unpinned subject/ })).toBeVisible();
+  expect(hrefs()).toEqual([expected[2]]);
+  fireEvent.change(filter, { target: { value: '' } });
+  quiescent = true;
+  fireEvent.focus(window);
+  await waitFor(() => expect(requests).toContain(`${bucket}:refresh`));
+  await screen.findByRole('link', { name: /Quiescent renamed subject/ });
+  expect(screen.queryByRole('link', { name: /New unpinned subject/ })).not.toBeInTheDocument();
+  expect(hrefs()).toEqual(expected);
+  expect(requests.filter((request) => request === `${bucket}:after-anchor`)).toHaveLength(1);
+});
+
+test.each(['counts', 'reachability'] as const)('reports authoritative counts before traversal and finds an older subject beyond the first page (%s)', async (mode) => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const rows = Array.from({ length: 61 }, (_, i) => mkThread(`THR-${String(61 - i).padStart(3, '0')}`, i === 60 ? 'Older needle' : `Recent ${i}`));
+  server.use(
+    http.get('/api/v1/orgs/alpha/threads', ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (!params.has('page_size')) return HttpResponse.json({ threads: params.get('status') === 'archived' ? [] : rows.slice(0, 50) });
+      const offset = Number(params.get('cursor') ?? 0);
+      const end = offset + Number(params.get('page_size'));
+      return HttpResponse.json({ threads: rows.slice(offset, end), totals: { open: 61, archived: 0, all: 61, dream_origin: 0 }, has_more: end < rows.length, next_cursor: end < rows.length ? String(end) : null, sampled_at: '2026-10-07T00:00:00Z' });
+    }),
+    http.get('/api/v1/orgs/alpha/threads/events', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  mountAt('/orgs/alpha/threads');
+  if (mode === 'counts') {
+    const open = await screen.findByRole('tab', { name: /open/i });
+    await waitFor(() => expect(open).toHaveTextContent('61'));
+  } else {
+    await screen.findByRole('link', { name: /THR-061/i });
+    await userEvent.setup().type(screen.getByRole('textbox', { name: /filter threads/i }), 'Older needle');
+    expect(await screen.findByRole('link', { name: /THR-001/i })).toBeVisible();
+  }
+});
+
+test.each(['subject-only', 'ID-only', 'populated-early'] as const)('exhausts literal client filtering with %s older matches', async (mode) => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const rows = Array.from({ length: 121 }, (_, index) => mkThread(
+    `THR-${String(index + 1).padStart(3, '0')}`,
+    mode === 'subject-only' && index === 120 ? 'Older literal match' :
+      mode === 'populated-early' && (index < 50 || index === 120) ? 'Early literal match' : `Ordinary ${index}`,
+  ));
+  const requests: number[] = [];
+  server.use(
+    http.get('/api/v1/orgs/alpha/threads', ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      const offset = Number(params.get('cursor') ?? 0);
+      requests.push(offset);
+      return HttpResponse.json({ threads: rows.slice(offset, offset + 50),
+        totals: { open: 121, archived: 0, all: 121, dream_origin: 0 }, has_more: offset + 50 < 121,
+        next_cursor: offset + 50 < 121 ? String(offset + 50) : null, sampled_at: '2026-10-07T00:00:00Z' });
+    }),
+    http.get('/api/v1/orgs/alpha/threads/events', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  mountAt('/orgs/alpha/threads');
+  await screen.findByRole('link', { name: /THR-001/i });
+  expect(requests.length).toBeGreaterThanOrEqual(1);
+  expect(new Set(requests)).toEqual(new Set([0]));
+  await userEvent.setup().type(screen.getByRole('textbox', { name: /filter threads/i }), mode === 'ID-only' ? 'THR-121' : 'literal match');
+  expect(await screen.findByRole('link', { name: /THR-121/i })).toBeVisible();
+  expect(requests.filter((offset) => offset > 0)).toEqual([50, 100]);
+  expect(screen.getByRole('tab', { name: /open/i })).toHaveTextContent('121');
+  const ids = screen.getAllByRole('link').map((link) => link.getAttribute('href')).filter((href) => /\/threads\/THR-/.test(href ?? ''));
+  const expected = mode === 'populated-early' ? ['/orgs/alpha/threads/THR-121', ...Array.from({ length: 50 }, (_, i) => `/orgs/alpha/threads/THR-${String(50 - i).padStart(3, '0')}`)] : ['/orgs/alpha/threads/THR-121'];
+  expect(ids).toEqual(expected);
+  expect(screen.queryByText('Searching remaining threads…')).not.toBeInTheDocument();
+});
+
+test.each(['clear', 'whitespace', 'change'] as const)('keeps current filter ownership while page three is deferred (%s)', async (mode) => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const rows = Array.from({ length: 150 }, (_, index) => mkThread(
+    `THR-289-${String(index + 1).padStart(3, '0')}`,
+    index < 100 ? 'Alpha needle' : `Ordinary ${index}`,
+    { status: 'archived' },
+  ));
+  rows.push(mkThread('THR-aLpHaNeEdLe-OLD', 'Older ledger entry', { status: 'archived' }));
+  const totals = { open: 7, archived: 151, all: 158, dream_origin: 11 };
+  const requests: Array<{ offset: number; filter: string }> = [];
+  let releaseThird!: () => void;
+  const third = new Promise<void>((resolve) => { releaseThird = resolve; });
+  server.use(
+    http.get('/api/v1/orgs/alpha/threads', async ({ request }) => {
+      const params = new URL(request.url).searchParams;
+      if (params.get('status') !== 'archived') return HttpResponse.json({
+        threads: [mkThread('THR-OPEN', 'Open fixture')], totals,
+        has_more: false, next_cursor: null, sampled_at: '2026-10-07T00:00:00Z',
+      });
+      const offset = Number(params.get('cursor') ?? 0);
+      requests.push({ offset, filter: (screen.getByRole('textbox', { name: /filter threads/i }) as HTMLInputElement).value });
+      if (offset === 100) await third;
+      return HttpResponse.json({ threads: rows.slice(offset, offset + 50), totals,
+        has_more: offset < 150, next_cursor: offset < 150 ? String(offset + 50) : null,
+        sampled_at: '2026-10-07T00:00:00Z' });
+    }),
+    http.get('/api/v1/orgs/alpha/threads/events', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  const { client } = mountRouteHistory('/orgs/alpha/threads');
+  await screen.findByRole('link', { name: /THR-OPEN/i });
+  await userEvent.setup().click(screen.getByRole('tab', { name: /archived/i }));
+  await screen.findByRole('link', { name: /THR-289-001/i });
+  const input = screen.getByRole('textbox', { name: /filter threads/i });
+  fireEvent.change(input, { target: { value: 'needle' } });
+  await waitFor(() => expect(requests.filter((r) => r.offset > 0).map((r) => r.offset)).toEqual([50, 100]));
+  const key = ['threads', SLUG, { status: 'archived', page_size: 50 }];
+  const committed = client.getQueryData<{ pages: unknown[] }>(key);
+  expect(committed?.pages).toHaveLength(2);
+  fireEvent.change(input, { target: { value: mode === 'clear' ? '' : mode === 'whitespace' ? '   ' : 'entry' } });
+  expect(client.getQueryData(key)).toBe(committed);
+  releaseThird();
+  if (mode === 'change') {
+    await screen.findByRole('link', { name: /THR-aLpHaNeEdLe-OLD/i });
+    const links = screen.getAllByRole('link').map((link) => link.getAttribute('href')).filter((href) => /\/threads\/THR-/.test(href ?? ''));
+    expect(links).toEqual(['/orgs/alpha/threads/THR-aLpHaNeEdLe-OLD']);
+    expect(requests.filter((r) => r.offset > 0)).toEqual([
+      { offset: 50, filter: 'needle' }, { offset: 100, filter: 'needle' }, { offset: 150, filter: 'entry' },
+    ]);
+  } else {
+    await screen.findByRole('link', { name: /THR-289-150/i });
+    expect(client.getQueryData<{ pages: unknown[] }>(key)?.pages).toHaveLength(3);
+    expect(requests.filter((r) => r.offset > 0).map((r) => r.offset)).toEqual([50, 100]);
+    expect(screen.queryByRole('link', { name: /THR-aLpHaNeEdLe-OLD/i })).not.toBeInTheDocument();
+  }
+  expect(screen.getByRole('tab', { name: /archived/i })).toHaveTextContent('151');
+  expect(screen.getByRole('tab', { name: /^all/i })).toHaveTextContent('158');
+});
+
+test('retains literal surrounding spaces and disables whitespace-only filtering', async () => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const rows = [mkThread('THR-SPACE-1', 'literal match text', { status: 'archived' }),
+    mkThread('THR-SPACE-2', 'match', { status: 'archived' })];
+  server.use(
+    http.get('/api/v1/orgs/alpha/threads', ({ request }) => threadListResponse({
+      threads: new URL(request.url).searchParams.get('status') === 'archived' ? rows : [],
+    }, rows)),
+    http.get('/api/v1/orgs/alpha/threads/events', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  mountAt('/orgs/alpha/threads');
+  await userEvent.setup().click(await screen.findByRole('tab', { name: /archived/i }));
+  await screen.findByRole('link', { name: /THR-SPACE-1/i });
+  const input = screen.getByRole('textbox', { name: /filter threads/i });
+  fireEvent.change(input, { target: { value: ' match ' } });
+  const hrefs = () => screen.getAllByRole('link').map((link) => link.getAttribute('href')).filter((href) => /\/threads\/THR-/.test(href ?? ''));
+  expect(hrefs()).toEqual(['/orgs/alpha/threads/THR-SPACE-1']);
+  fireEvent.change(input, { target: { value: '   ' } });
+  expect(hrefs()).toEqual(['/orgs/alpha/threads/THR-SPACE-2', '/orgs/alpha/threads/THR-SPACE-1']);
+  expect(screen.getByRole('tab', { name: /archived/i })).toHaveTextContent('2');
+});
+
+test.each(['cold', 'retry', 'cancel'] as const)('preserves a deep cold restoration target until enough pages or user cancellation (%s)', async (mode) => {
+  sessionStorage.setItem('happyranch.token', 'tok');
+  const key = `threads:list-scroll:${SLUG}:open:`;
+  sessionStorage.setItem(key, '350');
+  sessionStorage.setItem(`${key}:depth`, '4');
+  sessionStorage.setItem(`${key}:anchor`, 'THR-151');
+  const rows = Array.from({ length: 151 }, (_, index) => mkThread(`THR-${index + 1}`, `Deep target ${index + 1}`));
+  const requests: number[] = [];
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let failed = false;
+  server.use(
+    http.get('/api/v1/orgs/alpha/threads', async ({ request }) => {
+      const offset = Number(new URL(request.url).searchParams.get('cursor') ?? 0);
+      requests.push(offset);
+      if (offset === 50 && mode === 'retry' && !failed) {
+        failed = true;
+        return HttpResponse.json({ detail: 'restoration page unavailable' }, { status: 503 });
+      }
+      if (offset === (mode === 'cancel' ? 50 : 150)) await held;
+      return HttpResponse.json({ threads: rows.slice(offset, offset + 50),
+        totals: { open: 151, archived: 0, all: 151, dream_origin: 0 },
+        has_more: offset < 150, next_cursor: offset < 150 ? String(offset + 50) : null,
+        sampled_at: '2026-10-07T00:00:00Z' });
+    }),
+    http.get('/api/v1/orgs/alpha/threads/events', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+  );
+  mountAt('/orgs/alpha/threads');
+  const row = await screen.findByRole('link', { name: /Deep target 1\b/ });
+  const scroller = row.closest('.overflow-y-auto') as HTMLDivElement;
+  expect(scroller.scrollTop).toBe(0);
+  if (mode === 'retry') {
+    await screen.findByRole('button', { name: /^Retry$/ });
+    expect(sessionStorage.getItem(key)).toBe('350');
+    expect(scroller.scrollTop).toBe(0);
+    await userEvent.setup().click(screen.getByRole('button', { name: /^Retry$/ }));
+  }
+  await waitFor(() => expect(requests).toContain(mode === 'cancel' ? 50 : 150));
+  expect(sessionStorage.getItem(key)).toBe('350');
+  expect(scroller.scrollTop).toBe(0);
+  if (mode === 'cancel') {
+    scroller.scrollTop = 123;
+    fireEvent.wheel(scroller);
+    expect(sessionStorage.getItem(key)).toBe('123');
+  }
+  release();
+  if (mode === 'cancel') {
+    await screen.findByRole('link', { name: /Deep target 100\b/ });
+    expect(requests.filter((offset) => offset > 0)).toEqual([50]);
+    expect(scroller.scrollTop).toBe(123);
+    expect(sessionStorage.getItem(`${key}:anchor`)).toBeNull();
+  } else {
+    await screen.findByRole('link', { name: /Deep target 151\b/ });
+    expect(scroller.scrollTop).toBe(350);
+    expect(requests.filter((offset) => offset > 0)).toEqual(mode === 'retry' ? [50, 50, 100, 150] : [50, 100, 150]);
+    expect(screen.getAllByRole('link').filter((link) => /\/threads\/THR-/.test(link.getAttribute('href') ?? ''))).toHaveLength(151);
+  }
+});
+
 function mkSystemMessage(seq: number, speaker: string, payload: Record<string, unknown>) {
   return {
     seq,
@@ -130,7 +428,7 @@ function setupThreadWithMessages(
 ) {
   server.use(
     http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-      HttpResponse.json({ threads: [mkThread(threadId, 'Test thread')] }),
+      threadListResponse({ threads: [mkThread(threadId, 'Test thread')] }),
     ),
     http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
       HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -162,7 +460,7 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     const openThread = mkThread('THR-SCROLL-OPEN', 'Long verification open target');
     setupThreadWithMessages('THR-SCROLL', []);
     server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) =>
-      HttpResponse.json({ threads: new URL(request.url).searchParams.get('status') === 'archived' ? [archivedThread] : [openThread] }),
+      threadListResponse({ threads: new URL(request.url).searchParams.get('status') === 'archived' ? [archivedThread] : [openThread] }, [openThread, archivedThread]),
     ));
   }
 
@@ -311,7 +609,7 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
         requestPending();
         await delayed;
       }
-      return HttpResponse.json({ threads: [mkThread('THR-DELAY', 'Long verification delayed')] });
+      return threadListResponse({ threads: [mkThread('THR-DELAY', 'Long verification delayed')] });
     }));
     mountRouteHistory(`/orgs/${SLUG}/threads`);
     await pending;
@@ -328,7 +626,7 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
     sessionStorage.setItem(`threads:list-scroll:${SLUG}:open:`, '350');
     let rows = [mkThread('THR-ONE', 'Long verification one')];
     server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) =>
-      HttpResponse.json({ threads: new URL(request.url).searchParams.get('status') === 'open' ? rows : [] }),
+      threadListResponse({ threads: new URL(request.url).searchParams.get('status') === 'open' ? rows : [] }),
     ));
     const { client } = mountRouteHistory(`/orgs/${SLUG}/threads`);
     const row = await screen.findByRole('link', { name: /THR-ONE/i });
@@ -351,9 +649,9 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
       const slug = String(params.slug);
       const status = new URL(request.url).searchParams.get('status');
       if (slug === 'beta' && status === 'open') {
-        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'beta route target')] }));
+        return betaPending.then(() => threadListResponse({ threads: [mkThread('THR-BETA', 'beta route target')] }));
       }
-      return HttpResponse.json({
+      return threadListResponse({
         threads: status === 'open' ? [mkThread(`THR-${slug.toUpperCase()}`, `${slug} route target`)] : [],
       });
     }));
@@ -409,9 +707,9 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
       const slug = String(params.slug);
       const status = new URL(request.url).searchParams.get('status');
       if (slug === 'beta' && status === 'open') {
-        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'org scope target')] }));
+        return betaPending.then(() => threadListResponse({ threads: [mkThread('THR-BETA', 'org scope target')] }));
       }
-      return HttpResponse.json({
+      return threadListResponse({
         threads: status === 'open' ? [mkThread(`THR-${slug.toUpperCase()}`, 'org scope target')] : [],
       });
     }));
@@ -445,9 +743,9 @@ describe('ThreadsPage — route-local list scroll restoration', () => {
       const slug = String(params.slug);
       const status = new URL(request.url).searchParams.get('status');
       if (slug === 'beta' && status === 'open') {
-        return betaPending.then(() => HttpResponse.json({ threads: [mkThread('THR-BETA', 'beta route target')] }));
+        return betaPending.then(() => threadListResponse({ threads: [mkThread('THR-BETA', 'beta route target')] }));
       }
-      return HttpResponse.json({ threads: status === 'open' ? [mkThread('THR-ALPHA', 'alpha route target')] : [] });
+      return threadListResponse({ threads: status === 'open' ? [mkThread('THR-ALPHA', 'alpha route target')] : [] });
     }));
     const { router } = mountRouteHistory('/orgs/alpha/threads');
     await screen.findByRole('link', { name: /THR-ALPHA/i });
@@ -470,7 +768,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
   test('renders empty state when no threads', async () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
-      http.get(`/api/v1/orgs/${SLUG}/threads`, () => HttpResponse.json({ threads: [] })),
+      http.get(`/api/v1/orgs/${SLUG}/threads`, () => threadListResponse({ threads: [] })),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
       ),
@@ -520,7 +818,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({
+        threadListResponse({
           threads: [
             mkThread('THR-001', 'Launch plan', { turns_used: 3, turn_cap: 500, last_speaker: 'dev_agent' }),
             mkThread('THR-002', 'Budget review', { turns_used: 487, turn_cap: 500, last_speaker: 'founder' }),
@@ -549,7 +847,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread('THR-001', 'Grouped surface')] }),
+        threadListResponse({ threads: [mkThread('THR-001', 'Grouped surface')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -578,7 +876,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({
+        threadListResponse({
           threads: [
             mkThread('THR-001', 'Aged thread', { started_at: '2026-05-14T00:00:00Z' }),
           ],
@@ -599,7 +897,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({
+        threadListResponse({
           threads: [
             mkThread('THR-042', 'Dream reflection', {
               composed_from_dream_id: 'DREAM-001',
@@ -626,7 +924,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({
+        threadListResponse({
           threads: [
             mkThread('THR-099', 'Empty thread', { last_speaker: null }),
           ],
@@ -646,7 +944,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({
+        threadListResponse({
           threads: [
             mkThread('THR-001', 'Discuss launch plan'),
             mkThread('THR-002', 'Review the budget'),
@@ -674,7 +972,7 @@ describe('ThreadsPage — list (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread('THR-001', 'Launch plan')] }),
+        threadListResponse({ threads: [mkThread('THR-001', 'Launch plan')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -719,7 +1017,7 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread('THR-001', 'My subject')] }),
+        threadListResponse({ threads: [mkThread('THR-001', 'My subject')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -751,7 +1049,7 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({
+        threadListResponse({
           threads: [
             mkThread('THR-042', 'Dream thread', { composed_from_dream_id: 'DREAM-001' }),
           ],
@@ -786,7 +1084,7 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread('THR-001', 'Subject')] }),
+        threadListResponse({ threads: [mkThread('THR-001', 'Subject')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -812,7 +1110,7 @@ describe('ThreadsPage — detail (design-overhaul reshape)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread('THR-001', 'Subject')] }),
+        threadListResponse({ threads: [mkThread('THR-001', 'Subject')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -858,7 +1156,7 @@ describe('ThreadsPage — transcript focus (THREADDET-01)', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread('THR-001', 'Launch plan')] }),
+        threadListResponse({ threads: [mkThread('THR-001', 'Launch plan')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -913,7 +1211,7 @@ describe('ThreadsPage — structured detail rail (THREADDET-02)', () => {
   ) {
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread(threadId, 'Rail thread')] }),
+        threadListResponse({ threads: [mkThread(threadId, 'Rail thread')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -1403,7 +1701,7 @@ describe('ThreadsPage — system message rendering (design-overhaul)', () => {
 
 describe('ThreadsPage — segmented status filter (THREADS-02)', () => {
   // Status-aware handler so the open and archived per-status fetches return
-  // disjoint sets — All is derived client-side by merging them.
+  // disjoint sets with an independent org-wide server summary.
   function mountWithBuckets() {
     const open = [
       mkThread('THR-O1', 'Open alpha', { status: 'open' }),
@@ -1415,9 +1713,9 @@ describe('ThreadsPage — segmented status filter (THREADS-02)', () => {
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
         const status = new URL(request.url).searchParams.get('status');
-        if (status === 'archived') return HttpResponse.json({ threads: archived });
-        if (status === 'open') return HttpResponse.json({ threads: open });
-        return HttpResponse.json({ threads: [...open, ...archived] });
+        if (status === 'archived') return threadListResponse({ threads: archived }, [...open, ...archived]);
+        if (status === 'open') return threadListResponse({ threads: open }, [...open, ...archived]);
+        return threadListResponse({ threads: [...open, ...archived] });
       }),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -1489,7 +1787,7 @@ describe('ThreadsPage — segmented status filter (THREADS-02)', () => {
 
 describe('ThreadsPage — list header eyebrow + serif title (THREADS-04)', () => {
   // Status-aware handler: open + archived are disjoint, so the org-wide header
-  // counts (total threads, dream-opened) are derived across BOTH buckets.
+  // counts (total threads, dream-opened) come from the full server fixture.
   function mountWithHeaderData() {
     const open = [
       mkThread('THR-O1', 'Open alpha', { status: 'open' }),
@@ -1502,9 +1800,9 @@ describe('ThreadsPage — list header eyebrow + serif title (THREADS-04)', () =>
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
         const status = new URL(request.url).searchParams.get('status');
-        if (status === 'archived') return HttpResponse.json({ threads: archived });
-        if (status === 'open') return HttpResponse.json({ threads: open });
-        return HttpResponse.json({ threads: [...open, ...archived] });
+        if (status === 'archived') return threadListResponse({ threads: archived }, [...open, ...archived]);
+        if (status === 'open') return threadListResponse({ threads: open }, [...open, ...archived]);
+        return threadListResponse({ threads: [...open, ...archived] });
       }),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -1540,8 +1838,8 @@ describe('ThreadsPage — list header eyebrow + serif title (THREADS-04)', () =>
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
         const status = new URL(request.url).searchParams.get('status');
-        if (status === 'archived') return HttpResponse.json({ threads: [] });
-        return HttpResponse.json({ threads: [mkThread('THR-1', 'Solo')] });
+        if (status === 'archived') return threadListResponse({ threads: [] });
+        return threadListResponse({ threads: [mkThread('THR-1', 'Solo')] });
       }),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -1619,7 +1917,7 @@ describe('ThreadsPage — abort replies', () => {
     const thread = mkThread(threadId, 'Test thread');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [thread] }),
+        threadListResponse({ threads: [thread] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
         HttpResponse.json({
@@ -1802,7 +2100,7 @@ describe('ThreadsPage — retry invalidates correct query keys', () => {
     sessionStorage.setItem('happyranch.token', 'tok');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [mkThread(threadId, 'Subject')] }),
+        threadListResponse({ threads: [mkThread(threadId, 'Subject')] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/events`, () =>
         HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } }),
@@ -2020,7 +2318,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     ];
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [thread] }),
+        threadListResponse({ threads: [thread] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
         HttpResponse.json({
@@ -2378,7 +2676,7 @@ describe('ThreadsPage — reply delivery pair projection (GH-688 Phase 1)', () =
     const thread = mkThread(threadId, 'Test thread');
     server.use(
       http.get(`/api/v1/orgs/${SLUG}/threads`, () =>
-        HttpResponse.json({ threads: [thread] }),
+        threadListResponse({ threads: [thread] }),
       ),
       http.get(`/api/v1/orgs/${SLUG}/threads/${threadId}`, () =>
         HttpResponse.json(

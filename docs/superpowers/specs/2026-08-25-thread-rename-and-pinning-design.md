@@ -252,3 +252,7 @@ sentences) to stay in parity with the audit row shapes.
   longer ranks the pinned section (numeric thread ID desc does).
 - No thread-message or SSE event is emitted for rename/pin; the thread-tail
   SSE consumers are deliberately untouched.
+
+## Current thread-list annotation — 2026-10-07 / THR-289
+
+New paged Open reads extend the immutable pin comparator with stored start time and BINARY-ID tie keys after numeric pin suffix; Archived and global All remain ordinary views with no pin presentation. Pin dispatch captures destination and freezes page generations before snapshotting actual legacy/infinite/detail caches. Only loaded Open rows reorder; previous page capacities/params/metadata are retained, and unloaded detail rows are never fabricated into the list. Conditional owned rollback cannot overwrite newer cache observations. Settlement restarts the authoritative prefix before old cursors can be used again. Pin does not change totals, transcript/activity, lifecycle, audit meanings or notification behavior.
