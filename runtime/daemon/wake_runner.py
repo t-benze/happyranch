@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from runtime.config import Settings, settings as global_settings
-from runtime.daemon.dream_runner import _executor_name, _is_timeout
+from runtime.daemon.dream_runner import _is_timeout
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import WorkHourStatus
@@ -163,8 +163,19 @@ async def run_wake(
         )
         return
 
-    # Issue #568: forward AgentDef.model to executor.run for wake invocations.
+    # Select one canonical snapshot: an atomic save after load_agent must not
+    # mix a newer executor with the captured model/effort. Normalize and retain
+    # the existing unregistered-provider fallback before recording selection.
+    _prov = agent_def.executor.lower()
+    if not get_registry().is_registered(_prov):
+        _prov = "claude"
     model_name: str | None = agent_def.model
+    reasoning_effort = agent_def.reasoning_effort
+    if reasoning_effort is not None:
+        org_state.db.insert_audit_log(
+            work_hour_id, record.agent_name, "work_hour_reasoning_selection",
+            {"executor": _prov, "model": model_name, "reasoning_effort": reasoning_effort},
+        )
 
     parsed = parse_routines(agent_def.system_prompt)
     workspace = org_state.root / "workspaces" / record.agent_name
@@ -176,12 +187,6 @@ async def run_wake(
     managed_skills_index = resolve_managed_skills_index(
         paths=paths, agent_name=record.agent_name,
     )
-
-    # TASK-2511: resolve executor name early so we can pass provider to the
-    # materialization guard before spawn.
-    _prov = _executor_name(paths, record.agent_name)
-    if not get_registry().is_registered(_prov):
-        _prov = "claude"
 
     # Issue #536: serialize the complete pre-spawn skill materialization
     # transaction under a process-local workspace lock.
@@ -293,7 +298,7 @@ async def run_wake(
             timeout_seconds=settings.session_timeout_seconds,
             pre_launch_validator=_pre_launch_validator,
             org_slug=org_state.slug,
-            model=model_name,
+            model=model_name, reasoning_effort=reasoning_effort,
         ))
     else:
         # ── THR-207 supervised wiring: the wake session runs through the
@@ -322,7 +327,7 @@ async def run_wake(
                 workspace=workspace,
                 prompt=prompt,
                 session_id=session_id,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 org_slug=org_state.slug,
                 timeout_seconds=settings.session_timeout_seconds,
             )
@@ -353,7 +358,7 @@ async def run_wake(
                 timeout_seconds=settings.session_timeout_seconds,
                 pre_launch_validator=_pre_launch_validator if not contained else None,
                 org_slug=org_state.slug,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 running=running if contained else None,
                 throttle_backoff_seconds=() if not contained else None,
             )

@@ -30,6 +30,7 @@ class Owned:
         self.stop = threading.Event()
         self.errors: list[str] = []
         self.reaped: list[dict] = []
+        self.collisions: list[dict] = []
         if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
             raise RuntimeError("runner subreaper unavailable")
         descriptor = os.pidfd_open(os.getpid())
@@ -44,7 +45,11 @@ class Owned:
         start = identity(pid)
         if start is not None:
             with self.lock:
-                self.pids.setdefault(pid, start)
+                previous = self.pids.get(pid)
+                if previous is not None and previous != start:
+                    self.collisions.append(dict(pid=pid, previous=previous, observed=start, at=time.monotonic()))
+                    raise RuntimeError("owned PID number reused")
+                self.pids[pid] = start
 
     def register_provider(self, pid: int) -> dict:
         # A socket peer is not authority to signal arbitrary processes. Verify
@@ -74,6 +79,10 @@ class Owned:
 
     def sample(self) -> None:
         with self.lock:
+            for pid,start in list(self.pids.items()):
+                observed = identity(pid)
+                if observed is not None and observed != start:
+                    self.add(pid)  # Preserve the collision and fail before any signal.
             provider_file = self.root / "owned.json"
             if provider_file.exists():
                 import json
@@ -120,6 +129,7 @@ class Owned:
             except Exception as exc:
                 self.errors.append(f"{exc!r}\n{traceback.format_exc()}")
                 return
+
 
     def signal(self, pid: int, sig: int) -> None:
         if identity(pid) != self.pids.get(pid):
@@ -170,4 +180,4 @@ class Owned:
         absent = not survivors and not any(groups.values()) and all(
             "LoadState=not-found" in row["stdout"] for row in units.values())
         return dict(ok=absent and not self.errors and not self.thread.is_alive(), survivors=survivors, units=units, groups=groups,
-                    errors=self.errors, identities=self.pids, reaped=self.reaped, watcher_stopped=not self.thread.is_alive(), seconds=time.monotonic() - started)
+                    errors=self.errors, identities=self.pids, reaped=self.reaped, collisions=self.collisions, watcher_stopped=not self.thread.is_alive(), seconds=time.monotonic() - started)

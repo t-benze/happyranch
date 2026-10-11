@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 if TYPE_CHECKING:
+    from runtime.orchestrator.agent_def import AgentDef
     from runtime.infrastructure.memory_collection import CollectionObserver, InvocationObservation
     from runtime.daemon.queue import TaskQueue
     from runtime.daemon.sessions import SessionTracker
@@ -361,13 +362,11 @@ class Orchestrator:
     def _build_session_id(self) -> str:
         return f"sess-{uuid.uuid4().hex}"
 
-    def _resolve_executor_name(self, agent_name: str) -> str:
-        """Resolve the per-agent executor from org/agents/<name>.md frontmatter.
+    def _resolve_agent_def(self, agent_name: str) -> AgentDef:
+        """Load one canonical definition, refusing absent or terminated agents.
 
-        THR-095: AgentDef.executor is the SINGLE authoritative store.
-        agent.yaml is no longer read for executor resolution. Absent or
-        terminated agents fail closed rather than silently falling back to
-        ``claude``.
+        Task executor/model/effort selection must use this same byte snapshot
+        so an atomic save cannot combine separately saved configurations.
         """
         from runtime.orchestrator.prompt_loader import is_terminated, load_agent
         agent_def = load_agent(self._paths, agent_name)
@@ -379,7 +378,15 @@ class Orchestrator:
             raise AgentUnavailableError(
                 f"agent {agent_name!r} has no active definition"
             )
-        return agent_def.executor
+        return agent_def
+
+    def _resolve_executor_name(self, agent_name: str) -> str:
+        """Resolve the executor from the canonical active AgentDef (THR-095).
+
+        agent.yaml is not read. Absent or terminated agents fail closed rather
+        than silently falling back to ``claude``.
+        """
+        return self._resolve_agent_def(agent_name).executor
 
     def _resolve_model_name(self, agent_name: str) -> str | None:
         """Resolve the per-agent model from org/agents/<name>.md frontmatter.
@@ -388,17 +395,7 @@ class Orchestrator:
         agent.yaml is no longer read for model resolution.
         Returns the model string if set, or None when absent.
         """
-        from runtime.orchestrator.prompt_loader import is_terminated, load_agent
-        agent_def = load_agent(self._paths, agent_name)
-        if agent_def is None:
-            if is_terminated(self._paths, agent_name):
-                raise AgentTerminatedError(
-                    f"agent {agent_name!r} has been terminated"
-                )
-            raise AgentUnavailableError(
-                f"agent {agent_name!r} has no active definition"
-            )
-        return agent_def.model
+        return self._resolve_agent_def(agent_name).model
 
     def _resolve_session_timeout(self, agent_name: str, task_id: str | None = None) -> int:
         """Resolve the per-session timeout, walking task -> org_settings DB ->
@@ -839,8 +836,10 @@ class Orchestrator:
         task = self._db.get_task(task_id)
         agent_name = agent
         workspace = self._paths.workspaces_dir / agent_name
-        provider = self._resolve_executor_name(agent_name)
-        model_name = self._resolve_model_name(agent_name)
+        selection_def = self._resolve_agent_def(agent_name)
+        provider = selection_def.executor
+        model_name = selection_def.model
+        reasoning_effort = selection_def.reasoning_effort
         executor = self._build_executor(provider)
 
         # ── D7B: CustomAdapterExecutor invocation context ──────────────
@@ -1225,7 +1224,7 @@ class Orchestrator:
                 session_id=session_id,
                 invocation_purpose=invocation_purpose,
                 executor=provider,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
             )
             if not recovery:
                 self._db.update_task(task_id, assigned_agent=agent_name)
@@ -1246,7 +1245,8 @@ class Orchestrator:
                 self._db.insert_audit_log_uncommitted(
                     task_id, agent_name, "session_start",
                     {"workspace": str(workspace), "session_id": session_id,
-                     "invocation_purpose": purpose, "executor": provider, "model": model_name},
+                     "invocation_purpose": purpose, "executor": provider, "model": model_name,
+                     **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {})},
                 )
                 if memory_digest and memory_render is not None and memory_render.digest_ids:
                     self._db.insert_audit_log_uncommitted(
@@ -1319,7 +1319,7 @@ class Orchestrator:
                     )
                 return executor.build_launch_spec(
                     workspace=workspace, prompt=full_prompt, session_id=session_id,
-                    model=model_name, org_slug=self._slug, timeout_seconds=timeout_seconds,
+                    model=model_name, reasoning_effort=reasoning_effort, org_slug=self._slug, timeout_seconds=timeout_seconds,
                     resume_session_id=resume_session_id,
                 )
 
@@ -1377,7 +1377,7 @@ class Orchestrator:
                 agent_name=agent_name,
                 workspace=workspace,
                 provider=provider,
-                model_name=model_name,
+                model_name=model_name, reasoning_effort=reasoning_effort,
                 executor=executor,
                 session_id=session_id,
                 full_prompt=full_prompt,
@@ -1422,7 +1422,7 @@ class Orchestrator:
 
     def _launch_agent_with_scratch(
         self, *, task_id: str, agent_name: str, workspace: Path, provider: str,
-        model_name: str | None, executor, session_id: str, full_prompt: str,
+        model_name: str | None, reasoning_effort: str | None, executor, session_id: str, full_prompt: str,
         timeout_seconds: int, on_started: Callable[[int], None],
         on_throttle_event, pre_launch_integrity_validator: Callable[[], None],
         recovery_launch_validator: Callable[[], None],
@@ -1441,7 +1441,7 @@ class Orchestrator:
                 agent_name=agent_name,
                 workspace=workspace,
                 provider=provider,
-                model_name=model_name,
+                model_name=model_name, reasoning_effort=reasoning_effort,
                 executor=executor,
                 session_id=session_id,
                 full_prompt=full_prompt,
@@ -1478,7 +1478,7 @@ class Orchestrator:
                     timeout_seconds=timeout_seconds,
                     on_started=on_started,
                     on_throttle_event=on_throttle_event,
-                    model=model_name,
+                    model=model_name, reasoning_effort=reasoning_effort,
                     pre_launch_validator=pre_launch_integrity_validator,
                     org_slug=self._slug,
                     resume_session_id=resume_session_id,
@@ -1516,6 +1516,7 @@ class Orchestrator:
         workspace: Path,
         provider: str,
         model_name: str | None,
+        reasoning_effort: str | None,
         executor,
         session_id: str,
         full_prompt: str,
@@ -1628,7 +1629,7 @@ class Orchestrator:
                 workspace=workspace,
                 prompt=full_prompt,
                 session_id=session_id,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 org_slug=self._slug,
                 timeout_seconds=timeout_seconds,
                 resume_session_id=resume_session_id,
@@ -1691,7 +1692,7 @@ class Orchestrator:
                 timeout_seconds=timeout_seconds,
                 on_started=on_started if not contained else None,
                 on_throttle_event=on_throttle_event,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 pre_launch_validator=(
                     pre_launch_integrity_validator if not contained else None
                 ),

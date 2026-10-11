@@ -110,6 +110,7 @@ no native/transport/auth/session changes or new owner-read audience. Root-owned
 two-template public smoke465 and later owner/revision/recovery/UI acceptance remain
 dependencies. Retain OPEN/DRAFT/unaccepted/unmerged. Exact grammar:
 [Features And Invariants](docs/agent-guides/features-and-invariants.md).
+**Optional reasoning effort (THR298 seq15).** AgentDef frontmatter owns `reasoning_effort` beside `model`. Unset adds no CLI effort override and no workflow agent-projection key. Saves validate the selected executor's static catalog/declaration; support is not provider/model/account acceptance. CLI changes clear omitted model/effort, unrelated writes preserve them, explicit null clears. Custom adapters retain input-v1 `model:null` unless an ordinary exact-artifact update declares input-v2. See [current contract](docs/superpowers/specs/2026-10-11-agent-reasoning-effort.md) and the four agent guides. `CLAUDE.md` remains the raw symlink to this canonical file.
 
 **G submission-schema migration (THR139 seq395; retained F/E→G path).**
 The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.

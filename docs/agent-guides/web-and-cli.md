@@ -840,7 +840,7 @@ The Agents page (`web/src/features/agents/`) shows the active agent roster plus 
 
 - **Repositories** — `repos` map from org/agents/<name>.md frontmatter (THR-095), shown as badge chips in the detail header.
 - **System prompt** — collapsible, with Edit / Save / Cancel. The founder-only `PUT /agents/{agent_name}/system-prompt` accepts exactly `system_prompt` and the matching lowercase 64-hex `expected_revision` from `GET /agents`. Description remains read-only.
-- **Model** — per-agent model string (`model` field in `GET /agents`, additive THR-067 field). Web UI field is PR-2 (separate follow-up).
+- **Model and reasoning effort** — editable per-agent selection beside Executor, with localized default, static-support limits and unsupported-custom explanation. CLI switches clear the draft pair. Locale changes preserve draft/focus/actions without a save.
 
 Prompt saves preserve unrelated definition fields and normalize multiline/Unicode text through the existing parser and protected-input validators. The exact 200 receipt is `{agent, system_prompt, revision}` from one canonical byte snapshot. The editor freezes the draft base and captured org/target, disables typing/Save/Cancel through PUT and an explicit uncached GET, and shows Saved only when both body and revision match. Polling never rebases a dirty draft. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation. Initial loading/error/empty/missing-revision/disappeared-target states refuse editing; close/selection/navigation discard locally and ignore late responses. en/zh-CN switching preserves the mounted draft, focus and selection. Errors retain the draft; inspect an explicit fresh read before deliberate reapply, with no automatic PUT retry. Cancelling the request can leave an admitted save committed: its started renderer and terminal reconciliation finish before the writer gate releases, so inspect fresh canonical state before reapplying.
 
@@ -870,6 +870,13 @@ happyranch web
 The SPA fetches the daemon bearer token once via `GET /api/v1/auth/bootstrap`, which is localhost-gated, then caches it in `sessionStorage` and attaches it to HTTP and SSE calls. CLI bearer-token behavior is unchanged.
 
 ## CLI
+
+`happyranch cancel <task_id>` prints the daemon's cancelled-task summary, then
+each successful cancellation-delivery record in response order. An opaque
+control record without a PID prints `Cancellation delivered -> <task_id>
+(<agent>)` on one line; it does not identify a signal or claim process closure.
+A legacy PID-bearing record retains `SIGTERM -> <task_id> (<agent>, pid=<pid>)`.
+An empty or absent delivery list retains `No live subprocesses attached.`
 
 The CLI is an HTTP client. Start the daemon first.
 
@@ -1193,7 +1200,7 @@ get raw `gh pr merge` grants. The full workflow narrative (submit → blocked �
 merge/revise) is documented in `runtime/skills/bundled/jobs/SKILL.md` and
 `docs/agent-guides/features-and-invariants.md`.
 
-### Per-agent model selection
+### Per-agent model and reasoning-effort selection
 
 Set or clear the model an agent uses via the `set-model` CLI command (mirrors `set-executor`):
 
@@ -1205,9 +1212,17 @@ happyranch set-model --org <org> dev_agent --model claude-sonnet-5
 happyranch set-model --org <org> dev_agent
 ```
 
+```bash
+# Effort-only update preserves the selected model
+happyranch set-model --org <org> dev_agent --reasoning-effort high
+# Effort-only clear preserves model; cannot combine with --reasoning-effort
+happyranch set-model --org <org> dev_agent --clear-reasoning-effort
+```
+
+The CLI with no model/effort options still clears model. The UI presents Default and the selected CLI's static list; a custom adapter without an input-v2 effort declaration is disabled with an English/zh-CN explanation. Unsupported levels and conflicts show localized errors and retain the draft; Save uses actual persistence and refetch. OpenCode requires a pinned `provider/model`, while existing `#variant` or Pi thinking suffixes are preserved when effort is unset and must agree when explicit. [Static mappings and custom opt-in](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) describe transport only; account/model support and native OpenCode transport remain separate limits.
+
 The backend route is `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model` with payload
-`{"model": "<id>" | null}`. It reconciles the org `.md` frontmatter (`model:` field) and
-the org/agents/<name>.md frontmatter in one call (THR-095).
+`{"model": "<id>" | null, "reasoning_effort": "<level>" | null, "expected_executor": "<profile>"}`. Each selection member is optional: omission preserves it and null clears it. Invalid types/values or unsupported/conflicting effort return422 before canonical replacement. The UI binds each draft to its selected CLI; a saved CLI mismatch returns409 `reasoning_executor_changed`. It atomically updates the selection in org/agents/<name>.md frontmatter (THR-095).
 
 When a model is set AND the executor profile has a `model_arg` template (all four built-in
 profiles do — verified per CLI), the executor injects the substituted model flags into the
@@ -1215,7 +1230,7 @@ CLI argv at launch time. When unset, each CLI uses its own default model (today'
 for every existing agent).
 
 Executor changes and model overrides are coupled: changing an existing
-agent's executor clears its old configured model, while selecting the already
+agent's executor clears its old configured model and effort, while selecting the already
 configured executor preserves it. In the team-manager `manage-agent` update
 contract, an explicitly supplied `model` (including `null`) is the model choice
 for the new executor; if `model` is omitted during a real executor change, the

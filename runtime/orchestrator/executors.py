@@ -1415,6 +1415,7 @@ class ClaudeExecutor:
         prompt: str,
         allowed_tools: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for a Claude Code subprocess launch.
@@ -1429,7 +1430,7 @@ class ClaudeExecutor:
                 prompt=prompt,
                 permission_mode=self._permission_mode,
                 allowed_tools=allowed_tools,
-                model=model,
+                model=model, reasoning_effort=reasoning_effort,
                 model_arg=self._model_arg,
                 resume_session_id=resume_session_id,
             )
@@ -1438,9 +1439,8 @@ class ClaudeExecutor:
         cmd = [
             _resolve_binary(self._profile_name),
         ]
-        if model and self._model_arg:
-            for elem in self._model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("claude", model, self._model_arg, reasoning_effort)
         cmd += [
             "-p",
             "--permission-mode",
@@ -1464,6 +1464,7 @@ class ClaudeExecutor:
         resume_session_id: str | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
         running: "RunningHandle | None" = None,
@@ -1485,7 +1486,7 @@ class ClaudeExecutor:
         cmd = self._build_argv(
             prompt=prompt,
             allowed_tools=allowed,
-            model=model,
+            model=model, reasoning_effort=reasoning_effort,
             resume_session_id=resume_session_id,
         )
         return _run_command(
@@ -1514,6 +1515,7 @@ class ClaudeExecutor:
         prompt: str,
         session_id: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
@@ -1531,7 +1533,7 @@ class ClaudeExecutor:
         cmd = self._build_argv(
             prompt=prompt,
             allowed_tools=allowed,
-            model=model,
+            model=model, reasoning_effort=reasoning_effort,
             resume_session_id=resume_session_id,
         )
         return build_command_launch_spec(
@@ -1559,6 +1561,7 @@ class CodexExecutor:
     def _build_argv(
         self,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for a Codex subprocess launch.
@@ -1571,7 +1574,7 @@ class CodexExecutor:
             return self._adapter.build_argv(
                 cli_path=_resolve_binary(self._profile_name),
                 sandbox_mode=self._sandbox_mode,
-                model=model,
+                model=model, reasoning_effort=reasoning_effort,
                 model_arg=self._model_arg,
                 resume_session_id=resume_session_id,
             )
@@ -1588,9 +1591,8 @@ class CodexExecutor:
                 "resume",
                 resume_session_id,
             ]
-            if model and self._model_arg:
-                for elem in self._model_arg:
-                    cmd.append(elem.replace("{model}", model))
+            from runtime.adapters import model_effort_args
+            cmd += model_effort_args("codex", model, self._model_arg, reasoning_effort)
             cmd += [
                 "-c",
                 f'sandbox_mode="{self._sandbox_mode}"',
@@ -1605,9 +1607,8 @@ class CodexExecutor:
             _resolve_binary(self._profile_name),
             "exec",
         ]
-        if model and self._model_arg:
-            for elem in self._model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("codex", model, self._model_arg, reasoning_effort)
         cmd += [
             "--sandbox",
             self._sandbox_mode,
@@ -1636,6 +1637,7 @@ class CodexExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
@@ -1644,7 +1646,7 @@ class CodexExecutor:
         recovery_deadline_monotonic: float | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
+        cmd = self._build_argv(model=model, reasoning_effort=reasoning_effort, resume_session_id=resume_session_id)
         return _run_command(
             cmd,
             workspace,
@@ -1670,6 +1672,7 @@ class CodexExecutor:
         prompt: str,
         session_id: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
@@ -1680,7 +1683,7 @@ class CodexExecutor:
         timeout is applied at communicate-time in contained mode).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(model=model, resume_session_id=resume_session_id)
+        cmd = self._build_argv(model=model, reasoning_effort=reasoning_effort, resume_session_id=resume_session_id)
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
             session_id=session_id,
@@ -1726,6 +1729,7 @@ class OpencodeExecutor:
         self,
         workspace: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for an opencode subprocess launch.
@@ -1741,7 +1745,7 @@ class OpencodeExecutor:
                 cli_path=_resolve_binary(self._profile_name),
                 workspace=workspace,
                 prompt="",
-                model=model,
+                model=model, reasoning_effort=reasoning_effort,
                 model_arg=self._model_arg,
                 resume_session_id=resume_session_id,
             )
@@ -1750,9 +1754,8 @@ class OpencodeExecutor:
             _resolve_binary(self._profile_name),
             "run",
         ]
-        if model and self._model_arg:
-            for elem in self._model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("opencode", model, self._model_arg, reasoning_effort)
         if resume_session_id:
             # TASK-6080: `-s <id>` FAILS with rc=1 ``Error: Session not
             # found`` (empty stdout, one stderr line) when the id is missing
@@ -1777,6 +1780,7 @@ class OpencodeExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
@@ -1788,7 +1792,7 @@ class OpencodeExecutor:
         # (input_text), never argv (THR-200).
         cmd = self._build_argv(
             workspace=str(workspace),
-            model=model,
+            model=model, reasoning_effort=reasoning_effort,
             resume_session_id=resume_session_id,
         )
         return _run_command(
@@ -1815,6 +1819,7 @@ class OpencodeExecutor:
         prompt: str,
         session_id: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
@@ -1828,7 +1833,7 @@ class OpencodeExecutor:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
         cmd = self._build_argv(
             workspace=str(workspace),
-            model=model,
+            model=model, reasoning_effort=reasoning_effort,
             resume_session_id=resume_session_id,
         )
         return build_command_launch_spec(
@@ -1863,6 +1868,7 @@ class PiExecutor:
         self,
         prompt: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
         """Build the argv list for a Pi subprocess launch.
@@ -1875,7 +1881,7 @@ class PiExecutor:
             return self._adapter.build_argv(
                 cli_path=_resolve_binary(self._profile_name),
                 prompt=prompt,
-                model=model,
+                model=model, reasoning_effort=reasoning_effort,
                 model_arg=self._model_arg,
                 resume_session_id=resume_session_id,
             )
@@ -1884,9 +1890,8 @@ class PiExecutor:
         cmd = [
             _resolve_binary(self._profile_name),
         ]
-        if model and self._model_arg:
-            for elem in self._model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("pi", model, self._model_arg, reasoning_effort)
         cmd += [
             "-p",
             "--mode",
@@ -1908,6 +1913,7 @@ class PiExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
@@ -1915,7 +1921,7 @@ class PiExecutor:
         throttle_backoff_seconds: Sequence[float] | None = None,
     ) -> ExecutorResult:
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(prompt=prompt, model=model,
+        cmd = self._build_argv(prompt=prompt, model=model, reasoning_effort=reasoning_effort,
                                resume_session_id=resume_session_id)
         return _run_command(
             cmd,
@@ -1941,6 +1947,7 @@ class PiExecutor:
         prompt: str,
         session_id: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
@@ -1951,7 +1958,7 @@ class PiExecutor:
         timeout is applied at communicate-time in contained mode).
         """
         prompt = _SESSION_LIFETIME_PREAMBLE + prompt
-        cmd = self._build_argv(prompt=prompt, model=model,
+        cmd = self._build_argv(prompt=prompt, model=model, reasoning_effort=reasoning_effort,
                                resume_session_id=resume_session_id)
         return build_command_launch_spec(
             cmd=cmd, workspace=workspace, input_text=prompt, org_slug=org_slug,
@@ -1989,6 +1996,7 @@ class CustomAdapterExecutor:
         adapter_contract_version: int,
         provider: str,
         invocation_context: dict | None = None,
+        input_options: dict | None = None,
     ) -> None:
         self._profile_name = profile_name
         self._adapter_entry_id = adapter_entry_id
@@ -1996,6 +2004,7 @@ class CustomAdapterExecutor:
         self._adapter_hash = adapter_hash
         self._adapter_version = adapter_version
         self._adapter_contract_version = adapter_contract_version
+        self._input_options = input_options
         self._provider = provider
         # invocation_context is a dict with truthful invocation fields
         # set by the caller (orchestrator, thread_runner, etc.).
@@ -2126,6 +2135,7 @@ class CustomAdapterExecutor:
         prompt: str,
         session_id: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         org_slug: str | None = None,
         timeout_seconds: int = 1800,
@@ -2159,6 +2169,7 @@ class CustomAdapterExecutor:
         on_started: Callable[[int], None] | None = None,
         on_throttle_event: "OnThrottleEvent | None" = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         resume_session_id: str | None = None,
         pre_launch_validator: Callable[[], None] | None = None,
         org_slug: str | None = None,
@@ -2167,7 +2178,7 @@ class CustomAdapterExecutor:
     ) -> ExecutorResult:
         """Launch the custom adapter subprocess with AdapterInput on stdin.
 
-        Builds an AdapterInput v1 contract with truthful invocation
+        Builds default input v1 or explicitly declared input v2 with truthful invocation
         context, passes it as JSON on stdin, and parses the AdapterOutput
         v1 contract from stdout. Maps the output conservatively into
         ExecutorResult.
@@ -2261,6 +2272,8 @@ class CustomAdapterExecutor:
                 permission_mode=None,
             ),
         )
+        from runtime.orchestrator.adapter_contract import opt_in_adapter_input
+        adapter_input = opt_in_adapter_input(adapter_input, self._input_options, model, reasoning_effort)
         input_json = adapter_input.model_dump_json()
 
         # ── D7B: route through per-provider throttle (Fix 3) ──────
@@ -2467,6 +2480,12 @@ class CustomAdapterExecutor:
                     failure_category="post_launch_contract",
                     provider_launched=True,
                 )
+
+            # Input-v2 acknowledgement prevents an old wrapper silently ignoring opt-in input.
+            if adapter_input.contract_version == 2:
+                meta = output_dict.get("adapter_metadata")
+                if not isinstance(meta, dict) or type(meta.get("input_contract_version")) is not int or meta.get("input_contract_version") != 2:
+                    return ExecutorResult(success=False, duration_seconds=int(time.monotonic() - start_time), session_id=sid, error="Input-v2 adapter did not acknowledge input_contract_version=2", failure_category="post_launch_contract", provider_launched=True)
 
             # Validate AdapterOutput schema
             try:
