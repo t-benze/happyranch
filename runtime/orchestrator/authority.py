@@ -811,10 +811,10 @@ _RELEASE_REFERENCE_PREIMAGES = (
 )
 
 
-_release_schema_digest_cache: dict[tuple[str, str], str] | None = None
+_release_schema_digest_cache: dict[tuple[str, str, bool], str] | None = None
 
 
-def _release_schema_digest(layout: str = "F", history: str = "fresh") -> str:
+def _release_schema_digest(layout: str = "F", history: str = "fresh", *, pause_layout: bool = False) -> str:
     """Digest of the complete release-pinned org-database schema surface.
 
     Independent fresh or pinned whole-historical inputs run the actual current
@@ -828,7 +828,7 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh") -> str:
         return "unavailable"
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
-    key = (layout, history)
+    key = (layout, history, pause_layout)
     if key in _release_schema_digest_cache:
         return _release_schema_digest_cache[key]
     try:
@@ -859,6 +859,9 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh") -> str:
                         migrate_draft_schema(conn, expected_org_slug="release-reference")
                 else:
                     initialize_complete_org_schema(fresh, expected_org_slug="release-reference")
+                if pause_layout:
+                    from runtime.infrastructure.task_pause_controls import install_pause_schema
+                    install_pause_schema(fresh, org_slug="release-reference")
                 _release_schema_digest_cache[key] = _live_schema_digest(fresh)
             finally:
                 fresh.close()
@@ -2259,7 +2262,9 @@ def _server_evidence(
         with db.coherent_read_view() as conn:
             live_schema_digest = _live_schema_digest(db)
             layout = validate_workflow_schema(conn, expected_org_slug=orch._slug)
-        references = tuple(_release_schema_digest(layout, history) for history in _RELEASE_REFERENCE_HISTORIES)
+            from runtime.infrastructure.task_pause_controls import validate_pause_schema
+            pause_layout = validate_pause_schema(conn, org_slug=orch._slug, allow_absent=True)
+        references = tuple(_release_schema_digest(layout, history, pause_layout=pause_layout) for history in _RELEASE_REFERENCE_HISTORIES)
         reference = live_schema_digest if 'unavailable' not in references and live_schema_digest in references else 'unavailable'
     except Exception:
         reference = "unavailable"

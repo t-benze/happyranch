@@ -215,14 +215,47 @@ def persist_session_policy_binding(
     snapshot: ActivePolicySnapshot | None, provider_id: str | None = None,
     executor_kind: str | None = None, model_id: str | None = None,
 ) -> None:
-    """Persist the exact policy identity rendered for a task session.
+    """Original transaction-owning public binding; exact payloads unchanged."""
+    binding, legacy, selector = _prepare_session_policy_binding(
+        task_id=task_id, session_id=session_id, agent_name=agent_name,
+        snapshot=snapshot, provider_id=provider_id,
+        executor_kind=executor_kind, model_id=model_id,
+    )
+    if binding is not None:
+        db.bind_authority_policy_v2_session(binding)
+    else:
+        db.bind_authority_policy_legacy_session(
+            task_id=task_id, agent_name=agent_name, session_id=session_id,
+            legacy_payload=legacy, selector_payload=selector,
+        )
 
-    A ``v2`` launch writes only the immutable ``authority_policy_v2_session_bindings``
-    row. A selected ``legacy_v1`` launch writes the existing unchanged legacy
-    binding plus the additive supplemental selector audit in ONE transaction.
-    Explicit static/no-active keeps the unchanged ``legacy_static`` binding.
-    The Database owns every transaction/lock boundary here.
-    """
+
+def _persist_session_policy_binding_uncommitted(
+    *, db, task_id: str, session_id: str, agent_name: str,
+    snapshot: ActivePolicySnapshot | None, provider_id: str | None = None,
+    executor_kind: str | None = None, model_id: str | None = None,
+) -> None:
+    """Compose the same binding in the task-producer's owned transaction."""
+    binding, legacy, selector = _prepare_session_policy_binding(
+        task_id=task_id, session_id=session_id, agent_name=agent_name,
+        snapshot=snapshot, provider_id=provider_id,
+        executor_kind=executor_kind, model_id=model_id,
+    )
+    if binding is not None:
+        db._bind_authority_policy_v2_session_uncommitted(binding)
+    else:
+        db._bind_authority_policy_legacy_session_uncommitted(
+            task_id=task_id, agent_name=agent_name, session_id=session_id,
+            legacy_payload=legacy, selector_payload=selector,
+        )
+
+
+def _prepare_session_policy_binding(
+    *, task_id: str, session_id: str, agent_name: str,
+    snapshot: ActivePolicySnapshot | None, provider_id: str | None = None,
+    executor_kind: str | None = None, model_id: str | None = None,
+) -> tuple[AuthorityPolicyV2SessionBinding | None, dict | None, dict | None]:
+    """Pure construction of the original exact immutable binding payloads."""
     if snapshot is not None and snapshot.family == "v2":
         if snapshot.selector is None or snapshot.v2_release is None or snapshot.v2_activation is None:
             raise ActiveAuthorityPolicyError("v2 snapshot is incomplete")
@@ -244,8 +277,7 @@ def persist_session_policy_binding(
             selector_id=snapshot.selector.selector_id,
             team=snapshot.v2_release.team,
         )
-        db.bind_authority_policy_v2_session(binding)
-        return
+        return binding, None, None
     if snapshot is None:
         legacy_payload = {"session_id": session_id, "mode": "legacy_static"}
         selector_payload = None
@@ -257,10 +289,7 @@ def persist_session_policy_binding(
         selector_payload = _selector_binding_payload(
             session_id=session_id, snapshot=snapshot,
         )
-    db.bind_authority_policy_legacy_session(
-        task_id=task_id, agent_name=agent_name, session_id=session_id,
-        legacy_payload=legacy_payload, selector_payload=selector_payload,
-    )
+    return None, legacy_payload, selector_payload
 
 
 def load_session_policy_snapshot(

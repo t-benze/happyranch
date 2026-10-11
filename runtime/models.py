@@ -61,6 +61,58 @@ class BlockKind(StrEnum):
     BLOCKED_ON_JOB = "blocked_on_job"
 
 
+class TaskPauseControlRequest(BaseModel):
+    """Separate control precondition; it carries no execution authority."""
+    model_config = {"extra": "forbid"}
+    expected_generation: Annotated[StrictInt, Field(ge=0, le=2**63 - 1)]
+
+
+class TaskPauseBlocker(BaseModel):
+    model_config = {"extra": "forbid"}
+    kind: Literal["task_session", "job", "launch", "result_processing", "unknown"]
+    task_id: str
+    job_id: str | None = None
+    owner_kind: str
+    reason: str
+    observed_at: datetime
+
+
+class TaskPauseProjection(BaseModel):
+    model_config = {"extra": "forbid"}
+    org_slug: str
+    root_task_id: str
+    lifecycle_status: TaskStatus
+    held: bool
+    effective_hold: bool
+    generation: Annotated[StrictInt, Field(ge=0)]
+    control_state: Literal["unheld", "pausing", "paused"]
+    paused_at: datetime | None
+    resumed_at: datetime | None
+    blockers: list[TaskPauseBlocker]
+    evidence_complete: bool
+    observed_at: datetime
+
+
+class TaskPauseControlResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+    changed: bool
+    pause: TaskPauseProjection
+
+
+class TaskPauseOverview(BaseModel):
+    model_config = {"extra": "forbid"}
+    org_slug: str
+    observed_at: datetime
+    evidence_complete: bool
+    next_cursor: str | None
+    counts: dict[str, int] | None
+    unheld_runnable: list[TaskPauseProjection]
+    pausing: list[TaskPauseProjection]
+    paused: list[TaskPauseProjection]
+    terminal_drain: list[TaskPauseProjection]
+    unavailable_roots: list[TaskPauseProjection]
+
+
 class ReviewVerdict(StrEnum):
     APPROVE = "approve"
     REVISE = "revise"

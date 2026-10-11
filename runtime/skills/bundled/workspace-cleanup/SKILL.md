@@ -408,3 +408,8 @@ Use the normal task-owner or subtask summary protocol and submit
 `happyranch report-completion --org <slug> --from-file <ABSOLUTE_PAYLOAD_PATH>`
 with the current session binding as the final action. Artifact writing alone is
 not completion. Truthful anomalies and required escalations remain.
+
+
+## Root task Pause outcomes
+
+A held/deferred task is unfinished, not terminal/orphan evidence. Preserve its worktree and original owner. Terminal lifecycle alone cannot discharge possible-launch, host/tree or cleanup ACTION uncertainty; use the existing authoritative evidence and non-force contract. Pause does not change scheduler/selector eligibility or authorize reclamation. Real admitted cleanup runs under its existing owner after commitment; interrupted ACTION stays unknown and must not be replayed.

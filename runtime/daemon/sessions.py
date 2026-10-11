@@ -22,7 +22,9 @@ already-terminal token.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from threading import Lock
+from typing import Iterator
 
 
 class SessionTracker:
@@ -350,6 +352,24 @@ class SessionTracker:
                 (task_id, agent, session_id)
                 for (task_id, agent), session_id in self._active.items()
             ]
+
+    @contextmanager
+    def _pause_capture_guard(self, bindings: set[tuple[str, str, str]]) -> Iterator[None]:
+        """Freeze current ordinary bindings through the owned Pause COMMIT.
+
+        TaskPauseStore enters this leaf mutex after its root/DB writer. All
+        tracker mutations release it before acquiring binding/root/DB locks;
+        no binding lease, await, host operation or callback belongs inside.
+        The caller still requires durable real-running and purpose evidence:
+        registration alone supplies no job entitlement.
+        """
+        with self._lock:
+            bindings.update(
+                (task_id, agent, session_id)
+                for (task_id, agent), session_id in self._active.items()
+                if session_id not in self._recovery_sessions
+            )
+            yield
 
     def clear(self, task_id: str, agent: str) -> None:
         binding_lease = self._get_binding_lease(task_id, agent)

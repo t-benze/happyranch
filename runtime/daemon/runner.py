@@ -29,6 +29,16 @@ def enqueue_task(
         else:
             state.queue.enqueue(slug, task_id, metadata=metadata)
         return
+    from runtime.infrastructure.task_pause_controls import PauseControlError
+    store = getattr(orchestrator._db, "_task_pause_store", None)
+    if store is not None:
+        try:
+            with orchestrator._db._lock:
+                store.held_uncommitted(task_id)
+        except PauseControlError as exc:
+            if exc.detail["code"] == "root_paused":
+                return  # Durable eligible work is rediscovered after release.
+            raise
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(orchestrator._db, task_id, org_slug=slug)
     if ownership.kind != "legacy":

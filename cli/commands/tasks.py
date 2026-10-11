@@ -107,6 +107,73 @@ def _stream_task_events(client: OpcClient, slug: str, task_id: str) -> None:
 
 
 
+def _print_pause(pause: dict) -> None:
+    print(f"Root pause: {pause['root_task_id']} {pause['control_state']} "
+          f"(generation {pause['generation']}, lifecycle {pause['lifecycle_status']})")
+    for blocker in pause['blockers']:
+        print(f"  {blocker['kind']}: {blocker['task_id']} {blocker.get('job_id') or ''} {blocker['reason']}")
+    if not pause['evidence_complete']:
+        print("  Execution evidence is incomplete.")
+
+
+def cmd_pause_control(args: argparse.Namespace) -> None:
+    import json
+    try:
+        client = OpcClient.from_env()
+    except (DaemonNotRunning, DaemonStateInconsistent) as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
+    slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+    generation = args.expected_generation
+    if generation is None:
+        response = client.get(f"/api/v1/orgs/{slug}/tasks/{args.task_id}")
+        if not _ok(response):
+            sys.exit(1)
+        generation = response.json()['pause']['generation']
+    response = client.post(f"/api/v1/orgs/{slug}/tasks/{args.task_id}/{args.pause_action}",
+                           json={"expected_generation": generation})
+    # Conflicts are presented once. Never read and retry a stale toggle.
+    if not _ok(response):
+        sys.exit(1)
+    body = response.json()
+    if args.json:
+        print(json.dumps(body, indent=2))
+    else:
+        print("Control changed." if body['changed'] else "Control unchanged.")
+        _print_pause(body['pause'])
+
+
+def _cmd_pause_overview(args: argparse.Namespace, client: OpcClient, slug: str) -> None:
+    import json
+    cursor = None
+    seen = set()
+    while True:
+        params = {"limit": args.limit}
+        if cursor is not None:
+            params['before'] = cursor
+        response = client.get(f"/api/v1/orgs/{slug}/tasks/pause-overview", params=params)
+        if not _ok(response):
+            sys.exit(1)
+        body = response.json()
+        if args.json:
+            print(json.dumps(body, indent=2))
+        else:
+            print(f"Task pause overview — {slug} — {body['observed_at']}")
+            for name in ('unheld_runnable', 'pausing', 'paused', 'terminal_drain', 'unavailable_roots'):
+                print(name.replace('_', ' ') + ':')
+                for pause in body[name]:
+                    _print_pause(pause)
+            print("Counts: " + (json.dumps(body['counts']) if body['counts'] is not None else "unavailable for this bounded snapshot"))
+            print("This overview does not establish that restarting is safe; other roots and background sessions can start.")
+        cursor = body['next_cursor']
+        if not args.all_pages or cursor is None:
+            return
+        if cursor in seen:
+            print("Error: repeated overview cursor")
+            sys.exit(1)
+        seen.add(cursor)
+
+
 def cmd_tasks(args: argparse.Namespace) -> None:
     """List recent tasks."""
     try:
@@ -114,9 +181,14 @@ def cmd_tasks(args: argparse.Namespace) -> None:
     except (DaemonNotRunning, DaemonStateInconsistent) as exc:
         print(f"Error: {exc}")
         sys.exit(1)
+    if getattr(args, "pause_overview", False) and not args.org:
+        print("Error: tasks --pause-overview requires explicit --org")
+        sys.exit(2)
     slug = resolve_org_slug(
         args_org=args.org, available=_shared._fetch_available_orgs(client),
     )
+    if getattr(args, "pause_overview", False):
+        return _cmd_pause_overview(args, client, slug)
     params: dict = {"limit": args.limit}
     if getattr(args, "status", None):
         params["status"] = args.status
@@ -179,6 +251,8 @@ def cmd_tasks(args: argparse.Namespace) -> None:
         if t.get("revisit_of_task_id"):
             brief = f"{brief}  ↩ {t['revisit_of_task_id']}"
         team = t.get("team") or "-"
+        if t.get("pause", {}).get("effective_hold"):
+            _print_pause(t["pause"])
         print(f"{t['task_id']:<12} {team:<16} {status:<22} {agent:<18} {brief}")
 
 
@@ -237,7 +311,13 @@ def cmd_details(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     body = r.json()
+    if getattr(args, "json", False):
+        import json
+        print(json.dumps(body, indent=2))
+        return
     task = body["task"]
+    if body.get("pause"):
+        _print_pause(body["pause"])
 
     # Revisit header: shown only when this task IS a revisit.
     if task.get("revisit_of_task_id"):
@@ -1076,6 +1156,13 @@ def cmd_revisit(args: argparse.Namespace) -> None:
 
 
 def register(sub) -> None:
+    for action in ("pause", "resume"):
+        parser = sub.add_parser(action, help=f"{action.title()} a root task's future admissions")
+        parser.add_argument("task_id")
+        parser.add_argument("--org", default=None)
+        parser.add_argument("--expected-generation", type=int, default=None)
+        parser.add_argument("--json", action="store_true")
+        parser.set_defaults(func=cmd_pause_control, pause_action=action)
     p_run = sub.add_parser("run", help="Run a task")
     p_run.add_argument("--org", default=None, help="Org slug (or set HAPPYRANCH_ORG_SLUG; auto-inferred when only one org)")
     p_run.add_argument(
@@ -1114,6 +1201,7 @@ def register(sub) -> None:
         action="store_true",
         help="Show full per-step output summaries (no 80-char truncation)",
     )
+    p_details.add_argument("--json", action="store_true", help="Emit the complete details response")
     p_details.set_defaults(func=cmd_details)
 
     p_tail = sub.add_parser("tail", help="Stream events for an existing task")
@@ -1140,6 +1228,7 @@ def register(sub) -> None:
         help="Filter by block kind (delegated, blocked_on_job); "
              "most useful with --status in_progress",
     )
+    p_tasks.add_argument("--pause-overview", action="store_true", help="Read the org-scoped task pause overview; requires --org")
     p_tasks.set_defaults(func=cmd_tasks)
 
     p_audit = sub.add_parser("audit", help="Show filtered audit-log entries")
