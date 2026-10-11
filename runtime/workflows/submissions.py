@@ -90,7 +90,7 @@ class AuthorHandoffCurrent(ClosedRecord):
     reconciliation_required: StrictBool
     reason: Literal['awaiting_callback', 'awaiting_terminal_proof', 'authority_not_current',
                     'source_not_current', 'new_runs_disabled', 'source_uncertain',
-                    'source_failed', 'source_cancelled', 'consumed']
+                    'source_failed', 'source_cancelled', 'consumed', 'noncurrent_successor']
     graph: AuthorHandoffGraph | None
 
 
@@ -608,13 +608,15 @@ class WorkflowSubmissionStore:
             state, reason = 'consumed', 'consumed'
         elif intent['final_result_id'] is not None or intent['state'] == 'completed':
             reason = 'awaiting_terminal_proof'
+        if graph is not None and history_successor(conn, row['instance_id']):
+            state, reason = 'held', 'noncurrent_successor'
         core = dict(handoff_id=row['id'], reserved_submission_id=row['submission_id'], instance_id=row['instance_id'],
                     revision=1, candidate_digest=row['candidate_digest'], request_digest=row['request_digest'], created_at=row['created_at'])
         if proof['format'] == 'workflow-author-handoff@2':
             core['artifact_kind'] = 'document'
         return dict(format='workflow-author-handoff-receipt@2' if proof['format'] == 'workflow-author-handoff@2' else 'workflow-author-handoff-receipt@1', core=core, replayed=replayed,
                     current=dict(state=state, pending=state in ('pending', 'held'), reconciliation_required=reconcile,
-                                 reason=reason, graph=graph if state == 'consumed' else None))
+                                 reason=reason, graph=graph if state == 'consumed' or reason == 'noncurrent_successor' else None))
 
     async def consume_completed_handoff(self, handoff_id: str) -> list[str]:
         capture = self.org.workflow_authority.capture_admission()

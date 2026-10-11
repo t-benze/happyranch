@@ -233,7 +233,7 @@ def validate_revision_record(conn: sqlite3.Connection, row: dict, *, expected_or
         proof = _handoff_json(row['admission_bytes'], row['admission_digest'])
         if (set(proof) != {'format', 'operation', 'client_request', 'predecessor', 'pins', 'admission_authority'}
                 or proof['format'] != 'workflow-document-revision-admission@1'
-                or canonical_bytes(command) != row['request_bytes'] or command != proof['client_request']
+                or canonical_bytes(command) != row['request_bytes'] or canonical_bytes(command) != canonical_bytes(proof['client_request'])
                 or row['org_slug'] != expected_org_slug or row['principal'] != 'human:founder'
                 or row['id'] != _id('workflow-document-revision', row['org_slug'], row['principal'], row['operation_key'])
                 or canonical_bytes(proof['operation']) != canonical_bytes(_hex({k: v for k, v in row.items() if k not in ('admission_bytes', 'admission_digest')}))):
@@ -331,7 +331,7 @@ def _stage(conn: sqlite3.Connection, row: dict, intent: dict) -> tuple[dict, dic
     if operation['created_at'] != stamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ'):
         raise ValueError(CODE)
     launches = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind='launch_reserved'", (intent['id'],))
-    callbacks = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind IN ('callback_recorded','callback_rejected','cancel_requested')", (intent['id'],))
+    callbacks = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind IN ('callback_recorded','cancel_requested')", (intent['id'],))
     if (len(launches) != 1 or stamp < datetime.fromisoformat(launches[0]['created_at'])
             or any(stamp > datetime.fromisoformat(e['created_at']) for e in callbacks)):
         raise ValueError(CODE)
@@ -651,7 +651,8 @@ class WorkflowRevisionStore:
         intent = _record(conn, 'workflow_draft_dispatch_intents', row['draft_intent_id'])
         subject = review_row(conn, row)
         graph = None
-        collection = None
+        collection = dict(state='needs_revision', approved_use=False, validity='held',
+            reason='noncurrent_successor', owner_principal='human:founder', required_action='await_revision_author')
         reason = None
         try:
             self._authority(conn, intent, capture)

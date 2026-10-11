@@ -1329,7 +1329,7 @@ export interface AuthorHandoffCurrent {
   pending: boolean;
   reconciliation_required: boolean;
   reason: 'awaiting_callback' | 'awaiting_terminal_proof' | 'authority_not_current' |
-    'source_not_current' | 'new_runs_disabled' | 'source_uncertain' | 'source_failed' | 'source_cancelled' | 'consumed';
+    'source_not_current' | 'new_runs_disabled' | 'source_uncertain' | 'source_failed' | 'source_cancelled' | 'consumed' | 'noncurrent_successor';
   graph: AuthorHandoffGraph | null;
 }
 export interface LegacyAuthorHandoffReceipt {
@@ -1509,4 +1509,10 @@ export interface DocumentRevisionReceipt {
     collection: { state: 'collecting' | 'needs_revision' | 'ready_to_join' | 'approved' | 'held'; approved_use: boolean;
       validity: 'current' | 'held'; reason: string | null; owner_principal: 'human:founder'; required_action: string | null } | null;
   };
+}
+
+/** Agent-only CLI command shape; the browser client has no stage function. */
+export interface AuthorRevisionCommand {
+  format: 'workflow-author-revision-command@1'; operation_key: string; revision_operation_id: string;
+  expected_revision: 2; artifact_kind: 'document'; submission_bytes_base64: string; submission_digest: string;
 }
