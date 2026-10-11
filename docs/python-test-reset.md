@@ -88,8 +88,8 @@ start+900, retains a bounded incomplete FAIL receipt and grants no extra teardow
 or action time. Hosted upload shares the remaining900s/15-minute envelope;
 local timers do not guarantee upload success. Timing evidence is required by
 both daily consumers. These source bounds and480−375=105 nominal planning slack
-are not measured fit or observed signal/cleanup/export behavior;42 variants,
-cadence and the600 target remain unchanged. See [the timing contract](../e2e/README.md).
+are not measured fit or observed signal/cleanup/export behavior. The42 baseline/Pause variants remain at their original boundaries;
+the E04 prefix below adds six. Cadence and the600 target remain unchanged. See [the timing contract](../e2e/README.md).
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 
@@ -161,3 +161,23 @@ local-CI/test-authoring KB entries, engineering charters and delivered skill
 refresh. Only release-owned bundled skill sources change in this PR. The
 `integration-agentic-cli-stub-only` KB remains binding. Historical implementation
 reports retain their original failures, counts and allocations.
+
+### E04 daily source prefix
+
+The daily harness appends six accepted E04 jobs variants after the unchanged
+23 baseline and19 Pause variants (48 authored). Real provider-owned submit/
+block/read/final CLI callbacks, browser approval/rejection, completed0/7,
+failed-timeout/-9 and both two-job terminal orders retain literal durable and
+owned process oracles. BootA12 is archived across the existing Pause restart;
+bootB closes18, cumulative30 providers, alpha19tasks29results/beta1/1, eight
+jobs/seven script starts. Actual-content aggregate validation reads observation
+and browser artifacts and rechecks serial receipt windows and outcome joins.
+
+The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
+carry all four authoring answers and consumer mapping. Source/static checks do
+not establish execution, assertion sensitivity, fit, sanitation or cleanup.
+All new behavior/proof remains MISSING/UNEXECUTED; first daily PENDING per owner.
+E05 and later cancellation/restart remain future work; no entire-program PASS.
+The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
+bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
+lane, protected proof, collector action, Jenkins or deployment is authorized.

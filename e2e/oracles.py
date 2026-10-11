@@ -35,6 +35,35 @@ class Store:
             "audit": self.query(f"SELECT * FROM audit_log WHERE task_id IN ({marks}) ORDER BY id", tuple(ids)),
         }
 
+    def jobs(self, task: str) -> dict:
+        snapshot = self.snapshot(task)
+        snapshot["jobs"] = self.query(
+            "SELECT id,task_id,agent_name,title,rationale,script_text,interpreter,cwd_hint,"
+            "status,exit_code,reason,stdout_head,stderr_head,stdout_path,stderr_path,"
+            "duration_ms,started_at,finished_at,reviewed_at,reviewed_by,reject_reason,"
+            "cwd_resolved,max_runtime_seconds,review_required,persistent,created_at "
+            "FROM jobs WHERE task_id=? ORDER BY id", (task,))
+        return snapshot
+
+    def jobs_parked(self, task: str, session: str, ids: list[str]) -> dict | None:
+        snapshot = self.jobs(task)
+        require(len(snapshot["tasks"]) == 1, "jobs root has no children", snapshot)
+        row = snapshot["tasks"][0]
+        if row["block_kind"] != "blocked_on_job":
+            return None
+        require(row["status"] == "in_progress" and row["current_session_id"] == session
+                and row["orchestration_step_count"] == 1
+                and json.loads(row["blocked_on_job_ids"]) == sorted(ids), "literal parked job owner", row)
+        require(len(snapshot["results"]) == 1 and snapshot["results"][0]["status"] == "blocked"
+                and snapshot["results"][0]["session_id"] == session, "S1 genuinely blocked result", snapshot)
+        for action in ("session_start", "session_end", "completion_report", "task_blocked_on_jobs"):
+            count = sum(a["action"] == action for a in snapshot["audit"])
+            require(count <= 1, "no duplicate S1 lifecycle audit", action)
+            if count == 0:
+                return None  # Task publication and subsequent audit are separate commits.
+        require(not any(a["action"] == "task_resumed_from_jobs" for a in snapshot["audit"]), "no premature wake")
+        return snapshot
+
     def ordinary(self) -> None:
         selectors = self.query("SELECT team,family FROM authority_policy_active_selector")
         require(selectors == [{"team": "engineering", "family": "empty"}],

@@ -516,3 +516,23 @@ both independent same-root characterizations failed on candidate and baseline.
 Keep those genuine callback failures and their durable/native receipts. A
 test expectation repair, native admission or artifact provisioning does not
 establish complete retirement or behavioral QA acceptance.
+
+### E04 daily source prefix
+
+The daily harness appends six accepted E04 jobs variants after the unchanged
+23 baseline and19 Pause variants (48 authored). Real provider-owned submit/
+block/read/final CLI callbacks, browser approval/rejection, completed0/7,
+failed-timeout/-9 and both two-job terminal orders retain literal durable and
+owned process oracles. BootA12 is archived across the existing Pause restart;
+bootB closes18, cumulative30 providers, alpha19tasks29results/beta1/1, eight
+jobs/seven script starts. Actual-content aggregate validation reads observation
+and browser artifacts and rechecks serial receipt windows and outcome joins.
+
+The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
+carry all four authoring answers and consumer mapping. Source/static checks do
+not establish execution, assertion sensitivity, fit, sanitation or cleanup.
+All new behavior/proof remains MISSING/UNEXECUTED; first daily PENDING per owner.
+E05 and later cancellation/restart remain future work; no entire-program PASS.
+The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
+bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
+lane, protected proof, collector action, Jenkins or deployment is authorized.

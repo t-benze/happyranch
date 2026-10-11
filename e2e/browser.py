@@ -118,9 +118,73 @@ class Browser:
         self.page.screenshot(path=str(self.controller.root / "raw" / f"{shot}.png"), full_page=True)
         require(not any(row["event"] == "pageerror" for row in self.events), "built-browser JavaScript error", self.events)
 
+    def job_open(self, job: str, status: str) -> dict:
+        self.page.set_default_timeout(self.controller.remaining(10) * 1000)
+        path = f"/api/v1/orgs/alpha/jobs/{job}"
+        with self.response(path) as response:
+            self.page.goto(f"{self.base}/orgs/alpha/jobs/{job}")
+        body = response.value.json()
+        require(body["id"] == job and body["status"] == status, "fresh browser job state", body)
+        expect(self.page.get_by_role("main").get_by_text(status, exact=True).first).to_be_visible()
+        return body
+
+    def job_action(self, job: str, cap: int, pending_check: Any, *, reject: bool = False) -> dict:
+        self.job_open(job, "pending")
+        action = "Reject" if reject else "Approve & run"
+        self.page.get_by_role("main").get_by_role("button", name=action, exact=True).click()
+        dialog = self.page.get_by_role("dialog")
+        expect(dialog).to_be_visible()
+        expect(dialog.get_by_text(action + " " + job, exact=True)).to_be_visible()
+        if reject:
+            dialog.get_by_label("Reason", exact=True).fill("E04_REJECTED_BY_REVIEW")
+        else:
+            expect(dialog.get_by_label("Timeout (seconds)", exact=True)).to_have_value(str(cap))
+            expect(dialog.get_by_label("Working directory override", exact=True)).to_have_value("")
+        pending_check()  # Still no launch with the real confirmation open.
+        path = f"/api/v1/orgs/alpha/jobs/{job}/" + ("reject" if reject else "run")
+        with self.page.expect_response(lambda r: r.url == self.base + path and r.request.method == "POST") as received:
+            dialog.get_by_role("button", name=action, exact=True).click()
+        response = received.value
+        request = response.request.post_data_json
+        expected = {"reason": "E04_REJECTED_BY_REVIEW"} if reject else {}
+        record = dict(path=path, request=request, status=response.status, response=response.json(), at=time.monotonic())
+        self.events.append(dict(event="job-action", **record))
+        require(request == expected and response.status == (200 if reject else 202), "actual browser job action", record)
+        return record
+
+    def job_terminal(self, job: str, status: str, exit_code: int | None, out: str, err: str) -> dict:
+        body = self.job_open(job, status)
+        main = self.page.get_by_role("main")
+        if status == "rejected":
+            expect(main.get_by_text("E04_REJECTED_BY_REVIEW", exact=True)).to_be_visible()
+            expect(main.get_by_role("heading", name="Output", exact=True)).to_have_count(0)
+        else:
+            label = main.get_by_text("Exit code", exact=True)
+            expect(label).to_be_visible()
+            expect(label.locator("..").get_by_text(str(exit_code), exact=True)).to_be_visible()
+            for stream, content in (("stdout", out), ("stderr", err)):
+                heading = main.get_by_role("heading", name=stream, exact=True)
+                expect(heading.locator("..").locator("pre")).to_have_text(content)
+            if status == "failed":
+                expect(main.get_by_text("timeout", exact=True)).to_be_visible()
+        expect(main.get_by_role("button", name="Approve & run", exact=True)).to_have_count(0)
+        expect(main.get_by_role("button", name="Reject", exact=True)).to_have_count(0)
+        self.page.screenshot(path=str(self.controller.root / "raw" / f"e04-{job}.png"), full_page=True)
+        return dict(body=body, text=main.inner_text(), screenshot=f"e04-{job}.png", at=time.monotonic())
+
+    def jobs_waiting(self, task: str, ids: list[str]) -> dict:
+        path = f"/api/v1/orgs/alpha/tasks/{task}"
+        with self.response(path) as response, self.response(path + "/recall"):
+            self.page.goto(f"{self.base}/orgs/alpha/tasks/{task}")
+        main = self.page.get_by_role("main")
+        expect(main.get_by_text("waiting on jobs", exact=False).first).to_be_visible()
+        for job in ids:
+            expect(main.get_by_text(job, exact=False).first).to_be_visible()
+        return dict(body=response.value.json(), text=main.inner_text(), at=time.monotonic())
+
     def close(self) -> None:
         try:
-            (self.controller.root / "raw" / "browser-events.json").write_text(json.dumps(self.events, indent=2))
+            (self.controller.root / "raw" / "browser-events.json").write_text(self.controller.sanitize(json.dumps(self.events, indent=2)))
             self.page.screenshot(path=str(self.controller.root / "raw" / "browser-final.png"), full_page=True)
             self.context.close()
             self.browser.close()
