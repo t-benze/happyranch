@@ -275,7 +275,7 @@ class TaskReconciliation:
         require(row["action"] == "session_start" and row["task_id"] == SCOPE["owner"],
                 "original_session_evidence")
         try:
-            require(self.original_session(payload.get("session_id")) == binding, "original_session_evidence")
+            require(canonical(self.original_session(payload.get("session_id"))) == canonical(binding), "original_session_evidence")
         except ReconciliationError as exc:
             raise ReconciliationError("original_session_evidence") from exc
 
@@ -519,11 +519,12 @@ class TaskReconciliation:
             "thread_id": origin["id"], "composed_by": SCOPE["manager"], "composed_from_task_id": SCOPE["current"],
             "owner_dispatch": next((d for d in payload["dispatch_bindings"] if d["root_id"] == SCOPE["owner"]), None)})
         require(origin["composed_by"] == SCOPE["manager"] and origin["composed_from_task_id"] == SCOPE["current"])
-        require(payload["dispatch_bindings"] == sorted((self.dispatch(self.task(t)) for t in ROOT_SEQS), key=lambda d: d["root_id"]))
+        require(canonical(payload["dispatch_bindings"]) == canonical(sorted(
+            (self.dispatch(self.task(t)) for t in ROOT_SEQS), key=lambda d: d["root_id"])))
         edges = payload["old_edge_bindings"]
         require(isinstance(edges, list) and 2 <= len(edges) <= 18)
         for edge in edges:
-            require(edge == self.old_edge(edge["predecessor_id"], edge["successor_id"]))
+            require(canonical(edge) == canonical(self.old_edge(edge["predecessor_id"], edge["successor_id"])))
         self.validate_frozen(snapshot, payload["operator_claim"])
         return {"audit_id": row["id"], "timestamp": row["timestamp"], "task_id": row["task_id"],
                 "agent": row["agent"], "action": row["action"],
@@ -567,7 +568,7 @@ class TaskReconciliation:
                           "step": owner["orchestration_step_count"], "revision": owner["revision_count"],
                           **{k + "_sha256": owner[k + "_sha256"] for k in
                              ("active_chain", "active_fanout", "note", "blocked_on_job_ids")}, "result_row_id": None}
-        require(claim == expected_claim)
+        require(canonical(claim) == canonical(expected_claim))
         require(frozen[SCOPE["current"]]["status"] == "in_progress" and frozen[SCOPE["current"]]["cancelled_at"] is None)
         for task_id, parent, agent, revisit in ((SCOPE["dev_child"], SCOPE["predecessor"], "dev_agent", "TASK-10409"),
                                               (SCOPE["qa_child"], SCOPE["older"], "qa_engineer", None)):
@@ -587,12 +588,19 @@ class TaskReconciliation:
         for item, agent in zip(local["agents"], ("dev_agent", "qa_engineer")):
             keys(item, "target_agent failed_children retries")
             require(item["target_agent"] == agent and isinstance(item["failed_children"], list) and isinstance(item["retries"], list))
+            for name in ("failed_children", "retries"):
+                rows = item[name]
+                require(len(rows) <= CAP and [r["id"] for r in rows] == sorted({r["id"] for r in rows}))
             for child in item["failed_children"]:
                 keys(child, "id assigned_agent status parent_task_id revisit_of_task_id")
                 require(child["assigned_agent"] == agent and child["status"] == "failed" and child["parent_task_id"] == SCOPE["current"])
+                original = self.task(child["id"])
+                require(canonical(child) == canonical({k: original[k] for k in child}))
             for retry in item["retries"]:
                 keys(retry, "id revisit_of_task_id")
                 require(type(retry["id"]) is str and type(retry["revisit_of_task_id"]) is str)
+                original = self.task(retry["id"])
+                require(original["parent_task_id"] == SCOPE["current"] and original["revisit_of_task_id"] == retry["revisit_of_task_id"])
         # Reconstruct the full frozen path, including the new gap, rather than
         # trusting an array of independently valid but unrelated old edges.
         incoming = {SCOPE["successor"]: SCOPE["predecessor"]}
