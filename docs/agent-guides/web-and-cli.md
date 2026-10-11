@@ -1458,6 +1458,19 @@ refuses403 bearer_not_accepted. Human lanes retain the existing Founder bearer.
 Selection/current membership/grants are revalidated: invisible scope404, selected
 grant loss403, unready current authority409, stored corruption500.
 
+The current Founder owner can read a superseded source with the SAME active
+authorization pointer and collect-review grant, full immutable ownership closure
+and coherent current authority; no human reviewer row is required. Source and
+request agent selection remains strict. An original-current source GET after
+callback and before tracker clear is allowed; tracker clear refuses the session.
+After valid admission, corruption refuses500 and genuine failed/cancelled sources
+retain their actual reconciliation flags. Otherwise disabled cutover takes
+precedence over supersession, authority change and uncertainty:
+held/new_runs_disabled, then held/source_not_current, then
+held/authority_not_current, then uncertain/missing proof and eligible graph or
+callback states. Every held graph is null, with the same immutable core and no
+domain/queue/launch effects. Historical owner reads grant no POST/consume authority.
+
 H receipts contain exactly format/core/replayed/current. Core has only
 handoff_id, reserved_submission_id, instance_id, revision, candidate_digest,
 request_digest and created_at. Current contains state, pending,

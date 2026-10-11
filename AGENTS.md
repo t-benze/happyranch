@@ -516,6 +516,20 @@ U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
 with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
 cancellation and portability owner selection. This stacked draft remains
 unaccepted pending independent same-head assessment and retained gates.
+
+Current Founder-owner handoff GET may read a superseded source, including a
+configuration with zero human reviewers, only with current instance ownership,
+the SAME active authorization pointer and collect-review grant, full immutable
+closure and coherent current authority. Source/request-agent selection remains
+strict; staging, consumption and review dispatch retain current-source fences.
+After valid admission, corruption refuses500; failed/cancelled sources retain
+their actual reconciliation flags. Otherwise projection precedence is disabled
+(held/new_runs_disabled), superseded (held/source_not_current), changed coherent
+authority (held/authority_not_current), then uncertain/missing proof and eligible
+graph/callback states. Core stays identical; every held graph is hidden and GET
+creates no domain, queue or launch effects. Callback-before-clear original-current
+GET remains allowed; cleared sessions refuse through existing session admission.
+
 Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
 receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
 acceptance remain later units. Full independent review, honest same-head QA,

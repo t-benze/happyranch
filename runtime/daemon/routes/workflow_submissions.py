@@ -17,7 +17,7 @@ from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.submissions import AuthorHandoffCommand, AuthorHandoffCore, AuthorHandoffReceipt as StoredHandoffReceipt
 from pydantic import Field
-from runtime.workflows.templates import WorkflowTemplateError
+from runtime.workflows.templates import WorkflowTemplateError, WorkflowTemplatePrincipal
 
 router = APIRouter()
 IDENTITY_KEYS = {'actor', 'agent', 'agent_name', 'principal', 'principal_id', 'principal_kind', 'proof_kind',
@@ -172,9 +172,12 @@ async def get_handoff(org: OrgDep, handoff_id: str, request: Request,
     values = query_values(request, {'session_id', 'activation_id', 'request_id', 'proof_kind'})
     if re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', handoff_id) is None:
         fail('workflow_author_handoff_invalid_request', 422)
+    owner = None
     if set(values) == {'proof_kind'} and proof_kind == 'owner-human':
         lane, selector = 'owner-human', None
         _require_human(has_bearer)
+        owner = WorkflowTemplatePrincipal.founder(org_slug=org.slug, team_slug='',
+                                                 revalidate=lambda: _require_human(has_bearer))
     elif set(values) == {'session_id', 'activation_id'}:
         lane, selector = 'source-agent', activation_id
         agent_transport(request, has_bearer)
@@ -186,7 +189,7 @@ async def get_handoff(org: OrgDep, handoff_id: str, request: Request,
     try:
         require_read_schema(org, session_id)
         return await org.workflow_submissions.get_handoff(handoff_id=handoff_id, lane=lane,
-                                                          session_id=session_id, selector=selector)
+                                                          session_id=session_id, selector=selector, owner=owner)
     except ERRORS as exc:
         raise_read_error(exc)
     except sqlite_error_types() as exc:

@@ -20,7 +20,7 @@ from runtime.workflows.activation import (
     ClosedRecord, SHA256, Token, WorkflowActivationError, _id,
 )
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
-from runtime.workflows.templates import WorkflowTemplateStore, _document_contract
+from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, _document_contract
 
 
 class AuthorHandoffCommand(ClosedRecord):
@@ -280,17 +280,31 @@ class WorkflowSubmissionStore:
         return task, agent
 
     def _authority(self, conn: sqlite3.Connection, intent: dict, capture: Any, actions: set[str]) -> tuple[dict, dict, dict]:
+        selected = self._selected_authority(conn, intent, capture, actions)
+        if not self._current_activation(conn, intent):
+            raise WorkflowActivationError('workflow_author_handoff_source_not_current')
+        return selected
+
+    @staticmethod
+    def _current_activation(conn: sqlite3.Connection, intent: dict) -> bool:
+        active = conn.execute('SELECT activation_id,activation_revision FROM workflow_active_activations WHERE instance_id=?',
+                              (intent['instance_id'],)).fetchone()
+        return active is not None and tuple(active) == (intent['activation_id'], intent['activation_revision'])
+
+    def _selected_authority(self, conn: sqlite3.Connection, intent: dict, capture: Any,
+                            actions: set[str]) -> tuple[dict, dict, dict]:
+        """Validate the selected grant and full closure against coherent CURRENT authority.
+
+        Only the independently selected current owner may read a historical
+        activation through this helper; all other callers use _authority.
+        """
         activation, context_row, binding, template, authorization = _source(conn, intent)
         self.org.workflow_activations._closure(conn, activation['id'], actor=intent['admission_principal'])
         grant = json.loads(authorization['authority_bytes'])
         pointer = conn.execute('SELECT authorization_revision_id FROM workflow_active_authorizations WHERE namespace=?',
                                (authorization['namespace'],)).fetchone()
-        active = conn.execute('SELECT activation_id,activation_revision FROM workflow_active_activations WHERE instance_id=?',
-                              (intent['instance_id'],)).fetchone()
         if (pointer is None or pointer[0] != authorization['id'] or not actions <= set(grant['original_request']['allowed_actions'])):
             raise WorkflowActivationError('workflow_author_handoff_action_not_authorized')
-        if active is None or tuple(active) != (intent['activation_id'], intent['activation_revision']):
-            raise WorkflowActivationError('workflow_author_handoff_source_not_current')
         from runtime.workflows.activation import parse_request
         self.org.workflow_activations._roles(parse_request(grant['original_request']), json.loads(capture.ready.snapshot_bytes), template)
         context = json.loads(context_row['context_bytes'])
@@ -415,24 +429,29 @@ class WorkflowSubmissionStore:
         proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
         intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
         graph = validate_handoff_graph(conn, row, proof)
-        state, reason, reconcile = 'pending', 'awaiting_callback', False
+        # Reconciliation describes actual proof uncertainty independently of
+        # whichever higher-precedence hold currently hides the graph.
+        reconcile = (intent['state'] == 'uncertain'
+                     or (intent['state'] == 'completed' and _source_result(conn, intent) is None))
+        state, reason = 'pending', 'awaiting_callback'
         if intent['state'] in ('failed', 'cancelled'):
             state, reason = intent['state'], 'source_' + intent['state']
             reconcile = bool(intent['host_launch_started'] and not conn.execute(
                 "SELECT 1 FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind=?",
                 (intent['id'], intent['state'])).fetchone())
-        elif intent['state'] == 'uncertain':
-            state, reason, reconcile = 'held', 'source_uncertain', True
-        elif not intent['is_current'] or intent['cancellation_requested']:
+        elif conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled':
+            state, reason = 'held', 'new_runs_disabled'
+        elif (not intent['is_current'] or intent['cancellation_requested']
+              or not self._current_activation(conn, intent)):
             state, reason = 'held', 'source_not_current'
         elif capture.ready.generation != intent['authority_generation'] or capture.ready.snapshot_digest != intent['authority_digest']:
             state, reason = 'held', 'authority_not_current'
-        elif conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled':
-            state, reason = 'held', 'new_runs_disabled'
+        elif intent['state'] == 'uncertain':
+            state, reason = 'held', 'source_uncertain'
         elif graph is not None:
             state, reason = 'consumed', 'consumed'
-        elif intent['final_result_id'] is not None:
-            reason, reconcile = 'awaiting_terminal_proof', intent['state'] == 'completed' and _source_result(conn, intent) is None
+        elif intent['final_result_id'] is not None or intent['state'] == 'completed':
+            reason = 'awaiting_terminal_proof'
         core = dict(handoff_id=row['id'], reserved_submission_id=row['submission_id'], instance_id=row['instance_id'],
                     revision=1, candidate_digest=row['candidate_digest'], request_digest=row['request_digest'], created_at=row['created_at'])
         return dict(format='workflow-author-handoff-receipt@1', core=core, replayed=replayed,
@@ -572,14 +591,22 @@ class WorkflowSubmissionStore:
                 'can fulfill the same handoff only after genuine callback and committed successful/quiescent terminal proof.\n')
 
     async def get_handoff(self, *, handoff_id: str, lane: str, session_id: str | None,
-                          selector: str | None) -> dict:
+                          selector: str | None, owner: WorkflowTemplatePrincipal | None = None) -> dict:
         task_agent = self._session(session_id) if session_id is not None else None
+        if lane == 'owner-human':
+            if owner is None:
+                raise WorkflowActivationError('workflow_author_handoff_read_not_authorized')
+            self.org.workflow_activations._principal(owner)
+        elif owner is not None:
+            raise WorkflowActivationError('workflow_author_handoff_invalid_request')
         capture = self.org.workflow_authority.capture_admission()
         async with self._lock:
             async with self.org.db_lock:
                 lease = self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext()
                 with lease:
                     with self.org.workflow_authority.admission_writer(capture) as conn:
+                        if owner is not None:
+                            self.org.workflow_activations._principal(owner)
                         if session_id is not None:
                             self._session(session_id)
                         rows = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE id=?', (handoff_id,))
@@ -608,13 +635,16 @@ class WorkflowSubmissionStore:
                         elif lane == 'owner-human':
                             instance = _record(conn, 'workflow_instances', row['instance_id'])
                             grant = json.loads(_record(conn, 'workflow_authorization_revisions', proof['pins']['authorization']['id'])['authority_bytes'])
-                            if (instance['owner_principal'] != 'human:founder' or intent['admission_principal'] != 'human:founder'
-                                    or grant['actor'] != dict(principal_kind='human', principal_id='founder', proof_kind='founder_bearer')):
+                            if (instance['owner_principal'] != owner.operation_principal or intent['admission_principal'] != owner.operation_principal
+                                    or grant['actor'] != owner.provenance):
                                 raise WorkflowActivationError('workflow_author_handoff_not_found')
                         else:
                             raise WorkflowActivationError('workflow_author_handoff_invalid_request')
                         try:
-                            self._authority(conn, intent, capture, actions)
+                            if owner is not None:
+                                self._selected_authority(conn, intent, capture, actions)
+                            else:
+                                self._authority(conn, intent, capture, actions)
                         except WorkflowActivationError as exc:
                             if exc.code == 'workflow_author_handoff_action_not_authorized':
                                 raise WorkflowActivationError('workflow_author_handoff_read_not_authorized') from exc
