@@ -82,10 +82,15 @@ Run a potentially long `wait` in an ordinary persistent HappyRanch job. Replace 
   "interpreter": "bash",
   "review_required": false,
   "persistent": true,
-  "max_runtime_seconds": 960,
-  "max_output_bytes": 65536
+  "max_runtime_seconds": 960
 }
 ~~~
+
+HappyRanch public job submission uses a fixed default output cap of 50 MiB
+(52428800 bytes) per stream, separately for stdout and stderr. It does not
+support a submitted `max_output_bytes` override; including `65536` would not
+impose a 64 KiB limit. Configurable submission caps remain unimplemented design
+intent. This example uses the current default.
 
 `review_required:false` applies only under existing endpoint, credential and command authorization. Otherwise follow the delivered jobs approval workflow. Submit with this single-line command:
 
