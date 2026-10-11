@@ -17,6 +17,9 @@ DIAGNOSTIC_PHASES = {
     "engine_start": "engine_initialization",
     "network_join": "peer_establishment",
     "durable_commit": "receipt_commit",
+    "connector": "connector_probe",
+    "listener": "listener_admission",
+    "configuration": "configuration_validation",
 }
 DIAGNOSTIC_ACTORS = {"systemd", "tsnet-sidecar"}
 DIAGNOSTIC_UNITS = {"happyranch-tsnet-sidecar.service"}

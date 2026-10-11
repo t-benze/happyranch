@@ -93,6 +93,12 @@ func diagnosticReceipt(err error) string {
 		category, phase = "network_join", "peer_establishment"
 	case errors.Is(err, sidecar.ErrDurableCommit):
 		category, phase = "durable_commit", "receipt_commit"
+	case errors.Is(err, sidecar.ErrConnector):
+		category, phase = "connector", "connector_probe"
+	case errors.Is(err, sidecar.ErrListener):
+		category, phase = "listener", "listener_admission"
+	case errors.Is(err, sidecar.ErrConfiguration):
+		category, phase = "configuration", "configuration_validation"
 	}
 	receipt := map[string]any{"category": category, "phase": phase, "actor": "tsnet-sidecar", "unit": "happyranch-tsnet-sidecar.service", "outcome": "failed", "terminal": true, "assertion": map[string]string{"status": "completed"}}
 	if category == "network_join" {

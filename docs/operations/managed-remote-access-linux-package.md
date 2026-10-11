@@ -62,3 +62,29 @@ Install/upgrade/uninstall functions take an explicit fixture root and validate t
 THR228seq390 regression scope (authored, **UNEXECUTED / SKIPPED**): the retained Go cases drive credential files through `Sidecar.Start` and inspect the actual production AuthKey factory before substituting the existing deterministic server. Clean, LF, CRLF, ASCII/Unicode edge whitespace and interior whitespace/NUL/invalid-UTF8 bytes must reach the factory exactly as specified. Success, initialization failure and readiness failure must clear the owned normalized buffer and release the adapter key reference; only success may create the consumed marker/remove the ordinary source, and reintroduced input after success must refuse. Existing empty, mode, symlink and consumed-marker cases remain, with a whitespace-only refusal added. Owner validation remains unchanged and source-audited; no wrong-UID OS experiment was executed.
 
 Finite collector regression cases for later authorized coverage are: each of the four exact level/message/caller producers in pinned JSON and RFC3339 console form; the same records with secret canaries in error/key/SQL fields yielding only fixed category/count; wrong level/caller/message yielding `unclassified`; empty-message structured events yielding `unclassified`; duplicate JSON fields, invalid UTF-8, malformed JSON and incomplete final lines yielding `parse_loss`; byte/line overflow retaining explicit `truncated`; and unavailable/timeout/query-error observations remaining unknown rather than empty. These cases are specified, **not executable behavioral evidence**. The former Python collector suite is retired and absent; no new Python-unit or replacement E2E gate is added. The hosted actual CLI callback and fresh-install N3 remain separate from these cases, and malformed installer recovery remains source-only/unverified.
+
+THR228seq396 local diagnostic correction: startup receipts map `ErrConnector`
+(including failed/nil dial and failed probe close) to `connector/connector_probe`,
+`ErrListener` (state guard, failed/nil listen and stopping race) to
+`listener/listener_admission`, and direct `Start` configuration validation to
+`configuration/configuration_validation`. Matching uses wrapped error identity,
+never cause text. Main's earlier configuration validation still emits
+`configuration_invalid` and exits 2; failed `Start` still exits 1. Existing
+credential, engine, network and durable-commit categories, network-only finite
+subreasons, and safe `unknown/unknown` fallback remain. Both capture and ledger
+allowlists accept the same additions; unknown attributed receipts still retain
+parse loss, while plain unit-window receipts have weaker attribution. Output
+bounds and loss reporting are unchanged. The retained Go diagnostic cases are
+**UNEXECUTED** under the THR228 unit hold; collector cases remain specified with
+no retained authorized executable owner after Python-unit retirement.
+
+A consumed-marker presence snapshot does not prove completed durable commit:
+the marker is created before write, file sync/close and directory sync complete.
+The engine's `Durable` flag records its successful Running/expected-peer boundary
+with persistent tsnet configuration; it is not a separate persisted-state fsync
+or restart-validity measurement. Restart reconciliation handles retained
+source/retiring residue when the drop-in is absent; a present drop-in makes it
+return without retirement. Systemd credential staging precedes ExecStartPre, so
+source/drop-in presence and a later absent staged-directory snapshot do not
+establish what each attempt received. No credential lifecycle or restart policy
+change is part of this diagnostic correction.

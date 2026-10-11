@@ -537,18 +537,33 @@ func TestDiagnosticReceiptHasStableRedactedCategories(t *testing.T) {
 		err             error
 		category, phase string
 	}{
-		{fmt.Errorf("wrapped: %w", sidecar.ErrCredentialInput), "credential_input", "input_acquisition"},
+		{sidecar.ErrCredentialInput, "credential_input", "input_acquisition"},
+		{fmt.Errorf("TOKEN_CANARY /secret: %w", sidecar.ErrCredentialInput), "credential_input", "input_acquisition"},
 		{sidecar.ErrEngineStart, "engine_start", "engine_initialization"},
 		{sidecar.ErrNetworkJoin, "network_join", "peer_establishment"},
+		{fmt.Errorf("TOKEN_CANARY /secret: %w", sidecar.ErrNetworkJoin), "network_join", "peer_establishment"},
 		{sidecar.ErrDurableCommit, "durable_commit", "receipt_commit"},
+		{sidecar.ErrConnector, "connector", "connector_probe"},
+		{sidecar.ErrListener, "listener", "listener_admission"},
+		{sidecar.ErrConfiguration, "configuration", "configuration_validation"},
+		{fmt.Errorf("TOKEN_CANARY /secret: %w", sidecar.ErrConnector), "connector", "connector_probe"},
+		{fmt.Errorf("TOKEN_CANARY /secret: %w", sidecar.ErrListener), "listener", "listener_admission"},
+		{fmt.Errorf("TOKEN_CANARY /secret: %w", sidecar.ErrConfiguration), "configuration", "configuration_validation"},
+		{fmt.Errorf("TOKEN_CANARY /secret: %w", sidecar.ErrEngineStart), "engine_start", "engine_initialization"},
+		{fmt.Errorf("TOKEN_CANARY /secret: %w", sidecar.ErrDurableCommit), "durable_commit", "receipt_commit"},
+		{nil, "unknown", "unknown"},
+		{errors.New(sidecar.ErrConnector.Error()), "unknown", "unknown"},
+		{errors.New(sidecar.ErrListener.Error()), "unknown", "unknown"},
+		{errors.New(sidecar.ErrConfiguration.Error()), "unknown", "unknown"},
 		{errors.New("provider token=/secret/path"), "unknown", "unknown"},
+		{errors.New("KEY_CANARY TOKEN_CANARY CREDENTIAL_CANARY https://user:password@host.invalid/path?key=secret 100.64.0.1 /private/config BACKEND_CANARY"), "unknown", "unknown"},
 	} {
 		raw := strings.TrimPrefix(diagnosticReceipt(tc.err), "diagnostic_receipt=")
 		var got map[string]any
 		if err := json.Unmarshal([]byte(raw), &got); err != nil {
 			t.Fatal(err)
 		}
-		if got["category"] != tc.category || got["phase"] != tc.phase {
+		if got["category"] != tc.category || got["phase"] != tc.phase || got["actor"] != "tsnet-sidecar" || got["unit"] != "happyranch-tsnet-sidecar.service" || got["outcome"] != "failed" || got["terminal"] != true {
 			t.Fatalf("receipt=%v", got)
 		}
 		if tc.category == "network_join" {
@@ -558,10 +573,24 @@ func TestDiagnosticReceiptHasStableRedactedCategories(t *testing.T) {
 		} else if _, exists := got["sub_reason"]; exists || len(got) != 7 {
 			t.Fatal("non-network receipt shape changed")
 		}
-		if strings.Contains(raw, "token") || strings.Contains(raw, "/secret") || strings.Contains(raw, "provider") {
+		if strings.Contains(raw, "token") || strings.Contains(raw, "/secret") || strings.Contains(raw, "provider") || strings.Contains(raw, "CANARY") || strings.Contains(raw, "https://") || strings.Contains(raw, "100.64.0.1") || strings.Contains(raw, "/private/config") {
 			t.Fatalf("secret-bearing receipt %q", raw)
 		}
 	}
+	t.Run("direct-start-configuration-validation", func(t *testing.T) {
+		// Start validates before touching credentials or the engine. Main also
+		// pre-validates, so this proves the direct Start boundary's category.
+		svc := sidecar.New(sidecar.Config{}, nil, nil)
+		err := svc.Start(context.Background())
+		if !errors.Is(err, sidecar.ErrConfiguration) {
+			t.Fatal("invalid configuration did not refuse")
+		}
+		var got map[string]any
+		raw := strings.TrimPrefix(diagnosticReceipt(err), "diagnostic_receipt=")
+		if json.Unmarshal([]byte(raw), &got) != nil || got["category"] != "configuration" || got["phase"] != "configuration_validation" {
+			t.Fatal("direct Start configuration receipt missing")
+		}
+	})
 	for _, reason := range []string{"unclassified", "context_cancelled", "deadline_exceeded", "up_backend_error", "up_no_ip", "up_error_unclassified", "up_status_unavailable", "up_not_running", "peer_status_error", "peer_status_unavailable", "peer_not_running", "peer_wait_deadline", "expected_peer_missing", "KEY_CANARY TOKEN_CANARY CREDENTIAL_CANARY https://user:password@host.invalid/path?key=secret 100.64.0.1 /private/config BACKEND_CANARY"} {
 		name := reason
 		if strings.Contains(reason, "CANARY") {

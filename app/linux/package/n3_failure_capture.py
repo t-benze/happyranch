@@ -24,6 +24,9 @@ RECEIPT_GRAMMAR = {
     "engine_start": "engine_initialization",
     "network_join": "peer_establishment",
     "durable_commit": "receipt_commit",
+    "connector": "connector_probe",
+    "listener": "listener_admission",
+    "configuration": "configuration_validation",
 }
 SIDECAR_UNIT = "happyranch-tsnet-sidecar.service"
 SIDECAR_ACTOR = "tsnet-sidecar"

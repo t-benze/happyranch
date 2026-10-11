@@ -928,4 +928,14 @@ Unclaimed completion recovery retains the actual original return and SIDs while 
 
 ## Managed Linux enrollment input
 
-The sidecar normalizes surrounding enrollment-file whitespace before the actual tsnet AuthKey input, refuses blank input, and preserves interior bytes and existing custody/one-use safeguards. Owned read/normalized buffers are cleared on every returned path; the adapter releases its key reference after initialization, including failure. See [the maintained Linux package guide](../operations/managed-remote-access-linux-package.md) for the pinned Headscale logging limitation and bounded category-only capture. THR228seq390 keeps all unit execution suspended for PR800; authored Go regressions are UNEXECUTED, and retired Python units must not return. Current combined local-CI Web targets still invoke Vitest; use the permitted existing nonunit components only in this cycle.
+The sidecar normalizes surrounding enrollment-file whitespace before the actual tsnet AuthKey input, refuses blank input, and preserves interior bytes and existing custody/one-use safeguards. Owned read/normalized buffers are cleared on every returned path; the adapter releases its key reference after initialization, including failure. See [the maintained Linux package guide](../operations/managed-remote-access-linux-package.md) for the pinned Headscale logging limitation and bounded category-only capture. THR228seq390 keeps all unit execution suspended for PR800; authored Go regressions are UNEXECUTED, and retired Python units must not return. The published PR800 lineage’s combined local-CI Web targets still invoke Vitest; use only permitted scoped static components for this unpublished diagnostic correction.
+
+PR800's THR228seq396 local diagnostic correction adds finite connector, listener
+and direct-Start configuration categories to both receipt consumers; the Linux
+package guide records exact phases and limits. Main pre-validation retains its
+original exit-2 plain configuration message. No startup, retry or credential
+acceptance change follows. Authored retained cases and behavioral/proof results
+remain UNEXECUTED under the THR228 hold. Merged PR1025's current-main all/hooks
+are lint/static only under THR291seq69; the unpublished PR800 lineage retains
+historical combined build/Vitest selection and must use only permitted scoped
+static checks until ordinary reviewed integration. No daily execution is proved.
