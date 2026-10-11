@@ -489,6 +489,11 @@ class TaskReconciliation:
                    ("active_chain", "active_fanout", "note", "blocked_on_job_ids")}, "result_row_id": None}
 
     def validate_receipt(self, row: dict, payload: dict) -> dict:
+        # OrgState binds the database's existing control store to its selected
+        # org. A command's literal org string alone is not database ownership.
+        store = getattr(self.db, "_task_pause_store", None)
+        require(store is not None, "control_unavailable", 503)
+        require(store.org_slug == SCOPE["org"], "operation_scope", 403)
         require(type(row["id"]) is int and row["id"] > 0 and row["task_id"] == SCOPE["predecessor"]
                 and row["agent"] == SCOPE["manager"] and row["action"] == ACTION)
         aware_timestamp(row["timestamp"])
