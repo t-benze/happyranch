@@ -96,7 +96,7 @@ export function AgentsPage(): JSX.Element {
       didAutoSelect.current = false;
     }
     if (didAutoSelect.current) return;
-    if (agentsQuery.isLoading) return;
+    if (agentsQuery.isLoading || agentsQuery.isError) return;
     if (searchParams.get('view') === 'pending') return;
     didAutoSelect.current = true;
     if (!selectedAgent && agents.length > 0) {
@@ -104,6 +104,7 @@ export function AgentsPage(): JSX.Element {
     }
   }, [
     agentsQuery.isLoading,
+    agentsQuery.isError,
     searchParams,
     selectedAgent,
     agents,
@@ -162,13 +163,20 @@ export function AgentsPage(): JSX.Element {
           <Tabs value={tab}>
             <TabsContent value="active" className="mt-0">
               {agentsQuery.isLoading ? (
-                <div className="animate-pulse space-y-2 p-3">
+                <div role="status" aria-label={t('agents.common.loading')} className="animate-pulse space-y-2 p-3">
                   {[1, 2, 3, 4, 5].map((i) => (
                     <div
                       key={i}
                       className="bg-surface-raised h-10 w-full rounded-lg"
                     />
                   ))}
+                </div>
+              ) : agentsQuery.isError ? (
+                <div className="space-y-2 p-4" role="alert">
+                  <p className="text-text-muted text-sm">{t('agents.page.loadError')}</p>
+                  <Button variant="outline" size="sm" onClick={() => agentsQuery.refetch()}>
+                    {t('common.retry')}
+                  </Button>
                 </div>
               ) : agents.length === 0 ? (
                 <div className="p-4">

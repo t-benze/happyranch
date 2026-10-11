@@ -322,8 +322,11 @@ def exercise(c: Controller) -> None:
     c.mark("Pause.drained-before-restart", dict(worker=worker_finish, metrics=metrics, no_launch=bounded))
     # Whole paused state including original INTEGER results and consumption
     # audits must survive same-files restart, without reinitialization.
+    from jobs import anchor
+    anchor(c, "archive-A", 12)
     before = state(c)
     restart = c.restart_owned_daemon()
+    anchor(c, "initial-B", 0)
     host(c, "post-restart-zero", 0)
     require(state(c) == before, "same-files restart retains control/chain/results/consumption state", state(c))
     p = detail(c, root)["pause"]

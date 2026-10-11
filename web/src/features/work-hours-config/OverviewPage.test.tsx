@@ -1,8 +1,8 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, test } from 'vitest';
 import { AppRoutes } from '@/routes';
-import { renderWithProviders } from '@/test/render';
+import { renderWithProviders, savedLocaleAdapter } from '@/test/render';
 import { server } from '@/test/server';
 import { translate } from '@/lib/i18n';
 import type {
@@ -212,5 +212,69 @@ describe('Work-Hours Overview (S1)', () => {
         screen.getByText(translate('en', 'workHours.recovery.title')),
       ).toBeInTheDocument();
     });
+  });
+});
+
+
+describe('THR296 human Default working-hours roster', () => {
+  test.each(['en', 'zh-CN'] as const)('%s retains worker membership without a synthetic human agent', async (locale) => {
+    seed({ agents: [agent('consultant_head', 'Individual advice.', 'default'), agent('consultant_codex', 'Individual advice.', 'default')] });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: [{
+      name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder',
+      is_default: true, workers: ['consultant_head', 'consultant_codex'],
+    }] })));
+    renderWithProviders(<AppRoutes />, {
+      route: `/orgs/${SLUG}/work-hours`, i18n: { adapter: savedLocaleAdapter(locale) },
+    });
+    expect(await screen.findByText('consultant_head')).toBeInTheDocument();
+    expect(screen.getByText('consultant_codex')).toBeInTheDocument();
+    const rows = within(screen.getByRole('table')).getAllByRole('row');
+    expect(rows).toHaveLength(3);
+    await waitFor(() => {
+      for (const row of rows.slice(1)) expect(within(row).getByText('default')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('founder')).not.toBeInTheDocument();
+    expect(screen.queryByText('null')).not.toBeInTheDocument();
+  });
+});
+
+// C10: HTTP availability is transport input; the mounted overview owns every
+// state decision. Empty Default and an empty agent list are different states.
+describe('C10 Work Hours query availability', () => {
+  test.each(['en', 'zh-CN'] as const)('%s loading/error/retry preserves human worker mapping', async (locale) => {
+    seed({ agents: [agent('consultant_head', 'Advice.', 'default'), agent('consultant_codex', 'Advice.', 'default')] });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    let failed = true;
+    let reads = 0;
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/agents`, async () => {
+        reads += 1;
+        await pending;
+        return failed ? HttpResponse.json({ detail: 'fixture unavailable' }, { status: 503 })
+          : HttpResponse.json({ agents: [agent('consultant_head', 'Advice.', 'default'), agent('consultant_codex', 'Advice.', 'default')] });
+      }),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () => HttpResponse.json({ teams: [
+        { name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder', is_default: true,
+          workers: ['consultant_head', 'consultant_codex'] },
+        { name: 'eng', manager: 'lead', workers: [] },
+      ] })),
+    );
+    renderWithProviders(<AppRoutes />, { route: `/orgs/${SLUG}/work-hours`, i18n: { adapter: savedLocaleAdapter(locale) } });
+    try {
+      expect(await screen.findByRole('status', { name: translate(locale, 'workHours.roster.loading') })).toBeInTheDocument();
+      expect(screen.queryByText(translate(locale, 'workHours.empty.title'))).not.toBeInTheDocument();
+    } finally { release(); }
+    expect(await screen.findByRole('alert')).toHaveTextContent(translate(locale, 'workHours.roster.loadError'));
+    expect(screen.queryByText(translate(locale, 'workHours.empty.title'))).not.toBeInTheDocument();
+    failed = false;
+    fireEvent.click(screen.getByRole('button', { name: translate(locale, 'common.retry') }));
+    const row = (await screen.findByRole('link', { name: 'consultant_head' })).closest('tr')!;
+    await waitFor(() => expect(within(row).getByText('default')).toBeInTheDocument());
+    expect(within(row).getByText(translate(locale, 'workHours.eligibility.eligible'))).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'consultant_codex' })).toBeInTheDocument();
+    expect(screen.queryByText('founder', { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByText('null', { exact: true })).not.toBeInTheDocument();
+    expect(reads).toBe(2);
   });
 });

@@ -5,6 +5,7 @@ import {
   createAndActivateTeamEscalationPolicyV2,
   decodeTeamEscalationPolicyResponse,
   getTeamEscalationPolicy,
+  isEligiblePolicyManager,
   type TeamEscalationPolicyResponse,
 } from './authorityPolicy';
 
@@ -389,5 +390,20 @@ describe('team escalation policy response contract', () => {
     };
     await expect(createAndActivateTeamEscalationPolicyV2('alpha', 'engineering_manager', body))
       .rejects.toThrow('Invalid authority policy v2 control response');
+  });
+});
+
+
+describe('human manager projection and demoted workers', () => {
+  const teams = [
+    { name: 'default', manager: null },
+    { name: 'engineering', manager: 'engineering_manager' },
+  ];
+  it.each(['consultant_head', 'consultant_codex', 'founder'])('withholds manager policy eligibility from %s', (name) => {
+    expect(isEligiblePolicyManager({ name, team: 'default', role: 'worker' }, teams)).toBe(false);
+    expect(isEligiblePolicyManager({ name, team: 'default', role: 'manager' }, teams)).toBe(false);
+  });
+  it('preserves the independently registered Engineering manager control', () => {
+    expect(isEligiblePolicyManager({ name: 'engineering_manager', team: 'engineering', role: 'manager' }, teams)).toBe(true);
   });
 });
