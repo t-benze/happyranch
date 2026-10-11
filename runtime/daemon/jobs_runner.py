@@ -242,11 +242,13 @@ async def _pump_stream(
     Line events are emitted by buffering chunks and splitting on `\\n`; a
     trailing partial line is flushed on EOF.
 
-    When ``max_bytes`` is set and the running ``byte_counter`` for this stream
-    crosses it, fire ``cap_event`` so the outer ``run_job`` coroutine can
-    SIGKILL the process group. The pump keeps draining bytes already in
-    flight — the on-disk file may exceed ``max_bytes`` by a small margin
-    bounded by what's already in the OS pipe buffer at signal time.
+    Each chunk is written to disk and counted before the cap check. When
+    ``max_bytes`` and ``cap_event`` are supplied, this stream's counter is
+    ``>= max_bytes``, and the shared event is not already set, set the event
+    and return immediately, before head-buffer or line-event processing of
+    that chunk. The ``run_job`` cap watcher closes the read transports and
+    SIGKILLs the process group. This detecting branch does not establish a
+    strict file-size or total overshoot bound for both streams sharing the event.
     """
     line_buf = bytearray()
     with open(out_path, "ab", buffering=0) as f:

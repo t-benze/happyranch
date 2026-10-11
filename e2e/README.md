@@ -3,7 +3,7 @@
 This independently authored standalone lane implements the accepted E02/E03/E06
 case design (`TASK-10476`, SHA256
 `bc4c4c9d50a73ce45085ed6b5edcae572cdf75e8e26e3b583e6b7728037fd564`).
-The bounded Pause and E04 increments below follow that original baseline closure.
+The bounded Pause, E04 and E05 increments below follow that original baseline closure.
 Source and design acceptance do not establish behavioral PASS. Actual disposable
 runner results, authoring proof, independent review/QA and check enforcement are
 separate delivery obligations.
@@ -94,7 +94,7 @@ new daily baseline evidence remain PENDING until observed from the schedule.
 
 Target is 600s, action cutoff720s, cleanup reserve60s, evidence reserve120s,
 hard cap900s including dependency installation and build. Baseline scenarios
-(bootstrap, baseline, Pause/restart, E04, controller close/evidence together) have
+(bootstrap, baseline, Pause/restart, E04, E05, controller close/evidence together) have
 at most480s; each other command and cancellation scenarios retain240s.
 The launcher computes `min(command entry + cap, original start + 720)` once
 before spawn, passes that exact end to the controller and uses it for its own
@@ -478,3 +478,285 @@ that collector is untouched. General integration SKIPPED THR243seq42; Python
 units RETIRED. Daily19UTC, Python3.12/3.13/3.14 plus TERM3.12/INT3.14 and only
 Source Boundary Lint/Web Lint(Node24) merge contexts remain. No deployment,
 Jenkins, compatibility/authentic-memory PASS, E05 or program completion follows.
+
+## E05 threads and replay: authored source only
+
+The accepted TASK10637 design (`832d218b693b6e6f660a2f4ca484f498cf452878ae5f0e092d278986d0924f40`)
+and TASK10653 composition addendum govern four cases/five variants. The entire
+23 baseline +19 Pause +6 E04 prefix runs unchanged before E05, giving53 source
+variants. E05 adds three public-created threads, eight messages, six genuine
+thread invocations and one genuine dispatched task/result: seven providers.
+C/N/D settle at bootB21/22/25; archived bootA12 stays separate, cumulative37.
+Final alpha20tasks30results/beta1task1result, eight prior jobs/seven scripts,
+B19task+6thread summaries and four settled delivery pairs are separate oracles.
+These counts are source expectations, not observations.
+
+| Case / variant | Contract and literal oracle | Credible regression (unexecuted) | Nearest coverage and distinct gap | Production-only seam |
+| --- | --- | --- | --- | --- |
+| Compose / `E05.compose-race` | Shipping dialog, same synchronous Enter/click/click batch, one actual POST/200/committed opening/detail entry | Duplicate POST/thread if submit guard is removed | Retained Web write-path mocks lack real SPA/proxy/SQL join; eligibility alone cannot prove guard reentry | NO |
+| Reply / `E05.reply-natural` | C has two messages, M1/W1/W2 genuine tokens, claimed1..1/1..1/2..2, one consumed/two declined; natural closure | Lost wake, duplicate reply or unsettled delivery | Retained thread integration lacks this exact public/browser/durable closed workload; baseline task replay uses different authority | NO |
+| Dispatch / `E05.self-dispatch-followup` | D has one source-linked NULL-parent Engineering task/result, system2/reply3/system4/followup5; no replacement | Duplicate dispatch, lost followup, recursive task | Retained followup integration has broader seeded cardinalities, not this finite public-created venue | NO |
+| Denials / `E05.consumed-token`, `E05.nonparticipant-task-send` | Same live M1 replays the same file for409 consumed; actual live task SID sends to worker-only N for403 not_a_participant; coherent before/after content unchanged | Removed/reordered token or participant gate permits another message/effect | Baseline E03/E06 covers task callbacks, not thread invocation replay or this participant boundary | NO |
+
+`thread_provider.py` spends only its delivered token through its own bound CLI
+and private payload file; the task plan uses its own real task/SID. Controller
+instructions carry finite literals, never replacement authority. SHA256 token
+aliases, actual socket PID/start, genuine CLI child/source/argv witnesses and
+read-only durable identities remain distinct from anonymous host summaries.
+Private files are removed before normal provider exit. No DB writer, product
+serializer oracle, altered roster, stub/registry bypass or provider substitution
+is used. Same-thread nonparticipant reply authority is not publicly constructible
+here; the actual task-session send denial is the named boundary exercised.
+
+The E05 browser context uses its own registered loopback P, forwarding to the
+actual daemon D; existing CLI relay L and original browser context remain.
+Only the first exact compose request's original200 response can be held after
+an independent commit, with one arm deadline at most5s. Ordinary content and
+SSE are forwarded as bytes, without bootstrap/auth substitution or manufactured
+responses. Partial evidence includes actual network/navigation/eligibility
+records. Disabled controls do not prove handler reentry or causal guard
+sensitivity. Owned context, listener, connections and workers close before daemon
+teardown; missing/unknown closure fails daily health.
+
+The changed fixture/consumer contracts are: controller plan/peer/source registration
+must reject unexpected authority (nearest E04 task-only plan); the provider's
+finite CLI protocol must preserve same-file replay and final-callback ordering
+(nearest jobs protocol); Browser/BrowserRelay must preserve real bytes and the
+original held response (nearest baseline CLI loss relay cannot serve a whole
+browser origin); Store.thread_frame must retain one reopened mode=ro/query_only
+transaction across all affected tables and file manifests (nearest separate
+Store.query calls are not a coherent negative frame). Credible regressions are
+respectively wrong-owner callbacks, replay-file substitution, response fabrication
+or loss, and false unchanged-state evidence. Every one has NO production-only
+seam. These are external fixture/source assertions, with sensitivity unexecuted.
+
+Controller observations and scenario references flow through unchanged run.py
+result merge/sanitized export into the existing five artifact directories.
+`aggregate.validate_e04` validates the original30-provider checkpoint from its
+actual retained witness prefix; `validate_e05` independently opens the E05 browser
+artifact and actual observations, recomputing literal messages, claims, denials,
+source/CLI joins, ordered anonymous tails and closure. Missing/empty/hash-only
+or contradictory references fail. The aggregate's regression is false healthy
+reporting from metadata/totals; nearest E04 consumer lacks thread/proxy content.
+The manifest adds exactly five IDs, preventing an omitted E05 case from passing.
+NO production-only seam is added by either consumer. Validator controls are not
+product defect proof; no new controls were executed.
+
+The R1–R3 correction extends these same four-answer records, without a new
+proof framework or variant. All source predicates below are authored; dedicated
+contradictory-receipt/browser-ledger/sanitation controls are **UNAUTHORED** and
+assertion sensitivity remains **UNEXECUTED**.
+
+| Existing case or fixture/consumer | Required contract | Credible regression rejected by named source predicates | Nearest coverage / remaining gap | Production-only seam |
+| --- | --- | --- | --- | --- |
+| Compose / `E05.compose-race`; Browser snapshots and `BrowserRelay` | Complete chronological event ledger, exact held/released prefixes and actual proxy release interval; zero premature navigation, one automatic entry, four paired intentional revisits; actual initial GET/messages and rendered opening | A premature event omitted from a case snapshot, duplicate automatic navigation or empty/wrong opening fails `R2` prefix/navigation/projection/bubble checks | Earlier PNG and snapshot membership checks did not validate chronology or rendered semantics; same-tick eligibility is retained, guard sensitivity UNPROVEN | NO |
+| Reply / `E05.reply-natural`; provider and aggregate | Every decline/reply equals its canonical receipt and original instruction; exact argv, request, route, status, selected response, exit and shipping stdout; both literal C messages in their own sequence bubbles | Accepted SQL state with exit1/KeyError on decline, wrong endpoint/body, detached receipt or omitted rendered reply fails `R1` outcome and `R2` bubble checks | Earlier identity/source/terminal-row joins did not prove positive CLI delivery or actual rendering | NO |
+| Dispatch / `E05.self-dispatch-followup`; N/D compose, task read and final callback | Full founder compose command/wire joins; exact dispatch and replies; D2 GET returns this completed task/result/summary and prints literal details; callback remains last; full D system payloads and distinct rendered reply/summary | Wrong task/details summary or an absent D reply hidden by the completion system summary fails `R1` task/read and `R2` per-bubble/system checks | Earlier two-substring D check and selected-response presence did not establish all literal content | NO |
+| Denials / `E05.consumed-token`, `E05.nonparticipant-task-send`; Relay E05 request capture | Exact original instruction/real409 or403/request/response/error stdout, same retained file/live owner and coherent unchanged frame | Another endpoint/status/body or detached denial cannot pass by retaining valid durable rows | Existing negative frame checks are retained; dedicated contradictory artifact controls remain unauthored | NO |
+| `thread_provider.redaction_context/command`; Controller sanitation/export closure | Validate private retained context before and after capture, including current/old bearer and invocation tokens; sanitize full binary streams before16384-byte clipping or JSON/socket output; original byte counts/flags, safe digest identities | Boundary-straddling credential, multibyte output, timeout suffix or missing/unsafe/lost context cannot take the old clip-before-redact path; unknown context raises fixed text and withholds output | Existing full-string exporter cannot repair a fragment already clipped by a producer; sanitation and timeout behavior remain unproved | NO |
+| `aggregate.validate_e05`, threads command/compose/settled producers, browser response/DOM producers | Reopen existing artifacts and recompute actual command, public response, full ledger and rendered content joins; PNG signature proves file format only | Metadata-only or valid durable rows cannot substitute for public outcome/content | Extends the existing actual-content consumer; no executed controls or full test-authoring PASS | NO |
+
+The CLI relay captures request JSON/response text only after E05 starts; the
+original baseline/Pause/E04 wire receipts keep their prior shape. The controller
+sanitizes retained observations with the complete credential context; the
+unchanged launcher keeps its unsafe-export refusal. Binary provider capture
+preserves original stdout/stderr byte counts and per-stream cap flags. Complete
+secrets are removed before clipping; timeout capture also withholds a trailing
+credential prefix, and UTF-8 clipping drops incomplete codepoints. Private
+context failure emits only a fixed error and no captured output. Token/payload
+digests remain identity evidence, never credentials or sanitation proof.
+
+All E05 behavior, assertion sensitivity, proxy compatibility, guard reentry,
+token sanitation, delivery/persistence, process closure and measured budget fit
+remain MISSING/UNEXECUTED. Protected12 deliberate defects, RED/restoration/GREEN
+and repetitions remain unauthorized/unexecuted. No full test-authoring PASS.
+C18/N8/D25/final4 share the existing480 scenario allowance clipped by original720;
+cleanup60/export120 and hard900/target600 are unchanged. Arithmetic is not fit
+proof. Daily19UTC source binding and all five cells/artifacts remain unchanged.
+General integration is SKIPPED; Python units are RETIRED. TASK10555 owns the
+first-daily collector and Pause acceptance. Later cancellation/late-callback/
+restart coverage and eventual daily acceptance remain root-owned and unproven.
+
+## E07 C source increment — TASK-10773
+
+Accepted TASK10763 design
+`5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7`
+adds C only after the fully evaluated and archived E05 end. Exactly three
+variants bring the authored total to56: `E07.cancel-cascade-browser`,
+`E07.cancel-terminal-unchanged`, `E07.cancelled-late-cli`. These are source
+assertions, not observed behavior. R/full composition remains HELD; no crash,
+new boot, credential rotation, or dormant restart implementation is included.
+
+P publicly delegates to W using its real bound provider CLI, then exits
+naturally. The one INTEGER parent result is consumed as delegate. W writes
+its own bound final payload and launches the actual hash-bound CLI wrapper.
+A dedicated one-shot relay captures the complete original completion POST
+before upstream transmission; provider acknowledgement precedes communicate.
+Live PID/start/PPID/argv/hash and actual /proc socket inode/FD/TCP tuple join the
+issuer to that request. The browser Cancel dialog sends `E07_CANCEL_TREE`.
+Product teardown must close W, its CLI and launch root before Fcancel; cleanup
+cannot satisfy the case. The original retained POST is then forwarded once to
+boot B: actual409 `task_not_active`, cancelled true. Dead downstream EOF and the
+upstream response are distinct; no killed CLI response/exit is fabricated.
+
+| Case or changed evidence consumer | Contract | Credible defect | Prior gap | Shipping seam |
+| --- | --- | --- | --- | --- |
+| Cascade browser, SQL/public frames and receipt assertions | Two cancelled tasks, exact shared timestamp/note/two founder audits; P result retained, W result absent; real terminal UI; one active cancelled receipt, no queued cancellation | Wrong cascade/status, lost result, result race overwrite, surviving child or parent resume | Original53 and launcher interruption do not cancel a live public product tree | Real create/delegate, CancelTaskDialog/cancel route, run-step/host containment, read-only SQL and public detail/recall/tree/list |
+| Terminal-unchanged and command ledger | Actual P and identified completed-baseline cancel commands exit1 with exact409 and human message; full relevant content unchanged | Duplicate audit/timestamp/result mutation or wrong guard | Callback replay and Pause refusals are different routes | Shipping `happyranch cancel` and public cancel route |
+| Delayed CLI, provider/relay/socket fixtures and unchanged window | Original real W POST forwarded after cancel/closure; exact409; full1s fresh observations, <=50ms interval, no extra admission/result/consumption/revisit/peer | Copied SID masquerades as issuer, pre-forward leak, wrong auth denial, late resume or result | Existing committed-response loss delays a response, not an issued request | Genuine executable provider/CLI, loopback HTTP, task-active fence, host metrics and coherent SQL |
+| Prefix/export/aggregate consumers | Exact53 prefix, genuine E05 byte/record offset, entire suffix classification; raw/observations/scenario/result agree; independent actual-content recomputation | Dropped evidence field, count-only PASS, accepted unaccounted callback, truncated prefix | Former aggregate assumed final37 and whole E05 witness equality | Existing five daily artifacts and source-bound independent aggregate |
+| Sanitation/partial process records | Retained bearer and E05 contexts redact whole captures before clipping; unknown context/caps refuse full-content claims; launch evidence survives client death | Secret fragments on timeout/EOF/signal or fabricated posthumous return | Prior synchronous success receipt cannot describe a killed CLI | Private launch receipt, real Popen/socket streams and existing unsafe-export refusal |
+
+R1–R5 correction contracts (TASK10778):
+
+| Changed assertion/fixture/consumer | Contract | Credible defect | Previous coverage gap | Actual seam |
+| --- | --- | --- | --- | --- |
+| E05 aggregate transport | Original daemon/CLI/browser D/L/P keys and registered ports only; independent E07 listener/upstream predicate stays in E07 | Valid E05 fails on nonexistent E07 keys | Misplaced predicate disagreed with unchanged E05 producer | `threads.exercise` serialized transport |
+| Browser cancel and independent aggregate | Full literal `{ok:true, task_id:P, cancelled:[P,W], killed:[{task_id:W,agent:case_worker}]}` with exact order and membership | Reject real successful200 or accept incomplete response | Prior literal omitted ok/task_id | Shipping `tasks.cancel_task` and actual dialog POST |
+| Both new stub witnesses | Closed seven-field records, exact Claude/source/stub/plan hashes, integer argc7 and ordered flags `[-p,--output-format]` | Arbitrary provider/hash/argc/flag or unknown-field corruption passes internal copy equality | Suffix counted kinds/source only | Task templates select fresh unpinned Claude; `ClaudeAdapter` seven-argument launch, original `fake_claude.sh` argv and unchanged executable guard |
+| E07 ownership updates | Atomic temporary/replace union retains all earlier PIDs; register before process observations/waits | Watcher reads truncated JSON or failure loses an observed ancestor | New direct overwrites differed from atomic `Controller.start` | Existing `Owned.sample/observe` with unchanged PID-start/cgroup/unit checks |
+| Private launch writer and final collector | mode0600 temporary creation/replace, initial PID record retained until full acknowledgement commits; each issued command requires a record; retain valid siblings and valid initial records with fixed missing/malformed/incomplete/unexpected diagnostics | Interrupted write destroys all later evidence or glob hides missing record | Unguarded comprehension and truncate/chmod publication | Genuine provider Popen and acknowledgement, `Controller.evidence`, existing run e07 whitelist/export, independent aggregate |
+
+Launch collection parses each expected command-bound file independently. Failure
+categories contain only fixed words and a command index; raw malformed bytes,
+filenames and exception text are not exported. Valid partial records and the
+failure list travel inside `e07` through raw/observations/scenario/result. Other
+evidence is serialized before collection failures raise; aggregate rejects any
+failure and independently requires both complete records in command order.
+Sanitation remains outside parse catches: unavailable retained context still
+refuses export, and incomplete records never fabricate an acknowledgement.
+These source corrections add no dedicated control or execution evidence.
+
+All dedicated sensitivity controls remain **UNAUTHORED**; behavior, assertion
+sensitivity, transport provenance, delivery/persistence, fit, process closure
+and sanitation are **MISSING/UNEXECUTED**. No full test-authoring PASS. Protected12
+mutations/RED-restoration-GREEN/repetitions remain unauthorized/UNEXECUTED.
+General and actual callback integration remain SKIPPED under THR243seq42.
+
+Exact cumulative source expectations:39 starts=A12+B27,23 tasks/32 results
+(alpha22/31,beta1/1),21 completed/two cancelled; only P adds an accepted result.
+Eight jobs/seven scripts and every E05 thread/invocation/delivery count remain.
+B27/26/26/active1 becomes settled B27, with P success then W cancellation and
+full duplicate-preserving B25/B26 tails; queued-cancel delta0. E04 retains28
+anchors and its command ledger, E05 retains starts30:37 and its original
+observer/witness boundaries. E07 commands/anchors are separate.
+
+C partitions16+12+8+6+8=50 use fixed absolute ends clipped by original C/scenario
+ends. The shared scenario remains min(entry+480,original+720), other commands
+and interruptions240, cleanup60/export120, hard900/target600/hosted15min.
+375+50=425 is unmeasured arithmetic. No borrowed reserve or shortened1s window.
+Daily19UTC/default-branch Ubuntu Python3.12/3.13/3.14 and TERM3.12/INT3.14,
+five seven-day artifacts and lint-only merge gates remain unchanged.
+
+Source-observed successful live cancel-CLI printing mismatch (`killed` has
+agent/task_id but cmd_cancel reads pid) remains unresolved and unexecuted;
+positive cancellation uses the shipping browser. Retained CLI terminal-refusal
+branches do not reach that print. E04 output-cap/persistent-stop, R/full
+unchanged-bound disposition and all daily behavioral acceptance remain with
+root TASK10680. TASK10555 retains first-daily/Pause acceptance; first daily is
+PENDING per owner. Authored, independently reviewed, merged, executed and
+accepted are separate milestones; this is not completion of the reset.
+
+## E07 restart hold restoration — TASK-10804
+
+THR291 seq119 held R implementation and merge until root assessed actual
+source-bound first-daily prefix/archive/close timings. PR1043 nevertheless
+merged as `e4ba47ce3ab528447d7cded481f721dec07d175f` from reviewed
+`80f7cf197ca27552627fe980b524341f155653e7`. Its source review, static QA and
+lint did not satisfy that hold. This correction restores **56 active variants,
+39 expected starts=A12+B27, 23 tasks/32 results**, retaining baseline23,
+Pause19, E04six, E05five and Cthree. These remain source expectations, not
+observed execution counts. The original Pause same-files **graceful** restart
+is required and remains active.
+
+The abrupt R provider command, daemon SIGKILL/recovery/C0 path, R subreaper
+handshake and sole publication-gap exception are removed. There is no disabled
+runner, placeholder PASS, skipped variant or extra cell. The manifest and
+actual-evidence/export/aggregate requirements no longer require
+`e07-c-prefix.json`, `e07-restart.json`, `e07-predeath.json` or `e07-restart.png`.
+The aggregate again consumes complete final C39 observations and the entire
+witness stream, preserving literal ordered A12/B27 receipts without an R gap.
+Partial failures retain available sanitized C evidence and report missing
+content as failure; they receive no completion credit.
+
+The accepted TASK10763 original design
+`5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7`
+and TASK10782 R addendum
+`83d892a3e6eae329879ebf7be7a9dca47854f15f6bbe67be3811c4820e1fe184`
+remain held design/history. The removed implementation and its four-answer
+record remain available in [merged PR1043](https://github.com/t-benze/happyranch/pull/1043)
+and that immutable merge's `e2e/restart.py` and README. R is unimplemented in
+the active daily path and unproven; this correction does not release it.
+
+Scheduling returns to `D=min(scenarios entry+480, original run start+720)`
+with C capped at50 and its original16/28/36/42/50 partitions. There is no
+D−150 admission, R75 or separate final25 reservation. Normal close follows
+the original browser/proxy/provider-observer/daemon order within D, retaining
+the daemon's at-most20s wait, at-most1s observer/late-transport joins and
+at-most3s ordinary relay joins. Other commands
+and interruption remain240, cleanup60/export120/hard900/target600/hosted15min.
+No pre-existing operation cap or reserve is enlarged or borrowed, and no
+measured-fit claim follows.
+
+Shared deadline clipping remains necessary for the retained smaller caps:
+Controller.effective_end/bounded/publish_end bind the original scenario and
+case ends to provider sockets, generated job scripts, read-only SQLite,
+transport and direct Playwright callers. The watchdog uses that same end;
+C resets it to the original D after leaving its case, without a new allowance.
+The aggregate checks each generated E04 end against its actual case and the
+serialized scenario deadline, with no R allocation oracle. Browser.response
+retains the stored main-page cap (initial15, E04 at-most10, C at-most4);
+E05's thread page retains10 and provider release retains its caller's at-most5.
+The E04 task/Recall inner_text cap remains10. Full31s cache, both Pause windows,
+all full1s/at-most50ms C observations, genuine callbacks and literal content
+joins remain. Half-ready boot token/port capture, immediate ownership and
+numeric PID collision refusal remain valid for bootA/graceful Pause bootB
+and partial-failure sanitation; no R helper is needed by these owners.
+
+### Retained C observation correction
+
+TASK10801/step18's finite correction remains active. `e07.frame` stores full
+raw task-list/detail/Recall responses and exact indexed GET/path/status200
+HTTP joins. Cross-observation comparison copies validate the presence and
+string type of Pause `observed_at`, parseable timezone-aware UTC and each
+blocker's equal enclosing stamp, then exclude **only** `tasks[*].pause.observed_at`
+or detail-envelope `pause.observed_at` and those projections' ordered
+`blockers[*].observed_at`. Every other key, value, shape, array order, unknown
+field and durable timestamp remains compared. Raw evidence is never changed;
+there is no broad recursive normalization or clock-order assertion.
+
+`e07.content/public_content/detail_content` applies this to C freeze, terminal
+refusals, full window, final and browser joins. The aggregate independently
+reopens serialized evidence and uses its own
+`e07_public_state/e07_detail_state/e07_pause_state` validators, including exact
+same-observation raw joins before comparison. SQL datetime serialization retains
+the shipping UTC-Z mapping. Only the R-specific recovered-list producer and
+consumer are removed. PR1042's actual-content/stub/private atomic launch,
+ownership and partial-export corrections remain intact.
+
+Four answers for these retained C cases (`E07.cancel-cascade-browser`,
+`E07.cancel-terminal-unchanged`, `E07.cancelled-late-cli`):
+
+1. Observable contract: real browser cascade, terminal refusal and the original
+   late provider callback preserve exact state and evidence across fresh reads.
+2. Credible regression: raw timestamp equality rejects unchanged state; dropping
+   other Pause or unknown fields hides real state changes; an R artifact or
+   reservation accidentally left required rejects a complete C-only run.
+3. Coverage gap: prior C content predicates needed validated observation-only
+   comparisons; historical source/static approval supplies no behavioral proof.
+4. Actual seam: shipping task/Pause routes and real CLI/browser/HTTP boundaries
+   feed full SQL/public/evidence captures and independent reopened aggregate.
+   No production or test-only seam was added.
+
+This is source-only restoration, not full test-authoring or behavioral PASS.
+All behavioral/sensitivity/provenance/transport/persistence/delivery/sanitation/
+closure/fit proof is MISSING/UNEXECUTED; dedicated controls UNAUTHORED.
+Protected12/RED-restoration-GREEN/repetitions remain unauthorized/unexecuted.
+General AND actual CLI callback integration remain SKIPPED THR243seq42;
+Python units RETIRED. Daily19UTC/default immutable source/Ubuntu/Python
+3.12,3.13,3.14 plus TERM3.12/INT3.14 and five7day artifacts remain unchanged.
+TASK10555/JOB4257/Pause ownership is untouched; first-daily status requires its
+owner's actual source-bound evidence. No extra collection/run/retry/schedule/
+notification, production/schema/auth/permission change, deployment or Jenkins
+work is authorized. Root TASK10680 remains INCOMPLETE and alone owns renewed
+independent full review, scoped static QA, hold assessment and guarded merge.

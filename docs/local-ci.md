@@ -763,3 +763,88 @@ E05 and later cancellation/restart remain future work; no entire-program PASS.
 The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
 bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
 lane, protected proof, collector action, Jenkins or deployment is authorized.
+
+### E05 source coverage milestone
+
+The daily harness appends the accepted E05 C/N/D threads/replay source to the
+unchanged23 baseline,19 Pause and6 E04 variants:53 authored variants/37 expected
+providers, with bootA12 archived separately from bootB25. It uses genuine
+provider-owned thread/task CLI authority, a separate real-response browser
+proxy and content-reading aggregate validation. See `e2e/README.md` for the four
+case/five variant authoring map, literal counts and consumer contracts.
+
+This source milestone is not execution or behavioral acceptance. E05 proxy,
+guard sensitivity, denial immutability, delivery, sanitation, closure and measured
+fit remain MISSING/UNEXECUTED; protected12/RED-restoration-GREEN/repetitions remain
+unauthorized/unexecuted. General integration SKIPPED; Python units RETIRED.
+Lint-only PR/main checks, daily-only19UTC cadence,480 common scenarios clipped by
+original720, cleanup60/export120, target600/hard900 and existing five artifacts
+are unchanged. TASK10555 retains first-daily collection/Pause acceptance; collected
+results must be joined to their actual source SHA. Later cancellation/late-callback/
+restart and full daily acceptance remain unfinished root-owned work.
+
+E05 PR1040 R1–R3 source correction binds every named CLI receipt to its
+canonical command/instruction and actual public outcome, derives hold/navigation
+from the complete browser ledger with literal per-message rendering joins, and
+redacts full captured streams with retained credentials before byte clipping.
+Original48/total53 and A12+B25=37 source expectations remain unchanged. Dedicated
+contradictory-artifact and sanitation controls are UNAUTHORED; all behavior,
+sensitivity, proxy/guard, sanitation, delivery/persistence, closure, fit and
+protected proof remain MISSING/UNEXECUTED. This is static source correction only;
+the existing daily-only policy and all execution holds remain in effect.
+
+### E07 C authored cancellation increment
+
+The C-only source appends three variants to the preserved53:56 authored
+variants,39 starts=A12+B27,23 tasks/32 results (alpha22/31,beta1/1),21 completed
+and two cancelled. Real browser cascade and terminal CLI refusals precede
+forwarding W's original captured provider CLI request; independent serialized
+content, process/socket provenance and a full1s unchanged window are required.
+The E05 witness prefix is bound to its actual byte/record offset, with every
+E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
+retain all missing proof. R/full remains HELD, with no new restart/rotation code.
+C50 uses fixed16/12/8/6/8 partitions within unchanged480/original720;425 is
+unmeasured arithmetic. Daily-only19UTC and the five artifacts are unchanged.
+Source-only authoring is not independent review, merge, execution or acceptance.
+All behavior/sensitivity/provenance/fit/closure/sanitation proof is UNEXECUTED;
+dedicated controls UNAUTHORED; protected12 and repetitions unauthorized.
+General/actual callback integration SKIPPED THR243seq42; retired units untouched.
+The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
+unresolved. Root TASK10680 owns delivery/daily acceptance, TASK10555 owns
+first-daily/Pause (PENDING per owner). No entire-reset or test-authoring PASS.
+
+### E07 R hold restoration — TASK-10804
+
+THR291 seq119 held R implementation and merge pending assessed source-bound
+first-daily timing. PR1043 merged as `e4ba47ce3ab528447d7cded481f721dec07d175f`
+despite that hold; its review/static QA/lint did not release it. This bounded
+correction restores the56-case active daily baseline and39 expected starts
+(A12+B27;23 tasks/32 results), preserving the original graceful Pause restart,
+E04/E05, C and TASK10801's valid C observation/evidence corrections.
+
+R's active abrupt crash/recovery path, provider command, subreaper handshake,
+publication-gap exception and required R artifacts/aggregate expectations are
+removed. Accepted original E07/addendum and PR1043 source remain held history;
+R is unimplemented in the active daily path, unproven, and not skipped-as-PASS.
+See the [restoration and retained C assertion mapping](../e2e/README.md#e07-restart-hold-restoration--task-10804).
+
+D remains min(scenarios entry+480,original run+720), C50 with original
+partitions; no D−150 prefix admission, R75 or final25 allocation survives.
+Normal close uses the original order and caps inside D. Existing shared
+nested deadline clipping retains E04 inner_text10, E05 release5 and inherited
+browser response4/10; cleanup60/export120/hard900/target600/hosted15min and
+other command/interruption240 bounds remain unchanged. No new budget or
+measured-fit claim. Complete raw C evidence survives; only validated Pause
+observation stamps differ in nonmutating cross-observation copies. Aggregate
+independently reopens serialized content and exact same-observation joins.
+
+Daily19UTC/default immutable source/Ubuntu/Python3.12,3.13,3.14 plus TERM3.12/
+INT3.14/five7day artifacts and TASK10555/JOB4257/Pause ownership are unchanged.
+Root10680 alone assesses owner timing and the hold; no new collector or run.
+Required checks remain lint/static-only, normal hooks, independent full review,
+scoped static QA and manager guarded merge. All behavior/sensitivity/provenance/
+transport/persistence/delivery/sanitation/closure/fit proof MISSING/UNEXECUTED;
+controls UNAUTHORED; protected12/RED-restoration-GREEN/repetitions unauthorized.
+General AND actual CLI callback integration SKIPPED243seq42; units RETIRED.
+Root remains INCOMPLETE for held R, wider E04, cancel-CLI mismatch and daily
+acceptance. No deployment/serving restart/Jenkins/schema/auth/permission work.

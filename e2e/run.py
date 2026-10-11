@@ -22,7 +22,8 @@ from owned import Owned, identity
 # Existing baseline artifact presence contract; no content/projection oracle.
 BASELINE_ARTIFACTS = ["observations.json", "browser-events.json", "daemon.txt",
                       "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
-                      "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png"]
+                      "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png", "e07.json", "e07-prefix.json", "launch-witnesses.jsonl",
+                      "e07-parent.png", "e07-child.png", "e07-list.png"]
 
 
 def arm_deadline(deadline: float) -> None:
@@ -278,7 +279,7 @@ def main() -> int:
                 redaction_context = context
             if (root / "scenario.json").exists():
                 result = json.loads((root / "scenario.json").read_text())
-                receipt.update({k: result[k] for k in ("variants", "scenario_phases") if k in result})
+                receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07") if k in result})
             for path in (root / "raw").glob("*"):
                 if path.suffix in {".txt", ".json", ".jsonl"}:
                     staged[path.name] = redact(path.read_text(errors="replace")).encode()

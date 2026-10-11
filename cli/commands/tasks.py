@@ -1066,7 +1066,10 @@ def cmd_cancel(args: argparse.Namespace) -> None:
     print(f"Cancelled {len(cancelled)} task(s): {', '.join(cancelled)}")
     if killed:
         for k in killed:
-            print(f"  SIGTERM -> {k['task_id']} ({k['agent']}, pid={k['pid']})")
+            if "pid" in k:
+                print(f"  SIGTERM -> {k['task_id']} ({k['agent']}, pid={k['pid']})")
+            else:
+                print(f"  Cancellation delivered -> {k['task_id']} ({k['agent']})")
     else:
         print("  No live subprocesses attached.")
 
