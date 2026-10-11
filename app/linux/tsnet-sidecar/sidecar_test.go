@@ -1412,15 +1412,127 @@ func TestLateListenerAndListenerWithErrorCloseBeforeEngine(t *testing.T) {
 type pendingDeadlineContext struct {
 	context.Context
 	deadline time.Time
+	done     <-chan struct{}
 }
 
 func (c pendingDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c pendingDeadlineContext) Done() <-chan struct{}       { return c.done }
 
 func TestStartupAbsoluteDeadlineRefusesPendingTimerDelivery(t *testing.T) {
-	ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(-time.Nanosecond)}
-	if ctx.Err() != nil || startupContextError(ctx) != context.DeadlineExceeded {
-		t.Fatal("elapsed deadline relied on timer delivery")
-	}
+	t.Run("elapsed-entry", func(t *testing.T) {
+		calls := 0
+		svc, engine, events := connectorFixture(t, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+			calls++
+			return nil, nil
+		}))
+		credential, err := os.ReadFile(svc.cfg.CredentialFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(-time.Nanosecond), done: make(chan struct{})}
+		if ctx.Err() != nil || time.Now().Before(ctx.deadline) {
+			t.Fatal("fixture must have an elapsed deadline with Err still nil")
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("fixture delivered cancellation before Start")
+		default:
+		}
+		assertNetworkReason(t, svc.Start(ctx), "deadline_exceeded")
+		if calls != 0 || len(*events) != 0 {
+			t.Fatalf("elapsed entry performed work: calls=%d events=%v", calls, *events)
+		}
+		select {
+		case <-engine.listener.(*oneListener).accepted:
+			t.Fatal("elapsed entry started serving")
+		default:
+		}
+		retained, err := os.ReadFile(svc.cfg.CredentialFile)
+		if err != nil || string(retained) != string(credential) {
+			t.Fatal("elapsed entry consumed or changed credential fixture")
+		}
+		if _, err := os.Stat(filepath.Join(svc.cfg.StateDir, consumedMarker)); !os.IsNotExist(err) {
+			t.Fatal("elapsed entry created consumption marker")
+		}
+	})
+	t.Run("late-listener", func(t *testing.T) {
+		calls := 0
+		probe := &countedProbe{}
+		svc, engine, events := connectorFixture(t, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+			calls++
+			return probe, nil
+		}))
+		listener := engine.listener.(*oneListener)
+		engine.listenEntered, engine.listenRelease = make(chan struct{}), make(chan struct{})
+		ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(time.Second), done: make(chan struct{})}
+		var startup context.Context
+		engine.startFn = func(engineCtx context.Context, _ EngineConfig, _ []byte) (RedemptionReceipt, error) {
+			startup = engineCtx
+			return engine.receipt, nil
+		}
+		if ctx.Err() != nil || !time.Now().Before(ctx.deadline) {
+			t.Fatal("caller must initially be live")
+		}
+		result := make(chan error, 1)
+		go func() { result <- svc.Start(ctx) }()
+		// Release the existing Listen block even if a fixture assertion fails.
+		t.Cleanup(func() {
+			select {
+			case <-engine.listenRelease:
+			default:
+				close(engine.listenRelease)
+			}
+			_ = svc.Stop()
+		})
+		select {
+		case <-engine.listenEntered:
+		case err := <-result:
+			t.Fatalf("Start refused before reaching Listen: %v", err)
+		case <-time.After(2 * time.Second):
+			t.Fatal("Start did not reach Listen")
+		}
+		if !time.Now().Before(ctx.deadline) {
+			t.Fatal("fixture must reach Listen before the caller deadline")
+		}
+		if deadline, ok := startup.Deadline(); !ok || !deadline.Equal(ctx.deadline) {
+			t.Fatal("startup did not retain the earlier caller deadline")
+		}
+		// Await the real absolute deadline, never the caller's pending Done.
+		timer := time.NewTimer(time.Until(ctx.deadline))
+		defer timer.Stop()
+		<-timer.C
+		if ctx.Err() != nil || startup.Err() != nil || time.Now().Before(ctx.deadline) {
+			t.Fatal("listener release must be elapsed with Err still nil")
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("fixture delivered cancellation before listener return")
+		default:
+		}
+		select {
+		case <-startup.Done():
+			t.Fatal("fixture delivered startup cancellation before listener return")
+		default:
+		}
+		close(engine.listenRelease)
+		if err := <-result; err != ErrListener {
+			t.Fatalf("late listener admitted: %v", err)
+		}
+		if ctx.Err() != nil || calls != 1 || probe.closes != 1 || strings.Join(*events, ",") != "start,listen,listener-close,engine-close" {
+			t.Fatalf("calls=%d probe closes=%d events=%v", calls, probe.closes, *events)
+		}
+		select {
+		case <-listener.accepted:
+			t.Fatal("late listener started serving")
+		default:
+		}
+		if err := svc.Stop(); err != nil {
+			t.Fatal(err)
+		}
+		if probe.closes != 1 || strings.Join(*events, ",") != "start,listen,listener-close,engine-close" {
+			t.Fatal("Stop duplicated late-listener teardown", *events)
+		}
+	})
 }
 
 func TestConnectorConsumedCallerBudgetCannotRenewRetrySpacing(t *testing.T) {
