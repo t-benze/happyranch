@@ -2,7 +2,9 @@
 
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
-> Product contracts are unchanged; standalone E2E execution evidence is PENDING. See
+> THR-291 seq69: merge CI/default/all/pre-push are lint/static only; normal hooks
+> remain enabled. Daily-only E2E at19:00UTC is separate, first scheduled run PENDING.
+> Retained platform/callback sources are not automatic merge gates. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
 ## Bundled skill sources and canonical delivery

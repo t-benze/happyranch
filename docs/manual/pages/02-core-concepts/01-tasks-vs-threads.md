@@ -55,3 +55,8 @@ You do not have to prescribe the internal chain for routine work.
   (existing 60-second semantics), and the latest agent-written progress
   receipt — with an explicit stale/no-substantive-update state when a live
   session is silent, never implying progress from heartbeats.
+
+
+## Pause and Resume
+
+Pause belongs to a root task and its actual children, not a thread or historical family. It keeps the real lifecycle and waiting reason visible. Independent roots, thread replies, dreams, wakes and schedules can still run. If an already-running manager genuinely supersedes its root, the new NULL-parent successor is a separate unheld root. Pausing its predecessor does not pause that successor. A terminal predecessor may still show unresolved drain evidence.

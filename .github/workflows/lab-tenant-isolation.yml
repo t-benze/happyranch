@@ -1,8 +1,8 @@
 # Hostile tenant-isolation lab harness (THR-097 merge unit B)
 #
 # Runs the REAL hostile isolation harness on the repo's existing authorized
-# CI runner (GitHub Actions ubuntu-latest — Docker preinstalled), path-gated
-# so it only fires when the lab or its tests change. The harness itself pins
+# CI runner (GitHub Actions ubuntu-latest — Docker preinstalled), manually
+# selected outside the merge lane. The harness itself pins
 # its artifacts (headscale container digest, tailscale tarball sha256) and
 # verifies them at preflight; it never targets non-lab endpoints and cleans
 # up on success/failure/signal paths. Machine-readable evidence is uploaded
@@ -13,18 +13,8 @@
 
 name: Lab tenant isolation
 
+# THR-291 seq69: retained explicit manual capability, outside merge CI.
 on:
-  pull_request:
-    paths:
-      - 'labs/tenant_isolation/**'
-      - 'tests/contract/managed_remote_access/**'
-      - '.github/workflows/lab-tenant-isolation.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'labs/tenant_isolation/**'
-      - 'tests/contract/managed_remote_access/**'
-      - '.github/workflows/lab-tenant-isolation.yml'
   workflow_dispatch:
 
 jobs:

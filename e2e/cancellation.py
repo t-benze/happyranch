@@ -12,6 +12,7 @@ import traceback
 from pathlib import Path
 
 from owned import identity
+from run import daily_admission
 
 
 def validate(row: dict, source: str, python: str, signum: int) -> None:
@@ -81,6 +82,7 @@ def main() -> int:
     launcher_start = None
     signum = getattr(signal, "SIG" + args.signal)
     try:
+        row.update(daily_admission(source))
         command = [sys.executable, str(source / "e2e/run.py"), "--python", args.python,
                    "--exercise", "cancellation", "--artifacts", str(output / "launcher")]
         row["command"] = command

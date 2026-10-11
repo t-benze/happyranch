@@ -56,16 +56,45 @@ remain in the managed remote access spec.
 
 ## Gate state
 
-Required active PR and exact-merge main checks: Web (Node 24), Linux Canonical
-Store Validation (Ubuntu), macOS Canonical Store Validation (macOS 15), plus
-applicable Docs and other retained path-specific checks. The Linux canonical
-job still requires the explicit existing real callback smoke. Units are RETIRED,
-not skipped-pass; new standalone product E2E source is implemented under `e2e/`,
-while behavioral execution and required-check enforcement remain **PENDING**.
+Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
+Required checks at the final PR head and exact merge on main are exactly
+`Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
+path applicability. The manager supplies these two names to `pr_ci_waiter`;
+`pr_ci_merge` retains its independent review/QA, pinned-head and guarded-merge
+contract. Freshly observed GitHub protection has empty required contexts/checks
+and `strict=false`; source configuration is not external enforcement.
+
+Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
+ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
+Behavioral tests and builds are outside all/pre-push/required merge checks.
+Normal hooks stay enabled; never bypass hooks or the guarded worktree.
+Independent full code review and scoped QA remain mandatory. Static checks
+cannot establish lifecycle, callback, browser or platform correctness;
+behavioral regressions can be detected only later when their coverage executes.
+
+Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
+Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
+3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+`Daily Product E2E Health`. It is never a merge check. No local E2E alias,
+manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
+First scheduled execution is **PENDING**; prior first-slice receipts remain
+historical evidence at their own source, not daily/final-head verification.
+Engineering_manager owns daily failure/missing-evidence triage through existing
+tasks/threads; no new notifications or guaranteed response SLA is implied.
+
+Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
+under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
+the named actual CLI callback and their isolation fences retain their sources.
+Docs Manual build and the real tenant-isolation harness retain manual-only
+workflows, outside PR/main. Manual/tag macOS packaging is a separate release
+activity and invokes no fresh E2E. Legacy nightly integration remains separate
+at 07:00 UTC, with its historical failures and fixtures unchanged; its manual
+`all_only` input runs the same lint/static all selection. No legacy repair or
+run is authorized by this cadence change.
 
 Bare/default/directory Python selection refuses before test-module collection.
 The existing explicit platform files and isolated-parent `-m integration` entry
-remain. `local_ci.sh python` exits 2; `all` verifies retained Web checks only.
+remain. `local_ci.sh python` exits 2; `all` verifies source boundary and Web lint/static checks only.
 The obsolete PR1011 full-unit path, fixed G unit inventories/controls/repetitions
 and lab unit preflight are deleted. Disposable manual-all provenance, bounded
 capture and environment infrastructure remain.
@@ -91,7 +120,8 @@ merge remain mandatory. Every push renews review/QA. No deployment is included.
   14-complete-day, 29/30-agent, exact 10%, strict-majority and distinct-search/get-pair
   predicates are unchanged and unverified by this deletion or small E2E journeys.
 - General integration remains **SKIPPED** under THR-243 seq42, never PASS.
-  THR297's 40 interpreter setup errors, three stale `_FakeOrch.attach_memory_collection`
+  THR297 archived Build11 FAILURE (143pass/3fail/40errors/28UNTESTED),
+  with historical two-org cause UNKNOWN. Its 40 interpreter setup errors, three stale `_FakeOrch.attach_memory_collection`
   failures and 28 systemd gaps remain separate. Helpers/schedule fixtures stay;
   no interpreter repair, systemd provisioning, Jenkins mutation/allocation/run
   or real provider inference is part of this change.
@@ -101,7 +131,8 @@ merge remain mandatory. Every push renews review/QA. No deployment is included.
 
 ## Parent-owned continuation and external parity
 
-TASK-10476 owns merge/closeout and the freshly authored isolated browser → daemon
+TASK-10579 owns cadence delivery/merge/closeout, preserving terminal TASK-10476
+history and the freshly authored isolated browser → daemon
 → executable provider stub → actual CLI callback → independent durable/audit
 readback harness. First cases cover task completion, identical and lost-response
 replay, changed-payload retention under an ordinary static binding, known-task stale/fabricated-session denial,
@@ -109,8 +140,7 @@ missing/wrong bearer, colliding IDs across two orgs, and UI org switching.
 Jobs, threads, cancellation/late callback and actual daemon restart/recovery
 follow. The first eight cases are implemented in the separately authorized
 standalone lane; [its case record](../e2e/README.md) distinguishes source from
-actual execution/authoring evidence. Python matrices are wired as PR 3.12/3.14
-and main/release 3.12/3.13/3.14. The aggregate requires every cell/variant, exact
+actual execution/authoring evidence. The daily-only matrix is 3.12/3.13/3.14; first scheduled run is PENDING. The aggregate requires every cell/variant, exact
 source, zero skips and cleanup; no installed ruleset enforcement is inferred.
 Public API creates ordinary tasks; the built browser verifies lifecycle and
 alpha-beta-alpha isolation. No ordinary-task creation UI is added or covered.

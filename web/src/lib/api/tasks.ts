@@ -10,6 +10,8 @@ import type {
   TaskDetailResponse,
   TaskRecallNode,
   TaskRecord,
+  TaskPauseControlResponse,
+  TaskPauseOverview,
 } from './types';
 
 export type TaskListItem = TaskRecord;
@@ -144,3 +146,36 @@ export const downloadTaskAttachmentUrl = (
   storageKey: string,
 ): string =>
   `/orgs/${slug}/tasks/${taskId}/attachments/${encodeURIComponent(storageKey)}`;
+
+
+export const pauseTask = (
+  slug: string,
+  taskId: string,
+  expectedGeneration: number,
+): Promise<TaskPauseControlResponse> => {
+  if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) {
+    return Promise.reject(new RangeError('Pause generation must be a non-negative safe integer'));
+  }
+  return request(`/orgs/${slug}/tasks/${taskId}/pause`, {
+    method: 'POST', body: { expected_generation: expectedGeneration },
+  });
+};
+
+export const resumeTask = (
+  slug: string,
+  taskId: string,
+  expectedGeneration: number,
+): Promise<TaskPauseControlResponse> => {
+  if (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0) {
+    return Promise.reject(new RangeError('Pause generation must be a non-negative safe integer'));
+  }
+  return request(`/orgs/${slug}/tasks/${taskId}/resume`, {
+    method: 'POST', body: { expected_generation: expectedGeneration },
+  });
+};
+
+export const getTaskPauseOverview = (
+  slug: string,
+  params?: { limit?: number; before?: string },
+): Promise<TaskPauseOverview> =>
+  request(`/orgs/${slug}/tasks/pause-overview`, { params });

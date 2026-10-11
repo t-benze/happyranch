@@ -986,9 +986,8 @@ Two CLI entrypoints (invoked as jobs or on task resume, not as `happyranch` subc
 # Poll job (submitted via happyranch jobs submit):
 python -m runtime.daemon.pr_ci_waiter \
   --repo owner/repo --pr N --head-sha <40-char-sha> \
-  --expected-check "Web (Node 24)" \
-  --expected-check "Linux Canonical Store Validation (Ubuntu)" \
-  --expected-check "macOS Canonical Store Validation (macOS 15)" \
+  --expected-check "Source Boundary Lint" \
+  --expected-check "Web Lint (Node 24)" \
   --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
 
 # Merge (triggered by resumed task):
@@ -998,9 +997,11 @@ python -m runtime.daemon.pr_ci_merge \
   --review-task-id TASK-xxx --qa-task-id TASK-yyy
 ```
 
-For HappyRanch, include applicable Docs/other retained path-specific names too.
-The same active check policy applies to the exact merge on main. Python units
-are retired and fresh E2E is PENDING; other repositories use their own policy.
+For HappyRanch under THR-291 seq69, the two names above are unconditional on
+both PR and exact-merge main. Daily Product E2E Health, manual Docs/lab and
+release packaging are outside expected-check lists. Protection contexts/checks
+are observed empty with strict=false, not enforced by these examples. First
+scheduled E2E is PENDING; other repositories use their own policy.
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
 The review/QA evidence extraction follows the **Merge-evidence contract** in
@@ -1406,8 +1407,8 @@ which records actual checkout/source/tool provenance and the
 minutes; general integration retains its 30-minute cap and exact schedule-only
 predicate, so all three manual input cases skip it. THR-291 seq40 retired
 Python unit source, G named-case controls/repetitions and the PR1011 unit entry.
-The wrapper verifies retained Web checks only, with units RETIRED and fresh E2E
-PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
+The wrapper verifies source boundary and Web static checks only under seq69,
+with units RETIRED and first daily E2E PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
 See `docs/local-ci.md` for current checks and selectors.
 
 ### OpenAPI snapshot operator
@@ -1418,3 +1419,8 @@ After review, `uv run python scripts/generate_openapi_snapshot.py --write`
 atomically replaces `tests/contract/openapi.json`. The summarizer preserves workflow input discriminators. The former Python
 contract test is retired; Web/Swift still consume the snapshot and route
 classification. This operator does not run tests.
+
+
+## Root task Pause and Resume (THR-292)
+
+Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. Backend PR1 supplies transport; browser controls/bilingual UI belong to PR2. [Contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).

@@ -18,6 +18,35 @@ from pathlib import Path
 from owned import Owned, identity
 
 
+def daily_admission(source: Path) -> dict:
+    """Validate Actions' scheduled default-branch source before launching work.
+
+    Environment/payload checks are admission validation, not a hostile-runner
+    security boundary. No CLI event override or local execution alias exists.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME") != "schedule":
+        raise RuntimeError("fresh Product E2E requires the daily schedule event; absent/other events refuse")
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        raise RuntimeError("scheduled Actions event payload is required")
+    event = json.loads(Path(event_path).read_text())
+    repository = event["repository"]
+    branch = repository["default_branch"]
+    repo = repository["full_name"]
+    ref = "refs/heads/" + branch
+    sha = os.environ.get("GITHUB_SHA", "")
+    if (event.get("schedule") != "0 19 * * *" or not branch
+            or os.environ.get("GITHUB_REPOSITORY") != repo
+            or os.environ.get("GITHUB_REF") != ref
+            or os.environ.get("GITHUB_WORKFLOW_REF") != repo + "/.github/workflows/e2e.yml@" + ref
+            or len(sha) != 40 or any(c not in "0123456789abcdef" for c in sha)):
+        raise RuntimeError("daily cron/default-branch/workflow/source metadata mismatch")
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    if actual != sha:
+        raise RuntimeError("checkout differs from immutable scheduled github.sha")
+    return dict(event="schedule", cron=event["schedule"], source_sha=sha, source_ref=ref)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--python", required=True, help="absolute supported interpreter")
@@ -47,6 +76,7 @@ def main() -> int:
         signal.signal(sig, interrupted)
     signal.alarm(max(1, int(started + 720 - time.monotonic())))
     try:
+        receipt.update(daily_admission(source))
         if not (sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
                 and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
                 and os.environ.get("RUNNER_OS") == "Linux"):

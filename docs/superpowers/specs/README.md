@@ -20,7 +20,11 @@ For current behavior, use these sources before old specs:
   specs. Historical test paths describe past evidence, not executable gates.
   Product contracts and acceptance obligations remain unchanged. Standalone E2E
   source/case/matrix policy is in `e2e/README.md` and `docs/local-ci.md`; actual
-  behavioral evidence and required-check enforcement remain PENDING. This lane
+  first daily execution remains PENDING. THR-291 seq69 supersedes contrary
+  automatic test/build merge-gate text: only Source Boundary Lint and Web Lint
+  (Node24) are required. Daily19:00UTC E2E is outside merge; manual Docs/lab and
+  retained source do not imply automatic execution. Observed protection has empty
+  required contexts/checks, strict=false. Static checks are not behavioral proof. This lane
   uses public processes outside pytest; retained integration/platform/callback
   selectors keep their mandatory isolated parent. Historical test recipes do
   not authorize old-unit execution or weakening those fences.
@@ -48,6 +52,7 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
+| [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md) | current | Separate org root control, final commitment, truthful drain, API/CLI/overview and compatible rollback |
 | `2026-10-01-escalation-reason-display.md` | implemented | THR-279 read-side current-episode reason projection; current contract in `docs/agent-guides/web-and-cli.md`. |
 | `2026-09-20-web-i18n-design.md` | current | THR-118 W1 web i18n foundation (typed en/zh-CN catalog, resolver, adapter seam, coverage manifest). Current contract: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, `web/ARCHITECTURE.md`. Route translation is W2-W4; native persistence is N1. |
 | `2026-09-10-delegated-failure-manager-routing.md` | implemented | Current routing contract: `docs/agent-guides/orchestrator-contracts.md` and `runtime/orchestrator/run_step.py`. |

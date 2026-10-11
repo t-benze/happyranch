@@ -1,12 +1,14 @@
-"""Stable gate: missing cells/variants, skips and unknown cleanup always fail."""
+"""Daily health: missing cells/variants, skips and unknown cleanup always fail."""
 from __future__ import annotations
 
 import argparse
 import copy
 import json
+import os
 import signal
 
 from cancellation import validate as validate_cancellation
+from run import daily_admission
 from pathlib import Path
 
 
@@ -43,8 +45,8 @@ def controls() -> dict:
                   variants={v: {"status": "PASS"} for v in MANIFEST["variants"]},
                   cleanup=dict(ok=True, data_absent=True, ports_absent={"1234": True}),
                   phases=[dict(name=n, exit=0) for n in ("dependencies", "browser-dependencies", "browser-install", "web-dependencies", "web-build", "scenarios")])
-             for p in MANIFEST["pr_python"]]
-    validate(valid, MANIFEST["pr_python"], source, "success")
+             for p in MANIFEST["daily_python"]]
+    validate(valid, MANIFEST["daily_python"], source, "success")
     results = {}
     for name in ("missing-cell", "skip", "failed-variant", "missing-variant", "wrong-sha", "cleanup", "failed-job"):
         rows = copy.deepcopy(valid)
@@ -64,12 +66,12 @@ def controls() -> dict:
         else:
             state = "failure"
         try:
-            validate(rows, MANIFEST["pr_python"], source, state)
+            validate(rows, MANIFEST["daily_python"], source, state)
         except ValueError as exc:
             results[name] = str(exc)
         else:
             raise AssertionError(f"gate incorrectly accepted {name}")
-    validate(valid, MANIFEST["pr_python"], source, "success")
+    validate(valid, MANIFEST["daily_python"], source, "success")
     results.update(cancellation_controls())
     return results
 
@@ -116,39 +118,86 @@ def cancellation_controls() -> dict:
     return results
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--controls", action="store_true")
     parser.add_argument("--artifacts", type=Path)
     parser.add_argument("--source")
-    parser.add_argument("--event", choices=["pull_request", "push", "workflow_dispatch"])
+    parser.add_argument("--event", choices=["schedule"])
     parser.add_argument("--matrix-result")
     parser.add_argument("--cancellation-result")
     args = parser.parse_args()
     if args.controls:
         print(json.dumps(controls(), indent=2))
-        return
+        return 0
     if not all((args.artifacts, args.source, args.event, args.matrix_result, args.cancellation_result)):
         parser.error("artifacts, source, event, matrix-result and cancellation-result are required")
-    rows = [json.loads(path.read_text()) for path in args.artifacts.glob("e2e-[0-9]*/result.json")]
-    expected = MANIFEST["pr_python" if args.event == "pull_request" else "main_python"]
-    validate(rows, expected, args.source, args.matrix_result)
-    if args.cancellation_result != "success":
-        raise ValueError("cancellation jobs did not succeed")
-    cancellation = sorted(args.artifacts.glob("e2e-cancel-*/cancellation.json"))
-    if len(cancellation) != 2:
-        raise ValueError("missing or duplicate cancellation cell")
-    seen = set()
-    for path in cancellation:
-        row = json.loads(path.read_text())
-        signum = row["sent"]["signal"]
-        if signum in seen or signum not in {int(signal.SIGTERM), int(signal.SIGINT)} or row["status"] != "PASS":
-            raise ValueError("unexpected or failed cancellation cell")
-        seen.add(signum)
-        python = "3.12" if signum == signal.SIGTERM else "3.14"
-        validate_cancellation(row, args.source, python, signum)
-    print(json.dumps(dict(status="PASS", source_sha=args.source, cells=expected, cancellation=sorted(seen))))
+    expected = MANIFEST["daily_python"]
+    names = ["e2e-" + version for version in expected] + ["e2e-cancel-TERM", "e2e-cancel-INT"]
+    health = dict(status="FAIL", event=args.event, source_sha=args.source,
+                  cells=expected, artifacts=names, errors=[])
+    try:
+        admission = daily_admission(Path(__file__).resolve().parents[1])
+        if admission["source_sha"] != args.source:
+            raise ValueError("aggregate source differs from scheduled github.sha")
+        rows = []
+        required = ["result.json", "observations.json", "browser-events.json", "daemon.txt",
+                    "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
+                    "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png"]
+        phase_logs = [name + ".txt" for name in ("dependencies", "browser-dependencies", "browser-install",
+                                                "web-dependencies", "web-build", "scenarios")]
+        # Missing/empty sanitized artifacts cannot be represented as healthy.
+        for version in expected:
+            directory = args.artifacts / ("e2e-" + version)
+            for name in required + phase_logs:
+                path = directory / name
+                if not path.is_file() or (name.endswith((".json", ".png")) and path.stat().st_size == 0):
+                    health["errors"].append(f"missing/empty artifact: e2e-{version}/{name}")
+            if (directory / "result.json").is_file():
+                rows.append(json.loads((directory / "result.json").read_text()))
+        unexpected = set(path.name for path in args.artifacts.glob("e2e-*") if path.is_dir()) - set(names)
+        if unexpected:
+            health["errors"].append("unexpected artifact directories: " + ", ".join(sorted(unexpected)))
+        try:
+            validate(rows, expected, args.source, args.matrix_result)
+            if any(any(row.get(key) != admission[key] for key in admission) for row in rows):
+                raise ValueError("baseline daily event/source receipt mismatch")
+        except (ValueError, KeyError, TypeError) as exc:
+            health["errors"].append(str(exc))
+        if args.cancellation_result != "success":
+            health["errors"].append("cancellation jobs did not succeed: " + args.cancellation_result)
+        for label, version, signum in (("TERM", "3.12", int(signal.SIGTERM)), ("INT", "3.14", int(signal.SIGINT))):
+            directory = args.artifacts / ("e2e-cancel-" + label)
+            for name in ["cancellation.json", "launcher.log", "launcher/active.json", "launcher/result.json"] + ["launcher/" + name for name in phase_logs]:
+                path = directory / name
+                if not path.is_file() or (name in {"cancellation.json", "launcher/active.json", "launcher/result.json"} and path.stat().st_size == 0):
+                    health["errors"].append(f"missing/empty artifact: e2e-cancel-{label}/{name}")
+            try:
+                row = json.loads((directory / "cancellation.json").read_text())
+                if row["status"] != "PASS" or any(row.get(key) != admission[key] for key in admission):
+                    raise ValueError("failed or mismatched daily cancellation receipt")
+                if any(row["launcher_result"].get(key) != admission[key] for key in admission):
+                    raise ValueError("launcher daily event/source receipt mismatch")
+                validate_cancellation(row, args.source, version, signum)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                health["errors"].append(f"{label}: {exc}")
+        if not health["errors"]:
+            health["status"] = "PASS"
+    except Exception as exc:
+        health["errors"].append(str(exc))
+    print(json.dumps(health, indent=2))
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        lines = ["## Daily Product E2E health: " + health["status"],
+                 "", "Default-branch source: `" + args.source + "`", "Event: `schedule` (19:00 UTC)",
+                 "", "Expected artifacts (7-day retention): " + ", ".join("`" + name + "`" for name in names),
+                 "", "Baseline jobs: " + args.matrix_result + "; launcher diagnostics: " + args.cancellation_result,
+                 "", "Engineering_manager owns triage through existing tasks/threads. This health result does not block merging."]
+        lines.extend("\n- " + error.replace("\n", " ") for error in health["errors"])
+        with Path(summary).open("a") as stream:
+            stream.write("\n".join(lines) + "\n")
+    return 0 if health["status"] == "PASS" else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

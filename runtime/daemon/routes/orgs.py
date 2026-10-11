@@ -192,6 +192,8 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
         database = Database(db_path)
         try:
             initialize_complete_org_schema(database, expected_org_slug=body.slug)
+            from runtime.infrastructure.task_pause_controls import install_pause_schema
+            install_pause_schema(database, org_slug=body.slug)
         finally:
             database.close()
         org = await state.add_org(body.slug)

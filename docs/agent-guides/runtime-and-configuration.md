@@ -834,22 +834,42 @@ checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
 There is no default Python selection: pytest requires explicit existing canonical
 platform file selectors, or the isolated parent with `-m integration`.
 
-Required active PR **and exact-merge main** checks are `Web (Node 24)`,
-`Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
-and applicable Docs/other retained path-specific checks. The Linux job includes
-its existing real Codex callback smoke. Unit checks are neither required nor
-passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
-Independent review, QA, exact-head/completed checks and normal hooks remain
-mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
-never PASS; integration requires a disposable authorized venue away from the live
-daemon host and deterministic external provider stubs.
+Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
+Required checks at the final PR head and exact merge on main are exactly
+`Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
+path applicability. The manager supplies these two names to `pr_ci_waiter`;
+`pr_ci_merge` retains its independent review/QA, pinned-head and guarded-merge
+contract. Freshly observed GitHub protection has empty required contexts/checks
+and `strict=false`; source configuration is not external enforcement.
 
-The existing manual `local-ci-all` runner preserves its disposable environment,
-source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
-unit entry, G named-case controls/repetitions and lab unit preflight are removed.
-The existing `all_only` boolean is compatibility-only; every manual input runs
-retained Web checks, with separate integration skipped. Existing 150-minute manual
-and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
+ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
+Behavioral tests and builds are outside all/pre-push/required merge checks.
+Normal hooks stay enabled; never bypass hooks or the guarded worktree.
+Independent full code review and scoped QA remain mandatory. Static checks
+cannot establish lifecycle, callback, browser or platform correctness;
+behavioral regressions can be detected only later when their coverage executes.
+
+Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
+Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
+3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+`Daily Product E2E Health`. It is never a merge check. No local E2E alias,
+manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
+First scheduled execution is **PENDING**; prior first-slice receipts remain
+historical evidence at their own source, not daily/final-head verification.
+Engineering_manager owns daily failure/missing-evidence triage through existing
+tasks/threads; no new notifications or guaranteed response SLA is implied.
+
+Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
+under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
+the named actual CLI callback and their isolation fences retain their sources.
+Docs Manual build and the real tenant-isolation harness retain manual-only
+workflows, outside PR/main. Manual/tag macOS packaging is a separate release
+activity and invokes no fresh E2E. Legacy nightly integration remains separate
+at 07:00 UTC, with its historical failures and fixtures unchanged; its manual
+`all_only` input runs the same lint/static all selection. No legacy repair or
+run is authorized by this cadence change.
+
 See [the reset coverage gap record](../python-test-reset.md) and
 [Local CI](../local-ci.md) for retained selectors and evidence limits.
 
@@ -918,3 +938,10 @@ under workflow_recovery and blocks drain until genuine containment evidence exis
 Disable fences new admission/prelaunch and preserves ownership of already admitted
 work. No startup deployment, live migration, enable, assignment or restart follows
 from publishing S2 source.
+
+
+## Root task Pause and Resume (THR-292)
+
+The supported single daemon per org owns task_pause_controls installation/complete validation before recovery/admission; fresh org creation initializes the same literal extension. Generic Database and runtime-audit remain pause-free. No new config, dependency or permission switch is introduced. Durable holds/release intent and deferred original owners survive lost notifications. Startup preserves possible-launch/ACTION uncertainty and uses actual existing callback consumers, never consumed-result replay. Complete independent schema references include the pause dimension without weakening F/E/G/H comparisons; v2 raw schema is still observed-only. Rollback requires compatible code, including for an empty extension. Deployment/restart/live migration require their separate operator authority. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+
+Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.

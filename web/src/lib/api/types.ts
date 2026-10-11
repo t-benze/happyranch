@@ -66,7 +66,48 @@ export type ThreadInvocationPurpose = 'reply' | 'bootstrap';
 // Tasks
 // ---------------------------------------------------------------------------
 
+export interface TaskPauseProjection {
+  org_slug: string;
+  root_task_id: string;
+  lifecycle_status: TaskStatus;
+  held: boolean;
+  effective_hold: boolean;
+  generation: number;
+  control_state: 'unheld' | 'pausing' | 'paused';
+  paused_at: string | null;
+  resumed_at: string | null;
+  blockers: Array<{
+    kind: 'task_session' | 'job' | 'launch' | 'result_processing' | 'unknown';
+    task_id: string;
+    job_id: string | null;
+    owner_kind: string;
+    reason: string;
+    observed_at: string;
+  }>;
+  evidence_complete: boolean;
+  observed_at: string;
+}
+
+export interface TaskPauseControlResponse {
+  changed: boolean;
+  pause: TaskPauseProjection;
+}
+
+export interface TaskPauseOverview {
+  org_slug: string;
+  observed_at: string;
+  evidence_complete: boolean;
+  next_cursor: string | null;
+  counts: Record<string, number> | null;
+  unheld_runnable: TaskPauseProjection[];
+  pausing: TaskPauseProjection[];
+  paused: TaskPauseProjection[];
+  terminal_drain: TaskPauseProjection[];
+  unavailable_roots: TaskPauseProjection[];
+}
+
 export interface TaskRecord {
+  pause?: TaskPauseProjection;
   task_id: string;
   team: string;
   brief: string;
@@ -154,6 +195,7 @@ export interface EscalationReason {
 
 /** Envelope returned by `GET /api/v1/orgs/{slug}/tasks/{task_id}`. */
 export interface TaskDetailResponse {
+  pause?: TaskPauseProjection;
   task: TaskRecord;
   results: unknown[] | null;
   audit_log: unknown[];

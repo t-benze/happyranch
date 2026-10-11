@@ -1,4 +1,4 @@
-# First product E2E gate
+# Daily product E2E health
 
 This independently authored standalone lane implements the accepted E02/E03/E06
 case design (`TASK-10476`, SHA256
@@ -7,15 +7,22 @@ Source and design acceptance do not establish behavioral PASS. Actual disposable
 runner results, authoring proof, independent review/QA and check enforcement are
 separate delivery obligations.
 
-Run only on an authorized disposable GitHub Ubuntu runner, through the durable
-job/workflow boundary:
+Founder THR-291 seq69 admits fresh E2E only from `.github/workflows/e2e.yml`'s
+`0 19 * * *` schedule on default-branch immutable `github.sha` (19:00 UTC /
+03:00 Asia/Shanghai). There is no local execution alias, manual dispatch, PR,
+push, release, workflow_call or repository_dispatch entry. `run.py` and
+`cancellation.py` reject absent/unsupported events, wrong cron/workflow/default
+branch or checkout/source mismatch before launching scenarios. Actions metadata
+validation is not protection against a hostile runner forging its environment.
 
-```sh
-scripts/local_ci.sh e2e --python /absolute/supported/python --artifacts /new/output/directory
-```
+Python3.12/3.13/3.14 baseline and TERM3.12/INT3.14 launcher diagnostics feed
+`Daily Product E2E Health`, outside required merge checks. First scheduled run
+is PENDING. Historical TASK10532/run38035241095 on `afb46cbb6` retains both
+3.12/3.14 eight-case/23-variant baselines and TERM/INT cleanup; it is not fresh
+head/daily evidence. Engineering_manager owns ordinary task/thread triage;
+there are no retries, new notifications or promised response SLA.
 
-`run.py` refuses a live host or self-hosted runner. Python 3.12/3.14 run on PRs;
-main/release use 3.12/3.13/3.14. Every cell builds the real Web on Node24 and uses
+Every cell builds the real Web on Node24 and uses
 Playwright 1.58.0/Chromium with an exact hash-locked dependency closure. This
 lane does not change Web dependencies or reuse the screenshot harness's mock
 server. `browser-events.json` is an allowlisted response/status/page-error trace;
@@ -82,7 +89,7 @@ cleanup fails. Both diagnostics are required by the aggregate alongside the
 unchanged eight-case/23-variant baseline; they do not count as product cases or
 product-cancellation coverage. Full setup/action/interruption/cleanup/evidence
 phase times and reaped child exit statuses are retained. Actual signal and
-new-head baseline evidence remain PENDING until collected from hosted runs.
+new daily baseline evidence remain PENDING until observed from the schedule.
 
 Target is 600s, action cutoff720s, cleanup reserve60s, evidence reserve120s,
 hard cap900s including dependency installation and build. The workflow starts
@@ -188,3 +195,26 @@ successful run. Deletion PR1024 is merged at
 `5e87e778c6968338a12bd5cd65d461e5699836be`; this lane preserves that deletion and
 all current product/Web/shared assets. Main/release3.13 execution remains future
 work, not evidence supplied by a two-cell PR run.
+
+## Cadence delivery and remaining test-authoring evidence (THR-291 seq69)
+
+The existing four-answer case record and twelve protected deliberate-defect
+operations above are preserved. All twelve operations, attributable RED,
+byte-exact restoration/GREEN, five isolated/five sibling repetitions remain
+**UNEXECUTED / unauthorized**. Baseline success and harness refusal controls
+are not full assertion validation. This separate authoring gap does not impose
+an obsolete E2E merge hold: independent full review/scoped QA may accept this
+cadence/policy change without E2E execution/protected proof, and must identify
+that exclusion. No complete behavioral/test-authoring acceptance is claimed.
+
+Daily summary reports actual health/source SHA, exact artifact names and
+failure/missing evidence; each artifact retains seven days. Missing/failed/
+skipped/wrong-source/wrong-version cells, incomplete diagnostics/artifacts and
+unknown cleanup fail health. Static merge checks offer no equivalent behavioral
+coverage and delayed detection remains a risk. Later jobs/threads/product
+cancellation/late callbacks/actual daemon restart increments remain separately
+reviewable root-owned daily work, unproven until real evidence. General
+integration is SKIPPED THR243seq42. Archived THR297 Build11 remains FAILURE
+143pass/3fail/40errors/28UNTESTED with two-org cause UNKNOWN; this baseline does
+not fix fixture/systemd/interpreter gaps. TASK10582 owns detailed reconciliation.
+PR1014 compatibility/authentic-memory obligations remain unproven.

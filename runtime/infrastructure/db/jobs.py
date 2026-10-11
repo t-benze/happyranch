@@ -24,6 +24,10 @@ class JobsMixin:
 
     @_synchronized
     def insert_job(self, r: "JobRecord") -> None:
+        self._insert_job_uncommitted(r)
+        self._conn.commit()
+
+    def _insert_job_uncommitted(self, r: "JobRecord") -> None:
         self._conn.execute(
             """INSERT INTO jobs (
                 id, task_id, agent_name, title, rationale, script_text,
@@ -44,7 +48,6 @@ class JobsMixin:
                 int(r.review_required), int(r.persistent), r.created_at,
             ),
         )
-        self._conn.commit()
 
     @_synchronized
     def get_job(self, job_id: str) -> "JobRecord | None":
@@ -327,6 +330,27 @@ class JobsMixin:
         stdout_path: str,
         stderr_path: str,
     ) -> None:
+        changed = self._transition_job_to_running_uncommitted(
+            job_id, reviewer=reviewer, reviewed_at=reviewed_at, started_at=started_at,
+            cwd_resolved=cwd_resolved, max_runtime_seconds=max_runtime_seconds,
+            stdout_path=stdout_path, stderr_path=stderr_path,
+        )
+        self._conn.commit()
+        if not changed:
+            raise ValueError(f"not_pending: job {job_id} cannot transition to running")
+
+    def _transition_job_to_running_uncommitted(
+        self,
+        job_id: str,
+        *,
+        reviewer: str,
+        reviewed_at: str,
+        started_at: str,
+        cwd_resolved: str,
+        max_runtime_seconds: int | None,
+        stdout_path: str,
+        stderr_path: str,
+    ) -> bool:
         cur = self._conn.execute(
             "UPDATE jobs SET "
             "status='running', reviewed_by=?, reviewed_at=?, started_at=?, "
@@ -335,9 +359,7 @@ class JobsMixin:
             (reviewer, reviewed_at, started_at, cwd_resolved, max_runtime_seconds,
              stdout_path, stderr_path, job_id),
         )
-        self._conn.commit()
-        if cur.rowcount == 0:
-            raise ValueError(f"not_pending: job {job_id} cannot transition to running")
+        return cur.rowcount == 1
 
     @_synchronized
     def transition_job_to_terminal(

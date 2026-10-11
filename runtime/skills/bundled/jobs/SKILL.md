@@ -260,26 +260,22 @@ For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit 
 ```bash
 python -m runtime.daemon.pr_ci_waiter \
   --repo owner/repo --pr N --head-sha <40-char-sha> \
-  --expected-check "Web (Node 24)" \
-  --expected-check "Linux Canonical Store Validation (Ubuntu)" \
-  --expected-check "macOS Canonical Store Validation (macOS 15)" \
+  --expected-check "Source Boundary Lint" \
+  --expected-check "Web Lint (Node 24)" \
   --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
 ```
 
-For HappyRanch, add applicable Docs/other retained path-specific checks to the
-three active names above, on both PR and exact-merge main. THR-291 seq40 retired
-Python units; no unit PASS may be claimed. The standalone `Product E2E` workflow
-adds Python 3.12/3.14 PR cells and 3.12/3.13/3.14 main/release cells with Node24 and
-a complete-variant/cleanup aggregate, including separate real TERM/INT launcher
-cleanup diagnostics (not product cancellation). Add its stable aggregate to applicable
-exact-head evidence; source wiring alone does not prove execution or installed
-required-check enforcement. Its `scripts/local_ci.sh e2e` command is disposable
-GitHub Ubuntu only, through a durable job/workflow, with a cleanup-inclusive
-900s hard cap. Retained pytest integration/platform/callback selections keep
-their mandatory isolated parent. `all` remains retained Web only.
-Other repositories use their own current check names. The waiter accepts an
-explicit nonempty policy; it does not discover or enforce repository branch
-protection. Verify the expected names and actual completed outcomes.
+For HappyRanch under THR-291 seq69, exactly these two unconditional lint/static
+checks apply on PR and exact-merge main; there are no path-specific behavioral
+merge checks. Daily Product E2E Health is outside expected-check lists and
+schedule-only at19:00UTC. First scheduled run is PENDING. Docs/lab are manual;
+mac packaging is manual/tag; legacy integration schedule remains separate.
+Local default/all/pre-push selection is lint/static only; units RETIRED exit2.
+The waiter takes caller-supplied names; product gate semantics are unchanged.
+Freshly observed protection contexts/checks are empty and strict=false; do not
+claim external enforcement. Independent review/scoped QA, normal hooks and
+manager guarded merge remain required. Static checks are not behavioral proof.
+Other repositories use their own current check policy.
 
 This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
 
@@ -331,3 +327,10 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
 Retry once after 1 second on any non-listed error.
+
+
+## Root task Pause outcomes
+
+Task-root Pause may leave an authorized submitted job Pending. Founder approval/run and deferred automatic launch are gated at the actual origin root; rejection/stop remain available. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
+
+Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; founder approval/run never uses this exception.
