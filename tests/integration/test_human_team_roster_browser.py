@@ -686,7 +686,10 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
             settled()
             actual_worker = next(row for row in httpx.get(_base(port) + '/agents', headers=_auth_headers()).raise_for_status().json()['agents'] if row['name'] == 'browser_worker')
             assert actual_worker['team'] == 'default' and actual_worker['role'] == 'worker'
-            assert actual_worker['description'] == enrollment['description'] and actual_worker['system_prompt'] == enrollment['system_prompt']
+            # The canonical AgentDef writer terminates this non-LF draft with
+            # one LF. Keep the submitted draft/POST exact and compare the full
+            # canonical readback; stripping would hide changed prompt bytes.
+            assert actual_worker['description'] == enrollment['description'] and actual_worker['system_prompt'] == enrollment['system_prompt'] + '\n'
             creation_writes = [row for row in fixture['requests'] if row['method'] != 'GET'][creates_before:]
             assert [(row['method'], row['path'], row['body']) for row in creation_writes] == [
                 ('POST', '/api/v1/orgs/test/agents', {**enrollment, 'role': 'worker', 'team': 'default', 'executor': 'claude'})]

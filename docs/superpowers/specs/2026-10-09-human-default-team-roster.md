@@ -227,3 +227,22 @@ code comparison while excluding object-sharing reference flags. All 224 C4
 parameters and their original behavioral assertions remain. These corrections
 are source readiness; final-head hosted execution and the existing held proof
 inventory remain required, and no partial result is a feature-readiness claim.
+
+
+At `18e01cfa`, all four W10 cases reach enrollment and fail because the
+non-LF input is compared directly with its canonical AgentDef readback.
+The existing writer adds one final LF. C10 now requires that exact canonical
+value while preserving the original draft, locale/focus/selection and exact
+POST body assertions; no trimming or product writer change is introduced.
+All 89 assertions, four parameters and 29 required scenario rows remain.
+The four viewed draft screenshots are readable in English and Simplified Chinese
+at both viewports, but are partial evidence. Full C10 completion remains missing.
+
+Merged PR1025 (`d88ba446`) supersedes the historical PR1022 feature-shard and
+behavioral merge-check configuration under THR-291 seq69. PR/main checks are now
+lint/static only; retained C1–C10/platform/callback sources are not automatic
+merge requirements. Product E2E runs daily from default-branch source at 19:00 UTC;
+its first observed scheduled execution remains PENDING. No PR/manual/ad hoc
+execution, causal/repetition allocation or held M proof follows. Historical
+feature failures, in-flight run38104839795 and all held proof remain authentic;
+source inspection, scoped QA and independent review cannot claim behavioral PASS.

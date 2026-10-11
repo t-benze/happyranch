@@ -1,51 +1,76 @@
 # Local CI
 
-Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
-The former default `not integration` selection was deleted, including its
-unmarked component, contract and system acceptance cases. Git history preserves
-that source; do not restore it as a hidden unit or renamed E2E suite.
-`scripts/local_ci.sh python` refuses with exit 2. `all` runs the retained Web
-checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
-There is no default Python selection: pytest requires explicit existing canonical
-platform file selectors, or the isolated parent with `-m integration`.
+Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
+Required checks at the final PR head and exact merge on main are exactly
+`Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
+path applicability. The manager supplies these two names to `pr_ci_waiter`;
+`pr_ci_merge` retains its independent review/QA, pinned-head and guarded-merge
+contract. Freshly observed GitHub protection has empty required contexts/checks
+and `strict=false`; source configuration is not external enforcement.
 
-Required active PR **and exact-merge main** checks are `Web (Node 24)`,
-`Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
-and applicable Docs/other retained path-specific checks. The Linux job includes
-its existing real Codex callback smoke. Unit checks are neither required nor
-passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
-Independent review, QA, exact-head/completed checks and normal hooks remain
-mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
-never PASS; integration requires a disposable authorized venue away from the live
-daemon host and deterministic external provider stubs.
+Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
+ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
+Behavioral tests and builds are outside all/pre-push/required merge checks.
+Normal hooks stay enabled; never bypass hooks or the guarded worktree.
+Independent full code review and scoped QA remain mandatory. Static checks
+cannot establish lifecycle, callback, browser or platform correctness;
+behavioral regressions can be detected only later when their coverage executes.
 
-The existing manual `local-ci-all` runner preserves its disposable environment,
-source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
-unit entry, G named-case controls/repetitions and lab unit preflight are removed.
-The existing `all_only` boolean is compatibility-only; every manual input runs
-retained Web checks, with separate integration skipped. Existing 150-minute manual
-and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
-See [the reset coverage gap record](python-test-reset.md) for uncovered
-obligations; retained selectors and evidence limits follow below.
+Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
+Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
+3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+`Daily Product E2E Health`. It is never a merge check. No local E2E alias,
+manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
+First scheduled execution is **PENDING**; prior first-slice receipts remain
+historical evidence at their own source, not daily/final-head verification.
+Engineering_manager owns daily failure/missing-evidence triage through existing
+tasks/threads; no new notifications or guaranteed response SLA is implied.
+
+Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
+under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
+the named actual CLI callback and their isolation fences retain their sources.
+Docs Manual build and the real tenant-isolation harness retain manual-only
+workflows, outside PR/main. Manual/tag macOS packaging is a separate release
+activity and invokes no fresh E2E. Legacy nightly integration remains separate
+at 07:00 UTC, with its historical failures and fixtures unchanged; its manual
+`all_only` input runs the same lint/static all selection. No legacy repair or
+run is authorized by this cadence change.
+
+See [coverage gaps](python-test-reset.md) and [the case record](../e2e/README.md).
 
 ## Commands and retained lanes
 
 ```bash
-scripts/local_ci.sh all          # retained Web checks; Node 24 required
-scripts/local_ci.sh web          # same Web checks without all's advisory
-scripts/local_ci.sh python       # RETIRED, exit 2; no Python execution
+scripts/local_ci.sh all           # default: boundary lint + Web static checks
+scripts/local_ci.sh web           # colour scan + ESLint + typecheck, Node24
+scripts/local_ci.sh boundary-lint # source-only lint + bounded synthetic validation
+scripts/local_ci.sh python        # RETIRED exit2
+scripts/local_ci.sh e2e           # REFUSED exit2: daily schedule-only
 scripts/local_ci.sh help
-# Only in an authorized disposable integration venue:
-scripts/local_ci.sh integration
+# Optional retained Web source, separately selected outside merge CI:
+(cd web && npx vitest run)
+(cd web && npm run build)
+(cd web && npm run build-storybook)
+# Integration requires separate authorization/disposable venue; general suite SKIPPED.
 ```
 
-`all`/`web` execute `npm ci`, the design-system colour gate, lint, typecheck,
-SPA build, Storybook build and non-watch `vitest run`. They do not establish
-Python or native coverage. Node must be exactly major 24 from `.nvmrc`;
-missing/wrong Node refuses before npm work. `npm ci` preserves lockfile parity.
+The daily workflow retains locked browser dependencies, disposable Ubuntu24.04,
+real CLI/browser boundaries, synthetic orgs and deterministic executable provider
+stubs. Target600s/hard900s includes setup/actions/cleanup; actions stop720s with
+cleanup/evidence reserves. Missing/failed/skipped cells, wrong source/version,
+incomplete diagnostics/artifacts or unknown cleanup give nonzero daily health.
+The Actions summary identifies the actual source, expected `e2e-3.12`,
+`e2e-3.13`, `e2e-3.14`, `e2e-cancel-TERM`, `e2e-cancel-INT` artifacts,
+7-day retention, job states and missing/failure evidence. Launcher cleanup is
+not product cancellation/restart coverage. The case record keeps four authoring
+answers and twelve UNEXECUTED/unauthorized protected defect proposals;
+RED/restoration/GREEN/repetitions and full assertion validation remain absent.
+Cadence review/scoped QA may accept this policy change without daily execution
+or protected proof under seq69; that disposition is not behavioral acceptance.
 
-The two canonical hosted jobs retain exactly these existing Python platform
-files (222 static definitions; no parameter expansion implied):
+The seven retained canonical platform source files are:
+
+These files retain 222 static definitions (no parameter expansion implied):
 
 ```text
 tests/test_canonical_skill_store.py
@@ -57,8 +82,8 @@ tests/test_workspace_adapters.py
 tests/test_prelaunch_integrity_validation.py
 ```
 
-They historically overlapped default units but now survive solely as the existing
-platform lane. Explicit one-or-more file/node selectors are required; the root
+They historically overlapped default units but now survive solely as retained
+platform source. Explicit one-or-more file/node selectors are required; the root
 conftest refuses bare pytest, directory/default selection and unrecognized marker
 expressions before test-module collection. Existing integration-marked cases,
 including outside `tests/integration`, retain `-m integration` selection.
@@ -67,21 +92,55 @@ even through a job. The Linux canonical callback remains the explicit
 `tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback`
 selection through `tests/helpers/integration_parent.py`.
 
+## Source Boundary Lint
+
+```bash
+python scripts/check_source_boundaries.py
+python scripts/check_source_boundaries.py --source-root <isolated-root>
+python scripts/validate_source_boundaries.py
+scripts/local_ci.sh boundary-lint [--source-root <isolated-root>]
+```
+
+The local target runs the actual baseline CLI followed by bounded standalone
+synthetic validation; `all` runs the same lane before Web and propagates its
+nonzero exit. Local lint requires Python 3.12+ on PATH and only stdlib; it needs
+no dependency installation. The unconditional `Source Boundary Lint` hosted job
+in `ci.yml` runs both scripts via `uv run --no-project --python 3.14 python ...`
+on every PR and push to main, without project dependency sync. `Web Lint (Node 24)` is the other unconditional required check. Retained
+canonical/callback sources are not automated merge requirements.
+
+Only recursive `*.py` in `runtime/infrastructure` and `runtime/orchestrator`
+are parsed. Explicit daemon import/from forms are forbidden at module execution
+time; class bodies and ordinary control flow are included. Syntactic top-level
+TYPE_CHECKING/typing aliases exempt their true branches, with else inspected;
+function/async-function/lambda nodes are skipped. No allowlist or opt-out exists.
+No relative/dynamic import resolution, alias dataflow, callable decorator/default/
+annotation inspection or runtime isolation proof is claimed. No business imports,
+daemon/database construction or provider contact occurs. Exit 0 means a clean
+source scan, 1 means forbidden imports (relative file:line/target and boundary
+guidance), and 2 means invalid/missing/empty roots or filesystem/decode/parse
+failure. Directory symlinks refuse incomplete coverage. Synthetic sources contain
+fail-on-execution sentinels and exercise the real CLI/local gate; this is lint-tool
+validation outside `tests/`, not a retired suite or product E2E evidence.
+
+Docs Manual and tenant-isolation workflows are explicit manual-only; neither
+is a required path check. macOS packaging remains manual/tag release activity.
+
 ## Integration environment and retained observations
 
-## PR1022 finite roster L/W entry
+## Historical PR1022 finite roster L/W observations
 
-Engineering_manager TASK10553's continuation contract, citing Founder
-THR296seq24/37, retains the finite selections in `pr1022-roster-selected` in
-`.github/workflows/ci.yml`. Only same-repository pull requests numbered 1022
-with head branch `task/TASK-10430` run it. Normal publication starts it; it has
-no dispatch inputs, main-push execution or scheduled execution. Existing Web,
-Linux/macOS canonical and original callback checks remain separate. Python
-units and their gate are RETIRED THR291seq40; broad integration stays SKIPPED
-THR243seq42.
-The live daemon host cannot execute this entry, even through jobs.
+Engineering_manager TASK10553's continuation, citing Founder THR296seq24/37,
+retains the accepted finite selections and their authentic historical receipts.
+The former `pr1022-roster-selected` PR entry is superseded by merged
+PR1025/THR291seq69; it is absent from current CI. Normal publication now starts
+lint/static checks only. The retained feature/platform/original callback sources
+are not automatic merge gates; missing behavioral proof remains missing.
+Product E2E runs only on its daily default-branch schedule. Python units and
+their gate remain RETIRED; broad integration remains SKIPPED THR243seq42.
+The live daemon host cannot execute integration, even through jobs.
 
-The seven disposable Ubuntu shards use actual PR-head checkout, frozen Python
+The seven historical disposable Ubuntu shards used actual PR-head checkout, frozen Python
 3.14 dependencies and Node24. L1 includes all accepted C1/C2/C3 parameters;
 L4 includes all accepted C4 parameters; L5 includes exactly six non-restore
 parameters; L7 includes all ten contexts; L8/L9 include only their three/four
@@ -371,15 +430,15 @@ Local CI gives pre-push feedback; hosted checks are authoritative. Every push
 renews independent reviewer/QA evidence at its exact head.
 
 A pushed-PR completion's success-only `local_ci` receipt remains
-`{"command":"scripts/local_ci.sh all","exit_code":0}`. It establishes retained
-Web checks only. Failed, skipped or other-target outcomes belong in ordinary
-verification evidence. Record actual runtime path/version, source SHA, timing,
+`{"command":"scripts/local_ci.sh all","exit_code":0}`. It establishes source
+boundary lint and Web static analysis, not behavioral coverage. Failed,
+skipped or other-target outcomes belong in ordinary verification evidence. Record actual runtime path/version, source SHA, timing,
 command, exit and complete logs. Durable jobs are required for long checks and
 pushes with long hooks; authenticate the terminal receipt before publication.
 Manual hosted all still uses Python 3.14/Node 24 to run its stdlib receipt driver;
 that interpreter version is not a Python-suite result. Its `all_only` input cannot
 reactivate unit proofs. Scheduled integration remains separately owned and its
-failed/skipped outcomes cannot satisfy the required canonical callback check.
+failed/skipped outcomes are separate from fresh daily health.
 
 ## System Assistant retirement artifact verification (THR-294)
 
@@ -640,3 +699,22 @@ code comparison while excluding object-sharing reference flags. All 224 C4
 parameters and their original behavioral assertions remain. These corrections
 are source readiness; final-head hosted execution and the existing held proof
 inventory remain required, and no partial result is a feature-readiness claim.
+
+
+At `18e01cfa`, all four W10 cases reach enrollment and fail because the
+non-LF input is compared directly with its canonical AgentDef readback.
+The existing writer adds one final LF. C10 now requires that exact canonical
+value while preserving the original draft, locale/focus/selection and exact
+POST body assertions; no trimming or product writer change is introduced.
+All 89 assertions, four parameters and 29 required scenario rows remain.
+The four viewed draft screenshots are readable in English and Simplified Chinese
+at both viewports, but are partial evidence. Full C10 completion remains missing.
+
+Merged PR1025 (`d88ba446`) supersedes the historical PR1022 feature-shard and
+behavioral merge-check configuration under THR-291 seq69. PR/main checks are now
+lint/static only; retained C1–C10/platform/callback sources are not automatic
+merge requirements. Product E2E runs daily from default-branch source at 19:00 UTC;
+its first observed scheduled execution remains PENDING. No PR/manual/ad hoc
+execution, causal/repetition allocation or held M proof follows. Historical
+feature failures, in-flight run38104839795 and all held proof remain authentic;
+source inspection, scoped QA and independent review cannot claim behavioral PASS.
