@@ -362,6 +362,8 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             </span>
             <span className="tabular-nums">
               {agent?.team ?? '—'}
+              {teamsQuery.data?.teams.some((entry) => entry.name === agent?.team && entry.manager_kind === 'human')
+                ? ` · ${t('agents.team.founderManaged')}` : ''}
             </span>
             {agent?.executor && (
               <>

@@ -664,8 +664,16 @@ class Orchestrator:
             task_id, row, fallback_agent=agent,
         )
 
-    def create_task(self, brief: str, team: str = "engineering") -> str:
-        """Create a new task and persist it."""
+    def create_task(self, brief: str, team: str | None = None) -> str:
+        """Create an agent-managed root; human teams require explicit API owner."""
+        team = team or self._teams.task_default_team
+        owner = self._teams.executable_manager_for_team(team)
+        if owner is None:
+            raise ValueError("owner_required_for_human_team")
+        from runtime.orchestrator.prompt_loader import load_agent
+        definition = load_agent(self._paths, owner)
+        if definition is None or definition.team != team or definition.role != "manager":
+            raise ValueError("unknown_owner")
         task_id = self._db.next_task_id()
         task = TaskRecord(id=task_id, brief=brief, team=team)
         self._db.insert_task(task)

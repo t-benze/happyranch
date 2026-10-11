@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import shlex
 import sys
 
 PROVIDERS = {"claude", "codex", "opencode"}
@@ -135,20 +136,55 @@ def install() -> None:
     executors.CustomAdapterExecutor.build_launch_spec = unavailable
 
 
+def context_plan(path: str, binding: dict) -> bool:
+    """Recognize only the exact source-bound C7 shell plan after normal gates."""
+    helper = str(Path(binding["source"]) / "tests/helpers/human_team_context_plan.py")
+    lines = _read_owned(Path(path), executable=True).decode().splitlines()
+    if len(lines) != 3 or lines[:2] != ["#!/usr/bin/env bash", "set -euo pipefail"]:
+        return False
+    words = shlex.split(lines[2])
+    if words[:2] != ["python", helper]:
+        return False
+    if (len(words) not in (6, 7) or words[2] != "--provider" or words[3] not in ("claude", "codex")
+            or words[4] != "--capture" or (len(words) == 7 and words[6] != "--stale-task-root")):
+        raise RuntimeError("test_context_plan_refused")
+    capture = Path(words[5])
+    if not capture.is_absolute() or capture.is_symlink() or not capture.parent.resolve().is_relative_to(Path(binding["root"])):
+        raise RuntimeError("test_context_capture_refused")
+    return True
+
+
 if __name__ == "__main__":
     # Called by exact-source shell stubs immediately before the explicit plan.
     try:
-        stub, provider, plan, *argv = sys.argv[1:]
+        exiting = sys.argv[1:2] == ["--context-exit"]
+        arguments = sys.argv[2:] if exiting else sys.argv[1:]
+        stub, provider, plan, *argv = arguments
+        if exiting:
+            status, pid, provider_session = argv
+            if not status.isdecimal() or not 0 <= int(status) <= 255 or not pid.isdecimal():
+                raise RuntimeError("test_context_exit_refused")
         binding = manifest()
         validate_stub(provider, stub, binding)
         home = Path(os.environ["HAPPYRANCH_DAEMON_HOME"])
         validate_registry(json.loads(_read_owned(home / "executors.json")), binding)
         validate_plan(plan)
         validate_callback(binding)
+        c7 = context_plan(plan, binding)
+        if exiting:
+            if not c7 or provider_session != "c7-" + provider + "-" + pid:
+                raise RuntimeError("test_context_exit_refused")
+            witness({"kind": "context_provider_exit", "provider": provider,
+                     "pid": int(pid), "status": int(status), "provider_session_id": provider_session,
+                     "source_sha": binding["revision"], "stub_sha256": binding["stubs"][provider]["sha256"],
+                     "plan_sha256": hashlib.sha256(_read_owned(Path(plan))).hexdigest()})
+            raise SystemExit(0)
         witness({"kind": "stub", "provider": provider, "stub_sha256": binding["stubs"][provider]["sha256"],
                  "source_sha": binding["revision"], "plan_sha256": hashlib.sha256(_read_owned(Path(plan))).hexdigest(),
                  "argc": len(argv), "flags": [arg for arg in argv if arg in
                     {"-p", "--json", "run", "--format", "--output-format", "--resume", "-s", "-"}]})
+        if c7:
+            print("C7")
     except (KeyError, ValueError, OSError, RuntimeError):
         raise SystemExit("deterministic stub setup refused")
 
