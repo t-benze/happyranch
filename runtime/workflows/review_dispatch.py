@@ -13,6 +13,81 @@ from runtime.workflows.submissions import _insert, _record, validate_handoff_gra
 
 
 def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: str) -> None:
+    try:
+        _validate_review_dispatch_storage(conn, request_id=request_id)
+    except (KeyError, TypeError, AttributeError, ValueError, sqlite3.DatabaseError) as exc:
+        raise ValueError('workflow_review_storage_corrupt') from exc
+
+
+def _validate_transition(body: dict, *, cancelled: bool) -> None:
+    """Closed lifecycle grammar; event hashes alone are not ownership proof."""
+    code = 'workflow_review_storage_corrupt'
+    kind = body['event_kind']
+    before, after = body['before'], body['after']
+    old, new = before['outbox'], after['outbox']
+    old_bridge, new_bridge = before['bridge'], after['bridge']
+    changes = {
+        'claimed': ({'state', 'claim_token', 'claim_owner', 'updated_at'}, {'state'}),
+        'launch_reserved': ({'host_launch_started', 'updated_at'}, {'session_id'}),
+        'requeued': ({'state', 'claim_token', 'claim_owner', 'updated_at'}, {'state'}),
+        'running': ({'state', 'host_execution_id', 'updated_at'}, {'state'}),
+        'callback_recorded': (set(), {'result_id'}),
+        'uncertain': ({'state', 'last_error', 'updated_at'}, {'state'}),
+        'failed': ({'state', 'last_error', 'updated_at'}, {'state'}),
+        'cancel_requested': (set(), set()),
+        'cancelled': ({'state', 'updated_at'}, {'state'}),
+        'completed': ({'state', 'updated_at'}, {'state'}),
+    }
+    edges = {
+        'claimed': {('queued', 'claimed')}, 'launch_reserved': {('claimed', 'claimed')},
+        'requeued': {('claimed', 'queued')}, 'running': {('claimed', 'running')},
+        'callback_recorded': {(s, s) for s in ('claimed', 'running')},
+        'uncertain': {(s, 'uncertain') for s in ('claimed', 'running')},
+        'failed': {(s, 'uncertain') for s in ('claimed', 'running', 'uncertain')},
+        'cancel_requested': {(s, s) for s in ('queued', 'claimed', 'running', 'uncertain')},
+        'cancelled': {(s, 'cancelled') for s in ('queued', 'claimed', 'running', 'uncertain')},
+        'completed': {(s, 'completed') for s in ('running', 'uncertain')},
+    }
+    if (kind not in changes or (old['state'], new['state']) not in edges[kind]
+            or old['state'] != old_bridge['state'] or new['state'] != new_bridge['state']
+            or any(old[k] != new[k] for k in old if k not in changes[kind][0])
+            or any(old_bridge[k] != new_bridge[k] for k in old_bridge if k not in changes[kind][1])
+            or type(new['host_launch_started']) is not int
+            or new['host_launch_started'] not in (0, 1)):
+        raise ValueError(code)
+    if kind == 'claimed' and (not isinstance(new['claim_token'], str) or not new['claim_token']
+                              or new['claim_owner'] != 'workflow_dispatcher' or old['host_launch_started']):
+        raise ValueError(code)
+    if kind == 'requeued' and (old['host_launch_started'] or new['claim_token'] is not None
+                               or new['claim_owner'] is not None or new_bridge['session_id'] is not None):
+        raise ValueError(code)
+    if kind == 'launch_reserved' and (old['host_launch_started'] != 0 or new['host_launch_started'] != 1
+                                      or old_bridge['session_id'] is not None
+                                      or not isinstance(new_bridge['session_id'], str) or not new_bridge['session_id']):
+        raise ValueError(code)
+    if kind == 'running' and (not old['host_launch_started'] or old['host_execution_id'] is not None
+                              or not new_bridge['session_id'] or not isinstance(new['host_execution_id'], str)
+                              or len(new['host_execution_id']) != 64):
+        raise ValueError(code)
+    if kind == 'callback_recorded' and (cancelled or not old['host_launch_started']
+                                       or not old_bridge['session_id'] or old_bridge['result_id'] is not None):
+        raise ValueError(code)
+    if kind == 'cancel_requested' and cancelled:
+        raise ValueError(code)
+    if kind == 'cancelled' and not cancelled:
+        raise ValueError(code)
+    if kind == 'completed' and cancelled:
+        raise ValueError(code)
+    if kind not in ('callback_recorded', 'completed') and body['result'] is not None:
+        raise ValueError(code)
+    if kind not in ('completed', 'cancelled', 'failed') and body['terminal_evidence'] is not None:
+        raise ValueError(code)
+    if kind in ('cancelled', 'failed') and body['terminal_evidence'] != (
+            {'host_quiescent': True} if old['host_launch_started'] else None):
+        raise ValueError(code)
+
+
+def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: str) -> None:
     """Authenticate the entire sequenced F5 owner, full callbacks and terminal evidence."""
     code = 'workflow_review_storage_corrupt'
     bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (request_id,))
@@ -24,6 +99,7 @@ def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: st
     events = _records(conn, 'SELECT * FROM workflow_dispatch_events WHERE operation_id=? ORDER BY event_seq', (operation['id'],))
     previous = None
     accepted = None
+    cancelled = False
     for seq, event in enumerate(events, start=1):
         body = _stored_json(event['event_bytes'], event['event_digest'], code=code)
         if (set(body) != {'format', 'org_slug', 'operation_id', 'request_id', 'task_id', 'event_seq', 'event_kind',
@@ -32,6 +108,7 @@ def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: st
                 or body['operation_id'] != operation['id'] or body['request_id'] != request_id
                 or body['task_id'] != bridge['task_id'] or body['event_kind'] != event['event_kind']
                 or body['event_seq'] != seq or type(body['event_seq']) is not int or event['event_seq'] != seq
+                or event['id'] != f"{operation['id']}:{seq}"
                 or set(body['before']) != {'outbox', 'bridge'} or set(body['after']) != {'outbox', 'bridge'}
                 or set(body['before']['outbox']) != set(outbox) or set(body['after']['outbox']) != set(outbox)
                 or set(body['before']['bridge']) != set(bridge) or set(body['after']['bridge']) != set(bridge)
@@ -40,12 +117,19 @@ def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: st
                 or body['previous_digest'] != (None if previous is None else previous[0]['event_digest'])
                 or (previous is not None and body['before'] != previous[1]['after'])):
             raise ValueError(code)
+        _validate_transition(body, cancelled=cancelled)
+        cancelled = cancelled or body['event_kind'] == 'cancel_requested'
         if previous is None and (body['before']['outbox']['state'] != 'queued'
                                  or body['before']['outbox']['host_launch_started'] != 0
+                                 or body['before']['outbox']['claim_token'] is not None
+                                 or body['before']['outbox']['claim_owner'] is not None
+                                 or body['before']['outbox']['host_execution_id'] is not None
+                                 or body['before']['bridge']['result_id'] is not None
                                  or body['before']['bridge']['session_id'] is not None):
             raise ValueError(code)
         if body['event_kind'] == 'callback_recorded':
-            if accepted is not None or not isinstance(body['result'], dict):
+            if (accepted is not None or not isinstance(body['result'], dict)
+                    or set(body['result']) != {'id', 'record', 'digest', 'accepted', 'disposition'}):
                 raise ValueError(code)
             accepted = body['result']
             result = _record(conn, 'task_results', accepted['id'])
@@ -54,6 +138,9 @@ def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: st
                     or result['task_id'] != bridge['task_id'] or result['agent'] != bridge['assigned_principal']
                     or result['session_id'] != body['after']['bridge']['session_id']
                     or body['after']['bridge']['result_id'] != str(result['id'])):
+                raise ValueError(code)
+            if accepted['disposition'] != ('accepted' if body['before']['outbox']['state'] == 'running'
+                                            else 'pending_host_acknowledgment'):
                 raise ValueError(code)
         if body['event_kind'] == 'completed' and (
                 accepted is None or accepted['record']['status'] != 'completed'
@@ -75,15 +162,20 @@ def validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: st
         if (callback['task_id'] != bridge['task_id'] or callback['session_id'] != bridge['session_id']
                 or callback['result_id'] != bridge['result_id'] or callback['result_digest'] != accepted['digest']
                 or callback['accepted'] != 1 or callback['observed_revision'] != 1
-                or callback['disposition'] != accepted['disposition']):
+                or callback['disposition'] != accepted['disposition']
+                or callback['id'] != f"{operation['id']}:callback:{accepted['id']}"):
             raise ValueError(code)
     effects = _records(conn, 'SELECT * FROM workflow_dispatch_effects WHERE outbox_id=?', (outbox['id'],))
     if len(effects) != int(outbox['host_execution_id'] is not None):
         raise ValueError(code)
     if effects and (effects[0]['host_execution_id'] != outbox['host_execution_id']
-                    or effects[0]['task_id'] != bridge['task_id'] or effects[0]['session_id'] != bridge['session_id']):
+                    or effects[0]['task_id'] != bridge['task_id'] or effects[0]['session_id'] != bridge['session_id']
+                    or effects[0]['id'] != f"{operation['id']}:host"
+                    or effects[0]['effect_key'] != outbox['effect_key']
+                    or effects[0]['effect_kind'] != 'host_launch_observed'):
         raise ValueError(code)
-    if outbox['state'] != bridge['state'] or (outbox['state'] == 'completed' and operation['state'] != 'completed'):
+    expected_state = 'cancelled' if cancelled else 'completed' if outbox['state'] == 'completed' else 'admitted'
+    if outbox['state'] != bridge['state'] or operation['state'] != expected_state:
         raise ValueError(code)
 
 

@@ -1361,9 +1361,8 @@ def _validate_author_handoff_data(conn: sqlite3.Connection, *, expected_org_slug
         elif conn.execute('SELECT 1 FROM workflow_submissions WHERE id=? OR (instance_id=? AND revision=1)',
                           (row['submission_id'], row['instance_id'])).fetchone():
             raise ValueError('workflow_author_handoff_storage_corrupt')
-        # U3a(a) preserves the full graph validation boundary. Until the
-        # separately delivered producer reader is available, populated H must
-        # refuse rather than silently accepting partial or absent graph effects.
+        # The U3a(b) reader authenticates all declared requests and their actual
+        # owned task/event closure. Missing producer dependencies still refuse.
         try:
             from runtime.workflows.submissions import validate_handoff_graph
         except ImportError as exc:

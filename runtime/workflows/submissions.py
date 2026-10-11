@@ -9,10 +9,10 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import Field, StrictBool, StrictInt
+from pydantic import Field, StrictBool, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import (
-    _DRAFT_MUTABLE, _handoff_json, _handoff_record, _records,
+    _DRAFT_MUTABLE, _handoff_record, _records, _stored_json,
     require_author_handoff_schema, validate_workflow_schema,
 )
 from runtime.models import TaskRecord
@@ -109,12 +109,14 @@ def _source_result(conn: sqlite3.Connection, intent: dict) -> dict | None:
         return None
     callback = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind='callback_recorded'",
                         (intent['id'],))
-    terminal = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind IN ('completed','host_reconciled')",
+    terminal = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind IN ('completed','host_reconciled') ORDER BY event_seq",
                         (intent['id'],))
     if len(callback) != 1 or not terminal:
         return None
-    accepted = json.loads(callback[0]['event_bytes'])['result']
-    last = json.loads(terminal[-1]['event_bytes'])
+    accepted = _stored_json(callback[0]['event_bytes'], callback[0]['event_digest'],
+                            code='workflow_author_handoff_storage_corrupt')['result']
+    last = _stored_json(terminal[-1]['event_bytes'], terminal[-1]['event_digest'],
+                        code='workflow_author_handoff_storage_corrupt')
     task = _record(conn, 'tasks', intent['task_id'])
     if (callback[0]['result_id'] != result['id'] or callback[0]['callback_accepted'] != 1
             or accepted['record'] != result or accepted['id'] != result['id']
@@ -122,7 +124,7 @@ def _source_result(conn: sqlite3.Connection, intent: dict) -> dict | None:
             or last['after']['state'] != 'completed' or last['after']['final_result_id'] != result['id']
             or last['terminal_evidence'] != {'host_quiescent': True}
             or last['result'] != accepted or task['status'] != 'completed'
-            or intent['cancellation_requested'] or not intent['is_current']):
+            or intent['cancellation_requested']):
         return None
     return result
 
@@ -144,6 +146,13 @@ def review_scope(*, row: dict, proof: dict, context: dict, contract: dict, role:
 
 
 def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> dict | None:
+    try:
+        return _validate_handoff_graph(conn, row, proof)
+    except (KeyError, TypeError, AttributeError, ValueError, sqlite3.DatabaseError) as exc:
+        raise ValueError('workflow_author_handoff_storage_corrupt') from exc
+
+
+def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> dict | None:
     """Closed graph oracle: all declared requests and all actual agent tasks in role order."""
     code = 'workflow_author_handoff_storage_corrupt'
     operations = _records(conn, 'SELECT * FROM workflow_submission_operations WHERE submission_id=?', (row['submission_id'],))
@@ -158,7 +167,8 @@ def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> 
     if _source_result(conn, intent) is None:
         raise ValueError(code)
     round_ = rounds[0]
-    if round_['submission_id'] != row['submission_id']:
+    if (round_['submission_id'] != row['submission_id'] or round_['state'] != 'reviewing'
+            or round_['id'] != _id('workflow-round', row['instance_id'], 1, row['submission_id'])):
         raise ValueError(code)
     context = json.loads(_record(conn, 'workflow_contexts', intent['context_id'])['context_bytes'])
     contract = context['document_contract']
@@ -176,7 +186,8 @@ def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> 
         q = selected[0]
         scope = review_scope(row=row, proof=proof, context=context, contract=contract, role=role,
                              request_id=q['id'], round_id=round_['id'], binding=bindings[role])
-        if (q['status'] != 'pending' or q['supersedes_request_id'] is not None
+        if (q['id'] != _id('workflow-request', round_['id'], role, principal, 1)
+                or q['status'] != 'pending' or q['supersedes_request_id'] is not None
                 or canonical_bytes(scope) != q['request_scope_bytes']
                 or digest(q['request_scope_bytes']) != q['request_scope_digest']):
             raise ValueError(code)
@@ -192,10 +203,24 @@ def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> 
         bridge, op = bridges[0], dispatch[0]
         task = _record(conn, 'tasks', bridge['task_id'])
         outbox = _records(conn, 'SELECT * FROM workflow_dispatch_outbox WHERE request_id=?', (q['id'],))
+        brief = review_brief(scope, row['candidate_bytes'])
         if (len(outbox) != 1 or outbox[0]['operation_id'] != op['id'] or bridge['operation_id'] != op['id']
+                or op['id'] != _id('workflow-dispatch', q['id'], 1) or op['operation_key'] != q['id']
+                or outbox[0]['id'] != _id('workflow-outbox', op['id'])
+                or outbox[0]['effect_key'] != 'workflow-review:' + q['id']
+                or outbox[0]['host_execution_key'] != 'workflow-review-host:' + op['id']
+                or outbox[0]['recovery_owner'] != 'workflow_recovery' or outbox[0]['artifact_revision'] != 1
+                or any(outbox[0][k] != intent[k] for k in ('authority_namespace', 'authority_generation', 'authority_digest'))
                 or bridge['instance_id'] != row['instance_id'] or bridge['assigned_principal'] != principal
                 or bridge['assignment_generation'] != 1 or task['assigned_agent'] != principal
                 or task['team'] != bindings[role]['team'] or op['org_slug'] != row['org_slug']
+                or task['brief'] != brief or task['task_type'] != 'subtask'
+                or task['active_chain'] is not None or task['active_fanout'] is not None
+                or task['parent_task_id'] is not None
+                or (task['current_session_id'] != bridge['session_id']
+                    and not (outbox[0]['state'] in ('claimed', 'cancelled', 'uncertain')
+                             and not outbox[0]['host_launch_started']
+                             and bridge['session_id'] is None))
                 or op['principal'] != principal or op['instance_id'] != row['instance_id']
                 or op['round_id'] != round_['id'] or op['request_digest'] != q['request_scope_digest']):
             raise ValueError(code)
@@ -214,7 +239,26 @@ def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> 
     if event != dict(event_kind='submitted', instance_id=row['instance_id'], revision=1,
                      submission_digest=row['candidate_digest'], **graph):
         raise ValueError(code)
+    contributor = dict(principal=row['principal'], source_task_id=row['source_task_id'],
+                       source_session_id=row['source_session_id'], source_result_id=str(intent['final_result_id']),
+                       contribution_kind='author')
+    for table, key in (('workflow_submission_contributors', 'submission_id'),
+                       ('workflow_instance_contributors', 'instance_id')):
+        identity = row['submission_id'] if key == 'submission_id' else row['instance_id']
+        records = _records(conn, f'SELECT * FROM {table} WHERE {key}=? AND contribution_kind=?',
+                           (identity, 'author'))
+        if records != [{key: identity, **contributor}]:
+            raise ValueError(code)
     return graph
+
+
+def review_brief(scope: dict, candidate: bytes) -> str:
+    return ("Workflow document review. Independently assess only the pinned document and your authorized inputs. "
+            "Do not delegate, implement code, merge, approve planning input, or sign on behalf of another principal. "
+            "Report your findings through your actual task/session completion callback as the final session action. "
+            "This request and its callback remain unsigned; genuine review receipts and joins are later units.\n\n"
+            + canonical_bytes(dict(scope=scope,
+                submission_bytes_base64=base64.b64encode(candidate).decode('ascii'))).decode())
 
 
 class WorkflowSubmissionStore:
@@ -268,7 +312,10 @@ class WorkflowSubmissionStore:
             raise WorkflowActivationError('workflow_author_handoff_source_not_current')
 
     async def stage_author_handoff(self, *, session_id: str, command: dict) -> dict:
-        parsed = AuthorHandoffCommand.model_validate(command)
+        try:
+            parsed = AuthorHandoffCommand.model_validate(command)
+        except ValidationError as exc:
+            raise WorkflowActivationError('workflow_author_handoff_invalid_request') from exc
         command = parsed.model_dump()
         try:
             candidate = base64.b64decode(command['submission_bytes_base64'], validate=True)
@@ -459,7 +506,7 @@ class WorkflowSubmissionStore:
             if contract['role_kinds'][role] == 'human':
                 continue
             task_id = self.db.next_task_id()
-            brief = canonical_bytes(dict(scope=scope, submission_bytes_base64=base64.b64encode(row['candidate_bytes']).decode('ascii'))).decode()
+            brief = review_brief(scope, row['candidate_bytes'])
             self.db._insert_task_uncommitted(TaskRecord(id=task_id, assigned_agent=selected['principal'], team=selected['team'], brief=brief, task_type='subtask'))
             task_ids.append(task_id)
             opid = _id('workflow-dispatch', qid, 1)

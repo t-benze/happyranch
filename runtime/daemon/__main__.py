@@ -73,6 +73,17 @@ def _sweep_enqueue(
         publish()
 
 
+async def discover_completed_workflow_handoffs(state: DaemonState) -> None:
+    """Completed source discovery on the existing lifespan loop before workers."""
+    import logging
+    for org in state.orgs.values():
+        try:
+            await org.workflow_submissions.discover_completed_handoffs(state.queue)
+        except Exception:
+            # A held source remains durable; it is never coerced or relaunched.
+            logging.getLogger(__name__).exception('completed workflow handoff remains pending for %s', org.slug)
+
+
 def _sweep_on_startup(
     db: Database, queue: TaskQueue, slug: str,
     orchestrator: Orchestrator | None = None,
