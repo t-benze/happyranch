@@ -576,3 +576,83 @@ proof. Daily19UTC source binding and all five cells/artifacts remain unchanged.
 General integration is SKIPPED; Python units are RETIRED. TASK10555 owns the
 first-daily collector and Pause acceptance. Later cancellation/late-callback/
 restart coverage and eventual daily acceptance remain root-owned and unproven.
+
+## E07 C source increment — TASK-10773
+
+Accepted TASK10763 design
+`5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7`
+adds C only after the fully evaluated and archived E05 end. Exactly three
+variants bring the authored total to56: `E07.cancel-cascade-browser`,
+`E07.cancel-terminal-unchanged`, `E07.cancelled-late-cli`. These are source
+assertions, not observed behavior. R/full composition remains HELD; no crash,
+new boot, credential rotation, or dormant restart implementation is included.
+
+P publicly delegates to W using its real bound provider CLI, then exits
+naturally. The one INTEGER parent result is consumed as delegate. W writes
+its own bound final payload and launches the actual hash-bound CLI wrapper.
+A dedicated one-shot relay captures the complete original completion POST
+before upstream transmission; provider acknowledgement precedes communicate.
+Live PID/start/PPID/argv/hash and actual /proc socket inode/FD/TCP tuple join the
+issuer to that request. The browser Cancel dialog sends `E07_CANCEL_TREE`.
+Product teardown must close W, its CLI and launch root before Fcancel; cleanup
+cannot satisfy the case. The original retained POST is then forwarded once to
+boot B: actual409 `task_not_active`, cancelled true. Dead downstream EOF and the
+upstream response are distinct; no killed CLI response/exit is fabricated.
+
+| Case or changed evidence consumer | Contract | Credible defect | Prior gap | Shipping seam |
+| --- | --- | --- | --- | --- |
+| Cascade browser, SQL/public frames and receipt assertions | Two cancelled tasks, exact shared timestamp/note/two founder audits; P result retained, W result absent; real terminal UI; one active cancelled receipt, no queued cancellation | Wrong cascade/status, lost result, result race overwrite, surviving child or parent resume | Original53 and launcher interruption do not cancel a live public product tree | Real create/delegate, CancelTaskDialog/cancel route, run-step/host containment, read-only SQL and public detail/recall/tree/list |
+| Terminal-unchanged and command ledger | Actual P and identified completed-baseline cancel commands exit1 with exact409 and human message; full relevant content unchanged | Duplicate audit/timestamp/result mutation or wrong guard | Callback replay and Pause refusals are different routes | Shipping `happyranch cancel` and public cancel route |
+| Delayed CLI, provider/relay/socket fixtures and unchanged window | Original real W POST forwarded after cancel/closure; exact409; full1s fresh observations, <=50ms interval, no extra admission/result/consumption/revisit/peer | Copied SID masquerades as issuer, pre-forward leak, wrong auth denial, late resume or result | Existing committed-response loss delays a response, not an issued request | Genuine executable provider/CLI, loopback HTTP, task-active fence, host metrics and coherent SQL |
+| Prefix/export/aggregate consumers | Exact53 prefix, genuine E05 byte/record offset, entire suffix classification; raw/observations/scenario/result agree; independent actual-content recomputation | Dropped evidence field, count-only PASS, accepted unaccounted callback, truncated prefix | Former aggregate assumed final37 and whole E05 witness equality | Existing five daily artifacts and source-bound independent aggregate |
+| Sanitation/partial process records | Retained bearer and E05 contexts redact whole captures before clipping; unknown context/caps refuse full-content claims; launch evidence survives client death | Secret fragments on timeout/EOF/signal or fabricated posthumous return | Prior synchronous success receipt cannot describe a killed CLI | Private launch receipt, real Popen/socket streams and existing unsafe-export refusal |
+
+R1–R5 correction contracts (TASK10778):
+
+| Changed assertion/fixture/consumer | Contract | Credible defect | Previous coverage gap | Actual seam |
+| --- | --- | --- | --- | --- |
+| E05 aggregate transport | Original daemon/CLI/browser D/L/P keys and registered ports only; independent E07 listener/upstream predicate stays in E07 | Valid E05 fails on nonexistent E07 keys | Misplaced predicate disagreed with unchanged E05 producer | `threads.exercise` serialized transport |
+| Browser cancel and independent aggregate | Full literal `{ok:true, task_id:P, cancelled:[P,W], killed:[{task_id:W,agent:case_worker}]}` with exact order and membership | Reject real successful200 or accept incomplete response | Prior literal omitted ok/task_id | Shipping `tasks.cancel_task` and actual dialog POST |
+| Both new stub witnesses | Closed seven-field records, exact Claude/source/stub/plan hashes, integer argc7 and ordered flags `[-p,--output-format]` | Arbitrary provider/hash/argc/flag or unknown-field corruption passes internal copy equality | Suffix counted kinds/source only | Task templates select fresh unpinned Claude; `ClaudeAdapter` seven-argument launch, original `fake_claude.sh` argv and unchanged executable guard |
+| E07 ownership updates | Atomic temporary/replace union retains all earlier PIDs; register before process observations/waits | Watcher reads truncated JSON or failure loses an observed ancestor | New direct overwrites differed from atomic `Controller.start` | Existing `Owned.sample/observe` with unchanged PID-start/cgroup/unit checks |
+| Private launch writer and final collector | mode0600 temporary creation/replace, initial PID record retained until full acknowledgement commits; each issued command requires a record; retain valid siblings and valid initial records with fixed missing/malformed/incomplete/unexpected diagnostics | Interrupted write destroys all later evidence or glob hides missing record | Unguarded comprehension and truncate/chmod publication | Genuine provider Popen and acknowledgement, `Controller.evidence`, existing run e07 whitelist/export, independent aggregate |
+
+Launch collection parses each expected command-bound file independently. Failure
+categories contain only fixed words and a command index; raw malformed bytes,
+filenames and exception text are not exported. Valid partial records and the
+failure list travel inside `e07` through raw/observations/scenario/result. Other
+evidence is serialized before collection failures raise; aggregate rejects any
+failure and independently requires both complete records in command order.
+Sanitation remains outside parse catches: unavailable retained context still
+refuses export, and incomplete records never fabricate an acknowledgement.
+These source corrections add no dedicated control or execution evidence.
+
+All dedicated sensitivity controls remain **UNAUTHORED**; behavior, assertion
+sensitivity, transport provenance, delivery/persistence, fit, process closure
+and sanitation are **MISSING/UNEXECUTED**. No full test-authoring PASS. Protected12
+mutations/RED-restoration-GREEN/repetitions remain unauthorized/UNEXECUTED.
+General and actual callback integration remain SKIPPED under THR243seq42.
+
+Exact cumulative source expectations:39 starts=A12+B27,23 tasks/32 results
+(alpha22/31,beta1/1),21 completed/two cancelled; only P adds an accepted result.
+Eight jobs/seven scripts and every E05 thread/invocation/delivery count remain.
+B27/26/26/active1 becomes settled B27, with P success then W cancellation and
+full duplicate-preserving B25/B26 tails; queued-cancel delta0. E04 retains28
+anchors and its command ledger, E05 retains starts30:37 and its original
+observer/witness boundaries. E07 commands/anchors are separate.
+
+C partitions16+12+8+6+8=50 use fixed absolute ends clipped by original C/scenario
+ends. The shared scenario remains min(entry+480,original+720), other commands
+and interruptions240, cleanup60/export120, hard900/target600/hosted15min.
+375+50=425 is unmeasured arithmetic. No borrowed reserve or shortened1s window.
+Daily19UTC/default-branch Ubuntu Python3.12/3.13/3.14 and TERM3.12/INT3.14,
+five seven-day artifacts and lint-only merge gates remain unchanged.
+
+Source-observed successful live cancel-CLI printing mismatch (`killed` has
+agent/task_id but cmd_cancel reads pid) remains unresolved and unexecuted;
+positive cancellation uses the shipping browser. Retained CLI terminal-refusal
+branches do not reach that print. E04 output-cap/persistent-stop, R/full
+unchanged-bound disposition and all daily behavioral acceptance remain with
+root TASK10680. TASK10555 retains first-daily/Pause acceptance; first daily is
+PENDING per owner. Authored, independently reviewed, merged, executed and
+accepted are separate milestones; this is not completion of the reset.
