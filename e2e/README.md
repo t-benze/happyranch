@@ -683,6 +683,19 @@ separate. The estimated355 prefix versus330 ceiling remains **UNPROVEN**;
 late/missing stages fail the full manifest. No measured fit or universal
 interruptibility of OS/library calls is claimed.
 
+The shared response helper retains the main page's actual stored timeout:
+initial15s, E04 `job_open` at most10s, E07 `e07_detail` at most4s. An already
+clipped page default stays clipped until the next explicit transition. This
+also applies to inherited `open_task`, completion/cache revisits and bilingual
+Pause actions. E05's separate thread page retains its independent10s default.
+The response context fixes its operation end at entry, clips the native timer,
+checks immediately before the context exit can wait, and rejects late returns.
+Provider release reads the caller's existing socket cap (E05 at most5s;
+other callers retain their start/command cap), clips write/flush/read/close to
+that cap and the same effective phase end, and checks each return. Exact exit
+acknowledgement, process/private-file/CLI-child closure and evidence joins remain.
+No timeout metadata or serialized evidence shape is renamed to mask a wider cap.
+
 R creates one independent ordinary root through public API and joins its real
 case_manager provider to a provider-authored CLI payload, wrapper witness,
 PID/start/ancestry, accepted socket tuple/inode and full captured request.

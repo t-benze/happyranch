@@ -17,13 +17,13 @@ class PauseBrowser:
 
     def locale(self, locale: str) -> None:
         page = self.b.page
-        current = page.locator("html").get_attribute("lang", timeout=self.c.remaining(15)*1000)
+        current = page.locator("html").get_attribute("lang", timeout=self.c.remaining(self.b.page_timeout)*1000)
         self.c.remaining()
         require(current in {"en", "zh-CN"}, "shipping browser locale", current)
         if current != locale:
-            page.get_by_role("combobox", name="Language" if current == "en" else "语言", exact=True).click(timeout=self.c.remaining(15)*1000)
+            page.get_by_role("combobox", name="Language" if current == "en" else "语言", exact=True).click(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
-            page.get_by_role("option", name="English" if locale == "en" else "简体中文", exact=True).click(timeout=self.c.remaining(15)*1000)
+            page.get_by_role("option", name="English" if locale == "en" else "简体中文", exact=True).click(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         expect(page.locator("html")).to_have_attribute("lang", locale, timeout=self.c.remaining(5)*1000)
         self.c.remaining()
@@ -40,7 +40,7 @@ class PauseBrowser:
         roots_path = "/api/v1/orgs/alpha/tasks/roots"
         overview_path = "/api/v1/orgs/alpha/tasks/pause-overview"
         with self.b.response(roots_path), self.b.response(overview_path) as received:
-            page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(15)*1000)
+            page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         overview = received.value.json()
         require(overview["org_slug"] == "alpha" and any(p["root_task_id"] == root for p in overview[state]),
@@ -67,13 +67,13 @@ class PauseBrowser:
         # Detail is reached through the actual list link, then genuinely reloaded.
         path = f"/api/v1/orgs/alpha/tasks/{root}"
         with self.b.response(path), self.b.response(path + "/recall"):
-            main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').first.click(timeout=self.c.remaining(15)*1000)
+            main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').first.click(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         root_control = page.get_by_role("main").locator(f'[data-task-pause="{root}"]')
         expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
         self.c.remaining()
         with self.b.response(path) as reloaded, self.b.response(path + "/recall"):
-            page.reload(timeout=self.c.remaining(15)*1000)
+            page.reload(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         p = reloaded.value.json()["pause"]
         require(p["org_slug"] == "alpha" and p["root_task_id"] == root and p["generation"] == 1
@@ -85,7 +85,7 @@ class PauseBrowser:
         if state == "pausing":
             expect(root_control.locator("summary")).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
-            root_control.locator("summary").click(timeout=self.c.remaining(15)*1000)
+            root_control.locator("summary").click(timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
             expect(root_control.get_by_text("Task session" if locale == "en" else "任务会话", exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
@@ -95,11 +95,11 @@ class PauseBrowser:
             expect(root_control.locator("summary")).to_have_count(0, timeout=self.c.remaining(5)*1000)
             self.c.remaining()
         shot = f"pause-{state}-{locale}"
-        page.screenshot(path=str(self.c.root / "raw" / f"{shot}-root.png"), full_page=True, timeout=self.c.remaining(15)*1000)
+        page.screenshot(path=str(self.c.root / "raw" / f"{shot}-root.png"), full_page=True, timeout=self.c.remaining(self.b.page_timeout)*1000)
         self.c.remaining()
         child_path = f"/api/v1/orgs/alpha/tasks/{child}"
         with self.b.response(child_path) as child_response, self.b.response(child_path + "/recall"):
-            page.goto(f"{self.b.base}/orgs/alpha/tasks/{child}", timeout=self.c.remaining(15)*1000)
+            page.goto(f"{self.b.base}/orgs/alpha/tasks/{child}", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         data = child_response.value.json()
         require(data["task"]["parent_task_id"] == root and data["pause"]["effective_hold"], "live inherited child transport", data)
@@ -114,7 +114,7 @@ class PauseBrowser:
         self.c.remaining()
         expect(child_control.get_by_role("button", name=resume, exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)
         self.c.remaining()
-        page.screenshot(path=str(self.c.root / "raw" / f"{shot}-child.png"), full_page=True, timeout=self.c.remaining(15)*1000)
+        page.screenshot(path=str(self.c.root / "raw" / f"{shot}-child.png"), full_page=True, timeout=self.c.remaining(self.b.page_timeout)*1000)
         self.c.remaining()
         require(not any(r["event"] == "pageerror" for r in self.b.events), "Pause browser JavaScript errors", self.b.events)
         return dict(root=root, child=child, locale=locale, state=state, generation=1,
@@ -126,7 +126,7 @@ class PauseBrowser:
         self.locale("en")
         path = f"/api/v1/orgs/alpha/tasks/{root}"
         with self.b.response(path), self.b.response(path + "/recall"):
-            page.goto(f"{self.b.base}/orgs/alpha/tasks/{root}", timeout=self.c.remaining(15)*1000)
+            page.goto(f"{self.b.base}/orgs/alpha/tasks/{root}", timeout=self.c.remaining(self.b.page_timeout)*1000)
             self.c.remaining()
         main = page.get_by_role("main")
         expect(main.get_by_text("completed", exact=True).first).to_be_visible(timeout=self.c.remaining(5)*1000)
@@ -136,5 +136,5 @@ class PauseBrowser:
         self.c.remaining()
         expect(controls.get_by_role("button", name="Resume", exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)
         self.c.remaining()
-        page.screenshot(path=str(self.c.root / "raw/pause-terminal.png"), full_page=True, timeout=self.c.remaining(15)*1000)
+        page.screenshot(path=str(self.c.root / "raw/pause-terminal.png"), full_page=True, timeout=self.c.remaining(self.b.page_timeout)*1000)
         self.c.remaining()

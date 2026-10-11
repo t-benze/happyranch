@@ -5,7 +5,7 @@ import json
 import hashlib
 import re
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from typing import TYPE_CHECKING, Any
 
 from playwright.sync_api import expect, sync_playwright
@@ -30,7 +30,7 @@ class Browser:
         self.controller.remaining()
         self.page = self.context.new_page()
         self.controller.remaining()
-        self.page.set_default_timeout(15000)
+        self.set_page_timeout(15)
         self.events: list[dict] = []
         # Deliberately never collect headers, bootstrap bodies or storage. This
         # sanitized event trace is inspectable; raw Playwright ZIP/HAR is absent.
@@ -40,22 +40,39 @@ class Browser:
         self.page.on("pageerror", lambda error: self.events.append(dict(event="pageerror", message=str(error))))
         self.base = f"http://127.0.0.1:{controller.port}"
 
-    def response(self, path: str) -> Any:
-        result = self.page.expect_response(lambda response: response.url.split("?")[0] == self.base + path and response.status == 200, timeout=self.controller.remaining(15)*1000)
+    def set_page_timeout(self, cap: float) -> None:
+        # Preserve the actual page default, including an already clipped cap,
+        # for later callers sharing this page (Pause and retained task views).
+        self.page_timeout = self.controller.remaining(cap)
+        self.page.set_default_timeout(self.page_timeout * 1000)
         self.controller.remaining()
-        return result
+
+    @contextmanager
+    def response(self, path: str) -> Any:
+        c = self.controller
+        end = min(c.effective_end(), time.monotonic() + self.page_timeout)
+        # The native timer starts at entry, before the triggering action. Keep
+        # the same end through __exit__'s actual response wait and late return.
+        with c.bounded(end):
+            with self.page.expect_response(
+                lambda response: response.url.split("?")[0] == self.base + path and response.status == 200,
+                timeout=c.remaining(self.page_timeout) * 1000,
+            ) as result:
+                yield result
+                c.remaining()  # Refresh before __exit__ can block.
+            c.remaining()
 
     def open_task(self, org: str, task: str, brief: str, *, switch: bool = False,
                   cached_recall: bool = False, alien: str | None = None) -> None:
         roots = f"/api/v1/orgs/{org}/tasks/roots"
         with self.response(roots):
             if switch:
-                self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(15)*1000)
+                self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
-                self.page.get_by_role("option", name=org, exact=True).click(timeout=self.controller.remaining(15)*1000)
+                self.page.get_by_role("option", name=org, exact=True).click(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
             else:
-                self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(15)*1000)
+                self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
         main = self.page.get_by_role("main")
         expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
@@ -84,7 +101,7 @@ class Browser:
             else:
                 responses.enter_context(self.response(detail_path))
                 responses.enter_context(self.response(recall_path))
-            link.click(timeout=self.controller.remaining(15)*1000)
+            link.click(timeout=self.controller.remaining(self.page_timeout)*1000)
             self.controller.remaining()
         expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
         self.controller.remaining()
@@ -95,13 +112,13 @@ class Browser:
         require(self.controller.remaining(32) >= 31, "cache revisit fits action budget")
         begin = time.monotonic()
         main = self.page.get_by_role("main")
-        main.locator(f'a[href="/orgs/{org}/tasks"]').first.click(timeout=self.controller.remaining(15)*1000)
+        main.locator(f'a[href="/orgs/{org}/tasks"]').first.click(timeout=self.controller.remaining(self.page_timeout)*1000)
         self.controller.remaining()
         self.page.wait_for_timeout(31000)
         self.controller.remaining()
         self.events.append(dict(event="navigation", action="cache-expired-revisit", org=org, task=task))
         with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
-            main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click(timeout=self.controller.remaining(15)*1000)
+            main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click(timeout=self.controller.remaining(self.page_timeout)*1000)
             self.controller.remaining()
         self.controller.phases.append(dict(name="browser-cache-revisit", seconds=time.monotonic() - begin))
 
@@ -115,7 +132,7 @@ class Browser:
             require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "refresh owns expected task")
             self.events.append(dict(event="navigation", action="reload", org=org, task=task))
             with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
-                self.page.reload(timeout=self.controller.remaining(15)*1000)
+                self.page.reload(timeout=self.controller.remaining(self.page_timeout)*1000)
                 self.controller.remaining()
         main = self.page.get_by_role("main")
         expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
@@ -148,12 +165,12 @@ class Browser:
             other = "beta" if org == "alpha" else "alpha"
             expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
             self.controller.remaining()
-        self.page.screenshot(path=str(self.controller.root / "raw" / f"{shot}.png"), full_page=True, timeout=self.controller.remaining(15)*1000)
+        self.page.screenshot(path=str(self.controller.root / "raw" / f"{shot}.png"), full_page=True, timeout=self.controller.remaining(self.page_timeout)*1000)
         self.controller.remaining()
         require(not any(row["event"] == "pageerror" for row in self.events), "built-browser JavaScript error", self.events)
 
     def job_open(self, job: str, status: str) -> dict:
-        self.page.set_default_timeout(self.controller.remaining(10) * 1000)
+        self.set_page_timeout(10)
         path = f"/api/v1/orgs/alpha/jobs/{job}"
         with self.response(path) as response:
             self.page.goto(f"{self.base}/orgs/alpha/jobs/{job}", timeout=self.controller.remaining(10)*1000)
@@ -412,7 +429,7 @@ class Browser:
 
     def e07_detail(self, task: str, status: str, shot: str | None = None) -> dict:
         c = self.controller
-        self.page.set_default_timeout(c.remaining(4) * 1000)
+        self.set_page_timeout(4)
         self.page.set_default_navigation_timeout(c.remaining(4) * 1000)
         path = f"/api/v1/orgs/alpha/tasks/{task}"
         url = self.base + f"/orgs/alpha/tasks/{task}"

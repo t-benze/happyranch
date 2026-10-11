@@ -595,16 +595,29 @@ class Controller:
 
     def release(self, start: dict) -> None:
         connection, stream = self.holds.pop(start["session"])
-        connection.settimeout(self.remaining())
-        stream.write(b'{"action":"exit"}\n')
-        connection.settimeout(self.remaining())
-        stream.flush()
-        connection.settimeout(self.remaining())
-        acknowledgement = json.loads(stream.readline())
-        self.remaining()
+        # The caller owns the existing finite I/O cap: E05 sets 5s; other
+        # callers retain start/command's socket cap. Never replace it with 30s.
+        cap = connection.gettimeout()
+        require(cap is not None and cap > 0, "provider release requires finite caller cap")
+        end = self.effective_end()
+        with self.bounded(min(end, time.monotonic() + cap)):
+            connection.settimeout(self.remaining(cap))
+            stream.write(b'{"action":"exit"}\n')
+            self.remaining()
+        with self.bounded(min(end, time.monotonic() + cap)):
+            connection.settimeout(self.remaining(cap))
+            stream.flush()
+            self.remaining()
+        with self.bounded(min(end, time.monotonic() + cap)):
+            connection.settimeout(self.remaining(cap))
+            acknowledgement = json.loads(stream.readline())
+            self.remaining()
         require(acknowledgement == {"exiting": True}, "provider exit acknowledgement")
-        stream.close()
-        connection.close()
+        with self.bounded(min(end, time.monotonic() + cap)):
+            connection.settimeout(self.remaining(cap))
+            stream.close()
+            connection.close()
+            self.remaining()
 
     def finish(self, org: str, task: str) -> dict:
         begin = time.monotonic()
