@@ -70,8 +70,8 @@ Completed-source discovery precedes workers and periodic enqueue hints; possible
 launch without affirmative proof remains uncertain. No callback is a signature.
 U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
 with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
-cancellation and portability owner selection. This stacked draft remains
-unaccepted pending independent same-head assessment and retained gates.
+cancellation and portability owner selection. This complete U3a composition remains
+unaccepted pending renewed independent same-head assessment and current static gates.
 
 Current Founder-owner handoff GET may read a superseded source, including a
 configuration with zero human reviewers, only with current instance ownership,
@@ -89,9 +89,11 @@ GET remains allowed; cleared sessions refuse through existing session admission.
 Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
 receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
 acceptance remain later units. Full independent review, honest same-head QA,
-retained exact-head CI/actual hosted Codex CLI callback and manager guarded merge
-remain required. Manager-owned bounded two-template public smoke must precede
-Founder invitation. No live migration/enable/assignment/deploy/restart follows.
+unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
+manager guarded merge remain required under THR291 seq69. Actual CLI callback
+sources and isolation fences remain retained; execution is not a merge check.
+Manager-owned bounded two-template public smoke must precede Founder invitation.
+No live migration/enable/assignment/deploy/restart follows.
 
 **G submission-schema migration (THR139 seq395; retained F/E→G path).**
 The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.
