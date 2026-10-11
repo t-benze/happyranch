@@ -71,6 +71,15 @@ def host(record: dict, admitted: int, released: int, active: int, previous: dict
     return dict(admission=a, receipts=r, executor_sessions_active=m["executor_sessions_active"], run_step_queue_depth=0)
 
 
+def register_owned(c: Controller, pids: list[int]) -> None:
+    """Controller is the sole registry writer; publish the full union at once."""
+    path = c.root / "owned.json"
+    prior = json.loads(path.read_text())
+    temporary = c.root / "owned.tmp"
+    temporary.write_text(json.dumps(sorted(set(prior + pids))))
+    temporary.replace(path)
+
+
 def command(c: Controller, start: dict, action: str, wait: bool) -> dict:
     connection, stream = c.holds[start["session"]]
     record = dict(action=action, provider=start, entered=time.monotonic(), wire_begin=len(c.relay.records))
@@ -86,8 +95,7 @@ def command(c: Controller, start: dict, action: str, wait: bool) -> dict:
     launch = json.loads(stream.readline(131072))["e07_launch"]
     record["launch"] = launch
     c.e07["owned"].append(launch["child"])
-    path = c.root / "owned.json"
-    path.write_text(json.dumps(sorted(set(json.loads(path.read_text()) + [launch["child"]["pid"]]))))
+    register_owned(c, [launch["child"]["pid"]])
     require(launch["provider"] == {k:start[k] for k in ("task", "session", "agent", "org", "pid")}
             and launch["source_sha"] == c.revision and launch["python"] == c.python
             and launch["execution_deadline"] == instruction["execution_deadline"], "E07 actual launch authority")
@@ -116,13 +124,12 @@ def register_tree(c: Controller, start: dict) -> dict:
     while pid > 1 and len(chain) < 16:
         proc = process_record(pid)
         require(f"E2E_ROOT={c.root}".encode() in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"), "E07 tree ownership")
+        register_owned(c, [pid])
+        c.e07["owned"].append(proc)
         chain.append(proc)
         if pid == launch_pid:
             break
         pid = proc["ppid"]
-    c.e07["owned"].extend(chain)
-    path = c.root / "owned.json"
-    path.write_text(json.dumps(sorted(set(json.loads(path.read_text()) + [p["pid"] for p in chain]))))
     require(chain[-1]["pid"] == launch_pid and launch_pid != start["pid"], "E07 separate launch and plan ancestry")
     return dict(launch_pid=launch_pid, chain=chain)
 
@@ -194,10 +201,9 @@ def terminal_cli(c: Controller, task: str, status: str, rationale: str) -> dict:
     c.e07_commands.append(record)
     child = subprocess.Popen(argv, cwd=c.root, env=dict(c.env, HAPPYRANCH_DAEMON_HOME=str(c.root / "client")),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    register_owned(c, [child.pid])
     record["child"] = process_record(child.pid)
     c.e07["owned"].append(record["child"])
-    path = c.root / "owned.json"
-    path.write_text(json.dumps(sorted(set(json.loads(path.read_text()) + [child.pid]))))
     try:
         out, err = child.communicate(timeout=c.remaining())
     except subprocess.TimeoutExpired as exc:

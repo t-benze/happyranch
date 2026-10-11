@@ -382,7 +382,7 @@ class Browser:
                           requests=requests,parent_view=parent_view,child_view=child_view,rationale=rationale)
             c.e07.setdefault("browser_events",[]).append(dict(event="cancel",**record))
             require(len(requests) == 1 and record["request"] == {"rationale":"E07_CANCEL_TREE"}
-                    and record["status"] == 200 and record["response"] == {"cancelled":[parent,child],"killed":[{"task_id":child,"agent":"case_worker"}]},
+                    and record["status"] == 200 and record["response"] == {"ok":True,"task_id":parent,"cancelled":[parent,child],"killed":[{"task_id":child,"agent":"case_worker"}]},
                     "E07 literal shipping browser cancellation",record)
             return record
         finally:

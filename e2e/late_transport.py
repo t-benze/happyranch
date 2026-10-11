@@ -13,6 +13,7 @@ import select
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -49,6 +50,18 @@ def process_record(pid: int) -> dict:
                 cgroup=Path(f"/proc/{pid}/cgroup").read_text(), at=time.monotonic())
 
 
+def publish_launch(path: Path, record: dict) -> None:
+    """A killed writer leaves the last complete private record in place."""
+    fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)  # mkstemp creates mode0600, before any private byte.
+    try:
+        with os.fdopen(fd, "w") as file:
+            file.write(json.dumps(record))
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def provider_command(instruction: dict, binding: dict, stream: Any) -> dict:
     """The genuine provider writes its own payload and acknowledges before wait."""
     from thread_provider import redaction_context
@@ -79,9 +92,8 @@ def provider_command(instruction: dict, binding: dict, stream: Any) -> dict:
     launch_path = root / "coord" / ("e07-launch-" + binding["session"] + ".json")
     child = subprocess.Popen(argv, cwd=root, env=dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(home)),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    launch_path.write_text(json.dumps(dict(action=instruction["action"], provider=binding,
-                                          child_pid=child.pid, entered=entered, incomplete=True)))
-    launch_path.chmod(0o600)
+    publish_launch(launch_path, dict(action=instruction["action"], provider=binding,
+                                     child_pid=child.pid, entered=entered, incomplete=True))
     # Durable launch record precedes both acknowledgement and communicate. On
     # cancellation it survives even when neither process can write a final row.
     launch = dict(action=instruction["action"], provider=binding, child=process_record(child.pid),
@@ -89,8 +101,7 @@ def provider_command(instruction: dict, binding: dict, stream: Any) -> dict:
                   callback_sha256=manifest["callback_sha256"], source_sha=manifest["revision"],
                   python=sys.executable, entered=entered, execution_deadline=end,
                   acknowledged=time.monotonic())
-    launch_path.write_text(json.dumps(launch))
-    launch_path.chmod(0o600)
+    publish_launch(launch_path, launch)
     stream.write((json.dumps(dict(e07_launch=launch)) + "\n").encode())
     stream.flush()
     timed_out = False

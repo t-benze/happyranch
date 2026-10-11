@@ -881,8 +881,6 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(len(requests) == len(responses) == len(proxy) == 1, "one page/upstream/original response")
     request, response, wire = requests[0],responses[0],proxy[0]
     transport = case["transport"]
-    check(transport["port"] in case["ports"] and transport["upstream"] in case["ports"]
-          and transport["port"] != transport["upstream"], "distinct owned registered listener/upstream")
     check(len({transport[k] for k in ("daemon_port","cli_port","browser_port")}) == 3
           and all(transport[k] in transport["ports"] for k in ("daemon_port","cli_port","browser_port")), "registered owned D/L/P")
     origin = f"http://127.0.0.1:{transport['browser_port']}"
@@ -1002,6 +1000,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
 
     case = json.loads((directory / "e07.json").read_text())
     check(case == observations["e07"] == row["e07"], "actual raw/observations/scenario export equality")
+    check(case["launch_record_failures"] == [], "missing/malformed/incomplete/unexpected private launch record")
     variants = ["E07.cancel-cascade-browser","E07.cancel-terminal-unchanged","E07.cancelled-late-cli"]
     check(case["variants"] == variants and len(row["variants"]) == 56
           and list(row["variants"])[-3:] == variants and case["prefix"]["variants"] == list(row["variants"])[:53]
@@ -1062,14 +1061,45 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     check(all(w["cli_sha256"] == cli_digest for w in callbacks), "actual shipping CLI source hash")
     manifest = next(d["executable_manifest"] for d in observations["durable"] if "executable_manifest" in d)
     check(case["python"] == manifest["python"], "bound interpreter")
+    # The task templates select Claude with unset model/effort; these are fresh
+    # P/W tasks, not resumed sessions. ClaudeAdapter sends seven arguments:
+    # -p --permission-mode MODE --allowedTools RULES --output-format json.
+    # fake_claude.sh preserves that original argv for the unchanged guard.
+    # Recompute the exact task plan bytes independently, without importing the
+    # producer or guard's expected-construction helpers.
+    import shlex
+    wrappers = next(d["wrappers"] for d in observations["durable"] if "executable_manifest" in d)
+    source = Path(__file__).resolve().parents[1]
+    stub = manifest["stubs"]["claude"]
+    stub_sha = hashlib.sha256((source / "tests/integration/fake_claude.sh").read_bytes()).hexdigest()
+    plan_path = str(Path(manifest["root"]) / "coord/plan.sh")
+    plan_bytes = ("#!/bin/sh\nexec " + shlex.quote(manifest["python"]) + " -I "
+                  + shlex.quote(str(Path(manifest["source"]) / "e2e/provider.py")) + ' "$@"\n').encode()
+    plan_sha = hashlib.sha256(plan_bytes).hexdigest()
+    check(manifest["revision"] == row["source_sha"]
+          and stub["path"] == str(Path(manifest["root"]) / "bin/claude")
+          and stub["sha256"] == wrappers[stub["path"]] == stub_sha
+          and wrappers[plan_path] == plan_sha
+          and wrappers[plan_path + ".sha256"] == hashlib.sha256(plan_sha.encode()).hexdigest(),
+          "actual immutable source/stub/task-plan bindings")
+    stubs = [w for w in suffix if w["kind"] == "stub"]
+    for witness in stubs:
+        check(set(witness) == {"kind","provider","stub_sha256","source_sha","plan_sha256","argc","flags"}
+              and type(witness["argc"]) is int and witness == dict(
+                  kind="stub", provider="claude", stub_sha256=stub_sha, source_sha=row["source_sha"],
+                  plan_sha256=plan_sha, argc=7, flags=["-p","--output-format"]),
+              "complete new stub record and concrete fresh Claude launch contract")
     source_names = ["e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
                     "e2e/browser.py","e2e/aggregate.py","e2e/run.py","e2e/manifest.json","cli/commands/tasks.py",
                     "runtime/daemon/routes/tasks.py","runtime/orchestrator/run_step.py","web/src/features/tasks/CancelTaskDialog.tsx"]
     check(set(case["source_files"]) == set(source_names) and all(
         hashlib.sha256((Path(__file__).resolve().parents[1]/name).read_bytes()).hexdigest() == case["source_files"][name]
         for name in source_names), "actual complete harness/shipping seam source hashes")
-    check(len(case["partial_launches"]) == 2 and all(cmd["launch"] in case["partial_launches"] for cmd in commands[:2]),
-          "actual retained pre-wait launch records")
+    check(case["partial_launches"] == [cmd["launch"] for cmd in commands[:2]]
+          and all("incomplete" not in launch and launch["provider"] == {
+              k:start[k] for k in ("task","session","agent","org","pid")}
+              for launch,start in zip(case["partial_launches"],(parent,worker))),
+          "both actual complete pre-wait launch records in issued-command order")
     for index,cmd in enumerate(commands):
         launch = cmd["launch"] if index < 2 else cmd
         child = launch["child"]
@@ -1255,7 +1285,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     events = case["browser_events"]
     check([e["event"] for e in events] == ["detail-reload","detail-reload","cancel","detail-reload","detail-reload","list-reload"], "full finite browser action ledger")
     check(cancel["status"] == 200 and cancel["method"] == "POST" and cancel["request"] == {"rationale":"E07_CANCEL_TREE"}
-          and cancel["response"] == {"cancelled":[P,W],"killed":[{"task_id":W,"agent":"case_worker"}]}
+          and cancel["response"] == {"ok":True,"task_id":P,"cancelled":[P,W],"killed":[{"task_id":W,"agent":"case_worker"}]}
           and len(cancel["requests"]) == 1 and cancel["requests"][0]["body"] == cancel["request"], "one actual dialog cancellation/no invented PID")
     check(cancel["parent_view"]["detail"]["task"]["block_kind"] == "delegated" and "waiting on subtasks" in cancel["parent_view"]["text"]
           and cancel["child_view"]["detail"]["task"]["block_kind"] is None, "rendered current waiting/running tree")

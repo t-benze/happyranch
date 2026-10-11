@@ -607,6 +607,26 @@ upstream response are distinct; no killed CLI response/exit is fabricated.
 | Prefix/export/aggregate consumers | Exact53 prefix, genuine E05 byte/record offset, entire suffix classification; raw/observations/scenario/result agree; independent actual-content recomputation | Dropped evidence field, count-only PASS, accepted unaccounted callback, truncated prefix | Former aggregate assumed final37 and whole E05 witness equality | Existing five daily artifacts and source-bound independent aggregate |
 | Sanitation/partial process records | Retained bearer and E05 contexts redact whole captures before clipping; unknown context/caps refuse full-content claims; launch evidence survives client death | Secret fragments on timeout/EOF/signal or fabricated posthumous return | Prior synchronous success receipt cannot describe a killed CLI | Private launch receipt, real Popen/socket streams and existing unsafe-export refusal |
 
+R1–R5 correction contracts (TASK10778):
+
+| Changed assertion/fixture/consumer | Contract | Credible defect | Previous coverage gap | Actual seam |
+| --- | --- | --- | --- | --- |
+| E05 aggregate transport | Original daemon/CLI/browser D/L/P keys and registered ports only; independent E07 listener/upstream predicate stays in E07 | Valid E05 fails on nonexistent E07 keys | Misplaced predicate disagreed with unchanged E05 producer | `threads.exercise` serialized transport |
+| Browser cancel and independent aggregate | Full literal `{ok:true, task_id:P, cancelled:[P,W], killed:[{task_id:W,agent:case_worker}]}` with exact order and membership | Reject real successful200 or accept incomplete response | Prior literal omitted ok/task_id | Shipping `tasks.cancel_task` and actual dialog POST |
+| Both new stub witnesses | Closed seven-field records, exact Claude/source/stub/plan hashes, integer argc7 and ordered flags `[-p,--output-format]` | Arbitrary provider/hash/argc/flag or unknown-field corruption passes internal copy equality | Suffix counted kinds/source only | Task templates select fresh unpinned Claude; `ClaudeAdapter` seven-argument launch, original `fake_claude.sh` argv and unchanged executable guard |
+| E07 ownership updates | Atomic temporary/replace union retains all earlier PIDs; register before process observations/waits | Watcher reads truncated JSON or failure loses an observed ancestor | New direct overwrites differed from atomic `Controller.start` | Existing `Owned.sample/observe` with unchanged PID-start/cgroup/unit checks |
+| Private launch writer and final collector | mode0600 temporary creation/replace, initial PID record retained until full acknowledgement commits; each issued command requires a record; retain valid siblings and valid initial records with fixed missing/malformed/incomplete/unexpected diagnostics | Interrupted write destroys all later evidence or glob hides missing record | Unguarded comprehension and truncate/chmod publication | Genuine provider Popen and acknowledgement, `Controller.evidence`, existing run e07 whitelist/export, independent aggregate |
+
+Launch collection parses each expected command-bound file independently. Failure
+categories contain only fixed words and a command index; raw malformed bytes,
+filenames and exception text are not exported. Valid partial records and the
+failure list travel inside `e07` through raw/observations/scenario/result. Other
+evidence is serialized before collection failures raise; aggregate rejects any
+failure and independently requires both complete records in command order.
+Sanitation remains outside parse catches: unavailable retained context still
+refuses export, and incomplete records never fabricate an acknowledgement.
+These source corrections add no dedicated control or execution evidence.
+
 All dedicated sensitivity controls remain **UNAUTHORED**; behavior, assertion
 sensitivity, transport provenance, delivery/persistence, fit, process closure
 and sanitation are **MISSING/UNEXECUTED**. No full test-authoring PASS. Protected12

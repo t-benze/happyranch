@@ -572,6 +572,75 @@ class Controller:
             self.daemon_log.close()
         require(not failures, "browser cleanup/evidence failed", failures)
 
+    def collect_e07_launches(self) -> tuple[list[dict], list[dict]]:
+        """Retain each valid record; a missing sibling cannot erase evidence."""
+        import math
+
+        def number(value: object) -> bool:
+            return type(value) in (int, float) and value > 0 and (type(value) is int or math.isfinite(value))
+
+        records, failures = [], []
+        expected = set()
+        for index, command in enumerate(self.e07_commands):
+            if command["action"] not in {"e07-parent", "e07-held"}:
+                continue
+            # The ledger is registered before sending the real instruction.
+            # Even an interrupted send requires evidence or an explicit failure.
+            start = command["provider"]
+            binding = {k:start[k] for k in ("task", "session", "agent", "org", "pid")}
+            path = self.root / "coord" / ("e07-launch-" + start["session"] + ".json")
+            expected.add(path)
+            reason = None
+            try:
+                record = json.loads(path.read_text())
+            except TimeoutError:
+                raise  # Do not turn the original deadline into a parse failure.
+            except FileNotFoundError:
+                reason = "missing"
+            except (OSError, UnicodeError, ValueError, RecursionError):
+                reason = "malformed"
+            if reason is None:
+                valid = (isinstance(record, dict) and record.get("action") == command["action"]
+                         and record.get("provider") == binding and number(record.get("entered")))
+                if valid and record.get("incomplete") is True:
+                    valid = (set(record) == {"action","provider","child_pid","entered","incomplete"}
+                             and type(record["child_pid"]) is int and record["child_pid"] > 1)
+                    reason = "incomplete" if valid else "malformed"
+                elif valid:
+                    child = record.get("child")
+                    valid = (set(record) == {"action","provider","child","argv","payload","payload_sha256",
+                             "payload_bytes","callback_sha256","source_sha","python","entered",
+                             "execution_deadline","acknowledged"}
+                             and isinstance(child, dict)
+                             and set(child) == {"pid","start","state","ppid","argv","cgroup","at"}
+                             and type(child["pid"]) is int and child["pid"] > 1
+                             and type(child["ppid"]) is int and child["ppid"] == start["pid"]
+                             and all(isinstance(child[k], str) and child[k] for k in ("start","state","cgroup"))
+                             and isinstance(child["argv"], list) and all(isinstance(a, str) for a in child["argv"])
+                             and number(child["at"]) and isinstance(record["argv"], list)
+                             and all(isinstance(a, str) for a in record["argv"])
+                             and isinstance(record["payload"], dict)
+                             and all(isinstance(record[k], str) and len(record[k]) == 64
+                                     and all(c in "0123456789abcdef" for c in record[k])
+                                     for k in ("payload_sha256","callback_sha256"))
+                             and type(record["payload_bytes"]) is int and record["payload_bytes"] > 0
+                             and record["source_sha"] == self.revision and record["python"] == self.python
+                             and number(record["acknowledged"]) and number(record["execution_deadline"])
+                             and record["entered"] <= record["acknowledged"] <= record["execution_deadline"]
+                             and record["execution_deadline"] == command["instruction"]["execution_deadline"]
+                             and ("launch" not in command or command["launch"] == record))
+                if valid:
+                    records.append(record)
+                else:
+                    reason = "malformed"
+            if reason:
+                # Fixed categories and ledger index only: never raw bytes,
+                # filenames or exception text from a damaged private record.
+                failures.append(dict(command=index, reason=reason))
+        if any(path not in expected for path in (self.root / "coord").glob("e07-launch-*.json")):
+            failures.append(dict(reason="unexpected"))
+        return records, failures
+
     def evidence(self) -> None:
         self.capture_thread_secrets()
         rows = dict(variants=self.results, starts=self.starts, commands=self.commands,
@@ -579,7 +648,8 @@ class Controller:
                     provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
                     provider_observer=self.observer, observer_error=self.observer_error)
         if self.e07:
-            self.e07["partial_launches"] = [json.loads(path.read_text()) for path in sorted((self.root / "coord").glob("e07-launch-*.json"))]
+            launches, failures = self.collect_e07_launches()
+            self.e07.update(partial_launches=launches, launch_record_failures=failures)
             (self.root / "raw/e07.json").write_text(self.sanitize(json.dumps(self.e07, indent=2)))
         rows.update(e07=self.e07, e07_commands=self.e07_commands)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
@@ -597,6 +667,9 @@ class Controller:
         raw = self.sanitize(json.dumps(rows, indent=2))
         (self.root / "raw" / "observations.json").write_text(raw)
         (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases, e07=self.e07))))
+        # Fail only after all available sanitized evidence has been serialized.
+        # Sanitation/context errors above remain fatal and are never caught here.
+        require(not self.e07.get("launch_record_failures"), "E07 launch record evidence incomplete")
 
 
 def cancellation_hold(controller: Controller) -> None:
