@@ -1409,6 +1409,133 @@ def test_c4_normal_and_recovered_verdict_attribution(
 
 
 
+
+# Separate finite Engineering controls; original human C4 matrix is unchanged.
+AGENT_C4_CASES = [
+    (False, 'completed', None, 'ordinary-completed-implicit'),
+    (False, 'completed', 'CUSTOM_REVIEW_OUTCOME', 'ordinary-completed-explicit'),
+    (False, 'blocked', None, 'ordinary-failed-implicit'),
+    (False, 'blocked', 'CUSTOM_REVIEW_OUTCOME', 'ordinary-failed-explicit'),
+    (True, 'completed', None, 'accepted-completed-implicit'),
+    (True, 'completed', 'CUSTOM_REVIEW_OUTCOME', 'accepted-completed-explicit'),
+    (True, 'blocked', None, 'accepted-failed-implicit'),
+    (True, 'blocked', 'CUSTOM_REVIEW_OUTCOME', 'accepted-failed-explicit'),
+]
+
+
+@pytest.fixture
+def agent_c4_daemon(runtime: Path, request: pytest.FixtureRequest,
+                    fake_codex_plan_env: Path):
+    """Existing Engineering, provisioned before real daemon attachment.
+
+    Alarm bounds setup/body; existing live_daemon owns its ordinary teardown.
+    The outer namespace parent supplies the cleanup-inclusive hard deadline.
+    """
+    def expired(signum, frame):
+        raise TimeoutError('agent C4 setup/body exceeded 100 seconds')
+    previous = signal.signal(signal.SIGALRM, expired)
+    signal.alarm(100)
+    try:
+        teams = yaml.safe_load((runtime / 'org/teams.yaml').read_text())['teams']
+        assert teams['engineering']['manager'] == 'engineering_head'
+        assert 'dev_agent' in teams['engineering']['workers']
+        assert 'default' not in teams and 'consultant' not in teams
+        seed_workspace(runtime, 'engineering_head')
+        seed_workspace(runtime, 'dev_agent', executor='codex')
+        _write_plan(fake_codex_plan_env, runtime, status='completed', verdict=None, self_child=False)
+        yield request.getfixturevalue('live_daemon'), runtime
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+@pytest.mark.parametrize('recovery,status,verdict', [case[:3] for case in AGENT_C4_CASES],
+                         ids=[case[3] for case in AGENT_C4_CASES])
+def test_c4_existing_agent_team_attribution_and_replay(
+    agent_c4_daemon: tuple[int, Path], recovery: bool, status: str,
+    verdict: str | None, fake_codex_plan_env: Path, tmp_path: Path,
+) -> None:
+    """Real CLI callbacks/accepted omission recovery; manager remains reviewer.
+
+    No native fault/cut, manually seeded result, human team or product seam.
+    Exact public callback replay observes stable result/audit/parent rows;
+    it does not claim daemon crash/consumer replay or human recovery proof.
+    """
+    port, root = agent_c4_daemon
+    _write_plan(fake_codex_plan_env, root, status=status, verdict=verdict,
+                self_child=True, recovery=recovery)
+    reply = httpx.post(_base(port) + '/tasks', headers=_auth_headers(),
+        json={'team': 'engineering', 'owner': 'dev_agent', 'brief': 'agent C4 self child'},
+        timeout=5).raise_for_status().json()
+    body = _wait_for_terminal(_base(port), reply['task_id'], timeout=70)
+    assert body['task']['status'] == 'completed'
+    assert body['task']['orchestration_step_count'] == 2
+    witness = Path(str(fake_codex_plan_env) + '.calls.jsonl')
+    calls = [json.loads(line) for line in witness.read_text().splitlines()]
+    with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
+        children = observer.execute('SELECT id,team,assigned_agent,status,task_type FROM tasks WHERE parent_task_id=?',
+                                    (reply['task_id'],)).fetchall()
+        assert len(children) == 1
+        child = children[0]
+        assert child[1:] == ('engineering', 'dev_agent', 'completed' if status == 'completed' else 'failed', 'subtask')
+        results = observer.execute('SELECT id,session_id,status,verdict FROM task_results WHERE task_id=? ORDER BY id',
+                                   (child[0],)).fetchall()
+        assert len(results) == 1 and type(results[0][0]) is int and results[0][0] > 0
+        assert results[0][2:] == (status, verdict)
+        reviews = observer.execute("SELECT agent,payload FROM audit_log WHERE task_id=? AND action='review_verdict' ORDER BY id",
+                                   (child[0],)).fetchall()
+        assert len(reviews) == 1 and reviews[0][0] == 'engineering_head'
+        assert json.loads(reviews[0][1]) == {
+            'verdict': verdict if verdict is not None else 'approved' if status == 'completed' else 'rejected',
+            'feedback': 'child outcome' if status == 'completed' else 'self-blocked: child outcome',
+            'reviewed_agent': 'dev_agent'}
+        parent_results = observer.execute('SELECT id,session_id FROM task_results WHERE task_id=? ORDER BY id',
+                                          (reply['task_id'],)).fetchall()
+        assert len(parent_results) == 2 and parent_results[0][1] != parent_results[1][1]
+        child_calls = [call for call in calls if call['task'] == child[0]]
+        assert len(child_calls) == (2 if recovery else 1)
+        assert all(call['agent'] == 'dev_agent' and call['workspace'] == str(root / 'workspaces/dev_agent') for call in child_calls)
+        assert child_calls[-1]['session'] == results[0][1]
+        episodes = observer.execute('SELECT origin_session_id,recovery_session_id,accepted_result_id,accepted_result_session_id,state,provider_session_id FROM task_completion_recoveries WHERE task_id=?',
+                                    (child[0],)).fetchall()
+        if recovery:
+            assert len(episodes) == 1
+            origin, recovered, selected, accepted_session, state, provider = episodes[0]
+            assert origin == child_calls[0]['session'] and recovered == child_calls[1]['session'] and origin != recovered
+            assert type(selected) is int and selected == results[0][0] and accepted_session == recovered
+            assert provider and 'resume' in child_calls[1]['argv'] and provider in child_calls[1]['argv']
+            if status == 'completed':
+                assert state == 'callback_consumed'
+            # Legacy failed-agent marker closure is recorded, not redefined by
+            # this fixture. Selected result/reviewer/parent are independent oracles.
+        else:
+            assert episodes == []
+        callbacks = [json.loads(line) for line in Path(str(witness) + '.callback.calls.jsonl').read_text().splitlines()]
+        child_callbacks = [call for call in callbacks if call['task'] == child[0]]
+        assert len(child_callbacks) == 1 and child_callbacks[0]['exit'] == 0
+        def snapshot():
+            return {table: observer.execute('SELECT * FROM ' + table + ' WHERE ' + column + ' IN (?,?) ORDER BY rowid',
+                                            (reply['task_id'], child[0])).fetchall()
+                    for table, column in [('tasks', 'id'), ('task_results', 'task_id'),
+                                          ('audit_log', 'task_id'), ('task_completion_recoveries', 'task_id')]}
+        frozen = snapshot()
+        replay = httpx.post(_base(port) + f'/tasks/{child[0]}/completion', headers=_auth_headers(),
+            json={'session_id': results[0][1], 'agent': 'dev_agent', 'status': status,
+                  'output_summary': 'child outcome', 'confidence': 90, 'verdict': verdict}, timeout=5)
+        assert replay.status_code == 200 and replay.json() == {'ok': True}, replay.text
+        assert snapshot() == frozen
+        if recovery:
+            stale = httpx.post(_base(port) + f'/tasks/{child[0]}/completion', headers=_auth_headers(),
+                json={'session_id': origin, 'agent': 'dev_agent', 'status': 'completed',
+                      'output_summary': 'late original', 'confidence': 90}, timeout=5)
+            assert stale.status_code == 409, stale.text
+            assert snapshot() == frozen
+        (tmp_path / 'C4-agent-readback.json').write_text(json.dumps({
+            'root': reply['task_id'], 'child': child, 'results': results, 'reviews': reviews,
+            'parent_results': parent_results, 'episodes': episodes, 'replay_status': replay.status_code,
+            'meaning': 'assertions reached; failed legacy marker state is observation, not consumed-marker proof'}, sort_keys=True))
+
+
 def _c5_shipping_graph_process(tmp_path: Path, *, restore: bool, explicit_profile: bool) -> None:
     """Finite real route/registration process. Restore requires separate M venue.
 

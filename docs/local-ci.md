@@ -734,3 +734,83 @@ without replacing existing events, and actual job-submit refusals are retained
 before assertions. All 224 C4 cases and their behavioral assertions remain.
 These are source corrections only: no new behavioral execution, GREEN,
 causal/restoration/repetition or held migration/restore/reboot proof is claimed.
+
+
+## PR1022 bounded existing-agent C4 (THR296seq52)
+
+This separately authorized source-merge condition leaves daily/automated triggers
+unchanged. General integration remains SKIPPED THR243seq42. Independent full
+review APPROVE must precede independent QA execution; maker performs no C4 run.
+The original 224 C4 parameters are human-fixtured and excluded. Eight explicit
+`test_c4_existing_agent_team_attribution_and_replay` parameters use synthetic
+Engineering (`engineering_head`, worker `dev_agent`), plus the unchanged delayed
+chain-exit control. The exact ordered nodes live in `integration_parent.py`
+`AGENT_C4_NODES`; broad selectors, human cases and omitted nodes refuse.
+
+Use the existing parent with `--roster-agent-c4 --roster-output <owned-evidence>`
+and exactly those nine nodes, `-x -vv --tb=short`. The parent requires a standalone
+clean `/source` clone, PID1, dedicated `happyranch-c4` UTS namespace and loopback-only
+network, before product imports. The reviewed external namespace command mounts
+only source/frozen interpreter/system executables and owned evidence; no live
+HOME/config/token/registry/org/provider mount. Namespace preflight failure is a
+venue blocker, never permission to run directly on the daemon host.
+
+The new fixture bounds setup/body at100s and its terminal poll at70s. Existing
+chain waits remain60s. Parent deadline840s plus bounded interruption/cleanup
+reserve fits an outer900s cap. Stop on first actionable failure; retain original
+nonzero/timeout and unstarted nodes. Parent checkpoint/final receipts retain
+owned daemon logs, callback/plan/process witnesses, stub identity records, source
+SHA and read-only task/result/audit/recovery/job snapshots. Artifact retention
+failure is nonzero. Cleanup covers the owned process group and the external
+namespace; escaped-group processes remain namespace-contained until its exit.
+
+The cases observe genuine CLI callbacks, one selected result/review with legacy
+Engineering manager attribution, explicit/implicit verdicts, parent progression,
+accepted Codex omission recovery and read-only exact callback replay. Completed
+recovery requires consumed marker. Failed legacy recovery marker state is retained
+as observation without claiming consumed-marker closure. Public callback retry
+is not daemon-crash/consumer replay; the unchanged delayed chain control owns
+callback/exit ordering. Human recovery/native cuts, full224/C10/historical
+compatibility/M and causal/restoration/repetition remain deferred or held debt.
+THR296seq52 defers authoring proof for this one PR's source assessment; no
+behavioral/test-authoring/compatibility/live-move PASS follows from source or lint.
+
+The exact reviewed command below assumes a separately prepared, independent
+clean clone `C4_SOURCE` at the approved final SHA with frozen Python3.14 venv,
+and a fresh private `C4_INVOCATION` named `happyranch-roster-*` containing empty
+`evidence/` and `tools/uv` (the observed installed uv binary). Preparation is
+ordinary dependency setup only; authenticate source/tree/lock/interpreter/tool
+hashes before execution. Do not mount a linked `.git`, live checkout, daemon
+home, Docker socket or provider directory. This namespace command is currently
+UNEXECUTED; a source inspection cannot prove its venue works.
+
+```bash
+timeout --signal=TERM --kill-after=20s 900s /usr/bin/bwrap \
+  --unshare-all --as-pid-1 --hostname happyranch-c4 --die-with-parent --new-session \
+  --clearenv --ro-bind /usr /usr --symlink usr/bin /bin \
+  --symlink usr/lib /lib --symlink usr/lib64 /lib64 \
+  --proc /proc --dev /dev --tmpfs /tmp \
+  --ro-bind "$C4_SOURCE" /source \
+  --bind "$C4_INVOCATION" /happyranch-roster-agent-c4 \
+  --setenv PATH /happyranch-roster-agent-c4/tools:/usr/bin:/bin \
+  --setenv HOME /tmp --setenv PYTHONDONTWRITEBYTECODE 1 --chdir /source \
+  /source/.venv/bin/python tests/helpers/integration_parent.py \
+  --roster-agent-c4 --roster-output /happyranch-roster-agent-c4/evidence -- \
+  pytest -m integration \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[ordinary-completed-implicit]' \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[ordinary-completed-explicit]' \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[ordinary-failed-implicit]' \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[ordinary-failed-explicit]' \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[accepted-completed-implicit]' \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[accepted-completed-explicit]' \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[accepted-failed-implicit]' \
+  'tests/integration/test_human_team_roster_e2e.py::test_c4_existing_agent_team_attribution_and_replay[accepted-failed-explicit]' \
+  tests/integration/test_chain_e2e.py::test_chain_advance_at_most_once_with_delayed_session_exit_e2e \
+  -x -vv --tb=short
+```
+
+A QA-owned durable job retains stdout/stderr and the actual outer exit; it
+records setup/namespace failures, not just parent receipts. Namespace PID1 exit
+kills remaining owned descendants. Retain that external closure result alongside
+`parent-receipt.json`, `pytest.xml`, phase traces and DB/audit snapshots; unknown
+cleanup is not PASS. No automatic retries or broader selection on failure.
