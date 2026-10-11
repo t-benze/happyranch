@@ -64,7 +64,7 @@ class BrowserRelay:
                 relay.records.append(record)
                 try:
                     def remaining() -> float:
-                        value = end - time.monotonic()
+                        value = (end if selected else relay.deadline) - time.monotonic()
                         if value <= 0 or relay.stopping:
                             raise TimeoutError("browser transport deadline")
                         return value
@@ -76,6 +76,7 @@ class BrowserRelay:
                     if len(lengths) > 1:
                         raise ValueError("ambiguous browser request framing")
                     raw = self.rfile.read(int(lengths[0]) if lengths else 0)
+                    remaining()
                     if selected:
                         record.update(target=self.path, request_sha256=hashlib.sha256(raw).hexdigest(), request_bytes=len(raw))
                     connection = http.client.HTTPConnection("127.0.0.1", relay.upstream, timeout=remaining())
@@ -87,12 +88,17 @@ class BrowserRelay:
                         if key.lower() not in hops:
                             connection.putheader(key, value)
                     connection.putheader("Connection", "close")
+                    connection.connect()
+                    connection.sock.settimeout(remaining())
                     connection.endheaders(raw)
+                    remaining()
                     upstream_socket = connection.sock
                     with relay.lock:
                         relay.connections.add(upstream_socket)
                     record["forwarded"] = time.monotonic()
+                    upstream_socket.settimeout(remaining())
                     response = connection.getresponse()
+                    remaining()
                     headers = response.getheaders()
                     if response.status == 101:
                         raise ValueError("unsupported browser upgrade")
@@ -104,7 +110,9 @@ class BrowserRelay:
                     record["streaming"] = streaming
                     content = None
                     if selected:
+                        upstream_socket.settimeout(remaining())
                         content = response.read()
+                        remaining()
                         record.update(upstream_complete=time.monotonic(), response_sha256=hashlib.sha256(content).hexdigest(),
                                       response_bytes=len(content), content_type=response.getheader("Content-Type"))
                         # Parsing is evidence-only AFTER the unconditional
@@ -143,16 +151,24 @@ class BrowserRelay:
                     self.end_headers()
                     if self.command != "HEAD" and response.status not in {204, 304}:
                         if content is not None:
+                            self.connection.settimeout(remaining())
                             self.wfile.write(content)
+                            self.connection.settimeout(remaining())
                             self.wfile.flush()
+                            remaining()
                         else:
                             while True:
                                 self.connection.settimeout(remaining())
+                                upstream_socket.settimeout(remaining())
                                 chunk = response.read1(65536)
+                                remaining()
                                 if not chunk:
                                     break
+                                self.connection.settimeout(remaining())
                                 self.wfile.write(chunk)
+                                self.connection.settimeout(remaining())
                                 self.wfile.flush()
+                                remaining()
                     record["delivered"] = time.monotonic()
                 except (BrokenPipeError, ConnectionResetError) as exc:
                     record["client_disconnected"] = type(exc).__name__
@@ -181,7 +197,11 @@ class BrowserRelay:
         class Server(ThreadingHTTPServer):
             def get_request(self):
                 connection, address = super().get_request()
-                connection.settimeout(max(0.001, min(10, relay.deadline-time.monotonic())))
+                remaining = relay.deadline-time.monotonic()
+                if remaining <= 0:
+                    connection.close()
+                    raise TimeoutError("browser accepted after deadline")
+                connection.settimeout(min(10, remaining))
                 with relay.lock:
                     relay.connections.add(connection)
                 return connection, address
@@ -221,8 +241,15 @@ class BrowserRelay:
         self.proof, self.arm_end = proof, end
         self.hold = dict(armed=time.monotonic(), deadline=end)
 
-    def close(self) -> dict:
+    def close(self, end: float | None = None) -> dict:
         entered = time.monotonic()
+        end = min(self.deadline, end if end is not None else self.deadline, entered+3)
+        def left():
+            value = end-time.monotonic()
+            if value <= 0:
+                raise TimeoutError("browser relay close deadline")
+            return value
+        left()
         self.release.set()
         self.stopping = True
         self.server.shutdown()
@@ -237,9 +264,9 @@ class BrowserRelay:
                     pass
                 sock.close()
         self.server.server_close()
-        end = entered + 3
         for worker in [*workers, self.thread]:
-            worker.join(timeout=max(0, end - time.monotonic()))
+            worker.join(timeout=left())
+        left()
         result = dict(port=self.port, entered=entered, finished=time.monotonic(),
                       workers_alive=sum(w.is_alive() for w in workers), listener_alive=self.thread.is_alive(),
                       connections=len(self.connections), errors=list(self.errors))
@@ -249,10 +276,14 @@ class BrowserRelay:
 
 
 class Relay:
-    def __init__(self, upstream: int, proof: Callable[[dict], None]) -> None:
+    def __init__(self, upstream: int, proof: Callable[[dict], None], deadline: Callable[[], float]) -> None:
         self.upstream = upstream
         self.proof = proof
+        self.deadline = deadline
         self.records: list[dict] = []
+        self.sockets: set[socket.socket] = set()
+        self.workers: set[threading.Thread] = set()
+        self.lock = threading.Lock()
         self.capture_e05 = False
         self.armed: tuple[str, str] | None = None
         self.error: str | None = None
@@ -269,13 +300,21 @@ class Relay:
                 self.forward()
 
             def forward(self) -> None:
+                self.connection.settimeout(relay.remaining())
                 raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                relay.remaining()
                 digest = hashlib.sha256(raw).hexdigest()
-                connection = http.client.HTTPConnection("127.0.0.1", relay.upstream, timeout=25)
+                connection = http.client.HTTPConnection("127.0.0.1", relay.upstream, timeout=relay.remaining())
                 try:
+                    connection.connect()
+                    upstream_socket = connection.sock
+                    upstream_socket.settimeout(relay.remaining())
                     connection.request(self.command, self.path, body=raw, headers=dict(self.headers))
+                    upstream_socket.settimeout(relay.remaining())
                     response = connection.getresponse()
+                    upstream_socket.settimeout(relay.remaining())
                     body = response.read()
+                    relay.remaining()
                     parsed = json.loads(body)
                     record = dict(path=self.path, method=self.command, body_sha256=digest,
                                   status=response.status, response=parsed, dropped=False)
@@ -305,19 +344,72 @@ class Relay:
                             self.send_header(key, value)
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
+                    self.connection.settimeout(relay.remaining())
                     self.wfile.write(body)
+                    relay.remaining()
                 except Exception as exc:
                     relay.error = repr(exc)
                     self.close_connection = True
                 finally:
                     connection.close()
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        class Server(ThreadingHTTPServer):
+            def get_request(self):
+                connection, address = super().get_request()
+                with relay.lock:
+                    relay.sockets.add(connection)
+                connection.settimeout(relay.remaining())
+                return connection, address
+
+            def process_request_thread(self, request, address):
+                worker = threading.current_thread()
+                with relay.lock:
+                    relay.workers.add(worker)
+                try:
+                    super().process_request_thread(request, address)
+                finally:
+                    with relay.lock:
+                        relay.sockets.discard(request)
+                        relay.workers.discard(worker)
+
+            def handle_error(self, request, address):
+                relay.error = "CLI relay worker failed"
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.server.block_on_close = False
         self.port = self.server.server_port
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
-    def close(self) -> None:
+    def remaining(self, cap: float = 25) -> float:
+        value = self.deadline()-time.monotonic()
+        if value <= 0:
+            raise TimeoutError("CLI relay deadline")
+        return min(cap, value)
+
+    def close(self, end: float) -> dict:
+        def left():
+            value = min(end, self.deadline())-time.monotonic()
+            if value <= 0:
+                raise TimeoutError("CLI relay close deadline")
+            return min(3, value)
+        left()
         self.server.shutdown()
+        with self.lock:
+            connections, workers = list(self.sockets), list(self.workers)
+        for connection in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
         self.server.server_close()
-        self.thread.join(timeout=3)
+        for worker in workers:
+            worker.join(timeout=left())
+        self.thread.join(timeout=left())
+        left()
+        if self.thread.is_alive() or any(w.is_alive() for w in workers) or self.sockets:
+            raise TimeoutError("CLI relay listener/socket/worker did not close")
+        return dict(port=self.port, listener_alive=self.thread.is_alive(), workers_alive=sum(w.is_alive() for w in workers),
+                    sockets=len(self.sockets), error=self.error, finished=time.monotonic())

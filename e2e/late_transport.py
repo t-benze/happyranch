@@ -62,9 +62,10 @@ def publish_launch(path: Path, record: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def provider_command(instruction: dict, binding: dict, stream: Any) -> dict:
+def provider_command(instruction: dict, binding: dict, stream: Any, connection: socket.socket) -> dict:
     """The genuine provider writes its own payload and acknowledges before wait."""
     from thread_provider import redaction_context
+    from provider import remaining
     root = Path(os.environ["E2E_ROOT"])
     secrets = redaction_context(root, None)
     manifest = json.loads((root / "coord/manifest.json").read_text())
@@ -72,18 +73,22 @@ def provider_command(instruction: dict, binding: dict, stream: Any) -> dict:
     if digest(callback.read_bytes()) != manifest["callback_sha256"]:
         raise RuntimeError("E07 callback binding changed")
     parent = instruction["action"] == "e07-parent"
-    if instruction["action"] not in {"e07-parent", "e07-held"} or binding["org"] != "alpha" or binding["agent"] != ("case_manager" if parent else "case_worker"):
+    restart = instruction["action"] == "e07-restart-held"
+    if instruction["action"] not in {"e07-parent", "e07-held", "e07-restart-held"} or binding["org"] != "alpha" or binding["agent"] != ("case_manager" if parent or restart else "case_worker"):
         raise RuntimeError("E07 unexpected finite provider action")
     payload = dict(task_id=binding["task"], session_id=binding["session"], agent=binding["agent"],
                    status="completed", confidence=90,
                    summary="E07 parent delegated" if parent else "E07 cancelled child must not complete")
+    if restart:
+        payload["summary"] = "E07 old boot must not complete"
+        payload["decision"] = dict(action="done", summary=payload["summary"])
     if parent:
         payload["decision"] = dict(action="delegate", agent="case_worker", prompt="E07_CANCEL_CHILD")
     raw = json.dumps(payload, sort_keys=True).encode()
     path = root / "coord" / ("e07-" + digest(raw) + ".json")
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
         file.write(raw)
-    home = root / ("client" if parent else "e07-client")
+    home = root / ("client" if parent else "e07-r-client" if restart else "e07-client")
     argv = [str(callback), "report-completion", "--org", "alpha", "--from-file", str(path)]
     end = instruction["execution_deadline"]
     if time.monotonic() >= end:
@@ -102,11 +107,18 @@ def provider_command(instruction: dict, binding: dict, stream: Any) -> dict:
                   python=sys.executable, entered=entered, execution_deadline=end,
                   acknowledged=time.monotonic())
     publish_launch(launch_path, launch)
+    connection.settimeout(remaining(root, end=instruction["ack_deadline"]))
     stream.write((json.dumps(dict(e07_launch=launch)) + "\n").encode())
+    connection.settimeout(remaining(root, end=instruction["ack_deadline"]))
     stream.flush()
+    remaining(root, end=instruction["ack_deadline"])
     timed_out = False
     try:
-        out, err = child.communicate(timeout=max(0, end - time.monotonic()))
+        available = end-time.monotonic()
+        if available <= 0:
+            raise TimeoutError("E07 held execution deadline")
+        out, err = child.communicate(timeout=available)
+        timed_out = time.monotonic() >= end
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         out, err = exc.stdout or b"", exc.stderr or b""
@@ -172,6 +184,7 @@ class LateTransport:
                     if length < 0 or length > 16384:
                         raise ValueError("request cap")
                     raw = self.rfile.read(length)
+                    relay.remaining()
                     record["request_bytes"] = len(raw)
                     record["request_truncated"] = len(raw) != length
                     if len(raw) != length:
@@ -193,13 +206,17 @@ class LateTransport:
                             raise TimeoutError("abandoned captured request")
                     elif self.command != "GET" or self.path != "/api/v1/orgs":
                         raise ValueError("unaccounted discovery request")
+                    relay.remaining()
                     if selected:
                         relay.forward_count += 1
                         if relay.forward_count != 1:
                             raise ValueError("duplicate forward")
                     upstream_connection = http.client.HTTPConnection("127.0.0.1", relay.upstream, timeout=relay.remaining())
                     record["forwarded"] = time.monotonic()
+                    record["forwarded_upstream"] = relay.upstream
                     # Exact original selected body; never reconstruct or substitute SID.
+                    upstream_connection.connect()
+                    upstream_connection.sock.settimeout(relay.remaining())
                     upstream_connection.request(self.command, self.path, body=raw or None,
                                                 headers={"Authorization": self.headers.get("Authorization", ""),
                                                          "Content-Type": "application/json", "Connection": "close"})
@@ -207,8 +224,11 @@ class LateTransport:
                     with relay.lock:
                         if upstream_socket:
                             relay.sockets.add(upstream_socket)
+                    upstream_socket.settimeout(relay.remaining())
                     response = upstream_connection.getresponse()
+                    upstream_socket.settimeout(relay.remaining())
                     content = response.read(16385)
+                    relay.remaining()
                     safe = public_stream(content, relay.secrets, len(content) > 16384)
                     record.update(status=response.status, response_stream=safe, upstream_complete=time.monotonic())
                     if safe["truncated"] or safe["incomplete"]:
@@ -217,6 +237,7 @@ class LateTransport:
                     # Persist upstream outcome BEFORE observing a dead downstream.
                     if selected:
                         relay.completed.set()
+                    self.connection.settimeout(relay.remaining())
                     peer_gone = bool(select.select([self.connection], [], [], 0)[0]) and self.connection.recv(1, socket.MSG_PEEK) == b""
                     if peer_gone:
                         record["downstream"] = "EOF"
@@ -227,8 +248,11 @@ class LateTransport:
                             self.send_header("Content-Length", str(len(content)))
                             self.send_header("Connection", "close")
                             self.end_headers()
+                            self.connection.settimeout(relay.remaining())
                             self.wfile.write(content)
+                            self.connection.settimeout(relay.remaining())
                             self.wfile.flush()
+                            relay.remaining()
                             record["downstream"] = "delivered"
                         except (BrokenPipeError, ConnectionResetError):
                             record["downstream"] = "peer-gone"
@@ -320,7 +344,15 @@ class LateTransport:
             raise RuntimeError("E07 actual client socket provenance missing")
         return dict(process=proc, tcp=tcp, fds=fds, sampled=time.monotonic())
 
-    def close(self) -> dict:
+    def close(self, end: float | None = None) -> dict:
+        end = min(self.deadline, end if end is not None else self.deadline)
+        def left():
+            value = end-time.monotonic()
+            if value <= 0:
+                raise TimeoutError("E07 close deadline")
+            return min(1, value)
+        left()
+        self.server.block_on_close = False
         self.stop.set()
         self.release.set()
         with self.lock:
@@ -332,11 +364,12 @@ class LateTransport:
                 connection.close()
         self.server.shutdown()
         self.server.server_close()
-        self.thread.join(timeout=max(0, min(1, self.deadline - time.monotonic())))
+        self.thread.join(timeout=left())
         with self.lock:
             workers = list(self.workers)
         for worker in workers:
-            worker.join(timeout=max(0, min(1, self.deadline - time.monotonic())))
+            worker.join(timeout=left())
+        left()
         return dict(port=self.port, listener=self.listener, listener_alive=self.thread.is_alive(),
                     workers_alive=sum(t.is_alive() for t in workers), sockets=len(self.sockets),
                     errors=list(self.errors), forward_count=self.forward_count, at=time.monotonic())

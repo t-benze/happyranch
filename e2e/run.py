@@ -23,7 +23,7 @@ from owned import Owned, identity
 BASELINE_ARTIFACTS = ["observations.json", "browser-events.json", "daemon.txt",
                       "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
                       "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png", "e07.json", "e07-prefix.json", "launch-witnesses.jsonl",
-                      "e07-parent.png", "e07-child.png", "e07-list.png"]
+                      "e07-parent.png", "e07-child.png", "e07-list.png", "e07-c-prefix.json", "e07-restart.json", "e07-predeath.json", "e07-restart.png"]
 
 
 def arm_deadline(deadline: float) -> None:
@@ -66,6 +66,25 @@ def validate_timing(row: dict) -> None:
                 or phase["allowance_seconds"] != phase["deadline"] - phase["entered"]
                 or not started <= phase["entered"] <= phase["finished"] <= phase["deadline"]):
             raise ValueError("inconsistent command timing")
+
+    if row["exercise"] == "baseline":
+        scenario = next(p for p in row["phases"] if p["name"] == "scenarios")
+        allocation, normal = row["allocation"], row["normal_close"]
+        D = scenario["deadline"]
+        if (allocation["scenario_deadline"] != D or allocation["prefix_end"] != D-150
+                or not scenario["entered"] <= allocation["initialized"] <= allocation["prefix_finished"] < D-150):
+            raise ValueError("missing complete setup/prefix reservation")
+        if [p["name"] for p in allocation["stages"]] != ["C", "R"]:
+            raise ValueError("missing downstream stage")
+        for phase,cap,reserve in zip(allocation["stages"],(50,75),(100,25)):
+            if (phase["admitted"] is not True or phase["end"] != phase["entered"]+cap
+                    or phase["downstream"] != reserve or phase["end"]+reserve >= D):
+                raise ValueError("late/incomplete full downstream admission")
+        if (normal["complete"] is not True or normal["failures"] or normal["exit"] != 0
+                or normal["end"] != min(normal["entered"]+25,D)
+                or not normal["closed"] <= normal["evidence_finished"] < normal["end"]
+                or normal["evidence_finished"] > scenario["finished"]):
+            raise ValueError("missing normal close/evidence; outer cleanup is not credit")
 
 
 def daily_admission(source: Path) -> dict:
@@ -279,7 +298,7 @@ def main() -> int:
                 redaction_context = context
             if (root / "scenario.json").exists():
                 result = json.loads((root / "scenario.json").read_text())
-                receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07") if k in result})
+                receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07", "allocation", "normal_close") if k in result})
             for path in (root / "raw").glob("*"):
                 if path.suffix in {".txt", ".json", ".jsonl"}:
                     staged[path.name] = redact(path.read_text(errors="replace")).encode()

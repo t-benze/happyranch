@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import signal
 import subprocess
@@ -30,6 +31,8 @@ class Owned:
         self.stop = threading.Event()
         self.errors: list[str] = []
         self.reaped: list[dict] = []
+        self.collisions: list[dict] = []
+        self.restart_request = None
         if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
             raise RuntimeError("runner subreaper unavailable")
         descriptor = os.pidfd_open(os.getpid())
@@ -44,7 +47,11 @@ class Owned:
         start = identity(pid)
         if start is not None:
             with self.lock:
-                self.pids.setdefault(pid, start)
+                previous = self.pids.get(pid)
+                if previous is not None and previous != start:
+                    self.collisions.append(dict(pid=pid, previous=previous, observed=start, at=time.monotonic()))
+                    raise RuntimeError("owned PID number reused")
+                self.pids[pid] = start
 
     def register_provider(self, pid: int) -> dict:
         # A socket peer is not authority to signal arbitrary processes. Verify
@@ -74,6 +81,10 @@ class Owned:
 
     def sample(self) -> None:
         with self.lock:
+            for pid,start in list(self.pids.items()):
+                observed = identity(pid)
+                if observed is not None and observed != start:
+                    self.add(pid)  # Preserve the collision and fail before any signal.
             provider_file = self.root / "owned.json"
             if provider_file.exists():
                 import json
@@ -117,9 +128,100 @@ class Owned:
         while not self.stop.wait(0.02):
             try:
                 self.sample()
+                self.restart_close()
             except Exception as exc:
                 self.errors.append(f"{exc!r}\n{traceback.format_exc()}")
                 return
+
+    def restart_close(self) -> None:
+        """One R-only request, targeted adopted-child waits; never reap controller.
+
+        The controller supplied complete live identity records before B death.
+        Every signal checks this runner's cumulative ownership and pidfd identity.
+        ECHILD is an observation of another parent, never a claimed wait status.
+        """
+        path = self.root / "coord/r-close-request.json"
+        if not path.exists():
+            return
+        request = json.loads(path.read_text())
+        destination = self.root / "coord/r-close-receipt.json"
+        if self.restart_request is not None:
+            if request != self.restart_request:
+                raise RuntimeError("R close request changed")
+            return
+        self.restart_request = request
+        record = dict(request=request, owner_pid=os.getpid(), owner_start=identity(os.getpid()),
+                      entered=time.monotonic(), processes=[], signals=[], waits=[], samples=[], ok=False)
+        def save():
+            temporary = destination.with_suffix(".tmp")
+            temporary.write_text(json.dumps(record))
+            temporary.replace(destination)
+        save()
+        try:
+            if set(request) != {"action", "processes", "daemon", "controller", "term_end", "end"} or request["action"] != "E07-R-only-close":
+                raise RuntimeError("invalid R close request")
+            rows = request["processes"]
+            if not rows or len({r["pid"] for r in rows}) != len(rows):
+                raise RuntimeError("ambiguous R close identities")
+            if not time.monotonic() < request["term_end"] < request["end"]:
+                raise TimeoutError("R closure not admitted")
+            forbidden = {os.getpid(), request["controller"]["pid"], request["daemon"]["pid"]}
+            for row in rows:
+                pid = row["pid"]
+                if pid in forbidden or self.pids.get(pid) != row["start"]:
+                    raise RuntimeError("R close target not previously owned")
+                observed = identity(pid)
+                if observed is not None and observed != row["start"]:
+                    raise RuntimeError("R close numeric PID reused")
+                if observed is not None:
+                    env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+                    # A zombie no longer has readable environment bytes; its
+                    # authenticated pre-death identity is still checked above.
+                    stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                    if stat[0] != "Z" and f"E2E_ROOT={self.root}".encode() not in env:
+                        raise RuntimeError("R target ownership marker lost")
+                record["processes"].append(dict(row, observed_start=observed))
+            sent = set()
+            while time.monotonic() < request["end"]:
+                sig = signal.SIGTERM if time.monotonic() < request["term_end"] else signal.SIGKILL
+                sample = dict(at=time.monotonic(), identities=[])
+                for row in rows:
+                    pid, start = row["pid"], row["start"]
+                    observed = identity(pid)
+                    if observed is not None and observed != start:
+                        raise RuntimeError("R target PID reused during closure")
+                    if observed is not None:
+                        stat = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                        parent = int(stat[1])
+                        if (pid, sig) not in sent:
+                            self.signal(pid, sig)
+                            sent.add((pid, sig))
+                            record["signals"].append(dict(pid=pid, start=start, signal=int(sig), parent=parent, at=time.monotonic()))
+                        try:
+                            waited, status = os.waitpid(pid, os.WNOHANG)
+                        except ChildProcessError:
+                            record["waits"].append(dict(pid=pid, parent=parent, outcome="ECHILD", at=time.monotonic()))
+                        else:
+                            if waited:
+                                if parent != os.getpid():
+                                    raise RuntimeError("R wait parent attribution changed")
+                                receipt = dict(pid=pid, start=start, parent=parent, wait_status=status,
+                                               exit=os.waitstatus_to_exitcode(status), outcome="reaped", at=time.monotonic())
+                                record["waits"].append(receipt)
+                                self.reaped.append(receipt)
+                    sample["identities"].append(dict(pid=pid, observed_start=identity(pid)))
+                record["samples"].append(sample)
+                save()
+                if all(row["observed_start"] is None for row in sample["identities"]):
+                    record.update(ok=True, finished=time.monotonic())
+                    save()
+                    return
+                self.stop.wait(min(.02, max(0, request["end"]-time.monotonic())))
+            raise TimeoutError("R targeted closure deadline")
+        except Exception as exc:
+            record.update(error=type(exc).__name__, finished=time.monotonic())
+            save()
+            raise
 
     def signal(self, pid: int, sig: int) -> None:
         if identity(pid) != self.pids.get(pid):
@@ -170,4 +272,4 @@ class Owned:
         absent = not survivors and not any(groups.values()) and all(
             "LoadState=not-found" in row["stdout"] for row in units.values())
         return dict(ok=absent and not self.errors and not self.thread.is_alive(), survivors=survivors, units=units, groups=groups,
-                    errors=self.errors, identities=self.pids, reaped=self.reaped, watcher_stopped=not self.thread.is_alive(), seconds=time.monotonic() - started)
+                    errors=self.errors, identities=self.pids, reaped=self.reaped, collisions=self.collisions, watcher_stopped=not self.thread.is_alive(), seconds=time.monotonic() - started)
