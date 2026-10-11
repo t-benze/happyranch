@@ -247,14 +247,17 @@ def main() -> int:
             signal.signal(sig, signal.SIG_IGN)
         staged: dict[str, bytes] = {}
         token = ""
+        redaction_context: list[str] = []
 
         def redact(text: str) -> str:
             if not token:
                 raise ValueError("redaction context unavailable")
-            return text.replace(token, "[REDACTED]")
+            for secret in [token, *redaction_context]:
+                text = text.replace(secret, "[REDACTED]")
+            return text
 
         def collect_evidence() -> None:
-            nonlocal token
+            nonlocal token, redaction_context
             if not root or not root.exists():
                 return
             # Capture once: partial removal must never erase trusted context.
@@ -267,6 +270,12 @@ def main() -> int:
                     return
             if not token:
                 return  # No raw text/receipt is safe without established context.
+            context_path = root / "coord/redaction-context.json"
+            if context_path.exists():
+                context = json.loads(context_path.read_text())
+                if not isinstance(context, list) or not context or not all(isinstance(s, str) and s for s in context) or token not in context:
+                    raise ValueError("invalid retained redaction context")
+                redaction_context = context
             if (root / "scenario.json").exists():
                 result = json.loads((root / "scenario.json").read_text())
                 receipt.update({k: result[k] for k in ("variants", "scenario_phases") if k in result})

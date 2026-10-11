@@ -3,7 +3,7 @@
 This independently authored standalone lane implements the accepted E02/E03/E06
 case design (`TASK-10476`, SHA256
 `bc4c4c9d50a73ce45085ed6b5edcae572cdf75e8e26e3b583e6b7728037fd564`).
-The bounded Pause increment below follows that original baseline closure.
+The bounded Pause and E04 increments below follow that original baseline closure.
 Source and design acceptance do not establish behavioral PASS. Actual disposable
 runner results, authoring proof, independent review/QA and check enforcement are
 separate delivery obligations.
@@ -94,7 +94,7 @@ new daily baseline evidence remain PENDING until observed from the schedule.
 
 Target is 600s, action cutoff720s, cleanup reserve60s, evidence reserve120s,
 hard cap900s including dependency installation and build. Baseline scenarios
-(bootstrap, baseline, Pause/restart, controller close/evidence together) have
+(bootstrap, baseline, Pause/restart, E04, controller close/evidence together) have
 at most480s; each other command and cancellation scenarios retain240s.
 The launcher computes `min(command entry + cap, original start + 720)` once
 before spawn, passes that exact end to the controller and uses it for its own
@@ -139,7 +139,7 @@ SHA, failed jobs and failed cleanup; these controls are not product evidence.
 This launcher correction is source delivery only. The illustrative future
 combined375s estimate has105s nominal slack under480 only when global remaining
 time permits; no runtime fit, signal/timer/cleanup behavior or E04/E05 assertion
-validation has been observed. Current42 variants remain unchanged. New deliberate
+validation has been observed. The baseline/Pause42 variants remain at their original boundaries; the E04 prefix below adds six. New deliberate
 defects, RED/restoration/GREEN and repetitions remain UNEXECUTED/unauthorized.
 
 ## Accepted case record
@@ -233,9 +233,10 @@ actual CLI callback sources keep their fences and are not automated merge gates.
 Independent full review, scoped QA, normal hooks and manager guarded merge remain
 required. No old unit or full historical G-run allocation is renewed.
 
-Jobs approval/rejection/failure/single-resume, threads/replay, cancellation/late
-callback, restart windows beyond the bounded Pause increment below, PR1014 compatibility and authentic
-memory thresholds remain root-owned uncovered work. Provider hold and response
+The E04 prefix below authors approval/rejection/exit7/timeout and both fan-in
+orders; their behavior remains unproven. Wider jobs, threads/replay, cancellation/late
+callback, restart windows beyond the bounded Pause increment, PR1014 compatibility
+and authentic memory thresholds remain root-owned uncovered work. Provider hold and response
 loss in the baseline do not establish restart/recovery. No merge or deployment follows from a
 successful run. Deletion PR1024 is merged at
 `5e87e778c6968338a12bd5cd65d461e5699836be`; this lane preserves that deletion and
@@ -260,7 +261,7 @@ Daily summary reports actual health/source SHA, exact artifact names and
 failure/missing evidence; each artifact retains seven days. Missing/failed/
 skipped/wrong-source/wrong-version cells, incomplete diagnostics/artifacts and
 unknown cleanup fail health. Static merge checks offer no equivalent behavioral
-coverage and delayed detection remains a risk. Later jobs/threads/product
+coverage and delayed detection remains a risk. Wider jobs/threads/product
 cancellation/late callbacks/actual daemon restart increments remain separately
 reviewable root-owned daily work, unproven until real evidence. General
 integration is SKIPPED THR243seq42. Archived THR297 Build11 remains FAILURE
@@ -304,12 +305,11 @@ the accepted case map stay retired; none are recreated, imported or executed.
 | 5 P01b separate drain Resume | `Pause.resume-during-drain`, `Pause.drain-final`: separate root/worker; Pause then Resume before worker callback → original PID/start/SID stays alive, hold clears; normal worker completion → exactly one reviewer/M2 path with 4 authentic results and 3 tasks. No restart here. | Resume kills/relaunches worker, callback duplicated, chain wakes manager early or diverges from restart journey. | `scenarios.journey` has no control while its worker is live; distinct from group4's drained restart. |
 | 6 P16/P18 browser/readback/terminal | `Pause.overview-readonly`, `Pause.browser-pausing-en`, `Pause.browser-pausing-zh`, `Pause.browser-paused-en`, `Pause.browser-paused-zh`, `Pause.terminal-denied`: shipping Chromium responses at1440×900, user locale selector, root list/detail state/blocker/Resume, genuine child inherited/root link with no controls, alpha overview/read-only counts and restart limitation, real reload preserves generation1. Terminal browser retains completed and no Pause/Resume; both CLI controls409/task_terminal with unchanged state. `Pause.exact-closure` joins every launch/result/host count. | Synthetic-only UI masks transport drift, child control appears, locale/reload mutates state, GET queues work, missing org isolation/count honesty or terminal revival. | Retained Web `pause.test.tsx`, `pause-overview.test.tsx` and baseline Browser have synthetic projected/UI transport and ordinary live lifecycle evidence; missing actual daemon hold/restart bilingual readback. |
 
-### Restart/count phase handoff to later E04 owner
+### Preserved Pause restart/count boundary
 
-No E04/job scenario or receipt-store reset is added. Preserve these literal
-boundaries when integrating after this PR merges; rebase against the final
-source and reassess the combined budget, rather than interpreting a process-local
-receipt reset as lost evidence. Host receipts expose aggregate/recent summaries,
+The E04 prefix below begins after these unchanged literal Pause boundaries.
+The named process-local receipt reset retains the old boot archive; it is not
+lost evidence or an arbitrary counter rebaseline. Host receipts expose aggregate/recent summaries,
 not session IDs: serial phase deltas, exact admitted/released/published counts,
 durable session audits and PID/start disappearance supply the join. Nothing
 claims a receipt identity field that the API does not expose.
@@ -355,3 +355,126 @@ feature-completion acceptance. Full independent review, source/static scoped QA,
 exact-head two-lint receipts, normal hooked publication and manager guarded merge
 remain separate delivery gates. No production schema/auth/permission/enforcement,
 registry/shared stub, dependency, cadence/cap or cleanup-machinery changes.
+
+## E04 jobs prefix (TASK-10686 / THR-291)
+
+The daily controller now runs the unchanged baseline23, then Pause19, then
+`jobs.exercise`'s six serial variants: **48 authored variants**. E04 source
+reuses accepted design SHA256
+`14cf2584b91514bfaee04e59f23f862429e2c865179c298167e88df7b9b7cdf1`
+and composition SHA256
+`68f4a10b8822fdf109cea03949d1babb1105210004184bb98a2486294f3e1eb9`.
+PR1036's merged limits supersede the old designs' internal240 baseline limit.
+The common controller/watchdog deadline is min(entry+480, original720);
+per-case limits20/15/20/25/25/25 and read/socket caps only shorten it.
+Other commands/diagnostics240, cleanup60/export120, target600/hard900 and
+hosted15min remain. Fit, closure and sanitation behavior are UNPROVEN.
+
+The preserved baseline closes at9 providers/alpha6tasks8results/beta1/1.
+Pause archives bootA12, binds the actual same-files old/new daemon identity,
+then closes bootB6/cumulative18 with alpha13tasks17results/beta1/1.
+E04 before/S1/final bootB triples are(6,7,8),(8,9,10),(10,11,12),
+(12,13,14),(14,15,16),(16,17,18). Final cumulative30=A12+B18;
+alpha19tasks29results/beta1task1result, eight jobs/seven script starts:
+three completed0, three completed7, one rejected, one failed/timeout/-9.
+E05's53/37/B25 is future scope, not this prefix.
+
+For every row below: level is real public CLI/browser/durable E2E;
+**test-only production seam: NO**. Only the external owned provider and
+submitted deterministic Python scripts gain synchronization. No DB seed,
+internal enqueue, fake SID, production import, registry bypass or product edit.
+Each credible mutation is an unexecuted sensitivity proposal, not authorization.
+
+| Named case / contract and action → literal oracle | Credible regression | Nearest coverage and missing seam |
+| --- | --- | --- |
+| `E04.approve-exit0`: provider CLI submits review-required cap30, blocks/exits/parks; real browser Approve & run after S1 settlement; owned script released after running readback → completed/0/NULL, exact E04_OK streams, founder audits; natural live S2 reads then final callback/exit/done. | Premature run before review; lost terminal wake. | Baseline task completion does not submit or run a job. |
+| `E04.reject`: same real submit/block, browser Reason=E04_REJECTED_BY_REVIEW → rejected/reviewer founder, all execution fields NULL, no sentinel/peer/files at submit/park/dialog/final drain; one truthful natural S2/done. | Rejection runs script or omits wake. | Baseline has no rejection; empty output alone cannot prove no launch. |
+| `E04.completed-exit7`: real cap30 Python exits7 → completed/7/NULL, exact E04_EXIT7 streams, completed audit; CLI/receipt/browser and final summary explicitly preserve nonzero. | Normalize exit7 to0 or label natural nonzero failed. | Ordinary provider exits do not cover job runner return codes. |
+| `E04.failed-timeout`: real cap5 direct script ignores TERM and is never controller-released → product timeout/KILL, failed/timeout/-9, exact streams, duration5–17s, PID/start gone, empty PGID and socket EOF before outer cleanup, one natural S2. | Omit cap forwarding, discard reason, or accept terminal row without process closure. | Launcher TERM/INT diagnoses harness cleanup, not product job timeout. |
+| `E04.two-jobs-A-first`: A completed0 while B remains pending across durable/audit/CLI/browser and two +0 settled checkpoints; B then completed7 → one S2, both literal outcomes, two results/count2, no third provider. | Coordinated all→any producer/admission predicate or lost claim fence. | Single-job wake and ordinary child joins do not cover job fan-in. |
+| `E04.two-jobs-B-first`: B completed7 first, A pending through the same checkpoints, then A completed0 → identical final truth with reverse triggering-job ID. | Asymmetric terminal ordering, premature wake or duplicate return. | A-first alone cannot establish order symmetry. |
+
+`provider.jobs_command` invokes the bound CLI as a genuine provider child,
+using the real issued task/session. S1's final CLI action is blocked callback;
+S2 runs show/receipt/output/tail/wait, then exactly one completed/done callback
+as its final CLI action and naturally exits. Read-command exit0 never means
+job success. `Controller.provider_cli` retains command/argv/child PID-start/
+parent PID/source/interpreter/payload/HTTP receipts. Existing org discovery is
+retained and reconciled without assuming one request per read. For each of all
+six variants, `validate_e04` requires the shipping method, exact alpha/job path,
+query (including genuine S2 binding), literal HTTP200 and actual body: human
+show GET detail, JSON show/output GET receipt, tail GET and wait POST. It
+compares full detail/wait rows (including the captured output cap), the closed
+receipt identity and exact output/tail bytes against raw durable evidence;
+CLI JSON/text must agree with those responses. Discovery-only or error wire
+cannot satisfy a job read. `jobs.exercise` and the aggregate both require the
+first human-show line to equal returned ID, literal status and created timestamp;
+a completed/failed word in the title cannot substitute. Independent literal
+exit7, timeout/-9/reason and rejection-reason lines remain required.
+
+The live-S2 frame now retains source, actual provider identity/PID-start and
+snapshot entry/finish times. The aggregate requires one in-progress task bound
+to S2, exactly the unchanged blocked S1 result, literal terminal job rows and
+the natural S1-consumption → wake → S2-start audit chain, with no S2 end/result.
+Its snapshot must precede all actual S2 reads and the final callback, and its
+result/audit rows must reconcile with the final durable snapshot. Missing or
+contradictory live frames fail. Completed-only
+`Store.result` is not used for S1; `Store.jobs_parked` and `jobs.final_task`
+inspect literal blocked/completed results and original historical wait IDs.
+
+`jobs.pending`, `run_script`, `terminal_oracle`, `final_task`, browser job methods
+and the six records map actions to literal independent SQLite/file/process/UI
+oracles. Script tokens and hashes are distinct from genuine task/SID/PID joins.
+`jobs.anchor` retains two fresh settled public metrics projections and all
+intermediate samples, with exact admission/release/publication counts, ordered
+newest-first tails including duplicates, no eviction and no unexplained reset.
+S1 fully consumes/parks/publishes/releases before browser mutation; no S2 host
+receipt is required while S2 is still live. `Controller.observe_providers`
+continuously records socket readiness and executable witness counts across
+bootstrap, both boots, inter-case gaps and final drain. Its failure or missing
+observations fail health. This is serial causal attribution under the closed
+synthetic workload; host summaries contain no SID/PID/unique receipt identity.
+
+Evidence/control authoring records (all four answers; production seam NO):
+
+| Named fixture/control or consumer | Contract / assertion mapping | Credible regression; nearest coverage/gap |
+| --- | --- | --- |
+| Provider jobs protocol + wrapper child witness | `jobs_command`/`provider_cli` order absolute child/exchange deadlines with one-second receipt delivery room, append partial timeout evidence before refusal, bind actual child PID/parent/argv/source/SID and enforce block/final last-CLI rule. | Equal caller/child timeouts lose streams/identity; controller impersonation or post-final CLI. Exit-only provider lacks these command/evidence boundaries; persistence and sensitivity are unexecuted. |
+| Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Launch before approval, wrong peer, controller substituting timeout; baseline provider socket is a different process family. |
+| Passive observer + boot/window records | `anchor`, passive Pause archive hooks, unchanged baseline/Pause boundary assertions and `aggregate.validate_e04` recompute A0→9→12/B0→6→18, serial+1/+1 and pair+0, full tails/counters and observed source identities. | Missing/reset/evicted window, extra attempt without provider, duplicate summaries deduplicated, receipt-before-S1/after-S2 confusion; old aggregate only checked metadata. |
+| Browser jobs fixture | `job_action` captures actual unchanged-cap body, status, dialog-open no-launch; `job_terminal`/`jobs_waiting` read fresh shipping detail, output, Recall and screenshots. | Wrong dialog/action, stale outcome or exit7 laundered; existing Browser covers only ordinary tasks. |
+| Actual-content daily aggregate | `validate_e04` reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, five method/path/query/HTTP200/body/stdout/durable read joins, source-timed live-S2/blocked-S1 chronology and exact human-show first header; rejects empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
+| Existing metadata `controls` fixture with48 manifest entries | Existing `validate` controls still exercise missing/failed/skip/source/cleanup/timing envelope, now against the48-ID manifest. They are explicitly metadata-only; daily main additionally requires actual-content validation. | An omitted E04 name slips past stale manifest; old42-ID fixture covered baseline/Pause only. No control was executed for this delivery. |
+| Failure export / redaction context | `Controller.sanitize` + private retained old/new bearer context feed `run.collect_evidence/redact` before observations/scenario/browser-event/failure export; PR1036 unknown-context withholding and reserves remain. | Old boot secret survives final-token-only redaction, or failure loses partial chain; original exporter retained only final bearer. |
+
+Consumers are `Controller.mark/durable/evidence` → observations.json and
+scenario.json → run.py result.json/sanitized export → existing five seven-day
+artifacts → aggregate.main/validate_e04. Partial records and CLI attempts are appended before
+success marks. R1 uses a single absolute exchange deadline set by the controller
+before send: min(now+10, case end, common scenario end). The provider's absolute
+subprocess deadline is one second earlier; manifest/payload/spawn work consumes
+that same allowance, and communicate uses only its remaining time. A call with
+at most one second remaining refuses before dispatch. Socket send/read consume
+the original exchange end, never a fresh ten seconds. On subprocess timeout,
+the provider returns actual child identity and partial streams with explicit
+timed_out/non-success before raising; the controller appends that receipt before
+asserting success. The one-second delivery room covers serialization/transport
+inside the existing cap, not cleanup/export reserves. Existing sanitized
+finally export carries the partial receipt and executable witnesses, even
+without a final case record. Unknown secret context still withholds unsafe text;
+OS scheduling/transport loss or watchdog termination is not a persistence or
+runtime-fit guarantee, and delivery/sanitation proof remains UNEXECUTED. Cancellation uses the
+preserved exit-only provider and independent diagnostic shape; it does not
+require an E04 case or its content validator. The outer Owned mechanics and
+all old/current units remain unchanged; recorded job peers join its existing
+PID ledger without discarding earlier peers. Exhausted cleanup fails visibly.
+
+Delivery verification is SOURCE/CONFIGURATION/STATIC ONLY. New cases, controls,
+assertion sensitivity, timing fit, cleanup/sanitation, all protected12 deliberate
+mutations, RED/restoration/GREEN and repetitions remain **MISSING/UNEXECUTED**.
+No harness/product/provider/browser/job execution or new aggregate control run
+is authorized here. First daily remains PENDING per TASK10555/JOB4257 owner;
+that collector is untouched. General integration SKIPPED THR243seq42; Python
+units RETIRED. Daily19UTC, Python3.12/3.13/3.14 plus TERM3.12/INT3.14 and only
+Source Boundary Lint/Web Lint(Node24) merge contexts remain. No deployment,
+Jenkins, compatibility/authentic-memory PASS, E05 or program completion follows.
