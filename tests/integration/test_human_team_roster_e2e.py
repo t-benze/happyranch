@@ -137,9 +137,16 @@ def record_writer(event, **fields):
     target=receipt.with_name(receipt.name+'.'+event)
     value={'event':event,'pid':os.getpid(),'thread':threading.get_ident(),
         'source_sha':revision,'code_marshal_version':2,'file_sha256':hashlib.sha256(writer_data).hexdigest(),**fields}
-    fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
-    with os.fdopen(fd,'w') as out:
-        json.dump(value,out,sort_keys=True);out.flush();os.fsync(out.fileno())
+    # Readers admit a complete event only. Linking a flushed private staging
+    # file preserves the old O_EXCL refusal for an already published event.
+    staging=target.with_name(target.name+'.pending-'+str(os.getpid()))
+    fd=os.open(staging,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    try:
+        with os.fdopen(fd,'w') as out:
+            json.dump(value,out,sort_keys=True);out.flush();os.fsync(out.fileno())
+        os.link(staging,target,follow_symlinks=False)
+    finally:
+        staging.unlink()
 def selected_identity(orch,task_id,result_id):
     with orch._db._lock:
         rows=orch._db._conn.execute('SELECT * FROM task_completion_recoveries WHERE task_id=?',(task_id,)).fetchall()
@@ -407,7 +414,8 @@ def observe(frame,event,arg):
                 and writer_state and 'writer' not in writer_state and local['task_id']==writer_state['identity']['task']):
             orch=writer_state['orch']
             writer_state['writer']=asyncio.get_running_loop().create_task(held_writer(orch._workflow_drafts.org))
-        elif (extra[1]=='_wire_then_start_workers' and event=='return' and 'no_job_reentry' in cut and not writer_state):
+        elif (extra[1]=='_wire_then_start_workers' and event=='return' and 'no_job_reentry' in cut
+                and cut!='loss-no_job_reentry-cancel' and not writer_state):
             state=local['state'];org=state.get_org('test');orch=org.orchestrator
             owners=org.db.get_consumed_task_completion_recovery_owners()
             assert len(owners)==1 and owners[0]['status']=='failed'
@@ -538,6 +546,45 @@ with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) a
         accepted = conn.execute('SELECT origin_session_id,recovery_session_id,provider_session_id,state FROM task_completion_recoveries WHERE task_id=?', (T,)).fetchone()
         if accepted is None:
             assert prior == 0
+            # Recovery may report/observe only. Prepare genuine task-owned jobs
+            # while this original ordinary child session still owns submission.
+            if parent is not None and c4_cut is not None and ('after_job_drain' in c4_cut or c4_cut.startswith('native_drain_')):
+                # Genuine task-owned runner jobs, separate from the blocked result's empty
+                # wait list. The original failure is retained and one opaque job drains.
+                import time
+                running_script = ("trap '' TERM; " if c4_cut.startswith('native_drain_') else '') + 'echo owned-running; while true; do sleep 1; done'
+                for suffix, script in [('prior', 'echo retained-failure >&2; sleep 30'), ('running', running_script)]:
+                    request = pathlib.Path(workspace) / ('job-' + suffix + '-' + S + '.json')
+                    request.write_text(json.dumps({'task_id': T, 'session_id': S, 'title': 'C4-' + suffix,
+                        'script': script, 'interpreter': 'bash', 'review_required': False, 'persistent': suffix == 'running',
+                        'max_runtime_seconds': 1 if suffix == 'prior' else 180}))
+                    actual = subprocess.run(['happyranch', 'jobs', 'submit', '--org', org, '--from-file', str(request)],
+                        capture_output=True, text=True, timeout=30)
+                    with pathlib.Path(str(witness) + '.job.calls.jsonl').open('a') as out:
+                        out.write(json.dumps({'command': ['happyranch', 'jobs', 'submit', '--org', org, '--from-file', str(request)],
+                            'exit': actual.returncode, 'stdout': actual.stdout, 'stderr': actual.stderr,
+                            'task': T, 'session': S, 'agent': agent}) + '\\n')
+                    assert actual.returncode == 0, actual.stderr
+                    job_ids = re.findall(r'JOB-[0-9]+', actual.stdout)
+                    assert len(set(job_ids)) == 1, actual.stdout
+                    deadline = time.monotonic() + 30
+                    while time.monotonic() < deadline:
+                        with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
+                            job = observer.execute('SELECT status,exit_code,stderr_head FROM jobs WHERE id=?', (job_ids[0],)).fetchone()
+                        if job and job[0] == ('failed' if suffix == 'prior' else 'running'): break
+                        time.sleep(0.05)
+                    assert job and job[0] == ('failed' if suffix == 'prior' else 'running'), job
+                    if suffix == 'prior': assert job[1] != 0 and 'retained-failure' in job[2]
+                    if suffix == 'running' and c4_cut.startswith('native_drain_'):
+                        # The real shell installed its TERM behavior before admission to
+                        # the native drain. Status='running' alone is insufficient.
+                        deadline = time.monotonic() + 10
+                        while time.monotonic() < deadline:
+                            with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
+                                log_path = observer.execute('SELECT stdout_path FROM jobs WHERE id=?', (job_ids[0],)).fetchone()[0]
+                            if log_path and 'owned-running' in pathlib.Path(log_path).read_text(): break
+                            time.sleep(0.01)
+                        assert log_path and 'owned-running' in pathlib.Path(log_path).read_text()
             sys.exit(0)  # genuine Codex clean omission; native runner claims recovery
         assert accepted[1] == S and accepted[0] != S and accepted[2] and accepted[3] == 'claimed', (accepted, S)
         prompt = os.environ['HAPPYRANCH_TEST_ACTUAL_PROMPT']
@@ -618,39 +665,6 @@ else:
     payload.update(status=status, verdict=verdict, summary='child outcome')
 file = pathlib.Path(workspace) / ('completion-' + S + '.json')
 file.write_text(json.dumps(payload))
-if parent is not None and c4_cut is not None and ('after_job_drain' in c4_cut or c4_cut.startswith('native_drain_')):
-    # Genuine task-owned runner jobs, separate from the blocked result's empty
-    # wait list. The original failure is retained and one opaque job drains.
-    import time
-    running_script = ("trap '' TERM; " if c4_cut.startswith('native_drain_') else '') + 'echo owned-running; while true; do sleep 1; done'
-    for suffix, script in [('prior', 'echo retained-failure >&2; sleep 30'), ('running', running_script)]:
-        request = pathlib.Path(workspace) / ('job-' + suffix + '-' + S + '.json')
-        request.write_text(json.dumps({'task_id': T, 'session_id': S, 'title': 'C4-' + suffix,
-            'script': script, 'interpreter': 'bash', 'review_required': False, 'persistent': suffix == 'running',
-            'max_runtime_seconds': 1 if suffix == 'prior' else 180}))
-        actual = subprocess.run(['happyranch', 'jobs', 'submit', '--org', org, '--from-file', str(request)],
-            capture_output=True, text=True, timeout=30)
-        assert actual.returncode == 0, actual.stderr
-        job_ids = re.findall(r'JOB-[0-9]+', actual.stdout)
-        assert len(set(job_ids)) == 1, actual.stdout
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
-                job = observer.execute('SELECT status,exit_code,stderr_head FROM jobs WHERE id=?', (job_ids[0],)).fetchone()
-            if job and job[0] == ('failed' if suffix == 'prior' else 'running'): break
-            time.sleep(0.05)
-        assert job and job[0] == ('failed' if suffix == 'prior' else 'running'), job
-        if suffix == 'prior': assert job[1] != 0 and 'retained-failure' in job[2]
-        if suffix == 'running' and c4_cut.startswith('native_drain_'):
-            # The real shell installed its TERM behavior before admission to
-            # the native drain. Status='running' alone is insufficient.
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                with sqlite3.connect((root / 'happyranch.db').as_uri() + '?mode=ro', uri=True) as observer:
-                    log_path = observer.execute('SELECT stdout_path FROM jobs WHERE id=?', (job_ids[0],)).fetchone()[0]
-                if log_path and 'owned-running' in pathlib.Path(log_path).read_text(): break
-                time.sleep(0.01)
-            assert log_path and 'owned-running' in pathlib.Path(log_path).read_text()
 command = ['happyranch', 'report-completion', '--org', org, '--from-file', str(file)]
 actual = subprocess.run(command, capture_output=True, text=True, timeout=30)
 with pathlib.Path(str(witness) + '.callback.calls.jsonl').open('a') as out:

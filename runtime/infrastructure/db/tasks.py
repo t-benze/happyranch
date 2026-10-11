@@ -2272,7 +2272,8 @@ class TasksMixin:
         logs = self.get_audit_logs(task_id)
         starts, bound, unbound, reviews = [], [], [], []
         informational = {"session_end", "progress", "zombie_flagged", "zombie_cleared",
-                         "task_attachment_materialized", "executor_throttle", "task_scratch_reclaimed", "portability_reconciled"}
+                         "task_attachment_materialized", "executor_throttle", "task_scratch_report",
+                         "task_scratch_reclaimed", "portability_reconciled"}
         for log in logs:
             payload = log.get("payload")
             if not isinstance(payload, dict):

@@ -718,3 +718,19 @@ its first observed scheduled execution remains PENDING. No PR/manual/ad hoc
 execution, causal/repetition allocation or held M proof follows. Historical
 feature failures, in-flight run38104839795 and all held proof remain authentic;
 source inspection, scoped QA and independent review cannot claim behavioral PASS.
+
+
+The original PR1022 L4 archive at `18e01cfa` retains parent/command exit124,
+45 failed calls, 24 passed calls, two setup errors and one interrupted setup-only
+case; it is not complete 224-case proof. Its task teardown emitted the existing
+informational `task_scratch_report`, which the human failed-recovery reader had
+incorrectly treated as foreign causal history. That exact report action is now
+informational; unknown causal history still refuses and selected result/session,
+review ordering and replay fences remain unchanged. Fixture jobs are submitted
+by the original ordinary child before clean omission, never by the purpose-bound
+completion-recovery session. The restart-only no-job observer excludes the initial
+marker-interruption launch. Native diagnostic events link fully flushed JSON
+without replacing existing events, and actual job-submit refusals are retained
+before assertions. All 224 C4 cases and their behavioral assertions remain.
+These are source corrections only: no new behavioral execution, GREEN,
+causal/restoration/repetition or held migration/restore/reboot proof is claimed.
