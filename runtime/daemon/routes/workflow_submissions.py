@@ -15,7 +15,8 @@ from runtime.infrastructure.workflow_schema import require_author_handoff_schema
 from runtime.workflows.activation import WorkflowActivationError
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
-from runtime.workflows.submissions import AuthorHandoffCommand, AuthorHandoffReceipt
+from runtime.workflows.submissions import AuthorHandoffCommand, AuthorHandoffCore, AuthorHandoffReceipt as StoredHandoffReceipt
+from pydantic import Field
 from runtime.workflows.templates import WorkflowTemplateError
 
 router = APIRouter()
@@ -52,6 +53,8 @@ def require_read_schema(org: Any, session_id: str | None) -> None:
     with org.db._lock:
         try:
             require_author_handoff_schema(org.db._conn, expected_org_slug=org.slug)
+        except ERRORS:
+            raise
         except ValueError as exc:
             raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_corrupt'}) from exc
 
@@ -98,6 +101,15 @@ def decode_command(raw: bytes) -> dict:
         raise HTTPException(status_code=422, detail={'code': 'workflow_author_handoff_invalid_request'}) from exc
 
 
+class HandoffPublicCore(AuthorHandoffCore):
+    created_at: str = Field(min_length=27, max_length=27,
+                            pattern=r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$')
+
+
+class AuthorHandoffReceipt(StoredHandoffReceipt):
+    core: HandoffPublicCore
+
+
 TOKEN_SCHEMA = {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'^[A-Za-z0-9._:-]+$'}
 
 
@@ -140,6 +152,8 @@ async def stage_handoff(org: OrgDep, request: Request, response: Response,
         raise_error(exc)
     except sqlite_error_types() as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_unavailable'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_corrupt'}) from exc
     response.status_code = 200 if receipt['replayed'] else 201
     return receipt
 
@@ -177,3 +191,5 @@ async def get_handoff(org: OrgDep, handoff_id: str, request: Request,
         raise_read_error(exc)
     except sqlite_error_types() as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_unavailable'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_corrupt'}) from exc

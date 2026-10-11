@@ -47,7 +47,7 @@ class ReviewRequestScope(ClosedRecord):
     role: AbstractRole
     kind: Literal['agent', 'human']
     principal: Token
-    team: str | None
+    team: str | None = Field(max_length=63)
     assignment_generation: StrictInt = Field(ge=1, le=1)
     template: ActivatedTemplate
     activation: ReviewActivation
@@ -98,3 +98,5 @@ async def get_review_request(org: OrgDep, request_id: str, request: Request,
         raise_read_error(exc)
     except sqlite_error_types() as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_unavailable'}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_corrupt'}) from exc
