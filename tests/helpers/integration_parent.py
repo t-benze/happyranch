@@ -138,43 +138,6 @@ BROWSER_PACKAGES = {"@playwright/cli": "0.1.18", "playwright": "1.63.0-alpha-202
                     "playwright-core": "1.63.0-alpha-2026-08-05"}
 
 
-# THR296seq52 one-PR selection; separate from the historical human release.
-AGENT_C4_NODE = ROSTER_E2E + "test_c4_existing_agent_team_attribution_and_replay"
-AGENT_C4_IDS = (
-    "ordinary-completed-implicit", "ordinary-completed-explicit",
-    "ordinary-failed-implicit", "ordinary-failed-explicit",
-    "accepted-completed-implicit", "accepted-completed-explicit",
-    "accepted-failed-implicit", "accepted-failed-explicit",
-)
-AGENT_C4_NODES = tuple(AGENT_C4_NODE + "[" + case + "]" for case in AGENT_C4_IDS) + (
-    "tests/integration/test_chain_e2e.py::test_chain_advance_at_most_once_with_delayed_session_exit_e2e",
-)
-
-
-def agent_c4_selection(args: list[str], source: Path) -> dict:
-    """Closed node list and real namespace preflight BEFORE product imports.
-
-    The reviewed command exposes only a standalone source clone, its frozen
-    interpreter/dependencies and system executables. Fresh HOME alone refuses.
-    """
-    if args != ["pytest", "-m", "integration", *AGENT_C4_NODES, "-x", "-vv", "--tb=short"]:
-        raise ValueError("agent_c4_exact_selection_and_stop_on_failure_required")
-    devices = Path("/proc/net/dev").read_text().splitlines()[2:]
-    interfaces = {line.split(":", 1)[0].strip() for line in devices}
-    if (source != Path("/source") or os.getpid() != 1
-            or os.uname().nodename != "happyranch-c4" or interfaces != {"lo"}
-            or Path("/home/benze/projects").exists()
-            or Path("/home/benze/.happyranch").exists()):
-        raise ValueError("agent_c4_disposable_pid_uts_network_mount_isolation_required")
-    # Persist the actual mount/namespace evidence for independent QA assessment;
-    # neither this check nor a marker is a host-containment certificate.
-    return {"pid": os.getpid(), "hostname": os.uname().nodename,
-            "interfaces": sorted(interfaces),
-            "namespaces": {kind: os.readlink("/proc/self/ns/" + kind)
-                           for kind in ("pid", "mnt", "net", "uts", "user")},
-            "mountinfo": Path("/proc/self/mountinfo").read_text()}
-
-
 def private_directory(path: Path) -> Path:
     if (not path.is_absolute() or path.is_symlink() or path.resolve(strict=True) != path
             or not path.is_dir() or path.stat().st_uid != os.getuid()
@@ -364,7 +327,6 @@ def retain_roster(root: Path, binding: dict, source: Path, revision: str,
                         or path.name in ("identities.jsonl", "actual-contexts.jsonl",
                                          "C-fixture-daemon.log", "real-failed-daemon.log")
                         or (path.name == 'daemon.log' and path.parent.name == '.happyranch')
-                        or (binding.get("agent_c4") and path.name.endswith(".sha256"))
                         or path.name.endswith(".calls.jsonl")
                         or path.name.startswith("real-failed-cut.json"))):
             continue
@@ -380,8 +342,7 @@ def retain_roster(root: Path, binding: dict, source: Path, revision: str,
             inventory.append({"original_path": str(path), "path": str(target.relative_to(output)), "sha256": digest(target), "bytes": target.stat().st_size})
         except OSError as exc:
             errors.append({'path': str(path), 'error': repr(exc)})
-    c4_selected = (bool(binding.get("agent_c4")) or
-                   ROSTER_E2E + "test_c4_normal_and_recovered_verdict_attribution" in binding["selections"])
+    c4_selected = ROSTER_E2E + "test_c4_normal_and_recovered_verdict_attribution" in binding["selections"]
     if terminal and (c4_selected or any(node.startswith(ROSTER_E2E + name) for node in binding["selections"]
                          for name in ("test_c2_owner_required_before_persistence",
                                       "test_c7_both_resume_resets_and_worker_contexts"))):
@@ -431,7 +392,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.add_argument("--roster-old-reader")
         parser.add_argument("--roster-browser-tools")
         parser.add_argument("--roster-output", required=True)
-        parser.add_argument("--roster-agent-c4", action="store_true")
         options = parser.parse_args(args[:boundary])
         args = args[boundary:]
     if args[:1] == ["--"]:
@@ -447,27 +407,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("integration parent requires installed uv")
     binding = None
     if options is not None:
-        isolation = agent_c4_selection(args, source) if options.roster_agent_c4 else None
-        if not options.roster_agent_c4:
-            roster_selection(args)
+        roster_selection(args)
         needs_old = any(node.startswith(ROSTER_E2E + "test_c5_schema_history_publication_and_portability[b317-") for node in args)
         if needs_old != bool(options.roster_old_reader) or (ROSTER_BROWSER in args) != bool(options.roster_browser_tools):
             raise ValueError("roster_selected_case_binding_required")
         binding = roster_bindings(options, source, Path(sys.executable))
         binding["selections"] = args[3:]
-        if options.roster_agent_c4:
-            binding.update(agent_c4=True, isolation=isolation, parent_seconds=840,
-                           per_case_setup_body_seconds=100, expected_nodes=list(AGENT_C4_NODES),
-                           source_tree=subprocess.check_output(
-                               ["git", "-C", str(source), "rev-parse", "HEAD^{tree}"], text=True).strip(),
-                           python_version=list(sys.version_info[:3]),
-                           source_hashes={name: digest(source / name) for name in (
-                               "tests/helpers/integration_parent.py", "tests/integration/conftest.py",
-                               "tests/integration/test_human_team_roster_e2e.py",
-                               "tests/integration/test_chain_e2e.py", "cli/main.py",
-                               "runtime/daemon/routes/tasks.py", "runtime/orchestrator/run_step.py")},
-                           stubs={provider: digest(source / ("tests/integration/fake_" + provider + ".sh"))
-                                  for provider in PROVIDERS})
     with tempfile.TemporaryDirectory(prefix="happyranch-test-parent-") as directory:
         env = build_environment(Path(directory), source, Path(sys.executable), Path(uv).resolve(), revision,
                                 real_platform=os.environ.get("HAPPYRANCH_TEST_REAL_PLATFORM") == "1")
@@ -482,8 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         code = 1
         # Feature-only inner bound leaves cleanup/upload time under the
         # unchanged 90-minute hosted cap. Default/canonical parent is unchanged.
-        parent_seconds = 840 if binding and binding.get("agent_c4") else 70 * 60
-        deadline = time.monotonic() + parent_seconds
+        deadline = time.monotonic() + 70 * 60
         interrupted = {}
         def forward(signum, frame):
             if binding is not None:
@@ -507,7 +451,7 @@ def main(argv: list[str] | None = None) -> int:
                         if time.monotonic() >= interrupted.get('deadline', deadline):
                             code = 128 + interrupted['signal'] if interrupted else 124
                             print(json.dumps({'kind': 'roster-parent-deadline', 'exit': code,
-                                'seconds': parent_seconds, 'interruption': interrupted}), flush=True)
+                                'seconds': 70 * 60, 'interruption': interrupted}), flush=True)
                             os.killpg(child.pid, signal.SIGINT)
                             try:
                                 child.wait(timeout=20)
