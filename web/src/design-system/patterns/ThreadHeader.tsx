@@ -44,6 +44,7 @@ interface ThreadHeaderProps {
   subject: string;
   status: 'open' | 'archived';
   participants: string[];
+  participantLabels?: ReactNode;
   archiveSummary?: string | null;
   /** When true, renders a crescent-moon badge (dream-originated marker, A4). */
   dreamOriginated?: boolean;
@@ -68,6 +69,7 @@ export function ThreadHeader({
   subject,
   status,
   participants,
+  participantLabels,
   archiveSummary,
   dreamOriginated,
   actions,
@@ -150,7 +152,7 @@ export function ThreadHeader({
           <div className="flex flex-wrap items-center gap-2">
             <IdBadge id={threadId} kind="thread" />
             <span aria-hidden="true">·</span>
-            <span>{participants.join(', ') || L.noParticipants}</span>
+            <span>{participantLabels ?? (participants.join(', ') || L.noParticipants)}</span>
           </div>
         }
         actions={actions}

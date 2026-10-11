@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * Artifacts page — "produced-artifacts" recency card grid (THR-030 ART-01..04).
  *
@@ -226,7 +227,7 @@ function ArtifactCard({
             {prov.agent && (
               <>
                 <span aria-hidden="true">·</span>
-                <span>{prov.agent}</span>
+                <span><IdentityName canonicalId={prov.agent} /></span>
               </>
             )}
             {prov.date && (

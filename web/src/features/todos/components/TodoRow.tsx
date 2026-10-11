@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * TodoRow — a single schedule row in the Todos list.
  *
@@ -131,7 +132,7 @@ export function TodoRow({ schedule }: TodoRowProps): JSX.Element {
             >
               {agentInitials(schedule.agent_name)}
             </span>
-            <span className="truncate">{schedule.agent_name}</span>
+            <span className="truncate"><IdentityName canonicalId={schedule.agent_name} /></span>
           </span>
           <span aria-hidden="true" className="text-fg-subtle">
             ·

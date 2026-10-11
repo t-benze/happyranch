@@ -3,7 +3,45 @@ name: thread
 description: Use this skill when the orchestrator invokes you for thread participation. Decide whether to reply, decline, or dispatch a task — all based on the thread context provided in your prompt.
 ---
 
+## Current names and permanent automation IDs
+
+Fresh prompts may show current Name · ID for this turn. Use the permanent ID
+from the injected parameters for callback agent/composer/speaker, task/session/
+invocation proofs, configuration and delegate/then/fanout targets. A name is
+human-addressing/presentation data, never actor authority. Human destination
+arguments and @mentions accept current names or IDs; former names refuse with
+the current name and do not forward. Founder is a separate human; recipient
+transport remains `@founder`. Metadata failure gives ID-only context.
+
+CLI send/reply and both compose upload modes preflight former tokens before
+associated uploads; forward validates final quoted+note text. Quoted and email
+interior matches remain active. Unknown body text is unchanged. Preflight is
+read-only, not a reservation or rollback across upload/message requests. The
+server still owns admission; a rename between requests can leave an independent
+upload before the message refuses. Resumed/fallback prompts refresh current
+names without rewriting history. UI labels remain presentation only; source-specific
+verification and independent acceptance belong in the maker handoff.
+
+
 # thread
+
+## Current naming routing contract (THR-293)
+
+Human recipients and @mentions may use current names or permanent IDs; the
+server resolves them to canonical IDs. Former names refuse409 with the current
+name and never forward, including mixed former/current/founder text. The token
+grammar is unchanged; unknown text normally retains fallback. Founder-only
+current mentions create no new agent wake but retain existing due catch-up and
+delivery obligations. Founder is a human inbox recipient, never an executor.
+Do not substitute names for composer/speaker/agent/task/session/invocation-token
+proofs: those remain canonical ID bindings. Read lookup grants no authority or
+reservation. Current names of pending/terminated owners grant no wake eligibility.
+
+Compose validates body/recipients before application attachment finalization.
+Separate pre-uploaded attachments already exist independently of a later send;
+former-name refusal leaves those prior objects unchanged. CLI pre-upload/target resolution and current/resumed prompt source are now
+described above; neither source paragraph claims behavioral verification.
+Keep the existing callback shapes and authentication mechanics below.
 
 You've been invoked because something happened on a thread (THR-NNN). The full
 prior history is in your prompt, along with a note explaining WHY you were

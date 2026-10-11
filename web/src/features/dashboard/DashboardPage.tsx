@@ -1,3 +1,4 @@
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * Founder dashboard — Direction-A Pasture Home surface (THR-030 Leg B).
  *
@@ -287,7 +288,7 @@ export function DashboardPage(): JSX.Element {
                       className="border-border-subtle flex flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md border p-3"
                     >
                       <span className="text-text-primary font-mono text-xs font-medium">
-                        {job.agent_name}
+                        <IdentityName canonicalId={job.agent_name} />
                       </span>
                       <span className="text-text-muted font-mono text-xs">·</span>
                       <span className="text-id-task font-mono text-xs">{job.id}</span>

@@ -504,12 +504,13 @@ function useInviteAgent(threadId: string): MutationLike<
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: InviteArgs) =>
-      threadsApi.inviteToThread(slug, threadId, body),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['thread', slug, threadId] });
-      qc.invalidateQueries({ queryKey: ['threads', slug] });
+    mutationFn: ({ destination, ...body }: InviteArgs) =>
+      threadsApi.inviteToThread(destination?.slug ?? slug, destination?.threadId ?? threadId, body),
+    onSuccess: (_result, args) => {
+      qc.invalidateQueries({ queryKey: ['thread', args.destination?.slug ?? slug, args.destination?.threadId ?? threadId] });
+      qc.invalidateQueries({ queryKey: ['threads', args.destination?.slug ?? slug] });
     },
+    retry: false,
   });
 }
 

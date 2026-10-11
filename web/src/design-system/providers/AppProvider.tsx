@@ -21,6 +21,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
 import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { DataContext } from './DataContext';
+import { realIdentitiesApi } from './_real-identities';
 import { realAgentsApi } from './_real-agents';
 import { realAuthorityPolicyApi } from './_real-authority-policy';
 import { realAuditApi } from './_real-audit';
@@ -72,6 +73,7 @@ export function AppProvider({ children, client }: AppProviderProps): JSX.Element
         value={{
           orgs: realOrgsApi,
           agents: realAgentsApi,
+          identities: realIdentitiesApi,
           authorityPolicy: realAuthorityPolicyApi,
           audit: realAuditApi,
           threads: realThreadsApi,

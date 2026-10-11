@@ -243,6 +243,8 @@ from runtime.reply_delivery import reply_failure_category
 from runtime.infrastructure.work_hours_store import WorkHoursStore
 from runtime.infrastructure.schedule_store import ScheduleStore
 from runtime.infrastructure.thread_mentions import (
+    MessageAddresses,
+    classify_message_write,
     parse_mentions,
     resolve_wake_set,
     valid_mentions,
@@ -1540,6 +1542,51 @@ class Database(
 
 
 
+
+    def prepare_thread_message(self, body_markdown: str | None) -> MessageAddresses:
+        """Capture current addresses outside the connection RLock.
+
+        Only OrgState installs the org-local read adapter; generic databases
+        remain naming-free. No name is written or authority inferred here.
+        """
+        prepare = getattr(self, '_thread_address_prepare', None)
+        if prepare is not None:
+            return prepare(body_markdown)
+        return MessageAddresses(tuple(parse_mentions(body_markdown)))
+
+    def validate_thread_message(self, addresses: MessageAddresses | None) -> None:
+        validate = getattr(self, '_thread_address_validate', None)
+        if validate is not None:
+            validate(addresses)
+
+    @classify_message_write
+    @_synchronized
+    def append_thread_message(
+        self, *, thread_id: str, speaker: str, kind: ThreadMessageKind,
+        body_markdown: str | None = None, decline_reason: str | None = None,
+        system_payload: dict | None = None,
+        attachments: list[ThreadAttachment] | None = None,
+        sent_from_task_id: str | None = None,
+        _addresses: MessageAddresses | None = None,
+    ) -> int:
+        """Facade admission for public append, before any durable effect."""
+        try:
+            self._conn.execute('BEGIN')
+            self.validate_thread_message(_addresses)
+            mentions = self._derive_conversational_mentions(
+                thread_id, speaker, kind, body_markdown, addresses=_addresses,
+            )
+            seq = self._append_thread_message_uncommitted(
+                thread_id=thread_id, speaker=speaker, kind=kind,
+                body_markdown=body_markdown, decline_reason=decline_reason,
+                system_payload=system_payload, attachments=attachments,
+                sent_from_task_id=sent_from_task_id, mentions=mentions,
+            )
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+        return seq
 
     def _append_thread_message_uncommitted(
         self,

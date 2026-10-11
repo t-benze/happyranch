@@ -259,7 +259,7 @@ describe('Pending enrollments i18n', () => {
   test('zh-CN rows, reject dialog with 关闭, daemon values verbatim', async () => {
     stub();
     mount('zh-CN', `/orgs/${SLUG}/agents?view=pending`);
-    expect(await screen.findByText('new_writer')).toBeInTheDocument();
+    expect(await screen.findByText('new_writer', { selector: 'span' })).toBeInTheDocument();
     expect(screen.getByText('团队：content · 执行器：claude · 登记人：content_manager')).toBeInTheDocument();
     expect(screen.getByText('Drafts long-form posts.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '批准' })).toBeInTheDocument();
@@ -297,7 +297,7 @@ describe('Team escalation policy page i18n', () => {
     mountPolicy(locale);
     await screen.findByRole('textbox', { name: translate(locale, 'agents.policy.whatTo') });
     expect(screen.getByRole('link', { name: translate(locale, 'agents.policy.backTo', { name: 'engineering_manager' }) })).toBeInTheDocument();
-    expect(screen.getByText('engineering · engineering_manager', { exact: true }).textContent).toBe('engineering · engineering_manager');
+    expect(screen.getByText((_text, node) => node?.tagName === 'P' && node.textContent === 'engineering · engineering_manager').textContent).toBe('engineering · engineering_manager');
     expect(screen.getByText(translate(locale, 'agents.policy.ownedBy', { team: 'engineering' }), { exact: true })).toBeInTheDocument();
   });
 
@@ -310,7 +310,7 @@ describe('Team escalation policy page i18n', () => {
     expect(screen.getByRole('heading', { level: 1, name: '团队上报策略' })).toBeInTheDocument();
     // Agent and team identifiers are byte-verbatim (no title-casing).
     expect(screen.getByRole('link', { name: '← 返回 engineering_manager' })).toBeInTheDocument();
-    expect(screen.getByText('engineering · engineering_manager')).toBeInTheDocument();
+    expect(screen.getByText((_text, node) => node?.tagName === 'P' && node.textContent === 'engineering · engineering_manager')).toBeInTheDocument();
     expect(screen.getByText('归 engineering 团队所有，而非该智能体。')).toBeInTheDocument();
     expect(screen.getByText('团队所有')).toBeInTheDocument();
     expect(screen.getByText('不可变的双文本历史')).toBeInTheDocument();

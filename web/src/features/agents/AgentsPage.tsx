@@ -1,3 +1,6 @@
+import { AddressableNameEditor } from '@/shared/identities/AddressableNameEditor';
+import { useIdentityPresentation } from '@/hooks/identities';
+import { IdentityName } from '@/shared/identities/IdentityName';
 /**
  * AgentsPage — two-pane Pasture layout.
  *
@@ -48,6 +51,7 @@ export function AgentsPage(): JSX.Element {
   const { t } = useTranslation();
   const routes = useAgentsRoutes();
   const agentsQuery = useAgentsList();
+  const identityPresentation = useIdentityPresentation();
   const { density } = useDensity();
   const rowPad = density === 'compact' ? 'py-1.5' : 'py-2.5';
   const [addOpen, setAddOpen] = useState(false);
@@ -67,10 +71,11 @@ export function AgentsPage(): JSX.Element {
       ? 'active'
       : searchParams.get('view') === 'pending'
         ? 'pending'
-        : 'active';
+        : searchParams.get('view') === 'terminated' ? 'terminated' : 'active';
 
   const onTabChange = (next: string) => {
-    if (next === 'pending') navigate(routes.pending());
+    if (next === 'terminated') navigate(`${routes.inbox()}?view=terminated`);
+    else if (next === 'pending') navigate(routes.pending());
     else navigate(routes.inbox());
   };
 
@@ -97,7 +102,7 @@ export function AgentsPage(): JSX.Element {
     }
     if (didAutoSelect.current) return;
     if (agentsQuery.isLoading) return;
-    if (searchParams.get('view') === 'pending') return;
+    if (['pending', 'terminated'].includes(searchParams.get('view') ?? '')) return;
     didAutoSelect.current = true;
     if (!selectedAgent && agents.length > 0) {
       navigate(routes.detail(agents[0].name), { replace: true });
@@ -140,6 +145,7 @@ export function AgentsPage(): JSX.Element {
           <TabsList>
             <TabsTrigger value="active">{t('agents.tab.active')}</TabsTrigger>
             <TabsTrigger value="pending">{t('agents.tab.pending')}</TabsTrigger>
+            <TabsTrigger value="terminated">{t('identity.terminated')}</TabsTrigger>
           </TabsList>
         </Tabs>
       </header>
@@ -205,11 +211,11 @@ export function AgentsPage(): JSX.Element {
                           <div className="flex items-start gap-2.5">
                             {/* AGENTS-02: role-colored avatar-initial chip,
                                 mirroring the existing led-dot role logic. */}
-                            <AgentAvatar name={a.name} role={a.role} size="sm" />
+                            <AgentAvatar displayName={identityPresentation.name(a.name)} name={a.name} role={a.role} size="sm" />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="font-display text-text-primary truncate text-sm font-medium">
-                                  {a.name}
+                                  <IdentityName canonicalId={a.name} />
                                 </span>
                                 {/* AGENTS-04: role dot on the row's right edge
                                     (Direction-A `a-agents`), not crowding the
@@ -240,6 +246,9 @@ export function AgentsPage(): JSX.Element {
                   })}
                 </ul>
               )}
+            </TabsContent>
+            <TabsContent value="terminated" className="mt-0 p-3">
+              {identityPresentation.query.isLoading ? <p>{t('identity.loading')}</p> : identityPresentation.query.isError ? <p role="alert">{t('identity.loadError')}</p> : identityPresentation.query.data?.identities.filter((i) => i.kind === 'agent' && i.lifecycle === 'terminated').length ? <ul className="space-y-3">{identityPresentation.query.data.identities.filter((i) => i.kind === 'agent' && i.lifecycle === 'terminated').map((i) => <li key={i.canonical_id}><AddressableNameEditor canonicalId={i.canonical_id} /></li>)}</ul> : <p>{t('identity.terminatedEmpty')}</p>}
             </TabsContent>
             <TabsContent value="pending" className="mt-0 p-3">
               <PendingEnrollmentsTab />

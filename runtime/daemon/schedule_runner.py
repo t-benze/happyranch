@@ -22,6 +22,8 @@ from runtime.config import Settings, settings as global_settings
 from runtime.daemon.dream_runner import _executor_name, _is_timeout
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
+from runtime.identities.presentation import prompt_name_context
+from runtime.identities.registry import read_name_metadata
 from runtime.models import ScheduleKind, ScheduleStatus
 from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.executor_registry import get_registry
@@ -99,6 +101,7 @@ def build_schedule_prompt(
     managed_skills_index: str = "",
     repo_refresh_note: str = "",
     active_policy_section: str = "",
+    name_metadata=None,
 ) -> str:
     """Compose the schedule-fire prompt.
 
@@ -128,7 +131,7 @@ This is a SCHEDULE FIRE: a scheduled trigger to dispatch ONE root task from the
 stored normalized_brief. It is NOT the work itself. The real work happens in the
 root task you spawn — do not perform it here.
 
-current_time: {current_time}{skills_block}{repo_refresh_block}
+{prompt_name_context(name_metadata, agent_name)}current_time: {current_time}{skills_block}{repo_refresh_block}
 Schedule: {schedule_id}
 Kind: {kind}  Fire-at (UTC): {fire_at_iso}{recurrence_str}
 Timezone: {timezone}
@@ -292,6 +295,7 @@ async def run_schedule(
         managed_skills_index=managed_skills_index,
         repo_refresh_note=repo_refresh_note,
         active_policy_section=active_policy_section,
+        name_metadata=read_name_metadata(org_state),
     )
 
     executor_name = _prov

@@ -1,4 +1,7 @@
-import { useEffect, useId, useState } from 'react';
+import { useOrgSlugOptional } from '@/lib/orgSlug';
+import { useParams } from 'react-router-dom';
+import { useIdentityOptions, usePreflightAddresses, namingAddressError } from '@/hooks/identities';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -25,6 +28,15 @@ interface Props {
 export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): JSX.Element {
   const { t } = useTranslation();
   const invite = useInviteAgent(threadId);
+  const options = useIdentityOptions(agents);
+  const preflight = usePreflightAddresses();
+  const scopedSlug = useOrgSlugOptional();
+  const { slug: routeSlug } = useParams<{ slug: string }>();
+  const slug = scopedSlug ?? routeSlug ?? '';
+  const latch = useRef(false);
+  const [pending, setPending] = useState(false);
+  const scope = useRef(0);
+  useEffect(() => { scope.current += 1; return () => { scope.current += 1; }; }, [slug, threadId, open]);
   const [recipientsRaw, setRecipientsRaw] = useState('');
   // Locale-neutral error descriptor rendered at render time (see ArchiveDialog).
   const [errorView, setErrorView] = useState<ThreadErrorView | null>(null);
@@ -38,6 +50,7 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
 
   const submit = async (e?: React.FormEvent) => {
     e?.preventDefault();
+    if (latch.current) return;
     setErrorView(null);
     // Parse comma-separated tokens, trim, discard empties, deduplicate
     // preserving selection order — RecipientsInput builds comma-separated
@@ -53,19 +66,27 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
       return;
     }
     const uniqueNames = [...new Set(names)];
+    latch.current = true; setPending(true);
+    const capturedScope = scope.current;
     try {
+      // Prospective invite must NOT pass thread_id (that resolver admits existing participants only).
+      const resolved = await preflight.mutateAsync({ slug, context: 'thread_recipient', recipients: uniqueNames, canonicalAgentIds: agents.map((a) => a.name) });
+      if (scope.current !== capturedScope) return;
       // Sequential awaits — deterministic order, matches the non-batch
       // server contract one-agent-per-request.
-      for (const name of uniqueNames) {
-        await invite.mutateAsync({ agent_name: name });
+      for (const name of resolved.recipients) {
+        if (scope.current !== capturedScope) return;
+        await invite.mutateAsync({ agent_name: name, destination: { slug, threadId } });
       }
-      onClose();
+      if (scope.current === capturedScope) onClose();
     } catch (err) {
       // Honest partial failure: any succeeding invite mutated before the
       // failure landed — the dialog stays open so the user can retry or
       // close. useInviteAgent onSuccess invalidates ['thread', slug, threadId]
       // on every individual success, so successful invites are reflected.
-      setErrorView({ detail: classifyThreadError(err) });
+      if (scope.current === capturedScope) setErrorView({ detail: namingAddressError(err) ?? classifyThreadError(err) });
+    } finally {
+      latch.current = false; setPending(false);
     }
   };
 
@@ -84,7 +105,8 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
               id={nameId}
               value={recipientsRaw}
               onChange={setRecipientsRaw}
-              agents={agents}
+              agents={options}
+              disabled={pending}
               placeholder="agent_a, agent_b"
             />
             {/* FormField's error node, gated on the descriptor so an empty raw
@@ -97,8 +119,8 @@ export function InviteDialog({ threadId, open, onClose, agents = [] }: Props): J
           </FormField>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-            <Button type="submit" disabled={invite.isPending}>
-              {invite.isPending ? t('threads.dialog.invite.pending') : t('threads.dialog.invite.confirm')}
+            <Button type="submit" disabled={pending || invite.isPending}>
+              {pending || invite.isPending ? t('threads.dialog.invite.pending') : t('threads.dialog.invite.confirm')}
             </Button>
           </DialogFooter>
         </form>

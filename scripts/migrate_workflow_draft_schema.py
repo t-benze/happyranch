@@ -60,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
         conn.execute('BEGIN' if args.check else 'BEGIN IMMEDIATE')
         if args.check:
             layout = validate_workflow_schema(conn, expected_org_slug=args.org)
+            from runtime.identities.schema import validate_names
+            from runtime.infrastructure.workflow_schema import _validate_release_database
+            validate_names(conn, org_slug=args.org)
+            _validate_release_database(conn, layout)
             conn.rollback()
             if layout == 'F':
                 print('migration-needed: ' + draft_migration_guidance(org_slug=args.org, runtime_root=str(args.runtime_root)))

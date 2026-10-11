@@ -56,6 +56,9 @@ from runtime.orchestrator.workspace_adapters import (
     SystemContractMaterializationError,
 )
 
+from runtime.identities.registry import read_name_metadata
+from runtime.identities.presentation import identity_display, prompt_name_context
+
 logger = logging.getLogger(__name__)
 
 # Cap for the underlying-error detail appended to a no_callback reason so a
@@ -743,10 +746,11 @@ def build_thread_prompt(
     managed_skills_index: str = "",
     repo_refresh_note: str = "",
     active_policy_section: str = "",
+    name_metadata=None,
 ) -> str:
     from runtime.orchestrator.active_authority_policy import assert_no_reserved_team_policy_header
     triggering = next((m for m in messages if m.seq == triggering_seq), None)
-    parts_str = ", ".join(p.agent_name for p in participants)
+    parts_str = ", ".join(identity_display(name_metadata, p.agent_name) for p in participants)
     history = "\n".join(_render_message(m) for m in messages)
     assert_no_reserved_team_policy_header(thread.subject, source="thread subject")
     assert_no_reserved_team_policy_header(history, source="thread history")
@@ -768,6 +772,7 @@ def build_thread_prompt(
     repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
     return (
         f"{doctrine}"
+        f"{prompt_name_context(name_metadata, invoked_agent)}"
         f"You are participating in thread {thread.id}: \"{thread.subject}\".\n\n"
         f"Participants: {parts_str}.\n"
         f"current_time: {current_time}{skills_block}{repo_refresh_block}\n"
@@ -798,6 +803,8 @@ def build_thread_delta_prompt(
     managed_skills_index: str = "",
     repo_refresh_note: str = "",
     active_policy_section: str = "",
+    name_metadata=None,
+    participant_ids=(),
 ) -> str:
     """Turn 2+ prompt for a resumed agent session (issue #53).
 
@@ -826,6 +833,7 @@ def build_thread_delta_prompt(
     repo_refresh_block = f"\n{repo_refresh_note}\n" if repo_refresh_note else ""
     return (
         f"{doctrine}"
+        f"{prompt_name_context(name_metadata, invoked_agent, participant_ids)}"
         f"Continuing thread {thread.id}: \"{thread.subject}\". "
         f"New activity since your last turn follows.\n\n"
         f"current_time: {current_time}{skills_block}{repo_refresh_block}\n\n"
@@ -1242,6 +1250,8 @@ async def run_invocation(
                 managed_skills_index=managed_skills_index,
                 repo_refresh_note=repo_refresh_note,
                 active_policy_section=active_policy_section,
+                name_metadata=read_name_metadata(org_state),
+                participant_ids=[p.agent_name for p in participants],
             )
             resume_sid = stored_sid
             shown_seqs = [m.seq for m in new_messages]
@@ -1254,6 +1264,7 @@ async def run_invocation(
                 managed_skills_index=managed_skills_index,
                 repo_refresh_note=repo_refresh_note,
                 active_policy_section=active_policy_section,
+                name_metadata=read_name_metadata(org_state),
             )
             shown_seqs = [m.seq for m in messages]
 
@@ -1562,6 +1573,7 @@ async def run_invocation(
                     managed_skills_index=managed_skills_index,
                     repo_refresh_note=repo_refresh_note,
                     active_policy_section=active_policy_section,
+                    name_metadata=read_name_metadata(org_state),
                 )
                 # Re-apply the guardrail for the fallback prompt too.
                 escalation_note2 = _maybe_unresolved_escalations_note(
@@ -1708,7 +1720,10 @@ async def run_invocation(
 
             if resume_capable and getattr(result, "agent_session_id", None):
                 # Resume the same agent session and append the nudge.
-                retry_prompt = nudge_prompt
+                retry_prompt = prompt_name_context(
+                    read_name_metadata(org_state), inv.agent_name,
+                    [p.agent_name for p in participants],
+                ) + nudge_prompt
                 retry_resume_sid: str | None = result.agent_session_id
             else:
                 # Non-resumable executor: rebuild full prompt + corrective note.
@@ -1721,6 +1736,7 @@ async def run_invocation(
                         managed_skills_index=managed_skills_index,
                         active_policy_section=active_policy_section,
                         repo_refresh_note=repo_refresh_note,
+                        name_metadata=read_name_metadata(org_state),
                     )
                     + "\n"
                     + (escalation_note + "\n" if escalation_note else "")

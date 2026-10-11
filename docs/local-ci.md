@@ -457,3 +457,19 @@ both independent same-root characterizations failed on candidate and baseline.
 Keep those genuine callback failures and their durable/native receipts. A
 test expectation repair, native admission or artifact provisioning does not
 establish complete retirement or behavioral QA acceptance.
+
+
+## Finite naming verification lane
+
+The existing nightly workflow exposes a default-false `naming_only` input.
+It requires `all_only=false`, an exact published `naming_source_sha`, and
+`naming_image=node@sha256:<amd64-digest>`. The SHA must equal the workflow ref.
+It suppresses the manual Web lane and runs only the seventeen explicit selectors
+covering the twelve naming scenarios on a disposable Ubuntu 24.04 runner.
+`scripts/identity_names_hosted.sh` retains the source/image pins, resource bounds,
+shared deadline, cleanup reserve and bounded evidence export. The selection is
+`tests/helpers/identity_names/run.sh`; it does not collect retired Python units
+or run general integration. Scheduled/default behavior and retained PR/main
+checks are unchanged. Historical attempts remain evidence and do not renew
+allocations. A corrected candidate needs attributed behavioral results and
+independent review/QA; merely publishing or dispatching it is not a pass.

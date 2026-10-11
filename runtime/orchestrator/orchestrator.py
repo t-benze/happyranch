@@ -165,6 +165,7 @@ class Orchestrator:
         self._settings = settings
         self._paths = paths
         self._slug = slug
+        self._name_metadata_reader = None
         self._audit = AuditLogger(db)
         self._teams = teams
         # THR-181 Track A: deterministic injectable evaluator seam. The daemon
@@ -453,6 +454,14 @@ class Orchestrator:
         tz, label = resolve_org_timezone_display(load_org_config(self._paths))
         return render_current_time_line(tz, label, now)
 
+    def read_name_metadata(self):
+        """Presentation-only; unavailable org metadata supplies honest ID fallback."""
+        reader = self._name_metadata_reader
+        try:
+            return reader() if reader is not None else {}
+        except Exception:
+            return {}
+
     def _build_agent_prompt(
         self,
         provider: str,
@@ -481,6 +490,8 @@ class Orchestrator:
             intro = (
                 f"You are {agent_name}. Use the start-task skill to handle this task.\n"
             )
+        from runtime.identities.presentation import prompt_name_context
+        naming_context = prompt_name_context(self.read_name_metadata(), agent_name)
         # role_guidance is the per-task overlay (managers get the capabilities
         # block; workers only get a blocked-jobs resume header when applicable).
         # Empty prompt => omit the line so workers don't see a dangling block scalar.
@@ -512,6 +523,7 @@ class Orchestrator:
             f"  current_time: {current_time}\n"
             f"  brief: {brief}\n"
             f"{role_guidance_block}"
+            f"\n{naming_context}"
             f"{digest_block}"
             f"{attachments_block}"
             f"{skills_block}"

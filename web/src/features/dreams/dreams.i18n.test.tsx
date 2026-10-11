@@ -215,7 +215,7 @@ describe('Dream detail drawer i18n', () => {
     mount('zh-CN');
     const drawer = await openDetail();
 
-    expect(within(drawer).getByText('product_lead · 2026-06-18')).toBeInTheDocument();
+    expect(within(drawer).getByRole('heading', { name: 'product_lead · 2026-06-18' })).toBeInTheDocument();
     expect(within(drawer).getByText('来自梦境 · 由 product_lead 提议 · 待审核')).toBeInTheDocument();
     expect(within(drawer).getByText('知识候选')).toBeInTheDocument();
     expect(within(drawer).getByText('1 条学习')).toBeInTheDocument();

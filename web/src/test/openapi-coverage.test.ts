@@ -51,6 +51,15 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  // Naming routes are checked against the maintained summary; standalone and served-schema receipts are attributed in the naming maker handoff.
+  test('the four existing naming routes are browser-included', () => {
+    for (const route of [
+      'GET /api/v1/orgs/{slug}/identities',
+      'POST /api/v1/orgs/{slug}/identities/resolve',
+      'PUT /api/v1/orgs/{slug}/agents/{agent_id}/addressable-name',
+      'PUT /api/v1/orgs/{slug}/founder/addressable-name',
+    ]) expect(INCLUDED_PATHS.has(route)).toBe(true);
+  });
   test('prompt-only founder PUT is browser-included', () => {
     expect(INCLUDED_PATHS.has('PUT /api/v1/orgs/{slug}/agents/{agent_name}/system-prompt')).toBe(true);
   });
