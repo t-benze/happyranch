@@ -95,7 +95,7 @@ async function main(){
   const profile=mkdtempSync('/tmp/pause-ui-');
   const blank=join(dist,'pause-locale-switch.html');if(existsSync(blank))throw new Error('refuse overwrite blank page');writeFileSync(blank,'<!doctype html><title>Isolated locale storage writer</title>');
   const server=await createServer({root:dist,api:[{path:/^\/api\//,handler:api}]});
-  const chrome=spawn(chromeBin,['--headless=new','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-sandbox','--no-first-run','--disable-gpu','--disable-dev-shm-usage','--disable-background-networking','--disable-crash-reporter','--disable-breakpad','--disable-extensions','about:blank'],{stdio:['ignore','ignore','pipe'],env:{...process.env,XDG_CONFIG_HOME:join(profile,'config'),XDG_CACHE_HOME:join(profile,'cache')}});
+  const chrome=spawn(chromeBin,['--headless=new','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-sandbox','--no-first-run','--disable-gpu','--disable-dev-shm-usage','--disable-background-networking','--disable-crash-reporter','--disable-breakpad','--disable-extensions','about:blank'],{stdio:['ignore','ignore','pipe'],env:{...process.env,TMPDIR:profile,XDG_CONFIG_HOME:join(profile,'config'),XDG_CACHE_HOME:join(profile,'cache')}});
   const chromeErrors=[];chrome.stderr.on('data',chunk=>chromeErrors.push(chunk));
   let cdp;
   const check=(name,actual,expected=true)=>{const pass=JSON.stringify(actual)===JSON.stringify(expected);checks.push({name,actual,expected,pass});if(!pass)console.error('FAIL',name,JSON.stringify(actual),'expected',JSON.stringify(expected));};
