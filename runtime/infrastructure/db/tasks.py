@@ -2273,7 +2273,18 @@ class TasksMixin:
         starts, bound, unbound, reviews = [], [], [], []
         informational = {"session_end", "progress", "zombie_flagged", "zombie_cleared",
                          "task_attachment_materialized", "executor_throttle", "task_scratch_report",
-                         "task_scratch_reclaimed", "portability_reconciled"}
+                         "task_scratch_reclaimed", "portability_reconciled",
+                         # AuditLogger's native task-scoped memory observations.
+                         # Other memory CRUD/read rows use AGENT- scope, outside
+                         # get_audit_logs(task_id); collection controls are not
+                         # informational observations of this failed episode.
+                         "memory_added", "memory_digest_impression", "memory_search",
+                         # CollectionObserver._record's six supported PHASES
+                         # and its observational, task-scoped _seal checkpoint.
+                         "memory_runtime_intent", "memory_runtime_identity",
+                         "memory_runtime_expectation", "memory_runtime_binding",
+                         "memory_runtime_launched", "memory_runtime_terminal",
+                         "memory_collection_seal"}
         for log in logs:
             payload = log.get("payload")
             if not isinstance(payload, dict):
@@ -2298,7 +2309,7 @@ class TasksMixin:
                     return "ambiguous_history", None
             elif action == "review_verdict":
                 reviews.append(log)
-            elif action not in informational and not action.startswith("memory_"):
+            elif action not in informational:
                 return "ambiguous_history", None
         if (sorted(starts) != sorted([episode["origin_session_id"], session_id])
                 or len(unbound) > 1 or len(bound) > 1 or len(reviews) > 1):

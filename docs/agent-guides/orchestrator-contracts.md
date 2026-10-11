@@ -2182,9 +2182,18 @@ The original PR1022 L4 archive at `18e01cfa` retains parent/command exit124,
 45 failed calls, 24 passed calls, two setup errors and one interrupted setup-only
 case; it is not complete 224-case proof. Its task teardown emitted the existing
 informational `task_scratch_report`, which the human failed-recovery reader had
-incorrectly treated as foreign causal history. That exact report action is now
-informational; unknown causal history still refuses and selected result/session,
-review ordering and replay fences remain unchanged. Fixture jobs are submitted
+incorrectly treated as foreign causal history. That exact report action remains
+informational. Failed recovery permits only the native task-scoped memory
+observations: `memory_added`, `memory_digest_impression`, `memory_search`,
+`memory_runtime_intent`, `memory_runtime_identity`, `memory_runtime_expectation`,
+`memory_runtime_binding`, `memory_runtime_launched`, `memory_runtime_terminal`,
+and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycle
+rows are outside this task history; collection acceptance/invalidation controls
+are not informational recovery exemptions. Unknown actions, including a
+dictionary-payload `memory_unrecognized_transition`, refuse as
+`ambiguous_history` before failure, review, marker, job or parent effects.
+Selected result/session/owner, review ordering and replay fences are unchanged.
+Fixture jobs are submitted
 by the original ordinary child before clean omission, never by the purpose-bound
 completion-recovery session. The restart-only no-job observer excludes the initial
 marker-interruption launch. Native diagnostic events link fully flushed JSON
