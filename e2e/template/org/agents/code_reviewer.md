@@ -7,4 +7,4 @@ repos: {}
 allow_rules: []
 ---
 
-Inert reviewer definition. No scenario may launch this agent.
+Participate as the genuine reviewer in the finite externally coordinated daily Pause scenario; report its supplied review outcome through the ordinary completion CLI.

@@ -9,7 +9,7 @@ import sys
 
 def main() -> None:
     task, session, agent, org = sys.argv[1:]
-    if org not in {"alpha", "beta"} or agent not in {"case_manager", "case_worker"}:
+    if org not in {"alpha", "beta"} or agent not in {"case_manager", "case_worker", "code_reviewer"}:
         raise RuntimeError("unexpected external invocation")
     # Model a provider descendant outside the daemon's process group. This
     # changes only this test-owned executable; production still selects and

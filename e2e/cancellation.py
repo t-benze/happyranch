@@ -12,11 +12,12 @@ import traceback
 from pathlib import Path
 
 from owned import identity
-from run import daily_admission
+from run import daily_admission, validate_timing
 
 
 def validate(row: dict, source: str, python: str, signum: int) -> None:
     result, active = row["launcher_result"], row["active"]
+    validate_timing(result)
     if (row["source_sha"] != source or active["source_sha"] != source
             or result["source_sha"] != source or result["python"] != python
             or result["exercise"] != "cancellation" or result["status"] != "FAIL"
@@ -113,7 +114,10 @@ def main() -> int:
                 signal.pidfd_send_signal(descriptor, signum)
             finally:
                 os.close(descriptor)
-            row["launcher_exit"] = launcher.wait(timeout=max(1, started + 840 - time.monotonic()))
+            remaining = started + 900 - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("cancellation hard deadline exhausted")
+            row["launcher_exit"] = launcher.wait(timeout=remaining)
         row["launcher_absent"] = identity(launcher.pid) != launcher_start
         row["launcher_result"] = json.loads((output / "launcher/result.json").read_text())
         row["total_seconds"] = time.monotonic() - started
@@ -127,7 +131,10 @@ def main() -> int:
         if launcher is not None and launcher.poll() is None and identity(launcher.pid) == launcher_start:
             launcher.send_signal(signal.SIGTERM)
             try:
-                row["launcher_exit"] = launcher.wait(timeout=65)
+                remaining = min(180, started + 900 - time.monotonic())
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(row["command"], 0)
+                row["launcher_exit"] = launcher.wait(timeout=remaining)
             except subprocess.TimeoutExpired:
                 row["cleanup_unknown"] = True
         row["total_seconds"] = time.monotonic() - started

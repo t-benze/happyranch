@@ -79,6 +79,17 @@ Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
 manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
 First scheduled execution is **PENDING**; prior first-slice receipts remain
 historical evidence at their own source, not daily/final-head verification.
+The bounded launcher uses one baseline-scenario cap480 (other five commands
+and cancellation scenarios240), clipped by original start+720 and shared by
+controller/watchdog. Cleanup at most60 includes owned process/unit/group,
+port/socket/data closure and sanitized evidence staging, clipped by original
+start+780. Export at most120 from its actual entry is clipped by original
+start+900, retains a bounded incomplete FAIL receipt and grants no extra teardown
+or action time. Hosted upload shares the remaining900s/15-minute envelope;
+local timers do not guarantee upload success. Timing evidence is required by
+both daily consumers. These source bounds and480−375=105 nominal planning slack
+are not measured fit or observed signal/cleanup/export behavior;42 variants,
+cadence and the600 target remain unchanged. See [the timing contract](../e2e/README.md).
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 

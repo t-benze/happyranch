@@ -247,6 +247,65 @@ class Controller:
         require(body["assigned_agent"] == "case_manager" and body["team"] == "engineering", "public owner", body)
         return body["task_id"]
 
+    def restart_owned_daemon(self) -> dict:
+        """Restart only our quiescent disposable process, keeping public files."""
+        from owned import identity
+        require(not self.holds, "restart has no held providers")
+        require(self.daemon is not None and self.daemon.poll() is None, "owned daemon live")
+        old = dict(pid=self.daemon.pid, start=identity(self.daemon.pid), port=self.port)
+        require(old["start"] is not None, "restart old daemon identity")
+        env = Path(f"/proc/{old['pid']}/environ").read_bytes().split(b"\0")
+        require(f"E2E_ROOT={self.root}".encode() in env, "restart exact disposable ownership")
+        ports = json.loads((self.root / "ports.json").read_text())
+        begin = time.monotonic()
+        # Pidfd binds the graceful stop to this exact process, even on PID reuse.
+        descriptor = os.pidfd_open(old["pid"])
+        try:
+            require(identity(old["pid"]) == old["start"], "restart identity before signal")
+            signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+        finally:
+            os.close(descriptor)
+        exit_code = self.daemon.wait(timeout=self.remaining(20))
+        require(exit_code == 0 and identity(old["pid"]) != old["start"], "graceful owned daemon exit", exit_code)
+        program = f"import sys,runpy;sys.path.insert(0,{str(self.source)!r});runpy.run_module('runtime.daemon',run_name='__main__')"
+        self.daemon = subprocess.Popen([self.python, "-I", "-c", program], cwd=self.root,
+                                       env=self.env, stdout=self.daemon_log, stderr=subprocess.STDOUT, start_new_session=True)
+        new = dict(pid=self.daemon.pid, start=identity(self.daemon.pid))
+        require(new["start"] is not None and (new["pid"], new["start"]) != (old["pid"], old["start"]),
+                "new owned daemon identity", new)
+        # Retain both identities before readiness so failure artifacts and the
+        # unchanged outer descendant watcher can reconcile a partial restart.
+        record = dict(old=old, new=new, exit=exit_code)
+        self.durable.append(dict(pause_daemon_restart=record))
+        def ready() -> bool:
+            require(self.daemon.poll() is None and identity(new["pid"]) == new["start"], "restarted daemon live")
+            home = self.root / "daemon"
+            if not all((home / f"daemon.{name}").exists() for name in ("port", "token", "pid")):
+                return False
+            if int((home / "daemon.pid").read_text()) != new["pid"]:
+                return False
+            self.port = int((home / "daemon.port").read_text())
+            self.token = (home / "daemon.token").read_text().strip()
+            # Register every discovered port, including on failed readiness.
+            if self.port not in ports:
+                ports.append(self.port)
+                (self.root / "ports.json").write_text(json.dumps(ports))
+            try:
+                return self.get("/api/v1/health")["status"] == "ok"
+            except ConnectionError:
+                return False
+        self.poll(ready, "same-files owned daemon restart readiness")
+        self.relay.upstream = self.port
+        token = self.root / "client" / "daemon.token"
+        token.write_text(self.token)
+        token.chmod(0o600)
+        self.browser.base = f"http://127.0.0.1:{self.port}"
+        self.validate_bindings()
+        record["new"]["port"] = self.port
+        record["seconds"] = time.monotonic() - begin
+        self.phases.append(dict(name="pause-owned-daemon-restart", **record))
+        return record
+
     def start(self, org: str, task: str | None, agent: str) -> dict:
         self.validate_bindings()
         self.server.settimeout(self.remaining())
@@ -418,6 +477,8 @@ def main() -> None:
                 cancellation_hold(controller)
             else:
                 exercise(controller)
+                from pause import exercise as exercise_pause
+                exercise_pause(controller)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException:
