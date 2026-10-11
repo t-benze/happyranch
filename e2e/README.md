@@ -93,12 +93,54 @@ phase times and reaped child exit statuses are retained. Actual signal and
 new daily baseline evidence remain PENDING until observed from the schedule.
 
 Target is 600s, action cutoff720s, cleanup reserve60s, evidence reserve120s,
-hard cap900s including dependency installation and build. The workflow starts
-the monotonic clock before checkout/tool setup. No budget exhaustion becomes a
+hard cap900s including dependency installation and build. Baseline scenarios
+(bootstrap, baseline, Pause/restart, controller close/evidence together) have
+at most480s; each other command and cancellation scenarios retain240s.
+The launcher computes `min(command entry + cap, original start + 720)` once
+before spawn, passes that exact end to the controller and uses it for its own
+watchdog. No restart, case or phase resets the original clock. Exhausted
+allowances refuse launch; actions cannot borrow teardown or evidence time.
+
+Cleanup begins on normal completion, failure or catchable interruption. Its
+end is `min(cleanup entry + 60, original start + 780, original start + 900)`.
+Owned process/unit/group closure, all port checks and data/socket removal stay
+inside that allowance. Sanitized text/PNG evidence is staged in memory before
+removing its source, also inside cleanup. Serial per-unit query ceilings may
+exceed60s; timeout fails honestly and retains observed ownership, without a
+claim of absence. If cleanup fails, export may read partial diagnostics but
+performs no more teardown or actions.
+
+The first nonempty readable daemon token remains the redaction context through
+partial data removal; later collection cannot erase it or replace sanitized
+staging with raw text. If no trustworthy context was captured (missing, empty
+or unreadable token), raw diagnostics and the detailed receipt are withheld.
+Known-safe staging is retained where available; bounded incomplete metadata
+reports FAIL, even when owned-root cleanup succeeds. This failure path does
+not establish complete evidence or runtime sanitation safety.
+
+Export has its own end `min(export entry + 120, original start + 900)`.
+It writes a metadata-only FAIL first, then sanitized detailed artifacts and
+the final receipt, keeping the last second of that same allowance for a bounded
+failure receipt. Serialization, missing data or timeout cannot produce PASS.
+No fresh120s is granted after900. Fractional `setitimer` alarms enforce positive
+remainders without integer truncation. Timing receipts retain original ends,
+command caps/entry/end, cleanup/export allowance/elapsed/outcome and failure
+phase; both daily baseline and cancellation consumers require complete timing.
+Elapsed export/total values are sampled at final receipt construction; its write
+still runs under the export timer. Hosted upload shares the remaining outer
+900s/15-minute job envelope; local timers cannot guarantee upload success.
+
+The workflow starts the monotonic clock before checkout/tool setup. No budget exhaustion becomes a
 skip. Every enumerated variant must be present with PASS, and failed/missing
 matrix jobs fail the stable `Daily Product E2E Health` aggregate. The aggregate's
 bounded controls prove refusal of missing cells, skips, failed/missing variants, wrong
 SHA, failed jobs and failed cleanup; these controls are not product evidence.
+
+This launcher correction is source delivery only. The illustrative future
+combined375s estimate has105s nominal slack under480 only when global remaining
+time permits; no runtime fit, signal/timer/cleanup behavior or E04/E05 assertion
+validation has been observed. Current42 variants remain unchanged. New deliberate
+defects, RED/restoration/GREEN and repetitions remain UNEXECUTED/unauthorized.
 
 ## Accepted case record
 

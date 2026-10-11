@@ -8,7 +8,7 @@ import os
 import signal
 
 from cancellation import validate as validate_cancellation
-from run import daily_admission
+from run import BASELINE_ARTIFACTS, daily_admission, validate_timing
 from pathlib import Path
 
 
@@ -21,6 +21,7 @@ def validate(rows: list[dict], expected: list[str], source: str, matrix_result: 
     if len(rows) != len(expected) or sorted(r["python"] for r in rows) != sorted(expected):
         raise ValueError("missing, duplicate or unexpected matrix cell")
     for row in rows:
+        validate_timing(row)
         if row["source_sha"] != source or row["status"] != "PASS" or row["skipped"] != 0:
             raise ValueError("source/result/skip mismatch")
         if set(row["variants"]) != set(MANIFEST["variants"]):
@@ -41,14 +42,24 @@ def validate(rows: list[dict], expected: list[str], source: str, matrix_result: 
 def controls() -> dict:
     """Bounded validator controls only; never product-behavior evidence."""
     source = "1" * 40
-    valid = [dict(python=p, source_sha=source, status="PASS", skipped=0, total_seconds=10,
+    phases = [dict(name=n, exit=0, entered=0, finished=1,
+                   cap_seconds=480 if n == "scenarios" else 240,
+                   allowance_seconds=480 if n == "scenarios" else 240,
+                   deadline=480 if n == "scenarios" else 240)
+              for n in ("dependencies", "browser-dependencies", "browser-install", "web-dependencies", "web-build", "scenarios")]
+    timing = dict(started=0, action_deadline=720, hard_deadline=900,
+                  action=dict(finished=1, deadline=720, allowance_seconds=720, elapsed_seconds=1),
+                  cleanup=dict(entered=1, finished=2, deadline=61, allowance_seconds=60, elapsed_seconds=1, ok=True),
+                  export=dict(entered=2, finished=3, deadline=122, allowance_seconds=120, elapsed_seconds=1, ok=True))
+    valid = [dict(python=p, source_sha=source, status="PASS", skipped=0, total_seconds=3, evidence_seconds=1,
+                  exercise="baseline", timing=copy.deepcopy(timing),
                   variants={v: {"status": "PASS"} for v in MANIFEST["variants"]},
                   cleanup=dict(ok=True, data_absent=True, ports_absent={"1234": True}),
-                  phases=[dict(name=n, exit=0) for n in ("dependencies", "browser-dependencies", "browser-install", "web-dependencies", "web-build", "scenarios")])
+                  phases=copy.deepcopy(phases))
              for p in MANIFEST["daily_python"]]
     validate(valid, MANIFEST["daily_python"], source, "success")
     results = {}
-    for name in ("missing-cell", "skip", "failed-variant", "missing-variant", "wrong-sha", "cleanup", "failed-job"):
+    for name in ("missing-cell", "skip", "failed-variant", "missing-variant", "wrong-sha", "cleanup", "failed-job", "failed-export", "wrong-scenario-deadline"):
         rows = copy.deepcopy(valid)
         state = "success"
         if name == "missing-cell":
@@ -63,6 +74,10 @@ def controls() -> dict:
             rows[0]["source_sha"] = "2" * 40
         elif name == "cleanup":
             rows[0]["cleanup"]["ok"] = False
+        elif name == "failed-export":
+            rows[0]["timing"]["export"]["ok"] = False
+        elif name == "wrong-scenario-deadline":
+            rows[0]["phases"][-1]["deadline"] = 720
         else:
             state = "failure"
         try:
@@ -79,8 +94,14 @@ def controls() -> dict:
 def cancellation_controls() -> dict:
     """Synthetic refusal controls; these never count as actual signal evidence."""
     source = "1" * 40
-    phases = [dict(name=n, exit=0) for n in ("dependencies", "browser-dependencies", "browser-install", "web-dependencies", "web-build")]
-    phases.append(dict(name="scenarios", exit=None, interrupted=True))
+    phases = [dict(name=n, exit=0, entered=0, finished=1, deadline=240, cap_seconds=240, allowance_seconds=240)
+              for n in ("dependencies", "browser-dependencies", "browser-install", "web-dependencies", "web-build")]
+    phases.append(dict(name="scenarios", exit=None, interrupted=True,
+                       entered=1, finished=3, deadline=241, cap_seconds=240, allowance_seconds=240))
+    timing = dict(started=0, action_deadline=720, hard_deadline=900,
+                  action=dict(finished=3, deadline=720, allowance_seconds=720, elapsed_seconds=3),
+                  cleanup=dict(entered=3, finished=4, deadline=63, allowance_seconds=60, elapsed_seconds=1, ok=True),
+                  export=dict(entered=4, finished=5, deadline=124, allowance_seconds=120, elapsed_seconds=1, ok=True))
     fixture = dict(source_sha=source, launcher_exit=1, launcher_absent=True,
                    identities_live_at_signal=True, total_seconds=10,
                    sent=dict(signal=15, at=2, pid=10, start="100"),
@@ -89,7 +110,7 @@ def cancellation_controls() -> dict:
                                callback=dict(status=200, response={"ok": True}, dropped=False), ports=[1234, 1235],
                                owned=dict(identities={"11": "101"}, units=["happyranch-example.service"], groups=["/example"])),
                    launcher_result=dict(source_sha=source, python="3.12", exercise="cancellation", status="FAIL", skipped=0,
-                                        signals=[dict(signal=15, at=3, pid=10, start="100")], total_seconds=10, phases=phases,
+                                        signals=[dict(signal=15, at=3, pid=10, start="100")], total_seconds=5, evidence_seconds=1, phases=phases, timing=timing,
                                         cleanup=dict(ok=True, data_absent=True, sockets_absent=True, watcher_stopped=True,
                                                      survivors={}, errors=[], identities={"11": "101"},
                                                      units={"happyranch-example.service": {"stdout": "LoadState=not-found"}},
@@ -141,9 +162,7 @@ def main() -> int:
         if admission["source_sha"] != args.source:
             raise ValueError("aggregate source differs from scheduled github.sha")
         rows = []
-        required = ["result.json", "observations.json", "browser-events.json", "daemon.txt",
-                    "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
-                    "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png"]
+        required = ["result.json", *BASELINE_ARTIFACTS]
         phase_logs = [name + ".txt" for name in ("dependencies", "browser-dependencies", "browser-install",
                                                 "web-dependencies", "web-build", "scenarios")]
         # Missing/empty sanitized artifacts cannot be represented as healthy.
