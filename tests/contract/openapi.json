@@ -4120,6 +4120,28 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/reviews/human-receipts": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}": {
       "GET": {
         "params": [

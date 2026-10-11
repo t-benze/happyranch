@@ -154,7 +154,8 @@
     "GET /api/v1/runtime/custom-cli/status",
     "POST /api/v1/runtime/custom-cli/{operation_id}/forget",
     "GET /api/v1/orgs/{slug}/workflows/submissions/handoffs/{handoff_id}",
-    "GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}"
+    "GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}",
+    "POST /api/v1/orgs/{slug}/workflows/reviews/human-receipts"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",

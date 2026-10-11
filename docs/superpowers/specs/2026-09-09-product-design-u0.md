@@ -1,6 +1,6 @@
 # Product-design workflow U0 feasibility evidence
 
-**U3b(a/b/c) internal checkpoint, THR139 D5/G395/generic410/H445/457/465.**
+**U3b(a/b/c/d) dependency-incomplete checkpoint, THR139 D5/G395/generic410/H445/457/465.**
 F5 findings plus actual successful callback/quiescence produce genuine agent
 receipts; the existing server-derived bearer lane produces human receipts with
 no fake task/result/assignment. Both writers now collect all configured current
@@ -15,9 +15,12 @@ collection; historical joins remain separate from current source/authority holds
 and fresh approved use. No fourth signature, product-name/count branch, or
 unimplemented active direct-submit producer is introduced. The H handoff graph
 still uses its original completed-source fulfillment; that limitation is not
-proof of the deferred active-submit path. Public human write/reviewer-stage/
-signed-request server/OpenAPI/CLI/TS/native parity with exact public/deny
-and root-owned two-template public smoke465 remain dependencies; keep DRAFT,
+proof of the deferred active-submit path. U3b(d) now mounts the existing human bearer writer and selected pending/signed
+request reads, with safe receipt/findings projection and matching served models/
+OpenAPI/CLI/shared TS. Stored scope/brief bytes remain unchanged. Agent-stage/
+direct-submit public routes and additional native denial remain deferred, with
+no native/transport/auth/session or new owner-read meaning. Root-owned two-template
+public smoke465, later owner/revision/recovery/UI acceptance remain dependencies; keep DRAFT,
 unaccepted/unmerged. Behavior/proof execution remains UNEXECUTED/FOUNDER-WAIVED.
 Exact grammar: [Features And Invariants](../../agent-guides/features-and-invariants.md).
 

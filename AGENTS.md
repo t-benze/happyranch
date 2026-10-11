@@ -1,6 +1,6 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**U3b(a/b/c) dependency-incomplete backend checkpoint (THR139 395/410/445/457/465).**
+**U3b(a/b/c/d) dependency-incomplete checkpoint (THR139 395/410/445/457/465).**
 Internal F5 staging, genuine successful/quiescent agent receipts and authenticated
 human receipts retain matched closed readers and terminal/reaper consumers.
 Both receipt writers now collect ALL configured current template slots. Partial
@@ -13,9 +13,13 @@ actual receipt/result/assignment identities. Cold discovery reuses the existing
 service; ordinary holds do not starve later work, corruption remains visible.
 Historical joins grant no fresh approved use; current source/authority holds are
 reported separately. No extra author signature or deferred direct-submit path
-is introduced. Public human write/stage/signed-request server/OpenAPI/CLI/TS/native
-parity with exact public/deny disposition and root-owned two-template public
-smoke465 remain dependencies. Retain OPEN/DRAFT/unaccepted/unmerged. Exact grammar:
+is introduced. Human public write now mounts the existing bearer writer; selected request GET
+returns real pending/signed status with only recipient-safe findings/receipt fields.
+Matching served models/OpenAPI/CLI/shared TS ship; stored scope/brief bytes remain.
+Agent-stage/direct-submit public routes and additional native denial stay deferred;
+no native/transport/auth/session changes or new owner-read audience. Root-owned
+two-template public smoke465 and later owner/revision/recovery/UI acceptance remain
+dependencies. Retain OPEN/DRAFT/unaccepted/unmerged. Exact grammar:
 [Features And Invariants](docs/agent-guides/features-and-invariants.md).
 
 **G submission-schema migration (THR139 seq395; retained F/E→G path).**

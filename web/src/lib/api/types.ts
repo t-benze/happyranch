@@ -1342,14 +1342,50 @@ export interface WorkflowReviewRequestScope {
   allowed_actions: ['collect-review'];
   inputs: { pin: DocumentWorkflowActivationInput; bytes_base64: string }[];
 }
-export interface WorkflowReviewRequestReceipt {
+export interface HumanReviewCommand {
+  format: 'workflow-human-review-command@1';
+  action: 'sign-review';
+  /** 1..128 characters, [A-Za-z0-9._:-]; retain the original key/body on retry. */
+  operation_key: string;
+  request_id: string;
+  expected_revision: 1;
+  request_scope_digest: string;
+  outcome: 'approved' | 'changes_requested';
+  /** Canonical base64 of 1..1048576 UTF8 bytes (4..1398104 characters). */
+  findings_bytes_base64: string;
+  /** Lowercase SHA256 of the exact decoded bytes. */
+  findings_digest: string;
+}
+export interface ReviewReceiptProjection {
+  format: 'workflow-review-receipt@1';
+  receipt_id: string;
+  request_id: string;
+  submission_id: string;
+  submission_digest: string;
+  assignment_generation: 1;
+  request_scope_digest: string;
+  outcome: 'approved' | 'changes_requested';
+  findings_bytes_base64: string;
+  findings_digest: string;
+  /** Retained original timestamp, 1..64 characters. */
+  created_at: string;
+}
+export interface HumanReviewReceipt {
+  format: 'workflow-human-review-receipt@1';
+  receipt: ReviewReceiptProjection;
+}
+export interface WorkflowReviewError {
+  detail: { code: string; detail?: string | null; owner?: string | null; required_action?: string | null };
+}
+export interface WorkflowReviewRequestBase {
   format: 'workflow-review-request-receipt@1';
   request_id: string;
   scope: WorkflowReviewRequestScope;
   request_scope_digest: string;
-  status: 'pending';
-  signed: false;
-  pending: true;
   reconciliation_required: boolean;
   submission_bytes_base64: string;
 }
+export type WorkflowReviewRequestReceipt = WorkflowReviewRequestBase & (
+  { status: 'pending'; signed: false; pending: true; receipt: null } |
+  { status: 'approved' | 'changes_requested'; signed: true; pending: false; receipt: ReviewReceiptProjection }
+);

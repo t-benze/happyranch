@@ -26,6 +26,38 @@ class HumanReviewCommand(ClosedRecord):
     findings_digest: SHA256
 
 
+class ReviewReceiptProjection(ClosedRecord):
+    format: Literal['workflow-review-receipt@1']
+    receipt_id: Token
+    request_id: Token
+    submission_id: Token
+    submission_digest: SHA256
+    assignment_generation: StrictInt = Field(ge=1, le=1)
+    request_scope_digest: SHA256
+    outcome: Literal['approved', 'changes_requested']
+    findings_bytes_base64: str = Field(min_length=4, max_length=1398104)
+    findings_digest: SHA256
+    created_at: str = Field(min_length=1, max_length=64)
+
+
+def recipient_receipt(receipt: dict) -> dict:
+    """Project only a receipt already authenticated by its writer or complete graph."""
+    proof = _stored_json(receipt['proof_bytes'], receipt['proof_digest'],
+                         code='workflow_review_receipt_storage_corrupt')
+    if proof['format'] == 'workflow-human-review-proof@1':
+        command = proof['command']
+    elif proof['format'] == 'workflow-agent-review-proof@1':
+        command = proof['stage_event']['body']['stage']['command']
+    else:
+        raise ValueError('workflow_review_receipt_storage_corrupt')
+    return ReviewReceiptProjection.model_validate(dict(
+        format='workflow-review-receipt@1', receipt_id=receipt['id'],
+        **{key: receipt[key] for key in ('request_id', 'submission_id', 'submission_digest',
+            'assignment_generation', 'request_scope_digest', 'outcome', 'created_at')},
+        findings_bytes_base64=command['findings_bytes_base64'],
+        findings_digest=command['findings_digest'])).model_dump()
+
+
 def parse_human_review(command: object) -> dict:
     # Reuse the existing raw UTF8/base64 bounds, without entering the agent stage lane.
     from runtime.workflows.review_dispatch import parse_stage
@@ -257,7 +289,7 @@ class WorkflowReviewReceiptStore:
         self.org.workflow_activations._principal(principal)
 
     async def admit_human(self, *, principal: WorkflowTemplatePrincipal, command: object) -> dict:
-        """Sign only with current server bearer proof; no public adapter exists in this unit."""
+        """Sign only with current server bearer proof in the existing guarded writer."""
         from runtime.infrastructure.workflow_schema import _handoff_record, require_author_handoff_schema
         from runtime.workflows.review_dispatch import _same_value
         from runtime.workflows.submissions import validate_handoff_graph

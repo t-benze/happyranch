@@ -1,5 +1,35 @@
 # Features And Invariants
 
+**U3b(d) human public write and selected signed read — same THR139 authority.**
+POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` mounts ONLY the
+existing `admit_human` guarded writer through the server-derived Founder-bearer
+principal. The retained closed HumanReviewCommand selects one request; no query
+proof, body actor, task/session/result or agent lane is accepted. HTTP200 returns
+the original immutable receipt on an exact actor/key/full-payload retry;
+changed payload conflicts409. Peers/findings and all-current collection remain
+owned by the existing writer. Generic pinned kinds/outcomes/recipients and complete
+contributor independence govern. The explicit `workflow-review-receipt@1` response
+contains only receipt/request/submission identity and digests, generation,
+outcome, original timestamp and that recipient's findings encoding/digest.
+Private proof, admission/pins, unrelated inputs, peer findings and credentials
+are excluded.
+
+Existing request GET admits pending and genuine signed rows with the SAME
+selected human or actual CURRENT reviewer-session predicates. Current grant
+selection still precedes private H storage; binding leases, authority writer,
+after-wait rechecks and full receipt/graph validation remain. Historical proof
+never keeps an expired session or grants owner access. Response status is the
+real request row: pending/signed=false/pending=true/receipt=null, or approved or
+changes_requested/signed=true/pending=false/receipt=the safe projection. Stored
+scope/brief bytes, including the historical unsigned-purpose literal, are unchanged.
+Server served models/OpenAPI, CLI and shared TS agree. Agent-stage/direct-submit
+public routes and additional native denial remain deferred; native rules and
+client.ts are unchanged. No owner-resolution/revision/reassignment writer or new
+owner-read audience. Behavioral/proof results are UNEXECUTED/FOUNDER-WAIVED429/430;
+root-owned real two-template public smoke465 remains required before invitation.
+The draft stays dependency-incomplete/unaccepted/unmerged pending manager assessment,
+full cumulative independent review, honest same-head QA and guarded merge.
+
 **U3b(a) internal agent checkpoint — THR139 D5/G395/generic410/H445/457/465.**
 `WorkflowReviewDispatcher.stage_review` is an internal operation; no public or
 native stage surface is mounted. Its closed `workflow-review-stage-command@1`
@@ -31,9 +61,9 @@ The native terminal hook and existing lifespan/reaper discovery consume committe
 results without another scheduler, host launch or PID/TTL inference. Roles and
 outcomes come from pinned template data, including agent-looking human labels.
 
-Public human write/stage transport and signed-request CLI/TS/native parity and
-root-owned two-template public scratch smoke465 remain dependencies. Existing
-public GET selects pending requests only. Collection below is internal backend
+U3b(d) above mounts human write and genuine selected signed GET. Agent-stage/
+direct-submit public routes and extra native denial remain deferred. Root-owned
+two-template public scratch smoke465 remains a dependency. Collection below is internal backend
 work; keep the draft unaccepted/unmerged.
 
 **U3b(b) internal human receipt checkpoint — same THR139 authority.**
@@ -81,9 +111,8 @@ and consumes all-current collection below. No human task/session/result/current
 assignment, agent receipt_evidence bridge, F5 stage or host-terminal proof exists.
 Peers/findings remain immutable. Matched readers accept pending and signed rows.
 
-Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
-parity with exact public/deny dispositions is the following unit. This internal
-producer has no public caller yet; existing pending-only GET is unchanged.
+U3b(d) above is the human public caller and selected pending/signed read adapter.
+Reviewer-stage/direct-submit public routes and extra native denial remain deferred.
 All human behavior/proof execution remains UNEXECUTED; retained agent source
 is not accepted proof. Root-owned real two-template public scratch smoke465 is
 required before Founder invitation and remains separate from daily Product E2E.
@@ -135,8 +164,8 @@ reconciliation. Internal collection current validity/approved-use
 reports source/authority holds and owner reconciliation independently of retained
 joined history. A historical join cannot authorize fresh use; explicit durable
 owner resolution/revision/reassignment remains U4. All lifecycle/proof cases are
-source-inspected only, UNEXECUTED/FOUNDER-WAIVED139429/430. Public parity and root
-smoke465 are still required before Founder invitation.
+source-inspected only, UNEXECUTED/FOUNDER-WAIVED139429/430. Deferred public-stage disposition and root
+smoke465 remain dependencies; smoke465 is required before Founder invitation.
 
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.

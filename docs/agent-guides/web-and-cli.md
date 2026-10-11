@@ -3,8 +3,10 @@
 U3a(c) mounts the H/@3 public handoff and unsigned selected-request surfaces,
 with CLI/TypeScript/OpenAPI/native mirrors and F5 callback/replay/cancellation/
 portability owner selection. Direct-submit/reviewer-stage public/deny deferral
-remains. Requests and real callbacks are unsigned; genuine receipts and joins
-remain later units. Independent same-head assessment, unconditional Source Boundary Lint and
+remains. Callbacks alone are unsigned. U3b(d) mounts the existing human bearer
+writer and selected pending/signed reads with recipient-safe receipts and findings;
+matching closed served models/OpenAPI/CLI/shared TS ship. Stored scope/brief bytes
+remain unchanged. Native rules and client.ts are unchanged. Independent same-head assessment, unconditional Source Boundary Lint and
 Web Lint (Node 24) under THR291 seq69,
 manager-owned two-template public smoke and operator acceptance remain pending.
 Source parity is not behavioral PASS or native reachability authority.
@@ -1472,7 +1474,7 @@ Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org 
 
 ### U3a(c) public handoff and unsigned request surfaces
 
-The stacked draft serves only POST `/workflows/submissions/handoffs`, GET
+The U3a(c) historical checkpoint initially served POST `/workflows/submissions/handoffs`, GET
 `/workflows/submissions/handoffs/{handoff_id}` and GET
 `/workflows/reviews/requests/{request_id}`, under `/api/v1/orgs/{slug}`.
 Matched `@3` activation request/receipt schemas coexist with historical `@1/@2`.
@@ -1524,8 +1526,9 @@ reconciliation_required, reason and graph; graph is null unless currently
 consumed-authorized and then holds submission_id, round_id, request_ids and every
 actual configured agent reviewer_task_id in declared role order (0..3).
 Private source, admission, result, host, capability and input bytes never enter
-an H receipt. Unsigned request receipts instead expose the pinned document and
-only the selected recipient's inputs; they are pending with signed=false.
+an H receipt. Request receipts expose the pinned document and only the selected recipient's
+inputs. U3b(d) derives real pending/signed status and the safe selected receipt;
+the immutable scope purpose literal still says unsigned and is never rewritten.
 Callbacks preserve actual execution evidence and never sign a review.
 
 CLI commands are `workflows submissions stage --org ORG --session-id SID
@@ -1542,9 +1545,55 @@ through the unchanged shared client.ts. Bearer-sending agent TS calls expect403;
 owner reads can return200. One logical operation uses one endpoint fetch, with
 only the existing generic first401 token refresh permitting a second fetch of
 the same URL/body/key. Domain403/409 and response loss do not replay operations.
-Method/path classification includes the common GETs and excludes only the agent
-POST. SurfaceAllowList denies that exact normalized/prefixed POST, adding no GET
-grant or broader permission change. Actual operator UI, genuine receipts/joins,
-revisions/reassignment/recovery and independent acceptance remain later units;
+Method/path classification includes the common GETs and U3b(d) human POST, and
+excludes the agent handoff POST. SurfaceAllowList denies that exact normalized/prefixed POST, adding no GET
+grant or broader permission change. Actual operator UI, revisions/reassignment/recovery and independent acceptance
+remain later units; genuine receipts/joins remain dependency-incomplete;
 the manager-owned same-runtime two-template public smoke is required before
 Founder invitation. Source parity is not behavioral verification.
+
+### U3b(d) human write and selected signed request
+
+POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` uses the existing
+Founder bearer with no query proof or body principal. The body is exactly
+`workflow-human-review-command@1`, action `sign-review`, operation_key/request_id
+tokens (1..128 `[A-Za-z0-9._:-]`), strict integer expected_revision=1, lowercase
+SHA256 request_scope_digest, declared outcome approved or changes_requested,
+canonical findings_bytes_base64 (4..1398104 characters, 1..1048576 decoded UTF8
+bytes) and lowercase findings_digest. The whole command is <=2097152 bytes.
+The existing guarded writer revalidates current authority/recipient/contributor
+independence and owns collect-all. Exact current actor/key/full-payload retry
+returns HTTP200 with the original immutable receipt; changed payload/key or
+cross-request key reuse conflicts409. First response preserves peers. Agent
+labels cannot select this lane; wrong pinned kind/nonrecipient is invisible404.
+
+The closed response is `{format:workflow-human-review-receipt@1,receipt}`.
+Receipt has exactly format=workflow-review-receipt@1, receipt_id, request_id,
+submission_id, submission_digest, assignment_generation=1, request_scope_digest,
+outcome, findings_bytes_base64, findings_digest and original created_at (1..64
+characters). No private proof/pins/admission, unrelated inputs, peer findings or
+credentials are returned. GET `/workflows/reviews/requests/{request_id}` retains
+exactly session_id OR proof_kind=human. Full genuine receipt/graph closure follows
+current recipient/session/grant admission, with binding lease and after-wait
+checks. Pending returns status=pending/signed=false/pending=true/receipt=null;
+signed returns status=approved|changes_requested/signed=true/pending=false and
+the safe receipt. Reconciliation remains an independent current flag. Expired
+reviewer sessions cannot read signed history. No owner audience is added.
+The saved unsigned-purpose text and stored brief bytes stay immutable.
+
+Malformed/oversized/duplicate/unknown/mixed selectors or JSON refuse422; body
+identity/proof fields refuse403. Domain conflicts409, grant/contributor/auth
+refusals403, invisible request404 and category-only storage failures500 are
+distinct. Existing human_only detail and authority/schema owner guidance remain.
+CLI `happyranch workflows reviews sign --org ORG --from-file /absolute/command.json
+[--json]` uses Founder transport and forwards the retained command once.
+Existing `workflows submissions request-show R --org ORG --proof-kind human`
+(or --session-id SID) prints actual status/signed/pending. Syntax/file errors
+exit2, domain/transport errors exit1, success exit0. No new automatic retry.
+Shared `workflowReviews.signHumanReview` and getWorkflowReviewRequest plus all
+command/receipt/error types export through the existing api index. client.ts
+retains the sole generic first401 refresh; 403/409/response loss cannot invent
+a new operation. Static classification includes the human POST. Agent-stage/
+direct-submit routes/additional native denial remain deferred; native rules
+and reachability are unchanged. All behavioral/proof results UNEXECUTED under
+429/430; source parity is not acceptance, and root public smoke465 remains required.

@@ -310,16 +310,57 @@ def cmd_workflow_handoff(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(result, sort_keys=True))
     elif args.handoff_command == "request-show":
-        print(f"{result['request_id']}: unsigned pending={str(result['pending']).lower()}")
+        print(f"{result['request_id']}: {result['status']} signed={str(result['signed']).lower()} "
+              f"pending={str(result['pending']).lower()}")
     else:
         current = result['current']
         print(f"{result['core']['handoff_id']}: {current['state']} {current['reason']} "
               f"pending={str(current['pending']).lower()} reconciliation_required={str(current['reconciliation_required']).lower()}")
 
 
+def _human_review_payload(path: str) -> dict:
+    from fastapi import HTTPException
+    from runtime.daemon.routes.workflow_reviews import decode_human_command
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            raise ValueError('absolute path required')
+        with absolute.open('rb') as source:
+            return decode_human_command(source.read(2097153))
+    except (OSError, ValueError, HTTPException) as exc:
+        print('error: human review requires an absolute --from-file path containing a closed JSON command', file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def cmd_workflow_human_review(args: argparse.Namespace) -> None:
+    body = _human_review_payload(args.from_file)
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    try:
+        client = _founder_client()
+        response = client.post(f'/api/v1/orgs/{slug}/workflows/reviews/human-receipts', json=body)
+    except httpx.HTTPError as exc:
+        print('error: workflow review transport unavailable; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code != 200:
+        _print_error(response)
+    result = response.json()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        receipt = result['receipt']
+        print(f"{receipt['request_id']}: {receipt['outcome']} signed=true receipt={receipt['receipt_id']}")
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    reviews = workflow_sub.add_parser('reviews', help='Sign an existing selected human review request')
+    review_sub = reviews.add_subparsers(dest='review_command', required=True)
+    sign = review_sub.add_parser('sign', help='Submit a Founder-bearer human receipt')
+    sign.add_argument('--org', required=True)
+    sign.add_argument('--from-file', required=True)
+    sign.add_argument('--json', action='store_true')
+    sign.set_defaults(func=cmd_workflow_human_review)
     submissions = workflow_sub.add_parser("submissions", help="Stage original-current output and read safe handoff receipts")
     handoff_sub = submissions.add_subparsers(dest="handoff_command", required=True)
     for form in ("stage", "show", "request-show"):

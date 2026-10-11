@@ -1,5 +1,35 @@
 # Orchestrator Contracts
 
+**U3b(d) human public write and selected signed read — same THR139 authority.**
+POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` mounts ONLY the
+existing `admit_human` guarded writer through the server-derived Founder-bearer
+principal. The retained closed HumanReviewCommand selects one request; no query
+proof, body actor, task/session/result or agent lane is accepted. HTTP200 returns
+the original immutable receipt on an exact actor/key/full-payload retry;
+changed payload conflicts409. Peers/findings and all-current collection remain
+owned by the existing writer. Generic pinned kinds/outcomes/recipients and complete
+contributor independence govern. The explicit `workflow-review-receipt@1` response
+contains only receipt/request/submission identity and digests, generation,
+outcome, original timestamp and that recipient's findings encoding/digest.
+Private proof, admission/pins, unrelated inputs, peer findings and credentials
+are excluded.
+
+Existing request GET admits pending and genuine signed rows with the SAME
+selected human or actual CURRENT reviewer-session predicates. Current grant
+selection still precedes private H storage; binding leases, authority writer,
+after-wait rechecks and full receipt/graph validation remain. Historical proof
+never keeps an expired session or grants owner access. Response status is the
+real request row: pending/signed=false/pending=true/receipt=null, or approved or
+changes_requested/signed=true/pending=false/receipt=the safe projection. Stored
+scope/brief bytes, including the historical unsigned-purpose literal, are unchanged.
+Server served models/OpenAPI, CLI and shared TS agree. Agent-stage/direct-submit
+public routes and additional native denial remain deferred; native rules and
+client.ts are unchanged. No owner-resolution/revision/reassignment writer or new
+owner-read audience. Behavioral/proof results are UNEXECUTED/FOUNDER-WAIVED429/430;
+root-owned real two-template public smoke465 remains required before invitation.
+The draft stays dependency-incomplete/unaccepted/unmerged pending manager assessment,
+full cumulative independent review, honest same-head QA and guarded merge.
+
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > Product contracts are unchanged; replacement E2E is PENDING. See
@@ -78,8 +108,8 @@ with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
 cancellation and portability owner selection. This complete U3a composition remains
 unaccepted pending renewed independent same-head assessment and current static gates.
 Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
-receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
-acceptance remain later units. Full independent review, honest same-head QA,
+receipts/joins are the dependency-incomplete U3b checkpoint; revisions/reassignment/
+recovery, mounted operator UI and operator acceptance remain later units. Full independent review, honest same-head QA,
 unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
 manager guarded merge remain required under THR291 seq69. Actual CLI callback
 sources and isolation fences remain retained; execution is not a merge check.
@@ -2244,7 +2274,8 @@ history. Closed objection rounds keep an owner revision drain blocker. Existing
 reaper discovery consumes missed-last-response collection and proceeds past
 ordinary held items while exposing corruption; no parallel scheduler. The H
 completed-source fulfillment remains; deferred active direct-submit is unproven.
-Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
-parity with exact public/deny disposition and root-owned public smoke465 remain
-later dependencies; keep the draft unaccepted/unmerged. See the
+U3b(d) mounts human public write and selected signed reads with explicit safe
+projection and matching served/CLI/shared-TS models. Agent-stage/direct-submit
+public routes and extra native denial remain deferred; root public smoke465 and
+later owner/revision/recovery/UI acceptance remain dependencies; keep the draft unaccepted/unmerged. See the
 exact internal grammar in [Features And Invariants](features-and-invariants.md).

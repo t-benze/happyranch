@@ -733,8 +733,6 @@ class WorkflowSubmissionStore:
                         task_agent: tuple[str, str] | None, session_id: str | None,
                         human: bool, owner: WorkflowTemplatePrincipal | None = None,
                         include_signed: bool = False) -> tuple[dict, dict, dict]:
-        if include_signed and (not human or owner is None):
-            raise WorkflowActivationError('workflow_review_request_not_found')
         self._read_schema_presence(conn)
         status = "status IN ('pending','approved','changes_requested')" if include_signed else "status='pending'"
         requests = _records(conn, f"SELECT * FROM workflow_review_requests WHERE id=? AND {status} "
@@ -813,13 +811,23 @@ class WorkflowSubmissionStore:
                             self.org.workflow_reviews._intent(conn, task_agent[0])
                         return self._projection(conn, row, capture, replayed=True)
 
-    async def get_request(self, *, request_id: str, session_id: str | None, human: bool) -> dict:
+    async def get_request(self, *, request_id: str, session_id: str | None, human: bool,
+                          principal: WorkflowTemplatePrincipal | None = None) -> dict:
+        if human:
+            if principal is None or session_id is not None:
+                raise WorkflowActivationError('workflow_author_handoff_read_not_authorized')
+            self.org.workflow_review_receipts._human_principal(principal)
+        elif principal is not None or session_id is None:
+            raise WorkflowActivationError('workflow_author_handoff_read_not_authorized')
         task_agent = self._session(session_id) if session_id is not None else None
-        selection = dict(request_id=request_id, task_agent=task_agent, session_id=session_id, human=human)
+        selection = dict(request_id=request_id, task_agent=task_agent, session_id=session_id,
+                         human=human, include_signed=True)
         with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
             with self.db._lock:
                 if session_id is not None:
                     self._session(session_id)
+                if principal is not None:
+                    self.org.workflow_review_receipts._human_principal(principal)
                 self._select_request(self.db._conn, **selection)
         capture = self.org.workflow_authority.capture_admission()
         async with self._lock:
@@ -828,10 +836,14 @@ class WorkflowSubmissionStore:
                     with self.db._lock:
                         if session_id is not None:
                             self._session(session_id)
+                        if principal is not None:
+                            self.org.workflow_review_receipts._human_principal(principal)
                         self._select_request(self.db._conn, **selection)
                     with self.org.workflow_authority.admission_writer(capture) as conn:
                         if session_id is not None:
                             self._session(session_id)
+                        if principal is not None:
+                            self.org.workflow_review_receipts._human_principal(principal)
                         request, row, intent = self._select_request(conn, **selection)
                         self._authority(conn, intent, capture, {'collect-review'})
                         require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
@@ -839,13 +851,24 @@ class WorkflowSubmissionStore:
                         if scope['kind'] != ('human' if human else 'agent'):
                             raise ValueError('workflow_author_handoff_storage_corrupt')
                         proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
-                        validate_handoff_graph(conn, row, proof)
+                        graph = validate_handoff_graph(conn, row, proof)
+                        if graph is None or request_id not in graph['request_ids']:
+                            raise ValueError('workflow_author_handoff_storage_corrupt')
                         if not human:
                             self.org.workflow_reviews._intent(conn, task_agent[0])
                         current = self._projection(conn, row, capture, replayed=True)['current']
+                        signed = request['status'] != 'pending'
+                        receipt = None
+                        if signed:
+                            from runtime.workflows.review_receipts import recipient_receipt
+                            receipts = _records(conn, 'SELECT * FROM workflow_review_receipts WHERE request_id=?', (request_id,))
+                            if len(receipts) != 1:
+                                raise ValueError('workflow_author_handoff_storage_corrupt')
+                            receipt = recipient_receipt(receipts[0])
                         return dict(format='workflow-review-request-receipt@1', request_id=request_id,
-                            scope=scope, request_scope_digest=request['request_scope_digest'], status='pending',
-                            signed=False, pending=True, reconciliation_required=current['reconciliation_required'],
+                            scope=scope, request_scope_digest=request['request_scope_digest'], status=request['status'],
+                            signed=signed, pending=not signed, receipt=receipt,
+                            reconciliation_required=current['reconciliation_required'],
                             submission_bytes_base64=base64.b64encode(row['candidate_bytes']).decode('ascii'))
 
     async def discover_completed_handoffs(self, queue: Any) -> None:
