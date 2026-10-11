@@ -28,6 +28,8 @@ vi.mock('react-router-dom', async () => {
 vi.mock('@/lib/api', () => ({
   subscribeSSE: vi.fn(() => Promise.resolve()),
   tasks: {
+    pauseTask: vi.fn(() => Promise.resolve({ changed: true })),
+    resumeTask: vi.fn(() => Promise.resolve({ changed: true })),
     cancelTask: vi.fn(() => Promise.resolve({ ok: true })),
     revisitTask: vi.fn(() => Promise.resolve({ ok: true })),
     resolveEscalation: vi.fn(() => Promise.resolve({ ok: true })),
@@ -130,4 +132,19 @@ describe('realTasksApi status mutations invalidate every task-list family + deta
     expectAllListFamiliesInvalidated(qc);
     expect(isInvalidated(qc, DETAIL_KEY)).toBe(true);
   });
+});
+
+// P18c: provider cache propagation is a separate risk from UI wire bodies.
+it.each(['usePauseTask', 'useResumeTask'] as const)('%s refreshes every list/detail/overview only for the selected org', async (name) => {
+  const qc = makeClient();
+  const child = ['task', SLUG, 'CHILD-1'];
+  const overview = ['tasks-pause-overview', SLUG, { before: 'opaque-cursor' }];
+  const foreignDetail = ['task', 'other-org', TASK_ID];
+  const foreignOverview = ['tasks-pause-overview', 'other-org'];
+  for (const key of [child, overview, foreignDetail, foreignOverview]) qc.setQueryData(key, { seeded: true });
+  const { result } = renderHook(() => realTasksApi[name](TASK_ID), { wrapper: wrapper(qc) });
+  await act(async () => { await result.current.mutateAsync({ expected_generation: 6 }); });
+  expectAllListFamiliesInvalidated(qc);
+  for (const key of [DETAIL_KEY, child, overview]) expect(isInvalidated(qc, key)).toBe(true);
+  for (const key of [foreignDetail, foreignOverview]) expect(isInvalidated(qc, key)).toBe(false);
 });

@@ -32,6 +32,13 @@ function client() {
   qc.setQueryDefaults(['dashboard-summary'], { staleTime: Infinity });
   qc.setQueryData(['orgs'], orgs);
   for (const slug of ['org-a', 'org-b']) {
+    // Independent overview fixture: C13/C07 isolate the original list reader.
+    // Dedicated P18/G10 tests own overview transport, empty/error and pagination.
+    const overviewKey = ['tasks-pause-overview', slug, undefined];
+    qc.setQueryDefaults(overviewKey, { staleTime: Infinity, refetchInterval: false });
+    qc.setQueryData(overviewKey, { org_slug: slug, observed_at: '2026-10-11T00:00:00Z', evidence_complete: true,
+      counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [] });
+
     qc.setQueryData(['dashboard-summary', slug], summary);
     // These acceptance cases exercise the ordinary roots reader's recovery
     // contract. Seed an exhausted, fresh attention reader so its independent

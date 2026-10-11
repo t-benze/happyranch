@@ -29,6 +29,7 @@ import {
   TaskListRow,
   severityRollupStatus,
 } from './TaskListRow';
+import { TaskPauseOverview } from './TaskPauseOverview';
 import { useTasksRootsInfinite, useTasksRoutes } from '@/hooks/tasks';
 import type { TaskRecord } from '@/lib/api/types';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
@@ -420,6 +421,7 @@ function TasksList({ groupBy, setGroupBy, filters, setFilters }: {
           </Button>
           </div>
         </div>
+        <TaskPauseOverview key={routes.inbox()} />
         {filterOpen && (
           <form aria-label={t('tasks.filters.label')} className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(event) => {
             event.preventDefault();
