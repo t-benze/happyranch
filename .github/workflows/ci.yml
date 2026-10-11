@@ -448,11 +448,49 @@ jobs:
           print(json.dumps(record, sort_keys=True), flush=True)
           (root/'command.json').write_text(json.dumps(record, sort_keys=True))
           with (root/'pytest-output.log').open('w') as log:
-              process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-              for line in process.stdout:
-                  print(line, end='', flush=True); log.write(line); log.flush()
-              record['exit'] = process.wait()
-          (root/'command.json').write_text(json.dumps(record, sort_keys=True))
+              import signal, threading
+              process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                         text=True, start_new_session=True)
+              drain_errors = []
+              def drain():
+                  try:
+                      for line in process.stdout:
+                          print(line, end='', flush=True); log.write(line); log.flush()
+                  except Exception as exc:
+                      drain_errors.append(repr(exc))
+              reader = threading.Thread(target=drain, daemon=True)
+              reader.start()
+              previous = {}
+              interrupted = {}
+              def forward(signum, frame):
+                  interrupted['signal'] = signum
+                  record.update(exit=128+signum, interruption=signum)
+                  (root/'command.json').write_text(json.dumps(record, sort_keys=True))
+                  try: os.killpg(process.pid, signum)
+                  except ProcessLookupError: pass
+              try:
+                  for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                      previous[signum] = signal.signal(signum, forward)
+                  try:
+                      record['exit'] = process.wait(timeout=75*60)
+                  except subprocess.TimeoutExpired:
+                      record.update(exit=124, deadline_seconds=75*60)
+                      os.killpg(process.pid, signal.SIGTERM)
+                      try: process.wait(timeout=30)
+                      except subprocess.TimeoutExpired:
+                          os.killpg(process.pid, signal.SIGKILL); process.wait(timeout=5)
+                  if interrupted:
+                      record['exit'] = 128 + interrupted['signal']
+              finally:
+                  record.setdefault('exit', 1)
+                  for signum, handler in previous.items(): signal.signal(signum, handler)
+                  reader.join(timeout=10)
+                  if reader.is_alive():
+                      record.update(exit=record.get('exit') or 1, output_drain_incomplete=True)
+                  if drain_errors:
+                      record.update(exit=record.get('exit') or 1, output_drain_errors=drain_errors)
+                  with (root/'command.json').open('w') as receipt:
+                      json.dump(record, receipt, sort_keys=True); receipt.flush(); os.fsync(receipt.fileno())
           raise SystemExit(record['exit'])
           PY
       - name: Retain success and adverse receipts

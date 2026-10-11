@@ -582,6 +582,15 @@ See [the reset coverage gap record](docs/python-test-reset.md) and
 
 ## Commands
 
+PR1022's TASK10553 continuation retains the seven finite hosted L/W shards and
+all 224 C4 parameters. Feature-only phase tracebacks/checkpoints survive earlier
+than final teardown; parent/command inner deadlines fail visibly within the
+unchanged 90-minute hosted limit. W10 retains exact accessible unforced worker
+selection using observed adjacent agent/team text. Held M fixtures no longer
+import retired unit helpers, but M/restore/reboot/paired-observer/causal/repetition
+proof remains absent. See docs/local-ci.md and the roster migration runbook;
+no feature or maintenance readiness follows from source correction.
+
 OpenAPI operator (no tests/lifespan): `uv run python scripts/generate_openapi_snapshot.py --check`
 (default, non-writing), or explicit reviewed `uv run python scripts/generate_openapi_snapshot.py --write`
 (atomic snapshot replacement).

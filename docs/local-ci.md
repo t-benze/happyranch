@@ -71,8 +71,8 @@ selection through `tests/helpers/integration_parent.py`.
 
 ## PR1022 finite roster L/W entry
 
-Engineering_manager TASK10394's current scope-bound brief, citing Founder
-THR296seq24, releases the finite selections in `pr1022-roster-selected` in
+Engineering_manager TASK10553's continuation contract, citing Founder
+THR296seq24/37, retains the finite selections in `pr1022-roster-selected` in
 `.github/workflows/ci.yml`. Only same-repository pull requests numbered 1022
 with head branch `task/TASK-10430` run it. Normal publication starts it; it has
 no dispatch inputs, main-push execution or scheduled execution. Existing Web,
@@ -192,6 +192,32 @@ are excluded. Each shard uploads adverse and successful logs/receipts with
 run/attempt identity. Missing/incompatible tooling is an environment failure;
 submission, metadata, a prior-head receipt or binding refusal is not scenario
 PASS or a causal RED.
+
+The feature parent checkpoints owned scenario files every ten seconds and
+retains `.happyranch/daemon.log` before fixture teardown. Each selected feature
+case appends and fsyncs start/setup/call/teardown outcomes, durations and actual
+tracebacks to `pytest-phases.jsonl`. A start without a terminal phase is
+incomplete evidence. `parent-checkpoint.json` binds in-progress file snapshots,
+including partial logs, and has no exit/outcome claim. The final parent receipt
+remains separate; retention errors fail visibly and are recorded in the receipt.
+SIGKILL can leave only the last checkpoint and phase prefix, never a final PASS.
+
+Feature-only deadlines are 70 minutes for pytest inside the parent and 75
+minutes for the workflow command; the existing hosted cap remains 90 minutes.
+The parent first interrupts pytest for fixture cleanup, then closes its exact
+owned group. Deadline exit124 and catchable signal exits remain failures even
+if subsequent cleanup exits0. Native reentry completions/release waits are
+bounded at 60 seconds, writer/cancellation release waits at 180 seconds; missing
+barriers fail without advancing the original scenario oracle. All 224 C4
+parameters remain selected. These diagnostics address missing failure evidence;
+they do not establish the cause or repair of run38039978998's C4 failures.
+
+W10's exact accessible option name is `consultant_headdefault` (and equivalently
+`consultant_codexdefault`): adjacent text spans have no separating text-space.
+Actual fe94 DOM/AX/hit-test receipts establish this locator correction. Visible
+unforced role-option selection and every original request/readback/focus oracle
+remain required for all four locale/viewport cases. New-head screenshots and
+behavioral success remain pending; the locator premise failure is not product RED.
 
 This entry first collects genuine finite baseline/failure. Accepted causal
 controls, byte-restoration/GREEN, five isolated and five affected-sibling

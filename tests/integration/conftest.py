@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -17,6 +18,34 @@ from tests.helpers.deterministic_plan import DeterministicPlan
 
 if TYPE_CHECKING:
     from runtime.orchestrator.agent_def import AgentDef
+
+
+def _roster_phase_receipt(nodeid: str, **fields: object) -> None:
+    """Flush feature outcomes/tracebacks before fixture or process loss."""
+    if not nodeid.startswith(('tests/integration/test_human_team_roster_e2e.py::',
+                              'tests/integration/test_human_team_roster_browser.py::')):
+        return
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    if 'roster' not in binding:
+        return
+    output = Path(binding['roster']['output'])
+    row = {'nodeid': nodeid, 'source_sha': binding['revision'],
+           'time_ns': time.time_ns(), 'pid': os.getpid(), **fields}
+    with (output / 'pytest-phases.jsonl').open('a') as log:
+        log.write(json.dumps(row, sort_keys=True) + '\n')
+        log.flush()
+        os.fsync(log.fileno())
+
+
+def pytest_runtest_logstart(nodeid: str, location: tuple) -> None:
+    _roster_phase_receipt(nodeid, phase='start', outcome='in_progress')
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    _roster_phase_receipt(report.nodeid, phase=report.when, outcome=report.outcome,
+                          duration=report.duration, traceback=report.longreprtext,
+                          sections=report.sections)
 
 
 def pytest_configure(config):

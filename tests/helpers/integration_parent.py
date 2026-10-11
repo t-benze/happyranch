@@ -5,6 +5,7 @@ Only the ordinary pytest selection is accepted. This is not a proof driver.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 
 PROVIDERS = ("claude", "codex", "opencode")
 
@@ -313,36 +315,50 @@ def expose_roster(root: Path, env: dict[str, str], binding: dict) -> None:
     print(json.dumps({"kind": "integration-parent-roster-bindings", "binding": binding}, sort_keys=True), flush=True)
 
 
-def retain_roster(root: Path, binding: dict, source: Path, revision: str, code: int) -> None:
+def retain_roster(root: Path, binding: dict, source: Path, revision: str,
+                  code: int | None, *, terminal: bool = True) -> None:
     output = Path(binding["output"])
     inventory = []
+    errors = []
     # Keep only owned scenario evidence, never fixture credentials/config/DBs.
     for path in sorted((root / "tmp").rglob("*")):
         if (path.is_symlink() or not path.is_file() or path.stat().st_uid != os.getuid()
                 or not ((path.name.startswith("C") and path.suffix in (".json", ".png"))
                         or path.name in ("identities.jsonl", "actual-contexts.jsonl",
                                          "C-fixture-daemon.log", "real-failed-daemon.log")
+                        or (path.name == 'daemon.log' and path.parent.name == '.happyranch')
                         or path.name.endswith(".calls.jsonl")
                         or path.name.startswith("real-failed-cut.json"))):
             continue
         relative = path.relative_to(root / "tmp")
         target = output / "scenarios" / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
-        inventory.append({"original_path": str(path), "path": str(target.relative_to(output)), "sha256": digest(target), "bytes": target.stat().st_size})
+        try:
+            pending = target.with_name(target.name + '.pending')
+            shutil.copyfile(path, pending)
+            with pending.open('rb') as stream:
+                os.fsync(stream.fileno())
+            pending.replace(target)
+            inventory.append({"original_path": str(path), "path": str(target.relative_to(output)), "sha256": digest(target), "bytes": target.stat().st_size})
+        except OSError as exc:
+            errors.append({'path': str(path), 'error': repr(exc)})
     c4_selected = ROSTER_E2E + "test_c4_normal_and_recovered_verdict_attribution" in binding["selections"]
-    if c4_selected or any(node.startswith(ROSTER_E2E + name) for node in binding["selections"]
+    if terminal and (c4_selected or any(node.startswith(ROSTER_E2E + name) for node in binding["selections"]
                          for name in ("test_c2_owner_required_before_persistence",
-                                      "test_c7_both_resume_resets_and_worker_contexts")):
+                                      "test_c7_both_resume_resets_and_worker_contexts"))):
         # Independent final durable readback after the actual child/fixture tail;
         # native cut witnesses above retain earlier phases. This is not PASS.
         for db in sorted((root / "tmp").rglob("happyranch.db")):
             if db.is_symlink() or db.stat().st_uid != os.getuid():
                 raise ValueError("roster_c4_owned_readback_required")
-            with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True) as reader:
-                reader.row_factory = sqlite3.Row
-                tables = {name: [dict(row) for row in reader.execute('SELECT * FROM "' + name + '" ORDER BY rowid')]
-                          for name in ("tasks", "task_results", "audit_log", "task_completion_recoveries", "jobs")}
+            try:
+                with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=1)) as reader:
+                    reader.row_factory = sqlite3.Row
+                    tables = {name: [dict(row) for row in reader.execute('SELECT * FROM "' + name + '" ORDER BY rowid')]
+                              for name in ("tasks", "task_results", "audit_log", "task_completion_recoveries", "jobs")}
+            except sqlite3.Error as exc:
+                errors.append({'path': str(db), 'error': repr(exc)})
+                continue
             name = "C4-final-durable-readback.json" if c4_selected else "C-fixture-final-durable-readback.json"
             target = output / "scenarios" / db.relative_to(root / "tmp").parent / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -350,9 +366,21 @@ def retain_roster(root: Path, binding: dict, source: Path, revision: str, code: 
                 "meaning": "actual final readback; see child exit/assertions and native witnesses"},
                 sort_keys=True, default=lambda value: {"bytes_hex": value.hex()}))
             inventory.append({"original_path": str(db), "path": str(target.relative_to(output)), "sha256": digest(target), "bytes": target.stat().st_size})
-    receipt = {"source": str(source), "revision": revision, "exit": code, "binding": binding, "artifacts": inventory}
-    (output / "parent-receipt.json").write_text(json.dumps(receipt, sort_keys=True))
-    print(json.dumps({"kind": "integration-parent-roster-artifacts", "receipt": receipt}, sort_keys=True), flush=True)
+    receipt = {"source": str(source), "revision": revision, "exit": code,
+               "terminal": terminal, "time_ns": time.time_ns(),
+               "meaning": "terminal readback" if terminal else "in-progress file snapshot; no outcome inferred",
+               "binding": binding, "artifacts": inventory, "retention_errors": errors}
+    name = "parent-receipt.json" if terminal else "parent-checkpoint.json"
+    pending = output / (name + ".pending")
+    with pending.open('w') as stream:
+        json.dump(receipt, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    pending.replace(output / name)
+    if terminal:
+        print(json.dumps({"kind": "integration-parent-roster-artifacts", "receipt": receipt}, sort_keys=True), flush=True)
+    if errors:
+        raise RuntimeError('roster artifact retention failed: ' + json.dumps(errors))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -397,12 +425,41 @@ def main(argv: list[str] | None = None) -> int:
                                  cwd=source, start_new_session=True)
         previous = {}
         code = 1
+        # Feature-only inner bound leaves cleanup/upload time under the
+        # unchanged 90-minute hosted cap. Default/canonical parent is unchanged.
+        deadline = time.monotonic() + 70 * 60
+        interrupted = {}
         def forward(signum, frame):
-            os.killpg(child.pid, signum)
+            if binding is not None:
+                interrupted.update(signal=signum, deadline=time.monotonic() + 10)
+            try:
+                os.killpg(child.pid, signal.SIGINT if binding is not None else signum)
+            except ProcessLookupError:
+                pass
         try:
             for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
                 previous[signum] = signal.signal(signum, forward)
-            code = child.wait()
+            if binding is None:
+                code = child.wait()
+            else:
+                while True:
+                    try:
+                        code = child.wait(timeout=10)
+                        break
+                    except subprocess.TimeoutExpired:
+                        retain_roster(Path(directory), binding, source, revision, None, terminal=False)
+                        if time.monotonic() >= interrupted.get('deadline', deadline):
+                            code = 128 + interrupted['signal'] if interrupted else 124
+                            print(json.dumps({'kind': 'roster-parent-deadline', 'exit': code,
+                                'seconds': 70 * 60, 'interruption': interrupted}), flush=True)
+                            os.killpg(child.pid, signal.SIGINT)
+                            try:
+                                child.wait(timeout=20)
+                            except subprocess.TimeoutExpired:
+                                pass
+                            break
+                if interrupted:
+                    code = 128 + interrupted['signal']
             return code if code >= 0 else 128 - code
         finally:
             for signum, handler in previous.items():

@@ -167,8 +167,10 @@ Current C3/C5 fixture ownership is integration-only
 literal DATA/seed behavior, an independent valid product definition for the real
 worker denial, and inert explicit-profile setup through existing stores/registry.
 History DATA is separate from actual admission, graph, callback and reader proof.
-The two M-only retired source dependencies remain HELD and unresolved; no M source
-completion or portability-policy change follows from this reconciliation.
+TASK10553 removes the two M-only retired setup dependencies using independent
+literal legacy roster data/current integration rendering and explicit current
+remote runner/workspace columns. Their actual held M execution, containment and
+positive proof remain absent; no portability-policy or maintenance grant follows.
 
 
 ### TASK10394 current-graph assertion erratum and W10 venue repair
@@ -188,6 +190,17 @@ mapping, preferring installed runner assets or authenticated Ubuntu APT data
 extraction without scripts/global installation. Child selection and actual
 painted fonts accompany screenshots; real PNG readability still needs review.
 The recipient boundary captures actual DOM/accessibility/hidden ancestry/hit
-testing before its original accessible unforced exact-worker click. Dependent
-locator/modal correction awaits that observation. All original C10 request,
+testing before its original accessible unforced exact-worker click. Actual fe94
+DOM/AX evidence establishes adjacent agent/team text with no separating space;
+TASK10553 corrects the exact option locator to `consultant_headdefault` (and the
+Codex equivalent). No product component change follows. All original C10 request,
 readback, locale/focus/draft/selection and viewport assertions remain.
+
+Feature-only phase/outcome/traceback receipts are flushed incrementally, and
+scenario files/logs are checkpointed before final teardown. Incomplete prefixes
+and snapshots are not PASS. Parent 70-minute/command 75-minute bounds leave cleanup
+and artifact upload inside the unchanged hosted 90-minute cap; the complete 224
+C4 selection is retained. These changes prevent finalizer-only evidence loss,
+but do not identify or repair the original recovery/setup failure cause. Actual
+new-head success/screenshots, causal/restoration/repetitions, independent gates
+and the full M/restore/inhibition/reboot/paired-observer/after-M proof remain owed.

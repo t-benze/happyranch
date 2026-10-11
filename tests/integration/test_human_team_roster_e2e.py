@@ -63,7 +63,7 @@ def human_daemon(runtime: Path, request: pytest.FixtureRequest,
     # and abruptly exits only after the real separately committed effect. It
     # does not replace SQL, a method, an executor, or a final transition.
     launcher = r'''
-import ast,asyncio,hashlib,json,marshal,os,runpy,sys,threading,types
+import ast,asyncio,hashlib,json,marshal,os,runpy,sys,threading,time,types
 from pathlib import Path
 source=Path(sys.argv[1]); revision=sys.argv[2]; cut=sys.argv[3]; receipt=Path(sys.argv[4])
 sys.dont_write_bytecode=True
@@ -171,15 +171,27 @@ async def failed_drain_reentry():
     from runtime.daemon.zombie_reaper import _consume_zombie_fingerprint
     orch=writer_state['orch'];identity=writer_state['identity']
     pending=writer_state['pending_join']
-    assert await asyncio.wrap_future(pending.completion)=='recovery_required'
+    try:
+        disposition=await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(pending.completion)),60)
+    except TimeoutError:
+        record_writer('drain-joined-deadline',seconds=60,**identity)
+        raise
+    assert disposition=='recovery_required'
     record_writer('drain-joined-finished',disposition=pending.disposition,**identity)
     release=receipt.with_name(receipt.name+'.same-result-reentry')
-    while not release.exists():await asyncio.sleep(0.01)
+    deadline=time.monotonic()+60
+    while not release.exists() and time.monotonic()<deadline:await asyncio.sleep(0.01)
+    if not release.exists():record_writer('same-result-release-deadline',seconds=60,**identity)
+    assert release.exists(), 'same-result reentry release unavailable within 60 seconds'
     task=orch._db.get_task(identity['task'])
     row=orch._db.get_latest_task_result(task.id,identity['agent'],identity['session'])
     assert row['id']==identity['result']
     joined=_consume_zombie_fingerprint(orch._db,task.id,row,task,orch)
-    disposition=await asyncio.wrap_future(joined.completion)
+    try:
+        disposition=await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(joined.completion)),60)
+    except TimeoutError:
+        record_writer('same-result-completion-deadline',seconds=60,**identity)
+        raise
     retained=orch._human_failed_recovery_operations[(task.id,identity['agent'],identity['session'],identity['result'])]
     from runtime.daemon.jobs_runner import _INFLIGHT
     record_writer('same-result-reentered',disposition=disposition,phase=retained.phase,
@@ -255,7 +267,10 @@ async def prepared_late_cancel(org):
     pending=asyncio.create_task(asyncio.to_thread(request))
     try:
         permission=receipt.with_name(receipt.name+'.commit-late-cancel')
-        while not permission.exists():await asyncio.sleep(0.01)
+        deadline=time.monotonic()+180
+        while not permission.exists() and time.monotonic()<deadline:await asyncio.sleep(0.01)
+        if not permission.exists():record_writer('late-cancel-release-deadline',seconds=180,**identity)
+        assert permission.exists(), 'late cancellation release unavailable within 180 seconds'
     finally:
         org.db_lock.release()
     reply=await pending
@@ -270,7 +285,8 @@ async def held_writer(org,caller=None):
             if caller is not None and number==0:
                 writer_state['caller']=asyncio.create_task(shipping_caller(writer_state['orch'],caller))
             release=receipt.with_name(receipt.name+'.release-'+str(number))
-            while not release.exists():
+            deadline=time.monotonic()+180
+            while not release.exists() and time.monotonic()<deadline:
                 control=receipt.with_name(receipt.name+'.binding-replacement')
                 if control.exists() and 'replacement' not in writer_state:
                     orch=writer_state['orch'];identity=writer_state['identity']
@@ -287,6 +303,8 @@ async def held_writer(org,caller=None):
                     writer_state['shutdown']=True
                     record_writer('shutdown-observed',**writer_state['identity'])
                 await asyncio.sleep(0.01)
+            if not release.exists():record_writer('writer-release-deadline-'+str(number),seconds=180,**writer_state['identity'])
+            assert release.exists(), 'native writer release unavailable within 180 seconds'
         record_writer('released-'+str(number),**writer_state['identity'])
     record_writer('writer-complete',**writer_state['identity'])
 def observe_writer(frame,event,arg):
@@ -1841,7 +1859,6 @@ class _MaintenanceCase:
         from runtime.skills.canonical_store import _get_canonical_store_root
         from runtime.workflows.profile_coordinator import ProfileCoordinator
         from scripts import migrate_human_team_roster as utility
-        from tests.workflows.test_authority_coordinator import _seed_org
         self.source = Path(__file__).resolve().parents[2]
         self.revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=self.source, text=True).strip()
         assert not subprocess.check_output(['git', 'status', '--porcelain'], cwd=self.source).strip()
@@ -1853,7 +1870,17 @@ class _MaintenanceCase:
         self.home = Path(declaration['daemon_home'])
         self.env = {**os.environ, 'HAPPYRANCH_DAEMON_HOME': str(self.home), 'PYTHONDONTWRITEBYTECODE': '1'}
         assert Path(os.environ['HAPPYRANCH_DAEMON_HOME']).resolve() == self.home.resolve()
-        _seed_org(self.root)
+        # Independent synthetic legacy roster, using the current integration
+        # AgentDef renderer/attachment contract. No retired test source.
+        (self.root / 'org/agents').mkdir(parents=True)
+        (self.root / 'workspaces').mkdir()
+        (self.root / 'kb').mkdir()
+        (self.root / 'org/teams.yaml').write_text(
+            'teams:\n  engineering:\n    manager: engineering_head\n'
+            '    workers: [dev_agent, code_reviewer]\n')
+        from tests.integration.conftest import seed_agent_definition
+        for name in ('engineering_head', 'dev_agent', 'code_reviewer'):
+            seed_agent_definition(self.root, name)
         # Proven fresh fixture database: native complete initialization precedes attachment.
         from runtime.infrastructure.workflow_schema import initialize_complete_org_schema
         assert not (self.root / 'happyranch.db').exists()
@@ -2401,11 +2428,24 @@ def _c8_maintenance_refusal(case, refusal):
             expected = 'nonquiescent_tasks'
         elif refusal == 'remote-lease':
             # A terminal local job is no proof that its remote workspace is
-            # quiescent. Use the existing remote-store fixture owner.
-            from tests.infrastructure.test_remote_job_schema_migration import _insert_runner, _insert_workspace
+            # quiescent. Literal synthetic data follows the CURRENT remote
+            # schema's explicit column/FK contract, never a retired helper.
             with sqlite3.connect(case.root / 'happyranch.db') as conn:
-                _insert_runner(conn, 'C8-fixture-runner')
-                _insert_workspace(conn, 'workspace-1', 'C8-fixture-runner', agent='consultant_head', state='uncertain')
+                conn.execute('PRAGMA foreign_keys=ON')
+                conn.execute('''INSERT INTO remote_runners
+                    (id,org_slug,display_name,generation,state,capabilities_json,
+                     attestation_json,attestation_digest,attested_at,attestation_expires_at,
+                     cert_serial,cert_spki_sha256,cert_expires_at,created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    ('C8-fixture-runner','alpha','synthetic C8 unavailable runner',1,'unavailable',
+                     '{}','{}','0'*64,'2026-10-01','2026-10-02',
+                     'synthetic-C8-cert','1'*64,'2026-10-02','2026-10-01','2026-10-01'))
+                conn.execute('''INSERT INTO remote_runner_workspaces
+                    (id,runner_id,runner_generation,agent_name,generation,state,
+                     root_locator_hash,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)''',
+                    ('workspace-1','C8-fixture-runner',1,'consultant_head',1,'uncertain',
+                     '2'*64,'2026-10-01','2026-10-01'))
+                assert conn.execute('PRAGMA foreign_key_check').fetchall() == []
             expected = 'nonquiescent_remote_runner_workspaces'
         elif refusal == 'enrollment':
             pending = case.root / 'org/agents/_pending'; pending.mkdir(exist_ok=True)

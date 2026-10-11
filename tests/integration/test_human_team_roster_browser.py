@@ -326,7 +326,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
         target = tmp_path / ('C10-recipient-' + agent + '-diagnostic.json')
         record = {'source_sha': binding['revision'], 'locale': evaluate('document.documentElement.lang'),
                   'viewport': viewport, 'selected_agent': agent, 'dom': dom,
-                  'accessible_locator': {'role': 'option', 'name': agent + ' default', 'exact': True}}
+                  'accessible_locator': {'role': 'option', 'name': agent + 'default', 'exact': True}}
         target.write_text(json.dumps(record, sort_keys=True, ensure_ascii=False))
         record['accessibility'] = _result(pw('run-code', 'async page => {'
             'const cdp=await page.context().newCDPSession(page);try{'
@@ -335,7 +335,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
             'const ax=[];for(const nodeId of ids.nodeIds)ax.push(await cdp.send("Accessibility.getPartialAXTree",{nodeId,fetchRelatives:true}));'
             'return JSON.stringify({optionAX:ax,listboxSnapshot:await page.locator("[role=listbox]").ariaSnapshot(),'
             'accessibleOptionTexts:await page.getByRole("option").allTextContents(),'
-            'exactLocatorCount:await page.getByRole("option",{name:' + json.dumps(agent + ' default') + ',exact:true}).count()});'
+            'exactLocatorCount:await page.getByRole("option",{name:' + json.dumps(agent + 'default') + ',exact:true}).count()});'
             '}finally{await cdp.detach();}}'))
         target.write_text(json.dumps(record, sort_keys=True, ensure_ascii=False))
         pw('screenshot', '--filename=' + str(tmp_path / ('C10-recipient-' + agent + '-before-click.png')))
@@ -475,7 +475,7 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 action('if(await page.getByRole("dialog").getByLabel(' + json.dumps(labels[next_locale]['subject']) + ',{exact:true}).inputValue()!==' + json.dumps(subject) + ')throw new Error("subject lost");'
                        'if(await page.getByRole("dialog").getByLabel(' + json.dumps(labels[next_locale]['body']) + ',{exact:true}).inputValue()!==' + json.dumps(body_text) + ')throw new Error("body lost");')
                 recipient_diagnostics(agent)
-                action('await page.getByRole("option",{name:' + json.dumps(agent + ' default') + ',exact:true}).click();')
+                action('await page.getByRole("option",{name:' + json.dumps(agent + 'default') + ',exact:true}).click();')
                 wait('window.__c10Recipient.value===' + json.dumps(agent + ', '))
                 shot('worker-selector', 'filtered-selected-' + agent, (recipient_selector, '[role=dialog] > div.flex-row > button:last-child'))
                 writes_before = len([row for row in fixture['requests'] if row['method'] != 'GET'])

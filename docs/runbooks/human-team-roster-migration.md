@@ -414,10 +414,31 @@ No concrete picker correction or hosted screenshot PASS is claimed before the
 admitted DOM/accessibility/geometry observation. See docs/local-ci.md for the
 bounded package provenance, binding refusals and retained evidence contract.
 
-The HELD `_MaintenanceCase` still depends on deleted
-`tests.workflows.test_authority_coordinator._seed_org`; its remote-lease branch
-still depends on deleted `tests.infrastructure.test_remote_job_schema_migration`
-row helpers. Do not import or execute either path. Their redesign/release belongs
-to the root, alongside persistent ALL-launch inhibition, restore/reboot and
-paired-observer proof. Retired unit source is not a maintenance prerequisite to
-restore or execute.
+TASK10553's bounded source reconciliation removes both M-only retired helper
+dependencies. `_MaintenanceCase` now constructs a literal synthetic legacy
+Engineering roster using the existing integration AgentDef renderer, then the
+current native complete-schema initialization and existing coordinator/API
+owners. The C8 remote-lease setup inserts explicitly named current-schema
+runner/workspace columns and verifies foreign keys; its unavailable synthetic
+runner and uncertain workspace are data, never enrollment or execution receipts.
+No retired source was imported, restored or copied. M selectors/oracles remain
+held and unexecuted; this source repair supplies no capable-venue or positive proof.
+
+Current held/missing obligations remain with the manager/operator: causal controls,
+byte-exact restoration/GREEN, five isolated and five affected-sibling repetitions;
+L4 recovery success and complete C10 screenshots/actions; historical compatibility
+at the final head; actual C6/M check/apply/preservation and C8_M/C9_M containment,
+cuts/compensation/replay; portable compatible restore (distinct from same-root
+cold reopen); both complete paired observers; persistent ALL-launch inhibition
+through migration-process loss and reboot; new-package positive and after-M
+contexts/browser evidence. The utility's unchanged checked-manifest/backup/CAS,
+native coordinator, unknown-state refusal and pre-traffic compensation rules
+still apply. Existing source is not a manifest, receipt, maintenance capability,
+migration readiness or deployment/live-apply authorization.
+
+The admitted feature parent now retains incremental phase tracebacks and scenario
+checkpoints and has inner failure deadlines; see docs/local-ci.md. Prior L4
+timeout/failures and W10 exact-name failures remain authentic at fe94. W10 uses
+the observed exact accessible worker name without a space before `default`,
+preserving all original click/request/readback assertions. New-head evidence is
+required; no product component correction follows from the old locator mismatch.
