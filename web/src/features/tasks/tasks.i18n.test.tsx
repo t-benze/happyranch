@@ -189,6 +189,25 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+test.each(['en', 'zh-CN'] as const)('Cancel returns keyboard focus to its original action after locale switches (%s)', async (locale) => {
+  const user = userEvent.setup();
+  mount(`/orgs/${SLUG}/tasks/TASK-77`, locale);
+  const trigger = await screen.findByRole('button', { name: locale === 'en' ? 'Cancel' : '取消' });
+  trigger.focus();
+  await user.keyboard('{Enter}');
+  const dialog = await screen.findByRole('dialog');
+  const field = within(dialog).getByRole('textbox');
+  await user.type(field, 'Preserved draft 中文');
+  await switchLocale(locale === 'en' ? 'zh-CN' : 'en');
+  await switchLocale(locale);
+  expect(within(dialog).getByRole('textbox')).toBe(field);
+  expect(field).toHaveValue('Preserved draft 中文');
+  expect(field).toHaveFocus();
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(trigger).toHaveFocus());
+});
+
 describe('Tasks list i18n', () => {
   test('populated list: zh-CN chrome, verbatim data, same row node and zero requests across switches', async () => {
     const waiting = rootTask({

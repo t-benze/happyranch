@@ -149,6 +149,7 @@ async function main(){
         check(`${name}->${next} zero locale HTTP`,ledger.slice(from),[]);
       }
       await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27},detail.sessionId);await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Escape',code:'Escape',windowsVirtualKeyCode:27},detail.sessionId);await wait(detail,"!document.querySelector('[role=\"dialog\"] textarea')");
+      await wait(detail,`document.activeElement.textContent.trim()===${quote(tr(locale,'tasks.detail.cancel'))}`);
       check(`${name} Cancel focus return`,await evaluate(detail,`document.activeElement.textContent.trim()`),tr(locale,'tasks.detail.cancel'));
       await close(detail);
     }
