@@ -7,9 +7,26 @@ on:
 
 jobs:
   # THR-291 seq40: Python units and their gate are retired.
-  # Fresh product E2E coverage is PENDING, not a passing check.
+  # THR-291 seq69: PR/main automation is lint/static only.
+  # Behavioral sources survive; Product E2E runs in its separate daily workflow.
+  source-boundary-lint:
+    name: Source Boundary Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+      - name: Check actual source boundaries
+        run: uv run --no-project --python 3.14 python scripts/check_source_boundaries.py
+      - name: Validate lint CLI with isolated synthetic sources
+        run: uv run --no-project --python 3.14 python scripts/validate_source_boundaries.py
+
   web:
-    name: Web (Node 24)
+    name: Web Lint (Node 24)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -31,102 +48,3 @@ jobs:
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
-      - name: Build
-        run: npm run build
-      - name: Build Storybook
-        run: npm run build-storybook
-      # Bare `vitest` is watch mode and would hang CI; `vitest run` is non-watch.
-      - name: Test (non-watch)
-        run: npx vitest run
-
-  # ── Linux canonical skill store validation (same-owner, unconditional) ──
-  # Runs the production canonical-store boundary against the real Linux
-  # adapter using the existing explicit platform selection.
-  linux-canonical-validation:
-    name: Linux Canonical Store Validation (Ubuntu)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          python-version: "3.14"
-
-      - name: Sync dependencies
-        run: uv sync --frozen
-
-      - name: Run canonical store + validation tests
-        env:
-          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
-          HAPPYRANCH_TEST_REAL_PLATFORM: "1"
-        run: |
-          set -eux
-          uv run pytest \
-            tests/test_canonical_skill_store.py \
-            tests/test_canonical_production_bound.py \
-            tests/test_skill_cutover_completeness.py \
-            tests/test_thr070_skill_freshness.py \
-            tests/test_system_contract_materialization.py \
-            tests/test_workspace_adapters.py \
-            tests/test_prelaunch_integrity_validation.py \
-            -v --tb=short
-
-      - name: Run real daemon + executor smoke test
-        env:
-          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci-smoke
-          HAPPYRANCH_TEST_REAL_PLATFORM: "1"
-        run: >-
-          uv run python tests/helpers/integration_parent.py -- pytest -m integration
-          tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback
-          -v --tb=short
-
-  # ── macOS canonical skill store validation (same-owner, unconditional) ──
-  # Executor and daemon share the same OS identity — same-owner is the only
-  # supported delivery mode. No distinct-account provisioning or sudo.
-  # This job verifies deterministic canonical-store behavior on real macOS.
-  macos-canonical-validation:
-    name: macOS Canonical Store Validation (macOS 15)
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          python-version: "3.14"
-
-      - name: Sync dependencies
-        run: uv sync --frozen
-
-      - name: Run canonical store + validation tests
-        env:
-          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
-        run: |
-          set -eux
-          # Run canonical store and validation test suites on real macOS.
-          # These tests verify:
-          # - Canonical store build, hash-addressing, path-traversal rejection
-          # - Symlink materializer create/repair/withdrawal
-          # - Platform identity checks (same-owner: executor == daemon uid)
-          # - Direct executor launch under daemon identity
-          # - Cutover completeness (no legacy copy remains)
-          # - Skill freshness (31 tests)
-          # - Per-launch/retry pre-Popen integrity validation
-          # - Hardening failure compensation (no executor launch)
-          # - Same-owner adversarial limits (detection, not prevention)
-          uv run pytest \
-            tests/test_canonical_skill_store.py \
-            tests/test_canonical_production_bound.py \
-            tests/test_skill_cutover_completeness.py \
-            tests/test_thr070_skill_freshness.py \
-            tests/test_system_contract_materialization.py \
-            tests/test_workspace_adapters.py \
-            tests/test_prelaunch_integrity_validation.py \
-            -v --tb=short

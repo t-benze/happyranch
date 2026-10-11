@@ -260,18 +260,22 @@ For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit 
 ```bash
 python -m runtime.daemon.pr_ci_waiter \
   --repo owner/repo --pr N --head-sha <40-char-sha> \
-  --expected-check "Web (Node 24)" \
-  --expected-check "Linux Canonical Store Validation (Ubuntu)" \
-  --expected-check "macOS Canonical Store Validation (macOS 15)" \
+  --expected-check "Source Boundary Lint" \
+  --expected-check "Web Lint (Node 24)" \
   --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
 ```
 
-For HappyRanch, add applicable Docs/other retained path-specific checks to the
-three active names above, on both PR and exact-merge main. THR-291 seq40 retired
-Python units; neither unit PASS nor a ready fresh E2E check may be claimed.
-Other repositories use their own current check names. The waiter accepts an
-explicit nonempty policy; it does not discover or enforce repository branch
-protection. Verify the expected names and actual completed outcomes.
+For HappyRanch under THR-291 seq69, exactly these two unconditional lint/static
+checks apply on PR and exact-merge main; there are no path-specific behavioral
+merge checks. Daily Product E2E Health is outside expected-check lists and
+schedule-only at19:00UTC. First scheduled run is PENDING. Docs/lab are manual;
+mac packaging is manual/tag; legacy integration schedule remains separate.
+Local default/all/pre-push selection is lint/static only; units RETIRED exit2.
+The waiter takes caller-supplied names; product gate semantics are unchanged.
+Freshly observed protection contexts/checks are empty and strict=false; do not
+claim external enforcement. Independent review/scoped QA, normal hooks and
+manager guarded merge remain required. Static checks are not behavioral proof.
+Other repositories use their own current check policy.
 
 This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
 
