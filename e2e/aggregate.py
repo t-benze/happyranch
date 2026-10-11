@@ -156,12 +156,12 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
           "scenario/observation disagreement or observer failure")
     starts, commands = observations["starts"], observations["provider_commands"]
     durable, observer = observations["durable"], observations["provider_observer"]
-    check(len(starts) == 37 and len({s["session"] for s in starts[:30]}) == 30, "retained30 genuine prefix providers;37 composed")
+    check(len(starts) == 39 and len({s["session"] for s in starts[:30]}) == 30, "retained30 genuine prefix providers;39 C composition")
     check(len(observer) >= 2 and all(0 < b["at"] - a["at"] <= 1 for a, b in zip(observer, observer[1:])),
           "continuous provider observer interval")
     check(all(a["stubs"] <= b["stubs"] and a["calls"] <= b["calls"] for a, b in zip(observer, observer[1:])),
           "observer counter rollback")
-    check(observer[-1]["stubs"] == 37 and not observer[-1]["pending"], "observer composed final closure")
+    check(observer[-1]["stubs"] == 39 and not observer[-1]["pending"], "observer composed final closure")
     http = observations["http"]
     anchors = [r["jobs_anchor"] for r in durable if "jobs_anchor" in r and not r["jobs_anchor"]["name"].startswith("E05:")]
     check(len(anchors) == 28 and len({a["name"] for a in anchors}) == 28, "complete unique boot/case/drain anchors")
@@ -526,10 +526,10 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check([g["name"] for g in groups] == ["C", "N", "D"], "exact finite group order")
     C, N, D = groups
     starts = observations["starts"]
-    check(len(starts) == len({s["session"] for s in starts}) == 37, "37 unique runtime sessions")
+    check(len(starts) == 39 and len({s["session"] for s in starts[:37]}) == 37, "37 unique prefix sessions;39 C composition")
     providers = C["providers"] + N["providers"] + D["providers"]
     check(len(providers) == 6 and len({p["token_sha256"] for p in providers}) == 6
-          and {s["session"] for s in starts[30:]} == {p["session"] for p in providers + [D["task"]]}, "six genuine thread tokens and one task")
+          and {s["session"] for s in starts[30:37]} == {p["session"] for p in providers + [D["task"]]}, "six genuine thread tokens and one task")
     check(all(p in starts and p["org"] == "alpha" and p["pid_start"] for p in providers), "actual thread socket identities")
     anchors = [d["jobs_anchor"] for d in durable if "jobs_anchor" in d]
     previous = next(a for a in anchors if a["name"] == "final-drain-B")
@@ -684,10 +684,11 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
 
     commands, attempts = observations["thread_commands"], observations["thread_attempts"]
     check(len(commands) == len(attempts) == 11 and [a["command_index"] for a in attempts] == list(range(11)), "finite eleven provider CLI actions")
-    witnesses = observations["launch_witnesses"]
+    boundary = observations["e07"]["prefix"]
+    witnesses = observations["launch_witnesses"][:boundary["witness_records"]]
     check(case["witnesses"] == witnesses and len([w for w in witnesses if w["kind"] == "stub"]) == 37, "complete actual executable witnesses")
     calls = [w for w in witnesses if w["kind"] == "callback"]
-    check(len(calls) == len(observations["commands"])+len(observations["provider_commands"])+len(commands), "every CLI accounted")
+    check(len(calls) == boundary["command_count"]+len(observations["provider_commands"])+len(commands), "every CLI accounted")
     closures = [d["thread_process_closed"] for d in durable if "thread_process_closed" in d]
     check(len(closures) == 7 and {r["session"] for r in closures} == {p["session"] for p in providers+[D["task"]]}, "seven actual natural process closures")
     for provider in providers+[D["task"]]:
@@ -880,6 +881,8 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(len(requests) == len(responses) == len(proxy) == 1, "one page/upstream/original response")
     request, response, wire = requests[0],responses[0],proxy[0]
     transport = case["transport"]
+    check(transport["port"] in case["ports"] and transport["upstream"] in case["ports"]
+          and transport["port"] != transport["upstream"], "distinct owned registered listener/upstream")
     check(len({transport[k] for k in ("daemon_port","cli_port","browser_port")}) == 3
           and all(transport[k] in transport["ports"] for k in ("daemon_port","cli_port","browser_port")), "registered owned D/L/P")
     origin = f"http://127.0.0.1:{transport['browser_port']}"
@@ -987,6 +990,291 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
               and all(t["status"] == "completed" for t in d["snapshot"]["tasks"]), "global21tasks31results")
 
 
+def validate_e07(row: dict, observations: dict, directory: Path) -> None:
+    """Reopen serialized C evidence; no producer oracle or expected helper import."""
+    import hashlib
+    import socket
+    from collections import Counter
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            raise ValueError("E07 content: " + message)
+
+    case = json.loads((directory / "e07.json").read_text())
+    check(case == observations["e07"] == row["e07"], "actual raw/observations/scenario export equality")
+    variants = ["E07.cancel-cascade-browser","E07.cancel-terminal-unchanged","E07.cancelled-late-cli"]
+    check(case["variants"] == variants and len(row["variants"]) == 56
+          and list(row["variants"])[-3:] == variants and case["prefix"]["variants"] == list(row["variants"])[:53]
+          and case["design_sha256"] == MANIFEST["e07_c_design_sha256"]
+          and case["source_sha"] == row["source_sha"], "exact C manifest/design/source/preserved53")
+    for name in variants:
+        check(row["variants"][name]["status"] == "PASS" and row["variants"][name]["evidence"] == {"e07_file":"e07.json","source_sha":row["source_sha"]}
+              and row["variants"][name]["at"] >= case["finished"], "new marks follow actual case content")
+    phase = next(p for p in row["phases"] if p["name"] == "scenarios")
+    check(case["end"] == min(case["entered"]+50,case["scenario_deadline"])
+          and case["scenario_deadline"] == phase["deadline"] and case["entered"] < case["finished"] <= case["end"], "original C/scenario deadline binding")
+    check([p["name"] for p in case["phases"]] == ["capture","cancel-and-close","terminal-ui-and-refusals","forward-and-observe","archive"], "finite C-only phases")
+    for p,offset in zip(case["phases"],(16,28,36,42,50)):
+        check(p["end"] == min(case["entered"]+offset,case["end"],case["scenario_deadline"]) and p["entered"] < p["end"], "fixed absolute phase ends")
+    check(all(a["entered"] < b["entered"] <= a["end"] for a,b in zip(case["phases"],case["phases"][1:])), "no overrun borrows next phase")
+    e05 = next(d["threads_cases"] for d in observations["durable"] if "threads_cases" in d)
+    boundary = case["prefix"]
+    archive_raw = (directory/"e07-prefix.json").read_bytes()
+    archive = json.loads(archive_raw)
+    check(hashlib.sha256(archive_raw).hexdigest() == boundary["archive_sha256"]
+          and archive["starts"] == observations["starts"][:37]
+          and archive["commands"] == observations["commands"][:boundary["command_count"]]
+          and archive["provider_commands"] == observations["provider_commands"]
+          and archive["thread_commands"] == observations["thread_commands"]
+          and archive["provider_observer"] == observations["provider_observer"][:boundary["observer_end"]]
+          and archive["variants"] == {k:observations["variants"][k] for k in boundary["variants"]},
+          "actual pre-C archived original53 outcomes and command/observer prefix")
+    check(case["anchors"] == [dict(name="E05-end-B25",samples=[case["baseline"]]),
+          dict(name="P-success-W-live-B26",samples=case["live"]),dict(name="cancelled-B27",samples=case["freeze"]),
+          dict(name="final-B27",samples=[case["final"]])], "dedicated complete E07 boundary content")
+    raw = (directory / "launch-witnesses.jsonl").read_bytes()
+    check(raw.endswith(b"\n") and len(raw) == observations["witness_bytes"]
+          and hashlib.sha256(raw).hexdigest() == observations["witness_sha256"], "complete actual final append-only bytes")
+    all_witness = [json.loads(line) for line in raw.splitlines()]
+    prefix_raw = raw[:boundary["witness_bytes"]]
+    check(prefix_raw.endswith(b"\n") and hashlib.sha256(prefix_raw).hexdigest() == boundary["witness_sha256"]
+          and len(prefix_raw.splitlines()) == boundary["witness_records"]
+          and [json.loads(line) for line in prefix_raw.splitlines()] == e05["witnesses"]
+          and all_witness == observations["launch_witnesses"] and observations["witness_incomplete_line"] is False,
+          "genuine E05 byte/record boundary with exact original content")
+    check(boundary["e05_finished"] == e05["finished"] <= case["entered"]
+          and observations["provider_observer"][boundary["observer_end"]-1]["stubs"] == 37,
+          "original E05 observer boundary, no final39 substitution")
+    starts = observations["starts"]
+    parent,worker = case["parent"],case["worker"]
+    P,W = parent["task"],worker["task"]
+    check(len(starts) == len({s["session"] for s in starts}) == 39 and starts[37:] == [parent,worker]
+          and P != W and parent["agent"] == "case_manager" and worker["agent"] == "case_worker"
+          and parent["org"] == worker["org"] == "alpha", "exact two genuine suffix starts")
+    check(Counter(w["kind"] for w in all_witness) == {"stub":39,"callback":len(observations["commands"])+len(observations["provider_commands"])+len(observations["thread_commands"])+4}, "all old/new executable witnesses accounted")
+    commands = observations["e07_commands"]
+    check(commands == case["commands"] and [c["action"] for c in commands] == ["e07-parent","e07-held","terminal-cancel","terminal-cancel"], "dedicated exact four-command ledger")
+    suffix = all_witness[boundary["witness_records"]:]
+    check(Counter(w["kind"] for w in suffix) == {"stub":2,"callback":4}, "every appended record classified")
+    callbacks = [w for w in suffix if w["kind"] == "callback"]
+    check(all(w["source_sha"] == row["source_sha"] for w in suffix), "new wrapper/stub source equality")
+    cli_digest = hashlib.sha256((Path(__file__).resolve().parents[1]/"cli/main.py").read_bytes()).hexdigest()
+    check(all(w["cli_sha256"] == cli_digest for w in callbacks), "actual shipping CLI source hash")
+    manifest = next(d["executable_manifest"] for d in observations["durable"] if "executable_manifest" in d)
+    check(case["python"] == manifest["python"], "bound interpreter")
+    source_names = ["e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
+                    "e2e/browser.py","e2e/aggregate.py","e2e/run.py","e2e/manifest.json","cli/commands/tasks.py",
+                    "runtime/daemon/routes/tasks.py","runtime/orchestrator/run_step.py","web/src/features/tasks/CancelTaskDialog.tsx"]
+    check(set(case["source_files"]) == set(source_names) and all(
+        hashlib.sha256((Path(__file__).resolve().parents[1]/name).read_bytes()).hexdigest() == case["source_files"][name]
+        for name in source_names), "actual complete harness/shipping seam source hashes")
+    check(len(case["partial_launches"]) == 2 and all(cmd["launch"] in case["partial_launches"] for cmd in commands[:2]),
+          "actual retained pre-wait launch records")
+    for index,cmd in enumerate(commands):
+        launch = cmd["launch"] if index < 2 else cmd
+        child = launch["child"]
+        argv = launch["argv"]
+        match = [w for w in callbacks if w["pid"] == child["pid"] and w["argv_sha256"] == hashlib.sha256(json.dumps(argv[1:]).encode()).hexdigest()]
+        check(len(match) == 1 and match[0]["ppid"] == child["ppid"]
+              and launch["source_sha"] == row["source_sha"] and launch["python"] == manifest["python"]
+              and argv[0] == manifest["callback"] and child["start"], "each genuine CLI authority/source/argv/PID-start")
+        if index < 2:
+            check(child["ppid"] == (parent if index == 0 else worker)["pid"]
+                  and launch["callback_sha256"] == manifest["callback_sha256"]
+                  and launch["entered"] <= launch["acknowledged"] <= case["phases"][1]["entered"]
+                  and launch["execution_deadline"] == cmd["instruction"]["execution_deadline"], "provider pre-wait acknowledgement")
+            expected = dict(task_id=P if index == 0 else W, session_id=parent["session"] if index == 0 else worker["session"],
+                            agent="case_manager" if index == 0 else "case_worker",status="completed",confidence=90,
+                            summary="E07 parent delegated" if index == 0 else "E07 cancelled child must not complete")
+            if index == 0:
+                expected["decision"] = {"action":"delegate","agent":"case_worker","prompt":"E07_CANCEL_CHILD"}
+            check(launch["payload"] == expected
+                  and hashlib.sha256(json.dumps(expected,sort_keys=True).encode()).hexdigest() == launch["payload_sha256"]
+                  and len(json.dumps(expected,sort_keys=True).encode()) == launch["payload_bytes"], "actual provider-bound finite payload")
+    check(case["parent_command"] == commands[0] and case["held"] == commands[1] and case["refusals"] == commands[2:], "case references exact ledger")
+    parent_command = commands[0]
+    ret = parent_command["receipt"]
+    check(ret["launch"] == parent_command["launch"] and ret["exit"] == 0 and not ret["timed_out"]
+          and all(not ret[k]["truncated"] and not ret[k]["incomplete"] for k in ("stdout","stderr")), "genuine parent success return")
+    pw = parent_command["wire"]
+    parent_body = dict(session_id=parent["session"],agent="case_manager",status="completed",confidence=90,
+                       output_summary="E07 parent delegated",risks_flagged=[],dependencies=[],suggested_reviewer_focus=[],
+                       decision={"action":"delegate","agent":"case_worker","prompt":"E07_CANCEL_CHILD"})
+    check(len(pw) == 1 and pw[0] in observations["relay"] and pw[0]["path"] == f"/api/v1/orgs/alpha/tasks/{P}/completion"
+          and pw[0]["method"] == "POST" and pw[0]["request"] == parent_body and pw[0]["status"] == 200 and pw[0]["response"] == {"ok":True}, "parent accepted actual CLI wire")
+    check("receipt" not in commands[1] and case["provider_eof"]["bytes"] == 0, "no posthumous killed CLI return claim")
+    transport = case["transport"]
+    check(transport["port"] in case["ports"] and transport["upstream"] in case["ports"]
+          and transport["port"] != transport["upstream"], "distinct owned registered listener/upstream")
+    selected = [r for r in transport["records"] if r["selected"]]
+    check(len(selected) == 1 and all(r["selected"] or (r["method"] == "GET" and r["path"] == "/api/v1/orgs") for r in transport["records"]), "one selected original request, no retries/extras")
+    wire = selected[0]
+    body = dict(session_id=worker["session"],agent="case_worker",status="completed",confidence=90,
+                output_summary="E07 cancelled child must not complete",risks_flagged=[],dependencies=[],suggested_reviewer_focus=[])
+    check(wire["upstream"] == transport["upstream"] and wire["method"] == "POST" and wire["path"] == f"/api/v1/orgs/alpha/tasks/{W}/completion"
+          and wire["request"] == json.loads(wire["request_text"]) == body
+          and wire["request_bytes"] == len(wire["request_text"].encode())
+          and wire["request_sha256"] == hashlib.sha256(wire["request_text"].encode()).hexdigest()
+          and wire["request_truncated"] is False and wire["authorization_sha256"] == transport["bearer_sha256"], "actual full body and private bearer equality")
+    provenance = case["provenance"]
+    child = commands[1]["launch"]["child"]
+    check(provenance["process"]["pid"] == child["pid"] and provenance["process"]["start"] == child["start"]
+          and provenance["process"]["ppid"] == worker["pid"] and provenance["process"]["state"] != "Z"
+          and len(provenance["tcp"]) == len(provenance["fds"]) == 1, "captured live CLI owns exactly one selected socket")
+    tcp,fd = provenance["tcp"][0],provenance["fds"][0]
+    fields = tcp["raw"].split()
+    def endpoint(value: str) -> list:
+        host,port = value.split(":")
+        return [socket.inet_ntoa(bytes.fromhex(host)[::-1]),int(port,16)]
+    check(endpoint(fields[1]) == tcp["local"] == wire["peer"] and endpoint(fields[2]) == tcp["remote"] == wire["local"]
+          and fields[3] == tcp["state"] == "01" and fields[9] == tcp["inode"]
+          and fd["target"] == "socket:["+tcp["inode"]+"]" and type(fd["fd"]) is int
+          and wire["local"] == ["127.0.0.1",transport["port"]]
+          and wire["listener_fd"] == transport["listener"]["fd"] and wire["accepted_inode"].startswith("socket:["), "actual raw /proc tuple/inode/FD/listener join")
+    restart = [d["pause_daemon_restart"] for d in observations["durable"] if "pause_daemon_restart" in d]
+    check(len(restart) == 1 and transport["upstream"] == restart[0]["new"]["port"]
+          and (transport["daemon"]["pid"],transport["daemon"]["start"]) == (restart[0]["new"]["pid"],restart[0]["new"]["start"]), "original boot B, no new restart")
+    cancel = case["browser_cancel"]
+    check(commands[1]["launch"]["acknowledged"] <= wire["captured"] <= provenance["sampled"] <= cancel["entered"]
+          <= cancel["finished"] <= case["freeze"][0]["entered"] <= case["freeze"][1]["finished"] <= case["released"]
+          <= wire["forwarded"] <= wire["upstream_complete"] <= wire["closed"] <= case["window"]["entered"], "original pre-forward/cancel/closure/late-response order")
+    check(len(transport["accepted"]) == len(transport["records"]) and any(
+        a["peer"] == wire["peer"] and a["local"] == wire["local"] and a["fd"] == wire["accepted_fd"]
+        and a["inode"] == wire["accepted_inode"] and a["at"] <= wire["entered"] for a in transport["accepted"]),
+          "all accepted sockets registered before header/body waits")
+    check(provenance["process"]["argv"][0] == case["python"]
+          and provenance["process"]["argv"][-5:] == commands[1]["launch"]["argv"][1:], "actual live command line belongs to hash-bound CLI")
+    check(wire["status"] == 409 and wire["response"] == json.loads(wire["response_stream"]["text"]) == {"detail":{"code":"task_not_active","task_id":W,"status":"cancelled","cancelled":True}}
+          and not wire["response_stream"]["truncated"] and not wire["response_stream"]["incomplete"]
+          and wire["downstream"] in {"EOF","peer-gone"}, "literal task-active denial, dead downstream separately")
+
+    def projection(frame: dict, admitted: int, released: int, active: int, tail: dict) -> dict:
+        m = frame["metrics"]
+        check(any(h["path"] == "/api/v1/metrics" and h["response"] == m for h in observations["http"]), "actual public metrics record")
+        h = m["host_sessions"]
+        a,r = h["admission"],h["receipts"]
+        check((a["admitted_total"],a["released_total"],r["published_total"],a["active"],a["queue_depth"],m["executor_sessions_active"],m["run_step_queue_depth"])
+              == (admitted,released,released,active,0,active,0) and a["cancelled_queued_total"] == 0 and not a["shutdown"], "exact counters, no queued cancellation")
+        check(h["wired"] and h["backend"]["healthy"] and h["backend"]["name"] != "passthrough"
+              and not h["residue"]["admission_blocked"] and h["residue"]["survivors_count"] == 0
+              and r["published_total"] == r["window_size"] == r["quiescent_count"] == len(r["recent"]) <= 64
+              and r["with_residue_count"] == 0 and all(x["quiescent"] and x["survivors_count"] == 0 for x in r["recent"]), "complete settled retained receipt window")
+        check(r["recent"][released-tail["published_total"]:] == tail["recent"] and not frame["pending"], "entire ordered duplicate-preserving tail/no peer")
+        return {"admission":a,"receipts":r,"executor_sessions_active":active,"run_step_queue_depth":0}
+
+    live = case["live"]
+    prior = e05["final_anchor"]["projection"]["receipts"]
+    check(len(live) == 2 and projection(live[0],27,26,1,prior) == projection(live[1],27,26,1,prior), "two B27/26/26/1 projections")
+    check(live[1]["metrics"]["host_sessions"]["receipts"]["recent"][0]["terminal_reason"] == "success", "P success distinct from active cancellation")
+    result = case["parent_result"]
+    check(type(result["id"]) is int and result["task_id"] == P and result["session_id"] == parent["session"]
+          and result["status"] == "completed" and result["confidence_score"] == 90 and result["output_summary"] == "E07 parent delegated"
+          and json.loads(result["decision_json"]) == {"action":"delegate","agent":"case_worker","prompt":"E07_CANCEL_CHILD"}, "one real accepted delegation result")
+    live_tasks = {t["id"]:t for t in live[1]["sql"]["alpha"]["tables"]["tasks"]}
+    check(live_tasks[P]["status"] == live_tasks[W]["status"] == "in_progress" and live_tasks[P]["block_kind"] == "delegated"
+          and live_tasks[W]["block_kind"] is None and live_tasks[W]["parent_task_id"] == P, "actual parked/live tree")
+    freeze,second = case["freeze"]
+    check(projection(freeze,27,27,0,live[1]["metrics"]["host_sessions"]["receipts"]) == projection(second,27,27,0,live[1]["metrics"]["host_sessions"]["receipts"]), "two settled B27 projections")
+    newest = freeze["metrics"]["host_sessions"]["receipts"]["recent"][0]
+    check(newest["terminal_reason"] == "cancelled" and newest["invocation_kind"] == "task", "one W active cancellation receipt")
+    tables = freeze["sql"]["alpha"]["tables"]
+    tasks = {t["id"]:t for t in tables["tasks"]}
+    check(len(tasks) == 22 and len(tables["task_results"]) == 31 and Counter(t["status"] for t in tasks.values()) == {"completed":20,"cancelled":2}
+          and len(freeze["sql"]["beta"]["tables"]["tasks"]) == len(freeze["sql"]["beta"]["tables"]["task_results"]) == 1, "global23/32 and21completed/two cancelled")
+    for task,start in ((P,parent),(W,worker)):
+        t = tasks[task]
+        check(t["status"] == "cancelled" and t["block_kind"] is None and t["note"] == "cancelled by founder: E07_CANCEL_TREE"
+              and t["cancelled_at"] is not None and t["cancelled_at"] == t["completed_at"] == tasks[P]["cancelled_at"]
+              and t["current_session_id"] == start["session"], "exact shared cancellation stamp and owner")
+        check(freeze["public"][task][""]["task"]["task_id"] == task
+              and all(freeze["public"][task][""]["task"][k] == t[k] for k in ("status","block_kind","note","cancelled_at","completed_at","current_session_id")), "actual detail fields agree with coherent frame")
+    changed_fields = {"status","block_kind","note","cancelled_at","completed_at"}
+    for task in (P,W):
+        check({k:v for k,v in live_tasks[task].items() if k not in changed_fields}
+              == {k:v for k,v in tasks[task].items() if k not in changed_fields}, "coherent literal cancellation field deltas")
+        recall = freeze["public"][task]["/recall"]
+        check(recall["task_id"] == task and recall["status"] == "cancelled", "literal public terminal recall")
+        for suffix,body in freeze["public"][task].items():
+            check(any(h["method"] == "GET" and h["path"] == f"/api/v1/orgs/alpha/tasks/{task}"+suffix
+                      and h["status"] == 200 and h["response"] == body for h in observations["http"]), "real public detail/recall/tree response content")
+    recall_tree = freeze["public"][P]["/recall?tree=true"]
+    check(recall_tree["task_id"] == P and recall_tree["status"] == "cancelled" and len(recall_tree["children"]) == 1
+          and recall_tree["children"][0]["task_id"] == W and recall_tree["children"][0]["status"] == "cancelled", "exact public recall lineage")
+    check([r for r in tables["task_results"] if r["task_id"] in (P,W)] == [result], "no worker result or replacement")
+    audits = [a for a in tables["audit_log"] if a["task_id"] in (P,W)]
+    cancels = [a for a in audits if a["action"] == "task_cancelled"]
+    check([a["task_id"] for a in cancels] == [P,W] and all(a["agent"] == "founder" and json.loads(a["payload"]) == {"rationale":"E07_CANCEL_TREE","cascade":True} for a in cancels), "exact two founder audits")
+    check(sum(a["action"] == "session_end" and a["task_id"] == W for a in audits) == 1
+          and not any(a["task_id"] == W and a["action"] in {"completion_report","orchestration_step"} for a in audits), "one W end, no result consumption")
+    decisions = [a for a in audits if a["task_id"] == P and a["action"] == "orchestration_step"]
+    check(len(decisions) == 1 and json.loads(decisions[0]["payload"])["decision"]["action"] == "delegate", "P INTEGER result consumed once as delegate")
+    baseline = case["baseline"]["sql"]
+    check(freeze["sql"]["beta"] == baseline["beta"], "complete unchanged beta")
+    for name,old in baseline["alpha"]["tables"].items():
+        now = tables[name]
+        if name in {"tasks","task_results","audit_log"}:
+            check([r for r in now if r.get("task_id",r.get("id")) not in (P,W)] == old, "full old task/result/audit prefix " + name)
+        elif name.startswith("task_"):
+            check([r for r in now if r.get("task_id",r.get("root_task_id")) not in (P,W)] == old, "full old task lineage/control prefix " + name)
+        else:
+            check(now == old, "unchanged entire jobs/thread/delivery content " + name)
+    check(len(tables["jobs"]) == 8 and freeze["sql"]["alpha"]["files"] == baseline["alpha"]["files"], "unchanged8 jobs/seven scripts and product files")
+    for sample in [second,case["after_refusals"],*case["window"]["samples"],case["final"]]:
+        check(sample["sql"] == freeze["sql"] and sample["public"] == freeze["public"], "full task/result/audit/lineage/job/thread/public unchanged")
+        projection(sample,27,27,0,freeze["metrics"]["host_sessions"]["receipts"])
+    tree = case["tree"]
+    check(tree["chain"][0]["pid"] == worker["pid"] and tree["chain"][-1]["pid"] == tree["launch_pid"] == live_tasks[W]["executor_pid"]
+          and tree["launch_pid"] != worker["pid"] and all(a["ppid"] == b["pid"] for a,b in zip(tree["chain"],tree["chain"][1:])), "separate real launch root/plan ancestry")
+    expected_pids = {(x["pid"],x["start"]) for x in tree["chain"]+[child]}
+    for closed in [case["closure_samples"][-1],*[s["closure"] for s in case["window"]["samples"]]]:
+        check({(p["pid"],p["start"]) for p in closed["processes"]} == expected_pids
+              and all(p["observed_start"] != p["start"] for p in closed["processes"])
+              and all(not g["pids"] for g in closed["groups"].values()) and not closed["pending"], "all actual process generations closed before rescue")
+    check(case["closure_samples"][-1]["sampled"] <= freeze["entered"], "product closure precedes Fcancel")
+    check({u["unit"] for u in case["units"]} == {g.rsplit("/",1)[-1] for g in case["closure_samples"][-1]["groups"]}
+          and all("ActiveState=inactive" in u["stdout"]["text"] and not u["stdout"]["truncated"]
+                  and u["at"] < freeze["entered"] for u in case["units"]), "every owned product unit inactive before delayed forward")
+    for cmd,task,status,rationale in zip(commands[2:],(P,case["completed_target"]["id"]),("cancelled","completed"),("E07_DUPLICATE","E07_TERMINAL")):
+        posts = [w for w in cmd["wire"] if w["method"] == "POST"]
+        check(len(posts) == 1 and posts[0] in observations["relay"] and posts[0]["path"] == f"/api/v1/orgs/alpha/tasks/{task}/cancel"
+              and posts[0]["request"] == {"rationale":rationale,"cascade":True} and posts[0]["status"] == 409
+              and posts[0]["response"] == {"detail":{"code":"task_already_terminal","current_status":status}}
+              and cmd["exit"] == 1 and cmd["stdout"]["text"] == f"Task {task} is already {status}; nothing to cancel.\n"
+              and cmd["stderr"]["text"] == "" and all(not cmd[k]["truncated"] and not cmd[k]["incomplete"] for k in ("stdout","stderr"))
+              and cmd["observed_start"] != cmd["child"]["start"] and cmd["entered"] >= second["finished"], "genuine terminal refusals and full human output")
+    check(case["completed_target"] in baseline["alpha"]["tables"]["tasks"] and case["completed_target"]["status"] == "completed", "identified completed baseline target")
+    window = case["window"]
+    samples = window["samples"]
+    check(window["end"] == window["entered"]+1 and len(samples) >= 21
+          and samples[0]["entered"]-window["entered"] <= .05 and samples[-1]["entered"] >= window["end"]
+          and window["finished"] >= samples[-1]["finished"] and window["finished"] <= case["phases"][3]["end"]
+          and all(0 < b["entered"]-a["entered"] <= .05 for a,b in zip(samples,samples[1:]))
+          and all(s["finished"]-s["entered"] <= .05 and s["witnesses"] == case["after_refusals"]["witnesses"] for s in samples), "entire fresh one-second <=50ms unchanged window")
+    check(case["transport_closure"]["forward_count"] == 1 and case["transport_closure"]["port"] == transport["port"]
+          and not any(case["transport_closure"][k] for k in ("listener_alive","workers_alive","sockets","errors")), "owned one-shot transport closure")
+    events = case["browser_events"]
+    check([e["event"] for e in events] == ["detail-reload","detail-reload","cancel","detail-reload","detail-reload","list-reload"], "full finite browser action ledger")
+    check(cancel["status"] == 200 and cancel["method"] == "POST" and cancel["request"] == {"rationale":"E07_CANCEL_TREE"}
+          and cancel["response"] == {"cancelled":[P,W],"killed":[{"task_id":W,"agent":"case_worker"}]}
+          and len(cancel["requests"]) == 1 and cancel["requests"][0]["body"] == cancel["request"], "one actual dialog cancellation/no invented PID")
+    check(cancel["parent_view"]["detail"]["task"]["block_kind"] == "delegated" and "waiting on subtasks" in cancel["parent_view"]["text"]
+          and cancel["child_view"]["detail"]["task"]["block_kind"] is None, "rendered current waiting/running tree")
+    for view,task,name in zip(case["views"][:2],(P,W),("e07-parent.png","e07-child.png")):
+        check(dict(event="detail-reload",**view) in events and view["url"].endswith(f"/orgs/alpha/tasks/{task}")
+              and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}") and view["recall_url"] == view["detail_url"]+"/recall"
+              and view["detail_method"] == view["recall_method"] == "GET" and view["detail_status"] == view["recall_status"] == 200
+              and view["detail"] == freeze["public"][task][""] and view["recall"] == freeze["public"][task]["/recall"]
+              and view["cancel_disabled"] is True and view["cancel_title"] == "Cannot cancel a cancelled task"
+              and view["badges"] and all(x == "cancelled" for x in view["badges"]) and "cancelled" in view["text"]
+              and view["screenshot"] == name and (directory/name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual terminal detail/reload/literal badge/disabled control")
+    listing = case["views"][2]
+    check(dict(event="list-reload",**listing) in events and listing["method"] == "GET" and listing["status"] == 200
+          and listing["url"].endswith("/orgs/alpha/tasks") and listing["roots_url"].split("?")[0].endswith("/api/v1/orgs/alpha/tasks/roots")
+          and any(t["task_id"] == P and t["status"] == "cancelled" for t in listing["roots"]["tasks"])
+          and "Cancelled" in listing["text"] and listing["parent_href"] == f"/orgs/alpha/tasks/{P}"
+          and (directory/listing["screenshot"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual list group and task link")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--controls", action="store_true")
@@ -1027,6 +1315,7 @@ def main() -> int:
                     validate_e04(result, json.loads((directory / "observations.json").read_text()),
                                  json.loads((directory / "browser-events.json").read_text()), directory)
                     validate_e05(result, json.loads((directory / "observations.json").read_text()), directory)
+                    validate_e07(result, json.loads((directory / "observations.json").read_text()), directory)
                 except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                     health["errors"].append(f"e2e-{version}: {exc}")
         unexpected = set(path.name for path in args.artifacts.glob("e2e-*") if path.is_dir()) - set(names)

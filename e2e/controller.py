@@ -48,6 +48,9 @@ class Controller:
         self.relay = None
         self.browser = None
         self.browser_relay = None
+        self.e07: dict = {}
+        self.e07_commands: list[dict] = []
+        self.late_transport = None
         self.thread_commands: list[dict] = []
         self.thread_attempts: list[dict] = []
         self.starts: list[dict] = []
@@ -537,6 +540,11 @@ class Controller:
                 self.durable.append(dict(thread_proxy_closure=closure))
                 if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
                     failures.append("E05 proxy closure/transport failure")
+        if self.late_transport:
+            closure = self.late_transport.close()
+            self.e07["transport_closure"] = closure
+            if closure["listener_alive"] or closure["workers_alive"] or closure["sockets"] or closure["errors"]:
+                failures.append("E07 transport closure")
         if self.browser:
             try:
                 self.browser.close()
@@ -570,6 +578,10 @@ class Controller:
                     http=self.http, durable=self.durable, relay=self.relay.records if self.relay else [],
                     provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
                     provider_observer=self.observer, observer_error=self.observer_error)
+        if self.e07:
+            self.e07["partial_launches"] = [json.loads(path.read_text()) for path in sorted((self.root / "coord").glob("e07-launch-*.json"))]
+            (self.root / "raw/e07.json").write_text(self.sanitize(json.dumps(self.e07, indent=2)))
+        rows.update(e07=self.e07, e07_commands=self.e07_commands)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
                     thread_proxy=self.browser_relay.records if self.browser_relay else [])
         witness = self.root / "witness/identities.jsonl"
@@ -578,10 +590,13 @@ class Controller:
             # or final closure record could be completed. Do not export headers.
             data = witness.read_bytes()
             rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
+            rows["witness_bytes"] = len(data)
+            rows["witness_sha256"] = sha(witness)
+            (self.root / "raw/launch-witnesses.jsonl").write_text(self.sanitize(data.decode()))
             rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
         raw = self.sanitize(json.dumps(rows, indent=2))
         (self.root / "raw" / "observations.json").write_text(raw)
-        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases))))
+        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases, e07=self.e07))))
 
 
 def cancellation_hold(controller: Controller) -> None:
@@ -644,6 +659,8 @@ def main() -> None:
                 exercise_jobs(controller)
                 from threads import exercise as exercise_threads
                 exercise_threads(controller)
+                from e07 import exercise as exercise_cancellation
+                exercise_cancellation(controller)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException:

@@ -51,6 +51,33 @@ class Store:
                                               bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
         return result
 
+    def cancellation_frame(self) -> dict:
+        """All relevant SQL content from ONE real reopened ro transaction.
+
+        File observations are explicitly outside that SQL transaction.
+        """
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            names = [row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                if row[0] in {"tasks", "task_results", "audit_log", "jobs", "threads"}
+                or row[0].startswith(("task_", "thread_"))]
+            tables = {name: [dict(row) for row in db.execute('SELECT * FROM "' + name + '" ORDER BY rowid')]
+                      for name in names}
+            db.rollback()
+        files = []
+        for name in ("threads", "artifacts", "task-attachments", "jobs"):
+            directory = self.path.parent / name
+            for path in sorted(directory.rglob("*")) if directory.exists() else []:
+                require(not path.is_symlink(), "E07 product file symlink")
+                if path.is_file():
+                    raw = path.read_bytes()
+                    files.append(dict(path=str(path.relative_to(self.path.parent)), bytes=len(raw),
+                                      sha256=hashlib.sha256(raw).hexdigest()))
+        return dict(tables=tables, files=files)
+
     def snapshot(self, task: str | None = None) -> dict:
         where = "" if task is None else " WHERE id=? OR parent_task_id=?"
         tasks = self.query("SELECT * FROM tasks" + where + " ORDER BY id",

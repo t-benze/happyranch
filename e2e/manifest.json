@@ -62,7 +62,10 @@
     "E05.reply-natural",
     "E05.self-dispatch-followup",
     "E05.consumed-token",
-    "E05.nonparticipant-task-send"
+    "E05.nonparticipant-task-send",
+    "E07.cancel-cascade-browser",
+    "E07.cancel-terminal-unchanged",
+    "E07.cancelled-late-cli"
   ],
   "event": "schedule",
   "cron": "0 19 * * *",
@@ -73,5 +76,6 @@
   ],
   "e04_design_sha256": "14cf2584b91514bfaee04e59f23f862429e2c865179c298167e88df7b9b7cdf1",
   "composition_design_sha256": "68f4a10b8822fdf109cea03949d1babb1105210004184bb98a2486294f3e1eb9",
-  "e05_design_sha256": "832d218b693b6e6f660a2f4ca484f498cf452878ae5f0e092d278986d0924f40"
+  "e05_design_sha256": "832d218b693b6e6f660a2f4ca484f498cf452878ae5f0e092d278986d0924f40",
+  "e07_c_design_sha256": "5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7"
 }

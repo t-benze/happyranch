@@ -323,6 +323,90 @@ class Browser:
                 (self.controller.root / "raw/e05-browser-events.json").write_text(
                     self.controller.sanitize(json.dumps(self.thread_events, indent=2)))
 
+    def e07_detail(self, task: str, status: str, shot: str | None = None) -> dict:
+        c = self.controller
+        self.page.set_default_timeout(c.remaining(4) * 1000)
+        self.page.set_default_navigation_timeout(c.remaining(4) * 1000)
+        path = f"/api/v1/orgs/alpha/tasks/{task}"
+        url = self.base + f"/orgs/alpha/tasks/{task}"
+        self.page.goto(url)
+        # Real reload and real responses even if a previous React cache exists.
+        with self.response(path) as detail, self.response(path + "/recall") as recall:
+            self.page.reload(timeout=c.remaining(4)*1000)
+        main = self.page.get_by_role("main")
+        expect(main.get_by_text(status, exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
+        cancel = main.get_by_role("button", name="Cancel", exact=True)
+        if status == "cancelled":
+            expect(cancel).to_be_disabled(timeout=c.remaining(4)*1000)
+            expect(cancel).to_have_attribute("title", "Cannot cancel a cancelled task", timeout=c.remaining(4)*1000)
+        else:
+            expect(cancel).to_be_enabled(timeout=c.remaining(4)*1000)
+        record = dict(task=task, url=self.page.url, detail_url=detail.value.url, detail=detail.value.json(),
+                      detail_method=detail.value.request.method, detail_status=detail.value.status,
+                      recall_url=recall.value.url, recall=recall.value.json(), recall_status=recall.value.status,
+                      recall_method=recall.value.request.method, text=main.inner_text(),
+                      cancel_disabled=cancel.is_disabled(), cancel_title=cancel.get_attribute("title"),
+                      badges=main.get_by_text(status,exact=True).all_text_contents(), at=time.monotonic())
+        if shot:
+            self.page.screenshot(path=str(c.root / "raw" / shot),full_page=True,timeout=c.remaining(4)*1000)
+            record["screenshot"] = shot
+        c.e07.setdefault("browser_events",[]).append(dict(event="detail-reload",**record))
+        require(record["detail"]["task"]["task_id"] == task and record["detail"]["task"]["status"] == status,
+                "E07 current actual browser response",record)
+        return record
+
+    def e07_cancel(self, parent: str, child: str) -> dict:
+        c = self.controller
+        child_view = self.e07_detail(child,"in_progress")
+        parent_view = self.e07_detail(parent,"in_progress")
+        require("waiting on subtasks" in parent_view["text"] and child_view["detail"]["task"]["block_kind"] is None,
+                "E07 waiting parent and running child rendered")
+        self.page.get_by_role("main").get_by_role("button",name="Cancel",exact=True).click(timeout=c.remaining(4)*1000)
+        dialog = self.page.get_by_role("dialog")
+        expect(dialog.get_by_role("heading",name="Cancel task",exact=True)).to_be_visible(timeout=c.remaining(4)*1000)
+        dialog.get_by_placeholder("Reason for cancellation (optional)",exact=True).fill("E07_CANCEL_TREE",timeout=c.remaining(4)*1000)
+        path = f"/api/v1/orgs/alpha/tasks/{parent}/cancel"
+        requests = []
+        def capture(request):
+            if request.method == "POST" and request.url == self.base + path:
+                requests.append(dict(method=request.method,url=request.url,body=request.post_data_json,at=time.monotonic()))
+        self.page.on("request",capture)
+        rationale = dialog.get_by_role("textbox").input_value()
+        entered = time.monotonic()
+        try:
+            with self.page.expect_response(lambda r:r.url == self.base+path and r.request.method == "POST",timeout=c.remaining()*1000) as received:
+                dialog.get_by_role("button",name="Cancel task",exact=True).click(timeout=c.remaining()*1000)
+            response = received.value
+            record = dict(entered=entered,finished=time.monotonic(),path=path,method=response.request.method,
+                          request=response.request.post_data_json,status=response.status,response=response.json(),
+                          requests=requests,parent_view=parent_view,child_view=child_view,rationale=rationale)
+            c.e07.setdefault("browser_events",[]).append(dict(event="cancel",**record))
+            require(len(requests) == 1 and record["request"] == {"rationale":"E07_CANCEL_TREE"}
+                    and record["status"] == 200 and record["response"] == {"cancelled":[parent,child],"killed":[{"task_id":child,"agent":"case_worker"}]},
+                    "E07 literal shipping browser cancellation",record)
+            return record
+        finally:
+            self.page.remove_listener("request",capture)
+
+    def e07_terminal(self, parent: str, child: str) -> list[dict]:
+        c = self.controller
+        views = [self.e07_detail(parent,"cancelled","e07-parent.png"),self.e07_detail(child,"cancelled","e07-child.png")]
+        path = "/api/v1/orgs/alpha/tasks/roots"
+        self.page.goto(self.base+"/orgs/alpha/tasks",timeout=c.remaining(4)*1000)
+        with self.response(path) as roots:
+            self.page.reload(timeout=c.remaining(4)*1000)
+        main = self.page.get_by_role("main")
+        expect(main.get_by_text("Cancelled",exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
+        link = main.locator(f'a[href="/orgs/alpha/tasks/{parent}"]').first
+        expect(link).to_be_visible(timeout=c.remaining(4)*1000)
+        self.page.screenshot(path=str(c.root/"raw/e07-list.png"),full_page=True,timeout=c.remaining(4)*1000)
+        record = dict(url=self.page.url,roots_url=roots.value.url,roots=roots.value.json(),method=roots.value.request.method,
+                      status=roots.value.status,text=main.inner_text(),parent_href=link.get_attribute("href"),
+                      screenshot="e07-list.png",at=time.monotonic())
+        c.e07.setdefault("browser_events",[]).append(dict(event="list-reload",**record))
+        views.append(record)
+        return views
+
     def close(self) -> None:
         try:
             (self.controller.root / "raw" / "browser-events.json").write_text(self.controller.sanitize(json.dumps(self.events, indent=2)))

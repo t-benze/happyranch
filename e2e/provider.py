@@ -100,10 +100,21 @@ def main() -> None:
                 return
             if final:
                 raise RuntimeError("callback must be the provider's final CLI action")
-            selected_mode = "thread" if instruction["action"].startswith("thread-") else "jobs"
+            selected_mode = ("e07" if instruction["action"].startswith("e07-") else
+                             "thread" if instruction["action"].startswith("thread-") else "jobs")
             if command_mode is not None and selected_mode != command_mode:
                 raise RuntimeError("provider command modes cannot be mixed")
             command_mode = selected_mode
+            if selected_mode == "e07":
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from late_transport import provider_command
+                receipt = provider_command(instruction, row, stream)
+                stream.write((json.dumps(dict(e07_return=receipt)) + "\n").encode())
+                stream.flush()
+                if instruction["action"] == "e07-held" or receipt["exit"] != 0 or receipt["timed_out"]:
+                    raise RuntimeError("E07 held provider returned or parent failed")
+                final = True
+                continue
             if instruction["action"].startswith("thread-"):
                 sys.path.insert(0, str(Path(__file__).resolve().parent))
                 from thread_provider import command
