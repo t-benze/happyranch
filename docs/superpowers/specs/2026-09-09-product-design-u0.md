@@ -73,9 +73,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
@@ -1719,7 +1719,7 @@ migration-needed3, refusal1, parser2. Contention is bounded and refusal/rollback
 preserves original data and files; crash journals/SQLite WAL sidecars are not
 workflow schema. No live execution is authorized by script publication.
 
-Deliberate POST /orgs creation now proves its newly created skeleton before complete
+At the historical G checkpoint, deliberate POST /orgs creation proved its newly created skeleton before complete
 G initialization and attachment (the G ruling supersedes the S1 fresh-E target only), using existing cleanup ownership. Generic
 Database/runtime-audit remain workflow-free. F legacy work remains loadable with
 actual script guidance; missing readiness never mints enable/reconciliation

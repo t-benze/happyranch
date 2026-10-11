@@ -66,9 +66,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
@@ -407,7 +407,9 @@ roster without another directory scan. It holds every canonically ordered
 referenced profile lease through coherent synchronization/publication and
 shared-map insertion; its mirror
 digest must equal the current global digest before readiness is exposed.
-Startup does not dispatch, activate, or admit workflow work.
+Startup preserves existing workflow ownership. Before workers start, U3a(b)
+may fulfill an already committed completed H operation under current authority;
+it creates no new author activation or host execution.
 
 THR139 S1 separates existing and new databases. Existing `OrgState.load` retains
 foundation installation where required, validates full F/E/G/H before workflow

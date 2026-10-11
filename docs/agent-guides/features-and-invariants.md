@@ -71,9 +71,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
@@ -93,9 +93,9 @@ short writer reservation. GET and downgrade preflight never advance. Historical
 request replay reconstructs the original action/CAS before obsolete gates and
 returns its identity separately from current pending/enabled/draining state.
 
-Foundation installation still writes only generation1/event1. S1 independently
-validates complete F/E/G; only explicit POST /orgs fresh creation
-initializes G automatically. Existing F requires the operator script documented in
+Historical S1/G foundation evidence writes only generation1/event1 and
+validates complete F/E/G; at that checkpoint only explicit POST /orgs fresh creation
+initialized G automatically. Current H initialization/readers are described above. Existing F requires the operator script documented in
 runtime-and-configuration.md; startup/reopen/enable never adds draft DDL. Cold
 `OrgState.load` forwards actual org context and resumes committed requests only
 on ready E/G, retaining earlier F history and actionable guidance. Existing templates,
