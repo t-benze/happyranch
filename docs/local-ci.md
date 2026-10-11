@@ -763,3 +763,32 @@ E05 and later cancellation/restart remain future work; no entire-program PASS.
 The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
 bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
 lane, protected proof, collector action, Jenkins or deployment is authorized.
+
+### E05 source coverage milestone
+
+The daily harness appends the accepted E05 C/N/D threads/replay source to the
+unchanged23 baseline,19 Pause and6 E04 variants:53 authored variants/37 expected
+providers, with bootA12 archived separately from bootB25. It uses genuine
+provider-owned thread/task CLI authority, a separate real-response browser
+proxy and content-reading aggregate validation. See `e2e/README.md` for the four
+case/five variant authoring map, literal counts and consumer contracts.
+
+This source milestone is not execution or behavioral acceptance. E05 proxy,
+guard sensitivity, denial immutability, delivery, sanitation, closure and measured
+fit remain MISSING/UNEXECUTED; protected12/RED-restoration-GREEN/repetitions remain
+unauthorized/unexecuted. General integration SKIPPED; Python units RETIRED.
+Lint-only PR/main checks, daily-only19UTC cadence,480 common scenarios clipped by
+original720, cleanup60/export120, target600/hard900 and existing five artifacts
+are unchanged. TASK10555 retains first-daily collection/Pause acceptance; collected
+results must be joined to their actual source SHA. Later cancellation/late-callback/
+restart and full daily acceptance remain unfinished root-owned work.
+
+E05 PR1040 R1–R3 source correction binds every named CLI receipt to its
+canonical command/instruction and actual public outcome, derives hold/navigation
+from the complete browser ledger with literal per-message rendering joins, and
+redacts full captured streams with retained credentials before byte clipping.
+Original48/total53 and A12+B25=37 source expectations remain unchanged. Dedicated
+contradictory-artifact and sanitation controls are UNAUTHORED; all behavior,
+sensitivity, proxy/guard, sanitation, delivery/persistence, closure, fit and
+protected proof remain MISSING/UNEXECUTED. This is static source correction only;
+the existing daily-only policy and all execution holds remain in effect.

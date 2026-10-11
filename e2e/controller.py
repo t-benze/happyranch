@@ -37,6 +37,8 @@ class Controller:
         self.port = 0
         self.token = ""
         self.secrets: set[str] = set()
+        self.secret_lock = threading.RLock()
+        self.threads_active = False
         self.provider_commands: list[dict] = []
         self.provider_attempts: list[dict] = []
         self.observer: list[dict] = []
@@ -45,6 +47,9 @@ class Controller:
         self.daemon = None
         self.relay = None
         self.browser = None
+        self.browser_relay = None
+        self.thread_commands: list[dict] = []
+        self.thread_attempts: list[dict] = []
         self.starts: list[dict] = []
         self.holds: dict[str, tuple] = {}
         self.peer_connections: list[tuple] = []
@@ -81,10 +86,32 @@ class Controller:
             self.observer_error = repr(exc)
 
     def sanitize(self, text: str) -> str:
-        for secret in self.secrets | {self.token}:
+        for secret in sorted(self.secrets | {self.token}, key=len, reverse=True):
             if secret:
                 text = text.replace(secret, "[REDACTED]")
         return text
+
+    def remember_thread_secrets(self, tokens: list[str]) -> None:
+        with self.secret_lock:
+            require(all(isinstance(token, str) and token for token in tokens), "readable thread redaction identities")
+            self.secrets.update(tokens)
+            temporary = self.root / "coord/thread-redaction.tmp"
+            temporary.write_text(json.dumps(sorted(self.secrets)))
+            temporary.chmod(0o600)
+            temporary.replace(self.root / "coord/redaction-context.json")
+
+    def capture_thread_secrets(self) -> None:
+        if not self.threads_active:
+            return
+        try:
+            tokens = [row["invocation_token"] for store in self.stores.values()
+                      for row in store.query("SELECT invocation_token FROM thread_invocations")]
+            self.remember_thread_secrets(tokens)
+        except BaseException:
+            # Existing launcher rejects an invalid private context and withholds
+            # raw exports. Never fall back to bearer-only on an unknown token set.
+            (self.root / "coord/redaction-context.json").write_text("[]")
+            raise
 
     def provider_cli(self, start: dict, action: str, **arguments: Any) -> dict:
         from owned import identity
@@ -205,18 +232,22 @@ class Controller:
             stubs[provider] = dict(path=str(target), sha256=sha(target))
         plan = self.root / "coord" / "plan.sh"
         plan.write_text(f"#!/bin/sh\nexec {shlex.quote(self.python)} -I {shlex.quote(str(self.source / 'e2e/provider.py'))} \"$@\"\n")
-        for file in [*binary.iterdir(), plan]:
+        thread_plan = self.root / "coord/thread-plan.sh"
+        thread_plan.write_text(f"#!/bin/sh\nexec {shlex.quote(self.python)} -I {shlex.quote(str(self.source / 'e2e/thread_provider.py'))} \"$@\"\n")
+        for file in [*binary.iterdir(), plan, thread_plan]:
             file.chmod(0o700)
         Path(str(plan) + ".sha256").write_text(sha(plan))
+        Path(str(thread_plan) + ".sha256").write_text(sha(thread_plan))
         manifest = dict(root=str(self.root), source=str(self.source), revision=self.revision,
                         python=self.python, callback=str(callback), callback_sha256=sha(callback), stubs=stubs)
         path = self.root / "coord" / "manifest.json"
         path.write_text(json.dumps(manifest))
         path.chmod(0o600)
         self.env.update(PATH=f"{binary}:/usr/bin:/bin", E2E_SOCKET=str(self.socket_path),
-                        FAKE_CLAUDE_PLAN=str(plan), HAPPYRANCH_TEST_PARENT_MANIFEST=str(path),
+                        FAKE_CLAUDE_PLAN=str(plan), FAKE_CLAUDE_THREAD_PLAN=str(thread_plan), HAPPYRANCH_TEST_PARENT_MANIFEST=str(path),
                         HAPPYRANCH_TEST_STUB_GUARD=str(guard), HAPPYRANCH_TEST_WITNESS_DIR=str(self.root / "witness"))
-        self.bindings = {str(p): sha(p) for p in [*binary.iterdir(), plan, Path(str(plan) + ".sha256"), path]}
+        self.bindings = {str(p): sha(p) for p in [*binary.iterdir(), plan, Path(str(plan) + ".sha256"),
+                                               thread_plan, Path(str(thread_plan) + ".sha256"), path]}
         interpreter = Path(self.python).resolve()
         require(Path(sys.executable).resolve() == interpreter, "controller uses bound interpreter")
         self.bindings[str(interpreter)] = sha(interpreter)
@@ -490,6 +521,22 @@ class Controller:
 
     def close(self) -> None:
         failures = []
+        try:
+            self.capture_thread_secrets()
+        except Exception:
+            failures.append("unknown E05 token redaction context")
+        if self.browser_relay:
+            self.browser_relay.release.set()
+            try:
+                if self.browser:
+                    self.browser.close_threads_context()
+            except Exception as exc:
+                failures.append(type(exc).__name__ + ": E05 browser close")
+            finally:
+                closure = self.browser_relay.close()
+                self.durable.append(dict(thread_proxy_closure=closure))
+                if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
+                    failures.append("E05 proxy closure/transport failure")
         if self.browser:
             try:
                 self.browser.close()
@@ -518,10 +565,13 @@ class Controller:
         require(not failures, "browser cleanup/evidence failed", failures)
 
     def evidence(self) -> None:
+        self.capture_thread_secrets()
         rows = dict(variants=self.results, starts=self.starts, commands=self.commands,
                     http=self.http, durable=self.durable, relay=self.relay.records if self.relay else [],
                     provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
                     provider_observer=self.observer, observer_error=self.observer_error)
+        rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
+                    thread_proxy=self.browser_relay.records if self.browser_relay else [])
         witness = self.root / "witness/identities.jsonl"
         if witness.exists():
             # Keep genuine partial-run source witnesses even when no final case
@@ -592,9 +642,12 @@ def main() -> None:
                 from pause import exercise as exercise_pause
                 exercise_pause(controller)
                 exercise_jobs(controller)
+                from threads import exercise as exercise_threads
+                exercise_threads(controller)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException:
+        controller.capture_thread_secrets()
         (controller.root / "raw" / "failure.txt").write_text(controller.sanitize(traceback.format_exc()))
         raise
     finally:
