@@ -116,6 +116,50 @@ independent operator acceptance, including real Founder UI actions, remain pendi
 enablement, deployment or a Phase1-completion claim.
 
 
+## Founder-managed Default (THR296)
+
+
+Task-completion prompt wording follows the task owner: a worker-owned root may
+finish, self-delegate or escalate within its server-authorized contract. An
+attempted non-root founder escalation fails the child and wakes its parent.
+Manager-only operations retain their restrictions; the canonical start-task skill owns the
+payload guidance. Delegated leaves still omit decisions and callback identity
+and final-action ordering remain unchanged.
+
+Offline roster recovery uses the retained native operation/journal/request
+identity. Replay performs no reset/materializer/publication when actual durable
+completion is already established. Explicit compensation publishes a new
+coherent original-roster generation, retaining cleared resumes and audits; the
+original successful receipt is preserved. C6/C8/C9 observers/localizations are
+authored source, with M/guest-reboot behavior unexecuted.
+
+Attachment and executable authority are distinct. An exactly registered pending
+bootstrap manager can attach without a current manager grant; owner admission and
+workflow capture still require its ordinary supported promotion to ACTIVE. Active/
+pending duplicate identities or mismatched pending manager role/team refuse.
+
+Founder-managed teams use a human principal without an executable manager.
+Explicit active worker owners may run ordinary roots and self-decompose; they
+have no peer/fanout, manager administration, policy or template authority.
+Missing owners for a human team are refused before persistence. Malformed active
+definitions after attachment produce the existing unknown_owner admission refusal
+before task/attachment allocation. Delegated
+outcomes use a valid persisted executable parent owner, with unknown_manager
+for invalid ancestry. Null verdict uses the native implicit mapping; blank and
+custom strings remain exact. This audit is an agent outcome, never human approval.
+Selected human failed-leaf recovery is result-scoped and conservatively refuses
+foreign/multiple/unreadable history. Separate evidence, chain, fanout, FAILED,
+review and marker commits remain separate; history and review precede marker.
+Retained loop retries wait 50ms outside locks without a retry cap. Busy/pending
+is not settlement; parent handoff follows genuine owned cleanup. A native drain
+exception or cancellation retains the exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns `recovery_required` without new
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Pending callers join the original owner. Shutdown preserves
+accepted/consumed residue for existing next-start recovery. Healthy finished
+same-result reentry checks current ownership/history again; cancellation or a
+replacement binding cannot receive a cached done disposition.
+
 ## Conventions
 
 - Type hints on all function signatures.
@@ -2200,6 +2244,45 @@ The existing job runner has no descendant-tree quiescence receipt: actual job te
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
 
+
+The original PR1022 L4 run at `6472d886` retained an internal timeout exit 124,
+not complete recovery proof. Its incremental traces identify a missing bound
+completion audit for successful human-team leaf recovery, two failed-recovery
+reads of a nonexistent supervisor method, and fixture startup fingerprint
+refusals. Human-team completed recovery now atomically records the actual
+INTEGER result and recovery session in its completion audit; historical
+agent-team payloads retain their prior shape. Failed recovery reads shutdown
+from the existing admission controller without changing host enforcement.
+Test-side compiled-code fingerprints use marshal format 2, retaining full
+code comparison while excluding object-sharing reference flags. All 224 C4
+parameters and their original behavioral assertions remain. These corrections
+are source readiness; final-head hosted execution and the existing held proof
+inventory remain required, and no partial result is a feature-readiness claim.
+
+
+The original PR1022 L4 archive at `18e01cfa` retains parent/command exit124,
+45 failed calls, 24 passed calls, two setup errors and one interrupted setup-only
+case; it is not complete 224-case proof. Its task teardown emitted the existing
+informational `task_scratch_report`, which the human failed-recovery reader had
+incorrectly treated as foreign causal history. That exact report action remains
+informational. Failed recovery permits only the native task-scoped memory
+observations: `memory_added`, `memory_digest_impression`, `memory_search`,
+`memory_runtime_intent`, `memory_runtime_identity`, `memory_runtime_expectation`,
+`memory_runtime_binding`, `memory_runtime_launched`, `memory_runtime_terminal`,
+and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycle
+rows are outside this task history; collection acceptance/invalidation controls
+are not informational recovery exemptions. Unknown actions, including a
+dictionary-payload `memory_unrecognized_transition`, refuse as
+`ambiguous_history` before failure, review, marker, job or parent effects.
+Selected result/session/owner, review ordering and replay fences are unchanged.
+Fixture jobs are submitted
+by the original ordinary child before clean omission, never by the purpose-bound
+completion-recovery session. The restart-only no-job observer excludes the initial
+marker-interruption launch. Native diagnostic events link fully flushed JSON
+without replacing existing events, and actual job-submit refusals are retained
+before assertions. All 224 C4 cases and their behavioral assertions remain.
+These are source corrections only: no new behavioral execution, GREEN,
+causal/restoration/repetition or held migration/restore/reboot proof is claimed.
 
 U3a(c) completion routes select the existing draft or F5 review owner for exact
 full callback replay, and recheck ownership under org.db_lock before the existing

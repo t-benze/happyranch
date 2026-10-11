@@ -322,6 +322,82 @@ serializes connection access; removal can cause a logged sweep error. Cancellati
 can leave a worker running or a committed pending token for later recovery.
 There is no added orgs_lock hold, worker drain or lifespan guarantee.
 
+## Founder-managed teams (THR296)
+
+Historical TASK10394/TASK10553 PR1022 runs used the finite
+L1/L4/L5/L7/L8/L9/W10 selections with the closed integration parent,
+independently pinned b317 reader and transient exact browser tooling.
+Merged PR1025/THR291seq69 supersedes that automatic PR entry with lint-only
+checks and daily-only Product E2E; retained case source grants no new execution.
+See `docs/local-ci.md`. Python units remain RETIRED and broad integration SKIPPED.
+M, compatible restore, reboot, live operations and after-M acceptance remain
+held. Source checks are not behavioral proof; preserve exits and missing evidence.
+
+
+C10 uses the existing built SPA and isolated integration fixture, with en/zh-CN
+at 390×844 and 1440×900. Authored availability/empty-team projections are UI
+boundaries; real after-migration browser acceptance requires the actual C6 M
+check/apply/receipt. Header locale selection transfers focus to its trigger;
+modal external-tab locale updates preserve their focused drafts. Work Hours
+roster loading/error/Retry is distinct from empty. Emitted completion guidance
+references the canonical start-task skill: worker-owned roots have only
+server-authorized `done`, self-only `delegate` or `escalate` decisions;
+delegated leaves return plain completions. An attempted non-root founder
+escalation fails the child and wakes its parent; manager-only operations stay
+restricted.
+
+The bounded roster maintenance source pins effective registration and the clean
+Python3.14 reader, independently closes org/shared-store restore inventories,
+and performs final pre-reset CAS. Complete/compensate and two same-manifest
+replays retain native reset/publication ownership; compensation preserves the
+original receipt and records its NEW coherent generation separately. C6/C8/C9
+source and 28 publication/3 replay localizations are AUTHORED, not executed.
+M launch/observer/reboot capability remains unproved; see the operator runbook.
+
+Team managers may be existing agent names or closed tagged principals
+`{kind: agent|human, principal: ...}`. The sole human principal is `founder`;
+its executable manager is absent. Founder never enters AgentDef, all_agents,
+workspace, callback or executor identity. Attachment validates duplicates and
+both directions of active/pending roster and AgentDef role/team agreement.
+An exactly registered pending bootstrap manager may attach only with matching
+team/manager role and a unique active-or-pending identity. It stays absent from
+the active launch roster and current policy eligibility; workflow authority
+remains fenced until ordinary authenticated approval publishes an ACTIVE manager.
+Missing/mismatched definitions and active/pending duplicates refuse attachment.
+HTTP removal of a still-active declared worker is invalid and rolls back; native
+registry add/remove roundtrips are separate serialization coverage.
+
+Existing omitted task routing defaults to Engineering unless an explicit
+`task_default_team` is present. Proven fresh org creation adds empty human
+Default and writes both `default_team` and `task_default_team` as Default.
+Selecting a human team requires an active executable owner before task,
+attachment or queue persistence (`422 owner_required_for_human_team`). Malformed
+active definitions after attachment also refuse owner admission before allocation. Workers
+remain ordinary decision owners of roots, with self-only decomposition.
+
+New workflow authority uses schema2 typed managers and both routing pointers;
+retained schema1 bytes/digests and pinned workflow contexts keep their original
+interpretation. Human manager principals are never executable role candidates
+or policy-selector managers. Startup never moves or reconstructs the roster.
+Human delegated outcomes name the valid persisted executable parent owner, or
+`unknown_manager` on invalid ancestry. Only absent verdict maps implicitly;
+blank/custom/standard strings remain exact. These are agent outcome records,
+not authenticated Founder approval.
+
+Selected human failed-leaf recovery uses exact positive INTEGER result identity,
+complete selected-only history and separate guarded commits. The review/history
+precede the consumed marker. A finite process-local operation retains the same
+identity, phase and original parent effect through writer contention; 50ms
+outside-lock retries have no count cap. Pending is never settlement, and
+shutdown leaves authentic residue for next-start recovery. Native drain exception
+or cancellation retains the original exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns recovery_required without
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Healthy finished same-result reentry renews the current
+owner/history checks; cached done is not authority. Agent-team and
+completed-leaf transaction behavior is preserved. See the current THR296 spec
+and operator runbook; source authoring is not behavioral verification.
+
 ## Workflow authority publication (U2A)
 
 `WorkflowAuthorityCoordinator` owns the org-scoped producer half of the
@@ -642,6 +718,22 @@ See the project-layout boundary section and [Local CI](docs/local-ci.md).
 
 ## Commands
 
+PR1022's TASK10553 continuation retains all 224 C4 parameters and the finite
+L/W source. Historical PR shards are superseded by merged PR1025's THR291seq69
+lint-only automation; retained behavioral sources are not automatic merge gates. Feature-only phase tracebacks/checkpoints survive earlier
+than final teardown; parent/command inner deadlines fail visibly within the
+unchanged 90-minute hosted limit. W10 retains exact accessible unforced worker
+selection using observed adjacent agent/team text. Held M fixtures no longer
+import retired unit helpers, but M/restore/reboot/paired-observer/causal/repetition
+proof remains absent. See docs/local-ci.md and the roster migration runbook;
+no feature or maintenance readiness follows from source correction.
+
+W10's owned HTTP proxy forwards actual daemon SSE headers and frames as streams.
+Finite-request settlement excludes only streams whose headers were forwarded;
+browser disconnect/fixture cleanup closes idle upstreams, and a 30-minute stream
+deadline fails visibly. `C10-http-prefix.json` survives a failed browser oracle;
+it is partial diagnostic evidence, never the completed 29-row browser receipt.
+
 OpenAPI operator (no tests/lifespan): `uv run python scripts/generate_openapi_snapshot.py --check`
 (default, non-writing), or explicit reviewed `uv run python scripts/generate_openapi_snapshot.py --write`
 (atomic snapshot replacement).
@@ -709,6 +801,36 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
 - Follow existing patterns in `runtime/orchestrator/` before adding abstractions.
 - Keep changes scoped; avoid unrelated refactors and generated metadata churn.
 
+## Structural maintenance
+
+- Put behavior in its existing domain owner; `database.py`/`Database` stays the
+  shared interface, connection and coordination owner. Challenge unrelated
+  additions to `run_step.py`, `models.py` and generic utilities. Use the
+  [project layout](docs/agent-guides/project-layout.md) to locate responsibilities.
+- Preserve standalone `python scripts/check_source_boundaries.py` and its
+  local/hosted source-only lane: explicit module-time infrastructure/orchestrator
+  imports of `runtime.daemon` are forbidden, with syntactic `TYPE_CHECKING` and
+  callable-local exceptions and no allowlist. See the
+  [boundary contract](docs/agent-guides/project-layout.md#source-dependency-boundary)
+  for relative/dynamic import, alias and callable-metadata limitations. This lint
+  does not prove architecture quality; respect the existing frontend
+  [feature and layer boundaries](web/ARCHITECTURE.md#layers-strict).
+- Every code review answers: is behavior placed with its owner, does the change
+  introduce unnecessary coupling or duplicated ownership, and do the source map
+  and behavior docs agree with the code? Correct concrete violations before merge.
+- Repeated unrelated edits, merge conflicts, dependency cycles or scattered
+  feature changes trigger bounded design consideration. Size is a signal, not a
+  quota. Extract coherent responsibilities only for concrete maintenance benefit;
+  retain compatibility-sensitive code where warranted, including intentionally
+  retained bulk decline. E1/E2 remain deferred; do not reopen the decomposition
+  program.
+- Keep upkeep proportional, with necessary docs in the same PR. Record deferred
+  debt with concrete impact and an owner; do not start automatic cleanup campaigns
+  or impose tiny-move quotas.
+
+The engineering manager enforces these rules at merge. Success means locating
+and changing a responsibility without unrelated edits.
+
 ## Web Contract
 
 Every browser-callable daemon route maps to one TS function in `web/src/lib/api/`.
@@ -760,3 +882,47 @@ Root Pause/Resume (THR-292) is an org-owned control, separate from TaskStatus/Bl
 Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
+
+
+The original PR1022 L4 run at `6472d886` retained an internal timeout exit 124,
+not complete recovery proof. Its incremental traces identify a missing bound
+completion audit for successful human-team leaf recovery, two failed-recovery
+reads of a nonexistent supervisor method, and fixture startup fingerprint
+refusals. Human-team completed recovery now atomically records the actual
+INTEGER result and recovery session in its completion audit; historical
+agent-team payloads retain their prior shape. Failed recovery reads shutdown
+from the existing admission controller without changing host enforcement.
+Test-side compiled-code fingerprints use marshal format 2, retaining full
+code comparison while excluding object-sharing reference flags. All 224 C4
+parameters and their original behavioral assertions remain. These corrections
+are source readiness; final-head hosted execution and the existing held proof
+inventory remain required, and no partial result is a feature-readiness claim.
+
+C10 canonical enrollment readback includes the existing AgentDef writer's final LF.
+The exact submitted draft/POST, focus/selection and all 89 assertions remain;
+four readable draft screenshots do not establish completed 29-row browser proof.
+
+
+The original PR1022 L4 archive at `18e01cfa` retains parent/command exit124,
+45 failed calls, 24 passed calls, two setup errors and one interrupted setup-only
+case; it is not complete 224-case proof. Its task teardown emitted the existing
+informational `task_scratch_report`, which the human failed-recovery reader had
+incorrectly treated as foreign causal history. That exact report action remains
+informational. Failed recovery permits only the native task-scoped memory
+observations: `memory_added`, `memory_digest_impression`, `memory_search`,
+`memory_runtime_intent`, `memory_runtime_identity`, `memory_runtime_expectation`,
+`memory_runtime_binding`, `memory_runtime_launched`, `memory_runtime_terminal`,
+and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycle
+rows are outside this task history; collection acceptance/invalidation controls
+are not informational recovery exemptions. Unknown actions, including a
+dictionary-payload `memory_unrecognized_transition`, refuse as
+`ambiguous_history` before failure, review, marker, job or parent effects.
+Selected result/session/owner, review ordering and replay fences are unchanged.
+Fixture jobs are submitted
+by the original ordinary child before clean omission, never by the purpose-bound
+completion-recovery session. The restart-only no-job observer excludes the initial
+marker-interruption launch. Native diagnostic events link fully flushed JSON
+without replacing existing events, and actual job-submit refusals are retained
+before assertions. All 224 C4 cases and their behavioral assertions remain.
+These are source corrections only: no new behavioral execution, GREEN,
+causal/restoration/repetition or held migration/restore/reboot proof is claimed.
