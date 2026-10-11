@@ -10,6 +10,8 @@ import shlex
 import shutil
 import signal
 import socket
+import select
+import threading
 import subprocess
 import sys
 import time
@@ -34,11 +36,18 @@ class Controller:
         self.python = str(self.root / "venv" / "bin" / "python")
         self.port = 0
         self.token = ""
+        self.secrets: set[str] = set()
+        self.provider_commands: list[dict] = []
+        self.provider_attempts: list[dict] = []
+        self.observer: list[dict] = []
+        self.observer_error: str | None = None
+        self.observer_stop = threading.Event()
         self.daemon = None
         self.relay = None
         self.browser = None
         self.starts: list[dict] = []
         self.holds: dict[str, tuple] = {}
+        self.peer_connections: list[tuple] = []
         self.payloads: dict[str, dict] = {}
         self.results: dict[str, dict] = {}
         self.commands: list[dict] = []
@@ -50,9 +59,85 @@ class Controller:
         self.server.bind(str(self.socket_path))
         self.server.listen(8)
         self.stores = {org: Store(self.root, org) for org in ("alpha", "beta")}
+        self.observer_thread = threading.Thread(target=self.observe_providers, daemon=True)
+        self.observer_thread.start()
+
+    def observe_providers(self) -> None:
+        """Passive continuous socket/witness observer, including inter-case gaps."""
+        try:
+            while not self.observer_stop.is_set():
+                path = self.root / "witness/identities.jsonl"
+                # A writer may be appending its single bounded record; retain
+                # complete lines only, with the next observation covering it.
+                data = path.read_bytes() if path.exists() else b""
+                lines = data.split(b"\n")[:-1]
+                rows = [json.loads(line) for line in lines]
+                self.observer.append(dict(at=time.monotonic(), pending=bool(select.select([self.server], [], [], 0)[0]),
+                                          stubs=sum(r["kind"] == "stub" for r in rows),
+                                          calls=sum(r["kind"] == "callback" for r in rows)))
+                if self.observer_stop.wait(0.05):
+                    break
+        except BaseException as exc:
+            self.observer_error = repr(exc)
+
+    def sanitize(self, text: str) -> str:
+        for secret in self.secrets | {self.token}:
+            if secret:
+                text = text.replace(secret, "[REDACTED]")
+        return text
+
+    def provider_cli(self, start: dict, action: str, **arguments: Any) -> dict:
+        from owned import identity
+        require(identity(start["pid"]) == start["pid_start"], "provider CLI requires live issued SID")
+        connection, stream = self.holds[start["session"]]
+        entered = time.monotonic()
+        deadline = min(entered + self.remaining(10), self.deadline, getattr(self, "case_deadline", self.deadline))
+        # One absolute exchange end; the child stops one second earlier so its
+        # partial receipt can reach the existing sanitized finally exporter.
+        require(deadline - entered > 1, "provider CLI requires receipt delivery room")
+        instruction = dict(action=action, deadline=deadline, execution_deadline=deadline - 1, **arguments)
+        offset = len(self.relay.records)
+        attempt = dict(provider=dict(start), instruction=instruction, entered=entered, wire_begin=offset)
+        self.provider_attempts.append(attempt)
+        send_remaining = deadline - time.monotonic()
+        require(send_remaining > 0, "provider CLI exchange exhausted before send")
+        connection.settimeout(send_remaining)
+        stream.write((json.dumps(instruction) + "\n").encode())
+        stream.flush()
+        require(time.monotonic() < deadline, "provider CLI send exhausted exchange")
+        connection.settimeout(deadline - time.monotonic())
+        receipt = json.loads(stream.readline(262144))
+        receipt["wire"] = list(self.relay.records[offset:])
+        self.provider_commands.append(receipt)  # Preserve failed commands before assertions.
+        attempt.update(finished=time.monotonic(), command_index=len(self.provider_commands) - 1)
+        require(receipt["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
+                and receipt["source_sha"] == self.revision and receipt["python"] == self.python,
+                "provider-owned CLI identity/source/interpreter", receipt)
+        require(receipt["action"] == action and receipt["exit"] == 0 and receipt["timed_out"] is False
+                and receipt["execution_deadline"] == instruction["execution_deadline"]
+                and receipt["finished"] <= time.monotonic() < deadline and self.relay.error is None, "actual provider CLI exit/relay", receipt)
+        if "payload" in arguments:
+            expected = dict(arguments["payload"], task_id=start["task"], session_id=start["session"])
+            if action != "jobs-submit":
+                expected["agent"] = start["agent"]
+            require(receipt["payload"] == expected, "actual provider-authored payload", receipt["payload"])
+        if action == "jobs-submit":
+            submitted = [r for r in receipt["wire"] if r["path"] == f"/api/v1/orgs/{start['org']}/jobs/submit" and r["method"] == "POST"]
+            require(len(submitted) == 1 and submitted[0]["status"] == 201
+                    and submitted[0]["response"] == json.loads(receipt["stdout"]) and not submitted[0]["dropped"],
+                    "actual submit HTTP201 and returned identity", submitted)
+        if action in {"jobs-block", "jobs-final"}:
+            payload = receipt["payload"]
+            expected = f"/api/v1/orgs/{start['org']}/tasks/{start['task']}/completion"
+            callbacks = [r for r in receipt["wire"] if r["path"] == expected and r["method"] == "POST"]
+            require(len(callbacks) == 1 and callbacks[0]["status"] == 200
+                    and callbacks[0]["response"] == {"ok": True} and not callbacks[0]["dropped"], "real final callback", callbacks)
+            self.payloads[start["session"]] = payload
+        return receipt
 
     def remaining(self, cap: float = 30) -> float:
-        remaining = self.deadline - time.monotonic()
+        require(self.observer_error is None and self.observer_thread.is_alive(), "continuous provider observation", self.observer_error)
+        remaining = min(self.deadline, getattr(self, "case_deadline", self.deadline)) - time.monotonic()
         require(remaining > 0, "action deadline exceeded")
         return min(remaining, cap)
 
@@ -102,13 +187,13 @@ class Controller:
         guard = self.source / "tests/helpers/integration_stub_guard/guard.py"
         cli_hash = sha(self.source / "cli/main.py")
         program = (
-            "import sys, pathlib, hashlib, runpy; "
+            "import sys, pathlib, hashlib, runpy, os, json; "
             f"s=pathlib.Path({str(self.source)!r}); "
             f"assert hashlib.sha256((s/'cli/main.py').read_bytes()).hexdigest()=={cli_hash!r}; "
             "sys.path.insert(0,str(s)); import cli.main; "
             "assert pathlib.Path(cli.main.__file__).resolve()==s/'cli/main.py'; "
             f"g=runpy.run_path({str(guard)!r},run_name='e2e_external_witness'); "
-            f"g['witness']({{'kind':'callback','source_sha':{self.revision!r},'cli_sha256':{cli_hash!r}}}); "
+            f"g['witness']({{'kind':'callback','source_sha':{self.revision!r},'cli_sha256':{cli_hash!r},'pid':os.getpid(),'ppid':os.getppid(),'argv_sha256':hashlib.sha256(json.dumps(sys.argv[1:]).encode()).hexdigest()}}); "
             "sys.argv[0]='happyranch'; cli.main.main()"
         )
         callback = binary / "happyranch"
@@ -203,6 +288,10 @@ class Controller:
             require(int((home / "daemon.pid").read_text()) == self.daemon.pid, "new daemon PID")
             self.port = int((home / "daemon.port").read_text())
             self.token = (home / "daemon.token").read_text().strip()
+            self.secrets.add(self.token)
+            secrets_path = self.root / "coord/redaction-context.json"
+            secrets_path.write_text(json.dumps(sorted(self.secrets)))
+            secrets_path.chmod(0o600)
             try:
                 return self.get("/api/v1/health")["status"] == "ok"
             except ConnectionError:
@@ -286,6 +375,10 @@ class Controller:
                 return False
             self.port = int((home / "daemon.port").read_text())
             self.token = (home / "daemon.token").read_text().strip()
+            self.secrets.add(self.token)
+            secrets_path = self.root / "coord/redaction-context.json"
+            secrets_path.write_text(json.dumps(sorted(self.secrets)))
+            secrets_path.chmod(0o600)
             # Register every discovered port, including on failed readiness.
             if self.port not in ports:
                 ports.append(self.port)
@@ -312,10 +405,8 @@ class Controller:
         connection, _ = self.server.accept()
         connection.settimeout(self.remaining())
         stream = connection.makefile("rwb")
+        self.peer_connections.append((connection, stream))
         row = json.loads(stream.readline(4096))
-        require(row["org"] == org and row["agent"] == agent and (task is None or row["task"] == task),
-                "exact expected actual launch", row)
-        require(row["session"] not in self.holds and row["session"] not in {s["session"] for s in self.starts}, "unique issued session", row)
         import struct
         peer_pid, peer_uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         require(peer_pid == row["pid"] and peer_uid == os.getuid(), "actual owned socket peer", row)
@@ -325,11 +416,17 @@ class Controller:
         require(row["pid_start"] is not None, "live provider identity")
         env = Path(f"/proc/{peer_pid}/environ").read_bytes().split(b"\0")
         require(f"E2E_ROOT={self.root}".encode() in env, "provider run ownership")
-        self.starts.append(row)
+        # Preserve an unexpected peer in evidence/ownership before refusing it.
+        self.durable.append(dict(provider_peer=dict(row)))
         temp = self.root / "owned.tmp"
-        temp.write_text(json.dumps([s["pid"] for s in self.starts]))
+        prior_owned = json.loads((self.root / "owned.json").read_text()) if (self.root / "owned.json").exists() else []
+        temp.write_text(json.dumps(sorted(set(prior_owned + [s["pid"] for s in self.starts] + [peer_pid]))))
         temp.replace(self.root / "owned.json")
         self.holds[row["session"]] = (connection, stream)
+        require(row["org"] == org and row["agent"] == agent and (task is None or row["task"] == task),
+                "exact expected actual launch", row)
+        require(row["session"] not in {s["session"] for s in self.starts}, "unique issued session", row)
+        self.starts.append(row)
         public = self.get(f"/api/v1/orgs/{org}/tasks/{row['task']}")["task"]
         require(public["current_session_id"] == row["session"], "issued session agrees with public live binding", public)
         self.stores[org].ordinary()
@@ -398,9 +495,14 @@ class Controller:
                 self.browser.close()
             except Exception as exc:
                 failures.append(repr(exc))
-        for connection, stream in self.holds.values():
+        for connection, stream in self.peer_connections:
             stream.close()
             connection.close()
+        self.observer_stop.set()
+        self.observer_thread.join(timeout=1)
+        failures.extend([self.observer_error] if self.observer_error else [])
+        if self.observer_thread.is_alive():
+            failures.append("provider observer did not stop")
         self.server.close()
         self.socket_path.unlink(missing_ok=True)
         if self.relay:
@@ -417,12 +519,19 @@ class Controller:
 
     def evidence(self) -> None:
         rows = dict(variants=self.results, starts=self.starts, commands=self.commands,
-                    http=self.http, durable=self.durable, relay=self.relay.records if self.relay else [])
-        raw = json.dumps(rows, indent=2)
-        if self.token:
-            raw = raw.replace(self.token, "[REDACTED]")
+                    http=self.http, durable=self.durable, relay=self.relay.records if self.relay else [],
+                    provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
+                    provider_observer=self.observer, observer_error=self.observer_error)
+        witness = self.root / "witness/identities.jsonl"
+        if witness.exists():
+            # Keep genuine partial-run source witnesses even when no final case
+            # or final closure record could be completed. Do not export headers.
+            data = witness.read_bytes()
+            rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
+            rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
+        raw = self.sanitize(json.dumps(rows, indent=2))
         (self.root / "raw" / "observations.json").write_text(raw)
-        (self.root / "scenario.json").write_text(json.dumps(dict(variants=self.results, scenario_phases=self.phases)))
+        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases))))
 
 
 def cancellation_hold(controller: Controller) -> None:
@@ -476,13 +585,17 @@ def main() -> None:
             if args.exercise == "cancellation":
                 cancellation_hold(controller)
             else:
+                from jobs import anchor, exercise as exercise_jobs
+                anchor(controller, "initial-A", 0)
                 exercise(controller)
+                anchor(controller, "baseline-A", 9)
                 from pause import exercise as exercise_pause
                 exercise_pause(controller)
+                exercise_jobs(controller)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException:
-        (controller.root / "raw" / "failure.txt").write_text(traceback.format_exc())
+        (controller.root / "raw" / "failure.txt").write_text(controller.sanitize(traceback.format_exc()))
         raise
     finally:
         try:

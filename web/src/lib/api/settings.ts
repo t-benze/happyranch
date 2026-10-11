@@ -86,7 +86,10 @@ export interface TeamsPatchBody {
 
 export interface TeamRow {
   name: string;
-  manager: string;
+  manager: string | null;
+  manager_kind?: 'agent' | 'human';
+  human_manager?: 'founder' | null;
+  is_default?: boolean;
   workers: string[];
 }
 

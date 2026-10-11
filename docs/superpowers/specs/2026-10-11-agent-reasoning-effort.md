@@ -116,11 +116,13 @@ new trust, callback, permission or resume authority.
 ## Authority, recording and compatibility
 
 `_agent_projection` emits effort only when set. Absent canonical bytes and digest
-match the previous projection; set participates in normal snapshot publication,
+match the current projection baseline without effort; set participates in normal snapshot publication,
 admission and whole-byte authentication. Clear/reload removes the key. Current
 profile/activation readers use named fields; retained digest readers consume
 whole immutable bytes. Journal snapshots and old interpretation are never
-rewritten. Snapshot schema stays1. Old readers can ignore set effort and old
+rewritten. Effort adds no snapshot format bump of its own: the inherited roster
+writer emits schema2, and current version-aware readers retain schema1 and
+schema2 roster meanings. Old readers can ignore set effort and old
 writers can drop it: absence equality does not imply every old release honors
 new selections. Use a compatible writer, explicitly clear/reconcile before an
 intentional rollback, and retain historical bytes.

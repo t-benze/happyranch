@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import time
 from pathlib import Path
@@ -17,6 +18,34 @@ from tests.helpers.deterministic_plan import DeterministicPlan
 
 if TYPE_CHECKING:
     from runtime.orchestrator.agent_def import AgentDef
+
+
+def _roster_phase_receipt(nodeid: str, **fields: object) -> None:
+    """Flush feature outcomes/tracebacks before fixture or process loss."""
+    if not nodeid.startswith(('tests/integration/test_human_team_roster_e2e.py::',
+                              'tests/integration/test_human_team_roster_browser.py::')):
+        return
+    from tests.helpers.integration_stub_guard.guard import manifest
+    binding = manifest()
+    if 'roster' not in binding:
+        return
+    output = Path(binding['roster']['output'])
+    row = {'nodeid': nodeid, 'source_sha': binding['revision'],
+           'time_ns': time.time_ns(), 'pid': os.getpid(), **fields}
+    with (output / 'pytest-phases.jsonl').open('a') as log:
+        log.write(json.dumps(row, sort_keys=True) + '\n')
+        log.flush()
+        os.fsync(log.fileno())
+
+
+def pytest_runtest_logstart(nodeid: str, location: tuple) -> None:
+    _roster_phase_receipt(nodeid, phase='start', outcome='in_progress')
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    _roster_phase_receipt(report.nodeid, phase=report.when, outcome=report.outcome,
+                          duration=report.duration, traceback=report.longreprtext,
+                          sections=report.sections)
 
 
 def pytest_configure(config):
@@ -100,17 +129,18 @@ def runtime(runtime_container: Path, request: pytest.FixtureRequest) -> Path:
     teams = yaml.safe_load((org_root / "org" / "teams.yaml").read_text())["teams"]
     for config in teams.values():
         for agent in (config["manager"], *config["workers"]):
-            if (agent == "engineering_head"
-                    and request.node.name == "test_register_and_run_completes_via_codex_callback"):
-                continue
-            seed_agent_definition(org_root, agent)
+            bootstrap = (agent == "engineering_head"
+                and request.node.name == "test_register_and_run_completes_via_codex_callback")
+            seed_agent_definition(org_root, agent, executor="codex" if bootstrap else "claude",
+                                  pending=bootstrap)
     # NOTE: artifacts/ is intentionally NOT created here.
     # tests/integration/test_artifacts_e2e.py::test_lifespan_creates_artifacts_dir_for_existing_org
     # depends on this absence to exercise the daemon's startup mkdir. Do not add it.
     return org_root
 
 
-def seed_agent_definition(org_root: Path, agent: str, *, executor: str = "claude") -> AgentDef:
+def seed_agent_definition(org_root: Path, agent: str, *, executor: str = "claude",
+                          pending: bool = False) -> AgentDef:
     """Render a roster member for supported startup or example-based attachment."""
     from runtime.orchestrator.agent_def import AgentDef, render_agent_text
 
@@ -129,6 +159,8 @@ def seed_agent_definition(org_root: Path, agent: str, *, executor: str = "claude
         description="Integration test agent.", model=None,
     )
     agents_dir = org_root / "org" / "agents"
+    if pending:
+        agents_dir /= "_pending"
     agents_dir.mkdir(parents=True, exist_ok=True)
     (agents_dir / f"{agent}.md").write_text(render_agent_text(agent_def))
     return agent_def
@@ -315,6 +347,14 @@ def live_daemon(
 
     finally:
         subprocess.run([str(script), "stop"], check=False, env=_nested_daemon_env())
+        # Only the selected roster feature retains its fixture-owned daemon
+        # stderr. Default/canonical callback fixtures keep their original tail.
+        if request.node.path.name in ("test_human_team_roster_e2e.py", "test_human_team_roster_browser.py"):
+            log_path = paths_mod.log_file()
+            if (log_path.is_file() and not log_path.is_symlink()
+                    and log_path.resolve().is_relative_to(tmp_home.resolve())
+                    and log_path.stat().st_uid == os.getuid()):
+                (tmp_home.parent / "C-fixture-daemon.log").write_bytes(log_path.read_bytes())
         if capture_binding is not None:
             from scripts.jenkins_mac_guest import _read_two_org_prelaunch_exception
             import json

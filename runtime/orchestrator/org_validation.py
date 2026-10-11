@@ -23,40 +23,41 @@ class OrgConsistencyError(RuntimeError):
 
 
 def validate_team_membership(paths: OrgPaths, teams: TeamsRegistry) -> None:
-    """Refuse to load an org whose active agents reference unknown teams.
+    """Require matching roles and membership in both canonical directions.
 
-    Scans ``org/agents/*.md`` (active only — pending agents are validated
-    again at approve time). For every agent file, checks that its declared
-    ``team`` exists in ``teams.yaml``. For managers, additionally checks
-    the team's manager entry matches the agent name.
-
-    Raises ``OrgConsistencyError`` listing every drift found (not just the
-    first) so the founder sees the full picture in one read.
+    Active definitions must be registered exactly once. A declared pending
+    worker or exactly registered bootstrap manager remains valid enrollment
+    state. Attachment does not make pending identities executable or ready
+    for workflow authority publication.
+    Report all drift so partial three-file migrations fail attachment clearly.
     """
     known_teams = set(teams.teams())
+    active = {agent.name: agent for agent in prompt_loader.list_agents(paths)}
+    pending = {agent.name: agent for agent in prompt_loader.list_pending(paths)}
     drift: list[str] = []
-
-    for agent in prompt_loader.list_agents(paths):
+    for name in sorted(active.keys() & pending.keys()):
+        drift.append(f"  - agent {name!r} has both active and pending definitions")
+    memberships: dict[str, list[tuple[str, str]]] = {}
+    for team in teams.teams():
+        manager = teams.manager_for_team(team)
+        entries = [(worker, "worker") for worker in manager.workers]
+        if manager.name is not None:
+            entries.insert(0, (manager.name, "manager"))
+        for name, role in entries:
+            memberships.setdefault(name, []).append((team, role))
+            agent = active.get(name) or pending.get(name)
+            if agent is None or agent.team != team or agent.role != role:
+                drift.append(f"  - teams.yaml {team!r} {role} {name!r} has no matching {role} agent file")
+    for name, registrations in memberships.items():
+        if len(registrations) != 1:
+            drift.append(f"  - agent {name!r} has duplicate team memberships: {registrations!r}")
+    for name, agent in active.items():
         if agent.team not in known_teams:
-            drift.append(
-                f"  - agents/{agent.name}.md declares team {agent.team!r}, "
-                f"which is not registered in teams.yaml"
-            )
-            continue
-        if agent.role == "manager":
-            registered_manager = teams.manager_for_team(agent.team).name
-            if registered_manager != agent.name:
-                drift.append(
-                    f"  - agents/{agent.name}.md claims to manage "
-                    f"{agent.team!r}, but teams.yaml lists "
-                    f"{registered_manager!r} as the manager"
-                )
-
-    if not drift:
-        return
-
-    raise OrgConsistencyError(
-        "org content is inconsistent — agent files and teams.yaml disagree:\n"
-        + "\n".join(drift)
-        + "\nFix teams.yaml (or the offending agent file) and reload the org."
-    )
+            drift.append(f"  - agents/{name}.md declares unregistered team {agent.team!r}")
+        elif memberships.get(name) != [(agent.team, agent.role)]:
+            drift.append(f"  - agents/{name}.md declares {agent.team!r}/{agent.role}, but teams.yaml disagrees")
+    if drift:
+        raise OrgConsistencyError(
+            "org content is inconsistent — agent files and teams.yaml disagree:\n"
+            + "\n".join(drift) + "\nFix teams.yaml (or the offending agent file) and reload the org."
+        )
