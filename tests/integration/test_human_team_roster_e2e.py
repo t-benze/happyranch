@@ -81,7 +81,10 @@ def members(code):
 codes=[code for code in members(compile(data,str(path),'exec',dont_inherit=True,optimize=sys.flags.optimize))
        if code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect']
 assert len(codes)==1
-expected=hashlib.sha256(marshal.dumps(codes[0])).hexdigest()
+# Format 2 preserves the full code value without format 3/4 reference flags.
+# Independent compile and import may share constants differently; that is not
+# a source/code change and must not abort the actual startup observer.
+expected=hashlib.sha256(marshal.dumps(codes[0], 2)).hexdigest()
 drain_cuts={'native_drain_exception_same_result','native_drain_cancel_same_result'}
 writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_before_retry',
              'writer_cancelled_before_retry',
@@ -95,7 +98,7 @@ writer_cuts={'writer_busy_before_consumption-inline_worker','writer_reacquired_b
 writer_path=source/'runtime/orchestrator/run_step.py'
 writer_data=writer_path.read_bytes()
 assert writer_data==subprocess.check_output(['git','-C',str(source),'show',revision+':runtime/orchestrator/run_step.py'])
-writer_codes={code.co_qualname:hashlib.sha256(marshal.dumps(code)).hexdigest()
+writer_codes={code.co_qualname:hashlib.sha256(marshal.dumps(code, 2)).hexdigest()
     for code in members(compile(writer_data,str(writer_path),'exec',dont_inherit=True,optimize=sys.flags.optimize))
     if code.co_qualname in {'_submit_human_failed_recovery','_drive_human_failed_recovery','_HumanFailedRecoveryOperation.finish'}}
 assert len(writer_codes)==3
@@ -110,7 +113,7 @@ for rel,qualnames in {
     assert extra_data==subprocess.check_output(['git','-C',str(source),'show',revision+':'+rel])
     for code in members(compile(extra_data,str(extra_path),'exec',dont_inherit=True,optimize=sys.flags.optimize)):
         if code.co_qualname in qualnames:
-            extra_codes[(str(extra_path),code.co_qualname)]=hashlib.sha256(marshal.dumps(code)).hexdigest()
+            extra_codes[(str(extra_path),code.co_qualname)]=hashlib.sha256(marshal.dumps(code, 2)).hexdigest()
 assert len(extra_codes)==4
 jobs_path=source/'runtime/daemon/jobs_runner.py'
 # A finite test-side cut at the real SIGKILL statement; never replace the
@@ -133,7 +136,7 @@ writer_state={}
 def record_writer(event, **fields):
     target=receipt.with_name(receipt.name+'.'+event)
     value={'event':event,'pid':os.getpid(),'thread':threading.get_ident(),
-        'source_sha':revision,'file_sha256':hashlib.sha256(writer_data).hexdigest(),**fields}
+        'source_sha':revision,'code_marshal_version':2,'file_sha256':hashlib.sha256(writer_data).hexdigest(),**fields}
     fd=os.open(target,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
     with os.fdopen(fd,'w') as out:
         json.dump(value,out,sort_keys=True);out.flush();os.fsync(out.fileno())
@@ -200,7 +203,7 @@ async def failed_drain_reentry():
         **identity)
 def observe_drain(frame,event,arg):
     if frame.f_code.co_filename!=str(jobs_path) or frame.f_code.co_qualname!='terminate_jobs_for_task':return
-    assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==extra_codes[(str(jobs_path),'terminate_jobs_for_task')]
+    assert hashlib.sha256(marshal.dumps(frame.f_code, 2)).hexdigest()==extra_codes[(str(jobs_path),'terminate_jobs_for_task')]
     if (event=='line' and frame.f_lineno==kill_lines[0] and cut=='native_drain_exception_same_result'
             and writer_state and frame.f_locals['task_id']==writer_state['identity']['task']
             and 'fault' not in writer_state):
@@ -310,7 +313,7 @@ async def held_writer(org,caller=None):
 def observe_writer(frame,event,arg):
     if frame.f_code.co_filename!=str(writer_path) or frame.f_code.co_qualname not in writer_codes:
         return
-    assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==writer_codes[frame.f_code.co_qualname]
+    assert hashlib.sha256(marshal.dumps(frame.f_code, 2)).hexdigest()==writer_codes[frame.f_code.co_qualname]
     local=frame.f_locals
     if frame.f_code.co_qualname=='_submit_human_failed_recovery' and event=='call' and not writer_state:
         orch=local['orch']; task=orch._db.get_task(local['task_id'])
@@ -357,7 +360,7 @@ def observe(frame,event,arg):
     if (cut=='loss-no_job_reentry-cancel' and event=='return' and frame.f_code.co_filename==str(path)
             and frame.f_code.co_qualname=='TasksMixin.apply_human_failed_recovery_effect'
             and frame.f_locals.get('effect')=='marker' and arg=='progressed'):
-        assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==expected
+        assert hashlib.sha256(marshal.dumps(frame.f_code, 2)).hexdigest()==expected
         # C9.i's after-real-marker/before-parent localization, combined with
         # L4's genuine admission/process identities. The native SQL/effect
         # returned successfully; this test-side source observer interrupts its
@@ -370,7 +373,7 @@ def observe(frame,event,arg):
 
     extra=(frame.f_code.co_filename,frame.f_code.co_qualname)
     if cut in writer_cuts and extra in extra_codes:
-        assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==extra_codes[extra]
+        assert hashlib.sha256(marshal.dumps(frame.f_code, 2)).hexdigest()==extra_codes[extra]
         local=frame.f_locals
         if (extra[1]=='terminate_jobs_for_task' and cut in drain_cuts and event=='return' and frame.f_lineno==grace_lines[0]
                 and writer_state and local.get('task_id')==writer_state['identity']['task']
@@ -419,10 +422,10 @@ def observe(frame,event,arg):
             or frame.f_code.co_qualname!='TasksMixin.apply_human_failed_recovery_effect'
             or frame.f_locals.get('effect')!=cut or arg!='progressed'): return
     assert sys.getprofile() is observe
-    assert hashlib.sha256(marshal.dumps(frame.f_code)).hexdigest()==expected
+    assert hashlib.sha256(marshal.dumps(frame.f_code, 2)).hexdigest()==expected
     local=frame.f_locals
     record={'pid':os.getpid(),'thread':threading.get_ident(),'source_sha':revision,
-            'file_sha256':hashlib.sha256(data).hexdigest(),'code_sha256':expected,
+            'file_sha256':hashlib.sha256(data).hexdigest(),'code_marshal_version':2,'code_sha256':expected,
             'effect':cut,'return':arg,'task':local['task_id'],'agent':local['agent'],
             'session':local['session_id'],'result':local['result_row_id']}
     fd=os.open(receipt,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)

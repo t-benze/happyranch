@@ -1093,7 +1093,7 @@ def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRe
     queue = getattr(orch, "_queue", None)
     supervisor = getattr(orch, "_host_supervisor", None)
     if (org is None or (queue is not None and getattr(queue, "_stopping", False))
-            or (supervisor is not None and supervisor.is_shutdown())):
+            or (supervisor is not None and supervisor._admission.is_shutdown())):
         operation.finish("recovery_required")
         return
     authority, db = org.workflow_authority, orch._db
@@ -1389,10 +1389,19 @@ def _consume_accepted_completion_recovery(
         reviewer = None
         if current.parent_task_id is not None and not orch.teams.is_team_manager(agent):
             reviewer = _delegated_reviewer(orch, current)
+        completion_payload = report.model_dump()
+        try:
+            human_team = orch.teams.manager_for_team(current.team).kind == "human"
+        except KeyError:
+            human_team = False
+        if human_team:
+            completion_payload.update(
+                _recovery_session_id=session_id, _result_row_id=result_row_id,
+            )
         transitioned = db.consume_accepted_completed_task_completion_recovery(
             task_id=task_id, agent=agent, session_id=session_id,
             result_row_id=result_row_id, note=report.output_summary,
-            output_dir=report.output_dir, completion_payload=report.model_dump(),
+            output_dir=report.output_dir, completion_payload=completion_payload,
             settled_at=datetime.now(timezone.utc).isoformat(),
             reviewer=reviewer,
             verdict=report.verdict if report.verdict is not None else "approved",
@@ -3746,7 +3755,7 @@ def _kill_jobs_for_terminating_task(
             queue = getattr(orch, "_queue", None)
             supervisor = getattr(orch, "_host_supervisor", None)
             if (org is None or (queue is not None and getattr(queue, "_stopping", False))
-                    or (supervisor is not None and supervisor.is_shutdown())):
+                    or (supervisor is not None and supervisor._admission.is_shutdown())):
                 operation.finish("recovery_required")
                 return
             authority = org.workflow_authority
