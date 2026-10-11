@@ -138,6 +138,23 @@ class TasksMixin:
             raise ValueError('prior_audit_changed')
         return [dict(row) for row in rows]
 
+    def append_terminal_worktree_audit(self, task_id: str, agent: str, action: str, payload: dict) -> int:
+        """Caller owns RLock; isolate only this cleanup append's transaction.
+
+        Refuse pre-existing ownership. On a failed insert/commit, roll back
+        only our still-uncommitted append so it cannot strand the shared
+        connection or be committed by an unrelated terminal/report writer.
+        A possibly committed row remains untouched and never permits retry.
+        """
+        if self._conn.in_transaction:
+            raise ValueError('cleanup_audit_transaction_owned')
+        try:
+            return self.insert_audit_log(task_id, agent, action, payload)
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+
     def admit_terminal_worktree_root(self, transition: dict) -> tuple[str, int | None]:
         """Atomic raw history lookup + existing append-only committed start.
 
@@ -179,7 +196,7 @@ class TasksMixin:
                 or any(current[key] != root[key] for key in
                        ('id', 'created_at', 'parent_task_id', 'assigned_agent', 'current_session_id', 'orchestration_step_count', 'status'))):
             return 'original_owner_unavailable', None
-        event = self.insert_audit_log(root['id'], root['assigned_agent'] or 'orchestrator',
+        event = self.append_terminal_worktree_audit(root['id'], root['assigned_agent'] or 'orchestrator',
             'root_worktree_reconciliation_started',
             {'root_created_at': root['created_at'], 'transition': transition})
         return 'admitted', event

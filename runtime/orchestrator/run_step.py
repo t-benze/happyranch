@@ -813,7 +813,7 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
             def finish():
                 if orch._db._conn.in_transaction:
                     raise ValueError('finish_transaction_owned')
-                return orch._db.insert_audit_log(root['id'], root['assigned_agent'] or 'orchestrator',
+                return orch._db.append_terminal_worktree_audit(root['id'], root['assigned_agent'] or 'orchestrator',
                     'root_worktree_reconciliation_finished', receipt)
             budget.database(orch._db, finish, report=True)
             receipts.append(receipt)
