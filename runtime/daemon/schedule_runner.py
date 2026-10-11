@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from runtime.config import Settings, settings as global_settings
-from runtime.daemon.dream_runner import _executor_name, _is_timeout
+from runtime.daemon.dream_runner import _is_timeout
 from runtime.daemon.thread_runner import _build_executor_for_provider
 from runtime.infrastructure.audit_logger import AuditLogger
 from runtime.models import ScheduleKind, ScheduleStatus
@@ -200,11 +200,19 @@ async def run_schedule(
         )
         return
 
-    # Issue #568: forward AgentDef.model to executor.run for schedule invocations.
+    # Select one canonical snapshot: an atomic save after load_agent must not
+    # mix a newer executor with the captured model/effort. Normalize and retain
+    # the existing unregistered-provider fallback before recording selection.
+    _prov = agent_def.executor.lower()
+    if not get_registry().is_registered(_prov):
+        _prov = "claude"
     model_name: str | None = agent_def.model
     reasoning_effort = agent_def.reasoning_effort
     if reasoning_effort is not None:
-        org_state.db.insert_audit_log(schedule_id, record.agent_name, "schedule_reasoning_selection", {"executor": agent_def.executor, "model": model_name, "reasoning_effort": reasoning_effort})
+        org_state.db.insert_audit_log(
+            schedule_id, record.agent_name, "schedule_reasoning_selection",
+            {"executor": _prov, "model": model_name, "reasoning_effort": reasoning_effort},
+        )
 
     workspace = org_state.root / "workspaces" / record.agent_name
     try:
@@ -214,10 +222,6 @@ async def run_schedule(
     managed_skills_index = resolve_managed_skills_index(
         paths=paths, agent_name=record.agent_name,
     )
-
-    _prov = _executor_name(paths, record.agent_name)
-    if not get_registry().is_registered(_prov):
-        _prov = "claude"
 
     # Issue #536: serialize the complete pre-spawn skill materialization
     # transaction under a process-local workspace lock.

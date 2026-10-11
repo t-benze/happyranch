@@ -28,6 +28,15 @@ values in the current task tuple. Missing, pending-only and terminated agents
 retain their existing refusal before construction. This is selection coherence,
 not a lock across the later invocation or a lifecycle guarantee.
 
+Wake and schedule invocations likewise derive executor/model/effort from their
+already-loaded canonical definition. The effective provider is the lowercase
+registered executor, with the existing Claude fallback for an unregistered
+executor. Their optional selection audit records that effective provider beside
+the configured model/effort, which fallback preserves; it does not claim those
+overrides are accepted by the native provider. The same provider reaches skill
+materialization and executor construction. When effort is unset, no selection
+audit is added. Missing-agent handling and existing failure transitions remain.
+
 | CLI / verified source | Static values | Literal argv with explicit effort |
 | --- | --- | --- |
 | Claude 2.1.280 installed help | low, medium, high, xhigh, max | `--effort <level>` beside unchanged `--model <id>` when pinned |
@@ -137,8 +146,14 @@ tuple at the executor-construction boundary, then stops before construction.
 Controlled ordinary atomic file transitions cover same-CLI and CLI-changing
 tuples, unset/selected effort and unavailable-agent refusals. This prefix check
 does not prove complete task execution, callbacks or recovery. Wake/schedule
-executor reload coherence remains a separately identified source issue pending
-its own scoped correction; no five-owner coherence claim is made.
+prefix checks use real synthetic definitions and inert stores, observe the
+materialization-call provider plus captured model/effort and selection audit,
+then stop before real materialization or executor construction. They cover
+ordinary atomic same-CLI/CLI-changing saves, registered normalization,
+unregistered fallback, unset audit omission and missing-agent refusal. Synthetic
+store/audit observations establish prefix decisions only, not full persisted
+wake/schedule lifecycles or provider acceptance. Five-owner source tracing is
+separate from executable lifecycle evidence.
 
 ```bash
 uv run python scripts/verify_reasoning_effort.py --output <task-output>

@@ -146,6 +146,153 @@ def check_task_selection(root: Path, receipts: list[dict]) -> None:
                              'executor_construction_reached': False})
 
 
+def check_wake_schedule_selection(root: Path, receipts: list[dict]) -> None:
+    """Enter shipping prefixes; stop before real materialization or execution."""
+    import asyncio
+    import inspect
+    from runtime.daemon import dream_runner, schedule_runner, wake_runner
+    from runtime.models import ScheduleKind, ScheduleStatus, WorkHourStatus
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef, parse_agent_text, render_agent_text
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.org_config import OrgConfig
+
+    # BaseException avoids the shipping materialization-failure handler. This
+    # is an observation stop, not a simulated materialization/executor result.
+    class MaterializationBoundary(BaseException):
+        pass
+
+    original = parse_agent_text(
+        '---\nname: worker\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\nSynthetic prompt.\n',
+        expected_name='worker',
+    )
+    real_load = prompt_loader.load_agent
+
+    for owner, module, runner, initial_status, selection_action in (
+        ('wake', wake_runner, wake_runner.run_wake, WorkHourStatus.PENDING, 'work_hour_reasoning_selection'),
+        ('schedule', schedule_runner, schedule_runner.run_schedule, ScheduleStatus.FIRING, 'schedule_reasoning_selection'),
+    ):
+        paths = OrgPaths(root=root / f'{owner}-selection')
+        paths.agents_dir.mkdir(parents=True)
+        canonical = paths.agents_dir / 'worker.md'
+        record_id = f'{owner}-synthetic'
+        id_parameter = 'work_hour_id' if owner == 'wake' else 'schedule_id'
+
+        def invoke(
+            expected: tuple[str, str | None, str | None] | None, label: str,
+            next_definition: AgentDef | None = None,
+        ) -> None:
+            reads = []
+            updates = []
+            audits = []
+            observed = []
+            old_hash = hashlib.sha256(canonical.read_bytes()).hexdigest() if canonical.exists() else None
+            record = SimpleNamespace(id=record_id, agent_name='worker', status=initial_status,
+                                     kind=ScheduleKind.ONE_SHOT)
+            store = SimpleNamespace(get=lambda identifier: record,
+                                    update=lambda identifier, **fields: updates.append({'id': identifier, **fields}))
+
+            def insert_audit_log(task_id: str, agent: str, action: str, payload: dict) -> None:
+                audits.append({'task_id': task_id, 'agent': agent, 'action': action, 'payload': dict(payload)})
+
+            state = SimpleNamespace(root=paths.root, slug='synthetic', db=SimpleNamespace(
+                work_hours=store, schedules=store, insert_audit_log=insert_audit_log))
+
+            def load_then_save(read_paths: OrgPaths, name: str) -> AgentDef | None:
+                require(read_paths.root == paths.root, 'canonical read stays in the synthetic org')
+                definition = real_load(read_paths, name)
+                reads.append(name)
+                if next_definition is not None and len(reads) == 1:
+                    replacement = canonical.with_suffix('.next')
+                    replacement.write_text(render_agent_text(next_definition))
+                    replacement.replace(canonical)
+                return definition
+
+            def stop_at_materialization(*args, **kwargs) -> None:
+                frame = inspect.currentframe().f_back
+                try:
+                    require(frame.f_code is runner.__code__, f'{owner}: actual shipping prefix caller')
+                    observed.append((kwargs['provider'], frame.f_locals['model_name'],
+                                     frame.f_locals['reasoning_effort']))
+                finally:
+                    del frame
+                raise MaterializationBoundary
+
+            with (
+                patch.object(module, 'load_agent', load_then_save),
+                patch.object(dream_runner, 'load_agent', load_then_save),
+                patch.object(module, 'load_org_config', return_value=OrgConfig()),
+                patch.object(module, 'resolve_managed_skills_index', return_value=''),
+                patch.object(module, 'materialize_workspace_skills', stop_at_materialization),
+            ):
+                try:
+                    asyncio.run(runner(org_state=state, **{id_parameter: record_id}))
+                except MaterializationBoundary:
+                    require(expected is not None, f'{owner}/{label}: unavailable agent reached materialization')
+
+            if expected is None:
+                require(not observed, f'{owner}/{label}: missing active definition must refuse')
+                require(updates[-1]['status'] == (WorkHourStatus.FAILED if owner == 'wake' else ScheduleStatus.FAILED),
+                        f'{owner}/{label}: existing one-shot failure transition')
+                require(updates[-1]['error'] == 'agent_not_found', f'{owner}/{label}: exact failure reason')
+                require([row['action'] for row in audits] == (
+                    ['work_hour_started', 'work_hour_failed'] if owner == 'wake' else ['schedule_fired', 'schedule_failed']),
+                    f'{owner}/{label}: unchanged failure audit actions')
+                require(audits[-1]['payload'] == {'reason': 'agent_not_found'}, f'{owner}/{label}: exact failure audit')
+            else:
+                require(observed == [expected], f'{owner}/{label}: observed {observed!r}, expected {[expected]!r}')
+                selections = [row for row in audits if row['action'] == selection_action]
+                wanted = [] if expected[2] is None else [{
+                    'task_id': record_id, 'agent': 'worker', 'action': selection_action,
+                    'payload': {'executor': expected[0], 'model': expected[1], 'reasoning_effort': expected[2]},
+                }]
+                require(selections == wanted, f'{owner}/{label}: selection audit {selections!r}, expected {wanted!r}')
+                require([row['action'] for row in audits] == (
+                    ['work_hour_started'] if owner == 'wake' else ['schedule_fired']) +
+                    ([selection_action] if expected[2] is not None else []), f'{owner}/{label}: prefix audit actions')
+                require(len(updates) == (1 if owner == 'wake' else 0), f'{owner}/{label}: no post-boundary state update')
+
+            require(reads == ['worker'], f'{owner}/{label}: one genuine canonical selection read, observed {reads!r}')
+            current_hash = hashlib.sha256(canonical.read_bytes()).hexdigest() if canonical.exists() else None
+            if next_definition is not None:
+                require(old_hash != current_hash, 'ordinary atomic save actually changed canonical bytes')
+                require(canonical.read_text() == render_agent_text(next_definition), 'complete next definition remains saved')
+            receipts.append({'case': f'F-{owner}-selection' if expected else f'F-{owner}-refusal',
+                             'kind': label, 'selected': observed[0] if observed else None,
+                             'audits': audits, 'updates': [{k: str(v) for k, v in row.items()} for row in updates],
+                             'selection_reads': len(reads), 'before_sha256': old_hash,
+                             'after_sha256': current_hash, 'stopped_before_real_materialization': bool(observed)})
+
+        # First case exposes the actual old-head mixed tuple without injecting
+        # a production defect. Ordinary atomic saves occur after the real read.
+        for next_executor in ('pi', 'claude'):
+            for old_effort, new_effort in (('high', 'low'), (None, 'high'), ('high', None)):
+                canonical.write_text(render_agent_text(dataclasses.replace(
+                    original, model='old-model', reasoning_effort=old_effort)))
+                saved_next = dataclasses.replace(original, executor=next_executor, model='new-model', reasoning_effort=new_effort)
+                label = f'atomic-save:{next_executor}:{old_effort}:{new_effort}'
+                invoke(('claude', 'old-model', old_effort), f'{label}:old', saved_next)
+                invoke((next_executor, 'new-model', new_effort), f'{label}:next')
+
+        for executor, provider in (('claude', 'claude'), ('CoDeX', 'codex'), ('unregistered-synthetic', 'claude')):
+            for model, effort in ((None, None), ('saved-model', None), (None, 'high'), ('saved-model', 'high')):
+                canonical.write_text(render_agent_text(dataclasses.replace(
+                    original, executor=executor, model=model, reasoning_effort=effort)))
+                invoke((provider, model, effort), f'configured:{executor}:{model}:{effort}')
+
+        canonical.unlink()
+        invoke(None, 'missing')
+        paths.pending_agents_dir.mkdir(parents=True)
+        pending = paths.pending_agents_dir / 'worker.md'
+        pending.write_text(render_agent_text(original))
+        invoke(None, 'pending-only')
+        pending.unlink()
+        archived = paths.agents_dir / '_terminated'
+        archived.mkdir()
+        (archived / 'worker.md').write_text(render_agent_text(original))
+        invoke(None, 'terminated')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
@@ -173,6 +320,7 @@ def main():
         paths = OrgPaths(root=root / "synthetic")
         paths.agents_dir.mkdir(parents=True)
         check_task_selection(root, receipts)
+        check_wake_schedule_selection(root, receipts)
         settings = Settings(executor_launch_spacing_seconds=0)
         workspace = root / 'worker'
         workspace.mkdir()

@@ -111,8 +111,9 @@ def _load_task_history(workspace: Path) -> str:
 def _executor_name(paths: OrgPaths, agent_name: str) -> str:
     """THR-095: resolve executor from org/agents/<name>.md (single source).
 
-    Kept for schedule_runner / wake_runner compatibility. Dreams use
-    ``_active_agent_def`` for fail-closed admission.
+    Legacy standalone lookup; invocation owners select executor/model/effort
+    from their already-loaded definition. Dreams use ``_active_agent_def``
+    for fail-closed admission.
     """
     try:
         agent_def = load_agent(paths, agent_name)
