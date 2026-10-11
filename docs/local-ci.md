@@ -162,14 +162,46 @@ truncation, alongside the actual command result.
 `source.json` records event/ref/run/attempt, runner image/name, exact commit/tree,
 source path and selected import/fence hashes; `interpreter.json` and the parent log
 record actual interpreter identity. `cleanup.json` reports remaining scratch,
-same-user processes carrying this invocation's scratch binding, observation
-errors, truncation and command result. The existing parent owns its child group
-and temporary-directory cleanup. The workflow removes only the empty owned
-scratch directory after successful observation; residue or unknown observations
-fail evidence completion and remain visible. This limited observation is not
-host-wide quiescence, product cancellation/restart or crash proof. Uncatchable
-termination can leave missing/unknown cleanup; do not infer success from an
-absent receipt or disposable-runner teardown.
+actual process identities, stage/error-class/errno diagnostics, truncation and
+command result. The parent owns its child group and temporary-directory cleanup.
+Its closed TMPDIR is below this invocation's outer scratch; the daemon fixture
+preserves that binding. Directory ownership in `/proc` alone is insufficient to
+identify a process's credentials. The admitted hosted lane uses its
+[existing passwordless sudo capability](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
+only for `scripts/observe_thr299_processes.py`, a stdlib read-only process reader.
+It reads actual UID tuples and start-time identity before and after bounded
+complete environments, and binds a pidfd before classification. It emits no
+process environment values or command lines, changes no permissions or privilege
+configuration, signals no process and writes/removes no scratch. The source gate
+and matching event/HEAD are rechecked before invoking it. Unavailable sudo or a
+reader failure remains unknown; no visibility fallback drops inaccessible PIDs.
+
+An unrelated process requires complete credentials and, for the runner UID,
+a complete environment with no exact TMPDIR scratch/descendant binding. A read
+failure may count as disappearance only after observed identity/pidfd binding,
+terminal pidfd readiness and absence of the numeric process path. Permission
+failure alone, missing paths without bound identity, live unreadable processes,
+PID reuse/identity changes, incomplete reads and capped observation remain unknown.
+The reader caps each read at1MiB, scans at4096 process entries/10 seconds, retains
+at most128 diagnostic rows per category and has an outer15-second timeout;
+truncation fails completion. These are bounded snapshots, not a general
+quiescence, adoption, cancellation/restart or crash guarantee.
+
+The ordinary runner user validates the canonical fixed runner.temp scratch path,
+private mode/UID and dev/inode identity, and removes only that empty directory
+after complete no-bound-process evidence. Residue, changed/wrong scratch, removal
+failure or unknown observations fail completion and remain in the uploaded
+receipt. A missing scratch before command start is explicitly not_started, never
+successful cleanup. Early checkout/admission/setup failures preserve missing
+results and independent always-run evidence/upload paths; no root observer is
+run on an unadmitted source. Uncatchable termination can prevent receipts/upload;
+runner disposal, empty lists and27 passing cases never substitute for removal.
+
+Historical QA10851 run38184484716 at621044c4 passed27 selected cases but its evidence
+step failed with UNKNOWN cleanup and unreadable PIDs980/1069. Their errno, stage
+and identity were not retained; no specific cause or cleanup success is inferred.
+This source correction requires renewed independent FULL review and separately
+authorized corrected-source hosted QA; its hosted success remains pending.
 
 Find the actual run and bind its event/head/attempt before interpreting artifacts:
 

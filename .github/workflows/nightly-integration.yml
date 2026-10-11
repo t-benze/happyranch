@@ -94,7 +94,8 @@ jobs:
                    'tests/integration/conftest.py', 'tests/integration/test_verified_supersession_retry_shipping.py',
                    'tests/helpers/deterministic_plan.py', 'tests/helpers/integration_stub_guard/guard.py',
                    'tests/helpers/integration_stub_guard/sitecustomize.py', 'cli/main.py',
-                   'scripts/daemon.sh', 'scripts/run_bounded_output.py', 'uv.lock']
+                   'scripts/daemon.sh', 'scripts/run_bounded_output.py', 'uv.lock',
+                   'scripts/observe_thr299_processes.py']
           identity = {key: os.environ.get(key) for key in ('GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY',
                       'GITHUB_REF', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'RUNNER_OS',
                       'QA_RUNNER_ENVIRONMENT', 'QA_RUNNER_NAME', 'ImageOS', 'ImageVersion')}
@@ -154,38 +155,79 @@ jobs:
         env:
           QA_EVIDENCE: ${{ runner.temp }}/thr299-scoped-qa/evidence
           QA_SCRATCH: ${{ runner.temp }}/thr299-scoped-qa/scratch
+          QA_RUNNER_TEMP: ${{ runner.temp }}
         run: |
           python3 -I - <<'PY'
-          import json, os, pathlib, xml.etree.ElementTree as ET
+          import hashlib, json, os, pathlib, stat, subprocess, xml.etree.ElementTree as ET
           evidence = pathlib.Path(os.environ['QA_EVIDENCE'])
           evidence.mkdir(parents=True, exist_ok=True)
           scratch = pathlib.Path(os.environ['QA_SCRATCH'])
-          errors, processes = [], []
-          remaining = sorted(p.name for p in scratch.iterdir()) if scratch.is_dir() else []
-          # Observe only same-user processes carrying this invocation's scratch binding.
-          # This is finite cleanup evidence, not host-wide quiescence proof or a kill sweep.
-          for proc in pathlib.Path('/proc').iterdir():
-              if not proc.name.isdecimal():
-                  continue
-              try:
-                  if proc.stat().st_uid != os.getuid():
-                      continue
-                  env = (proc / 'environ').read_bytes().split(b'\0')
-                  prefix = b'TMPDIR=' + os.fsencode(scratch)
-                  if any(value == prefix or value.startswith(prefix + b'/') for value in env):
-                      processes.append(int(proc.name))
-              except FileNotFoundError:
-                  pass
-              except OSError:
-                  errors.append(proc.name)
           command = evidence / 'command-exit.txt'
-          cleanup = 'not_started' if not scratch.exists() and not command.exists() else 'unknown'
-          if scratch.is_dir() and not remaining and not processes and not errors:
-              scratch.rmdir()
-              cleanup = 'scratch_removed_no_bound_process_observed'
+          errors, processes, remaining = [], [], []
+          observation = dict(result='not_started', observation_errors=[], bound_processes=[],
+                             observations_truncated=False)
+          cleanup, scratch_truncated = 'unknown', False
+          scratch_identity, observer_transport = None, None
+          stage = 'scratch_binding'
+          try:
+              runner_temp = pathlib.Path(os.environ['QA_RUNNER_TEMP'])
+              if runner_temp.resolve(strict=True) != runner_temp or scratch != runner_temp / 'thr299-scoped-qa/scratch':
+                  raise ValueError('wrong_scratch_binding')
+              if scratch.resolve() != scratch:
+                  raise ValueError('noncanonical_scratch')
+              if not scratch.exists() and not scratch.is_symlink():
+                  cleanup = 'not_started' if not command.exists() else 'unknown'
+              else:
+                  info = scratch.lstat()
+                  if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                      raise ValueError('scratch_owner_or_mode')
+                  scratch_identity = (info.st_dev, info.st_ino, info.st_uid, info.st_mode)
+                  for item in scratch.iterdir():
+                      if len(remaining) == 128:
+                          scratch_truncated = True
+                          raise ValueError('scratch_entries_truncated')
+                      remaining.append(item.name)
+                  stage = 'source_admission'
+                  source = json.loads((evidence / 'source.json').read_text())
+                  actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+                  helper = pathlib.Path('scripts/observe_thr299_processes.py')
+                  if source.get('admitted') is not True or source.get('checkout_sha') != actual or actual != os.environ['GITHUB_SHA']:
+                      raise ValueError('observer_source_not_admitted')
+                  if source.get('source_hashes', {}).get(str(helper)) != hashlib.sha256(helper.read_bytes()).hexdigest():
+                      raise ValueError('observer_source_digest_mismatch')
+                  stage = 'read_only_observer'
+                  # Existing hosted sudo capability: read-only proc observer only.
+                  # No sudo cleanup, signal, permission or privilege configuration.
+                  completed = subprocess.run(['sudo', '-n', '--', '/usr/bin/python3', '-I', str(helper),
+                      '--uid', str(os.getuid()), '--scratch', str(scratch)],
+                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+                  observer_transport = dict(exit_code=completed.returncode, output_bytes=len(completed.stdout))
+                  if completed.returncode or len(completed.stdout) > 1048576:
+                      raise ValueError('observer_failed_or_output_truncated')
+                  decoded = json.loads(completed.stdout)
+                  if not isinstance(decoded, dict):
+                      raise ValueError('observer_shape_mismatch')
+                  observation = decoded
+                  if observation.get('uid') != os.getuid() or observation.get('scratch') != str(scratch) or observation.get('observer_euid') != 0:
+                      raise ValueError('observer_identity_mismatch')
+                  processes = observation['bound_processes']
+                  errors.extend(observation['observation_errors'])
+                  stage = 'scratch_removal'
+                  if not remaining and observation['result'] == 'no_bound_process_observed' and not errors and not processes and observation['observations_truncated'] is False:
+                      info = scratch.lstat()
+                      if (info.st_dev, info.st_ino, info.st_uid, info.st_mode) != scratch_identity or scratch.resolve(strict=True) != scratch:
+                          raise ValueError('scratch_identity_changed')
+                      scratch.rmdir()
+                      if scratch.exists() or scratch.is_symlink():
+                          raise ValueError('scratch_reappeared')
+                      cleanup = 'scratch_removed_no_bound_process_observed'
+          except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+              errors.append(dict(stage=stage, error_class=type(exc).__name__, errno=getattr(exc, 'errno', None),
+                                 reason=str(exc) if type(exc) is ValueError else None))
           (evidence / 'cleanup.json').write_text(json.dumps(dict(result=cleanup,
-              remaining=remaining[:128], bound_processes=processes[:128], observation_errors=errors[:128],
-              observations_truncated=any(len(items) > 128 for items in (remaining, processes, errors)),
+              remaining=remaining, bound_processes=processes, observation_errors=errors,
+              observations_truncated=scratch_truncated or observation.get('observations_truncated', False),
+              process_observation=observation, scratch_identity=scratch_identity, observer_transport=observer_transport,
               command_exit=command.read_text().strip() if command.exists() else None), indent=2) + '\n')
           cases, result_errors = [], []
           xml = evidence / 'pytest.xml'
