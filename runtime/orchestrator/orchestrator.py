@@ -922,8 +922,8 @@ class Orchestrator:
                 task_id=task_id,
             )
         except _IntegrityError:
-            root_transitions = _RootWorktreeTransitions()
             from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
+            root_transitions = _RootWorktreeTransitions()
             # Integrity failure is terminal — no executor launch.
             with _capture_root_worktree_transition(self, task_id, '_run_agent_impl.integrity', root_transitions):
                 self._db.update_task(
@@ -949,10 +949,14 @@ class Orchestrator:
             from runtime.orchestrator.run_step import (
                 _reclaim_terminal_task_worktree,
             )
+            tail_failed = False
             try:
                 _reclaim_terminal_task_worktree(self, task_id)
+            except BaseException:
+                tail_failed = True
+                raise
             finally:
-                _root_worktree_batch(self, root_transitions)
+                _root_worktree_batch(self, root_transitions, teardown_incomplete=tail_failed)
             return ExecutorResult(
                 success=False,
                 duration_seconds=0,
