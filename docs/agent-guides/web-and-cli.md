@@ -1,7 +1,16 @@
 # Web And CLI
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+U3a(b) stages internal H/@3 handoff/submission and configured review ownership.
+This slice adds no public route, CLI command, TypeScript/OpenAPI contract or
+native reachability. The documented future author stage command is a U3a(c)
+dependency; existing callback, replay, cancellation and portability adapters
+still require F5 owner selection there. Direct-submit/reviewer-stage public/deny
+deferral remains. Requests and real review callbacks remain unsigned; receipts
+and joins require their later unit. Manager-owned two-template public smoke and
+independent operator acceptance are pending, with no behavioral PASS claimed.
+
+**G submission-schema migration (THR139 seq395).** The retained F/E-to-G path
+precedes explicit G-to-H migration; deliberate fresh org creation now initializes H. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
@@ -23,9 +32,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 

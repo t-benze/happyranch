@@ -31,9 +31,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
@@ -116,8 +116,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   unchanged inert version-1 foundation F from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
   membership validation, or orchestrator construction. Deliberate POST /orgs
-  creation proves a fresh skeleton, then initializes complete G (F plus the
-  reviewed E draft extension and exact THR139seq395 submission definitions/additions) in one
+  creation proves a fresh skeleton, then initializes complete H (F plus the
+  reviewed E/G definitions/additions and exact THR139seq445 handoff table) in one
   transaction before attachment. Existing startup/reopen/enable never installs
   E: use `python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> [--check]`
   only with operator authorization. Check exits0 ready, 3 migration-needed,
@@ -134,7 +134,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
-  canonical F, E or G reference after full layout/history/data validation, caches
+  canonical F, E, G or H reference after full layout/history/data validation, caches
   independently by layout, and hashes every non-null sqlite_master SQL object; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
   store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain
@@ -143,7 +143,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   strict action/key/generation input; request/fence commits precede separate
   bounded reconciliation. Every authoritative reread validates the full layout
   and org-bound deterministic event chain; cold load advances only authentic
-  committed requests only on ready E/G before teams/settings mutation. F keeps
+  committed requests only on ready E/G/H before teams/settings mutation. F keeps
   authentic history and actionable script guidance without recovery advancement.
   GET/preflight never advance.
   SQLite integrity/FKs and contradictory pre-enable work block verification;
@@ -194,7 +194,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   CLI `workflows activate --org ... --from-file /absolute/request.json` and
   `workflows activations list/show` use the existing Founder client; parser2,
   domain/transport1, valid receipt including pending0. This adds no DDL or
-  migration, no reassignment/reactivation API, and no U3 submission/approval.
+  migration or reassignment/reactivation API. S2 alone grants no U3 submission/approval;
+  staged U3a(b) ownership is documented separately below.
   Source is not deployment or Phase1/operator acceptance.
 
 - **Task-scratch reclamation contract (THR-195 B1).** `runtime/daemon/task_scratch_reclamation.py` accepts only immutable finalized ledger rows for valid canonical manifested `TASK-*` roots. Its caller-constructible `*Assertions` values are explicitly untrusted shapes, have no permissive defaults, and reject missing, malformed, stale-boot, truncated, ambiguous, unsupported-platform, recovery/job/live-reference, unavailable, or internally inconsistent values; B1 does not establish their provenance or independently validate lifecycle/liveness/current-boot authority, whose producers are deferred to B2/B3. The private `collect_revalidate_seal_consume_disposable` seam retains the typed values from each existing bounded E/C admission, compares liveness/session/process and complete coverage projections (including bucket classification/accounting and dominance) across E1..E4/C1..C3 while excluding collection timestamps, and binds final C3's canonical workspace/root/manifest/census fields to its successfully sealed stack-local row. It refuses malformed/private-identity/boot-mismatched or exhausted bounded observations before execution, and a partial executor failure claims zero while preserving the remainder for a fresh refusal. The sole production caller is the bounded pre-agent `run_step` hook. It is disabled by default through the strict boolean `workspace_cleanup.reclamation_actions_enabled` (default `false`), and disabling affects later admissions only — it cannot revoke an already admitted consumer call. It acts only on a third-or-later cleanup ordinal whose scheduler-created preclaim owner is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to this invocation's initial successful `0 -> 1` claim (the first two runs stay report-only), applies one shared one-second deadline and at most 23 read/load admissions with no refill or recovery, and makes at most five best-effort calls to the unchanged consumer. Each attempt records the owner `workspace_cleanup_reclamation_attempt` audit before the prompt carries the known facts into the ordinary completion summary; the transported remainder is exactly the returned `after` accounting or `null`; scheduler triggering/order remains unchanged. It adds no writer fence or future-writer/same-UID guarantee. Sealing also re-derives the canonical root and applies the 60-second newest-mtime floor. Execution hard-skips Git/worktree/bare-repository ancestor or descendant evidence and cross-device ambiguity, uses fd-relative no-follow pathname removal with verified parent/root identity, exact allocated-byte/inode accounting, and complete protected manifest/lock/parent/directory-entry/sibling postconditions. Detected pre-action identity mismatches fail the row with zero reclaimed claims. Portable POSIX unlink/rmdir is not inode-bound: the threat contract deliberately excludes a hostile same-UID replacement in the final identity-check-to-pathname-syscall window, and does not promise that replacement survives. The separate report-only coordinator remains report-only after teardown and through the existing daily trigger; deployment, legacy-backlog eligibility, and activation beyond the explicitly enabled hook remain absent. Unmanifested `.happyranch/tmp`, `.tmp`, `.task-cache`, `.t`, shared `/tmp`, and pre-contract roots remain ineligible.
@@ -496,14 +497,29 @@ NULL active legacy result and genuine INTEGER result links retain their meaning.
 Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
 generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
 
-This is a dependency-incomplete draft storage slice: populated H still needs the
-separately delivered matched `@3` template/activation/context readers and
-`submissions.validate_handoff_graph` for full absent/present graph closure.
-Reads refuse when these dependencies are unavailable; no success is inferred.
-Submission/dispatch producers and public API/CLI/TS remain follow-ons. Independent
-full review, same-head QA, applicable retained CI/real hosted CLI callback and
-manager guarded merge remain required before acceptance. No live migration,
-enable, assignment, deployment or restart is authorized by this change.
+U3a(b) adds matched immutable `@3` template/activation/context readers,
+`submissions.validate_handoff_graph` and the internal handoff/review producers.
+Historical `@1`/`@2` families and pins retain their interpretation. An original
+CURRENT author with stage+submit authority reserves immutable bytes only. SAME
+operation fulfillment requires its genuine INTEGER/full callback and committed
+successful/quiescent terminal proof, plus current authority and independence.
+The atomic graph retains NULL legacy result, appends the authentic result link,
+and creates one unsigned request per configured slot. Actual agent tasks alone
+populate the ordered 0..3 reviewer-task IDs; roles, kinds, outcomes and timing
+come from immutable template data. Inputs remain filtered to each recipient.
+
+The review owner reuses the existing scheduler/native host lifecycle and
+Pause/Resume final admission, publication, prompt reader and cancellation fences.
+Completed-source discovery precedes workers and periodic enqueue hints; possible
+launch without affirmative proof remains uncertain. No callback is a signature.
+This stacked draft remains dependency-incomplete: public API/CLI/TS/native parity
+and existing task callback/cancellation/portability adapters belong to U3a(c).
+Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
+acceptance remain later units. Full independent review, honest same-head QA,
+retained exact-head CI/actual hosted Codex CLI callback and manager guarded merge
+remain required. Manager-owned bounded two-template public smoke must precede
+Founder invitation. No live migration/enable/assignment/deploy/restart follows.
 
 Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
 The former default `not integration` selection was deleted, including its

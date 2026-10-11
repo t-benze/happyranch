@@ -25,6 +25,25 @@ Parameters:
                                 # carry the orchestration capabilities block here)
 ```
 
+## Workflow-owned document tasks
+
+For a workflow-owned task, follow its immutable document contract and only its
+recipient-filtered inputs. Do not use generic delegation, fanout, coding, approval
+or merge actions. Historical @1/@2 tasks retain their original drafting contract.
+A newly pinned @3 original author with explicit stage+submit authority receives
+its bound handoff supplement: preserve exact UTF8 output under one stable
+operation key before the genuine final completion callback. Staging reserves
+bytes only; the owned service fulfills that SAME operation after committed
+successful/quiescent terminal proof and current authority checks. The stage
+CLI/API adapter is a separate U3a(c) dependency; do not substitute another public
+command or fabricate a result when it is unavailable.
+
+Configured review tasks independently assess their pinned document and filtered
+inputs, then report through their actual task/session callback. Requests and
+callbacks remain unsigned; do not claim a receipt, joined approval or another
+principal's signature. Report unavailable dependencies honestly. In every lane,
+retain this skill's FINAL report-completion action and current session binding.
+
 ## Steps
 
 1. **Parse parameters.** Extract `task_id`, `session_id`, `brief`, and (when present) `role_guidance` from the prompt above. Hold `session_id` in a variable for the lifetime of this session — every callback to `happyranch` must include it. When the `role_guidance` block is absent (typical worker spawn), treat `brief` as your complete per-task instruction.

@@ -123,6 +123,8 @@ async def _lifespan(app: FastAPI):
     # ensure_workers_started so a rapid terminal thread-dispatched task can
     # enqueue its TASK_FOLLOWUP via asyncio.run_coroutine_threadsafe.
     _main_loop = asyncio.get_running_loop()
+    from runtime.daemon.__main__ import discover_completed_workflow_handoffs
+    await discover_completed_workflow_handoffs(state)
     _wire_then_start_workers(state, _main_loop)
 
     # Recover any jobs left in 'running' state from a previous daemon process.

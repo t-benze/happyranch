@@ -1121,6 +1121,9 @@ class Orchestrator:
                 provider_id=provider, executor_kind=provider,
                 model_id=model_name or "default",
             )
+        submissions = getattr(self, "_workflow_submissions", None)
+        if submissions is not None and not recovery:
+            brief += submissions.author_instruction(task_id, session_id)
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,
@@ -1162,7 +1165,9 @@ class Orchestrator:
                 drafts = getattr(self, "_workflow_drafts", None)
                 from runtime.workflows.recovery import classify_task
                 ownership = classify_task(self._db, task_id, org_slug=self._slug)
-                if ownership.kind == "draft" and drafts is not None:
+                if ownership.kind == "f5":
+                    drafts = getattr(self, "_workflow_reviews", None)
+                if ownership.kind in ("draft", "f5") and drafts is not None:
                     drafts.bind_session(task_id, agent_name, session_id)
                 elif ownership.kind != "legacy":
                     raise ValueError("workflow_reconciliation_required")
@@ -1552,7 +1557,8 @@ class Orchestrator:
                      if task_db is not None else WorkflowTaskOwnership(
                          "reconciliation_required" if getattr(self, "_workflow_drafts", None) is not None
                          else "legacy"))
-        drafts = getattr(self, "_workflow_drafts", None) if ownership.kind == "draft" else None
+        drafts = (getattr(self, "_workflow_reviews", None) if ownership.kind == "f5"
+                  else getattr(self, "_workflow_drafts", None) if ownership.kind == "draft" else None)
         if ownership.kind != "legacy" and drafts is None:
             return ExecutorResult(success=False, duration_seconds=0, session_id=session_id,
                                   error="workflow_reconciliation_required")
@@ -1649,6 +1655,10 @@ class Orchestrator:
             try:
                 if drafts is not None:
                     drafts.terminal(task_id, agent_name, session_id, outcome, expected_request=host_request)
+                    if ownership.kind == "draft":
+                        submissions = getattr(self, "_workflow_submissions", None)
+                        if submissions is not None:
+                            submissions.completed(task_id)
             finally:
                 _clear_tracker()
 

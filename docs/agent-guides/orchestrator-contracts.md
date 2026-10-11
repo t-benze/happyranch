@@ -23,14 +23,29 @@ NULL active legacy result and genuine INTEGER result links retain their meaning.
 Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
 generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
 
-This is a dependency-incomplete draft storage slice: populated H still needs the
-separately delivered matched `@3` template/activation/context readers and
-`submissions.validate_handoff_graph` for full absent/present graph closure.
-Reads refuse when these dependencies are unavailable; no success is inferred.
-Submission/dispatch producers and public API/CLI/TS remain follow-ons. Independent
-full review, same-head QA, applicable retained CI/real hosted CLI callback and
-manager guarded merge remain required before acceptance. No live migration,
-enable, assignment, deployment or restart is authorized by this change.
+U3a(b) adds matched immutable `@3` template/activation/context readers,
+`submissions.validate_handoff_graph` and the internal handoff/review producers.
+Historical `@1`/`@2` families and pins retain their interpretation. An original
+CURRENT author with stage+submit authority reserves immutable bytes only. SAME
+operation fulfillment requires its genuine INTEGER/full callback and committed
+successful/quiescent terminal proof, plus current authority and independence.
+The atomic graph retains NULL legacy result, appends the authentic result link,
+and creates one unsigned request per configured slot. Actual agent tasks alone
+populate the ordered 0..3 reviewer-task IDs; roles, kinds, outcomes and timing
+come from immutable template data. Inputs remain filtered to each recipient.
+
+The review owner reuses the existing scheduler/native host lifecycle and
+Pause/Resume final admission, publication, prompt reader and cancellation fences.
+Completed-source discovery precedes workers and periodic enqueue hints; possible
+launch without affirmative proof remains uncertain. No callback is a signature.
+This stacked draft remains dependency-incomplete: public API/CLI/TS/native parity
+and existing task callback/cancellation/portability adapters belong to U3a(c).
+Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
+acceptance remain later units. Full independent review, honest same-head QA,
+retained exact-head CI/actual hosted Codex CLI callback and manager guarded merge
+remain required. Manager-owned bounded two-template public smoke must precede
+Founder invitation. No live migration/enable/assignment/deploy/restart follows.
 
 **G submission-schema migration (THR139 seq395; retained F/E→G path).**
 The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.
@@ -56,9 +71,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 

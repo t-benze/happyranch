@@ -1,5 +1,11 @@
 # Project Layout
 
+U3a(b) internal producers are `runtime/workflows/submissions.py` (immutable
+original-author H reservation, SAME-operation fulfillment, graph validation and
+completed-source discovery) and `review_dispatch.py` (actual F5 review ownership
+through the existing draft/native-host lifecycle). OrgState attaches them to the
+org Database and orchestrator. Public adapters are a separate U3a(c) dependency.
+
 HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel: orchestrator, daemon and CLI, audit, KB, threads, revisit, and escalation primitives. The organization it runs is loaded per runtime from `<runtime>/orgs/<slug>/org/`.
 
 A canonical sample org lives at `examples/orgs/hk-macau-tourism/`. Treat it as the reference shape when bootstrapping a new org; nothing about that org's specific teams, agents, or constraints is baked into the system.
