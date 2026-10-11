@@ -19,9 +19,9 @@ on EVERY launch attempt (inside the per-attempt launch closure, so throttle
 retries after a rate-limited response re-verify the artifact before the next
 Popen — D4 fail-closed trust boundary).
 D12: finalized stable external contract — this module is the authoritative
-code-level reference; the unified-adapter architecture spec §2 is the
-normative prose. Protocol/05b, 05c, executor guide, and envelope design spec
-parity shipped in the same PR.
+code-level reference. Current optional input-v2 prose is in
+docs/superpowers/specs/2026-10-11-agent-reasoning-effort.md; original
+unified-adapter and Protocol references remain historical.
 
 THR-107 seq244: dependency-manifest extension — adds ``DependencyManifest``
 and ``DependencyRecord`` models for declared child executable dependencies.
@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, ConfigDict, StrictStr, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +114,7 @@ class ResultText(BaseModel):
 
 class AdapterMetadata(BaseModel):
     """Provenance metadata from the adapter (§2.2)."""
+    input_contract_version: int | None = Field(None, description="Input-v2 adapters must acknowledge integer 2; absent for legacy input v1")
     adapter: str = Field(..., description="REQUIRED to exactly equal the stable server-derived canonical_adapter_id from the contract-reference / submitted adapter ID. Never a display name, provider, or arbitrary implementation identity. A mismatch fails the conformance probe at registration AND blocks every launch at runtime.")
     adapter_version: str = Field(..., description="Version of the adapter implementation")
     contract_version: int = Field(..., description="Version of THIS result contract")
@@ -202,3 +203,56 @@ class DependencyManifest(BaseModel):
     """
     dependency_manifest_version: Annotated[int, BeforeValidator(_strict_int_for_manifest), Field(ge=1, le=1, description="Version of the dependency manifest contract (must be exactly 1)")]
     dependencies: list[DependencyRecord] = Field(..., min_length=1, description="Non-empty list of declared child executable dependencies")
+
+
+class AdapterInputOptions(BaseModel):
+    """Explicit input-v2 opt-in. Output contract remains v1. Literal argv templates."""
+    model_config = ConfigDict(extra="forbid")
+    version: Annotated[Literal[2], BeforeValidator(_strict_int_for_manifest)]
+    model_arg_template: list[StrictStr] | None = None
+    effort_arg_template: list[StrictStr] | None = None
+    reasoning_effort_values: list[StrictStr] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def validate_templates(self):
+        import re
+        for template, placeholder in ((self.model_arg_template, "model"), (self.effort_arg_template, "effort")):
+            if template is not None:
+                if not template or len(template) > 16 or any(not p or len(p) > 512 for p in template):
+                    raise ValueError("Arg template must contain 1..16 nonempty literal argv elements")
+                fields = [field for p in template for field in re.findall(r"\{([^{}]*)\}", p)]
+                if fields != [placeholder] or any("{" in p.replace("{" + placeholder + "}", "") or "}" in p.replace("{" + placeholder + "}", "") for p in template):
+                    raise ValueError(f"Arg template requires exactly one {{{placeholder}}} and no other placeholders")
+        values = self.reasoning_effort_values
+        if len(values) != len(set(values)) or any(not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", v) for v in values):
+            raise ValueError("Effort values must be unique bounded lowercase identifiers")
+        if bool(values) != bool(self.effort_arg_template):
+            raise ValueError("Effort template and allowed values must be declared together")
+        return self
+
+
+class EffortInfo(BaseModel):
+    reasoning_effort: StrictStr
+    effort_arg_template: list[str]
+
+
+class AdapterInputV2(AdapterInput):
+    contract_version: Literal[2] = 2
+    reasoning_effort: EffortInfo | None = None
+
+
+def opt_in_adapter_input(
+    legacy: AdapterInput, options: dict | None, model: str | None, effort: str | None,
+) -> AdapterInput:
+    if options is None:
+        if effort is not None:
+            raise ValueError("This custom adapter has not opted into reasoning_effort")
+        return legacy
+    declaration = AdapterInputOptions.model_validate(options)
+    if effort is not None and effort not in declaration.reasoning_effort_values:
+        raise ValueError("Unsupported custom adapter reasoning_effort")
+    data = legacy.model_dump()
+    data["contract_version"] = 2
+    data["model"] = ModelInfo(model_id=model, model_arg_template=declaration.model_arg_template) if model is not None else None
+    data["reasoning_effort"] = EffortInfo(reasoning_effort=effort, effort_arg_template=declaration.effort_arg_template) if effort is not None else None
+    return AdapterInputV2.model_validate(data)

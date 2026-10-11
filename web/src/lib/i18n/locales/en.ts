@@ -2225,6 +2225,12 @@ export const en = {
   'agents.detail.staleNote':
     'The current executor “{name}” is no longer registered and cannot be assigned to new agents.',
   'agents.detail.staleLink': 'The current executor is no longer registered.',
+  'agents.error.invalidEffort': 'Reasoning effort is unsupported or conflicts with the model. Check the selected CLI values; OpenCode requires provider/model.',
+  'agents.error.effortExecutorChanged': 'The saved CLI changed. Reload the agent and reapply the model and effort for that CLI.',
+  'agents.detail.reasoningEffort': 'Reasoning effort',
+  'agents.detail.effortDefault': 'Default (no override)',
+  'agents.detail.effortHelp': 'Static CLI values. Model and account support may vary. OpenCode requires provider/model; embedded variants must agree. Applies to the next launch.',
+  'agents.detail.effortUnsupported': 'This executor does not declare reasoning effort support. Custom adapters can opt into input v2 through an ordinary adapter update.',
   'agents.detail.model': 'Model',
   'agents.detail.modelDefault': 'Default for {executor}',
   'agents.detail.modelUnset': 'Unset',

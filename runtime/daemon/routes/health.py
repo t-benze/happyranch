@@ -97,6 +97,7 @@ class ExecutorPrereq(BaseModel):
     present: bool
     path: str | None
     hint: str
+    reasoning_effort_values: list[str] = []
 
 
 class PrereqsResponse(BaseModel):
@@ -151,6 +152,7 @@ def health_prereqs(request: Request) -> PrereqsResponse:
     registered/not-registered + hint.
     """
     state = request.app.state.daemon
+    from runtime.orchestrator.executor_registry import reasoning_effort_values
     registry = get_registry()
     names = registry.list_profile_names()
     results: list[ExecutorPrereq] = []
@@ -170,6 +172,7 @@ def health_prereqs(request: Request) -> PrereqsResponse:
                 present=adapter_present,
                 path=adapter_path,
                 hint=_hint_for(name),
+                reasoning_effort_values=list(reasoning_effort_values(name)),
             ))
         else:
             # Built-in — presence is determined solely by the machine-local
@@ -182,5 +185,6 @@ def health_prereqs(request: Request) -> PrereqsResponse:
                 present=registered,
                 path=stored if registered else None,
                 hint=_hint_for(name),
+                reasoning_effort_values=list(reasoning_effort_values(name)),
             ))
     return PrereqsResponse(prereqs=results)

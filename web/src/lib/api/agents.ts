@@ -148,7 +148,7 @@ export const setAgentExecutor = (
 export const setAgentModel = (
   slug: string,
   agentName: string,
-  body: { model: string | null },
+  body: { model?: string | null; reasoning_effort?: string | null; expected_executor?: string },
 ): Promise<{
   agent: string;
   before: string | null;

@@ -18,6 +18,7 @@ class AuditLogger:
         invocation_purpose: str = "unattributed",
         executor: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._db.insert_audit_log(
             task_id=task_id,
@@ -29,6 +30,7 @@ class AuditLogger:
                 "invocation_purpose": invocation_purpose,
                 "executor": executor,
                 "model": model,
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
             },
         )
 
@@ -1569,11 +1571,12 @@ class AuditLogger:
         *,
         executor: str | None = None,
         model: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         self._db.insert_audit_log(
             task_id=dream_id, agent=agent,
             action="dream_started",
-            payload={"executor": executor, "model": model},
+            payload={"executor": executor, "model": model, **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {})},
         )
 
     def log_dream_completed(

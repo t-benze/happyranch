@@ -1,8 +1,15 @@
+export interface AdapterInputOptions {
+  version: 2;
+  model_arg_template: string[] | null;
+  effort_arg_template: string[] | null;
+  reasoning_effort_values: string[];
+}
+
 /** Custom adapter API client (THR-107 seq141 + removal + seq220).
 
 GET    /api/v1/runtime/adapters                     - list all adapters
 GET    /api/v1/runtime/adapters/{id}                - poll adapter status
-GET    /api/v1/runtime/adapters/contract-reference  - canonical v1 schemas + paths (seq184, seq339)
+GET    /api/v1/runtime/adapters/contract-reference  - legacy/output v1 plus opt-in input-v2 schemas + paths (seq184, seq339)
 POST   /api/v1/runtime/adapters/{id}/approve        - approve pending adapter (seq220)
 POST   /api/v1/runtime/adapters/{id}/reject          - reject/remove pending adapter (seq220)
 POST   /api/v1/runtime/adapters/{id}/bind-profile    - bind approved adapter to profile
@@ -40,6 +47,7 @@ export interface AdapterEntry {
   version: string;
   capabilities: string[];
   contract_version: number;
+  input_options?: AdapterInputOptions | null;
   workspace_adapter: string;
   status: string;
   registered_at: string;
@@ -81,6 +89,7 @@ export interface RemoveAdapterRequest {
   version: string;
   capabilities: string[];
   contract_version: number;
+  input_options?: AdapterInputOptions | null;
   workspace_adapter: string;
   name: string;
   intended_profile_name: string | null;
@@ -106,6 +115,7 @@ export interface ApproveAdapterRequest {
   version: string;
   capabilities: string[];
   contract_version: number;
+  input_options?: AdapterInputOptions | null;
   workspace_adapter: string;
   /** THR-107 seq244: dependency manifest version (null for legacy). */
   dependency_manifest_version: number | null;
@@ -135,6 +145,7 @@ export interface RejectAdapterRequest {
   version: string;
   capabilities: string[];
   contract_version: number;
+  input_options?: AdapterInputOptions | null;
   workspace_adapter: string;
   /** THR-107 seq244: dependency manifest version (null for legacy). */
   dependency_manifest_version: number | null;
@@ -245,6 +256,8 @@ export const rejectAdapter = (
  *  scoped-token endpoint, not a CLI-only route. */
 export interface ContractReferenceResponse {
   contract_version: number;
+  input_v2_schema: Record<string, unknown>;
+  input_options_schema: Record<string, unknown>;
   canonical_adapter_id: string;
   canonical_adapter_id_description: string;
   adapter_input_schema: Record<string, unknown>;

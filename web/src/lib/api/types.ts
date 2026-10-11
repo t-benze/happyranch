@@ -540,6 +540,7 @@ export interface ExecutorPrereq {
   present: boolean;
   path: string | null;
   hint: string;
+  reasoning_effort_values?: string[];
 }
 
 /** Mirror of runtime/daemon/routes/health.py::PrereqsResponse. */
@@ -557,6 +558,7 @@ export interface AgentSummary {
   role: 'manager' | 'worker' | null;
   executor: string | null;
   model?: string | null;
+  reasoning_effort?: string | null;
   description: string | null;
   // Phase 2: additive read-only fields (D6)
   repos: Record<string, string>;

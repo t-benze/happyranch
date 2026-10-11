@@ -57,7 +57,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, BeforeValidator, Field
 
-from runtime.orchestrator.adapter_contract import _strict_int_for_manifest
+from runtime.orchestrator.adapter_contract import _strict_int_for_manifest, AdapterInputOptions, AdapterInputV2
 
 from runtime.daemon.auth import require_registration_token, require_token
 from runtime.orchestrator.adapter_store import acquire_store_lock, release_store_lock
@@ -102,6 +102,7 @@ class AdapterRegisterRequest(BaseModel):
     ``dependency_manifest_version: 1``.
     """
 
+    input_options: AdapterInputOptions | None = None
     executable: str = Field(
         ...,
         description="Absolute path to the adapter executable. PATH lookup is not supported.",
@@ -160,6 +161,7 @@ class AdapterEntryResponse(BaseModel):
     browser never recomputes hash/tamper eligibility.
     """
 
+    input_options: AdapterInputOptions | None = None
     id: str
     name: str
     executable: str
@@ -204,6 +206,7 @@ class AdapterSubmitRequest(BaseModel):
     THR-107 seq244: adds ``dependency_manifest_version`` and ``dependencies``.
     """
 
+    input_options: AdapterInputOptions | None = None
     executable: str = Field(
         ...,
         description="Absolute path to the adapter executable (v1 AdapterInput/AdapterOutput wrapper).",
@@ -251,6 +254,8 @@ class ContractReferenceResponse(BaseModel):
     CLI-only endpoint — the browser is an intentional scoped-token consumer.
     """
 
+    input_v2_schema: dict = Field(default_factory=lambda: AdapterInputV2.model_json_schema())
+    input_options_schema: dict = Field(default_factory=lambda: AdapterInputOptions.model_json_schema())
     contract_version: int = Field(..., description="v1 contract version (always 1)")
     canonical_adapter_id: str = Field(
         ..., description="The stable server-derived adapter ID for this token's intended profile"
@@ -322,6 +327,7 @@ class AdapterRemoveRequest(BaseModel):
     and wrong targets.
     """
 
+    input_options: AdapterInputOptions | None = None
     executable: str = Field(
         ...,
         min_length=1,
@@ -388,6 +394,7 @@ class AdapterApproveRequest(BaseModel):
     manifest facts.
     """
 
+    input_options: AdapterInputOptions | None = None
     executable: str = Field(
         ...,
         description="Absolute path to the adapter executable (must match store exactly).",
@@ -453,6 +460,7 @@ class AdapterRejectRequest(BaseModel):
     manifest facts.
     """
 
+    input_options: AdapterInputOptions | None = None
     executable: str = Field(
         ...,
         description="Absolute path to the adapter executable (must match store exactly).",
@@ -512,6 +520,7 @@ def _adapter_snapshot_mismatch(entry, body: AdapterRemoveRequest) -> str | None:
         ("version", entry.version, body.version),
         ("capabilities", entry.capabilities, body.capabilities),
         ("contract_version", entry.contract_version, body.contract_version),
+        ("input_options", entry.input_options, body.input_options.model_dump(mode="json") if body.input_options is not None else None),
         ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
         ("name", entry.name, body.name),
         ("intended_profile_name", entry.intended_profile_name, body.intended_profile_name),
@@ -662,6 +671,7 @@ def _entry_to_response(entry) -> AdapterEntryResponse:
         version=entry.version,
         capabilities=entry.capabilities,
         contract_version=entry.contract_version,
+        input_options=entry.input_options,
         workspace_adapter=entry.workspace_adapter,
         status=entry.status,
         registered_at=entry.registered_at,
@@ -733,6 +743,7 @@ def register_adapter(
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
             verify_thread_resume=body.verify_thread_resume,
+            input_options=body.input_options.model_dump(mode="json") if body.input_options is not None else None,
         )
         if coordinator is not None:
             kwargs["profile_coordinator"] = coordinator
@@ -908,6 +919,7 @@ def _approve_registered_adapter(
             dependencies=body.dependencies,
             thread_resume_verified_at=body.thread_resume_verified_at,
             thread_resume_contract_version=body.thread_resume_contract_version,
+            input_options=body.input_options.model_dump(mode="json") if body.input_options is not None else None,
             selected_profile_names=selected_profile_names,
         )
     except ValueError as exc:
@@ -1157,6 +1169,7 @@ def submit_adapter(
             dependency_manifest_version=body.dependency_manifest_version,
             dependencies=body.dependencies,
             verify_thread_resume=body.verify_thread_resume,
+            input_options=body.input_options.model_dump(mode="json") if body.input_options is not None else None,
         )
         if coordinator is not None:
             kwargs["profile_coordinator"] = coordinator
@@ -1253,7 +1266,7 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
     # endpoint. The candidate may fetch the contract multiple times before
     # proceeding to conformance check-ins and submission.
 
-    from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, DependencyManifest, DependencyRecord
+    from runtime.orchestrator.adapter_contract import AdapterInput, AdapterOutput, AdapterInputOptions, AdapterInputV2, DependencyManifest, DependencyRecord
     from runtime.orchestrator.custom_adapter_registry import (
         build_probe_input,
         compute_canonical_adapter_path,
@@ -1329,7 +1342,10 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
             "input": {
                 "source": "stdin",
                 "description": (
-                    "Read exactly one v1 AdapterInput JSON object from stdin. "
+                    "Read exactly one AdapterInput JSON object from stdin: v1 by default, "
+                    "v2 only with an approved input_options.version=2 declaration. "
+                    "Input2 requires integer adapter_metadata.input_contract_version=2; "
+                    "output remains v1. "
                     "The daemon pipes the AdapterInput payload to the adapter's "
                     "stdin at launch time; the adapter must read it fully before "
                     "invoking the candidate CLI."
@@ -1406,6 +1422,7 @@ def get_contract_reference(request: Request) -> ContractReferenceResponse:
                     "version": "Adapter version string",
                     "capabilities": "Declared capabilities list",
                     "workspace_adapter": "Workspace preparation adapter (default: pi)",
+                    "input_options": "Optional explicit input-v2 declaration; see input_options_schema. Must match the approved snapshot exactly.",
                     "dependency_manifest_version": (
                         "Integer. Must be 1 for new submissions. "
                         "Separate versioning space from contract_version."
@@ -2270,6 +2287,7 @@ def reject_pending_adapter(
         ("version", entry.version, body.version),
         ("capabilities", entry.capabilities, body.capabilities),
         ("contract_version", entry.contract_version, body.contract_version),
+        ("input_options", entry.input_options, body.input_options.model_dump(mode="json") if body.input_options is not None else None),
         ("workspace_adapter", entry.workspace_adapter, body.workspace_adapter),
         ("dependency_manifest_version", entry.dependency_manifest_version, body.dependency_manifest_version),
         ("dependencies", _entry_deps, _req_deps),
@@ -2313,6 +2331,7 @@ def reject_pending_adapter(
             ("version", re_read_entry.version, body.version),
             ("capabilities", re_read_entry.capabilities, body.capabilities),
             ("contract_version", re_read_entry.contract_version, body.contract_version),
+            ("input_options", re_read_entry.input_options, body.input_options.model_dump(mode="json") if body.input_options is not None else None),
             ("workspace_adapter", re_read_entry.workspace_adapter, body.workspace_adapter),
             ("dependency_manifest_version", re_read_entry.dependency_manifest_version, body.dependency_manifest_version),
             ("dependencies", re_read_entry.dependencies or [], body.dependencies or []),
