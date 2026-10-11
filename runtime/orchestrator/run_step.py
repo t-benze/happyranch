@@ -780,8 +780,10 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
     unexamined = [event.after['id'] for event in transitions if not event.attempted]
     size = len(json.dumps([event.provenance() for event in transitions]).encode())
     if size > 262144:
-        logger.error('root worktree owner transition manifest exceeds receipt cap; all unexamined; roots=%s',
-                     len(transitions))
+        logger.error('root worktree owner transition manifest exceeds receipt cap; all unexamined; '
+                     'roots=%s raw_audit_window=(%s,%s] cursor=%s; complete=false; no retry',
+                     len(transitions), getattr(transitions, 'audit_low', None),
+                     getattr(transitions, 'audit_high', None), getattr(transitions, 'audit_low', None))
         return []
     for event in transitions:
         if event.attempted:
