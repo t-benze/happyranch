@@ -10,6 +10,14 @@ on:
         description: Legacy compatibility input; manual all runs source boundary and Web static checks only
         type: boolean
         default: false
+      thr299_scoped_qa:
+        description: Opt in to PR1047 fixed-node disposable THR299 QA (independent review required)
+        type: boolean
+        default: false
+      expected_source_sha:
+        description: Required immutable 40-hex event SHA when thr299_scoped_qa is true
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -17,7 +25,7 @@ permissions:
 jobs:
   local-ci-all:
     name: Manual local CI all (Python 3.14, Node 24)
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.thr299_scoped_qa != true }}
     runs-on: ubuntu-latest
     # Preserve the existing disposable venue cap; units are retired.
     timeout-minutes: 150
@@ -51,6 +59,161 @@ jobs:
           path: ${{ runner.temp }}/local-ci-all/
           if-no-files-found: warn
           retention-days: 14
+
+  thr299-scoped-qa:
+    name: THR299 disposable scoped QA (Python 3.14)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.thr299_scoped_qa == true && github.repository == 't-benze/happyranch' && github.ref == 'refs/heads/task/TASK-10816' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
+      QA_EVIDENCE: ${{ runner.temp }}/thr299-scoped-qa/evidence
+      QA_SCRATCH: ${{ runner.temp }}/thr299-scoped-qa/scratch
+      QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      QA_RUNNER_NAME: ${{ runner.name }}
+    steps:
+      - name: Checkout exact event source
+        timeout-minutes: 1
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Admit immutable source before dependency or product setup
+        run: |
+          python3 -I - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          evidence = pathlib.Path(os.environ['QA_EVIDENCE'])
+          evidence.mkdir(parents=True, exist_ok=True)
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          expected = os.environ['EXPECTED_SOURCE_SHA']
+          actual = git('rev-parse', 'HEAD')
+          admitted = bool(re.fullmatch(r'[0-9a-fA-F]{40}', expected)) and expected.lower() == os.environ['GITHUB_SHA'] == actual
+          admitted = admitted and os.environ['QA_RUNNER_ENVIRONMENT'] == 'github-hosted'
+          files = ['tests/helpers/integration_parent.py', 'tests/conftest.py',
+                   'tests/integration/conftest.py', 'tests/integration/test_verified_supersession_retry_shipping.py',
+                   'tests/helpers/deterministic_plan.py', 'tests/helpers/integration_stub_guard/guard.py',
+                   'tests/helpers/integration_stub_guard/sitecustomize.py', 'cli/main.py',
+                   'scripts/daemon.sh', 'scripts/run_bounded_output.py', 'uv.lock']
+          identity = {key: os.environ.get(key) for key in ('GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY',
+                      'GITHUB_REF', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'RUNNER_OS',
+                      'QA_RUNNER_ENVIRONMENT', 'QA_RUNNER_NAME', 'ImageOS', 'ImageVersion')}
+          identity.update(admitted=admitted, expected_sha=expected.lower() if re.fullmatch(r'[0-9a-fA-F]{40}', expected) else None, checkout_sha=actual, tree=git('rev-parse', 'HEAD^{tree}'),
+                          source=str(pathlib.Path.cwd()), source_hashes={name: hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() for name in files})
+          (evidence / 'source.json').write_text(json.dumps(identity, indent=2) + '\n')
+          if not admitted:
+              raise SystemExit('THR299 source/hosted venue admission refused')
+          PY
+      - name: Install uv and Python 3.14
+        timeout-minutes: 3
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          enable-cache: false
+          python-version: '3.14'
+      - name: Sync dependencies (frozen)
+        timeout-minutes: 4
+        run: uv sync --frozen --python 3.14
+      - name: Record effective interpreter
+        run: |
+          .venv/bin/python -I - <<'PY'
+          import hashlib, json, os, pathlib, sys
+          executable = pathlib.Path(sys.executable).resolve()
+          identity = dict(executable=str(executable), prefix=sys.prefix, version=sys.version,
+                          sha256=hashlib.sha256(executable.read_bytes()).hexdigest())
+          (pathlib.Path(os.environ['QA_EVIDENCE']) / 'interpreter.json').write_text(json.dumps(identity, indent=2) + '\n')
+          if sys.version_info[:2] != (3, 14):
+              raise SystemExit('Python 3.14 required')
+          PY
+      - name: Run only the five retained THR299 nodes through the unmodified parent
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          mkdir -m 700 "$QA_SCRATCH"
+          export TMPDIR="$QA_SCRATCH" TMP="$QA_SCRATCH" TEMP="$QA_SCRATCH"
+          set +e
+          python3 -I scripts/run_bounded_output.py \
+            --output "$QA_EVIDENCE/selected.log" --max-bytes 1048576 -- \
+            timeout --signal=INT --kill-after=20s 300s \
+            .venv/bin/python tests/helpers/integration_parent.py -- pytest -m integration \
+            tests/integration/test_verified_supersession_retry_shipping.py::test_thr299_isolated_session_history_refuses_before_sid_filter \
+            tests/integration/test_verified_supersession_retry_shipping.py::test_thr299_isolated_nonselected_purpose_and_metadata_compatible \
+            tests/integration/test_verified_supersession_retry_shipping.py::test_thr299_isolated_selected_purpose_retains_specific_refusal \
+            tests/integration/test_verified_supersession_retry_shipping.py::test_thr299_public_read_and_scope_refusal \
+            tests/integration/test_verified_supersession_retry_shipping.py::test_thr299_isolated_old_validator_bound_and_local_failure \
+            -v --tb=short --junitxml="$QA_EVIDENCE/pytest.xml"
+          status=$?
+          printf '%s\n' "$status" > "$QA_EVIDENCE/command-exit.txt"
+          exit "$status"
+      - name: Retain exact case outcomes and observe cleanup even after failure
+        if: ${{ always() }}
+        run: |
+          python3 -I - <<'PY'
+          import json, os, pathlib, xml.etree.ElementTree as ET
+          evidence = pathlib.Path(os.environ['QA_EVIDENCE'])
+          evidence.mkdir(parents=True, exist_ok=True)
+          scratch = pathlib.Path(os.environ['QA_SCRATCH'])
+          errors, processes = [], []
+          remaining = sorted(p.name for p in scratch.iterdir()) if scratch.is_dir() else []
+          # Observe only same-user processes carrying this invocation's scratch binding.
+          # This is finite cleanup evidence, not host-wide quiescence proof or a kill sweep.
+          for proc in pathlib.Path('/proc').iterdir():
+              if not proc.name.isdecimal():
+                  continue
+              try:
+                  if proc.stat().st_uid != os.getuid():
+                      continue
+                  env = (proc / 'environ').read_bytes().split(b'\0')
+                  prefix = b'TMPDIR=' + os.fsencode(scratch)
+                  if any(value == prefix or value.startswith(prefix + b'/') for value in env):
+                      processes.append(int(proc.name))
+              except FileNotFoundError:
+                  pass
+              except OSError:
+                  errors.append(proc.name)
+          command = evidence / 'command-exit.txt'
+          cleanup = 'not_started' if not scratch.exists() and not command.exists() else 'unknown'
+          if scratch.is_dir() and not remaining and not processes and not errors:
+              scratch.rmdir()
+              cleanup = 'scratch_removed_no_bound_process_observed'
+          (evidence / 'cleanup.json').write_text(json.dumps(dict(result=cleanup,
+              remaining=remaining[:128], bound_processes=processes[:128], observation_errors=errors[:128],
+              observations_truncated=any(len(items) > 128 for items in (remaining, processes, errors)),
+              command_exit=command.read_text().strip() if command.exists() else None), indent=2) + '\n')
+          cases, result_errors = [], []
+          xml = evidence / 'pytest.xml'
+          if xml.is_file() and xml.stat().st_size <= 1048576:
+              try:
+                  for case in ET.parse(xml).iter('testcase'):
+                      cases.append(dict(classname=case.get('classname'), name=case.get('name'),
+                          seconds=case.get('time'), outcome=next((tag for tag in ('error', 'failure', 'skipped') if case.find(tag) is not None), 'passed')))
+              except ET.ParseError:
+                  result_errors.append('malformed_junit')
+          else:
+              result_errors.append('missing_or_oversize_junit')
+              if xml.is_file():
+                  # Preserve an explicitly truncated diagnostic; never parse it as complete results.
+                  with xml.open('rb') as stream:
+                      fragment = stream.read(1048576)
+                  xml.write_bytes(fragment)
+          log = evidence / 'selected.log'
+          if not log.is_file():
+              result_errors.append('missing_command_log')
+          if not command.is_file():
+              result_errors.append('missing_command_exit')
+          truncated = log.is_file() and log.read_bytes().startswith(b'[nightly log truncated;')
+          (evidence / 'cases.json').write_text(json.dumps(dict(cases=cases,
+              result_errors=result_errors, log_truncated=truncated, expected_cases=27), indent=2) + '\n')
+          if cleanup != 'scratch_removed_no_bound_process_observed' or result_errors or len(cases) != 27 or any(case['outcome'] != 'passed' for case in cases) or truncated:
+              raise SystemExit('THR299 evidence incomplete; inspect command exit, case and cleanup receipts')
+          PY
+      - name: Upload THR299 evidence on every outcome
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thr299-scoped-qa-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/thr299-scoped-qa/evidence/
+          if-no-files-found: warn
+          retention-days: 7
 
   integration:
     name: Python integration (3.12)

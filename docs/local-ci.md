@@ -92,6 +92,105 @@ even through a job. The Linux canonical callback remains the explicit
 `tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback`
 selection through `tests/helpers/integration_parent.py`.
 
+## PR1047 opt-in disposable THR299 scoped QA
+
+`nightly-integration.yml` also supplies a separately selected manual QA venue for
+SAME TASK10725 / PR1047, under Founder THR299seq4/11. Ordinary manual dispatch
+still runs lint/static `all`, including the legacy `all_only` input. Only
+`thr299_scoped_qa=true` skips that manual lint job and selects the new
+`THR299 disposable scoped QA (Python 3.14)` job. It admits only
+`t-benze/happyranch`, literal `refs/heads/task/TASK-10816`, and
+`workflow_dispatch` on disposable GitHub-hosted Ubuntu24.04. Scheduled integration
+and its reporting retain their original predicates. The lane has no PR/push/tag,
+main, automatic retry, extra schedule, notification or merge-check path.
+
+After independent FULL review of the support at the actual pushed head, parent
+TASK10725 separately assigns the qualified QA retry of TASK10836. QA first
+statically inspects the selected imports/conftests at that exact source; no
+retired unit import or collection is permitted. Dispatch the existing registered
+workflow with both explicit inputs (replace the placeholder with the reviewed
+immutable commit SHA; this example is guidance, not an execution receipt):
+
+```bash
+gh workflow run nightly-integration.yml --repo t-benze/happyranch \
+  --ref task/TASK-10816 -f thr299_scoped_qa=true \
+  -f expected_source_sha=REVIEWED_40_HEX_SHA
+```
+
+The SHA is an assertion, never an alternate checkout target. Checkout pins
+`github.sha` with persisted credentials disabled. Before dependency/product setup,
+a missing/malformed expected SHA, event/checkout mismatch or non-hosted runner
+fails nonzero. Inputs reach the gate through environment variables, never shell
+commands. Setup uses pinned actions, frozen dependencies and verified Python3.14;
+no production runtime, DB, token or provider credentials are supplied. The
+unmodified `tests/helpers/integration_parent.py` runs before pytest/runtime
+imports, with its closed HOME/config/data/PATH, exact source/interpreter/CLI and
+registered deterministic-stub fences. Natural synthetic IDs and the unmodified
+real public fixture retain their existing assertions. No patched queue/claim
+launcher or exact synthetic producer grant is selected.
+
+Only these five nodes in
+`tests/integration/test_verified_supersession_retry_shipping.py` run, with
+`-m integration`, verbose case output and JUnit:
+
+- `test_thr299_isolated_session_history_refuses_before_sid_filter`
+- `test_thr299_isolated_nonselected_purpose_and_metadata_compatible`
+- `test_thr299_isolated_selected_purpose_retains_specific_refusal`
+- `test_thr299_public_read_and_scope_refusal`
+- `test_thr299_isolated_old_validator_bound_and_local_failure`
+
+They are the existing 27 parameterized cases: 25 isolated session-validator cases
+and two public read/refusal/old-validator cases. There is no caller-selected node,
+command or URL. The whole job is capped at 20 minutes, dependency sync at 4 minutes,
+and the selected command at 300 seconds with INT then 20 seconds to KILL. The
+existing output limiter retains at most 1 MiB of merged output; its truncation
+marker is incomplete evidence, never a complete case log. The original command
+status is preserved in `command-exit.txt`, including 124/137 timeout outcomes.
+JUnit is bounded to 1 MiB with oversize/malformed/missing evidence reported; verbose
+logs and `cases.json` retain expanded names and outcomes. Failure/error/skipped
+cases are not PASS. Evidence completeness requires all 27 outcomes and no log
+truncation, alongside the actual command result.
+
+`source.json` records event/ref/run/attempt, runner image/name, exact commit/tree,
+source path and selected import/fence hashes; `interpreter.json` and the parent log
+record actual interpreter identity. `cleanup.json` reports remaining scratch,
+same-user processes carrying this invocation's scratch binding, observation
+errors, truncation and command result. The existing parent owns its child group
+and temporary-directory cleanup. The workflow removes only the empty owned
+scratch directory after successful observation; residue or unknown observations
+fail evidence completion and remain visible. This limited observation is not
+host-wide quiescence, product cancellation/restart or crash proof. Uncatchable
+termination can leave missing/unknown cleanup; do not infer success from an
+absent receipt or disposable-runner teardown.
+
+Find the actual run and bind its event/head/attempt before interpreting artifacts:
+
+```bash
+gh run list --repo t-benze/happyranch --workflow nightly-integration.yml \
+  --branch task/TASK-10816 --event workflow_dispatch --limit 5
+gh run view RUN_ID --repo t-benze/happyranch \
+  --json headSha,event,attempt,status,conclusion,jobs,url
+gh run download RUN_ID --repo t-benze/happyranch \
+  --name thr299-scoped-qa-RUN_ID-ATTEMPT --dir /absolute/owned/evidence
+```
+
+Never attribute the newest run by position alone: match reviewed SHA, explicit
+selector, run ID and attempt. Upload is `always()` on success/failure with 7-day
+retention, but whole-job/runner termination may prevent it. For an external run
+still in flight, record its URL/status immediately and use the existing durable
+job/task handoff for a bounded wait (at most20 minutes plus a small artifact
+settlement allowance); no cross-run polling service, automatic retry or maker
+launch. Missing artifacts, results or cleanup remain missing evidence.
+
+This finite QA venue is separate from lint/static merge CI, general integration
+(**SKIPPED THR243seq42**) and schedule-only daily Product E2E. The earlier maker
+27-case exit0 is historical evidence without adequate venue qualification; it is
+not independent hosted proof. Exact synthetic producer-positive and dependent
+race/replay/crash/causal/repetition proof remain **UNPROVEN THR299seq11**. Native
+Swift execution remains **UNEXECUTED** without an authorized compatible venue.
+Parent10725 owns later qualified QA, guarded merge/install/serving verification,
+real reconciliation/replay and both original retry reads before naming use.
+
 ## Source Boundary Lint
 
 ```bash
