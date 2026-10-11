@@ -17,8 +17,11 @@ unimplemented active direct-submit producer is introduced. The H handoff graph
 still uses its original completed-source fulfillment; that limitation is not
 proof of the deferred active-submit path. U3b(d) now mounts the existing human bearer writer and selected pending/signed
 request reads, with safe receipt/findings projection and matching served models/
-OpenAPI/CLI/shared TS. Stored scope/brief bytes remain unchanged. Agent-stage/
-direct-submit public routes and additional native denial remain deferred, with
+OpenAPI/CLI/shared TS. Stored scope/brief bytes remain unchanged.
+Human POST retained template/activation dependency failures after selected-human/
+current-grant admission return category-only `workflow_review_receipt_storage_corrupt`500;
+true principal/grant403, invisible scope404, conflict409 and caller command422 remain.
+Agent-stage/direct-submit public routes and additional native denial remain deferred, with
 no native/transport/auth/session or new owner-read meaning. Root-owned two-template
 public smoke465, later owner/revision/recovery/UI acceptance remain dependencies; keep DRAFT,
 unaccepted/unmerged. Behavior/proof execution remains UNEXECUTED/FOUNDER-WAIVED.

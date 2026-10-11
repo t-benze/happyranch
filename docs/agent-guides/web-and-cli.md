@@ -1585,6 +1585,10 @@ Malformed/oversized/duplicate/unknown/mixed selectors or JSON refuse422; body
 identity/proof fields refuse403. Domain conflicts409, grant/contributor/auth
 refusals403, invisible request404 and category-only storage failures500 are
 distinct. Existing human_only detail and authority/schema owner guidance remain.
+After actual selected-human/current-grant admission, missing retained template
+mapping or activation closure and malformed retained activation requests yield
+only `workflow_review_receipt_storage_corrupt`500. These dependency failures
+do not become caller422 or invisible404; current-after-wait checks still apply.
 CLI `happyranch workflows reviews sign --org ORG --from-file /absolute/command.json
 [--json]` uses Founder transport and forwards the retained command once.
 Existing `workflows submissions request-show R --org ORG --proof-kind human`

@@ -155,6 +155,11 @@ async def sign_human_review(org: OrgDep, request: Request,
     except ERRORS as exc:
         if exc.code == 'workflow_human_review_operation_conflict':
             fail(exc.code, 409)
+        if exc.code in {'template_version_not_found', 'workflow_activation_not_found',
+                        'workflow_activation_invalid_request'}:
+            # These retained readers run only after selected-human/current-grant
+            # admission; caller command parsing and invisible selection are separate.
+            fail('workflow_review_receipt_storage_corrupt', 500)
         raise_error(exc)
     except sqlite_error_types() as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_review_receipt_storage_unavailable'}) from exc
