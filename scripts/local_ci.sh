@@ -5,7 +5,7 @@
 #
 # Node runtime contract: the web/all targets must run under effective Node.js
 # major exactly 24 (the repository .nvmrc declaration), matching the GitHub
-# "Web (Node 24)" job. The wrapper verifies this before any npm/uv work and
+# "Web Lint (Node 24)" job. The wrapper verifies this before npm work and
 # exits nonzero otherwise — it never runs npm under a different Node major.
 #
 # Usage:
@@ -14,11 +14,10 @@
 # Targets:
 #   python       Refuse retired Python unit target (exit 2; no execution)
 #   web          cd web; npm ci; design-system colour gate; npm run lint;
-#                npm run typecheck; npm run build; npm run build-storybook;
-#                npx vitest run
+#                npm run typecheck (static only)
 #   integration  uv sync --frozen; isolated parent -> pytest tests/ -v -m integration
 #   boundary-lint Source-only boundary lint + bounded synthetic CLI validation
-#   all          Boundary lint + Web checks (default; platform gates remain hosted)
+#   all          Boundary lint + Web static checks (default; THR-291 seq69)
 #   help         Show this help
 #
 # Scratch: every Python pytest invocation gets a fresh, uniquely named
@@ -176,10 +175,10 @@ observe_tmp_inodes() {
 
 # ── Node.js runtime contract (web/all targets) ───────────────────────────
 # The repository declares its exact Node line in .nvmrc (Node 24), matching
-# the GitHub "Web (Node 24)" job (.github/workflows/ci.yml). The web and all
+# the GitHub "Web Lint (Node 24)" job (.github/workflows/ci.yml). The web and all
 # targets must run under effective Node major 24 exactly — never "whatever is
 # installed" — otherwise they are not GitHub-Web parity and can pass/fail for
-# the wrong reason. The guard runs before any uv/npm work and exits nonzero
+# the wrong reason. The guard runs before npm work and exits nonzero
 # when Node 24 cannot be verified.
 
 NODE_DECLARATION_FILE="${REPO_ROOT}/.nvmrc"
@@ -280,7 +279,7 @@ try_select_node() {
 }
 
 ensure_node_declared() {
-  # Fail-fast Node runtime guard. Exits nonzero (before any uv/npm work) when
+  # Fail-fast Node runtime guard. Exits nonzero (before npm work) when
   # the effective Node major does not exactly match the repository declaration.
   local declared_major effective_major raw
   # Reject an embedded NUL at the byte level BEFORE command substitution would
@@ -318,7 +317,7 @@ ensure_node_declared() {
 
   echo -e "${RED}ERROR: effective Node.js ${effective_major:-<none>} does not match the repository declaration (Node ${declared_major} from ${NODE_DECLARATION_FILE}).${NC}" >&2
   echo "The web/all targets must run under Node ${declared_major} exactly to match GitHub CI" >&2
-  echo "(Web (Node 24)); they never run under a different Node major." >&2
+  echo "(Web Lint (Node 24)); they never run under a different Node major." >&2
   echo "Remediation:" >&2
   echo "  - Install Node ${declared_major} so it resolves on PATH, or select it with a" >&2
   echo "    version manager, e.g.: nvm install ${declared_major} && nvm use ${declared_major}" >&2
@@ -349,12 +348,6 @@ run_web() {
   npm run lint
   echo -e "${YELLOW}--- Typecheck ---${NC}"
   npm run typecheck
-  echo -e "${YELLOW}--- Build ---${NC}"
-  npm run build
-  echo -e "${YELLOW}--- Storybook static build ---${NC}"
-  npm run build-storybook
-  echo -e "${YELLOW}--- Test (non-watch) ---${NC}"
-  npx vitest run
 }
 
 run_integration() {
@@ -366,7 +359,7 @@ run_all() {
   run_boundary_lint
   observe_tmp_inodes
   ensure_node_declared
-  echo "Python units RETIRED (THR-291 seq40); fresh product E2E PENDING."
+  echo "Python units RETIRED; all is lint/static only (THR-291 seq69). Daily E2E PENDING."
   echo ""
   run_web
 }
@@ -382,21 +375,22 @@ show_help() {
   echo "  boundary-lint Source-only lint + synthetic validation (Python 3.12+, stdlib only)"
   echo "                Optional: --source-root <repository-shaped-root>"
   echo "  web          Run Web CI"
-  echo "               (npm ci + colour gate + lint + typecheck + build + build-storybook + vitest run)"
+  echo "               (npm ci + colour gate + lint + typecheck; static only)"
   echo "  integration  Run Python integration tests"
   echo "               (isolated parent -> pytest tests/ -v -m integration)"
-  echo "  all          Default: runs boundary lint + retained Web checks; E2E coverage PENDING"
+  echo "  all          Default: source boundary lint + Web lint/typecheck/colour scan"
   echo "  help         Show this help"
   echo ""
   echo "Caveats:"
   echo "  - Web/all targets require effective Node.js major exactly 24 (the"
-  echo "    repository .nvmrc declaration, matching the GitHub Web (Node 24)"
-  echo "    job); the wrapper verifies this before any work and exits nonzero"
+  echo "    repository .nvmrc declaration, matching the GitHub Web Lint (Node 24)"
+  echo "    job); the wrapper verifies this before npm work and exits nonzero"
   echo "    otherwise."
   echo "  - Retained integration uses the installed uv + Python interpreter, not the"
-  echo "    future E2E matrix (which remains PENDING)."
+  echo "    standalone E2E matrix (whose execution evidence remains PENDING)."
   echo "  - Integration requires an authorized disposable venue; never the live daemon host."
-  echo "  - Web CI runs vitest run (non-watch mode), matching GHA behavior."
+  echo "  - Fresh E2E admits only the daily hosted schedule; no local execution target."
+  echo "  - Retained Web tests/builds are optional separate commands, outside all/hooks."
   echo "  - uv sync --frozen ensures lockfile parity; run 'uv lock' first if"
   echo "    you've changed pyproject.toml."
   echo "  - integration creates a fresh pytest --basetemp under the"
@@ -410,6 +404,7 @@ case "${1:-all}" in
   boundary-lint) run_boundary_lint "${@:2}" ;;
   web)          run_web ;;
   integration)  run_integration ;;
+  e2e)          echo "REFUSED: fresh Product E2E is daily schedule-only (THR-291 seq69)." >&2; exit 2 ;;
   all)          run_all ;;
   help|-h|--help) show_help ;;
   *)

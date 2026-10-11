@@ -2,18 +2,11 @@ name: Docs Manual CI
 
 # Standalone build check for the HappyRanch End-User Manual (Nextra docs site).
 # Non-publishing: it installs docs/manual deps and runs the Nextra/Next build only.
-# Path-filtered so it does not run on — and is fully independent of — the web/ app CI.
+# Explicit manual build; independent of the merge lint lane.
 
+# THR-291 seq69: retained explicit manual capability, outside merge CI.
 on:
-  pull_request:
-    paths:
-      - 'docs/manual/**'
-      - '.github/workflows/docs-manual-ci.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'docs/manual/**'
-      - '.github/workflows/docs-manual-ci.yml'
+  workflow_dispatch:
 
 jobs:
   build:

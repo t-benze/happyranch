@@ -61,7 +61,7 @@ python "$GUARD" setup \
 
 # 5. All subsequent repo commands MUST use $WORKTREE_ROOT:
 #    cd "$WORKTREE_ROOT"
-#    scripts/local_ci.sh all  # retained Web checks; Python units retired
+#    scripts/local_ci.sh all  # lint/static only; daily E2E is separate (THR-291 seq69)
 #    git -C "$WORKTREE_ROOT" diff --stat
 ```
 
