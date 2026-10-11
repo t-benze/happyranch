@@ -1,6 +1,6 @@
 /** Mirror of runtime/daemon/routes/workflow_templates.py. */
 import { request } from './client';
-import type { WorkflowDocumentReviewDefinition } from './types';
+import type { WorkflowDocumentReviewDefinition, WorkflowDocumentReviewDefinition3 } from './types';
 
 export interface WorkflowTemplatePublisher {
   principal_kind: 'agent' | 'human';
@@ -34,7 +34,7 @@ export interface PublishWorkflowTemplateInput<Definition = unknown> {
   definition: Definition;
 }
 
-export type PublishDocumentWorkflowTemplateInput = PublishWorkflowTemplateInput<WorkflowDocumentReviewDefinition>;
+export type PublishDocumentWorkflowTemplateInput = PublishWorkflowTemplateInput<WorkflowDocumentReviewDefinition | WorkflowDocumentReviewDefinition3>;
 
 export const publishWorkflowTemplate = (
   slug: string,

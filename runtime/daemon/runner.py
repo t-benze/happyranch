@@ -42,7 +42,7 @@ def enqueue_task(
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(orchestrator._db, task_id, org_slug=slug)
     if ownership.kind != "legacy":
-        if ownership.kind == "draft":
+        if ownership.kind in ("draft", "f5"):
             state.queue.enqueue(slug, task_id)
         return
     from runtime.orchestrator.authority import enqueue_task_generation_aware

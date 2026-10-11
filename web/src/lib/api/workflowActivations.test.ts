@@ -22,6 +22,7 @@ const body: WorkflowActivationRequest = {
 const genericBodies: [string, WorkflowActivationRequest][] = [
   ['legacy', body],
   ['product', { ...body, format: 'workflow-activation-request@2' }],
+  ['matched3', { ...body, format: 'workflow-activation-request@3', allowed_actions: ['draft-document', 'stage-immutable-document', 'submit-immutable-document'] }],
   ...(['proposal', 'A', 'Z'] as const).map((name): [string, DocumentWorkflowActivationRequest] => [name, {
     ...body, format: 'workflow-activation-request@2', instance_id: `proposal-${name.toLowerCase()}`,
     bindings: {

@@ -211,6 +211,7 @@ class WorkflowDraftDispatcher:
         task = self.db.get_task(task_id)
         invocation = TaskInvocation(self.org.orchestrator, task, task.assigned_agent,
                                     self.org.orchestrator._build_session_id(), owner="draft")
+        invocation.workflow_dispatcher = self
         invocation.draft_request_key = key
         try:
             invocation.prepare()
@@ -283,8 +284,8 @@ class WorkflowDraftDispatcher:
         intent = self._intent(conn, invocation.task.id)
         self._event(conn, intent, "launch_reserved", changes={"host_launch_started": 1,
                                                               "session_id": invocation.session_id})
-        conn.execute("UPDATE tasks SET status='in_progress',updated_at=? WHERE id=?",
-                     (datetime.now(timezone.utc).isoformat(), invocation.task.id))
+        conn.execute("UPDATE tasks SET status='in_progress',current_session_id=?,updated_at=? WHERE id=?",
+                     (invocation.session_id, datetime.now(timezone.utc).isoformat(), invocation.task.id))
         validate_workflow_schema(conn, expected_org_slug=self.org.slug)
         invocation.draft_claim = claim
 

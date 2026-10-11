@@ -1229,8 +1229,10 @@ class Database(
             from runtime.workflows.recovery import classify_task
             drafts = getattr(self, "_workflow_drafts", None)
             ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None)
+            if ownership.kind == 'f5':
+                drafts = getattr(self, '_workflow_reviews', None)
             if ownership.kind != "legacy":
-                if ownership.kind != "draft" or drafts is None:
+                if ownership.kind not in ('draft', 'f5') or drafts is None:
                     self._conn.rollback()
                     return False
                 if v2_admission is not None and not self._authenticate_v2_attempt_admission_uncommitted(
@@ -1260,8 +1262,7 @@ class Database(
                 if v2_admission is not None:
                     # Event insertion also allocates rowids. Resolve the exact
                     # accepted INTEGER identity from its owning intent.
-                    result_id = self._conn.execute("SELECT final_result_id FROM workflow_draft_dispatch_intents WHERE id=?",
-                                                   (ownership.intent_id,)).fetchone()[0]
+                    result_id = drafts._intent(self._conn, task_id)["final_result_id"]
                     admitted_attempt = self._insert_authority_policy_v2_attempt_uncommitted(
                         task_id=task_id, agent=agent, session_id=session_id, result_id=result_id,
                         admission=v2_admission, now=_now().isoformat(),
