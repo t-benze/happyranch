@@ -110,6 +110,14 @@ exceed60s; timeout fails honestly and retains observed ownership, without a
 claim of absence. If cleanup fails, export may read partial diagnostics but
 performs no more teardown or actions.
 
+The first nonempty readable daemon token remains the redaction context through
+partial data removal; later collection cannot erase it or replace sanitized
+staging with raw text. If no trustworthy context was captured (missing, empty
+or unreadable token), raw diagnostics and the detailed receipt are withheld.
+Known-safe staging is retained where available; bounded incomplete metadata
+reports FAIL, even when owned-root cleanup succeeds. This failure path does
+not establish complete evidence or runtime sanitation safety.
+
 Export has its own end `min(export entry + 120, original start + 900)`.
 It writes a metadata-only FAIL first, then sanitized detailed artifacts and
 the final receipt, keeping the last second of that same allowance for a bounded

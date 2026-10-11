@@ -249,14 +249,24 @@ def main() -> int:
         token = ""
 
         def redact(text: str) -> str:
-            return text.replace(token, "[REDACTED]") if token else text
+            if not token:
+                raise ValueError("redaction context unavailable")
+            return text.replace(token, "[REDACTED]")
 
         def collect_evidence() -> None:
             nonlocal token
             if not root or not root.exists():
                 return
-            token_file = root / "daemon" / "daemon.token"
-            token = token_file.read_text().strip() if token_file.exists() else ""
+            # Capture once: partial removal must never erase trusted context.
+            if not token:
+                try:
+                    token = (root / "daemon" / "daemon.token").read_text().strip()
+                except TimeoutError:
+                    raise  # Reserve expiry is not an ordinary token-read failure.
+                except (OSError, UnicodeError):
+                    return
+            if not token:
+                return  # No raw text/receipt is safe without established context.
             if (root / "scenario.json").exists():
                 result = json.loads((root / "scenario.json").read_text())
                 receipt.update({k: result[k] for k in ("variants", "scenario_phases") if k in result})
@@ -346,9 +356,14 @@ def main() -> int:
             # Keep the final second of this SAME allowance for a failure receipt.
             arm_deadline(export["deadline"] - 1)
             if root and root.exists():
+                # Preserve safe partial staging even if recollection fails.
+                for name, content in staged.items():
+                    (output / name).write_bytes(content)
                 collect_evidence()  # Read-only partial diagnostics; never teardown.
             for name, content in staged.items():
                 (output / name).write_bytes(content)
+            if not token:
+                raise ValueError("redaction context unavailable")
             if receipt["status"] == "PASS" and args.exercise == "baseline":
                 required = BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]]
                 if any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required):
