@@ -23,7 +23,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const tr = (locale, key) => (locale === 'en' ? en : zhCN)[key];
 const quote = JSON.stringify;
 const stamp = '2026-10-11T00:00:00Z';
-const ledger = [], checks = [], screenshots = [], hung = [];
+const ledger = [], checks = [], screenshots = [], hung = [], browserEvents = [];
 const blockers = ['task_session','job','launch','result_processing','unknown'].map(kind => ({kind,task_id:'ROOT-PAUSING',job_id:kind==='job'?'JOB-9':null,owner_kind:'raw-owner',reason:'raw_reason',observed_at:stamp}));
 let scenario = 'populated', control = 'success', toggled = { held: false, generation: 4 };
 function projection(id, status = 'in_progress', extra = {}) {
@@ -86,7 +86,7 @@ async function api(req,res) {
   return end({});
 }
 class CDP {
-  constructor(url){this.ws=new WebSocket(url);this.id=0;this.pending=new Map();this.ready=new Promise((ok,fail)=>{this.ws.onopen=ok;this.ws.onerror=()=>fail(new Error('CDP connection failed'));});this.ws.onmessage=event=>{const message=JSON.parse(event.data);const pending=this.pending.get(message.id);if(pending){this.pending.delete(message.id);message.error?pending.reject(new Error(JSON.stringify(message.error))):pending.resolve(message.result);}};}
+  constructor(url){this.ws=new WebSocket(url);this.id=0;this.pending=new Map();this.ready=new Promise((ok,fail)=>{this.ws.onopen=ok;this.ws.onerror=()=>fail(new Error('CDP connection failed'));});this.ws.onmessage=event=>{const message=JSON.parse(event.data);if(['Runtime.exceptionThrown','Network.loadingFailed'].includes(message.method))browserEvents.push(message);const pending=this.pending.get(message.id);if(pending){this.pending.delete(message.id);message.error?pending.reject(new Error(JSON.stringify(message.error))):pending.resolve(message.result);}};}
   async send(method,params={},sessionId){await this.ready;const id=++this.id;const result=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`CDP timeout: ${method}`));},10000);this.pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}});});this.ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));return result;}
 }
 async function main(){
@@ -105,10 +105,10 @@ async function main(){
     const [port,path]=readFileSync(join(profile,'DevToolsActivePort'),'utf8').split('\n');cdp=new CDP(`ws://127.0.0.1:${port}${path.trim()}`);
     const browser=await cdp.send('Browser.getVersion');
     async function evaluate(page,expression){const result=await cdp.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},page.sessionId);if(result.exceptionDetails)throw new Error(result.exceptionDetails.exception?.description||result.exceptionDetails.text);return result.result.value;}
-    async function wait(page,expression){const until=Date.now()+5000;while(Date.now()<until){if(await evaluate(page,expression))return;await sleep(40);}const state=await evaluate(page,'({url:location.href,title:document.title,text:document.body?.textContent?.slice(0,1200)})');throw new Error(`UI wait timed out: ${expression}; ${JSON.stringify(state)}`);}
+    async function wait(page,expression){const until=Date.now()+5000;while(Date.now()<until){if(await evaluate(page,`!!document.body && (${expression})`))return;await sleep(40);}const state=await evaluate(page,'({url:location.href,title:document.title,readyState:document.readyState,visibility:document.visibilityState,text:document.body?.textContent?.slice(0,1200)})');throw new Error(`UI wait timed out: ${expression}; ${JSON.stringify(state)}`);}
     async function open(route,locale='en',width=1440,height=900,theme='light'){
       const {targetId}=await cdp.send('Target.createTarget',{url:'about:blank'});const {sessionId}=await cdp.send('Target.attachToTarget',{targetId,flatten:true});const page={targetId,sessionId};
-      await cdp.send('Page.enable',{},sessionId);await cdp.send('Runtime.enable',{},sessionId);await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false},sessionId);
+      await cdp.send('Page.enable',{},sessionId);await cdp.send('Runtime.enable',{},sessionId);await cdp.send('Network.enable',{},sessionId);await cdp.send('Page.bringToFront',{},sessionId);await wait(page,"location.href==='about:blank' && document.readyState==='complete'");await cdp.send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false},sessionId);
       await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:`localStorage.setItem('happyranch.ui.locale',${quote(locale)});localStorage.setItem('happyranch.theme',${quote(theme)});`},sessionId);
       await cdp.send('Page.navigate',{url:server.url+route},sessionId);return page;
     }
@@ -118,7 +118,7 @@ async function main(){
     const button=label=>`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${quote(label)})`;
     async function enter(page,source){await cdp.send('Page.bringToFront',{},page.sessionId);await evaluate(page,`(()=>{const button=${source};if(!button)throw new Error('button missing');button.scrollIntoView({block:'center'});button.focus();return true;})()`);await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'},page.sessionId);await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13},page.sessionId);}
     async function switchLocale(page,locale){
-      const {targetId}=await cdp.send('Target.createTarget',{url:server.url+'/pause-locale-switch.html'});const {sessionId}=await cdp.send('Target.attachToTarget',{targetId,flatten:true});await cdp.send('Runtime.enable',{},sessionId);await sleep(60);
+      const {targetId}=await cdp.send('Target.createTarget',{url:server.url+'/pause-locale-switch.html'});const {sessionId}=await cdp.send('Target.attachToTarget',{targetId,flatten:true});await cdp.send('Runtime.enable',{},sessionId);await wait({sessionId},`location.href===${quote(server.url+'/pause-locale-switch.html')} && document.readyState==='complete'`);
       await evaluate({sessionId},`localStorage.setItem('happyranch.ui.locale',${quote(locale)})`);await cdp.send('Target.closeTarget',{targetId});await cdp.send('Page.bringToFront',{},page.sessionId);await wait(page,`document.documentElement.lang===${quote(locale)}`);await sleep(100);
     }
     for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark']){
@@ -181,9 +181,9 @@ async function main(){
       scenario='populated';const child=await open('/orgs/pause-org/tasks/CHILD-1',locale,width,height,theme);await wait(child,"!!document.querySelector('[data-task-pause=\"CHILD-1\"]')");check(`${name} child has inherited root link`,await evaluate(child,"document.querySelector('[data-task-pause] a').getAttribute('href')"),'/orgs/pause-org/tasks/ROOT-PAUSING');check(`${name} child has no controls`,await evaluate(child,"document.querySelector('[data-task-pause] button')===null"));check(`${name} child fits`,await evaluate(child,'document.documentElement.scrollWidth <= innerWidth + 1'));await shot(child,`${name}-child`,{locale,width,height,theme,state:'child inherited'});await close(child);
     }
     const assets=readdirSync(join(dist,'assets')).filter(file=>/\.(js|css)$/.test(file)).map(file=>({file,sha256:digest(readFileSync(join(dist,'assets',file)))}));
-    const receipt={boundary:'UI/transport only; synthetic HTTP, not backend enforcement/E2E',head,generated_at:new Date().toISOString(),node:{path:process.execPath,version:process.version},chrome:{path:chromeBin,...browser},dist:{path:dist,index_sha256:digest(readFileSync(join(dist,'index.html'))),assets},checks,screenshots,ledger,failed:checks.filter(c=>!c.pass).length};writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
+    const receipt={boundary:'UI/transport only; synthetic HTTP, not backend enforcement/E2E',head,generated_at:new Date().toISOString(),node:{path:process.execPath,version:process.version},chrome:{path:chromeBin,...browser},dist:{path:dist,index_sha256:digest(readFileSync(join(dist,'index.html'))),assets},checks,screenshots,ledger,browserEvents,failed:checks.filter(c=>!c.pass).length};writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
     console.log(`${checks.length} browser assertions; ${screenshots.length} screenshots; ${receipt.failed} failures; UI/transport ONLY`);process.exitCode=receipt.failed?1:0;
-  }catch(error){writeFileSync(join(out,'failure.json'),JSON.stringify({head,boundary:'UI/transport only',error:error.stack,checks,screenshots,ledger},null,2)+'\n');throw error;}
+  }catch(error){writeFileSync(join(out,'failure.json'),JSON.stringify({head,boundary:'UI/transport only',error:error.stack,checks,screenshots,ledger,browserEvents},null,2)+'\n');throw error;}
   finally{for(const response of hung)response.destroy();cdp?.ws.close();if(chrome.exitCode===null&&chrome.signalCode===null)chrome.kill('SIGTERM');await new Promise(resolve=>{if(chrome.exitCode!==null||chrome.signalCode!==null)resolve();else{chrome.once('exit',resolve);setTimeout(()=>{chrome.kill('SIGKILL');resolve();},1000).unref();}});writeFileSync(join(out,'chrome-stderr.log'),Buffer.concat(chromeErrors));server.server.closeAllConnections?.();await server.close();try{rmSync(profile,{recursive:true,force:true,maxRetries:3,retryDelay:100});}catch(error){writeFileSync(join(out,'cleanup-failure.json'),JSON.stringify({profile,error:String(error)})+'\n');process.exitCode=1;}rmSync(blank);}
 }
 main().catch(error=>{console.error(error.stack);process.exitCode=1;});
