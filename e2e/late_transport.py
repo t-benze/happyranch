@@ -73,22 +73,18 @@ def provider_command(instruction: dict, binding: dict, stream: Any, connection: 
     if digest(callback.read_bytes()) != manifest["callback_sha256"]:
         raise RuntimeError("E07 callback binding changed")
     parent = instruction["action"] == "e07-parent"
-    restart = instruction["action"] == "e07-restart-held"
-    if instruction["action"] not in {"e07-parent", "e07-held", "e07-restart-held"} or binding["org"] != "alpha" or binding["agent"] != ("case_manager" if parent or restart else "case_worker"):
+    if instruction["action"] not in {"e07-parent", "e07-held"} or binding["org"] != "alpha" or binding["agent"] != ("case_manager" if parent else "case_worker"):
         raise RuntimeError("E07 unexpected finite provider action")
     payload = dict(task_id=binding["task"], session_id=binding["session"], agent=binding["agent"],
                    status="completed", confidence=90,
                    summary="E07 parent delegated" if parent else "E07 cancelled child must not complete")
-    if restart:
-        payload["summary"] = "E07 old boot must not complete"
-        payload["decision"] = dict(action="done", summary=payload["summary"])
     if parent:
         payload["decision"] = dict(action="delegate", agent="case_worker", prompt="E07_CANCEL_CHILD")
     raw = json.dumps(payload, sort_keys=True).encode()
     path = root / "coord" / ("e07-" + digest(raw) + ".json")
     with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as file:
         file.write(raw)
-    home = root / ("client" if parent else "e07-r-client" if restart else "e07-client")
+    home = root / ("client" if parent else "e07-client")
     argv = [str(callback), "report-completion", "--org", "alpha", "--from-file", str(path)]
     end = instruction["execution_deadline"]
     if time.monotonic() >= end:

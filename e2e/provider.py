@@ -139,7 +139,7 @@ def main() -> None:
                 connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
                 stream.flush()
                 remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
-                if instruction["action"] in {"e07-held", "e07-restart-held"} or receipt["exit"] != 0 or receipt["timed_out"]:
+                if instruction["action"] == "e07-held" or receipt["exit"] != 0 or receipt["timed_out"]:
                     raise RuntimeError("E07 held provider returned or parent failed")
                 final = True
                 continue

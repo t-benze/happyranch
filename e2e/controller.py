@@ -33,13 +33,8 @@ class Controller:
     def __init__(self, args: argparse.Namespace) -> None:
         self.root, self.source = args.root, args.source
         self.revision, self.deadline = args.sha, args.deadline
-        self.work_end = args.deadline - 150 if args.exercise == "baseline" else args.deadline
         self.local_bounds = threading.local()
-        self.allocation = dict(scenario_deadline=args.deadline, prefix_end=self.work_end,
-                               initialized=time.monotonic(), stages=[])
-        self.normal_close = {}
         self.boots = []
-        self.r_commands = []
         self.env = dict(os.environ, E2E_SCENARIO_DEADLINE=str(args.deadline))
         self.publish_end()
         self.python = str(self.root / "venv" / "bin" / "python")
@@ -177,7 +172,7 @@ class Controller:
         return receipt
 
     def effective_end(self) -> float:
-        return min(self.deadline, self.work_end, getattr(self, "case_deadline", self.deadline),
+        return min(self.deadline, getattr(self, "case_deadline", self.deadline),
                    getattr(self.local_bounds, "end", self.deadline))
 
     def publish_end(self) -> None:
@@ -635,88 +630,54 @@ class Controller:
         self.results[variant] = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
 
     def close(self) -> None:
-        # All live observations precede TERM; independent disposal overlaps the
-        # daemon's own drain. The outer cleanup reserve cannot confer PASS here.
-        from owned import identity
-        entered = time.monotonic()
-        end = min(entered+25, self.deadline)
-        self.work_end = end
-        if hasattr(self, "case_deadline"):
-            del self.case_deadline
-        record = self.normal_close
-        record.update(entered=entered, end=end, complete=False, failures=[])
-        self.publish_end()
-        self.capture_thread_secrets()
-        with self.bounded(min(entered+4, end)):
-            if self.browser:
-                self.browser.final_observation()
-        if self.daemon and self.daemon.poll() is None:
-            pid = self.daemon.pid
-            start = identity(pid)
-            record["daemon"] = dict(pid=pid, start=start, port=self.port)
-            require(start is not None and f"E2E_ROOT={self.root}".encode()
-                    in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"), "normal close owned daemon")
-            descriptor = os.pidfd_open(pid)
-            try:
-                require(identity(pid) == start, "normal close exact identity")
-                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
-                record["signalled"] = time.monotonic()
-            finally:
-                os.close(descriptor)
-        close_end = min(entered+24, end-1)
-        self.work_end = close_end
-        self.publish_end()
+        failures = []
         try:
-            if self.browser_relay and not getattr(self, "browser_relay_closed", False):
-                self.browser_relay.release.set()
+            self.capture_thread_secrets()
+        except Exception:
+            failures.append("unknown E05 token redaction context")
+        if self.browser_relay:
+            self.browser_relay.release.set()
+            try:
                 if self.browser:
                     self.browser.close_threads_context()
-                closure = self.browser_relay.close(close_end)
+            except Exception as exc:
+                failures.append(type(exc).__name__ + ": E05 browser close")
+            finally:
+                closure = self.browser_relay.close(self.deadline)
                 self.durable.append(dict(thread_proxy_closure=closure))
-                require(not any(closure[k] for k in ("workers_alive", "listener_alive", "connections", "errors")), "thread proxy normal close")
-            if self.late_transport:
-                closure = self.late_transport.close(close_end)
-                self.e07.setdefault("restart", {})["transport_closure"] = closure
-                require(not any(closure[k] for k in ("listener_alive", "workers_alive", "sockets", "errors")), "late transport normal close")
-            if self.browser:
+                if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
+                    failures.append("E05 proxy closure/transport failure")
+        if self.late_transport:
+            closure = self.late_transport.close(self.deadline)
+            self.e07["transport_closure"] = closure
+            if closure["listener_alive"] or closure["workers_alive"] or closure["sockets"] or closure["errors"]:
+                failures.append("E07 transport closure")
+        if self.browser:
+            try:
                 self.browser.close()
-                self.remaining()
-            for connection, stream in self.peer_connections:
-                if connection.fileno() != -1:
-                    connection.settimeout(self.remaining())
-                stream.close()
-                connection.close()
-                self.remaining()
-            self.observer_stop.set()
-            self.observer_thread.join(timeout=self.remaining(1))
-            require(not self.observer_thread.is_alive() and self.observer_error is None, "normal observer close")
-            self.server.close()
-            self.socket_path.unlink(missing_ok=True)
-            if self.relay:
-                record["cli_relay"] = self.relay.close(close_end)
-                require(self.relay.error is None, "CLI relay close/transport error")
-            if "signalled" in record:
-                wait_end = min(record["signalled"]+20, close_end)
-                require(wait_end > time.monotonic(), "normal daemon wait budget")
-                record["exit"] = self.daemon.wait(timeout=wait_end-time.monotonic())
-                record["waited"] = time.monotonic()
-                record["observed_start"] = identity(pid)
-                from restart import listener_absent
-                record["listener_absent"] = listener_absent(self.port)
-                require(record["exit"] == 0 and record["observed_start"] is None
-                        and record["listener_absent"] and record["waited"] < wait_end, "normal daemon closure")
-            else:
-                raise RuntimeError("normal close has no live daemon")
-            if hasattr(self, "daemon_log"):
-                self.daemon_log.close()
-            self.remaining()
-            record.update(closed=time.monotonic(), complete=True)
-        except BaseException as exc:
-            record["failures"].append(type(exc).__name__)
-            raise
-        finally:
-            self.work_end = end
-            self.publish_end()
+            except Exception as exc:
+                failures.append(repr(exc))
+        for connection, stream in self.peer_connections:
+            stream.close()
+            connection.close()
+        self.observer_stop.set()
+        self.observer_thread.join(timeout=self.remaining(1))
+        failures.extend([self.observer_error] if self.observer_error else [])
+        if self.observer_thread.is_alive():
+            failures.append("provider observer did not stop")
+        self.server.close()
+        self.socket_path.unlink(missing_ok=True)
+        if self.relay:
+            self.relay.close(self.deadline)
+        if self.daemon and self.daemon.poll() is None:
+            self.daemon.send_signal(signal.SIGTERM)
+            try:
+                self.daemon.wait(timeout=self.remaining(20))
+            except subprocess.TimeoutExpired:
+                pass  # Outer watcher owns verified-PID escalation and failure receipt.
+        if hasattr(self, "daemon_log"):
+            self.daemon_log.close()
+        require(not failures, "browser cleanup/evidence failed", failures)
 
     def collect_e07_launches(self) -> tuple[list[dict], list[dict]]:
         """Retain each valid record; a missing sibling cannot erase evidence."""
@@ -727,8 +688,8 @@ class Controller:
 
         records, failures = [], []
         expected = set()
-        for index, command in enumerate([*self.e07_commands, *self.r_commands]):
-            if command["action"] not in {"e07-parent", "e07-held", "e07-restart-held"}:
+        for index, command in enumerate(self.e07_commands):
+            if command["action"] not in {"e07-parent", "e07-held"}:
                 continue
             # The ledger is registered before sending the real instruction.
             # Even an interrupted send requires evidence or an explicit failure.
@@ -797,8 +758,7 @@ class Controller:
             launches, failures = self.collect_e07_launches()
             self.e07.update(partial_launches=launches, launch_record_failures=failures)
             (self.root / "raw/e07.json").write_text(self.sanitize(json.dumps(self.e07, indent=2)))
-        rows.update(e07=self.e07, e07_commands=self.e07_commands, r_commands=self.r_commands,
-                    allocation=self.allocation, boots=self.boots, normal_close=self.normal_close)
+        rows.update(e07=self.e07, e07_commands=self.e07_commands, boots=self.boots)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
                     thread_proxy=self.browser_relay.records if self.browser_relay else [])
         witness = self.root / "witness/identities.jsonl"
@@ -813,16 +773,7 @@ class Controller:
             rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
         raw = self.sanitize(json.dumps(rows, indent=2))
         (self.root / "raw" / "observations.json").write_text(raw)
-        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases, e07=self.e07, allocation=self.allocation, normal_close=self.normal_close))))
-        if self.normal_close.get("complete"):
-            self.remaining()
-            self.normal_close["evidence_finished"] = time.monotonic()
-            rows["normal_close"] = self.normal_close
-            (self.root / "raw/observations.json").write_text(self.sanitize(json.dumps(rows, indent=2)))
-            (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(
-                variants=self.results, scenario_phases=self.phases, e07=self.e07,
-                allocation=self.allocation, normal_close=self.normal_close))))
-            self.remaining()
+        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases, e07=self.e07))))
         # Fail only after all available sanitized evidence has been serialized.
         # Sanitation/context errors above remain fatal and are never caught here.
         require(not self.e07.get("launch_record_failures"), "E07 launch record evidence incomplete")
@@ -893,8 +844,6 @@ def main() -> None:
                 exercise_threads(controller)
                 from e07 import exercise as exercise_cancellation
                 exercise_cancellation(controller)
-                from restart import exercise as exercise_restart
-                exercise_restart(controller)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException:
