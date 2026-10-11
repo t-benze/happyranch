@@ -4,12 +4,13 @@ Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
 The former default `not integration` selection was deleted, including its
 unmarked component, contract and system acceptance cases. Git history preserves
 that source; do not restore it as a hidden unit or renamed E2E suite.
-`scripts/local_ci.sh python` refuses with exit 2. `all` runs the retained Web
-checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
+`scripts/local_ci.sh python` refuses with exit 2. `all` runs source boundary lint
+plus retained Web checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
 There is no default Python selection: pytest requires explicit existing canonical
 platform file selectors, or the isolated parent with `-m integration`.
 
-Required active PR **and exact-merge main** checks are `Web (Node 24)`,
+Required active PR **and exact-merge main** checks are
+`Source Boundary Lint`, `Web (Node 24)`,
 `Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
 and applicable Docs/other retained path-specific checks. The Linux job includes
 its existing real Codex callback smoke. Unit checks are neither required nor
@@ -23,23 +24,25 @@ The existing manual `local-ci-all` runner preserves its disposable environment,
 source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
 unit entry, G named-case controls/repetitions and lab unit preflight are removed.
 The existing `all_only` boolean is compatibility-only; every manual input runs
-retained Web checks, with separate integration skipped. Existing 150-minute manual
-and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+source boundary lint and retained Web checks, with separate integration skipped.
+Existing 150-minute manual and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
 See [the reset coverage gap record](python-test-reset.md) for uncovered
 obligations; retained selectors and evidence limits follow below.
 
 ## Commands and retained lanes
 
 ```bash
-scripts/local_ci.sh all          # retained Web checks; Node 24 required
-scripts/local_ci.sh web          # same Web checks without all's advisory
+scripts/local_ci.sh all          # boundary lint + retained Web checks; Node 24 required
+scripts/local_ci.sh web          # Web checks only
+scripts/local_ci.sh boundary-lint # source-only lint + synthetic validation
 scripts/local_ci.sh python       # RETIRED, exit 2; no Python execution
 scripts/local_ci.sh help
 # Only in an authorized disposable integration venue:
 scripts/local_ci.sh integration
 ```
 
-`all`/`web` execute `npm ci`, the design-system colour gate, lint, typecheck,
+`all` first runs `boundary-lint`; `all`/`web` then execute `npm ci`,
+the design-system colour gate, lint, typecheck,
 SPA build, Storybook build and non-watch `vitest run`. They do not establish
 Python or native coverage. Node must be exactly major 24 from `.nvmrc`;
 missing/wrong Node refuses before npm work. `npm ci` preserves lockfile parity.
@@ -66,6 +69,44 @@ No new contract-unit tier exists. Do not run integration on the live daemon host
 even through a job. The Linux canonical callback remains the explicit
 `tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback`
 selection through `tests/helpers/integration_parent.py`.
+
+## Source Boundary Lint
+
+```bash
+python scripts/check_source_boundaries.py
+python scripts/check_source_boundaries.py --source-root <isolated-root>
+python scripts/validate_source_boundaries.py
+scripts/local_ci.sh boundary-lint [--source-root <isolated-root>]
+```
+
+The local target runs the actual baseline CLI followed by bounded standalone
+synthetic validation; `all` runs the same lane before Web and propagates its
+nonzero exit. Local lint requires Python 3.12+ on PATH and only stdlib; it needs
+no dependency installation. The unconditional `Source Boundary Lint` hosted job
+in `ci.yml` runs both scripts via `uv run --no-project --python 3.14 python ...`
+on every PR and push to main, without project dependency sync. Existing Web
+(Node 24), Linux/macOS canonical selections and Linux actual Codex callback
+remain separate required checks.
+
+Only recursive `*.py` in `runtime/infrastructure` and `runtime/orchestrator`
+are parsed. Explicit daemon import/from forms are forbidden at module execution
+time; class bodies and ordinary control flow are included. Syntactic top-level
+TYPE_CHECKING/typing aliases exempt their true branches, with else inspected;
+function/async-function/lambda nodes are skipped. No allowlist or opt-out exists.
+No relative/dynamic import resolution, alias dataflow, callable decorator/default/
+annotation inspection or runtime isolation proof is claimed. No business imports,
+daemon/database construction or provider contact occurs. Exit 0 means a clean
+source scan, 1 means forbidden imports (relative file:line/target and boundary
+guidance), and 2 means invalid/missing/empty roots or filesystem/decode/parse
+failure. Directory symlinks refuse incomplete coverage. Synthetic sources contain
+fail-on-execution sentinels and exercise the real CLI/local gate; this is lint-tool
+validation outside `tests/`, not a retired suite or product E2E evidence.
+
+Docs Manual build is path-gated only by `docs/manual/**` or its workflow;
+hostile tenant-isolation is path-gated only by `labs/tenant_isolation/**`,
+`tests/contract/managed_remote_access/**` or its workflow. Evaluate the final
+diff for applicability; omitted checks are never PASS. The mac app workflow is
+manual/tag, not an ordinary PR/main requirement.
 
 ## Integration environment and retained observations
 
@@ -203,9 +244,9 @@ Local CI gives pre-push feedback; hosted checks are authoritative. Every push
 renews independent reviewer/QA evidence at its exact head.
 
 A pushed-PR completion's success-only `local_ci` receipt remains
-`{"command":"scripts/local_ci.sh all","exit_code":0}`. It establishes retained
-Web checks only. Failed, skipped or other-target outcomes belong in ordinary
-verification evidence. Record actual runtime path/version, source SHA, timing,
+`{"command":"scripts/local_ci.sh all","exit_code":0}`. It establishes source
+boundary lint and retained Web checks, not Python behavioral coverage. Failed,
+skipped or other-target outcomes belong in ordinary verification evidence. Record actual runtime path/version, source SHA, timing,
 command, exit and complete logs. Durable jobs are required for long checks and
 pushes with long hooks; authenticate the terminal receipt before publication.
 Manual hosted all still uses Python 3.14/Node 24 to run its stdlib receipt driver;

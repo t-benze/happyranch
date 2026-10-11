@@ -96,10 +96,13 @@ Tracked source is split by product surface:
 |   |-- thread_forward.py
 |   `-- client/client.py
 |-- runtime/                     # Python runtime package shipped by pyproject
+|   |-- config.py                # settings and runtime configuration
+|   |-- models.py                # shared request and runtime models
+|   |-- runtime.py               # runtime container paths and org discovery
 |   |-- adapters/                # Claude, Codex, opencode, and Pi adapters
 |   |-- daemon/                  # FastAPI app, routes, queue, sessions, runners, compatibility aliases
 |   |-- infrastructure/          # SQLite, audit, KB, learnings, threads, artifacts, mention routing
-|   |   `-- db/                  # Database facade mixins: task core, dreams (including the unchanged candidate updater; facade clock remains late-bound), knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads (including the unchanged uncommitted pin helper; facade clock remains late-bound), reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
+|   |   `-- db/                  # Database facade mixins: task core, dreams (DreamsMixin owns update_dream_kb_candidate; _late_database_now resolves the facade-owned clock), knowledge, jobs, attachments, audit, sessions, workspace cleanup, threads (including the unchanged uncommitted pin helper; facade clock remains late-bound), reply delivery/exchange, schema bootstrap/migrations, authority v1 claims/fences, authority v2 attempts/candidates/finalization, authority v2 continuation/settlement/publication/generation/spend/decision dispatch/zombie consumption, authority policy release/activation/selector/session binding
 |   |-- orchestrator/            # task state machine, executors, prompts, teams, workspaces, task-scratch reports
 |   |   |-- task_prompt_headers.py # read-only roster, revisit/resolution, prior-step/chain and fanout headers; same-object exports through run_step.py
 |   |   |-- task_terminal_readers.py # four unchanged verdict/carrier/fingerprint/terminal-report readers; same-object run_step exports; consumers, sentinel, state and patch lookup remain in the facade
@@ -202,6 +205,33 @@ and `admit_task_completion_callback`.
 The exact S8a/S8b/S8c/S8d/S8e/S8f/S8g method inventories and remaining collision holds are
 recorded in
 `docs/superpowers/plans/2026-10-01-backend-decomposition.md`.
+
+## Source dependency boundary
+
+`python scripts/check_source_boundaries.py` recursively parses only `*.py` under
+`runtime/infrastructure` and `runtime/orchestrator`. It rejects explicit
+`import runtime.daemon[.*]`, `from runtime.daemon import names/star`, and
+`from runtime.daemon.* import names` at module execution time, including class
+bodies and ordinary control flow. There are no allowlist edges or opt-outs.
+Top-level `typing` and `TYPE_CHECKING` aliases are recognized syntactically:
+true TYPE_CHECKING branches are ignored, their `else` branches are inspected.
+Function, async-function and lambda nodes are skipped, matching the historical
+rule. This does not resolve relative/dynamic imports or alias dataflow, inspect
+callable decorators/defaults/annotations, or prove dynamic dependency isolation.
+
+The stdlib-only CLI imports no business modules. `--source-root <root>` selects
+an isolated repository-shaped root for validation. Both scan directories must
+exist and contain Python source; filesystem/decode/parse failures refuse with
+exit 2, forbidden imports return 1 with relative file:line/target and guidance,
+and a clean scan returns 0. Directory symlinks refuse rather than silently omit
+coverage. `python scripts/validate_source_boundaries.py` is bounded standalone
+synthetic CLI validation outside `tests/`, with fail-on-execution source sentinels;
+it is neither product testing nor E2E coverage.
+
+`scripts/local_ci.sh boundary-lint` runs the baseline and synthetic validation;
+`all` includes that lane before Web. Unconditional `Source Boundary Lint` in
+`.github/workflows/ci.yml` runs both commands on every PR and push to main using
+Python 3.14, without installing project dependencies. See [Local CI](../local-ci.md).
 
 ## Test placement
 
