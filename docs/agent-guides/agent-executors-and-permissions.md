@@ -286,21 +286,19 @@ double-read, then independently confirms merged/default-branch state and
 candidate-to-PR-head containment; another task's unmerged PR never counts. It
 never uses `--force` and never deletes a branch.
 
-Independently, the runtime has a forward-only terminal hook for exact
-`completed`, `failed`, and `cancelled` transitions. It resolves only the
-registered assigned agent's canonical `repos/happyranch` task worktree and
-fails closed across ownership, realpath/device, Git registration/branch,
-cleanliness, remote durability, PR, liveness, recorded-deferral, and deadline
-gates. Each shipping hook makes one attempt after terminal durability and
-applicable teardown; errors and uncertainty preserve. Its process gate loads
-the bundled `workspace-cleanup` scanner by explicit path and applies the same
-exact name-plus-expected-cgroup helper exemptions: root-owned processes are out
-of scope, any other unreadable same-user process is uncertain, and a positive
-reference preserves. The call runs in the existing task worker thread under
-the unchanged five-second total hook deadline. It does not scan other
-worktrees or schedule cleanup, and it deliberately excludes `superseded`,
-`blocked_on_job`, accepted/restart completion-recovery settlement, and
-historical residue.
+Independently, newly committed structural roots in all four terminal states
+(`completed`, `failed`, `cancelled`, `superseded`) receive one bounded
+post-teardown parent-tree reconciliation, including NULL-parent workflow tasks.
+An old child deferral is advisory only in that root pass. The child hook retains
+its one-task/five-second deferral policy. Shared exact-HEAD Git preservation,
+recursive snapshots/protected identities and the unchanged packaged same-user
+scanner retain dirty, active, successor-used, protected and unknown paths.
+Only the original winning owner admits a committed audit start; repeated or
+interrupted notices never retry. No agent permission or execution enforcement
+changes. Root batches share10s work/1s report/1s owned-group reap and explicit
+node/event/candidate/output caps with truthful frontier/remainder. Async owners
+await off-loop outside locks; no historical scan or schedule follows.
+See [the complete owner contract](orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see

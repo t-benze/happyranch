@@ -269,35 +269,88 @@ preemption.
 
 ## Forward-only terminal task worktrees
 
-The runtime makes one bounded best-effort reclamation attempt after an ordinary
-task durably reaches exactly `completed`, `failed`, or `cancelled`, and only
-after the applicable process/session/control/job teardown. Shipping owners are
-ordinary `_complete`/`_fail`, `_run_agent`'s pre-launch workspace-integrity
-failure, daemon-startup liveness failure, successful legacy or V2 zombie
-cancellation, the task-cancel route, and portability cancellation. Accepted or
-restart completion-recovery settlement, `superseded`, `blocked_on_job`, legacy
-normalization, and every unlisted terminal writer do not call this helper.
+The existing child hook remains a one-task, five-second attempt and honors maker
+`worktree-deferred:` evidence. A newly committed structural root (`parent_task_id
+IS NULL`, including workflow tasks) reaching `completed`, `failed`, `cancelled`
+or `superseded` instead reconciles its parent ancestry tree once. At this root
+pass an old child deferral is advisory; the result/history/risk bytes remain
+unchanged. Revisit and supersession edges protect paths and never enroll other
+families as candidates. Only registered assigned-agent canonical
+`repos/happyranch/.claude/worktrees/<task-id>` worktrees are considered.
 
-The only candidate is the registered assigned agent's literal
-`repos/happyranch/.claude/worktrees/<task-id>` under the canonical non-bare
-primary. Registered-agent ownership, unchanged non-symlink same-device paths,
-exact worktree registration and `task/<task-id>` branch, clean status, a HEAD
-contained by a durable remote ref, no open or closed-unmerged pull request, no
-live session/control/PID or shared-scanner process reference, no latest applicable
-`worktree-deferred:` risk, and the shared deadline must all be proven. Any
-error, timeout, malformed response, missing or ambiguous identity, dirty or
-unpublished state, or live reference yields a typed logged preservation result.
-The process gate loads the bundled `workspace-cleanup` `check_path_use.py` by
-its explicit file path and uses its exact seq171/seq185 same-user rule as the
-single source: root-owned processes are out of scope; only exact
-name-plus-expected-cgroup helpers are exempt; another unreadable same-user
-process is uncertain; and a positive cwd/root/exe/maps/fd reference is live.
-The synchronous hook runs inside the queue's existing `run_in_executor` worker
-thread and retains the one five-second total deadline.
-Success runs literal non-force `git worktree remove <path>` and never deletes a
-branch. The helper changes no task, result, parent, or audit state; signals no
-process; enqueues nothing; raises nothing into terminal semantics; and schedules
-no retry, scan, or historical reclamation.
+The original winning owner captures the transition under the existing DB lock.
+Bounded raw task-audit lookup and start insertion share that lock; the committed
+start INTEGER id plus root id/created_at identify the event. Mutable updated_at
+or completed_at never create a new event. Original owners hand their captured
+root to the shared batch without a redundant notice lookup or fresh cleanup
+budget; separate read-only repeats still observe prior identity and perform
+zero actions. An unavailable before/after projection or audit anchor names the
+unexamined writer/root and bounded audit frontier, closing action authority for
+the entire owner batch. A start without finish stays interrupted/unknown, with
+no retry. Failed or uncertain admission starts no removal. A terminal commit
+without a start remains missing, never rediscovered by historical startup scan.
+
+Shipping tails include ordinary completion/failure/manager supersession,
+prelaunch integrity refusal, newly committed startup/recovery/orphan consumption,
+legacy/V2 reaper cancellation, task cancel/resolve/revisit, thread dispatch,
+portability, and workflow draft/review terminal/cancel. Root work follows history
+and teardown outside DB/publisher/workflow locks. The ordinary run-step owner
+carries its capture past journal close; accepted recovery carries it to its
+current-owner post-drain tail, including zero jobs. The enclosing run-step
+worker also carries workflow events past the host callback's tracker clear and
+the dispatcher's invocation close/live-claim release. Async workflow cancel
+callers defer committed events while awaiting the synchronous owner off-loop;
+their post-owner tail awaits the finite batch outside locks, retaining started
+work through cancellation. Portability keeps its eligible legacy child hook
+after the existing audit/current-owner checks, outside the DB lock and off-loop;
+result consumption's disabled child hook remains disabled. Ordinary nonroot task
+cancel also awaits its eligible child hook through the cancellation-safe helper:
+a started finite cleanup settles before route cancellation propagates. The
+periodic reaper keeps lifecycle and workflow queue notification on its owning event loop and
+offloads only the child hooks and captured root batch. Nonterminal or lost-CAS
+paths create no event. Schema normalization and already-terminal history remain
+excluded.
+
+Dirty, local-only, open/closed-unmerged PR, active session/control/PID/job,
+unsettled host/recovery, held, successor-use-unresolved, foreign, protected or
+unknown evidence retains. Terminality and a cleared tracker are not quiescence.
+The release-bundled `workspace-cleanup/scripts/worktree_safety.py` is the shared
+Git preservation, recursive snapshot and protected-identity owner for the root
+pass and manual runner. Fresh complete owning PR pages are repeated. A live
+owning branch must contain exact HEAD; contradictory/failed evidence cannot
+fall back to an old default ref or unrelated merged PR. Only proven branch
+absence permits fresh default/squash-aware merged-PR containment routes.
+
+Action admission repeats parent/tree/task/successor/job/native ownership,
+registration/common-dir, clean exact HEAD, fresh GitHub preservation, recursive
+no-follow snapshots and the unchanged packaged same-user scanner. Only exact
+readable name+cgroup exceptions apply; other unknown population retains. No
+force, branch deletion, cache-only action or task-tmp reclamation follows.
+Success requires actual absence, registration removal, preserved branch and
+protected identities. Failure after remove invocation is possibly partial
+`action_anomaly`, never retained; later mutation halts. Missing finish remains
+missing. Task terminal/results/history/reporting survive cleanup failure.
+
+Each owner batch shares 10s work, including 0.5s cumulative DB observations and
+at most 50ms lock admission; 1s cumulative report and 1s cumulative owned-group
+TERM/KILL/reap. Caps are16 events,256 nodes,depth64,page64,16 candidate attempts,
+5s per candidate clipped to remaining work,200000 recursive/pending entries,
+1MiB subprocess output and256KiB aggregate receipts. The ordinary-I/O 12s target
+is conditional: synchronous SQLite/fsync/kernel I/O cannot be interrupted by a
+timer. Overruns are reported truthfully and stop later actions.
+
+Membership/protection closure and receipt capacity precede every action.
+Incomplete closure means zero removal, unknown total and an exact FIFO
+parent/cursor/depth frontier with known lower bound. Complete membership with
+action limits names every remaining candidate. Receipts distinguish no-op,
+removed, retained, action anomaly and unexamined; candidate counts partition
+without treating absence as reclamation. Complete requires empty frontier and
+remainder, closed protection and successful finish publication. No detached
+action, implicit continuation, new schedule or historical sweep is introduced.
+Manual/daily age/ordinal/peer/history/host-job/cache gates retain their separate
+authority. Root release adds no Web/CLI/configuration control. Future source
+applies only after separate deployment; historical backlog needs separate
+explicit authorization. Source lint is not owner-lifecycle behavioral evidence.
 
 ## Org Content APIs
 

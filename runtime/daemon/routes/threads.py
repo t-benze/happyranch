@@ -36,6 +36,10 @@ from runtime.orchestrator._paths import OrgPaths
 from runtime.orchestrator.org_config import OrgConfig, resolve_org_setting_threads
 from runtime.reply_delivery import reply_failure_category
 
+from runtime.orchestrator.run_step import (
+    _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch, _await_root_worktree_batch,
+)
+
 router = APIRouter(dependencies=[require_token()])
 
 # Special routing literal for addressing the founder. NOT a real agent name —
@@ -1586,211 +1590,221 @@ class DispatchBody(BaseModel):
 async def dispatch_from_thread_endpoint(
     slug: str, thread_id: str, body: DispatchBody, org: OrgDep, request: Request,
 ) -> dict:
-    state: DaemonState = request.app.state.daemon
-    t = org.db.get_thread(thread_id)
-    if t is None:
-        raise HTTPException(status_code=404, detail={"code": "not_found"})
-    if t.status is not ThreadStatus.OPEN:
-        raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
-    brief = body.brief.strip()
-    if not brief:
-        raise HTTPException(status_code=422, detail={"code": "empty_brief"})
-    if body.team is not None and not body.team.strip():
-        raise HTTPException(status_code=422, detail={"code": "empty_team"})
-    if body.target_agent is not None and not body.target_agent.strip():
-        raise HTTPException(status_code=422, detail={"code": "empty_target_agent"})
+    root_transitions = _RootWorktreeTransitions()
+    root_tail_failed = False
+    try:
+        state: DaemonState = request.app.state.daemon
+        t = org.db.get_thread(thread_id)
+        if t is None:
+            raise HTTPException(status_code=404, detail={"code": "not_found"})
+        if t.status is not ThreadStatus.OPEN:
+            raise HTTPException(status_code=400, detail={"code": "thread_not_open"})
+        brief = body.brief.strip()
+        if not brief:
+            raise HTTPException(status_code=422, detail={"code": "empty_brief"})
+        if body.team is not None and not body.team.strip():
+            raise HTTPException(status_code=422, detail={"code": "empty_team"})
+        if body.target_agent is not None and not body.target_agent.strip():
+            raise HTTPException(status_code=422, detail={"code": "empty_target_agent"})
 
-    inv = _validate_invocation_token(
-        org, token=body.invocation_token,
-        expected_agent=body.dispatcher, expected_thread_id=thread_id,
-        require_purposes=[
-            ThreadInvocationPurpose.REPLY,
-            ThreadInvocationPurpose.BOOTSTRAP,
-            ThreadInvocationPurpose.TASK_FOLLOWUP,
-        ],
-    )
-    if inv.dispatched_task_id is not None:
-        code = (
-            "task_followup_dispatch_already_used"
-            if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP
-            else "dispatch_already_used"
+        inv = _validate_invocation_token(
+            org, token=body.invocation_token,
+            expected_agent=body.dispatcher, expected_thread_id=thread_id,
+            require_purposes=[
+                ThreadInvocationPurpose.REPLY,
+                ThreadInvocationPurpose.BOOTSTRAP,
+                ThreadInvocationPurpose.TASK_FOLLOWUP,
+            ],
         )
-        raise HTTPException(status_code=409, detail={"code": code})
+        if inv.dispatched_task_id is not None:
+            code = (
+                "task_followup_dispatch_already_used"
+                if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP
+                else "dispatch_already_used"
+            )
+            raise HTTPException(status_code=409, detail={"code": code})
 
-    if not org.db.is_thread_participant(thread_id, body.dispatcher):
-        raise HTTPException(status_code=403, detail={"code": "not_participant"})
-    if org.teams is None:
-        raise HTTPException(status_code=403, detail={"code": "teams_registry_unavailable"})
+        if not org.db.is_thread_participant(thread_id, body.dispatcher):
+            raise HTTPException(status_code=403, detail={"code": "not_participant"})
+        if org.teams is None:
+            raise HTTPException(status_code=403, detail={"code": "teams_registry_unavailable"})
 
-    dispatcher = body.dispatcher
-    async with org.teams_lock:
-        is_manager = org.teams.is_team_manager(dispatcher)
-        dispatcher_team = (
-            org.teams.team_for_manager(dispatcher) if is_manager
-            else org.teams.team_for_agent(dispatcher)
-        )
-        if dispatcher_team is None:
-            raise HTTPException(status_code=403, detail={"code": "dispatcher_team_unknown"})
-        effective_team = body.team if body.team is not None else dispatcher_team
-        if effective_team != dispatcher_team:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "thread_dispatch_team_override_forbidden",
-                        "dispatcher_team": dispatcher_team,
-                        "requested_team": effective_team,
-                        "hint": SELF_DISPATCH_HINT},
-            )
-        effective_target = body.target_agent if body.target_agent is not None else dispatcher
-        if effective_target != dispatcher:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "thread_dispatch_must_be_self",
-                        "dispatcher": dispatcher,
-                        "requested_target": effective_target,
-                        "hint": SELF_DISPATCH_HINT},
-            )
-        if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP and not is_manager:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "task_followup_dispatch_manager_required"},
-            )
-
-    org_paths = OrgPaths(root=org.root)
-    agent_def = prompt_loader.load_agent(org_paths, effective_target)
-    workspace_exists = (org.root / "workspaces" / effective_target).exists()
-    if agent_def is None or not workspace_exists:
-        raise HTTPException(status_code=404, detail={"code": "unknown_agent", "agent": effective_target})
-
-    # THR-018 §3a forcing function: an optional `resolves` names a blocked
-    # predecessor that this thread-dispatched continuation supersedes. The
-    # maker-checker boundary: ONLY a founder/manager-authorized dispatch may
-    # auto-close a predecessor — a worker self-dispatch must NEVER. (The founder
-    # closes via `revisit`; managers close in-lineage via this thread path.)
-    # Validated before the task is created so an ineligible/unauthorized supersede
-    # rejects cleanly without orphaning a new root.
-    resolves = body.resolves.strip() if body.resolves else None
-    predecessor = None
-    pred_block_kind = None
-    if resolves:
-        if not is_manager:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": "thread_supersede_not_authorized",
-                        "dispatcher": dispatcher, "resolves": resolves},
-            )
-        from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
-        predecessor = org.db.get_task(resolves)
-        if predecessor is None:
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "predecessor_not_found", "resolves": resolves},
-            )
-        from runtime.orchestrator.task_pause import assert_origin_unheld
-        assert_origin_unheld(org, resolves)
-        pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
-        if pred_block_kind is None:
-            raise HTTPException(
-                status_code=409,
-                detail={"code": "predecessor_not_supersedable",
-                        "resolves": resolves,
-                        "predecessor_status": predecessor.status.value},
-            )
-
-    if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP:
-        if resolves:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "task_followup_dispatch_resolves_forbidden"},
-            )
+        dispatcher = body.dispatcher
         async with org.teams_lock:
-            if not org.teams.is_team_manager(dispatcher):
+            is_manager = org.teams.is_team_manager(dispatcher)
+            dispatcher_team = (
+                org.teams.team_for_manager(dispatcher) if is_manager
+                else org.teams.team_for_agent(dispatcher)
+            )
+            if dispatcher_team is None:
+                raise HTTPException(status_code=403, detail={"code": "dispatcher_team_unknown"})
+            effective_team = body.team if body.team is not None else dispatcher_team
+            if effective_team != dispatcher_team:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "thread_dispatch_team_override_forbidden",
+                            "dispatcher_team": dispatcher_team,
+                            "requested_team": effective_team,
+                            "hint": SELF_DISPATCH_HINT},
+                )
+            effective_target = body.target_agent if body.target_agent is not None else dispatcher
+            if effective_target != dispatcher:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "thread_dispatch_must_be_self",
+                            "dispatcher": dispatcher,
+                            "requested_target": effective_target,
+                            "hint": SELF_DISPATCH_HINT},
+                )
+            if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP and not is_manager:
                 raise HTTPException(
                     status_code=403,
                     detail={"code": "task_followup_dispatch_manager_required"},
                 )
+
+        org_paths = OrgPaths(root=org.root)
+        agent_def = prompt_loader.load_agent(org_paths, effective_target)
+        workspace_exists = (org.root / "workspaces" / effective_target).exists()
+        if agent_def is None or not workspace_exists:
+            raise HTTPException(status_code=404, detail={"code": "unknown_agent", "agent": effective_target})
+
+        # THR-018 §3a forcing function: an optional `resolves` names a blocked
+        # predecessor that this thread-dispatched continuation supersedes. The
+        # maker-checker boundary: ONLY a founder/manager-authorized dispatch may
+        # auto-close a predecessor — a worker self-dispatch must NEVER. (The founder
+        # closes via `revisit`; managers close in-lineage via this thread path.)
+        # Validated before the task is created so an ineligible/unauthorized supersede
+        # rejects cleanly without orphaning a new root.
+        resolves = body.resolves.strip() if body.resolves else None
+        predecessor = None
+        pred_block_kind = None
+        if resolves:
+            if not is_manager:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": "thread_supersede_not_authorized",
+                            "dispatcher": dispatcher, "resolves": resolves},
+                )
+            from runtime.daemon.routes.tasks import _eligible_supersede_block_kind
+            predecessor = org.db.get_task(resolves)
+            if predecessor is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "predecessor_not_found", "resolves": resolves},
+                )
+            from runtime.orchestrator.task_pause import assert_origin_unheld
+            assert_origin_unheld(org, resolves)
+            pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
+            if pred_block_kind is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"code": "predecessor_not_supersedable",
+                            "resolves": resolves,
+                            "predecessor_status": predecessor.status.value},
+                )
+
+        if inv.purpose is ThreadInvocationPurpose.TASK_FOLLOWUP:
+            if resolves:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "task_followup_dispatch_resolves_forbidden"},
+                )
+            async with org.teams_lock:
+                if not org.teams.is_team_manager(dispatcher):
+                    raise HTTPException(
+                        status_code=403,
+                        detail={"code": "task_followup_dispatch_manager_required"},
+                    )
+                async with org.db_lock:
+                    task_id = org.db.next_task_id()
+                    result = org.db.dispatch_task_followup_replacement(
+                        token=body.invocation_token,
+                        thread_id=thread_id,
+                        dispatcher=dispatcher,
+                        task=TaskRecord(
+                            id=task_id, brief=brief, team=effective_team,
+                            assigned_agent=effective_target,
+                            dispatched_from_thread_id=thread_id,
+                        ),
+                        team=effective_team,
+                    )
+            if not result["ok"]:
+                raise HTTPException(status_code=409, detail={"code": result["code"]})
+            sys_seq = result["system_message_seq"]
+            family_closed = []
+        else:
             async with org.db_lock:
-                task_id = org.db.next_task_id()
-                result = org.db.dispatch_task_followup_replacement(
-                    token=body.invocation_token,
-                    thread_id=thread_id,
-                    dispatcher=dispatcher,
-                    task=TaskRecord(
+                from runtime.orchestrator.task_pause import origin_guard
+                with origin_guard(org, resolves):
+                    cur_inv = org.db.get_pending_invocation(body.invocation_token)
+                    if cur_inv is None or cur_inv.dispatched_task_id is not None:
+                        raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
+                    task_id = org.db.next_task_id()
+                    org.db.insert_task(TaskRecord(
                         id=task_id, brief=brief, team=effective_team,
                         assigned_agent=effective_target,
                         dispatched_from_thread_id=thread_id,
-                    ),
-                    team=effective_team,
-                )
-        if not result["ok"]:
-            raise HTTPException(status_code=409, detail={"code": result["code"]})
-        sys_seq = result["system_message_seq"]
-        family_closed = []
-    else:
-        async with org.db_lock:
-            from runtime.orchestrator.task_pause import origin_guard
-            with origin_guard(org, resolves):
-                cur_inv = org.db.get_pending_invocation(body.invocation_token)
-                if cur_inv is None or cur_inv.dispatched_task_id is not None:
-                    raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
-                task_id = org.db.next_task_id()
-                org.db.insert_task(TaskRecord(
-                    id=task_id, brief=brief, team=effective_team,
-                    assigned_agent=effective_target,
-                    dispatched_from_thread_id=thread_id,
-                ))
-                sys_seq = org.db.append_thread_message(
-                    thread_id=thread_id, speaker=dispatcher,
-                    kind=ThreadMessageKind.SYSTEM,
-                    system_payload={
-                        "kind_tag": "task_dispatched",
-                        "task_id": task_id,
-                        "dispatcher": dispatcher,
-                        "target_agent": effective_target,
-                        "team": effective_team,
-                        "brief_preview": brief[:160],
-                    },
-                )
-                org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
-                audit = AuditLogger(org.db)
-                audit.log_thread_dispatch(
-                    thread_id, task_id=task_id, dispatcher=dispatcher,
-                    target_agent=effective_target, team=effective_team,
-                )
-                # Canonical supersede tail shared with resolve_escalation_in_process
-                # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
-                # and emits thread followups.
-                family_closed: list[str] = []
-                if resolves and predecessor is not None:
-                    from runtime.daemon.routes.tasks import (
-                        _close_predecessor_family_and_run_tail,
+                    ))
+                    sys_seq = org.db.append_thread_message(
+                        thread_id=thread_id, speaker=dispatcher,
+                        kind=ThreadMessageKind.SYSTEM,
+                        system_payload={
+                            "kind_tag": "task_dispatched",
+                            "task_id": task_id,
+                            "dispatcher": dispatcher,
+                            "target_agent": effective_target,
+                            "team": effective_team,
+                            "brief_preview": brief[:160],
+                        },
                     )
-                    family_closed = _close_predecessor_family_and_run_tail(
-                        org, audit,
-                        predecessor=predecessor,
-                        successor_root=task_id,
-                        pred_block_kind=pred_block_kind,
-                        actor="thread-dispatch",
-                        note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
-                        thread_id=thread_id,
-                        close_revisit_family=True,
+                    org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
+                    audit = AuditLogger(org.db)
+                    audit.log_thread_dispatch(
+                        thread_id, task_id=task_id, dispatcher=dispatcher,
+                        target_agent=effective_target, team=effective_team,
                     )
+                    # Canonical supersede tail shared with resolve_escalation_in_process
+                    # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
+                    # and emits thread followups.
+                    family_closed: list[str] = []
+                    if resolves and predecessor is not None:
+                        from runtime.daemon.routes.tasks import (
+                            _close_predecessor_family_and_run_tail,
+                        )
+                        family_closed = _close_predecessor_family_and_run_tail(
+                            org, audit,
+                            predecessor=predecessor,
+                            successor_root=task_id,
+                            pred_block_kind=pred_block_kind,
+                            actor="thread-dispatch",
+                            note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
+                            thread_id=thread_id,
+                            close_revisit_family=True,
+                                            root_transitions=root_transitions,
+                        )
 
-    enqueue_task(state, slug, task_id)
+        enqueue_task(state, slug, task_id)
 
-    await _publish_thread_event(
-        org, slug,
-        thread_id=thread_id, seq=sys_seq, speaker=dispatcher,
-        kind="system", preview=brief[:160], status="open",
-    )
+        await _publish_thread_event(
+            org, slug,
+            thread_id=thread_id, seq=sys_seq, speaker=dispatcher,
+            kind="system", preview=brief[:160], status="open",
+        )
 
-    return {
-        "task_id": task_id,
-        "team": effective_team,
-        "assigned_agent": effective_target,
-        "dispatched_from_thread_id": thread_id,
-        "system_message_seq": sys_seq,
-        "superseded_task_id": resolves if (resolves and predecessor is not None) else None,
-    }
+        return {
+            "task_id": task_id,
+            "team": effective_team,
+            "assigned_agent": effective_target,
+            "dispatched_from_thread_id": thread_id,
+            "system_message_seq": sys_seq,
+            "superseded_task_id": resolves if (resolves and predecessor is not None) else None,
+        }
+    except BaseException:
+        root_tail_failed = True
+        raise
+    finally:
+        if root_transitions:
+            await _await_root_worktree_batch(org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)
 
 
 # ---------------------------------------------------------------------------

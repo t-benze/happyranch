@@ -671,34 +671,28 @@ literal absence and unchanged protected-path identities.
 
 ## Terminal task-worktree reclamation
 
-Terminal task-worktree reclamation has no configuration key or cadence. On the
-approved ordinary `completed`, `failed`, and `cancelled` writer seams, after
-durable terminal state and applicable process/session/control/job teardown, the
-runtime makes one bounded attempt for only the assigned registered agent's
-literal `repos/happyranch/.claude/worktrees/<task-id>` candidate. It requires a
-canonical non-symlink same-device primary and worktree, exact Git registration
-and branch identity, clean status, durable remote containment, no open or
-closed-unmerged PR, no live session/control/PID or shared-scanner process reference, no recorded
-`worktree-deferred:` risk, and a shared deadline. Unknown, unavailable,
-malformed, timed-out, dirty, unpublished, live, foreign, or ambiguous evidence
-preserves the worktree.
+There is no configuration switch or cadence for future root-terminal release.
+All four terminal states (`completed`, `failed`, `cancelled`, `superseded`)
+trigger the original post-commit owner once for the actual parent tree,
+including NULL-parent workflow tasks. Child deferrals become advisory only in
+this root pass; all current independent preservation gates remain. Child hooks
+retain their one-task/five-second policy and recorded deferral gate.
 
-The process gate loads the bundled `workspace-cleanup` scanner by explicit file
-path, so its seq171/seq185 exact name-plus-expected-cgroup exception table is
-the single source for both paths. Root-owned processes are out of scope; any
-other unreadable same-user process is uncertain; a positive
-cwd/root/exe/maps/fd reference is live. `run_step` already executes in the
-queue's worker thread, and the terminal hook retains one five-second total
-deadline.
+Root batches share10s work/0.5s DB/50ms lock admissions,1s report,1s owned-group
+reap,16 events/256 nodes/depth64/page64/16 attempts,5s clipped candidates,
+1MiB capture/256KiB receipts. This is a conditional 12s ordinary-I/O target,
+not preemption of SQLite/fsync/kernel I/O. Interrupted start never retries;
+incomplete closure gives zero removal and explicit frontier/remainder.
+Verified success requires absence, unregistration, preserved branch and
+protected identities; possible partial action or report anomaly halts.
 
-Successful removal is literal non-force `git worktree remove`; no branch is
-deleted. A failed gate or removal is a typed/logged preservation outcome and
-never changes terminal semantics or schedules a retry. `superseded`,
-`blocked_on_job`, accepted/restart completion-recovery settlement, legacy
-normalization, and historical cleanup remain outside this mechanism. This is
-separate from `workspace_cleanup.enabled` and
-`workspace_cleanup.reclamation_actions_enabled`; neither switch expands or
-disables the terminal hook.
+The shared safety helper and unchanged packaged same-user scanner serve root
+release; async owners await the finite pass off-loop outside locks. Manual/daily
+retain their authenticated host-job scanner, age/ordinal/peer/history/cache
+gates. No boot history scan, recurring continuation or rollout authority is
+added. `workspace_cleanup.enabled` and
+`workspace_cleanup.reclamation_actions_enabled` retain their separate meanings.
+See [the full owner/evidence contract](orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 
 ## Agent Configuration: Single Source of Truth (THR-095)
 
