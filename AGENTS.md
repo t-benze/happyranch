@@ -50,8 +50,9 @@ concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
 U3a(b) internal submission/review/link producers are staged in the stacked draft.
-Genuine receipts/joins/finalization, later U3-U6 units and
-independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
+Internal genuine receipts/collection/service joins are the dependency-incomplete
+U3b checkpoint above. Public parity, later U3-U6 controls and independent operator
+acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 

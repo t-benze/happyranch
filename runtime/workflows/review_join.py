@@ -37,6 +37,11 @@ def _responses(conn: sqlite3.Connection, graph: dict) -> list[dict]:
 
 def _event(conn: sqlite3.Connection, row: dict, proof: dict, graph: dict, created_at: str) -> dict:
     """Only called after every receipt has passed the complete graph oracle."""
+    grant_pin = proof['pins']['authorization']
+    grant = _stored_json(bytes.fromhex(grant_pin['bytes_hex']), grant_pin['digest'],
+                         code='workflow_review_join_storage_corrupt')
+    if not set(ACTIONS) <= set(grant['original_request']['allowed_actions']):
+        raise ValueError('workflow_review_join_storage_corrupt')
     receipts, assignments = [], []
     for request in _responses(conn, graph):
         receipt = _records(conn, 'SELECT * FROM workflow_review_receipts WHERE request_id=?', (request['id'],))

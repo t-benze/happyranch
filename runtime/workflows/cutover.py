@@ -370,11 +370,34 @@ class WorkflowCutoverStore:
                 graph = validate_handoff_graph(conn, handoff, proof)
                 if graph is None:
                     raise ValueError('workflow_author_handoff_storage_corrupt')
-                if validate_collection(conn, handoff, proof, graph) == 'needs_revision':
-                    owner = conn.execute('SELECT owner_principal FROM workflow_instances WHERE id=?',
-                                         (handoff['instance_id'],)).fetchone()[0]
+                owner = conn.execute('SELECT owner_principal FROM workflow_instances WHERE id=?',
+                                     (handoff['instance_id'],)).fetchone()[0]
+                disposition = validate_collection(conn, handoff, proof, graph)
+                if disposition == 'needs_revision':
                     blockers.append(self._blocker('cutover_review_needs_revision', record_id=graph['round_id'],
                         state='closed', owner=owner, required_action='revise_document', deferred_to='U4'))
+                else:
+                    # Closed joins are retained history, not a discharge of a
+                    # later source/current-owner validity hold.
+                    intent = dict(conn.execute('SELECT * FROM workflow_draft_dispatch_intents WHERE id=?',
+                                               (handoff['intent_id'],)).fetchone())
+                    task = dict(conn.execute('SELECT * FROM tasks WHERE id=?', (handoff['source_task_id'],)).fetchone())
+                    active = conn.execute('SELECT activation_id,activation_revision FROM workflow_active_activations WHERE instance_id=?',
+                                          (handoff['instance_id'],)).fetchone()
+                    authorization = conn.execute('SELECT authorization_revision_id FROM workflow_active_authorizations WHERE namespace=?',
+                        (f"org/{self._org_slug}/workflow-instance/{handoff['instance_id']}",)).fetchone()
+                    pointer = conn.execute('SELECT current_generation,snapshot_digest,state FROM workflow_authority_pointers WHERE namespace=?',
+                                           (proof['admission_authority']['ready']['namespace'],)).fetchone()
+                    held = (intent['state'] != 'completed' or not intent['is_current'] or intent['cancellation_requested']
+                        or task['status'] != 'completed' or task['cancelled_at'] is not None
+                        or task['current_session_id'] != handoff['source_session_id']
+                        or task['assigned_agent'] != handoff['principal']
+                        or active is None or tuple(active) != (intent['activation_id'], intent['activation_revision'])
+                        or authorization is None or authorization[0] != proof['pins']['authorization']['id']
+                        or pointer is None or tuple(pointer) != (intent['authority_generation'], intent['authority_digest'], 'ready'))
+                    if held:
+                        blockers.append(self._blocker('cutover_review_validity_held', record_id=graph['round_id'],
+                            state='closed', owner=owner, required_action='reconcile_source_or_authority', deferred_to='U4'))
         return blockers
 
     def downgrade_preflight(self) -> dict:

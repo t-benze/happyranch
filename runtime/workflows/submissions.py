@@ -855,8 +855,14 @@ class WorkflowSubmissionStore:
             handoffs = [r[0] for r in self.db._conn.execute('SELECT h.id FROM workflow_author_handoffs h '
                 'JOIN workflow_draft_dispatch_intents d ON d.id=h.intent_id WHERE d.state=\'completed\' AND NOT EXISTS '
                 '(SELECT 1 FROM workflow_submission_operations o WHERE o.submission_id=h.submission_id)')]
+        from runtime.workflows.authority import WorkflowAuthorityError
         for handoff_id in handoffs:
-            tasks = await self.consume_completed_handoff(handoff_id)
+            try:
+                tasks = await self.consume_completed_handoff(handoff_id)
+            except WorkflowAuthorityError as exc:
+                if exc.code != 'workflow_activation_authority_stale':
+                    raise
+                continue
             for task_id in tasks:
                 queue.enqueue_if_absent(self.org.slug, task_id)
         # Reuse lifespan/reaper discovery for result-before-consumption recovery.

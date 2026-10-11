@@ -129,7 +129,9 @@ admission, and preserves earlier event interpretations.
 Exact retry and human/agent/concurrent last response use the same writer and IDs.
 Existing lifespan/reaper discovery handles a committed-last-receipt gap without
 another scheduler; whitelisted ordinary authority holds continue to later work,
-while corruption propagates. Internal collection current validity/approved-use
+while corruption propagates. Closed joins with a later relational source or
+authorization/activation/authority-pointer hold also block drain for owner
+reconciliation. Internal collection current validity/approved-use
 reports source/authority holds and owner reconciliation independently of retained
 joined history. A historical join cannot authorize fresh use; explicit durable
 owner resolution/revision/reassignment remains U4. All lifecycle/proof cases are

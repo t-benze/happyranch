@@ -394,10 +394,11 @@ class WorkflowReviewReceiptStore:
             tasks = [r[0] for r in self.db._conn.execute("SELECT b.task_id FROM workflow_request_task_bridges b "
                 "JOIN workflow_review_requests q ON q.id=b.request_id WHERE b.state='completed' AND q.status='pending'")]
         from runtime.workflows.review_join import HOLDS
+        from runtime.workflows.authority import WorkflowAuthorityError
         for task_id in tasks:
             try:
                 await self.admit_completed(task_id)
-            except WorkflowActivationError as exc:
+            except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise  # Corruption and unexpected failures remain visible.
 
@@ -414,6 +415,7 @@ class WorkflowReviewReceiptStore:
     async def discover_collections(self) -> None:
         """Existing reaper recovers a committed last receipt with no service effect."""
         from runtime.workflows.review_join import HOLDS
+        from runtime.workflows.authority import WorkflowAuthorityError
         with self.db._lock:
             handoffs = [r[0] for r in self.db._conn.execute(
                 'SELECT h.id FROM workflow_author_handoffs h JOIN workflow_rounds r '
@@ -421,6 +423,6 @@ class WorkflowReviewReceiptStore:
         for handoff_id in handoffs:
             try:
                 await self.collection_current(handoff_id)
-            except WorkflowActivationError as exc:
+            except (WorkflowActivationError, WorkflowAuthorityError) as exc:
                 if exc.code not in HOLDS:
                     raise
