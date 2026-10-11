@@ -113,13 +113,13 @@ async function main(){
       await cdp.send('Page.navigate',{url:server.url+route},sessionId);return page;
     }
     const close=page=>cdp.send('Target.closeTarget',{targetId:page.targetId});
-    async function shot(page,name,metadata){await sleep(100);const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},page.sessionId);const bytes=Buffer.from(data,'base64');const file=join(out,`${name}.png`);writeFileSync(file,bytes);screenshots.push({file,sha256:digest(bytes),...metadata});}
+    async function shot(page,name,metadata){await cdp.send('Page.bringToFront',{},page.sessionId);await sleep(100);const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},page.sessionId);const bytes=Buffer.from(data,'base64');const file=join(out,`${name}.png`);writeFileSync(file,bytes);screenshots.push({file,sha256:digest(bytes),...metadata});}
     const rootButton=(id,label)=>`[...document.querySelectorAll('[data-tasks-responsive-list] [data-task-pause="${id}"] button')].find(b=>b.textContent.trim()===${quote(label)})`;
     const button=label=>`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${quote(label)})`;
-    async function enter(page,source){await evaluate(page,`(()=>{const button=${source};if(!button)throw new Error('button missing');button.scrollIntoView({block:'center'});button.focus();return true;})()`);for(const type of ['keyDown','keyUp'])await cdp.send('Input.dispatchKeyEvent',{type,key:'Enter',code:'Enter',windowsVirtualKeyCode:13},page.sessionId);}
+    async function enter(page,source){await cdp.send('Page.bringToFront',{},page.sessionId);await evaluate(page,`(()=>{const button=${source};if(!button)throw new Error('button missing');button.scrollIntoView({block:'center'});button.focus();return true;})()`);await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'},page.sessionId);await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13},page.sessionId);}
     async function switchLocale(page,locale){
       const {targetId}=await cdp.send('Target.createTarget',{url:server.url+'/pause-locale-switch.html'});const {sessionId}=await cdp.send('Target.attachToTarget',{targetId,flatten:true});await cdp.send('Runtime.enable',{},sessionId);await sleep(60);
-      await evaluate({sessionId},`localStorage.setItem('happyranch.ui.locale',${quote(locale)})`);await cdp.send('Target.closeTarget',{targetId});await wait(page,`document.documentElement.lang===${quote(locale)}`);await sleep(100);
+      await evaluate({sessionId},`localStorage.setItem('happyranch.ui.locale',${quote(locale)})`);await cdp.send('Target.closeTarget',{targetId});await cdp.send('Page.bringToFront',{},page.sessionId);await wait(page,`document.documentElement.lang===${quote(locale)}`);await sleep(100);
     }
     for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark']){
       scenario='populated';toggled={held:false,generation:4};const name=`${locale}-${width}-${theme}`;
