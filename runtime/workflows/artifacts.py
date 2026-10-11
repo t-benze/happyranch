@@ -185,7 +185,8 @@ def require_document_subject(artifact: ArtifactRevision, scope: dict) -> None:
         raise ValueError('artifact_subject_mismatch')
 
 
-def document_from_handoff(row: dict, proof: dict, *, source_result_id: int | None = None) -> ArtifactRevision:
+def document_from_handoff(row: dict, proof: dict, *, source_result_id: int | None = None,
+                          contributors: tuple[dict, ...] = ()) -> ArtifactRevision:
     """Project caller-authenticated H data; an active author has no invented result."""
     return document_revision(identity=ArtifactIdentity(org_namespace=row['org_slug'],
         instance_id=row['instance_id'], output_slot='output'), submission_id=row['submission_id'],
@@ -193,7 +194,8 @@ def document_from_handoff(row: dict, proof: dict, *, source_result_id: int | Non
         provenance=ArtifactProvenance(source_task_id=row['source_task_id'],
             source_session_id=row['source_session_id'], source_result_id=source_result_id,
             author_principal=row['principal'], source_bytes=_canonical_bytes(proof['source_intent']),
-            contributor_bytes=(), pins_bytes=_canonical_bytes(proof['pins'])))
+            contributor_bytes=tuple(_canonical_bytes(item) for item in contributors),
+            pins_bytes=_canonical_bytes(proof['pins'])))
 
 
 def document_from_submission(submission: dict, *, org_namespace: str, pins: dict,

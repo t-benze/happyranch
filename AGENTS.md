@@ -1,51 +1,22 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**Artifact boundary A — THR139 seq480/477, ROOT TASK10693.**
-`runtime/workflows/artifacts.py` supplies a pure frozen `ArtifactRevision`:
-org namespace + workflow instance + stable output slot (`output` for the current
-single-output document family), stored submission ID, positive strict-integer
-revision, explicit document/code-change subject, and authenticated provenance
-references/snapshots. Output descriptions and submission IDs are not stable
-artifact identity. Source task/session, genuine optional INTEGER result link,
-author/contributor records and pinned template/context/binding/authorization
-references remain caller-owned evidence; an active author gets no invented
-result and a human reviewer gets no invented task.
-
-Document projections verify exact UTF8 bytes (1..1048576) and raw SHA256.
-Submission integrity and both human/agent receipt subject checks consume this
-projection. Existing `review_scope`/`review_brief` wrappers select the document
-compatibility adapter: exact historical scope, purpose, brief (including its
-historical later-receipts sentence), bytes, IDs, digest preimages and proof formats
-stay unchanged. Selected recipient/grant checks still precede private decode;
-after-wait/current-authority writer checks, contributor independence and genuine
-callback/Boolean-quiescence proof stay in existing owners. The pure module has
-no store/schema/graph import, I/O, registry or recursive validation.
-
-Closed canonical `workflow-code-change@1` descriptors require kind code-change,
-repository `{id}` (opaque binding Token), object_format sha1/sha256, full lowercase
-40/64-character head, comparison null or `{base}` in that format, and navigation
-`{branch,pr_url}` with nullable bounded UTF8 text (1..256/1..2048 bytes). All keys
-are required; unknown/duplicate keys, symbolic/short OIDs and malformed types
-refuse. Canonical descriptor bytes use the same 1MiB limit. Repository/algorithm/
-head/base define the immutable object subject; descriptor SHA256 additionally
-pins the navigation snapshot. No path/URL resolution, content sniffing, fetch,
-checkout, execution or access grant follows from parsing. A syntactically valid
-absent object can parse; no repository reader is mounted in A.
-
-Product-design and the differently named one-human proposal use the same document
-projection with template-defined roles/outcomes; code-change shares the identity
-model as representation only. B still owns matched versioned template/context/
-request/proof admission and actual authorized immutable repository resolution.
-C still owns r2 producers/fresh requests/sign-offs, reassignment/recovery and
-mounted UI/CLI. H revision1/unique-intent constraints and old @1/@2/@3 pins/history
-remain intact. Seq475 reviewer-stage public/native decision is PENDING; no dependent
-surface is mounted. Founder465 two-template public scratch/revision acceptance
-and real Founder UI Request changes/Sign off remain UNOBSERVED. Ordered development/
-review/QA, CI and guarded merge adapters/general coding/fork-join remain Phase2.
-A is source-only delivery, not behavioral acceptance: behavior/proof campaigns
-UNEXECUTED / FOUNDER-WAIVED139429/430; integration SKIPPED24342; Python units RETIRED.
-Full independent review, scoped QA and exact-head lint renew before manager merge.
-
+**Artifact boundary A — THR139seq480/477, ROOT TASK10693.** Pure frozen
+`artifacts.ArtifactRevision` separates org/instance/stable output slot from a
+stored submission ID, strict positive revision, document/code-change subject and
+authenticated provenance. Current document integrity and both receipt subject
+checks use it; legacy scope/brief wrappers preserve exact historical bytes,
+IDs, digest preimages and error/admission ordering. No store/schema/graph import,
+I/O or recursive validation enters the pure adapter. Closed canonical code-change
+descriptors pin repository/object-format/full head/optional base and navigation,
+but mount no repository reader or template admission. Product-design and the
+one-human proposal share the document adapter; code shares the representation.
+B/C versioned admission/resolution, r2/fresh sign-offs/reassignment/recovery/UI,
+Founder465 public/revision/real UI acceptance and Phase2 ordered coding/CI/merge
+adapters remain outstanding. Seq475 reviewer-stage public/native decision is
+PENDING; H revision1/unique intent and @1/@2/@3 history remain unchanged.
+Behavior/proof UNEXECUTED/FOUNDER-WAIVED139429/430; integration SKIPPED24342;
+Python units RETIRED. Full independent review/scoped QA renew at final head.
+Exact grammar: [Features And Invariants](docs/agent-guides/features-and-invariants.md).
 
 **U3b(a/b/c/d) dependency-incomplete checkpoint (THR139 395/410/445/457/465).**
 Internal F5 staging, genuine successful/quiescent agent receipts and authenticated

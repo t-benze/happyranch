@@ -204,9 +204,12 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
     # source validity belongs to mutation/approved-use admission, not history.
     result = _reviewed_source_result(conn, row, intent)
     # Pure integrity projection only; keep full H/F5/receipt oracles in their callers.
-    candidate = document_from_handoff(row, proof, source_result_id=result['id'])
+    contributors = tuple(_records(conn, 'SELECT * FROM workflow_instance_contributors WHERE instance_id=?',
+                                  (row['instance_id'],)))
+    candidate = document_from_handoff(row, proof, source_result_id=result['id'], contributors=contributors)
     submission = document_from_submission(_record(conn, 'workflow_submissions', row['submission_id']),
-        org_namespace=operations[0]['org_slug'], pins=proof['pins'], source_result_id=result['id'])
+        org_namespace=operations[0]['org_slug'], pins=proof['pins'], source_result_id=result['id'],
+        contributors=contributors)
     if candidate.review_key != submission.review_key:
         raise ValueError(code)
     round_ = rounds[0]
