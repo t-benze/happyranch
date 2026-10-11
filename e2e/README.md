@@ -746,3 +746,10 @@ PASS. First daily remains PENDING per owner. E04 output-cap/persistent-stop,
 other recovery branches, the separate live cancel-CLI mismatch and overall
 program acceptance remain root-owned. TASK10555/JOB4257 and the daily19UTC
 matrix/artifacts/triggers/retry/notification policy are unchanged.
+
+The E04 final task/Recall direct text read also clips to the retained main-page
+operation timeout: `job_terminal` calls `job_open`, which sets at most10s;
+`open_task`/`completed` retain it. The direct read uses the smaller of that
+already clipped cap and the effective absolute end, then checks expiry again
+on return. Its literal text/Recall/PNG aggregate joins remain unchanged.
+This is an authored source bound, not an executed timeout/sensitivity result.

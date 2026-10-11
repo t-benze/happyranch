@@ -434,7 +434,7 @@ def exercise(c: Controller) -> None:
             record["anchors"].append(previous)
             c.browser.open_task("alpha", task, variant)
             c.browser.completed("alpha", task, variant, summary, shot="e04-task-" + str(index))
-            record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(timeout=c.remaining(15)*1000),
+            record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(timeout=c.remaining(c.browser.page_timeout)*1000),
                                           screenshot=f"e04-task-{index}.png", at=time.monotonic())
             c.remaining()
             record.update(finished=time.monotonic(), observer_end=len(c.observer), commands_end=len(c.provider_commands))
