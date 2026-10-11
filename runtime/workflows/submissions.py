@@ -195,9 +195,10 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
         bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (q['id'],))
         dispatch = _records(conn, 'SELECT * FROM workflow_dispatch_operations WHERE request_id=?', (q['id'],))
         if contract['role_kinds'][role] == 'human':
-            if bridges or dispatch or q['status'] != 'pending' or conn.execute(
-                    'SELECT 1 FROM workflow_review_receipts WHERE request_id=?', (q['id'],)).fetchone():
+            if bridges or dispatch:
                 raise ValueError(code)
+            from runtime.workflows.review_receipts import validate_human_receipt
+            validate_human_receipt(conn, q, scope, proof)
             continue
         if len(bridges) != 1 or len(dispatch) != 1:
             raise ValueError(code)
@@ -680,9 +681,13 @@ class WorkflowSubmissionStore:
 
     def _select_request(self, conn: sqlite3.Connection, *, request_id: str,
                         task_agent: tuple[str, str] | None, session_id: str | None,
-                        human: bool) -> tuple[dict, dict, dict]:
+                        human: bool, owner: WorkflowTemplatePrincipal | None = None,
+                        include_signed: bool = False) -> tuple[dict, dict, dict]:
+        if include_signed and (not human or owner is None):
+            raise WorkflowActivationError('workflow_review_request_not_found')
         self._read_schema_presence(conn)
-        requests = _records(conn, "SELECT * FROM workflow_review_requests WHERE id=? AND status='pending' "
+        status = "status IN ('pending','approved','changes_requested')" if include_signed else "status='pending'"
+        requests = _records(conn, f"SELECT * FROM workflow_review_requests WHERE id=? AND {status} "
                             'AND supersedes_request_id IS NULL AND assignment_generation=1', (request_id,))
         if len(requests) != 1:
             raise WorkflowActivationError('workflow_review_request_not_found')
@@ -704,7 +709,7 @@ class WorkflowSubmissionStore:
         intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
         if not intent['is_current'] or not self._current_activation(conn, intent):
             raise WorkflowActivationError('workflow_review_request_not_found')
-        self._read_grant(conn, intent, {'collect-review'})
+        self._read_grant(conn, intent, {'collect-review'}, owner)
         return request, row, intent
 
     async def get_handoff(self, *, handoff_id: str, lane: str, session_id: str | None,

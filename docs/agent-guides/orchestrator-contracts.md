@@ -2219,7 +2219,19 @@ completed-review receipt discovery for result-before-consumption recovery. Neith
 consumer relaunches uncertain work or infers quiescence from PID/TTL absence.
 The authority writer appends authentic INTEGER-backed result/assignment/receipt
 identities atomically; matched graph readers reject partial/forged closure.
-Stage/callback/verdict alone is unsigned. Human response, public stage/signed
-request transport parity and template join are later units; this checkpoint must
+Stage/callback/verdict alone is unsigned. The U3b(b) internal human producer
+accepts only the existing server-derived Founder WorkflowTemplatePrincipal and
+rechecks it before selected-grant/private-H decoding, after lock waits, within
+BEGIN IMMEDIATE, and before commit. Full pinned generic human kind/outcome,
+subject/revision/raw digest, recipient/generation, activation/context/binding/
+grant/current authority/source validity/cutover and contributor independence
+bind the saved closed bearer proof. No human task/session/result, assignment,
+agent evidence bridge/stage or host-quiescence witness is invented. Historical
+proof validation is separate from current admission. Exact actor/key/full-command
+replay returns the original immutable receipt; changed body/key reuse conflicts.
+Only that request status changes; other pending requests/findings remain intact.
+Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
+parity with exact public/deny disposition, collect-all closure/needs_revision and
+automatic template join are later units; this checkpoint must
 remain draft/unaccepted/unmerged until those dependencies are assessed. See the
 exact internal grammar in [Features And Invariants](features-and-invariants.md).

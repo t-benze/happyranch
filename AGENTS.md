@@ -1,14 +1,20 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**U3b(a) dependency-incomplete backend checkpoint (THR139 395/410/445/457/465).**
-Internal F5 findings staging and genuine successful/quiescent agent receipt
-admission now have matched closed graph readers and existing terminal/reaper
-consumers. Stage/callback acknowledgment alone is unsigned. No public stage or
-human receipt surface is mounted, and the pending-only public request GET does
-not expose signed agent requests. Human receipt/public CLI/TS/native parity,
-collect-all closure/automatic join and root-owned two-template public smoke465
-remain dependencies; retain the draft unaccepted/unmerged. Exact grammar and
-proof boundaries: [Features And Invariants](docs/agent-guides/features-and-invariants.md).
+**U3b(a/b) dependency-incomplete backend checkpoint (THR139 395/410/445/457/465).**
+Internal F5 findings staging and genuine successful/quiescent agent receipts
+retain their matched closed readers and terminal/reaper consumers. Internal
+`WorkflowReviewReceiptStore.admit_human` now uses the existing server-derived
+Founder principal with in-writer revalidation and immutable closed bearer
+provenance in receipt proof_bytes. It creates no human task/session/result,
+assignment, agent evidence bridge, stage or host-quiescence fiction. Only the
+selected request outcome changes; peers stay pending. Historical proof never
+grants a fresh write. No public human write/stage surface is mounted; the
+pending-only public GET excludes signed human and agent requests. Public
+server/OpenAPI/CLI/TS/native signed-request and write/stage parity with exact
+public/deny disposition, collect-all closure/needs_revision/automatic join and
+root-owned two-template public smoke465 remain dependencies. Retain the draft
+unaccepted/unmerged. Exact grammar and proof boundaries:
+[Features And Invariants](docs/agent-guides/features-and-invariants.md).
 
 **G submission-schema migration (THR139 seq395; retained F/E→G path).**
 The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.

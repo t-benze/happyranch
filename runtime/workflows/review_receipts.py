@@ -1,13 +1,137 @@
-"""Internal agent receipt admission from staged findings and actual F5 terminal proof."""
+"""Internal human and agent receipts with separate current admission and saved proof."""
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Literal
+
+from pydantic import Field, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import _records, _stored_json
-from runtime.workflows.activation import WorkflowActivationError, _id
+from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.submissions import _insert, _record
+from runtime.workflows.templates import WorkflowTemplatePrincipal
+
+
+class HumanReviewCommand(ClosedRecord):
+    format: Literal['workflow-human-review-command@1']
+    action: Literal['sign-review']
+    operation_key: Token
+    request_id: Token
+    expected_revision: StrictInt = Field(ge=1, le=1)
+    request_scope_digest: SHA256
+    outcome: Literal['approved', 'changes_requested']
+    findings_bytes_base64: str = Field(min_length=4, max_length=1398104)
+    findings_digest: SHA256
+
+
+def parse_human_review(command: object) -> dict:
+    # Reuse the existing raw UTF8/base64 bounds, without entering the agent stage lane.
+    from runtime.workflows.review_dispatch import parse_stage
+    try:
+        parsed = HumanReviewCommand.model_validate(command).model_dump()
+        parse_stage(dict(parsed, format='workflow-review-stage-command@1', action='stage-review'))
+        if len(canonical_bytes(parsed)) > 2097152:
+            raise ValueError('command bounds')
+        return parsed
+    except (ValidationError, ValueError) as exc:
+        raise WorkflowActivationError('workflow_human_review_invalid_request') from exc
+
+
+def _human_proof(request: dict, scope: dict, handoff: dict, command: dict, created_at: str) -> dict:
+    return dict(format='workflow-human-review-proof@1',
+        actor=dict(principal_kind='human', principal_id='founder', proof_kind='founder_bearer'),
+        operation_principal='human:founder', command=command, request_digest=digest(canonical_bytes(command)),
+        scope=scope, request_scope_digest=request['request_scope_digest'], pins=handoff['pins'],
+        admission_authority=dict(handoff['admission_authority'], actions=['collect-review']), created_at=created_at)
+
+
+def _human_receipt_row(request: dict, scope: dict, proof: dict) -> dict:
+    raw = canonical_bytes(proof)
+    if len(raw) > 16777216:
+        raise ValueError('workflow_review_receipt_storage_corrupt')
+    return dict(id=_id('workflow-review-receipt', request['id'], request['assignment_generation']),
+        request_id=request['id'], submission_id=scope['submission_id'], submission_digest=scope['submission_digest'],
+        assignment_generation=request['assignment_generation'], request_scope_digest=request['request_scope_digest'],
+        proof_bytes=raw, proof_digest=digest(raw), outcome=proof['command']['outcome'],
+        supersedes_receipt_id=None, created_at=proof['created_at'])
+
+
+def _human_receipts_for_key(conn: sqlite3.Connection, *, org_slug: str, operation_key: str) -> list[dict]:
+    rows = _records(conn, 'SELECT p.* FROM workflow_review_receipts p '
+        'JOIN workflow_review_requests q ON q.id=p.request_id '
+        'JOIN workflow_rounds r ON r.id=q.round_id '
+        'JOIN workflow_submission_operations o ON o.submission_id=r.submission_id '
+        "WHERE o.org_slug=? AND q.principal='founder'", (org_slug,))
+    matches = []
+    for receipt in rows:
+        request = _record(conn, 'workflow_review_requests', receipt['request_id'])
+        scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'],
+                             code='workflow_review_receipt_storage_corrupt')
+        if scope['kind'] != 'human':
+            continue  # Kind is pinned data; an agent name cannot select the human lane.
+        proof = _stored_json(receipt['proof_bytes'], receipt['proof_digest'],
+                             code='workflow_review_receipt_storage_corrupt')
+        if proof['format'] != 'workflow-human-review-proof@1' or proof['operation_principal'] != 'human:founder':
+            raise ValueError('workflow_review_receipt_storage_corrupt')
+        if proof['command']['operation_key'] == operation_key:
+            matches.append(receipt)
+    return matches
+
+
+def validate_human_receipt(conn: sqlite3.Connection, request: dict, scope: dict, handoff: dict) -> None:
+    """Authenticate closed historical data only; it supplies no current bearer authority."""
+    from runtime.workflows.review_dispatch import _same_value
+    code = 'workflow_review_receipt_storage_corrupt'
+    if scope['kind'] != 'human' or scope['principal'] != 'founder':
+        raise ValueError(code)
+    receipts = _records(conn, 'SELECT * FROM workflow_review_receipts WHERE request_id=?', (request['id'],))
+    # A human has neither a task/result/assignment nor an agent evidence bridge.
+    if (conn.execute('SELECT 1 FROM workflow_current_assignments WHERE instance_id=? AND role_key=?',
+                     (scope['instance_id'], scope['role'])).fetchone()
+            or conn.execute('SELECT 1 FROM workflow_instance_tasks WHERE instance_id=? AND role_key=?',
+                            (scope['instance_id'], scope['role'])).fetchone()
+            or conn.execute("SELECT 1 FROM workflow_task_results WHERE instance_id=? AND principal='founder'",
+                            (scope['instance_id'],)).fetchone()
+            or conn.execute('SELECT 1 FROM workflow_receipt_evidence e JOIN workflow_review_receipts p '
+                            'ON p.id=e.receipt_id WHERE p.request_id=?', (request['id'],)).fetchone()):
+        raise ValueError(code)
+    if request['status'] == 'pending':
+        if receipts:
+            raise ValueError(code)
+        return
+    if len(receipts) != 1:
+        raise ValueError(code)
+    receipt = receipts[0]
+    if type(receipt['proof_bytes']) is not bytes or not 1 <= len(receipt['proof_bytes']) <= 16777216:
+        raise ValueError(code)
+    proof = _stored_json(receipt['proof_bytes'], receipt['proof_digest'], code=code)
+    command = parse_human_review(proof['command'])
+    created_at = proof['created_at']
+    stamp = datetime.strptime(created_at, '%Y-%m-%dT%H:%M:%S.%fZ')
+    submission = _record(conn, 'workflow_submissions', scope['submission_id'])
+    contributors = {r[0] for r in conn.execute('SELECT principal FROM workflow_instance_contributors WHERE instance_id=?',
+                                              (scope['instance_id'],))}
+    contributors |= {r[0] for r in conn.execute('SELECT principal FROM workflow_submission_operations WHERE instance_id=?',
+                                               (scope['instance_id'],))}
+    if (created_at != stamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            or command['request_id'] != request['id'] or command['expected_revision'] != scope['revision']
+            or command['request_scope_digest'] != request['request_scope_digest']
+            or command['outcome'] not in scope['outcomes'] or request['status'] != command['outcome']
+            or request['principal'] in contributors
+            or submission['instance_id'] != scope['instance_id']
+            or not _same_value(submission['revision'], scope['revision'])
+            or submission['submission_digest'] != scope['submission_digest']
+            or digest(submission['submission_bytes']) != scope['submission_digest']):
+        raise ValueError(code)
+    submission['submission_bytes'].decode('utf8')
+    expected = _human_proof(request, scope, handoff, command, created_at)
+    if (not _same_value(proof, expected)
+            or not _same_value(receipt, _human_receipt_row(request, scope, expected))
+            or not _same_value(_human_receipts_for_key(conn, org_slug=scope['org_slug'],
+                                operation_key=command['operation_key']), [receipt])):
+        raise ValueError(code)
 
 
 def _completed_proof(conn: sqlite3.Connection, request: dict, scope: dict) -> tuple[dict, dict, dict] | None:
@@ -125,6 +249,87 @@ def validate_agent_receipt(conn: sqlite3.Connection, request: dict, scope: dict)
 class WorkflowReviewReceiptStore:
     def __init__(self, org: Any) -> None:
         self.org, self.db = org, org.db
+
+    def _human_principal(self, principal: WorkflowTemplatePrincipal) -> None:
+        if (type(principal) is not WorkflowTemplatePrincipal
+                or principal.task_id is not None or principal.session_id is not None):
+            raise WorkflowActivationError('role_binding_not_authorized')
+        self.org.workflow_activations._principal(principal)
+
+    async def admit_human(self, *, principal: WorkflowTemplatePrincipal, command: object) -> dict:
+        """Sign only with current server bearer proof; no public adapter exists in this unit."""
+        from runtime.infrastructure.workflow_schema import _handoff_record, require_author_handoff_schema
+        from runtime.workflows.review_dispatch import _same_value
+        from runtime.workflows.submissions import validate_handoff_graph
+        self._human_principal(principal)
+        command = parse_human_review(command)
+        store = self.org.workflow_submissions
+        selection = dict(request_id=command['request_id'], task_agent=None, session_id=None,
+                         human=True, owner=principal, include_signed=True)
+        with self.db._lock:
+            self._human_principal(principal)
+            store._select_request(self.db._conn, **selection)
+        capture = self.org.workflow_authority.capture_admission()
+        async with store._lock:
+            async with self.org.db_lock:
+                # Recheck selected scope/grant after await, before private H decode.
+                with self.db._lock:
+                    self._human_principal(principal)
+                    store._select_request(self.db._conn, **selection)
+                with self.org.workflow_authority.admission_writer(capture) as conn:
+                    self._human_principal(principal)
+                    request, row, intent = store._select_request(conn, **selection)
+                    store._authority(conn, intent, capture, {'collect-review'})
+                    require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+                    handoff = _handoff_record(conn, row, expected_org_slug=self.org.slug)
+                    graph = validate_handoff_graph(conn, row, handoff)
+                    if graph is None or request['id'] not in graph['request_ids']:
+                        raise ValueError('workflow_review_receipt_storage_corrupt')
+                    current = store._projection(conn, row, capture, replayed=True)['current']
+                    if current['state'] != 'consumed' or current['reconciliation_required']:
+                        raise WorkflowActivationError('workflow_author_handoff_source_not_current')
+                    scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'],
+                                         code='workflow_review_receipt_storage_corrupt')
+                    if scope['kind'] != 'human' or scope['principal'] != principal.principal_id:
+                        raise WorkflowActivationError('workflow_review_request_not_found')
+                    # Current capture is checked by the owned writer and against the full
+                    # saved H authority closure. Historical proof never replaces this check.
+                    fields = {'dependency': ('kind', 'org_namespace', 'profile_name', 'consumer_identity', 'bound_generation', 'state'),
+                              'store': ('kind', 'profile_name', 'generation', 'profile_digest', 'state'),
+                              'registry': ('kind', 'profile_name', 'published_generation')}
+                    authority = dict(ready=dict(namespace=capture.ready.namespace, generation=capture.ready.generation,
+                        snapshot_bytes_hex=capture.ready.snapshot_bytes.hex(), snapshot_digest=capture.ready.snapshot_digest),
+                        pointer=dict(zip(('current_generation', 'journal_id', 'snapshot_digest', 'state', 'profile_fence'),
+                                         capture.pointer, strict=True)),
+                        profiles=[dict(name=name, digest=dg) for name, dg in capture.profile_digests],
+                        mirror=[dict(zip(fields[item[0]], item, strict=True)) for item in capture.profile_mirror],
+                        cutover='enabled', actions=['collect-review'])
+                    if not _same_value(authority, dict(handoff['admission_authority'], actions=['collect-review'])):
+                        raise WorkflowActivationError('workflow_activation_authority_stale')
+                    existing = _records(conn, 'SELECT * FROM workflow_review_receipts WHERE request_id=?', (request['id'],))
+                    keys = _human_receipts_for_key(conn, org_slug=self.org.slug, operation_key=command['operation_key'])
+                    if existing:
+                        saved = _stored_json(existing[0]['proof_bytes'], existing[0]['proof_digest'],
+                                             code='workflow_review_receipt_storage_corrupt')
+                        if not _same_value(saved['command'], command) or not _same_value(keys, existing):
+                            raise WorkflowActivationError('workflow_human_review_operation_conflict')
+                        self._human_principal(principal)
+                        return existing[0]
+                    if keys or request['status'] != 'pending':
+                        raise WorkflowActivationError('workflow_human_review_operation_conflict')
+                    if (command['expected_revision'] != scope['revision']
+                            or command['request_scope_digest'] != request['request_scope_digest']
+                            or command['outcome'] not in scope['outcomes']):
+                        raise WorkflowActivationError('workflow_human_review_invalid_request')
+                    created_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+                    proof = _human_proof(request, scope, handoff, command, created_at)
+                    receipt = _human_receipt_row(request, scope, proof)
+                    _insert(conn, 'workflow_review_receipts', receipt)
+                    conn.execute('UPDATE workflow_review_requests SET status=? WHERE id=? AND status=?',
+                                 (command['outcome'], request['id'], 'pending'))
+                    validate_handoff_graph(conn, row, handoff)
+                    self._human_principal(principal)
+                    return receipt
 
     async def admit_completed(self, task_id: str) -> str | None:
         """Join committed terminal proof under the existing authority writer; never launch or join."""

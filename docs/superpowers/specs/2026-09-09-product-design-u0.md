@@ -1,13 +1,20 @@
 # Product-design workflow U0 feasibility evidence
 
-**U3b(a) internal checkpoint, THR139 D5/G395/generic410/H445/457/465.**
+**U3b(a/b) internal checkpoint, THR139 D5/G395/generic410/H445/457/465.**
 The actual F5 reviewer/session can internally stage immutable findings/outcome
 in the sequenced event chain; only an exact successful INTEGER/full callback,
 committed host quiescence, current authority/assignment and contributor
 independence can populate its agent receipt/provenance bridge. Producer and
 closed graph readers ship together, with existing terminal/reaper consumers.
-Human receipt/public stage/signed-request CLI/TS/native parity, collect-all
-closure/automatic template join and root-owned two-template public smoke465 are
+Internal human receipt admission now uses the existing authenticated Founder
+principal and in-writer revalidation, with closed immutable bearer provenance
+and matched historical graph validation. No synthetic human task/result,
+assignment, agent evidence/stage or host-quiescence assertion exists. Exact
+admitted replay returns the original proof; changed payload/key reuse conflicts.
+Only the selected request changes; pending peers/findings remain intact.
+Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
+parity with exact public/deny dispositions, collect-all
+closure/needs_revision/automatic template join and root-owned two-template public smoke465 are
 still dependencies. No joined event or fourth signature exists in this slice;
 keep it draft/unaccepted/unmerged. Exact bounds and pure-data event grammar:
 [Features And Invariants](../../agent-guides/features-and-invariants.md).

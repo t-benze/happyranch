@@ -31,12 +31,66 @@ The native terminal hook and existing lifespan/reaper discovery consume committe
 results without another scheduler, host launch or PID/TTL inference. Roles and
 outcomes come from pinned template data, including agent-looking human labels.
 
-This dependency-incomplete checkpoint stays unaccepted/unmerged: human receipts,
-public stage transport and signed-request projections with CLI/TS/native parity,
+This dependency-incomplete checkpoint stays unaccepted/unmerged: public human
+write and stage transport and signed-request projections with CLI/TS/native parity,
 collect-all closure/automatic template join, and root-owned two-template public
 scratch smoke465 remain later units. Existing public request GET accepts pending
-requests only; a signed agent request is no longer selectable there. No joined
+requests only; a signed human or agent request is no longer selectable there. No joined
 event, fourth signature, schema/migration, auth, permission or host API change.
+
+**U3b(b) internal human receipt checkpoint — same THR139 authority.**
+`WorkflowReviewReceiptStore.admit_human` takes an existing server-derived
+`WorkflowTemplatePrincipal` separately from the body. It requires the actual
+human Founder/founder_bearer lane, no task/session, and revalidates before scope
+selection, after awaited locks, inside the existing authority writer, and before
+commit. Selected recipient and current grant admission precede full private H
+decode; source validity, enabled cutover, current activation/authority/actions,
+complete historical closure and whole-instance contributor independence must
+still hold. Pinned role **kind**, output and allowed outcomes select behavior;
+role labels, product names and reviewer counts supply no human authority.
+
+The closed `workflow-human-review-command@1` has action `sign-review`,
+operation_key/request_id Token `[A-Za-z0-9._:-]{1,128}`, strict integer
+expected_revision=1, exact request_scope_digest, outcome `approved` or
+`changes_requested` additionally declared by the template, canonical base64
+findings_bytes_base64 (4..1398104 characters, 1..1048576 decoded UTF8 bytes), and
+findings_digest (SHA256 of the exact raw bytes). Canonical command <=2097152
+bytes. No body actor, proof Boolean, credentials or synthetic task/result.
+
+`workflow-human-review-proof@1` is a closed pure-data object with exactly
+`format,actor,operation_principal,command,request_digest,scope,request_scope_digest,
+pins,admission_authority,created_at`. Actor is exactly
+`{principal_kind:human,principal_id:founder,proof_kind:founder_bearer}` and
+operation_principal is `human:founder`. Request digest covers the **full canonical
+command**, including operation key and raw findings encoding/digest. Scope binds
+actual subject/revision/raw artifact digest, request, role/principal/generation
+and all recipient inputs. Pins retain the complete H template, activation,
+authorization/grant, binding, context, source scope and generic contract bytes.
+Admission authority retains the validated full H ready/pointer/profiles/mirror/
+enabled-cutover closure with actions exactly `[collect-review]`; current admission
+also compares the complete fresh capture inside the writer. Created_at is UTC
+`YYYY-MM-DDTHH:MM:SS.ffffffZ`; canonical proof <=16777216 bytes. The reader derives
+and compares the entire canonical proof and receipt row with strict JSON types,
+command/time/byte bounds and authentic saved closure. Boolean/integer substitutions,
+extra fields, partial or mismatched proof refuse. Historical validation invokes
+no bearer callback and supplies no current mutation authority.
+
+One org/actual human/operation-key identifies the immutable full payload. After
+CURRENT admission, exact replay returns the original receipt bytes/ID/timestamp;
+changed body/key or cross-request key reuse conflicts with zero partial effects.
+The existing guarded transaction inserts only the human receipt and updates only
+its selected request outcome. No human task/session/result/current assignment,
+agent receipt_evidence bridge, F5 stage or human host-terminal proof is created.
+Unsigned humans and authentic existing agent rows remain readable; peers and
+findings remain untouched and round/instance stay reviewing. Objection is a
+receipt only; collect-all closure/needs_revision/service join remain a later
+backend unit. No joined event, fourth signature, r2 or reassignment is added.
+Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
+parity with exact public/deny dispositions is the following unit. This internal
+producer has no public caller yet; existing pending-only GET is unchanged.
+All human behavior/proof execution remains UNEXECUTED; retained agent source
+is not accepted proof. Root-owned real two-template public scratch smoke465 is
+required before Founder invitation and remains separate from daily Product E2E.
 
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
