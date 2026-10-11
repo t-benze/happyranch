@@ -1309,30 +1309,91 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
               snapshot_digest=ready['snapshot_digest'], state='ready', profile_fence=journal[0]['profile_fence']))
         check(captured['cutover'] == 'enabled' and captured['actions'] == ['stage-immutable-document', 'submit-immutable-document']
               and set(captured['actions']) <= set(grant['original_request']['allowed_actions']))
-        check(isinstance(captured['profiles'], list) and len(captured['profiles']) <= 1024
-              and captured['profiles'] == [dict(name=p['profile_name'], digest=p['profile_digest'])
-                                          for p in sorted(snapshot['machine_global_profiles'], key=lambda p: p['profile_name'])])
+        def namespace(value: object) -> None:
+            check(type(value) is str and bool(value.strip()) and '\x00' not in value
+                  and 1 <= len(value.encode('utf8')) <= 256)
+
+        def profile_name(value: object) -> None:
+            # SourceProfileName is the complete authentic producer string,
+            # not the abstract workflow Role grammar or a normalized alias.
+            check(type(value) is str and bool(value))
+
+        def i0(value: object) -> None:
+            check(type(value) is int and 0 <= value <= 9223372036854775807)
+
+        def digest_value(value: object) -> None:
+            check(type(value) is str and re.fullmatch(r'[0-9a-f]{64}', value) is not None)
+
+        snapshot_profiles = snapshot['machine_global_profiles']
+        check(isinstance(snapshot_profiles, list) and len(snapshot_profiles) <= 1024)
+        names: list[str] = []
+        for profile in snapshot_profiles:
+            closed(profile, 'consumers generation profile_digest profile_name')
+            profile_name(profile['profile_name'])
+            i0(profile['generation'])
+            digest_value(profile['profile_digest'])
+            check(isinstance(profile['consumers'], list))
+            for consumer in profile['consumers']:
+                namespace(consumer)
+            check(profile['consumers'] == sorted(set(profile['consumers'])))
+            names.append(profile['profile_name'])
+        check(names == sorted(set(names)))
+        check(isinstance(captured['profiles'], list) and len(captured['profiles']) <= 1024)
+        for profile in captured['profiles']:
+            closed(profile, 'name digest')
+            profile_name(profile['name'])
+            digest_value(profile['digest'])
+        check(captured['profiles'] == [dict(name=p['profile_name'], digest=p['profile_digest'])
+                                      for p in snapshot_profiles])
         check(isinstance(captured['mirror'], list) and len(captured['mirror']) <= 16384)
         grouped: list[tuple] = []
+        dependencies: list[dict] = []
+        stores: dict[str, dict] = {}
+        registry: dict[str, dict] = {}
         for item in captured['mirror']:
             kind = item.get('kind') if isinstance(item, dict) else None
             fields = {'dependency': 'kind org_namespace profile_name consumer_identity bound_generation state',
                       'store': 'kind profile_name generation profile_digest state',
                       'registry': 'kind profile_name published_generation'}
-            check(kind in fields)
+            check(type(kind) is str and kind in fields)
             closed(item, fields[kind])
-            check(isinstance(item['profile_name'], str) and bool(item['profile_name']))
+            profile_name(item['profile_name'])
             if kind == 'dependency':
-                check(item['state'] in ('active', 'unbound', 'removed') and type(item['bound_generation']) is int and item['bound_generation'] >= 0)
+                namespace(item['org_namespace'])
+                namespace(item['consumer_identity'])
+                i0(item['bound_generation'])
+                check(type(item['state']) is str and item['state'] in ('active', 'unbound', 'removed'))
                 grouped.append((0, item['org_namespace'], item['profile_name'], item['consumer_identity']))
+                dependencies.append(item)
             elif kind == 'store':
-                check(item['state'] in ('active', 'removed') and type(item['generation']) is int and item['generation'] >= 0
-                      and re.fullmatch(r'[0-9a-f]{64}', item['profile_digest']) is not None)
+                i0(item['generation'])
+                digest_value(item['profile_digest'])
+                check(type(item['state']) is str and item['state'] in ('active', 'removed'))
                 grouped.append((1, item['profile_name']))
+                stores[item['profile_name']] = item
             else:
-                check(type(item['published_generation']) is int and item['published_generation'] >= 0)
+                i0(item['published_generation'])
                 grouped.append((2, item['profile_name']))
+                registry[item['profile_name']] = item
         check(grouped == sorted(set(grouped)))
+        # Reconstruct authority::_profile_projection from the saved full mirror.
+        # Current mutable tables/files are not witnesses to historical readiness.
+        required: dict[str, dict] = {}
+        for dependency in dependencies:
+            if dependency['org_namespace'] != ready['namespace'] or dependency['state'] == 'removed':
+                continue
+            name = dependency['profile_name']
+            store = stores.get(name)
+            published = registry.get(name)
+            check(dependency['state'] == 'active' and store is not None and published is not None)
+            bound_generation = dependency['bound_generation']
+            check(store['state'] == 'active' and store['generation'] == bound_generation
+                  and published['published_generation'] == bound_generation)
+            profile = required.setdefault(name, dict(consumers=[], generation=bound_generation,
+                                                    profile_digest=store['profile_digest'], profile_name=name))
+            check(profile['generation'] == bound_generation and profile['profile_digest'] == store['profile_digest'])
+            profile['consumers'].append(dependency['consumer_identity'])
+        check([required[name] for name in sorted(required)] == snapshot_profiles)
         return proof
     except (ValueError, KeyError, TypeError, AttributeError, UnicodeError, sqlite3.DatabaseError) as exc:
         raise ValueError(code) from exc

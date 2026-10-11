@@ -23,6 +23,22 @@ NULL active legacy result and genuine INTEGER result links retain their meaning.
 Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
 generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
 
+Complete H validation authenticates historical profile readiness from the saved
+full dependency/store/registry mirror. Every closed variant preserves raw
+nonempty source profile names; namespace and consumer identities are nonblank
+UTF8 strings of 1..256 bytes without NUL, generations are exact integers in
+0..9223372036854775807, and digests are full lowercase SHA256 strings. Native
+row grouping/order and unrelated or removed rows remain intact. The historical
+org's active requirements must have matching active store and registry
+generations, and their full names, digests and ordered consumer membership must
+reconstruct the pinned canonical profile projection. Empty mirror with required
+profiles, missing/mismatched required rows or unbound requirements refuse
+`workflow_author_handoff_storage_corrupt` before graph creation; an empty
+required projection remains valid. Readiness, the offline script and producers
+share this reader. Admitted GET exposes only category500; invisible scope404 and
+selected-grant403 retain earlier precedence. Today's mutable mirror is never
+historical evidence; a genuine later authority change remains a current hold.
+
 U3a(b) adds matched immutable `@3` template/activation/context readers,
 `submissions.validate_handoff_graph` and the internal handoff/review producers.
 Historical `@1`/`@2` families and pins retain their interpretation. An original
