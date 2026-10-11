@@ -38,8 +38,10 @@ The review owner reuses the existing scheduler/native host lifecycle and
 Pause/Resume final admission, publication, prompt reader and cancellation fences.
 Completed-source discovery precedes workers and periodic enqueue hints; possible
 launch without affirmative proof remains uncertain. No callback is a signature.
-This stacked draft remains dependency-incomplete: public API/CLI/TS/native parity
-and existing task callback/cancellation/portability adapters belong to U3a(c).
+U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
+with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
+cancellation and portability owner selection. This stacked draft remains
+unaccepted pending independent same-head assessment and retained gates.
 Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
 receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
 acceptance remain later units. Full independent review, honest same-head QA,
@@ -72,7 +74,7 @@ concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
 U3a(b) internal submission/review/link producers are staged in the stacked draft.
-Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+Genuine receipts/joins/finalization, later U3-U6 units and
 independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
@@ -2160,3 +2162,13 @@ Retained Pause retries admitted through v2 preserve their original tagged genera
 The existing job runner has no descendant-tree quiescence receipt: actual job terminal status still settles waits, while its committed launch journal becomes an unknown drain blocker. Only affirmative failure before runner entry closes a no-launch reservation. No PID absence, terminal row or caught runner exception establishes tree closure.
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
+
+
+U3a(c) completion routes select the existing draft or F5 review owner for exact
+full callback replay, and recheck ownership under org.db_lock before the existing
+binding lease and synchronized INTEGER result transaction. Generation/current
+session, cancellation, Pause/Resume and uncertain containment fences remain.
+Workflow trackers clear only through their existing terminal owner, preserving
+callback-before-terminal reads. Cancellation and portability select that same
+owner; a transport result or PID cannot prove quiescence. No callback is a
+signature and no reviewer request is automatically approved.

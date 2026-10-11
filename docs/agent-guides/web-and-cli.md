@@ -1,13 +1,12 @@
 # Web And CLI
 
-U3a(b) stages internal H/@3 handoff/submission and configured review ownership.
-This slice adds no public route, CLI command, TypeScript/OpenAPI contract or
-native reachability. The documented future author stage command is a U3a(c)
-dependency; existing callback, replay, cancellation and portability adapters
-still require F5 owner selection there. Direct-submit/reviewer-stage public/deny
-deferral remains. Requests and real review callbacks remain unsigned; receipts
-and joins require their later unit. Manager-owned two-template public smoke and
-independent operator acceptance are pending, with no behavioral PASS claimed.
+U3a(c) mounts the H/@3 public handoff and unsigned selected-request surfaces,
+with CLI/TypeScript/OpenAPI/native mirrors and F5 callback/replay/cancellation/
+portability owner selection. Direct-submit/reviewer-stage public/deny deferral
+remains. Requests and real callbacks are unsigned; genuine receipts and joins
+remain later units. Independent same-head assessment, retained CI/callback gates,
+manager-owned two-template public smoke and operator acceptance remain pending.
+Source parity is not behavioral PASS or native reachability authority.
 
 **G submission-schema migration (THR139 seq395).** The retained F/E-to-G path
 precedes explicit G-to-H migration; deliberate fresh org creation now initializes H. Existing F/E startup,
@@ -33,7 +32,7 @@ concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
 U3a(b) internal submission/review/link producers are staged in the stacked draft.
-Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+Genuine receipts/joins/finalization, later U3-U6 units and
 independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
@@ -1432,3 +1431,61 @@ classification. This operator does not run tests.
 ## Root task Pause and Resume (THR-292)
 
 Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. Backend PR1 supplies transport; browser controls/bilingual UI belong to PR2. [Contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+
+
+### U3a(c) public handoff and unsigned request surfaces
+
+The stacked draft serves only POST `/workflows/submissions/handoffs`, GET
+`/workflows/submissions/handoffs/{handoff_id}` and GET
+`/workflows/reviews/requests/{request_id}`, under `/api/v1/orgs/{slug}`.
+Matched `@3` activation request/receipt schemas coexist with historical `@1/@2`.
+An original CURRENT author supplies `session_id` and one closed
+`workflow-author-handoff-command@1` JSON body containing operation_key,
+activation_id, expected_revision=1, submission_bytes_base64 and submission_digest.
+The command is bounded to 2MiB; the exact strict UTF8 document is 1..1MiB.
+Stage commits201; exact before-callback replay returns200. Every post-callback
+POST refuses409 source_not_current; after tracker clearing the session refusal
+precedes replay. Staging returns no graph, launch, signature or approval.
+
+Handoff GET chooses exactly one current proof: session_id+activation_id for the
+original author; session_id+request_id for the selected actual reviewer; or
+proof_kind=owner-human for the current Founder owner, including zero-human-review
+configurations. Request GET uses session_id for the actual agent recipient or
+proof_kind=human for the selected human recipient. Unknown, duplicate, blank,
+malformed or mixed selectors refuse422. Agent lanes are header-free;
+a valid bearer conflicts403 auth_path_conflict, and an invalid present header
+refuses403 bearer_not_accepted. Human lanes retain the existing Founder bearer.
+Selection/current membership/grants are revalidated: invisible scope404, selected
+grant loss403, unready current authority409, stored corruption500.
+
+H receipts contain exactly format/core/replayed/current. Core has only
+handoff_id, reserved_submission_id, instance_id, revision, candidate_digest,
+request_digest and created_at. Current contains state, pending,
+reconciliation_required, reason and graph; graph is null unless currently
+consumed-authorized and then holds submission_id, round_id, request_ids and every
+actual configured agent reviewer_task_id in declared role order (0..3).
+Private source, admission, result, host, capability and input bytes never enter
+an H receipt. Unsigned request receipts instead expose the pinned document and
+only the selected recipient's inputs; they are pending with signed=false.
+Callbacks preserve actual execution evidence and never sign a review.
+
+CLI commands are `workflows submissions stage --org ORG --session-id SID
+--from-file /absolute/command.json [--json]`, `workflows submissions show H
+--org ORG --session-id SID --activation-id A` (or --request-id R), and
+`workflows submissions show H --org ORG --proof-kind owner-human`.
+`workflows submissions request-show R --org ORG` requires either --session-id SID
+or --proof-kind human. Every command forwards the exact payload/query once;
+syntax/unknown fields exit2, domain/transport failure exits1, pending/held/success
+exits0. Lost responses retain the original key; no automatic operation replay.
+
+TypeScript exports stageAuthorHandoff/getAuthorHandoff/getWorkflowReviewRequest
+through the unchanged shared client.ts. Bearer-sending agent TS calls expect403;
+owner reads can return200. One logical operation uses one endpoint fetch, with
+only the existing generic first401 token refresh permitting a second fetch of
+the same URL/body/key. Domain403/409 and response loss do not replay operations.
+Method/path classification includes the common GETs and excludes only the agent
+POST. SurfaceAllowList denies that exact normalized/prefixed POST, adding no GET
+grant or broader permission change. Actual operator UI, genuine receipts/joins,
+revisions/reassignment/recovery and independent acceptance remain later units;
+the manager-owned same-runtime two-template public smoke is required before
+Founder invitation. Source parity is not behavioral verification.

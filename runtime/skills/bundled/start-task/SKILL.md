@@ -35,8 +35,11 @@ its bound handoff supplement: preserve exact UTF8 output under one stable
 operation key before the genuine final completion callback. Staging reserves
 bytes only; the owned service fulfills that SAME operation after committed
 successful/quiescent terminal proof and current authority checks. The stage
-CLI/API adapter is a separate U3a(c) dependency; do not substitute another public
-command or fabricate a result when it is unavailable.
+CLI is `happyranch workflows submissions stage --org ORG --session-id SID
+--from-file /absolute/command.json`. Supply the closed bound command, keep its
+original key on transport loss, and stage before the final callback. If the
+compatible adapter is unavailable, report that dependency; never fabricate a
+result or substitute an unapproved direct-submit/reviewer-stage operation.
 
 Configured review tasks independently assess their pinned document and filtered
 inputs, then report through their actual task/session callback. Requests and

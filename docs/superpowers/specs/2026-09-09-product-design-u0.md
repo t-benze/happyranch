@@ -33,8 +33,10 @@ The review owner reuses the existing scheduler/native host lifecycle and
 Pause/Resume final admission, publication, prompt reader and cancellation fences.
 Completed-source discovery precedes workers and periodic enqueue hints; possible
 launch without affirmative proof remains uncertain. No callback is a signature.
-This stacked draft remains dependency-incomplete: public API/CLI/TS/native parity
-and existing task callback/cancellation/portability adapters belong to U3a(c).
+U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
+with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
+cancellation and portability owner selection. This stacked draft remains
+unaccepted pending independent same-head assessment and retained gates.
 Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
 receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
 acceptance remain later units. Full independent review, honest same-head QA,
@@ -74,7 +76,7 @@ concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
 U3a(b) internal submission/review/link producers are staged in the stacked draft.
-Public adapters, genuine receipts/joins/finalization, later U3-U6 units and
+Genuine receipts/joins/finalization, later U3-U6 units and
 independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 

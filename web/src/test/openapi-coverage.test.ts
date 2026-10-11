@@ -51,6 +51,12 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  test('H uses one shared GET classification and one agent-only POST', () => {
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/submissions/handoffs/{handoff_id}')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}')).toBe(true);
+    expect(EXCLUDED_PATHS.get('POST /api/v1/orgs/{slug}/workflows/submissions/handoffs')).toBe('agent-only current-source mutation');
+  });
+
   test('prompt-only founder PUT is browser-included', () => {
     expect(INCLUDED_PATHS.has('PUT /api/v1/orgs/{slug}/agents/{agent_name}/system-prompt')).toBe(true);
   });

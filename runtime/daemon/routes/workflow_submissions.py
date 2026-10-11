@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 
 from runtime.daemon.auth import _require_human, optional_bearer
@@ -33,7 +33,8 @@ def raise_error(exc: Any) -> None:
                 'workflow_author_handoff_action_not_authorized', 'workflow_author_handoff_read_not_authorized'}:
         fail(code, 403)
     if code in {'workflow_author_handoff_source_not_current', 'workflow_author_handoff_operation_conflict',
-                'workflow_author_handoff_schema_required'}:
+                'workflow_author_handoff_schema_required', 'workflow_author_handoff_timing_not_allowed',
+                'workflow_author_handoff_authority_stale'}:
         detail = {'code': code}
         if getattr(exc, 'owner', None):
             detail.update(owner=exc.owner, required_action=exc.required_action)
@@ -77,18 +78,42 @@ def decode_command(raw: bytes) -> dict:
         raise HTTPException(status_code=422, detail={'code': 'workflow_author_handoff_invalid_request'}) from exc
 
 
+TOKEN_SCHEMA = {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'^[A-Za-z0-9._:-]+$'}
+
+
+def proof_schema(*lanes: dict) -> dict:
+    return {'oneOf': [dict(type='object', additionalProperties=False, required=list(lane), properties=lane)
+                      for lane in lanes]}
+
+
+READ_RESPONSES = {403: {'description': 'Current principal or selected grant refused'},
+                  404: {'description': 'Invisible or absent selected object'},
+                  409: {'description': 'Current authority or required H schema unavailable'},
+                  422: {'description': 'Unknown, duplicate, mixed, blank or malformed proof selectors'},
+                  500: {'description': 'Category-only stored closure or storage refusal'}}
+HANDOFF_PROOFS = proof_schema({'session_id': TOKEN_SCHEMA, 'activation_id': TOKEN_SCHEMA},
+                              {'session_id': TOKEN_SCHEMA, 'request_id': TOKEN_SCHEMA},
+                              {'proof_kind': {'type': 'string', 'const': 'owner-human'}})
+
+
 @router.post('/workflows/submissions/handoffs', status_code=201, response_model=AuthorHandoffReceipt,
              responses={200: {'model': AuthorHandoffReceipt, 'description': 'Exact before-callback original-current replay'},
                         403: {'description': 'Current session/grant refused'}, 409: {'description': 'Source/schema/authority/conflict refusal'},
                         422: {'description': 'Closed bounded request refused'}, 500: {'description': 'Storage unavailable or corrupt'}},
-             openapi_extra={'requestBody': {'required': True, 'content': {'application/json': {
+             openapi_extra={'x-query-proof-schema': proof_schema({'session_id': TOKEN_SCHEMA}), 'requestBody': {'required': True, 'content': {'application/json': {
                  'schema': AuthorHandoffCommand.model_json_schema()}}}})
-async def stage_handoff(org: OrgDep, request: Request, response: Response, body: object = Body(...),
-                        session_id: str = Query(min_length=1, max_length=128, pattern=r'^[A-Za-z0-9._:-]+$'),
+async def stage_handoff(org: OrgDep, request: Request, response: Response,
+                        session_id: str | None = Query(default=None),
                         has_bearer: bool = optional_bearer()) -> dict:
-    query_values(request, {'session_id'})
+    if set(query_values(request, {'session_id'})) != {'session_id'}:
+        fail('workflow_author_handoff_invalid_request', 422)
     agent_transport(request, has_bearer)
-    command = decode_command(await request.body())
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 2097152:
+            fail('workflow_author_handoff_invalid_request', 422)
+        raw.extend(chunk)
+    command = decode_command(bytes(raw))
     try:
         receipt = await org.workflow_submissions.stage_author_handoff(session_id=session_id, command=command)
     except ERRORS as exc:
@@ -104,7 +129,8 @@ def sqlite_error_types() -> tuple[type[Exception], ...]:
     return (sqlite3.DatabaseError,)
 
 
-@router.get('/workflows/submissions/handoffs/{handoff_id}', response_model=AuthorHandoffReceipt)
+@router.get('/workflows/submissions/handoffs/{handoff_id}', response_model=AuthorHandoffReceipt,
+            responses=READ_RESPONSES, openapi_extra={'x-query-proof-schema': HANDOFF_PROOFS})
 async def get_handoff(org: OrgDep, handoff_id: str, request: Request,
                       session_id: str | None = Query(default=None), activation_id: str | None = Query(default=None),
                       request_id: str | None = Query(default=None), proof_kind: str | None = Query(default=None),
@@ -128,3 +154,5 @@ async def get_handoff(org: OrgDep, handoff_id: str, request: Request,
                                                           session_id=session_id, selector=selector)
     except ERRORS as exc:
         raise_error(exc)
+    except sqlite_error_types() as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_unavailable'}) from exc

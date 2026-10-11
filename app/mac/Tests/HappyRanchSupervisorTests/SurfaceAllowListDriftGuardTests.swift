@@ -45,6 +45,8 @@ struct SurfaceAllowListDriftGuardTests {
         ("{candidate_id}", "cand-1"),
         ("{attachment_id}", "att-1"),
         ("{adapter_id}", "adapter-1"),
+        ("{handoff_id}", "handoff-1"),
+        ("{request_id}", "request-1"),
     ]
 
     /// Replace template placeholders in a path with concrete values.
