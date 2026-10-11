@@ -559,9 +559,18 @@ is unchanged. No old 233-case execution is required or added.
 Run38102419156 attempt1 at f3abbfed1 executed the integrated reviewer/readiness
 and diagnostic repair: 16/17 passed, with A10 failing before callback arrival.
 Its bounded executor result proves the real CLI exited1 because the disposable
-daemon token was absent; authority readiness and cleanup succeeded. The token
-initialization correction remains unverified until a new attributed disposable
-run reaches the genuine callback/session/result and forged-label denial tail
-for all three providers. Historical attempt3 remains 16/17 with its timeout;
-neither failure is erased or relabeled. Unit source and gates are RETIRED, general
+daemon token was absent; authority readiness and cleanup succeeded.
+Run38104179027 attempt1 at ae8b48422 reached the genuine callback/session/result,
+rename preservation and forged-label denial assertions for all three providers.
+Claude and Codex emitted complete case receipts. OpenCode then failed the launch
+witness assertion because the helper incorrectly required Codex's `--json`
+flag; its shipping invocation uses `run --format json`. The run remains 16/17,
+with cleanup/export successful and no complete OpenCode case receipt.
+
+The retained helper now records a bounded boolean for the actual adjacent
+`--format json` argument pair and requires it with `run` for OpenCode. Claude's
+`-p`, Codex's `--json`, executable/source digests and real CLI callback witnesses
+remain required. This correction is unverified by the hosted naming boundary
+until a new attributed run passes; no prior failure is relabeled. Historical
+attempt3 remains 16/17 with its timeout. Unit source and gates are RETIRED, general
 integration is SKIPPED, and PR1025 is not an established replacement gate.

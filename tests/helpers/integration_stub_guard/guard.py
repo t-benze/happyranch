@@ -147,6 +147,8 @@ if __name__ == "__main__":
         validate_callback(binding)
         witness({"kind": "stub", "provider": provider, "stub_sha256": binding["stubs"][provider]["sha256"],
                  "source_sha": binding["revision"], "plan_sha256": hashlib.sha256(_read_owned(Path(plan))).hexdigest(),
+                 "format_json": any(flag == "--format" and value == "json"
+                                    for flag, value in zip(argv, argv[1:])),
                  "argc": len(argv), "flags": [arg for arg in argv if arg in
                     {"-p", "--json", "run", "--format", "--output-format", "--resume", "-s", "-"}]})
     except (KeyError, ValueError, OSError, RuntimeError):
@@ -161,6 +163,13 @@ def assert_launch_witness(provider: str, *, callbacks: int = 1) -> None:
     calls = [row for row in rows if row.get("kind") == "callback"]
     assert stubs, "actual deterministic executable launch witness missing"
     assert all(row["source_sha"] == binding["revision"] and row["stub_sha256"] == binding["stubs"][provider]["sha256"] for row in stubs)
-    assert all("-p" in row["flags"] if provider == "claude" else "--json" in row["flags"] for row in stubs)
+    assert provider in PROVIDERS, "unknown deterministic provider"
+    for row in stubs:
+        if provider == "claude":
+            assert "-p" in row["flags"]
+        elif provider == "codex":
+            assert "--json" in row["flags"]
+        else:
+            assert "run" in row["flags"] and row.get("format_json") is True
     expected_cli = hashlib.sha256((Path(binding["source"]) / "cli/main.py").read_bytes()).hexdigest()
     assert len(calls) >= callbacks and all(row["source_sha"] == binding["revision"] and row["cli_sha256"] == expected_cli for row in calls)
