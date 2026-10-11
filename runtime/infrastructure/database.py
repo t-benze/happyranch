@@ -1229,8 +1229,10 @@ class Database(
             from runtime.workflows.recovery import classify_task
             drafts = getattr(self, "_workflow_drafts", None)
             ownership = classify_task(self, task_id, org_slug=drafts.org.slug if drafts is not None else None)
+            if ownership.kind == 'f5':
+                drafts = getattr(self, '_workflow_reviews', None)
             if ownership.kind != "legacy":
-                if ownership.kind != "draft" or drafts is None:
+                if ownership.kind not in ('draft', 'f5') or drafts is None:
                     self._conn.rollback()
                     return False
                 if v2_admission is not None and not self._authenticate_v2_attempt_admission_uncommitted(

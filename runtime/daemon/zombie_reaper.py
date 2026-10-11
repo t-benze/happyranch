@@ -132,15 +132,14 @@ def _sweep_org_zombies(
         if t is None:
             continue
 
-        from runtime.orchestrator.task_pause import pause_deferred_owner
-        if pause_deferred_owner(db, task_id):
-            continue
         from runtime.workflows.recovery import classify_task
         ownership = classify_task(db, task_id, org_slug=getattr(orchestrator, "_slug", None))
         if ownership.kind != "legacy":
             # TTL/dead PID are never proof of workflow host quiescence.
             drafts = getattr(orchestrator, "_workflow_drafts", None)
-            if ownership.kind == "draft" and drafts is not None:
+            if ownership.kind == 'f5':
+                drafts = getattr(orchestrator, '_workflow_reviews', None)
+            if ownership.kind in ('draft', 'f5') and drafts is not None:
                 drafts.reconcile(task_id)
                 if queue is not None:
                     drafts.notify_queued(task_id, queue)
@@ -348,8 +347,7 @@ async def zombie_reaper_loop(
 
         for org in list(state.orgs.values()):
             try:
-                from runtime.orchestrator.task_pause import discover_pause_work
-                await discover_pause_work(org, state.queue)
+                await org.workflow_submissions.discover_completed_handoffs(state.queue)
                 _sweep_org_zombies(
                     org.db,
                     now=now,

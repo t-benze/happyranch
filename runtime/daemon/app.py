@@ -12,6 +12,8 @@ from runtime.daemon.routes import (
     adapters,
     agents,
     artifacts,
+    assistant,
+    assistant_a_mode,
     audit,
     authority_policy,
     auth,
@@ -39,6 +41,8 @@ from runtime.daemon.routes import (
     workflow_templates,
     workflow_cutover,
     workflow_activations,
+    workflow_submissions,
+    workflow_reviews,
     work_hours,
     schedules,
 )
@@ -123,6 +127,8 @@ async def _lifespan(app: FastAPI):
     # ensure_workers_started so a rapid terminal thread-dispatched task can
     # enqueue its TASK_FOLLOWUP via asyncio.run_coroutine_threadsafe.
     _main_loop = asyncio.get_running_loop()
+    from runtime.daemon.__main__ import discover_completed_workflow_handoffs
+    await discover_completed_workflow_handoffs(state)
     _wire_then_start_workers(state, _main_loop)
 
     # Recover any jobs left in 'running' state from a previous daemon process.
@@ -227,10 +233,6 @@ async def _lifespan(app: FastAPI):
                 org.orchestrator, _task_id,
                 trigger="startup_recovery", triggering_job_id=None,
             )
-
-    from runtime.orchestrator.task_pause import discover_pause_work
-    for org in state.orgs.values():
-        await discover_pause_work(org, state.queue)
 
     # GitHub #688 Slice B: enqueue startup-recovered reply-delivery tokens
     # BEFORE the thread workers start draining each org's queue, so retained
@@ -441,6 +443,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(metrics.router, prefix="/api/v1")
     app.include_router(runtime.router, prefix="/api/v1")
     app.include_router(orgs.router, prefix="/api/v1")
+    app.include_router(assistant.router, prefix="/api/v1")
+    app.include_router(assistant_a_mode.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(agents.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(authority_policy.router, prefix="/api/v1/orgs/{slug}", tags=["authority-policy"])
@@ -451,6 +455,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(workflow_cutover.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-cutover"])
     app.include_router(workflow_activations.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-activations"])
     app.include_router(workflow_templates.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-templates"])
+    app.include_router(workflow_submissions.router, prefix='/api/v1/orgs/{slug}', tags=['workflow-submissions'])
+    app.include_router(workflow_reviews.router, prefix='/api/v1/orgs/{slug}', tags=['workflow-reviews'])
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(skills.router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(skills.agent_skills_router, prefix="/api/v1/orgs/{slug}", tags=["skills"])

@@ -14,6 +14,7 @@ from runtime.workflows.templates import (
     WorkflowTemplateStore,
     WorkflowTemplateVersion,
 )
+from runtime.workflows.activation import WorkflowActivationError
 
 
 router = APIRouter()
@@ -49,7 +50,10 @@ def _error(code: str, status_code: int) -> None:
     raise HTTPException(status_code=status_code, detail={"code": code})
 
 
-def _raise_store_error(exc: WorkflowTemplateError) -> None:
+def _raise_store_error(exc: WorkflowTemplateError | WorkflowActivationError) -> None:
+    if isinstance(exc, WorkflowActivationError):
+        from runtime.daemon.routes.workflow_activations import _raise
+        _raise(exc)
     if exc.code == "template_version_not_found":
         _error(exc.code, 404)
     if exc.code in _CONFLICT_CODES:
@@ -134,7 +138,7 @@ async def publish_template(
                     definition=body.definition,
                     expected_current_version=body.expected_current_version,
                 )
-            except WorkflowTemplateError as exc:
+            except (WorkflowTemplateError, WorkflowActivationError) as exc:
                 _raise_store_error(exc)
         return _serialize(result)
 
@@ -191,7 +195,7 @@ async def publish_template(
                     definition=body.definition,
                     expected_current_version=body.expected_current_version,
                 )
-            except WorkflowTemplateError as exc:
+            except (WorkflowTemplateError, WorkflowActivationError) as exc:
                 _raise_store_error(exc)
     return _serialize(result)
 
@@ -203,7 +207,7 @@ def list_templates(org: OrgDep, team_slug: str = Query(...)) -> dict:
             org_slug=org.slug,
             namespace=f"org/{org.slug}/team/{team_slug}",
         )
-    except WorkflowTemplateError as exc:
+    except (WorkflowTemplateError, WorkflowActivationError) as exc:
         _raise_store_error(exc)
     return {"templates": [_serialize(item) for item in items]}
 
@@ -222,6 +226,6 @@ def get_template(
             template_name=template_name,
             version=version,
         )
-    except WorkflowTemplateError as exc:
+    except (WorkflowTemplateError, WorkflowActivationError) as exc:
         _raise_store_error(exc)
     return _serialize(item)
