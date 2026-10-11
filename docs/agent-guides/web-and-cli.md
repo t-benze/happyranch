@@ -1,5 +1,30 @@
 # Web And CLI
 
+**Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
+POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+`happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` expose the existing current
+non-recovery agent reviewer writer. Selected immutable request scope chooses
+`workflow-review-stage-command@1` or `@2`; both remain closed and byte-compatible.
+The five-field @1/@2 acknowledgement (format, stage_event_id, request_digest,
+replayed, signed=false) is unsigned. Genuine INTEGER/full callback and successful
+Boolean-quiescent terminal under current authority remain necessary for a receipt.
+The actual launch supplement carries selected request/digest/revision/outcomes
+and staging-before-final-callback instructions; forthcoming invocation identity
+is not session admission proof. CLI uses loopback session transport without
+bearer fallback or automatic retry. This POST is browser-excluded and denied
+natively before credential lookup/injection/forwarding. The private stage-only
+comparison independently checks raw and normalized paths: literal query split,
+one percent-decode with UTF8 replacement (malformed triplets and plus literal),
+one final slash removal, existing prefix strip, exact family. Shared transport,
+normalizer, H/G/r1/history and receipt validators retain their contracts.
+This supersedes the historical reviewer-stage deferrals below; direct-submit,
+C1 implementation, B2 repository access, wider recovery/UI and Founder465
+public two-template/revision smoke plus real Request changes AND Sign off remain
+separate/root-owned. New behavior/proof is UNEXECUTED/FOUNDER-WAIVED139429/430;
+integration SKIPPED24342, Python units RETIRED; automation is lint/static only.
+
+
 **Matched artifact admission B1 — THR139seq480/477, ROOT TASK10693.**
 A closed `artifact-review` definition with strict schema_version 4 compiles to
 `workflow-artifact-contract@4`; exact pins are workflow-compiler@4,
@@ -31,7 +56,7 @@ instance and output slot), submission ID, strict revision1, document kind, exact
 bytes digest and content_digest subject. It adds repository_resolution null.
 Human-review-command/proof/receipt, review-stage-command, agent-review-proof,
 review-receipt, review-request-receipt and review-join use matched @2 families.
-No agent-review-stage endpoint is added. Current selected-principal/grant checks
+B1 added no stage endpoint; seq475 staging is described above. Selected-principal/grant checks
 precede private decode and repeat after waits/in the writer. Both authentic
 receipt lanes, INTEGER/full callback and successful Boolean-quiescent terminal,
 contributor independence, retained objections and collect-all rules remain.
@@ -78,8 +103,8 @@ B1 adds the matched public model unions described above; native is unchanged. Co
 with repository/algorithm/full head/optional base identity and pinned navigation;
 no repository reader is mounted. B1 admits the document family; B2 owns
 authorized immutable-object reads;
-C owns fresh revisions/sign-offs, reassignment/recovery and mounted UI/CLI. Seq475
-reviewer-stage endpoint/native decision remains PENDING. Historical @1/@2/@3 pins,
+C owns fresh revisions/sign-offs, reassignment/recovery and mounted UI/CLI. Seq493 approves the seq475
+reviewer-stage endpoint/native restriction described above. Historical @1/@2/@3 pins,
 H revision1/unique intent, selection-before-private-decode and after-wait current
 authority retain their owners. Product-design and a differently named one-human
 proposal map through the same document adapter; code maps as representation only.
@@ -92,8 +117,7 @@ and execution exclusions. Independent full review/scoped QA renew on the final h
 
 U3a(c) mounts the H/@3 public handoff and unsigned selected-request surfaces,
 with CLI/TypeScript/OpenAPI/native mirrors and F5 callback/replay/cancellation/
-portability owner selection. Direct-submit/reviewer-stage public/deny deferral
-remains. Callbacks alone are unsigned. U3b(d) mounts the existing human bearer
+portability owner selection. Direct-submit remains deferred; current reviewer-stage/native rules are above. Callbacks alone are unsigned. U3b(d) mounts the existing human bearer
 writer and selected pending/signed reads with recipient-safe receipts and findings;
 matching closed served models/OpenAPI/CLI/shared TS ship. Stored scope/brief bytes
 remain unchanged. Native rules and client.ts are unchanged. Independent same-head assessment, unconditional Source Boundary Lint and
@@ -1747,7 +1771,48 @@ exit2, domain/transport errors exit1, success exit0. No new automatic retry.
 Shared `workflowReviews.signHumanReview` and getWorkflowReviewRequest plus all
 command/receipt/error types export through the existing api index. client.ts
 retains the sole generic first401 refresh; 403/409/response loss cannot invent
-a new operation. Static classification includes the human POST. Agent-stage/
-direct-submit routes/additional native denial remain deferred; native rules
-and reachability are unchanged. All behavioral/proof results UNEXECUTED under
+a new operation. Static classification includes the human POST. Reviewer staging adds only the native denial described above; direct-submit
+remains deferred and no new remote reachability follows. All behavioral/proof results UNEXECUTED under
 429/430; source parity is not acceptance, and root public smoke465 remains required.
+
+### Current-reviewer stage transport (seq475/493)
+
+Transport403 (valid bearer auth_path_conflict; any other Authorization header
+bearer_not_accepted) precedes query422. Exactly one nonblank session_id token
+[A-Za-z0-9._:-]{1,128} is required; mixed/unknown/duplicate selectors refuse.
+Stream body is 1..2097152 bytes; UTF8 JSON object only, no BOM, duplicate keys
+at any depth, nonfinite numbers or unknown command fields. Decoding422 precedes
+decodable body-identity403; closed command422 follows. Allowed fields are format,
+action=stage-review, operation_key, request_id, expected_revision (strict INTEGER1),
+request_scope_digest, outcome, findings_bytes_base64 and findings_digest. Findings
+are canonical base64 of 1..1048576 exact UTF8 bytes with matching raw SHA256.
+The immutable selected template admits outcomes; request IDs/digests grant nothing.
+
+The retained writer rechecks actual CURRENT session, recipient/grant, source and
+independence after waits/in the writer before new admission or exact replay.
+New stage and exact same actor/key/command/original-session replay return200
+with the same event/digest and actual Boolean replayed; signed is always false.
+Conflict409 never outranks revoked/currentness refusal. No receipt/join/queue or
+launch is created by the transport adapter. The finite error envelope is
+`detail:{code}`, with only schema-required409 permitting bounded owner/action
+guidance. Selected request absence/invisibility is404; explicit stage conflict,
+stale source/authority, disabled runs and schema-required are409. Other
+profile/authority failures map workflow_review_stage_authority_unavailable409.
+Malformed stage/scope/outcome maps workflow_review_stage_invalid_request422;
+database failures map workflow_review_stage_storage_unavailable500; retained
+closure/template/activation or unexpected failures map
+workflow_review_stage_storage_corrupt500, never caller422 or private details.
+
+CLI invalid file/syntax/token/command exits2 before HTTP, success exits0 and prints
+only the five acknowledgement fields under --json; refusal/transport/invalid ack
+exits1. Plain output is `request_id: staged signed=false replayed=<boolean>
+stage_event_id=<id>`. It posts once, closes its loopback client and preserves the
+original key/body on uncertainty. Served OpenAPI includes both command and ack
+families, closed session proof and finite errors; summary pins parameters/statuses
+only. Browser classification excludes this POST; no browser adapter is provided.
+Native denial decodes once, case-insensitive octets with UTF8 replacement:
+%73tages and %2F separators can match; %FF in an org prefix is replaced before
+prefix stripping. %2573 remains %73, decoded %3F is never a new query split,
+query data is never decoded and '+' or malformed triplets stay literal.
+Nonmatching targets use the existing policy. Human POST, selected GETs and
+existing author-handoff denial retain their prior rules.

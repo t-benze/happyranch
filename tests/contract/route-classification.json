@@ -207,6 +207,7 @@
     "POST /api/v1/orgs/{slug}/custom-skills/agent-create": "agent-only — opaque session-binding, not exercised from the Web UI (THR-055 B2)",
     "GET /api/v1/orgs/{slug}/portability-preflight": "cli-only org-portability preflight — read-only, no browser/TS consumer (THR-187 Slice A)",
     "POST /api/v1/orgs/{slug}/reconcile-portability": "founder-only org-portability reconciliation — no browser/TS consumer (THR-187 Slice A)",
+    "POST /api/v1/orgs/{slug}/workflows/reviews/stages": "agent-only current-reviewer mutation",
     "POST /api/v1/orgs/{slug}/workflows/submissions/handoffs": "agent-only current-source mutation"
   }
 }

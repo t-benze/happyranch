@@ -362,16 +362,71 @@ def cmd_workflow_human_review(args: argparse.Namespace) -> None:
         print(f"{receipt['request_id']}: {receipt['outcome']} signed=true receipt={receipt['receipt_id']}")
 
 
+def _review_stage_payload(path: str) -> dict:
+    from fastapi import HTTPException
+    from runtime.daemon.routes.workflow_reviews import decode_stage_command
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            raise ValueError('absolute path required')
+        with absolute.open('rb') as source:
+            return decode_stage_command(source.read(2097153))
+    except (OSError, ValueError, HTTPException) as exc:
+        print('error: review stage requires an absolute --from-file path containing a closed JSON command', file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def cmd_workflow_review_stage(args: argparse.Namespace) -> None:
+    from pydantic import ValidationError
+    from runtime.daemon.routes.workflow_reviews import ReviewStageAck, ArtifactReviewStageAck
+    body = _review_stage_payload(args.from_file)
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    try:
+        port_path = port_file()
+        if not port_path.exists():
+            raise DaemonNotRunning('daemon not running')
+        with httpx.Client(base_url=f'http://127.0.0.1:{port_path.read_text().strip()}',
+                          headers={'X-HappyRanch-Surface': 'cli'}, timeout=30.0) as client:
+            response = client.post(f'/api/v1/orgs/{slug}/workflows/reviews/stages',
+                                   params={'session_id': args.session_id}, json=body)
+    except (httpx.HTTPError, OSError, DaemonNotRunning) as exc:
+        print('error: review stage transport unavailable; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code != 200:
+        _print_error(response)
+    try:
+        model = ArtifactReviewStageAck if body['format'] == 'workflow-review-stage-command@2' else ReviewStageAck
+        result = model.model_validate(response.json()).model_dump()
+        # A well-formed unrelated acknowledgement is still not this command.
+        from runtime.workflows.draft_dispatch import canonical_bytes, digest
+        if result['request_digest'] != digest(canonical_bytes(body)):
+            raise ValueError('acknowledgement digest')
+    except (ValueError, ValidationError) as exc:
+        print('error: invalid unsigned stage acknowledgement; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"{body['request_id']}: staged signed=false replayed={str(result['replayed']).lower()} "
+              f"stage_event_id={result['stage_event_id']}")
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
-    reviews = workflow_sub.add_parser('reviews', help='Sign an existing selected human review request')
+    reviews = workflow_sub.add_parser('reviews', help='Stage current reviewer findings or sign a human request')
     review_sub = reviews.add_subparsers(dest='review_command', required=True)
     sign = review_sub.add_parser('sign', help='Submit a Founder-bearer human receipt')
     sign.add_argument('--org', required=True)
     sign.add_argument('--from-file', required=True)
     sign.add_argument('--json', action='store_true')
     sign.set_defaults(func=cmd_workflow_human_review)
+    stage_review = review_sub.add_parser('stage', help='Stage current agent findings before the genuine final callback')
+    stage_review.add_argument('--org', required=True)
+    stage_review.add_argument('--session-id', required=True, type=_workflow_token)
+    stage_review.add_argument('--from-file', required=True)
+    stage_review.add_argument('--json', action='store_true')
+    stage_review.set_defaults(func=cmd_workflow_review_stage)
     submissions = workflow_sub.add_parser("submissions", help="Stage original-current output and read safe handoff receipts")
     handoff_sub = submissions.add_subparsers(dest="handoff_command", required=True)
     for form in ("stage", "show", "request-show"):

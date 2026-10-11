@@ -4183,6 +4183,32 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/reviews/stages": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/submissions/handoffs": {
       "POST": {
         "params": [

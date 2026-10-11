@@ -5,6 +5,60 @@ import Foundation
 @Suite("SurfaceAllowList deny gate")
 struct SurfaceAllowListTests {
 
+    @Test("review stage denies raw and normalized aliases independently before forwarding")
+    func deniesCurrentReviewerStageAliases() {
+        let policy = SurfaceAllowList.default
+        let family = "/workflows/reviews/stages"
+        let prefixes = ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha", "/api/v42/orgs/alpha"]
+        for prefix in prefixes {
+            for suffix in ["", "/", "?session_id=sess-1", "/?session_id=sess-1"] {
+                let target = prefix + family + suffix
+                #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target))
+                #expect(!policy.isAllowed(method: "POST", path: target, rawPath: "/tasks"))
+            }
+        }
+        let encoded = [
+            "/api/v1/orgs/alpha/workflows/reviews/%73tages",
+            "/api/v1/orgs/alpha/workflows%2Freviews%2Fstages",
+            "/api/v1/orgs/alpha/workflows%2freviews%2fstages",
+            "/%61pi/v1/%6Frgs/alpha/workflows/reviews/stages",
+            "/api/v1/orgs/%FF/workflows/reviews/%73tages",
+            "/api/v1/orgs/%ff/workflows/reviews/stages",
+        ]
+        for target in encoded {
+            for suffix in ["", "/", "%2F", "?session_id=sess-1", "/?session_id=sess-1", "%2f?session_id=sess-1"] {
+                #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target + suffix))
+                #expect(!policy.isAllowed(method: "POST", path: target + suffix, rawPath: "/tasks"))
+            }
+        }
+    }
+
+    @Test("review stage one-pass decoder preserves nonmatching policy and configured scope")
+    func preservesNonmatchingReviewStageTargets() {
+        let policy = SurfaceAllowList.default
+        for target in [
+            "/workflows/reviews/%2573tages", "/workflows/reviews/stages%3Fsession_id=sess-1",
+            "/tasks?next=/workflows/reviews/%73tages", "/workflows/reviews/+stages",
+            "/workflows/reviews/stage%", "/workflows/reviews/%7stages",
+            "/workflows/reviews/%GGstages", "/workflows/reviews/%FFstages",
+            "/workflows/reviews/stages//", "/workflows/reviews/./stages",
+            "/workflows/reviews/stages/child",
+        ] {
+            #expect(policy.isAllowed(method: "POST", path: target, rawPath: target))
+        }
+        let family = "/workflows/reviews/stages"
+        #expect(SurfaceAllowList().isAllowed(method: "POST", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "GET", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "POST", path: "/workflows/reviews/human-receipts",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/reviews/human-receipts"))
+        #expect(policy.isAllowed(method: "GET", path: "/workflows/reviews/requests/request-1",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/reviews/requests/request-1"))
+        #expect(policy.isAllowed(method: "GET", path: "/workflows/submissions/handoffs/handoff-1",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/submissions/handoffs/handoff-1"))
+        #expect(!policy.isAllowed(method: "POST", path: "/workflows/submissions/handoffs",
+                                  rawPath: "/api/v1/orgs/alpha/workflows/submissions/handoffs"))
+    }
+
     @Test("handoff POST denies normalized and raw prefixed forms only")
     func deniesAuthorHandoffPost() {
         let policy = SurfaceAllowList.default

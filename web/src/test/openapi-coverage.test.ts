@@ -56,6 +56,8 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}')).toBe(true);
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/human-receipts')).toBe(true);
     expect(EXCLUDED_PATHS.get('POST /api/v1/orgs/{slug}/workflows/submissions/handoffs')).toBe('agent-only current-source mutation');
+    expect(EXCLUDED_PATHS.get('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe('agent-only current-reviewer mutation');
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe(false);
   });
 
   test('prompt-only founder PUT is browser-included', () => {

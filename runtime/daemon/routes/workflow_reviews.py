@@ -1,12 +1,13 @@
-"""Founder-bearer human receipts and current selected-recipient request reads."""
+"""Human receipts, current reviewer staging and selected-recipient reads."""
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import Field, StrictBool, StrictInt, ValidationError
+from pydantic import Field, StrictBool, StrictInt, ValidationError, field_validator
 
 from runtime.workflows.activation import (AbstractRole, ActivatedTemplate, ClosedRecord,
     DocumentTaskInput, DocumentThreadInput, SHA256, Token)
@@ -17,6 +18,10 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.routes.workflow_submissions import ERRORS, IDENTITY_KEYS, READ_RESPONSES, TOKEN_SCHEMA, agent_transport, fail, proof_schema, query_values, raise_error, raise_read_error, sqlite_error_types
 from runtime.workflows.review_receipts import HumanReviewCommand, ReviewReceiptProjection, ArtifactHumanReviewCommand, ArtifactReviewReceiptProjection, parse_human_review, recipient_receipt
 from runtime.workflows.templates import WorkflowTemplatePrincipal
+from runtime.workflows.authority import WorkflowAuthorityError
+from runtime.workflows.profile_coordinator import ProfileCoordinatorError
+from runtime.workflows.draft_dispatch import DraftOwnershipError
+from runtime.workflows.review_dispatch import ReviewStageCommand, ArtifactReviewStageCommand, parse_stage
 
 router = APIRouter()
 
@@ -255,3 +260,146 @@ async def get_review_request(org: OrgDep, request_id: str, request: Request,
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_unavailable'}) from exc
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_corrupt'}) from exc
+
+
+class ReviewStageAck(ClosedRecord):
+    format: Literal['workflow-review-stage-ack@1']
+    stage_event_id: Token
+    request_digest: SHA256
+    replayed: StrictBool
+    signed: Literal[False]
+
+    @field_validator('signed', mode='before')
+    @classmethod
+    def unsigned_boolean(cls, value: object) -> object:
+        if value is not False:
+            raise ValueError('unsigned Boolean required')
+        return value
+
+
+class ArtifactReviewStageAck(ReviewStageAck):
+    format: Literal['workflow-review-stage-ack@2']
+
+
+StageAck = ReviewStageAck | ArtifactReviewStageAck
+
+
+class ReviewStageErrorDetail(ClosedRecord):
+    code: Literal[
+        'auth_path_conflict', 'bearer_not_accepted', 'body_identity_rejected',
+        'unknown_session', 'cross_org_session', 'session_not_current', 'recovery_purpose_forbidden',
+        'workflow_author_handoff_read_not_authorized', 'workflow_author_handoff_action_not_authorized',
+        'role_binding_not_authorized', 'workflow_review_request_not_found',
+        'workflow_review_stage_operation_conflict', 'workflow_author_handoff_source_not_current',
+        'workflow_activation_authority_stale', 'workflow_new_runs_disabled',
+        'workflow_author_handoff_schema_required', 'workflow_review_stage_authority_unavailable',
+        'workflow_review_stage_invalid_request', 'workflow_review_stage_storage_unavailable',
+        'workflow_review_stage_storage_corrupt',
+    ]
+
+
+class ReviewStageSchemaErrorDetail(ClosedRecord):
+    code: Literal['workflow_author_handoff_schema_required']
+    owner: str = Field(min_length=1, max_length=256)
+    required_action: str = Field(min_length=1, max_length=2000)
+
+
+class ReviewStageError(ClosedRecord):
+    detail: ReviewStageErrorDetail | ReviewStageSchemaErrorDetail
+
+
+STAGE_RESPONSES = {status: dict(spec, model=ReviewStageError) for status, spec in READ_RESPONSES.items()}
+STAGE_RESPONSES[422]['description'] = 'Closed query, bounded strict JSON, findings, scope or outcome refused'
+
+
+def stage_command_schema() -> dict:
+    return {'anyOf': [ReviewStageCommand.model_json_schema(), ArtifactReviewStageCommand.model_json_schema()]}
+
+
+def decode_stage_command(raw: bytes) -> dict:
+    def pairs(items: list[tuple[str, object]]) -> dict:
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise ValueError('duplicate')
+            value[key] = item
+        return value
+
+    def nonfinite(value: str) -> None:
+        raise ValueError('nonfinite')
+
+    def finite_float(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError('nonfinite')
+        return number
+
+    try:
+        if not 1 <= len(raw) <= 2097152 or raw.startswith(b'\xef\xbb\xbf'):
+            raise ValueError('size')
+        value = json.loads(raw.decode('utf8'), object_pairs_hook=pairs,
+                           parse_constant=nonfinite, parse_float=finite_float)
+        if isinstance(value, dict) and set(value) & (IDENTITY_KEYS | {'proof', 'proof_bytes', 'actor_proof', 'provenance'}):
+            fail('body_identity_rejected', 403)
+        return parse_stage(value)
+    except (ValueError, UnicodeError, ValidationError, RecursionError) as exc:
+        raise HTTPException(status_code=422, detail={'code': 'workflow_review_stage_invalid_request'}) from exc
+
+
+def raise_stage_error(exc: Exception) -> None:
+    code = exc.code
+    if code in {'unknown_session', 'cross_org_session', 'session_not_current', 'recovery_purpose_forbidden',
+                'workflow_author_handoff_read_not_authorized', 'workflow_author_handoff_action_not_authorized',
+                'role_binding_not_authorized'}:
+        fail(code, 403)
+    if code == 'workflow_review_request_not_found':
+        fail(code, 404)
+    if code == 'workflow_review_stage_invalid_request':
+        fail(code, 422)
+    if code in {'workflow_review_stage_operation_conflict', 'workflow_author_handoff_source_not_current',
+                'workflow_activation_authority_stale', 'workflow_new_runs_disabled',
+                'workflow_author_handoff_schema_required'}:
+        detail = {'code': code}
+        if code == 'workflow_author_handoff_schema_required' and getattr(exc, 'owner', None):
+            detail.update(owner=exc.owner, required_action=exc.required_action)
+        raise HTTPException(status_code=409, detail=detail) from exc
+    if isinstance(exc, (WorkflowAuthorityError, ProfileCoordinatorError)):
+        fail('workflow_review_stage_authority_unavailable', 409)
+    # A retained template/activation/closure error is an internal failure after
+    # selected admission, never caller422 or a private existence distinction.
+    fail('workflow_review_stage_storage_corrupt', 500)
+
+
+@router.post('/workflows/reviews/stages', response_model=StageAck,
+             responses=STAGE_RESPONSES,
+             openapi_extra={'x-query-proof-schema': proof_schema({'session_id': TOKEN_SCHEMA}),
+                            'parameters': [{'name': 'session_id', 'in': 'query', 'required': True,
+                                            'schema': TOKEN_SCHEMA}],
+                            'requestBody': {'required': True, 'content': {'application/json': {
+                                'schema': stage_command_schema()}}}})
+async def stage_agent_review(org: OrgDep, request: Request,
+                             has_bearer: bool = optional_bearer()) -> dict:
+    agent_transport(request, has_bearer)
+    pairs = list(request.query_params.multi_items())
+    if (len(pairs) != 1 or pairs[0][0] != 'session_id'
+            or re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', pairs[0][1]) is None):
+        fail('workflow_review_stage_invalid_request', 422)
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 2097152:
+            fail('workflow_review_stage_invalid_request', 422)
+        raw.extend(chunk)
+    command = decode_stage_command(bytes(raw))
+    try:
+        acknowledgement = await org.workflow_reviews.stage_review(session_id=pairs[0][1], command=command)
+        model = ArtifactReviewStageAck if command['format'] == 'workflow-review-stage-command@2' else ReviewStageAck
+        model.model_validate(acknowledgement)
+        return acknowledgement
+    except ERRORS as exc:
+        raise_stage_error(exc)
+    except sqlite_error_types() as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_review_stage_storage_unavailable'}) from exc
+    except (DraftOwnershipError, ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_review_stage_storage_corrupt'}) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_review_stage_storage_corrupt'}) from exc

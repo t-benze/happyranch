@@ -1,5 +1,30 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
+**Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
+POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+`happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` expose the existing current
+non-recovery agent reviewer writer. Selected immutable request scope chooses
+`workflow-review-stage-command@1` or `@2`; both remain closed and byte-compatible.
+The five-field @1/@2 acknowledgement (format, stage_event_id, request_digest,
+replayed, signed=false) is unsigned. Genuine INTEGER/full callback and successful
+Boolean-quiescent terminal under current authority remain necessary for a receipt.
+The actual launch supplement carries selected request/digest/revision/outcomes
+and staging-before-final-callback instructions; forthcoming invocation identity
+is not session admission proof. CLI uses loopback session transport without
+bearer fallback or automatic retry. This POST is browser-excluded and denied
+natively before credential lookup/injection/forwarding. The private stage-only
+comparison independently checks raw and normalized paths: literal query split,
+one percent-decode with UTF8 replacement (malformed triplets and plus literal),
+one final slash removal, existing prefix strip, exact family. Shared transport,
+normalizer, H/G/r1/history and receipt validators retain their contracts.
+This supersedes the historical reviewer-stage deferrals below; direct-submit,
+C1 implementation, B2 repository access, wider recovery/UI and Founder465
+public two-template/revision smoke plus real Request changes AND Sign off remain
+separate/root-owned. New behavior/proof is UNEXECUTED/FOUNDER-WAIVED139429/430;
+integration SKIPPED24342, Python units RETIRED; automation is lint/static only.
+
+
 **Matched artifact admission B1 — THR139seq480/477, ROOT TASK10693.**
 A closed `artifact-review` definition with strict schema_version 4 compiles to
 `workflow-artifact-contract@4`; exact pins are workflow-compiler@4,
@@ -31,7 +56,7 @@ instance and output slot), submission ID, strict revision1, document kind, exact
 bytes digest and content_digest subject. It adds repository_resolution null.
 Human-review-command/proof/receipt, review-stage-command, agent-review-proof,
 review-receipt, review-request-receipt and review-join use matched @2 families.
-No agent-review-stage endpoint is added. Current selected-principal/grant checks
+B1 added no stage endpoint; seq475 staging is described above. Selected-principal/grant checks
 precede private decode and repeat after waits/in the writer. Both authentic
 receipt lanes, INTEGER/full callback and successful Boolean-quiescent terminal,
 contributor independence, retained objections and collect-all rules remain.
@@ -83,8 +108,7 @@ but mount no repository reader or template admission. Product-design and the
 one-human proposal share the document adapter; code shares the representation.
 B2 repository resolution and C r2/fresh sign-offs/reassignment/recovery/UI,
 Founder465 public/revision/real UI acceptance and Phase2 ordered coding/CI/merge
-adapters remain outstanding. Seq475 reviewer-stage public/native decision is
-PENDING; H revision1/unique intent and @1/@2/@3 history remain unchanged.
+adapters remain outstanding. Seq493 approves seq475 staging as described above; H revision1/unique intent and @1/@2/@3 history remain unchanged.
 Behavior/proof UNEXECUTED/FOUNDER-WAIVED139429/430; integration SKIPPED24342;
 Python units RETIRED. Full independent review/scoped QA renew at final head.
 Exact grammar: [Features And Invariants](docs/agent-guides/features-and-invariants.md).
@@ -105,8 +129,8 @@ reported separately. No extra author signature or deferred direct-submit path
 is introduced. Human public write now mounts the existing bearer writer; selected request GET
 returns real pending/signed status with only recipient-safe findings/receipt fields.
 Matching served models/OpenAPI/CLI/shared TS ship; stored scope/brief bytes remain.
-Agent-stage/direct-submit public routes and additional native denial stay deferred;
-no native/transport/auth/session changes or new owner-read audience. Root-owned
+Reviewer staging/native denial are described above; direct-submit stays deferred.
+No shared transport/auth/session changes or new owner-read audience follow. Root-owned
 two-template public smoke465 and later owner/revision/recovery/UI acceptance remain
 dependencies. Retain OPEN/DRAFT/unaccepted/unmerged. Exact grammar:
 [Features And Invariants](docs/agent-guides/features-and-invariants.md).
@@ -766,7 +790,7 @@ graph/callback states. Core stays identical; every held graph is hidden and GET
 creates no domain, queue or launch effects. Callback-before-clear original-current
 GET remains allowed; cleared sessions refuse through existing session admission.
 
-Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+Direct-submit remains deferred; reviewer staging/native denial are described above. Genuine
 receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
 acceptance remain later units. Full independent review, honest same-head QA,
 unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and

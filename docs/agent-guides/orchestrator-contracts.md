@@ -1,5 +1,30 @@
 # Orchestrator Contracts
 
+**Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
+POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+`happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` expose the existing current
+non-recovery agent reviewer writer. Selected immutable request scope chooses
+`workflow-review-stage-command@1` or `@2`; both remain closed and byte-compatible.
+The five-field @1/@2 acknowledgement (format, stage_event_id, request_digest,
+replayed, signed=false) is unsigned. Genuine INTEGER/full callback and successful
+Boolean-quiescent terminal under current authority remain necessary for a receipt.
+The actual launch supplement carries selected request/digest/revision/outcomes
+and staging-before-final-callback instructions; forthcoming invocation identity
+is not session admission proof. CLI uses loopback session transport without
+bearer fallback or automatic retry. This POST is browser-excluded and denied
+natively before credential lookup/injection/forwarding. The private stage-only
+comparison independently checks raw and normalized paths: literal query split,
+one percent-decode with UTF8 replacement (malformed triplets and plus literal),
+one final slash removal, existing prefix strip, exact family. Shared transport,
+normalizer, H/G/r1/history and receipt validators retain their contracts.
+This supersedes the historical reviewer-stage deferrals below; direct-submit,
+C1 implementation, B2 repository access, wider recovery/UI and Founder465
+public two-template/revision smoke plus real Request changes AND Sign off remain
+separate/root-owned. New behavior/proof is UNEXECUTED/FOUNDER-WAIVED139429/430;
+integration SKIPPED24342, Python units RETIRED; automation is lint/static only.
+
+
 **Matched artifact admission B1 — THR139seq480/477, ROOT TASK10693.**
 A closed `artifact-review` definition with strict schema_version 4 compiles to
 `workflow-artifact-contract@4`; exact pins are workflow-compiler@4,
@@ -31,7 +56,7 @@ instance and output slot), submission ID, strict revision1, document kind, exact
 bytes digest and content_digest subject. It adds repository_resolution null.
 Human-review-command/proof/receipt, review-stage-command, agent-review-proof,
 review-receipt, review-request-receipt and review-join use matched @2 families.
-No agent-review-stage endpoint is added. Current selected-principal/grant checks
+B1 added no stage endpoint; seq475 staging is described above. Selected-principal/grant checks
 precede private decode and repeat after waits/in the writer. Both authentic
 receipt lanes, INTEGER/full callback and successful Boolean-quiescent terminal,
 contributor independence, retained objections and collect-all rules remain.
@@ -109,8 +134,8 @@ model as representation only. B1 adds the matched document admission described
 above; B2 still owns actual authorized immutable repository resolution.
 C still owns r2 producers/fresh requests/sign-offs, reassignment/recovery and
 mounted UI/CLI. H revision1/unique-intent constraints and old @1/@2/@3 pins/history
-remain intact. Seq475 reviewer-stage public/native decision is PENDING; no dependent
-surface is mounted. Founder465 two-template public scratch/revision acceptance
+remain intact. Seq493 approves the seq475 reviewer-stage source adapter and native denial
+described above. Founder465 two-template public scratch/revision acceptance
 and real Founder UI Request changes/Sign off remain UNOBSERVED. Ordered development/
 review/QA, CI and guarded merge adapters/general coding/fork-join remain Phase2.
 A is source-only delivery, not behavioral acceptance: behavior/proof campaigns
@@ -140,9 +165,8 @@ never keeps an expired session or grants owner access. Response status is the
 real request row: pending/signed=false/pending=true/receipt=null, or approved or
 changes_requested/signed=true/pending=false/receipt=the safe projection. Stored
 scope/brief bytes, including the historical unsigned-purpose literal, are unchanged.
-Server served models/OpenAPI, CLI and shared TS agree. Agent-stage/direct-submit
-public routes and additional native denial remain deferred; native rules and
-client.ts are unchanged. No owner-resolution/revision/reassignment writer or new
+Server served models/OpenAPI, CLI and shared TS agree. Reviewer staging/native denial are described above; direct-submit
+remains deferred and client.ts is unchanged. No owner-resolution/revision/reassignment writer or new
 owner-read audience. Behavioral/proof results are UNEXECUTED/FOUNDER-WAIVED429/430;
 root-owned real two-template public smoke465 remains required before invitation.
 The draft stays dependency-incomplete/unaccepted/unmerged pending manager assessment,
@@ -225,7 +249,7 @@ U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
 with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
 cancellation and portability owner selection. This complete U3a composition remains
 unaccepted pending renewed independent same-head assessment and current static gates.
-Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+Direct-submit remains deferred; reviewer staging/native denial are described above. Genuine
 receipts/joins are the dependency-incomplete U3b checkpoint; revisions/reassignment/
 recovery, mounted operator UI and operator acceptance remain later units. Full independent review, honest same-head QA,
 unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
@@ -2480,7 +2504,22 @@ reaper discovery consumes missed-last-response collection and proceeds past
 ordinary held items while exposing corruption; no parallel scheduler. The H
 completed-source fulfillment remains; deferred active direct-submit is unproven.
 U3b(d) mounts human public write and selected signed reads with explicit safe
-projection and matching served/CLI/shared-TS models. Agent-stage/direct-submit
-public routes and extra native denial remain deferred; root public smoke465 and
+projection and matching served/CLI/shared-TS models. Reviewer staging/native denial are described above; direct-submit
+remains deferred; root public smoke465 and
 later owner/revision/recovery/UI acceptance remain dependencies; keep the draft unaccepted/unmerged. See the
 exact internal grammar in [Features And Invariants](features-and-invariants.md).
+
+### Current F5 reviewer launch supplement (seq475/493)
+
+WorkflowReviewDispatcher.reviewer_instruction renders only a relationally owned
+pending agent-kind F5 request. It checks the actual bridge/task/principal,
+current activation/grant before decoding private immutable closure, then current
+authority, pins/generation and independence. Queued pre-commit Pause admission
+and already-claimed pre-publication launches both use the selected request.
+Ordinary/author tasks receive no supplement; invalid identified F5 ownership
+fails closed. Its forthcoming session ID labels instructions, without calling
+_session/_fresh or registering a session. _run_agent_impl adds the supplement
+to its local brief before binding publication, and Pause _final_prompt rebuild
+consumes that same augmented brief. Stored briefs/scopes and old pins stay intact.
+Actual launch admission and stage CURRENT checks retain ownership after waits;
+no renderer write, fake session, receipt insertion or new host API is involved.

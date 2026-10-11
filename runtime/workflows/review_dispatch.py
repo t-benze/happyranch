@@ -303,6 +303,73 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
 class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
     """The F5 adapter projects real rows; it creates no draft intent or alternate host API."""
 
+    def reviewer_instruction(self, task_id: str, agent: str, session_id: str) -> str:
+        """Render the selected F5 contract before the forthcoming session is published.
+
+        The invocation identity labels instructions only. Relational selection
+        uses the retained bridge; CURRENT-session admission remains stage-owned.
+        No lifecycle writer, session registration or receipt effect runs here.
+        """
+        store = self.org.workflow_submissions
+
+        def selected(conn: sqlite3.Connection) -> tuple[dict, dict]:
+            bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))
+            if (len(bridges) != 1 or bridges[0]['assigned_principal'] != agent
+                    or bridges[0]['assignment_generation'] != 1):
+                raise DraftOwnershipError('workflow_review_storage_corrupt')
+            bridge = bridges[0]
+            request, _, source = store._select_request(conn, request_id=bridge['request_id'],
+                task_agent=(task_id, agent), session_id=bridge['session_id'], human=False)
+            return request, source
+
+        with self.db._lock:
+            # Ordinary and author invocations on historical layouts stay inert.
+            if not self.db._conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' "
+                                         "AND name='workflow_request_task_bridges'").fetchone():
+                return ''
+            if not self.db._conn.execute('SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?',
+                                         (task_id,)).fetchone():
+                return ''
+            selected(self.db._conn)  # Current relational recipient/grant before private decode.
+        capture = self.org.workflow_authority.capture_admission()
+        with self.db._lock:
+            request, source = selected(self.db._conn)
+            store._authority(self.db._conn, source, capture, {'collect-review'})
+            intent = self._intent(self.db._conn, task_id)
+            task = _record(self.db._conn, 'tasks', task_id)
+            scope = intent['scope']
+            if (scope['kind'] != 'agent' or scope['principal'] != agent
+                    or scope['request_id'] != request['id'] or not intent['is_current']
+                    or intent['cancellation_requested'] or intent['final_result_id'] is not None
+                    or (intent['state'], task['status']) not in {('queued', 'pending'), ('claimed', 'in_progress')}
+                    or intent['host_launch_started'] or task['assigned_agent'] != agent
+                    or task['cancelled_at'] is not None
+                    or capture.ready.generation != intent['authority_generation']
+                    or capture.ready.snapshot_digest != intent['authority_digest']
+                    or self.db._conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled'):
+                raise DraftOwnershipError('workflow_activation_authority_stale')
+            family = review_family(scope)
+            revision = scope['revision']
+            outcomes = json.dumps(scope['outcomes'])
+            request_id, scope_digest = request['id'], request['request_scope_digest']
+        return (f'\nWorkflow current reviewer: independently assess only the selected pinned immutable '
+                f'document and recipient-filtered inputs. Read them with happyranch workflows submissions '
+                f'request-show {request_id} --org {self.org.slug} --session-id {session_id} --json. '
+                f'The selected request is {request_id}, request_scope_digest {scope_digest}, revision {revision}; '
+                f'declared outcomes are {outcomes}. Before your genuine final callback write one closed JSON '
+                f'command: format workflow-review-stage-command@{family}, action stage-review, operation_key '
+                f'(one stable original key), request_id {request_id}, expected_revision {revision}, '
+                f'request_scope_digest {scope_digest}, outcome (one declared value), findings_bytes_base64 '
+                '(canonical base64 of exact UTF8 findings) and findings_digest (SHA256 of those raw bytes). '
+                f'Call happyranch workflows reviews stage --org {self.org.slug} --session-id {session_id} '
+                '--from-file <absolute-command.json> --json before report-completion. Preserve the same '
+                'key/body after transport loss; do not retry automatically. The five-field acknowledgement '
+                'is unsigned; request, acknowledgement or callback alone supplies no signature. Only genuine '
+                'INTEGER/full callback and committed successful terminal with Boolean host_quiescent=true '
+                'under current authority can admit a receipt. Retain failure/BLOCK evidence, never invent '
+                'approval, result, session or signature. No delegation, coding, execution or merge grant '
+                'follows. Use your actual task/session report-completion as the FINAL session action.\n')
+
     async def stage_review(self, *, session_id: str, command: dict) -> dict:
         command = parse_stage(command)
         store = self.org.workflow_submissions

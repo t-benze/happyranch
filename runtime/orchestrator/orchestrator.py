@@ -1131,6 +1131,9 @@ class Orchestrator:
         submissions = getattr(self, "_workflow_submissions", None)
         if submissions is not None and not recovery:
             brief += submissions.author_instruction(task_id, session_id)
+        reviews = getattr(self, "_workflow_reviews", None)
+        if reviews is not None and not recovery:
+            brief += reviews.reviewer_instruction(task_id, agent_name, session_id)
         full_prompt = self._build_agent_prompt(
             provider,
             agent_name,

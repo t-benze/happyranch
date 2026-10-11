@@ -46,9 +46,17 @@ kind. B1 admits documents only; code activation refuses before allocation.
 Follow the actual bound supplement and use workflow-author-handoff-command@2
 with artifact_kind document, never the historical @1 command for @4. The
 repository_binding/resolution slots are null and grant no repository capability.
-An @2 review scope requires matched @2 findings/proof formats; if its stage
-adapter is unavailable report that dependency before the genuine final callback.
-No public reviewer-stage route or execution/merge authority follows.
+A current configured agent reviewer follows its bound launch supplement: read
+only the selected pinned request/inputs, then stage exact UTF8 findings with
+`happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json --json` before the genuine final callback.
+Use workflow-review-stage-command@1 for an @1 request scope and @2 for an @2
+scope, the selected request/digest/revision/declared outcome and one stable key.
+Staging returns an unsigned five-field acknowledgement; it is not a receipt.
+Keep the same key/body after transport loss, without automatic retry. Only the
+actual INTEGER/full callback plus successful Boolean-quiescent terminal and
+current authority can admit a receipt. Report unavailable dependencies and
+failure/BLOCK evidence honestly. No execution/merge authority follows.
 
 Configured review tasks independently assess their pinned document and filtered
 inputs, then report through their actual task/session callback. Requests and
