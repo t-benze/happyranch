@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import signal
@@ -16,6 +17,54 @@ import traceback
 from pathlib import Path
 
 from owned import Owned, identity
+
+
+# Existing baseline artifact presence contract; no content/projection oracle.
+BASELINE_ARTIFACTS = ["observations.json", "browser-events.json", "daemon.txt",
+                      "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
+                      "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png"]
+
+
+def arm_deadline(deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("exhausted absolute deadline")
+    # alarm(int(remaining)) can disable the timer for a positive fraction.
+    signal.setitimer(signal.ITIMER_REAL, remaining)
+
+
+def validate_timing(row: dict) -> None:
+    """Require complete, bounded launcher receipts in both daily consumers."""
+    timing = row["timing"]
+    started, action_end, hard_end = (timing[key] for key in ("started", "action_deadline", "hard_deadline"))
+    if not all(math.isfinite(value) for value in (started, action_end, hard_end)):
+        raise ValueError("nonfinite timing")
+    if action_end != started + 720 or hard_end != started + 900:
+        raise ValueError("changed outer deadlines")
+    action = timing["action"]
+    if (not started <= action["finished"] <= action_end or action["deadline"] != action_end
+            or action["allowance_seconds"] != 720 or action["elapsed_seconds"] != action["finished"] - started):
+        raise ValueError("action budget exhausted")
+    cleanup, export = timing["cleanup"], timing["export"]
+    for phase, cap, outer in ((cleanup, 60, min(action_end + 60, hard_end)), (export, 120, hard_end)):
+        if (phase["ok"] is not True or not action["finished"] <= phase["entered"]
+                or phase["deadline"] != min(phase["entered"] + cap, outer)
+                or not phase["entered"] <= phase["finished"] < phase["deadline"]
+                or phase["allowance_seconds"] != phase["deadline"] - phase["entered"]
+                or phase["elapsed_seconds"] != phase["finished"] - phase["entered"]):
+            raise ValueError("missing, failed or inconsistent reserve timing")
+    if cleanup["finished"] > export["entered"]:
+        raise ValueError("overlapping cleanup/export")
+    if (row["total_seconds"] != export["finished"] - started
+            or row["evidence_seconds"] != export["elapsed_seconds"]):
+        raise ValueError("inconsistent elapsed timing")
+    for phase in row["phases"]:
+        cap = 480 if phase["name"] == "scenarios" and row["exercise"] == "baseline" else 240
+        if (phase["cap_seconds"] != cap
+                or phase["deadline"] != min(phase["entered"] + cap, action_end)
+                or phase["allowance_seconds"] != phase["deadline"] - phase["entered"]
+                or not started <= phase["entered"] <= phase["finished"] <= phase["deadline"]):
+            raise ValueError("inconsistent command timing")
 
 
 def daily_admission(source: Path) -> dict:
@@ -57,25 +106,33 @@ def main() -> int:
     output = args.artifacts.resolve()
     output.mkdir(parents=True, exist_ok=False)
     started = float(os.environ.get("E2E_STARTED_MONOTONIC", time.monotonic()))
-    if not 0 <= time.monotonic() - started < 720:
-        raise RuntimeError("invalid or exhausted cleanup-inclusive start clock")
     receipt = dict(schema=1, status="ENVIRONMENT_FAILURE", cleanup={"ok": False}, skipped=0,
                    variants={}, phases=[], source_sha=None, python=None,
                    exercise=args.exercise, signals=[])
     root = None
     owner = None
     logs = []
+    action_end, hard_end = started + 720, started + 900
+    receipt["timing"] = dict(started=started, action_deadline=action_end,
+                             hard_deadline=hard_end, phase="action")
 
     def interrupted(signum: int, _frame: object) -> None:
+        phase = receipt["timing"]["phase"]
+        if signum == signal.SIGALRM and phase != "action":
+            receipt["timing"][phase]["timeout_signal"] = dict(signal=signum, at=time.monotonic(),
+                                                              pid=os.getpid(), start=identity(os.getpid()), phase=phase)
+            raise TimeoutError(f"{phase} deadline exhausted")
         receipt["signals"].append(dict(signal=signum, at=time.monotonic(),
-                                       pid=os.getpid(), start=identity(os.getpid())))
+                                       pid=os.getpid(), start=identity(os.getpid()), phase=phase))
         raise RuntimeError(f"runner interrupted by signal {signum}")
 
     # Register before dependencies, daemon, browser or any other child launch.
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGALRM):
         signal.signal(sig, interrupted)
-    signal.alarm(max(1, int(started + 720 - time.monotonic())))
     try:
+        if not 0 <= time.monotonic() - started < 720:
+            raise RuntimeError("invalid or exhausted cleanup-inclusive start clock")
+        arm_deadline(action_end)
         receipt.update(daily_admission(source))
         if not (sys.platform == "linux" and os.environ.get("GITHUB_ACTIONS") == "true"
                 and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
@@ -121,14 +178,20 @@ def main() -> int:
 
         def command(name: str, argv: list[str], cwd: Path = source) -> None:
             begin = time.monotonic()
+            cap = 480 if name == "scenarios" and args.exercise == "baseline" else 240
+            end = min(begin + cap, action_end)
+            if name == "scenarios":
+                argv = [*argv, "--deadline", str(end)]
+            arm_deadline(end)  # Reject exhaustion before opening logs or spawning.
             log = root / "raw" / (name + ".txt")
             logs.append(log)
             with log.open("w") as stream:
+                arm_deadline(end)
                 process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT)
                 owner.add(process.pid)
-                active_phase = dict(name=name, argv=argv, pid=process.pid, exit=None)
+                active_phase = dict(name=name, argv=argv, pid=process.pid, exit=None,
+                                    entered=begin, deadline=end, cap_seconds=cap, allowance_seconds=end - begin)
                 receipt["phases"].append(active_phase)
-                end = min(begin + 240, started + 720)
                 try:
                     while process.poll() is None:
                         if time.monotonic() >= end:
@@ -150,8 +213,10 @@ def main() -> int:
                     code = process.returncode
                     active_phase["exit"] = code
                 finally:
-                    active_phase["seconds"] = time.monotonic() - begin
+                    active_phase["finished"] = time.monotonic()
+                    active_phase["seconds"] = active_phase["finished"] - begin
                     active_phase["interrupted"] = process.poll() is None
+            arm_deadline(action_end)
             if code:
                 raise RuntimeError(f"{name} exited {code}")
 
@@ -165,35 +230,62 @@ def main() -> int:
         # separate real processes. No runtime/pytest import in the controller.
         command("scenarios", [python, "-I", str(source / "e2e" / "controller.py"),
                               "--root", str(root), "--source", str(source),
-                              "--sha", receipt["source_sha"], "--deadline", str(started + 720),
+                              "--sha", receipt["source_sha"],
                               "--exercise", args.exercise])
         result = json.loads((root / "scenario.json").read_text())
         receipt.update(result)
         receipt["status"] = "PASS"
     except BaseException as exc:
+        receipt["failure_phase"] = "action"
         receipt["failure"] = repr(exc)
         receipt["traceback"] = traceback.format_exc()
     finally:
-        # No new actions after 720. Teardown is independently bounded to 60s;
-        # remaining 120s is reserved for diagnostics and artifact publication.
+        action_finished = time.monotonic()
+        receipt["timing"]["action"] = dict(finished=action_finished, deadline=action_end,
+                                           allowance_seconds=720, elapsed_seconds=action_finished - started)
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, signal.SIG_IGN)
-        signal.alarm(60)
-        evidence_started = time.monotonic()
+        staged: dict[str, bytes] = {}
+        token = ""
+
+        def redact(text: str) -> str:
+            return text.replace(token, "[REDACTED]") if token else text
+
+        def collect_evidence() -> None:
+            nonlocal token
+            if not root or not root.exists():
+                return
+            token_file = root / "daemon" / "daemon.token"
+            token = token_file.read_text().strip() if token_file.exists() else ""
+            if (root / "scenario.json").exists():
+                result = json.loads((root / "scenario.json").read_text())
+                receipt.update({k: result[k] for k in ("variants", "scenario_phases") if k in result})
+            for path in (root / "raw").glob("*"):
+                if path.suffix in {".txt", ".json", ".jsonl"}:
+                    staged[path.name] = redact(path.read_text(errors="replace")).encode()
+                elif path.suffix == ".png":
+                    staged[path.name] = path.read_bytes()
+
+        def reserve(name: str, cap: float, outer: float) -> dict:
+            entered = time.monotonic()
+            phase = dict(entered=entered, deadline=min(entered + cap, outer), ok=False)
+            phase["allowance_seconds"] = max(0, phase["deadline"] - entered)
+            receipt["timing"].update({"phase": name, name: phase})
+            return phase
+
+        cleanup = reserve("cleanup", 60, min(action_end + 60, hard_end))
         try:
+            arm_deadline(cleanup["deadline"])
             try:
                 receipt["cleanup"] = owner.cleanup() if owner else {"ok": False, "reason": "setup did not admit containment"}
-            except Exception:
-                receipt["cleanup"] = dict(ok=False, error=traceback.format_exc())
-            evidence_started = time.monotonic()
+            except TimeoutError:
+                raise
+            except Exception as exc:
+                receipt["cleanup"] = dict(ok=False, error=repr(exc))
+            # Snapshot sanitized evidence before deleting its owned source. All
+            # port checks, data/socket removal and staging consume cleanup time.
+            collect_evidence()
             if root:
-                token_file = root / "daemon" / "daemon.token"
-                token = token_file.read_text().strip() if token_file.exists() else ""
-                def redact(text: str) -> str:
-                    return text.replace(token, "[REDACTED]") if token else text
-                if (root / "scenario.json").exists():
-                    result = json.loads((root / "scenario.json").read_text())
-                    receipt.update({k: v for k, v in result.items() if k != "status"})
                 ports = json.loads((root / "ports.json").read_text()) if (root / "ports.json").exists() else []
                 import socket
                 absence = {}
@@ -202,30 +294,93 @@ def main() -> int:
                         sock.settimeout(1)
                         absence[str(port)] = sock.connect_ex(("127.0.0.1", port)) != 0
                 receipt["cleanup"]["ports_absent"] = absence
-                for path in (root / "raw").glob("*"):
-                    if path.suffix in {".txt", ".json", ".jsonl"}:
-                        (output / path.name).write_text(redact(path.read_text(errors="replace")))
-                    elif path.suffix == ".png":
-                        shutil.copyfile(path, output / path.name)
-                # Only sanitized browser event trace is exported. No HAR,
-                # sessionStorage, raw Playwright trace or bootstrap body.
                 shutil.rmtree(root)
                 receipt["cleanup"]["data_absent"] = not root.exists()
                 receipt["cleanup"]["sockets_absent"] = not root.exists()
                 receipt["cleanup"]["ok"] &= all(absence.values()) and not root.exists()
-                receipt = json.loads(redact(json.dumps(receipt)))
-        except BaseException:
-            receipt["cleanup"] = dict(ok=False, error=traceback.format_exc())
-        signal.alarm(0)
-        receipt["evidence_seconds"] = time.monotonic() - evidence_started
-        receipt["total_seconds"] = time.monotonic() - started
-        receipt["target_exceeded"] = receipt["total_seconds"] > 600
-        manifest = json.loads((source / "e2e" / "manifest.json").read_text())
-        if (args.exercise != "baseline" or receipt["signals"] or not receipt["cleanup"]["ok"] or receipt["total_seconds"] > 900
-                or set(receipt["variants"]) != set(manifest["variants"])
-                or any(row["status"] != "PASS" for row in receipt["variants"].values())):
+            cleanup["ok"] = receipt["cleanup"]["ok"] is True
+        except BaseException as exc:
+            receipt["cleanup"].update(ok=False, error=repr(exc))
+            cleanup["error"] = type(exc).__name__
+        finally:
+            cleanup["finished"] = time.monotonic()
+            cleanup["elapsed_seconds"] = cleanup["finished"] - cleanup["entered"]
+            cleanup["ok"] &= cleanup["finished"] < cleanup["deadline"]
+            if not cleanup["ok"]:
+                receipt["cleanup"]["ok"] = False
+                receipt.setdefault("failure_phase", "cleanup")
+                # A timed-out cleanup may not have returned its normal receipt.
+                # Keep every observed identity/unit/group, without claiming absence.
+                if owner:
+                    receipt["cleanup"].setdefault("identities", owner.pids.copy())
+                    receipt["cleanup"].setdefault("observed_units", sorted(owner.units.copy()))
+                    receipt["cleanup"].setdefault("observed_groups", sorted(owner.groups.copy()))
+
+        export = reserve("export", 120, hard_end)
+
+        def publish(row: dict) -> None:
+            temporary = output / "result.tmp"
+            temporary.write_text(json.dumps(row, indent=2))
+            temporary.replace(output / "result.json")
+
+        def failure_receipt() -> dict:
+            # Bounded metadata only: no raw exception/token text or partial PASS.
+            closure = receipt["cleanup"]
+            safe_cleanup = {key: closure[key] for key in
+                            ("identities", "groups", "ports_absent", "data_absent", "sockets_absent", "watcher_stopped")
+                            if key in closure}
+            safe_cleanup.update(ok=False, observed_units=closure.get("observed_units", sorted(closure.get("units", {}))),
+                                observed_groups=closure.get("observed_groups", sorted(closure.get("groups", {}))))
+            binding = {key: receipt[key] for key in ("event", "cron", "source_ref", "interpreter", "node") if key in receipt}
+            return dict(binding, schema=1, status="FAIL", source_sha=receipt["source_sha"],
+                        python=receipt["python"], exercise=args.exercise, skipped=0,
+                        variants={}, signals=receipt["signals"], phases=receipt["phases"],
+                        cleanup=safe_cleanup, timing=receipt["timing"],
+                        failure_phase=receipt.get("failure_phase", "export"),
+                        failure="incomplete detailed evidence",
+                        total_seconds=time.monotonic() - started)
+
+        try:
+            arm_deadline(export["deadline"])
+            publish(failure_receipt())
+            # Keep the final second of this SAME allowance for a failure receipt.
+            arm_deadline(export["deadline"] - 1)
+            if root and root.exists():
+                collect_evidence()  # Read-only partial diagnostics; never teardown.
+            for name, content in staged.items():
+                (output / name).write_bytes(content)
+            if receipt["status"] == "PASS" and args.exercise == "baseline":
+                required = BASELINE_ARTIFACTS + [phase["name"] + ".txt" for phase in receipt["phases"]]
+                if any(name not in staged or (name.endswith((".json", ".png")) and not staged[name]) for name in required):
+                    raise ValueError("missing/empty baseline evidence")
+            manifest = json.loads((source / "e2e" / "manifest.json").read_text())
+            export["finished"] = time.monotonic()
+            export["elapsed_seconds"] = export["finished"] - export["entered"]
+            export["ok"] = True
+            receipt["evidence_seconds"] = export["elapsed_seconds"]
+            receipt["total_seconds"] = export["finished"] - started
+            receipt["target_exceeded"] = receipt["total_seconds"] > 600
+            if (args.exercise != "baseline" or receipt["signals"] or not cleanup["ok"]
+                    or set(receipt["variants"]) != set(manifest["variants"])
+                    or any(row["status"] != "PASS" for row in receipt["variants"].values())):
+                receipt["status"] = "FAIL"
+            if receipt["status"] == "PASS":
+                validate_timing(receipt)
+            publish(json.loads(redact(json.dumps(receipt))))
+        except BaseException as exc:
+            export["ok"] = False
+            export["error"] = type(exc).__name__
+            export["finished"] = time.monotonic()
+            export["elapsed_seconds"] = export["finished"] - export["entered"]
             receipt["status"] = "FAIL"
-        (output / "result.json").write_text(json.dumps(receipt, indent=2))
+            receipt.setdefault("failure_phase", "export")
+            try:
+                arm_deadline(export["deadline"])
+                publish(failure_receipt())
+            except BaseException:
+                pass  # Initial FAIL survives; no work after the absolute bound.
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
     return 0 if receipt["status"] == "PASS" else 1
 
 
