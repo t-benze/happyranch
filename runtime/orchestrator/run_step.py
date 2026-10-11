@@ -197,6 +197,11 @@ def _reclaim_terminal_task_worktree(
         return result
 
     try:
+        store = getattr(orch._db, "_task_pause_store", None)
+        if store is not None:
+            projection = store.projection(task_id)
+            if projection["effective_hold"] or projection["blockers"] or not projection["evidence_complete"]:
+                return preserve("task-pause-ownership-unsettled")
         _terminal_worktree_remaining(deadline)
         task = orch._db.get_task(task_id)
         if task is None:
@@ -441,12 +446,100 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    from runtime.orchestrator.task_pause import (
+        TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation,
+    )
+    from runtime.infrastructure.task_pause_controls import PauseControlError
+    store = getattr(orch._db, "_task_pause_store", None)
+    if store is None:
+        return _run_step_body(orch, task_id, metadata)
+    task = orch._db.get_task(task_id)
+    if task is None:
+        return
+    from runtime.workflows.recovery import classify_task, route_owned_task
+    if classify_task(orch._db, task_id, org_slug=orch._slug).kind != "legacy":
+        route_owned_task(orch, task_id)
+        return
+    try:
+        invocation = deferred_invocation(orch, task, metadata)
+        if invocation is None:
+            if not eligible(orch, task):
+                return
+            agent = task.assigned_agent or _default_agent_for_root(orch, task)
+            invocation = TaskInvocation(orch, task, agent, orch._build_session_id(),
+                owner="v2" if isinstance(metadata, dict) and "authority_v2_generation" in metadata else "ordinary",
+                metadata=metadata or {})
+            invocation.prepare()
+    except DeferredRootPause:
+        return
+    except PauseControlError as exc:
+        if exc.detail["code"] == "root_paused":
+            return
+        raise
+    token = _invocation.set(invocation)
+    try:
+        consumer_only = getattr(invocation, "consumer_only", False)
+        landed = (orch._db.get_latest_task_result(task_id, invocation.agent,
+                    invocation.consumer_session_id if consumer_only else invocation.session_id)
+                  if invocation.admitted or consumer_only else None)
+        if landed is not None:
+            # The existing consumer authenticates the actual INTEGER row and
+            # current owner. A late callback ends this retry; no provider rerun
+            # and no synthetic ExecutorResult or consumed-result replay.
+            from runtime.orchestrator.orchestrator import completion_report_from_result_row
+            report = completion_report_from_result_row(task_id, landed, fallback_agent=invocation.agent)
+            orch._audit.log_completion_report(report=report)
+            _consume_completion_report(orch, task_id, report, result_row_id=landed["id"])
+        elif consumer_only:
+            raise DeferredRootPause("exact callback no longer available")
+        elif getattr(invocation, "deferred_recovery", False):
+            from runtime.orchestrator.executors import ExecutorResult
+            with store.db._lock:
+                row = store.row_uncommitted(store.root_uncommitted(task_id)["id"])
+                proof = invocation._entry(row)["context"]["recovery_return"]
+            result = ExecutorResult(success=True, session_id=proof["origin_session_id"],
+                                    agent_session_id=proof["provider_session_id"], duration_seconds=proof["duration_seconds"])
+            _finish_step_return(orch, task, invocation.agent, result,
+                                orch._read_completion_from_db(task_id, invocation.agent, result.session_id),
+                                usage_already_recorded=True)
+        else:
+            _run_step_body(orch, task_id, invocation.metadata)
+    except DeferredRootPause:
+        with store.db._lock:
+            row = store.row_uncommitted(store.root_uncommitted(task_id)["id"])
+            entry = invocation._entry(row)
+            recovery_deferred = "recovery_return" in entry["context"] and not invocation.admitted
+        if recovery_deferred:
+            invocation.phase("recovery_deferred")
+        elif invocation.admitted:
+            invocation.phase("retry_deferred", started_at=None, captured_generation=None)
+        else:
+            invocation.close()
+    except BaseException:
+        if invocation.admitted:
+            invocation.phase("unknown")
+        else:
+            invocation.close()
+        raise
+    else:
+        invocation.close()
+    finally:
+        from runtime.orchestrator.task_pause import release_live
+        release_live(invocation)
+        _invocation.reset(token)
+
+
+def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     # metadata: optional resume context (trigger, triggering_job_id); read by the CAS-win audit hook in Task 11.
     db = orch._db
     task = db.get_task(task_id)
     if task is None:
         return
 
+    from runtime.orchestrator.task_pause import current_invocation
+    retained_invocation = current_invocation()
+    if retained_invocation is not None and retained_invocation.admitted:
+        task = retained_invocation.task
     from runtime.workflows.recovery import route_owned_task
     if route_owned_task(orch, task_id):
         return
@@ -512,135 +605,143 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         )
         return
 
-    # ---- 2. Atomic claim (persisted count is monotonic telemetry) ----
-    next_count = task.orchestration_step_count + 1
-    # ---- 3. Atomic claim: unblock + increment + mark in_progress ----
-    # Conditional CAS on (expected_status, expected_block_kind) — if another
-    # worker has already claimed this task_id (duplicate enqueue from a
-    # multi-child fan-in race, or parent auto-resume colliding with a late
-    # callback), the UPDATE matches zero rows and we return silently.
-    #
-    # THR-229 C3d3b mandatory fence: a TAGGED queue item carrying a v2
-    # continuation generation token is admitted ONLY by the atomic generation
-    # claim, which authenticates the exact token G.  A malformed/present-null,
-    # empty, stale or mismatched token refuses and NEVER falls back to the
-    # ordinary claim.  An UNTAGGED item still uses the ordinary claim, which
-    # itself refuses a pending v2 pointer (so a missed producer cannot dispatch
-    # a root awaiting a v2 continuation).
-    metadata_dict = metadata if isinstance(metadata, dict) else {}
-    tagged_admission = "authority_v2_generation" in metadata_dict
-    reserved_session_id: str | None = None
-    if tagged_admission:
-        admission_generation = metadata_dict.get("authority_v2_generation")
-        notification = None
-        if isinstance(admission_generation, str) and admission_generation:
-            notification = db.get_authority_policy_v2_recovery_notification(
-                admission_generation
+    from runtime.orchestrator.task_pause import current_invocation, DeferredRootPause
+    pause_invocation = current_invocation()
+    if pause_invocation is not None:
+        # Candidate identity is pure preparation; arbitration owns all writes.
+        next_count = task.orchestration_step_count + 1
+        reserved_session_id = pause_invocation.session_id
+    else:
+        # ---- 2. Atomic claim (persisted count is monotonic telemetry) ----
+        next_count = task.orchestration_step_count + 1
+        # ---- 3. Atomic claim: unblock + increment + mark in_progress ----
+        # Conditional CAS on (expected_status, expected_block_kind) — if another
+        # worker has already claimed this task_id (duplicate enqueue from a
+        # multi-child fan-in race, or parent auto-resume colliding with a late
+        # callback), the UPDATE matches zero rows and we return silently.
+        #
+        # THR-229 C3d3b mandatory fence: a TAGGED queue item carrying a v2
+        # continuation generation token is admitted ONLY by the atomic generation
+        # claim, which authenticates the exact token G.  A malformed/present-null,
+        # empty, stale or mismatched token refuses and NEVER falls back to the
+        # ordinary claim.  An UNTAGGED item still uses the ordinary claim, which
+        # itself refuses a pending v2 pointer (so a missed producer cannot dispatch
+        # a root awaiting a v2 continuation).
+        metadata_dict = metadata if isinstance(metadata, dict) else {}
+        tagged_admission = "authority_v2_generation" in metadata_dict
+        reserved_session_id: str | None = None
+        if tagged_admission:
+            admission_generation = metadata_dict.get("authority_v2_generation")
+            notification = None
+            if isinstance(admission_generation, str) and admission_generation:
+                notification = db.get_authority_policy_v2_recovery_notification(
+                    admission_generation
+                )
+            if notification is None or notification.root_task_id != task_id:
+                logger.debug(
+                    "run_step %s: tagged continuation generation absent/unknown — refuse",
+                    task_id,
+                )
+                return
+            reserved_session_id = orch._build_session_id()
+            reservation = db.try_claim_v2_continuation_generation(
+                root_task_id=task_id,
+                manager_agent=notification.manager_agent,
+                manager_session_id=notification.manager_session_id,
+                result_id=notification.result_id,
+                generation_id=admission_generation,
+                next_session_id=reserved_session_id,
             )
-        if notification is None or notification.root_task_id != task_id:
+            if reservation.status != "claimed":
+                logger.debug(
+                    "run_step %s: generation admission refused (%s) — no ordinary claim",
+                    task_id, reservation.reason,
+                )
+                return
+            next_count = reservation.orchestration_step_count or next_count
+            # The reserved session is now durable on the task; settle the admission
+            # bookkeeping BEFORE any external launch.  A settlement failure holds
+            # dispatch and permits only exact settlement retry — never a launch and
+            # never a repeat generation admission.
+            settlement = db.settle_v2_continuation_generation_admission(
+                root_task_id=task_id,
+                manager_agent=notification.manager_agent,
+                manager_session_id=notification.manager_session_id,
+                result_id=notification.result_id,
+                generation_id=admission_generation,
+                next_session_id=reserved_session_id,
+            )
+            if settlement.status not in ("settled", "already_settled_exact"):
+                logger.warning(
+                    "run_step %s: admission settlement held (%s) — no launch",
+                    task_id, settlement.reason,
+                )
+                return
+            claimed = True
+        else:
+            claimed = db.try_claim_for_step(
+                task_id,
+                expected_status=task.status,
+                expected_block_kind=task.block_kind,
+                new_count=next_count,
+            )
+        if not claimed:
             logger.debug(
-                "run_step %s: tagged continuation generation absent/unknown — refuse",
+                "run_step %s: lost claim race (another worker is advancing it)",
                 task_id,
             )
+            # THR-229 R4: the ordinary claim also refuses a root whose durable
+            # pointer is ``pending(G)``.  That specific refusal is NOT a lost race:
+            # request independent discovery/publication for the target so the live
+            # generation can be tagged and admitted through its own fence.  This
+            # dequeue admits/launches nothing and never rewrites the stale item.
+            _request_pending_v2_publication(orch, task_id)
             return
-        reserved_session_id = orch._build_session_id()
-        reservation = db.try_claim_v2_continuation_generation(
-            root_task_id=task_id,
-            manager_agent=notification.manager_agent,
-            manager_session_id=notification.manager_session_id,
-            result_id=notification.result_id,
-            generation_id=admission_generation,
-            next_session_id=reserved_session_id,
-        )
-        if reservation.status != "claimed":
-            logger.debug(
-                "run_step %s: generation admission refused (%s) — no ordinary claim",
-                task_id, reservation.reason,
-            )
-            return
-        next_count = reservation.orchestration_step_count or next_count
-        # The reserved session is now durable on the task; settle the admission
-        # bookkeeping BEFORE any external launch.  A settlement failure holds
-        # dispatch and permits only exact settlement retry — never a launch and
-        # never a repeat generation admission.
-        settlement = db.settle_v2_continuation_generation_admission(
-            root_task_id=task_id,
-            manager_agent=notification.manager_agent,
-            manager_session_id=notification.manager_session_id,
-            result_id=notification.result_id,
-            generation_id=admission_generation,
-            next_session_id=reserved_session_id,
-        )
-        if settlement.status not in ("settled", "already_settled_exact"):
-            logger.warning(
-                "run_step %s: admission settlement held (%s) — no launch",
-                task_id, settlement.reason,
-            )
-            return
-        claimed = True
-    else:
-        claimed = db.try_claim_for_step(
-            task_id,
-            expected_status=task.status,
-            expected_block_kind=task.block_kind,
-            new_count=next_count,
-        )
-    if not claimed:
-        logger.debug(
-            "run_step %s: lost claim race (another worker is advancing it)",
-            task_id,
-        )
-        # THR-229 R4: the ordinary claim also refuses a root whose durable
-        # pointer is ``pending(G)``.  That specific refusal is NOT a lost race:
-        # request independent discovery/publication for the target so the live
-        # generation can be tagged and admitted through its own fence.  This
-        # dequeue admits/launches nothing and never rewrites the stale item.
-        _request_pending_v2_publication(orch, task_id)
-        return
 
-    # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
-    # CAS wins on an in_progress(blocked_on_job) → in_progress(NULL) transition. The
-    # prompt-build at step 4 reads this row to inject BLOCKED-JOBS-RESULTS.
-    if (task.status in _PARKED_CARRIER_STATUSES
-            and task.block_kind == BlockKind.BLOCKED_ON_JOB):
-        import json as _json
-        try:
-            job_ids = _json.loads(task.blocked_on_job_ids or "[]")
-        except _json.JSONDecodeError:
-            job_ids = []
-        job_outcomes = {jid: (db.get_job_status(jid) or "unknown")
-                        for jid in job_ids}
-        md = metadata or {}
-        orch._audit.log_task_resumed_from_jobs(
-            task_id=task_id,
-            blocking_job_ids=job_ids,
-            trigger=md.get("trigger", "unknown"),
-            triggering_job_id=md.get("triggering_job_id"),
-            job_outcomes=job_outcomes,
-        )
+        # Spec §5.2: write task_resumed_from_jobs audit row immediately after the
+        # CAS wins on an in_progress(blocked_on_job) → in_progress(NULL) transition. The
+        # prompt-build at step 4 reads this row to inject BLOCKED-JOBS-RESULTS.
+        if (task.status in _PARKED_CARRIER_STATUSES
+                and task.block_kind == BlockKind.BLOCKED_ON_JOB):
+            import json as _json
+            try:
+                job_ids = _json.loads(task.blocked_on_job_ids or "[]")
+            except _json.JSONDecodeError:
+                job_ids = []
+            job_outcomes = {jid: (db.get_job_status(jid) or "unknown")
+                            for jid in job_ids}
+            md = metadata or {}
+            orch._audit.log_task_resumed_from_jobs(
+                task_id=task_id,
+                blocking_job_ids=job_ids,
+                trigger=md.get("trigger", "unknown"),
+                triggering_job_id=md.get("triggering_job_id"),
+                job_outcomes=job_outcomes,
+            )
 
-    # Fan-out dispatch: active_fanout can only be "spawned"
-    # (all children terminal — inject join context).
-    # pending_review removed — founder ruling THR-012 msg 129/131
-    # removed the fan-out review gate entirely.
-    if task.active_fanout is not None:
-        from runtime.orchestrator.fanout import FanoutState as _FanoutState
-        fanout_state = _FanoutState.deserialize(task.active_fanout)
-        if fanout_state.status == "spawned":
-            # status == "spawned" → all children terminal; inject join context.
-            _inject_fanout_join_context(orch, task_id, task.active_fanout)
-            db.update_task_active_fanout(task_id, None)
+        # Fan-out dispatch: active_fanout can only be "spawned"
+        # (all children terminal — inject join context).
+        # pending_review removed — founder ruling THR-012 msg 129/131
+        # removed the fan-out review gate entirely.
+        if task.active_fanout is not None:
+            from runtime.orchestrator.fanout import FanoutState as _FanoutState
+            fanout_state = _FanoutState.deserialize(task.active_fanout)
+            if fanout_state.status == "spawned":
+                # status == "spawned" → all children terminal; inject join context.
+                _inject_fanout_join_context(orch, task_id, task.active_fanout)
+                db.update_task_active_fanout(task_id, None)
 
     # ---- 4. Run the agent subprocess ----
     agent = task.assigned_agent or _default_agent_for_root(orch, task)
-    if task.assigned_agent is None:
+    if task.assigned_agent is None and pause_invocation is None:
         db.update_task(task_id, assigned_agent=agent)
 
     prompt = _build_agent_prompt(orch, task, agent)
-    prompt += _prepare_workspace_cleanup_reclamation_context(
-        orch, task, agent, stale_orchestration_step_count=task.orchestration_step_count,
-        claimed_next_step_count=next_count,
-    )
+    if pause_invocation is None:
+        prompt += _prepare_workspace_cleanup_reclamation_context(
+            orch, task, agent, stale_orchestration_step_count=task.orchestration_step_count,
+            claimed_next_step_count=next_count,
+        )
     try:
         if reserved_session_id is None:
             result, report = orch._run_agent(task_id, agent, prompt)
@@ -648,6 +749,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             result, report = orch._run_agent(
                 task_id, agent, prompt, runtime_session_id=reserved_session_id,
             )
+    except DeferredRootPause:
+        raise
     except Exception as exc:
         note = f"agent invocation failed: {exc}"
         _fail(orch, task_id, note=note)
@@ -658,12 +761,20 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         )
         return
 
+    _finish_step_return(orch, task, agent, result, report)
+
+
+def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, result, report,
+                        *, usage_already_recorded: bool = False) -> None:
+    db, task_id = orch._db, task.id
+    from runtime.orchestrator.task_pause import current_invocation, DeferredRootPause
+    pause_invocation = current_invocation()
     # Persist token usage for this session, regardless of session outcome.
     # Spec 4.3: skip when None; otherwise write — including the parse-failure
     # case where token columns are NULL but ``usage_raw_json`` carries the
     # raw payload. Done before outcome classification so timeouts / blocked
     # sessions still land their usage row.
-    if result.token_usage is not None:
+    if not usage_already_recorded and result.token_usage is not None:
         db.insert_session_token_usage(
             task_id=task_id,
             agent=agent,
@@ -697,83 +808,108 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         and recovery_executor == "codex"
         and bool(result.agent_session_id)
     ):
-        origin_session_id = result.session_id
-        recovery_session_id = orch._build_session_id()
-        # Establish the live budget before the durable claim.  Claim/SQLite
-        # contention is part of this one recovery attempt; it must never get
-        # a fresh 120 seconds after returning.
-        recovery_deadline_monotonic = time.monotonic() + 120.0
-        claimed_at = datetime.now(timezone.utc)
-        expires_at = claimed_at + timedelta(seconds=120)
-        if db.claim_task_completion_recovery(
-            task_id=task_id, agent=agent, origin_session_id=origin_session_id,
-            recovery_session_id=recovery_session_id,
-            provider_session_id=result.agent_session_id,
-            claimed_at=claimed_at.isoformat(), expires_at=expires_at.isoformat(),
-        ):
-            recovery_claimed = True
-            # Claim-before-launch deliberately spends the one attempt even if
-            # preparation/admission/launch refuses.  The short prompt carries
-            # the current binding and never replays the implementation brief.
-            recovery_prompt = (
-                "Your previous turn ended without a HappyRanch completion callback. "
-                "Submit the required callback now using the current task/session "
-                f"binding task={task_id} session={recovery_session_id} and the "
-                "work already performed. If waiting on a job, report blocked with "
-                "its actual job ID. Do not claim unverified success. Do not continue "
-                "implementation or start new work."
-            )
-            # Wall expiry is durable; this monotonic deadline fences the live
-            # invocation across preparation and admission waits.
-            remaining = max(0, int(recovery_deadline_monotonic - time.monotonic()))
-            if remaining > 0:
-                try:
-                    recovery_result, recovery_report = orch._run_agent(
-                        task_id, agent, recovery_prompt,
-                        runtime_session_id=recovery_session_id,
-                        resume_session_id=result.agent_session_id,
-                        origin_runtime_session_id=origin_session_id,
-                        timeout_seconds_override=remaining,
-                        recovery_deadline_monotonic=recovery_deadline_monotonic,
-                        recovery=True,
+        if pause_invocation is not None:
+            claimed, recovery_result, recovery_report = pause_invocation.recover_return(result)
+            recovery_session_id = pause_invocation.session_id
+            recovery_claimed = claimed
+            origin_session_id = result.session_id
+            if claimed:
+                if (recovery_result.session_id == recovery_session_id
+                        and recovery_result.token_usage is not None):
+                    db.insert_session_token_usage(
+                        task_id=task_id, agent=agent,
+                        session_id=recovery_result.session_id,
+                        executor=orch._resolve_executor_name(agent),
+                        token_usage=recovery_result.token_usage,
+                        scope_type="task", scope_id=task_id,
+                        thread_id=task.dispatched_from_thread_id,
                     )
-                    if recovery_result.token_usage is not None:
-                        db.insert_session_token_usage(
-                            task_id=task_id, agent=agent,
-                            session_id=recovery_result.session_id,
-                            executor=orch._resolve_executor_name(agent),
-                            token_usage=recovery_result.token_usage,
-                            scope_type="task", scope_id=task_id,
-                            thread_id=task.dispatched_from_thread_id,
-                        )
-                    result, report = recovery_result, recovery_report
-                except Exception as exc:
-                    result.error = f"completion recovery launch failed: {exc}"
+                result, report = recovery_result, recovery_report
+                accepted_row = db.get_accepted_task_completion_recovery_result(task_id=task_id, agent=agent)
+                if accepted_row is not None:
+                    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                    report = completion_report_from_result_row(task_id, accepted_row, fallback_agent=agent)
+                    accepted_recovery_callback = True
             else:
-                # The durable claim has already spent the sole recovery.  Do
-                # not leave a clean origin omission in progress merely
-                # because claim contention consumed the entire live budget.
-                result.success = False
-                result.error = "completion recovery live budget expired before launch"
-            accepted_row = db.get_accepted_task_completion_recovery_result(
-                task_id=task_id, agent=agent,
-            )
-            if accepted_row is not None:
-                from runtime.orchestrator.orchestrator import completion_report_from_result_row
-                report = completion_report_from_result_row(
-                    task_id, accepted_row, fallback_agent=agent,
-                )
-                # The accepted callback is the durable terminal authority.
-                # Keep the provider result untouched for honest diagnostics and
-                # usage accounting, but do not let a late provider error erase
-                # an already-admitted recovery result.
-                accepted_recovery_callback = True
+                report = orch._read_completion_from_db(task_id, agent, origin_session_id)
         else:
-            # An exact origin callback may have committed between the initial
-            # read and claim. Decode only that persisted invocation result.
-            accepted = orch._read_completion_from_db(task_id, agent, origin_session_id)
-            if accepted is not None:
-                report = accepted
+            origin_session_id = result.session_id
+            recovery_session_id = orch._build_session_id()
+            # Establish the live budget before the durable claim.  Claim/SQLite
+            # contention is part of this one recovery attempt; it must never get
+            # a fresh 120 seconds after returning.
+            recovery_deadline_monotonic = time.monotonic() + 120.0
+            claimed_at = datetime.now(timezone.utc)
+            expires_at = claimed_at + timedelta(seconds=120)
+            if db.claim_task_completion_recovery(
+                task_id=task_id, agent=agent, origin_session_id=origin_session_id,
+                recovery_session_id=recovery_session_id,
+                provider_session_id=result.agent_session_id,
+                claimed_at=claimed_at.isoformat(), expires_at=expires_at.isoformat(),
+            ):
+                recovery_claimed = True
+                # Claim-before-launch deliberately spends the one attempt even if
+                # preparation/admission/launch refuses.  The short prompt carries
+                # the current binding and never replays the implementation brief.
+                recovery_prompt = (
+                    "Your previous turn ended without a HappyRanch completion callback. "
+                    "Submit the required callback now using the current task/session "
+                    f"binding task={task_id} session={recovery_session_id} and the "
+                    "work already performed. If waiting on a job, report blocked with "
+                    "its actual job ID. Do not claim unverified success. Do not continue "
+                    "implementation or start new work."
+                )
+                # Wall expiry is durable; this monotonic deadline fences the live
+                # invocation across preparation and admission waits.
+                remaining = max(0, int(recovery_deadline_monotonic - time.monotonic()))
+                if remaining > 0:
+                    try:
+                        recovery_result, recovery_report = orch._run_agent(
+                            task_id, agent, recovery_prompt,
+                            runtime_session_id=recovery_session_id,
+                            resume_session_id=result.agent_session_id,
+                            origin_runtime_session_id=origin_session_id,
+                            timeout_seconds_override=remaining,
+                            recovery_deadline_monotonic=recovery_deadline_monotonic,
+                            recovery=True,
+                        )
+                        if recovery_result.token_usage is not None:
+                            db.insert_session_token_usage(
+                                task_id=task_id, agent=agent,
+                                session_id=recovery_result.session_id,
+                                executor=orch._resolve_executor_name(agent),
+                                token_usage=recovery_result.token_usage,
+                                scope_type="task", scope_id=task_id,
+                                thread_id=task.dispatched_from_thread_id,
+                            )
+                        result, report = recovery_result, recovery_report
+                    except Exception as exc:
+                        result.error = f"completion recovery launch failed: {exc}"
+                else:
+                    # The durable claim has already spent the sole recovery.  Do
+                    # not leave a clean origin omission in progress merely
+                    # because claim contention consumed the entire live budget.
+                    result.success = False
+                    result.error = "completion recovery live budget expired before launch"
+                accepted_row = db.get_accepted_task_completion_recovery_result(
+                    task_id=task_id, agent=agent,
+                )
+                if accepted_row is not None:
+                    from runtime.orchestrator.orchestrator import completion_report_from_result_row
+                    report = completion_report_from_result_row(
+                        task_id, accepted_row, fallback_agent=agent,
+                    )
+                    # The accepted callback is the durable terminal authority.
+                    # Keep the provider result untouched for honest diagnostics and
+                    # usage accounting, but do not let a late provider error erase
+                    # an already-admitted recovery result.
+                    accepted_recovery_callback = True
+            else:
+                # An exact origin callback may have committed between the initial
+                # read and claim. Decode only that persisted invocation result.
+                accepted = orch._read_completion_from_db(task_id, agent, origin_session_id)
+                if accepted is not None:
+                    report = accepted
 
     # A newer ordinary generation can replace the claimed recovery while its
     # preparation/admission path is waiting.  Its launch validator refuses to
@@ -4689,6 +4825,48 @@ def _spawn_fanout_children(
                 _enqueue_task_generation_aware(orch, cc["first_leg_id"])
 
     return outcome
+
+
+def _prepare_fanout_join_payload(
+    orch: "Orchestrator", task_id: str, active_fanout_json: str,
+) -> dict | None:
+    """Pure prospective join, reused by final atomic admission."""
+    from runtime.orchestrator.fanout import (
+        FanoutState,
+        build_fanout_join_context,
+        collect_child_join_info,
+    )
+    fanout = FanoutState.deserialize(active_fanout_json)
+    if fanout.status != "spawned":
+        raise ValueError("fanout is not ready for final admission")
+
+    db = orch._db
+    # Collect child results for all children in the fan-out.
+    children = []
+    child_reports: dict[str, dict | None] = {}
+    for cid in fanout.children_ids:
+        child = db.get_task(cid)
+        if child is not None:
+            children.append(child)
+        # Fetch the latest completion report for verdict/confidence.
+        report = db.get_latest_completion_report(cid)
+        if report is not None:
+            child_reports[cid] = {
+                "verdict": report.verdict,
+                "confidence_score": report.confidence,
+            }
+        else:
+            child_reports[cid] = None
+
+    join_infos = collect_child_join_info(children, child_reports=child_reports)
+    join_context = build_fanout_join_context(
+        parent_task_id=task_id,
+        fanout=fanout,
+        child_results=join_infos,
+    )
+
+    return {"width": fanout.width, "children_ids": fanout.children_ids,
+            "context_markdown": join_context}
 
 
 def _inject_fanout_join_context(

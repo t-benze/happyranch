@@ -197,3 +197,8 @@ Runtime container shape:
 ```
 
 HTTP routes are per org under `/api/v1/orgs/<slug>/...`; container routes are under `/api/v1/runtime` and `/api/v1/orgs`. Only `schema_version: 2` runtimes are supported.
+
+
+## Root task Pause and Resume (THR-292)
+
+runtime/infrastructure/task_pause_controls.py owns the literal org-only table, closed journal, generation control and read projection. runtime/orchestrator/task_pause.py owns private producer arbitration and durable deferred discovery. Integration stays in existing admission, workflow dispatch, jobs, origin actions and startup/reaper owners. CLI controls live in cli/commands/tasks.py; TS transport in web/src/lib/api/{types,tasks}.ts; schema/route snapshots in tests/contract. The current design is docs/superpowers/specs/2026-10-10-root-task-pause-resume.md. No generic Database initializer or platform/auth/permission backend is introduced.

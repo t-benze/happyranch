@@ -323,3 +323,10 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
 Retry once after 1 second on any non-listed error.
+
+
+## Root task Pause outcomes
+
+Task-root Pause may leave an authorized submitted job Pending. Founder approval/run and deferred automatic launch are gated at the actual origin root; rejection/stop remain available. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
+
+Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; founder approval/run never uses this exception.

@@ -1,5 +1,7 @@
 # Task-completion recovery arbitration
 
+> Current amendment: [THR-292 root Pause contract](2026-10-10-root-task-pause-resume.md) composes the task-store recovery claim with real admission. An unclaimed held/deferred return has no deadline; the accepted real admission pins the unchanged 120-second budget. Claimed deadlines/spend and existing startup/late-callback settlement remain unchanged. Original execution uncertainty is retained independently of recovery containment. The pre-admission ordering below is historical for that amended task-store path.
+>
 > Status: implemented in this PR candidate; not merged or deployed.
 > Current source: `runtime/orchestrator/run_step.py`, `runtime/orchestrator/orchestrator.py`,
 > `runtime/infrastructure/database.py`, and `docs/agent-guides/orchestrator-contracts.md`.

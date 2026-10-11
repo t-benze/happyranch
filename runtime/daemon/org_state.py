@@ -257,6 +257,11 @@ class OrgState:
                     org_slug=slug, runtime_root=str(root.parent.parent),
                 ))
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
+            from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
+            install_pause_schema(db, org_slug=slug)
+            db._task_pause_store = TaskPauseStore(db, slug)
+            with db._lock:
+                validate_workflow_schema(db._conn, expected_org_slug=slug)
             teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.
@@ -290,6 +295,8 @@ class OrgState:
                 teams=teams,
                 authority_evaluator=_build_authority_evaluator(),
             )
+            from runtime.orchestrator.task_pause import restore_pause_preparations
+            restore_pause_preparations(orchestrator)
             state = cls(
                 slug=slug,
                 root=root,

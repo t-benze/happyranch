@@ -3440,6 +3440,9 @@ class AuthorityV2ContinuationMixin:
                 status="generation_pending", reason=reason, **kw,
             )
 
+        store = getattr(self, "_task_pause_store", None)
+        if store is not None:
+            store.held_uncommitted(root_task_id)
         if not isinstance(generation_id, str) or not generation_id:
             return _pending("missing_generation")
         if not isinstance(next_session_id, str) or not next_session_id:
