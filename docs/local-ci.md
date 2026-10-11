@@ -219,6 +219,17 @@ unforced role-option selection and every original request/readback/focus oracle
 remain required for all four locale/viewport cases. New-head screenshots and
 behavioral success remain pending; the locator premise failure is not product RED.
 
+Run 38099858029 at `6472d886` reaches the actual worker click/send/navigation in all four
+W10 cases, then fails finite HTTP settlement. The owned proxy buffered the
+shipping persistent thread SSE bodies. It now forwards real upstream SSE headers
+and frames, distinguishing header-ready streams from finite requests. An idle
+stream stays open until actual browser disconnect, fixture cleanup or its owned
+30-minute deadline; deadline/forwarding errors fail visibly. Every original
+request/readback/locale/focus oracle remains. `C10-http-prefix.json` retains
+requests, stream lifecycle and completed screenshot/action prefixes even on
+failure; it does not substitute for `C10-browser-receipt.json` and all 29 rows.
+Source proxy controls are diagnostic evidence only; new hosted C10 proof is owed.
+
 This entry first collects genuine finite baseline/failure. Accepted causal
 controls, byte-restoration/GREEN, five isolated and five affected-sibling
 repetitions, screenshot inspection and independent exact-head review/QA remain

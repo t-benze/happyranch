@@ -204,3 +204,11 @@ C4 selection is retained. These changes prevent finalizer-only evidence loss,
 but do not identify or repair the original recovery/setup failure cause. Actual
 new-head success/screenshots, causal/restoration/repetitions, independent gates
 and the full M/restore/inhibition/reboot/paired-observer/after-M proof remain owed.
+
+The `6472d886` W10 run subsequently reaches real worker selection/send/navigation in
+all four cases and fails the proxy's finite HTTP-settlement premise: thread SSE
+bodies persist by contract. The owned proxy now forwards actual stream headers
+and frames, observes browser disconnect/cleanup and a finite stream deadline,
+and retains HTTP/action/screenshot prefixes on failed oracles. Original 89
+assertions, four cases and 29 rows remain; a prefix/source control is not full
+C10 GREEN, final-head proof, independent QA or maintenance readiness.

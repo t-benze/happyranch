@@ -591,6 +591,12 @@ import retired unit helpers, but M/restore/reboot/paired-observer/causal/repetit
 proof remains absent. See docs/local-ci.md and the roster migration runbook;
 no feature or maintenance readiness follows from source correction.
 
+W10's owned HTTP proxy forwards actual daemon SSE headers and frames as streams.
+Finite-request settlement excludes only streams whose headers were forwarded;
+browser disconnect/fixture cleanup closes idle upstreams, and a 30-minute stream
+deadline fails visibly. `C10-http-prefix.json` survives a failed browser oracle;
+it is partial diagnostic evidence, never the completed 29-row browser receipt.
+
 OpenAPI operator (no tests/lifespan): `uv run python scripts/generate_openapi_snapshot.py --check`
 (default, non-writing), or explicit reviewed `uv run python scripts/generate_openapi_snapshot.py --write`
 (atomic snapshot replacement).

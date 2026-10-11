@@ -13,7 +13,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import select
 import shutil
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -51,7 +53,8 @@ def _c10_product_control(runtime: Path) -> None:
 def _spa(dist: Path, daemon_port: int):
     """Own HTTP availability at this proxy; successful actions go to daemon."""
     state = {'mode': 'populated', 'teams_mode': 'populated', 'settings_mode': 'populated',
-             'policy_mode': 'populated', 'requests': [], 'inflight': 0,
+             'policy_mode': 'populated', 'requests': [], 'inflight': 0, 'streams': 0,
+             'stop': threading.Event(),
              'release': threading.Event(), 'teams_release': threading.Event(),
              'settings_release': threading.Event(), 'policy_release': threading.Event()}
     lock = threading.Lock()
@@ -75,6 +78,75 @@ def _spa(dist: Path, daemon_port: int):
             self.send_header('Content-Length', str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
+
+        def relay_events(self, response: http.client.HTTPResponse,
+                         upstream: socket.socket, record: dict) -> None:
+            # The shipping thread endpoints remain open even without events.
+            # Forward their real headers/frames; EOF is not finite HTTP idle.
+            self.send_response(response.status)
+            self.send_header('Content-Type', response.getheader('Content-Type'))
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            self.wfile.flush()
+            upstream.settimeout(None)
+            monitor_stop = threading.Event()
+            deadline = time.monotonic() + 1800
+
+            def monitor() -> None:
+                # Abort an idle upstream when navigation closes the browser
+                # socket. No synthetic heartbeat, events or reconnects.
+                while not monitor_stop.wait(0.2):
+                    reason = None
+                    if state['stop'].is_set():
+                        reason = 'fixture_cleanup'
+                    elif time.monotonic() >= deadline:
+                        reason = 'stream_deadline_exceeded'
+                    else:
+                        try:
+                            readable, _, _ = select.select([self.connection], [], [], 0)
+                            if readable and not self.connection.recv(1, socket.MSG_PEEK):
+                                reason = 'client_disconnected'
+                        except OSError:
+                            reason = 'client_disconnected'
+                    if reason:
+                        with lock:
+                            record['stream_end'] = reason
+                        try:
+                            upstream.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        return
+
+            observer = threading.Thread(target=monitor, name='C10-stream-disconnect')
+            with lock:
+                record.update(stream=True, headers_forwarded=time.monotonic(), stream_bytes=0)
+                state['streams'] += 1
+            observer.start()
+            try:
+                while True:
+                    raw = response.read1(65536)
+                    if not raw:
+                        break
+                    self.wfile.write(raw)
+                    self.wfile.flush()
+                    with lock:
+                        record['stream_bytes'] += len(raw)
+                with lock:
+                    record.setdefault('stream_end', 'upstream_eof')
+            except (BrokenPipeError, ConnectionResetError):
+                with lock:
+                    record.setdefault('stream_end', 'client_disconnected')
+            except (OSError, http.client.HTTPException) as exc:
+                with lock:
+                    record.setdefault('stream_end', 'upstream_error')
+                    record['stream_error'] = type(exc).__name__
+            finally:
+                monitor_stop.set()
+                observer.join(timeout=2)
+                with lock:
+                    state['streams'] -= 1
+                if observer.is_alive():
+                    raise AssertionError('owned stream monitor did not terminate')
 
         def respond(self):
             path = urlsplit(self.path).path
@@ -118,7 +190,13 @@ def _spa(dist: Path, daemon_port: int):
                         headers = {key: value for key, value in self.headers.items()
                                    if key.lower() not in ('host', 'connection', 'content-length')}
                         connection.request(self.command, self.path, body, headers)
+                        upstream = connection.sock
                         response = connection.getresponse()
+                        record['status'] = response.status
+                        record['content_type'] = response.getheader('Content-Type', '')
+                        if record['content_type'].split(';', 1)[0] == 'text/event-stream':
+                            self.relay_events(response, upstream, record)
+                            return
                         raw = response.read()
                         # Coherent UI empty-team projection, not a hidden live
                         # roster mutation. Other real teams/agents stay populated.
@@ -161,6 +239,7 @@ def _spa(dist: Path, daemon_port: int):
     try:
         yield f'http://127.0.0.1:{server.server_port}', state
     finally:
+        state['stop'].set()
         for key in ('release', 'teams_release', 'settings_release', 'policy_release'):
             state[key].set()
         server.shutdown()
@@ -262,12 +341,17 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
     def settled():
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            if fixture['inflight'] == 0:
+            if fixture['inflight'] == fixture['streams']:
                 time.sleep(0.2)
-                if fixture['inflight'] == 0:
+                if fixture['inflight'] == fixture['streams']:
+                    failed_streams = [row for row in fixture['requests']
+                                      if row.get('stream_end') in ('stream_deadline_exceeded', 'upstream_error')]
+                    if failed_streams:
+                        raise AssertionError(('owned SSE forwarding failed', failed_streams))
                     return
             time.sleep(0.05)
-        raise AssertionError('baseline HTTP did not settle')
+        raise AssertionError(('baseline HTTP did not settle', fixture['inflight'], fixture['streams'],
+                              [row for row in fixture['requests'] if 'finished' not in row]))
 
     def shot(view: str, state: str, controls: tuple[str, ...] = ()):
         geometry = evaluate('({width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth})')
@@ -764,6 +848,10 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
             expected_roster = yaml.safe_load(canonical_before)
             expected_roster['teams']['default']['workers'].append('browser_worker')
             assert yaml.safe_load((root / 'org/teams.yaml').read_text()) == expected_roster
+            failed_streams = [row for row in fixture['requests']
+                              if row.get('stream_end') in ('stream_deadline_exceeded', 'upstream_error')]
+            if failed_streams:
+                raise AssertionError(('owned SSE forwarding failed before browser receipt', failed_streams))
             (tmp_path / 'C10-browser-receipt.json').write_text(json.dumps({
                 'source_sha': binding['revision'], 'cli': cli, 'cli_version': cli_version, 'selected_tools': selected,
                 'browser_user_agent': evaluate('navigator.userAgent'), 'screenshots': evidence,
@@ -774,7 +862,18 @@ def test_c10_bilingual_existing_views(human_daemon: tuple[int, Path], tmp_path: 
                 'demotion_boundary': 'Web coherent before/after cache cases only; real M proof requires actual C6 check/apply/receipt',
             }, sort_keys=True))
         finally:
-            for key in ('release', 'teams_release', 'settings_release', 'policy_release'):
-                fixture[key].set()
-            if opened:
-                pw('close')
+            try:
+                for key in ('release', 'teams_release', 'settings_release', 'policy_release'):
+                    fixture[key].set()
+                if opened:
+                    pw('close')
+            finally:
+                # Persist the prefix even when a product oracle or CLI fails.
+                # This diagnostic is never a completed 29-row browser receipt.
+                (tmp_path / 'C10-http-prefix.json').write_text(json.dumps({
+                    'source_sha': binding['revision'], 'parameter_locale': locale, 'viewport': viewport,
+                    'inflight': fixture['inflight'], 'streams': fixture['streams'],
+                    'requests': fixture['requests'], 'screenshots': evidence,
+                    'worker_retention': retention, 'locale_windows': locale_windows,
+                    'meaning': 'observed prefix only; original completion receipt required',
+                }, sort_keys=True))

@@ -442,3 +442,10 @@ timeout/failures and W10 exact-name failures remain authentic at fe94. W10 uses
 the observed exact accessible worker name without a space before `default`,
 preserving all original click/request/readback assertions. New-head evidence is
 required; no product component correction follows from the old locator mismatch.
+
+The next `6472d886` W10 failure is separately retained: all four cases reach Send and
+thread navigation, then the test proxy buffers persistent thread SSE responses.
+The proxy correction forwards real headers/frames and owns disconnect/cleanup
+and finite failure deadlines. Failed-case HTTP/screenshot/action prefixes are
+retained separately from completed browser receipts. This test-side correction
+does not change the product, prove the 29-row scenarios or release held M work.
