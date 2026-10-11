@@ -391,7 +391,7 @@ def _sweep_on_startup(
                     from runtime.orchestrator.run_step import (
                         _reclaim_terminal_task_worktree,
                     )
-                    _reclaim_terminal_task_worktree(orchestrator, task_id)
+                    _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
 
             # Branch 2 — parked on children (delegated). Re-enqueue only when all
             # children are terminal (orphaned wake-up); else leave it parked.

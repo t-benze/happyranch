@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from runtime.daemon.queue import TaskQueue
     from runtime.infrastructure.database import Database
     from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.models import TaskRecord
 
 logger = logging.getLogger("happyranch.daemon.zombie_reaper")
 
@@ -113,11 +114,13 @@ def _sweep_org_zombies(
     warm_up_seconds: float,
     orchestrator: Orchestrator | None = None,
     queue: TaskQueue | None = None,
+    deferred_child_worktrees: list[TaskRecord] | None = None,
 ) -> None:
     """Sweep one org for zombie tasks.
 
-    This is the pure logic entry point — callable from the periodic loop
-    (with orchestrator) or unit tests (without).
+    The periodic caller keeps lifecycle and queue publication on its event
+    loop, deferring only the existing child hooks and captured root cleanup.
+    Synchronous callers retain the original inline hook behavior.
     """
     # Warm-up grace: don't trust staleness until daemon has been up >= 1
     # heartbeat interval. Prevents false-reaping freshly-spawned sessions
@@ -278,7 +281,10 @@ def _sweep_org_zombies(
                                 _reclaim_terminal_task_worktree,
                             )
                             _enqueue_parent_if_waiting(orchestrator, task_id)
-                            _reclaim_terminal_task_worktree(orchestrator, task_id)
+                            if t.parent_task_id is not None and deferred_child_worktrees is not None:
+                                deferred_child_worktrees.append(t)
+                            else:
+                                _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
                         continue
                     # TTL expired — cancel.
                     # THR-079 ruling: no auto-revisit. Cancel via the existing
@@ -301,7 +307,10 @@ def _sweep_org_zombies(
                             _reclaim_terminal_task_worktree,
                         )
                         _enqueue_parent_if_waiting(orchestrator, task_id)
-                        _reclaim_terminal_task_worktree(orchestrator, task_id)
+                        if t.parent_task_id is not None and deferred_child_worktrees is not None:
+                            deferred_child_worktrees.append(t)
+                        else:
+                            _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
     except BaseException:
         root_tail_failed = True
         raise
@@ -383,23 +392,30 @@ async def zombie_reaper_loop(
                 await org.workflow_submissions.discover_completed_handoffs(state.queue)
                 from runtime.orchestrator.task_pause import discover_pause_work
                 await discover_pause_work(org, state.queue)
-                sweep = asyncio.create_task(asyncio.to_thread(
-                    _sweep_org_zombies, org.db,
-                    now=now,
-                    uptime=uptime,
-                    warm_up_seconds=warm_up_seconds,
-                    orchestrator=org.orchestrator,
-                    queue=state.queue,
-                ))
-                cancelled = False
-                while True:
-                    try:
-                        await asyncio.shield(sweep)
-                        break
-                    except asyncio.CancelledError:
-                        cancelled = True
-                if cancelled:
-                    raise asyncio.CancelledError
+                from runtime.orchestrator.run_step import (
+                    _defer_root_worktree_batches, _RootWorktreeTransitions,
+                    _await_root_worktree_batch, _await_terminal_task_worktree,
+                )
+                root_transitions = _RootWorktreeTransitions()
+                child_worktrees = []
+                root_tail_failed = False
+                try:
+                    with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
+                        _sweep_org_zombies(
+                            org.db, now=now, uptime=uptime,
+                            warm_up_seconds=warm_up_seconds,
+                            orchestrator=org.orchestrator, queue=state.queue,
+                            deferred_child_worktrees=child_worktrees,
+                        )
+                    for task in child_worktrees:
+                        await _await_terminal_task_worktree(org.orchestrator, task.id)
+                except BaseException:
+                    root_tail_failed = True
+                    raise
+                finally:
+                    if root_transitions:
+                        await _await_root_worktree_batch(org.orchestrator, root_transitions,
+                            teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
             except Exception:
                 logger.exception(
                     "zombie reaper sweep failed for org %s", org.slug,

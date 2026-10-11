@@ -281,8 +281,12 @@ families as candidates. Only registered assigned-agent canonical
 The original winning owner captures the transition under the existing DB lock.
 Bounded raw task-audit lookup and start insertion share that lock; the committed
 start INTEGER id plus root id/created_at identify the event. Mutable updated_at
-or completed_at never create a new event. A repeat observes prior identity and
-performs zero actions; a start without finish stays interrupted/unknown, with
+or completed_at never create a new event. Original owners hand their captured
+root to the shared batch without a redundant notice lookup or fresh cleanup
+budget; separate read-only repeats still observe prior identity and perform
+zero actions. An unavailable before/after projection or audit anchor names the
+unexamined writer/root and bounded audit frontier, closing action authority for
+the entire owner batch. A start without finish stays interrupted/unknown, with
 no retry. Failed or uncertain admission starts no removal. A terminal commit
 without a start remains missing, never rediscovered by historical startup scan.
 
@@ -292,9 +296,18 @@ legacy/V2 reaper cancellation, task cancel/resolve/revisit, thread dispatch,
 portability, and workflow draft/review terminal/cancel. Root work follows history
 and teardown outside DB/publisher/workflow locks. The ordinary run-step owner
 carries its capture past journal close; accepted recovery carries it to its
-current-owner post-drain tail, including zero jobs. Async owners await owned
-off-loop completion through cancellation. Nonterminal or lost-CAS paths create
-no event. Schema normalization and already-terminal history remain excluded.
+current-owner post-drain tail, including zero jobs. The enclosing run-step
+worker also carries workflow events past the host callback's tracker clear and
+the dispatcher's invocation close/live-claim release. Async workflow cancel
+callers defer committed events while awaiting the synchronous owner off-loop;
+their post-owner tail awaits the finite batch outside locks, retaining started
+work through cancellation. Portability keeps its eligible legacy child hook
+after the existing audit/current-owner checks, outside the DB lock and off-loop;
+result consumption's disabled child hook remains disabled. The periodic reaper
+keeps lifecycle and workflow queue notification on its owning event loop and
+offloads only the child hooks and captured root batch. Nonterminal or lost-CAS
+paths create no event. Schema normalization and already-terminal history remain
+excluded.
 
 Dirty, local-only, open/closed-unmerged PR, active session/control/PID/job,
 unsettled host/recovery, held, successor-use-unresolved, foreign, protected or

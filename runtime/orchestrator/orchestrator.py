@@ -951,7 +951,7 @@ class Orchestrator:
             )
             tail_failed = False
             try:
-                _reclaim_terminal_task_worktree(self, task_id)
+                _reclaim_terminal_task_worktree(self, task_id, original_task=task)
             except BaseException:
                 tail_failed = True
                 raise
@@ -1671,15 +1671,28 @@ class Orchestrator:
             invocation = current_invocation()
             if invocation is not None:
                 invocation.host_terminal(outcome)
+            from runtime.orchestrator.run_step import (
+                _defer_root_worktree_batches, _RootWorktreeTransitions, _root_worktree_batch,
+            )
+            root_transitions = _RootWorktreeTransitions()
+            tail_failed = False
             try:
-                if drafts is not None:
-                    drafts.terminal(task_id, agent_name, session_id, outcome, expected_request=host_request)
-                    if ownership.kind == "draft":
-                        submissions = getattr(self, "_workflow_submissions", None)
-                        if submissions is not None:
-                            submissions.completed(task_id)
+                with _defer_root_worktree_batches(self, root_transitions) as delivery:
+                    try:
+                        if drafts is not None:
+                            drafts.terminal(task_id, agent_name, session_id, outcome, expected_request=host_request)
+                            if ownership.kind == "draft":
+                                submissions = getattr(self, "_workflow_submissions", None)
+                                if submissions is not None:
+                                    submissions.completed(task_id)
+                    finally:
+                        _clear_tracker()
+            except BaseException:
+                tail_failed = True
+                raise
             finally:
-                _clear_tracker()
+                _root_worktree_batch(self, root_transitions,
+                    teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
 
         def _launch_body(running: RunningHandle) -> LaunchResult:
             if drafts is not None:

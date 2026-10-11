@@ -34,7 +34,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Callable, NamedTuple
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from runtime.infrastructure.database import (
     Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
@@ -251,17 +251,24 @@ def _capture_root_worktree_transition(orch, task_id, writer, transitions):
     capture_started = time.monotonic()
     acquired = allowance > 0 and db._lock.acquire(timeout=allowance)
     before = None
+    capture_unavailable = not acquired
     before_seconds = 0.0
     try:
         if acquired:
             try:
                 before = db.terminal_worktree_task_projection(task_id)
+                capture_unavailable |= before is None
                 if isinstance(transitions, _RootWorktreeTransitions):
                     anchor = db.terminal_worktree_audit_high_watermark()
+                    if type(anchor) is not int:
+                        raise ValueError('capture_audit_anchor_unavailable')
                     if transitions.audit_low is None:
                         transitions.audit_low = anchor
                     transitions.audit_high = anchor
             except Exception:
+                capture_unavailable = True
+                if isinstance(transitions, _RootWorktreeTransitions):
+                    transitions.audit_high = None
                 logger.exception('root worktree %s before projection unavailable', task_id)
         before_seconds = time.monotonic()-capture_started
         yield
@@ -270,19 +277,27 @@ def _capture_root_worktree_transition(orch, task_id, writer, transitions):
         try:
             if acquired and before is not None and before['parent_task_id'] is None:
                 after = db.terminal_worktree_task_projection(task_id)
+                capture_unavailable |= after is None
                 if (after is not None and before['status'] not in {s.value for s in TERMINAL_STATES}
                         and after['status'] in {s.value for s in TERMINAL_STATES}):
                     transitions.append(_RootWorktreeTransition(before, after, writer))
                 if isinstance(transitions, _RootWorktreeTransitions):
-                    transitions.audit_high = db.terminal_worktree_audit_high_watermark()
+                    anchor = db.terminal_worktree_audit_high_watermark()
+                    if type(anchor) is not int:
+                        raise ValueError('capture_audit_anchor_unavailable')
+                    transitions.audit_high = anchor
         except Exception:
+            capture_unavailable = True
+            if isinstance(transitions, _RootWorktreeTransitions):
+                transitions.audit_high = None
             logger.exception('root worktree %s transition capture unavailable', task_id)
         finally:
             if isinstance(transitions, _RootWorktreeTransitions):
                 transitions.capture_seconds += before_seconds+time.monotonic()-after_started
-                if not acquired or before is None:
+                if capture_unavailable:
                     if len(transitions.unexamined) < 256:
-                        transitions.unexamined.append(dict(task_id=task_id, writer=writer, reason='transition_capture_unavailable'))
+                        transitions.unexamined.append(dict(task_id=task_id, writer=writer, reason='transition_capture_unavailable',
+                            audit_low=transitions.audit_low, audit_high=transitions.audit_high))
                     else:
                         transitions.overflow_count += 1
             if acquired:
@@ -755,7 +770,9 @@ def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
         return []
     capture_missing = getattr(transitions, 'unexamined', [])
     if capture_missing:
-        logger.warning('root worktree capture scope unexamined=%s', capture_missing)
+        logger.warning('root worktree capture scope unexamined=%s raw_audit_window=(%s,%s] cursor=%s; zero actions; complete=false',
+            capture_missing, getattr(transitions, 'audit_low', None),
+            getattr(transitions, 'audit_high', None), getattr(transitions, 'audit_low', None))
     if getattr(transitions, 'overflow_count', 0):
         # Close the raw interval after the last original writer's terminal
         # audit tail. An unavailable upper bound remains explicitly unknown.
@@ -838,8 +855,17 @@ def _root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
 
 async def _await_root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
     """Cancellation retains ownership of a started finite off-loop action."""
-    worker = asyncio.create_task(asyncio.to_thread(_root_worktree_batch, orch, transitions,
-                                                  teardown_incomplete=teardown_incomplete))
+    return await _await_worktree_cleanup(_root_worktree_batch, orch, transitions,
+                                        teardown_incomplete=teardown_incomplete)
+
+
+async def _await_terminal_task_worktree(orch: "Orchestrator", task_id: str) -> TerminalWorktreeReclaimOutcome:
+    """Await the existing child hook outside the event loop and owner locks."""
+    return await _await_worktree_cleanup(_reclaim_terminal_task_worktree, orch, task_id)
+
+
+async def _await_worktree_cleanup(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    worker = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
     cancelled = False
     while True:
         try:
@@ -854,6 +880,7 @@ async def _await_root_worktree_batch(orch, transitions, *, teardown_incomplete=F
 
 def _reclaim_terminal_task_worktree(
     orch: "Orchestrator", task_id: str, *, transition: _RootWorktreeTransition | None = None,
+    original_task: TaskRecord | None = None,
 ) -> TerminalWorktreeReclaimOutcome:
     """Remove one exact clean, durable, quiescent task worktree fail-closed.
 
@@ -861,6 +888,11 @@ def _reclaim_terminal_task_worktree(
     worktrees, retries, deletes a branch, changes task state, signals a process,
     or raises into the terminal transition that called it.
     """
+    # Original owners already captured this root (including unavailable
+    # capture). Its one shared batch owns all cleanup observations; a notice
+    # lookup here would reset the DB/work allowance before that batch runs.
+    if original_task is not None and original_task.id == task_id and original_task.parent_task_id is None:
+        return TerminalWorktreeReclaimOutcome('preserved', 'original_root_owner_batch')
     try:
         task = orch._db.get_task(task_id)
     except Exception:
@@ -1154,6 +1186,23 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    # Workflow dispatch returns before the ordinary invocation owner exists.
+    # This worker scope also carries its terminal event past tracker teardown,
+    # workflow invocation close/release and the dispatcher's live-claim tail.
+    transitions = _RootWorktreeTransitions()
+    tail_failed = False
+    try:
+        with _defer_root_worktree_batches(orch, transitions) as delivery:
+            _run_step_owned(orch, task_id, metadata)
+    except BaseException:
+        tail_failed = True
+        raise
+    finally:
+        _root_worktree_batch(orch, transitions,
+            teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
+
+
+def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     from runtime.orchestrator.task_pause import (
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation,
     )

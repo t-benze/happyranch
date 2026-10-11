@@ -39,6 +39,8 @@ from runtime.portability.eligibility import (
 from runtime.portability.roots import classify_root_entries
 
 from runtime.orchestrator.run_step import (
+    _await_worktree_cleanup,
+    _await_terminal_task_worktree,
     _capture_root_worktree_transition, _defer_root_worktree_batches, _RootWorktreeTransitions, _root_worktree_batch, _await_root_worktree_batch,
 )
 
@@ -266,6 +268,7 @@ async def reconcile_portability(
 ) -> dict:
     root_transitions = _RootWorktreeTransitions()
     root_tail_failed = False
+    child_cleanup_task_id = None
     try:
         if body.disposition not in ("cancel", "consume_result"):
             raise HTTPException(
@@ -287,7 +290,11 @@ async def reconcile_portability(
                 raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
             owner = org.workflow_reviews if ownership.kind == 'f5' else org.workflow_drafts
             if body.disposition == "cancel":
-                return owner.cancel(task_id)
+                with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
+                    try:
+                        return await _await_worktree_cleanup(owner.cancel, task_id)
+                    finally:
+                        root_tail_failed |= delivery['teardown_incomplete']
             # A transport result/PID cannot establish finalized containment.
             owner.reconcile(task_id)
             raise HTTPException(status_code=409, detail={"code": "workflow_host_quiescence_unavailable"})
@@ -375,6 +382,12 @@ async def reconcile_portability(
                 after=after,
             )
 
+        # _consume_zombie_fingerprint deliberately disables the child hook.
+        # Restore this route's one-task tail only after its original audit and
+        # current-recovery-owner checks succeeded, outside org.db_lock.
+        if task.parent_task_id is not None:
+            child_cleanup_task_id = task_id
+
         return {
             "task_id": task_id,
             "disposition": body.disposition,
@@ -386,5 +399,9 @@ async def reconcile_portability(
         root_tail_failed = True
         raise
     finally:
-        if root_transitions:
-            await _await_root_worktree_batch(org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)
+        try:
+            if child_cleanup_task_id is not None:
+                await _await_terminal_task_worktree(org.orchestrator, child_cleanup_task_id)
+        finally:
+            if root_transitions:
+                await _await_root_worktree_batch(org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)

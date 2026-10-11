@@ -44,6 +44,8 @@ from runtime.orchestrator.task_pause import assert_origin_unheld, origin_guard
 logger = logging.getLogger(__name__)
 
 from runtime.orchestrator.run_step import (
+    _await_worktree_cleanup,
+    _defer_root_worktree_batches,
     _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch, _await_root_worktree_batch,
 )
 
@@ -1890,7 +1892,11 @@ async def cancel_task(
             # Workflow-owned execution has no ordinary delegated subtree. Its durable fence
             # precedes containment, whose controls run outside org.db_lock.
             owner = org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts
-            return owner.cancel(task_id)
+            with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
+                try:
+                    return await _await_worktree_cleanup(owner.cancel, task_id)
+                finally:
+                    root_tail_failed |= delivery['teardown_incomplete']
         if root.status in _TERMINAL_TASK_STATUSES:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
