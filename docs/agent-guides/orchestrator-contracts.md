@@ -303,8 +303,10 @@ callers defer committed events while awaiting the synchronous owner off-loop;
 their post-owner tail awaits the finite batch outside locks, retaining started
 work through cancellation. Portability keeps its eligible legacy child hook
 after the existing audit/current-owner checks, outside the DB lock and off-loop;
-result consumption's disabled child hook remains disabled. The periodic reaper
-keeps lifecycle and workflow queue notification on its owning event loop and
+result consumption's disabled child hook remains disabled. Ordinary nonroot task
+cancel also awaits its eligible child hook through the cancellation-safe helper:
+a started finite cleanup settles before route cancellation propagates. The
+periodic reaper keeps lifecycle and workflow queue notification on its owning event loop and
 offloads only the child hooks and captured root batch. Nonterminal or lost-CAS
 paths create no event. Schema normalization and already-terminal history remain
 excluded.

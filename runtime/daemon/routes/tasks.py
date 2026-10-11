@@ -2051,12 +2051,12 @@ async def cancel_task(
 
         if org.orchestrator is not None:
             from runtime.orchestrator.run_step import (
-                _reclaim_terminal_task_worktree,
+                _await_terminal_task_worktree,
             )
             for tid in to_cancel:
                 task = org.db.get_task(tid)
                 if not root_transitions and task is not None and task.parent_task_id is not None:
-                    await asyncio.to_thread(_reclaim_terminal_task_worktree, org.orchestrator, tid)
+                    await _await_terminal_task_worktree(org.orchestrator, tid)
 
         return {
             "ok": True,
