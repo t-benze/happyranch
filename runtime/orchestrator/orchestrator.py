@@ -922,31 +922,37 @@ class Orchestrator:
                 task_id=task_id,
             )
         except _IntegrityError:
+            root_transitions = _RootWorktreeTransitions()
+            from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
             # Integrity failure is terminal — no executor launch.
-            self._db.update_task(
-                task_id,
-                note=(
-                    "Pre-launch workspace skill integrity validation "
-                    "failed — executor launch refused. "
-                    "No automatic repair from same-UID local source. "
-                    "Recovery: FIRST perform manual authoritative "
-                    "external re-sync/redeploy of release/custom "
-                    "artifacts. THEN: (a) for broken links only — "
-                    "happyranch set-executor <agent> --executor "
-                    "<current-executor> (re-materializes links, does "
-                    "NOT recover corrupted bytes); (b) for corrupted "
-                    "canonical bytes — happyranch skills recover "
-                    "<slug> <version> <content_hash> (then restart "
-                    "daemon; next materialization rebuilds from "
-                    "ArtifactStore). Local same-UID sources are not "
-                    "automatically repaired or trusted."
-                ),
-                status=TaskStatus.FAILED,
-            )
+            with _capture_root_worktree_transition(self, task_id, '_run_agent_impl.integrity', root_transitions):
+                self._db.update_task(
+                    task_id,
+                    note=(
+                        "Pre-launch workspace skill integrity validation "
+                        "failed — executor launch refused. "
+                        "No automatic repair from same-UID local source. "
+                        "Recovery: FIRST perform manual authoritative "
+                        "external re-sync/redeploy of release/custom "
+                        "artifacts. THEN: (a) for broken links only — "
+                        "happyranch set-executor <agent> --executor "
+                        "<current-executor> (re-materializes links, does "
+                        "NOT recover corrupted bytes); (b) for corrupted "
+                        "canonical bytes — happyranch skills recover "
+                        "<slug> <version> <content_hash> (then restart "
+                        "daemon; next materialization rebuilds from "
+                        "ArtifactStore). Local same-UID sources are not "
+                        "automatically repaired or trusted."
+                    ),
+                    status=TaskStatus.FAILED,
+                )
             from runtime.orchestrator.run_step import (
                 _reclaim_terminal_task_worktree,
             )
-            _reclaim_terminal_task_worktree(self, task_id)
+            try:
+                _reclaim_terminal_task_worktree(self, task_id)
+            finally:
+                _root_worktree_batch(self, root_transitions)
             return ExecutorResult(
                 success=False,
                 duration_seconds=0,

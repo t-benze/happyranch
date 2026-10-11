@@ -413,3 +413,33 @@ not completion. Truthful anomalies and required escalations remain.
 ## Root task Pause outcomes
 
 A held/deferred task is unfinished, not terminal/orphan evidence. Preserve its worktree and original owner. Terminal lifecycle alone cannot discharge possible-launch, host/tree or cleanup ACTION uncertainty; use the existing authoritative evidence and non-force contract. Pause does not change scheduler/selector eligibility or authorize reclamation. Real admitted cleanup runs under its existing owner after commitment; interrupted ACTION stays unknown and must not be replayed.
+
+## Separate future root-terminal owner
+
+This manual/daily procedure keeps its marker, age, ordinal, peer/history,
+authenticated host-job scanner and cache gates. Its Git preservation,
+recursive snapshot and protected post-action identities call the same bundled
+`worktree_safety.py` as the runtime root owner. Owning live-branch contradiction
+refuses before fresh default or squash/merged-PR fallback. Recursive enumeration
+and capture are bounded; unknown evidence retains.
+
+Only a newly committed structural root in completed/failed/cancelled/superseded
+can reconsider its parent tree after teardown, including NULL-parent workflow
+tasks. Revisit/supersession links protect, never enroll other families. Child
+recorded deferral is advisory only at that root pass, without result/history
+rewrites. Dirty/local-only/open/active/held/successor-used/protected/unknown paths
+retain. This skill does not authorize agents to invoke a root pass manually or
+rescan already-terminal roots.
+
+Root admission uses bounded raw task audit under the existing lock and a stable
+committed start INTEGER id; replay/missing finish never retries. One owner batch
+shares 10s work (0.5s DB,50ms lock admissions),1s report and1s owned-group reap;
+16 events/256 nodes/depth64/page64/16 attempts,5s clipped candidate ceiling,
+200000 recursive/pending entries,1MiB capture and256KiB receipts. The 12s target
+is conditional on ordinary synchronous SQLite/storage/kernel I/O. Incomplete
+membership/protection means zero removal with exact frontier/unknown total;
+action caps name all remainder. Non-force success requires absence,
+unregistration, preserved branch and protected identities. Possibly partial
+post-action/report anomaly halts later mutation. Terminal/results/history/report
+survive refusal/failure. No queue, retry, detached action, extra schedule,
+cache-only root action, deployment or historical authority is added.

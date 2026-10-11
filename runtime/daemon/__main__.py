@@ -135,365 +135,381 @@ def _sweep_on_startup(
     the caller enqueues them once the event loop is live.
     """
     # Imported lazily to avoid a startup-time cycle (run_step → daemon types).
-    from runtime.orchestrator.run_step import (
-        TERMINAL_STATES,
-        _enqueue_parent_if_waiting,
-    )
+    from runtime.orchestrator.run_step import _capture_root_worktree_transition, _root_worktree_batch, _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS
+    root_transitions = _RootWorktreeTransitions()
+    root_tail_failed = False
+    root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
+    root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
+    try:
+        from runtime.orchestrator.run_step import (
+            TERMINAL_STATES,
+            _enqueue_parent_if_waiting,
+        )
 
-    if orchestrator is not None:
-        from runtime.orchestrator.task_pause import restore_pause_preparations
-        restore_pause_preparations(orchestrator)
-    audit = AuditLogger(db)
+        if orchestrator is not None:
+            from runtime.orchestrator.task_pause import restore_pause_preparations
+            restore_pause_preparations(orchestrator)
+        audit = AuditLogger(db)
 
-    import json as _json
-    # Path B: parked carriers are in_progress(...) with block_kind set.
-    # A live subprocess is in_progress + block_kind IS NULL (Branch 1).
-    _PARKED = {TaskStatus.IN_PROGRESS}
-    _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
+        import json as _json
+        # Path B: parked carriers are in_progress(...) with block_kind set.
+        # A live subprocess is in_progress + block_kind IS NULL (Branch 1).
+        _PARKED = {TaskStatus.IN_PROGRESS}
+        _TERMINAL_JOB_STATES = {"completed", "failed", "rejected"}
 
-    # THR-229: pre-final v2 attempt ownership precedes EVERY task-specific
-    # startup branch.  Interrupted old-boot/failed-stage attempts receive only
-    # exact refusal housekeeping; a live same-boot owner and any failed
-    # refusal transaction retain their prior residue and are fenced from
-    # accepted-recovery, pid failure and Pending enqueue effects in this pass.
-    from runtime.orchestrator.authority import (
-        refuse_authority_policy_v2_pre_final_on_startup,
-    )
-    v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(
-        db, orchestrator=orchestrator,
-    )
-    v2_discovery_unavailable = v2_pre_final_roots is None
+        # THR-229: pre-final v2 attempt ownership precedes EVERY task-specific
+        # startup branch.  Interrupted old-boot/failed-stage attempts receive only
+        # exact refusal housekeeping; a live same-boot owner and any failed
+        # refusal transaction retain their prior residue and are fenced from
+        # accepted-recovery, pid failure and Pending enqueue effects in this pass.
+        from runtime.orchestrator.authority import (
+            refuse_authority_policy_v2_pre_final_on_startup,
+        )
+        v2_pre_final_roots = refuse_authority_policy_v2_pre_final_on_startup(
+            db, orchestrator=orchestrator,
+        )
+        v2_discovery_unavailable = v2_pre_final_roots is None
 
-    # Accepted recovery callbacks whose effects committed just before a crash
-    # may now be terminal.  Include only the ledger's exact current-owner
-    # bindings: a cancelled or newer generation must remain outside this
-    # reconciliation and follow its own lifecycle.
-    selected_recovery_owners = {
-        owner["task_id"]: owner
-        for owner in db.get_consumed_task_completion_recovery_owners()
-    }
-    consumed_parent_cleanup_ids = {
-        task_id for task_id, owner in selected_recovery_owners.items()
-        if owner["parent_task_id"] is not None
-    }
-    task_ids = dict.fromkeys([
-        *db.get_accepted_task_completion_recovery_task_ids(),
-        *selected_recovery_owners,
-        *consumed_parent_cleanup_ids,
-        *db.get_nonterminal_task_ids(),
-    ])
-    for task_id in task_ids:
-        t = db.get_task(task_id)
-        if t is None:
-            continue
-        from runtime.orchestrator.task_pause import pause_deferred_owner
-        if pause_deferred_owner(db, task_id):
-            continue
-        from runtime.workflows.recovery import recover_owned_task
-        if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):
-            continue
-        if v2_discovery_unavailable or task_id in v2_pre_final_roots:
-            continue
-
-        # A completed leaf receipt can commit immediately before its ordinary
-        # post-commit job cleanup.  Restart has no inherited live PID/control,
-        # so reuse the existing ownership-aware cleanup rather than signalling
-        # a persisted PID; terminal-child handling below reconstructs its wake.
-        selected_owner = selected_recovery_owners.get(task_id)
-        if selected_owner is not None and orchestrator is not None:
-            if t.task_type == "subtask" and selected_owner["status"] == TaskStatus.FAILED.value:
-                from runtime.orchestrator.run_step import _submit_human_failed_recovery
-                _submit_human_failed_recovery(orchestrator, task_id, selected_owner["agent"],
-                    selected_owner["recovery_session_id"], selected_owner["accepted_result_id"])
+        # Accepted recovery callbacks whose effects committed just before a crash
+        # may now be terminal.  Include only the ledger's exact current-owner
+        # bindings: a cancelled or newer generation must remain outside this
+        # reconciliation and follow its own lifecycle.
+        selected_recovery_owners = {
+            owner["task_id"]: owner
+            for owner in db.get_consumed_task_completion_recovery_owners()
+        }
+        consumed_parent_cleanup_ids = {
+            task_id for task_id, owner in selected_recovery_owners.items()
+            if owner["parent_task_id"] is not None
+        }
+        task_ids = dict.fromkeys([
+            *db.get_accepted_task_completion_recovery_task_ids(),
+            *selected_recovery_owners,
+            *consumed_parent_cleanup_ids,
+            *db.get_nonterminal_task_ids(),
+        ])
+        for task_id in task_ids:
+            t = db.get_task(task_id)
+            if t is None:
                 continue
-            # The task/ledger ownership is already durable, but the ordinary
-            # cleanup helper below is deliberately asynchronous.  Record its
-            # owned-job backstop before returning to the lifespan, whose
-            # generic orphan scan otherwise can win the gap and permanently
-            # label this exact recovery-owned job ``daemon_crash``.  This
-            # transaction neither waits for nor signals a persisted PID; the
-            # later helper retains live-control termination when one exists.
-            # Restrict the eager settlement to the exact recovery-owned
-            # terminal rows selected above, so unrelated terminal/generic
-            # orphan behavior is unchanged.
-            # Revalidate the selector's full durable fingerprint at each
-            # effect boundary.  A replacement/cancellation after selection
-            # must perform no stale backstop, live cleanup, or parent wake.
-            # The guarded update itself rechecks the same fingerprint; its
-            # rowcount may be zero when no owned job remains running.
-            recovery_owner = (
-                selected_owner["agent"], selected_owner["recovery_session_id"],
-                selected_owner["accepted_result_id"], selected_owner["status"],
-            )
-            recovery_job_ids = db.settle_consumed_task_completion_recovery_jobs(
-                task_id=task_id, agent=recovery_owner[0],
-                recovery_session_id=recovery_owner[1], result_row_id=recovery_owner[2],
-                terminal_status=recovery_owner[3],
-                finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            )
-            if recovery_job_ids is None:
+            from runtime.orchestrator.task_pause import pause_deferred_owner
+            if pause_deferred_owner(db, task_id):
                 continue
-            from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
-            _kill_jobs_for_terminating_task(
-                orchestrator, task_id, recovery_owner=recovery_owner,
-                recovery_job_ids=recovery_job_ids,
-                after_recovery_cleanup=(
-                    lambda task_id=task_id: _enqueue_parent_if_waiting(
-                        orchestrator, task_id, root_auto_revisit_spawned=False,
-                    ) if task_id in consumed_parent_cleanup_ids else None
-                ),
-            )
+            from runtime.workflows.recovery import recover_owned_task
+            if recover_owned_task(db, queue, slug, task_id, orchestrator=orchestrator):
+                continue
+            if v2_discovery_unavailable or task_id in v2_pre_final_roots:
+                continue
 
-        # THR-247 recovery is not an ordinary THR-079 subprocess.  Its claim
-        # is durably spent before launch/PID publication, so a restart must
-        # settle it before the ordinary pid-alive leave-alone path.  Never use
-        # a persisted PID here: without a live generation-owned control it may
-        # be absent or recycled.  The transaction protects accepted callbacks,
-        # cancellation, and a newer durable owner; those winners are left
-        # wholly untouched for their own normal lifecycle path.
-        if t.assigned_agent is not None:
-            accepted_result = db.get_accepted_task_completion_recovery_result(
-                task_id=task_id, agent=t.assigned_agent,
-            )
-            if accepted_result is not None:
-                # An accepted recovery callback is authoritative even if a
-                # stale PID happens to look alive after restart.  The ledger
-                # selects this immutable row; never substitute a latest row.
-                if orchestrator is not None:
-                    accepted_report = completion_report_from_result_row(
-                        task_id, accepted_result, fallback_agent=t.assigned_agent,
-                    )
-                    from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
-                    _consume_accepted_completion_recovery(
-                        orchestrator, task_id, accepted_report,
-                        agent=t.assigned_agent, session_id=t.current_session_id or "",
-                        result_row_id=accepted_result["id"],
-                    )
-                continue
-            recovery = db.get_claimed_task_completion_recovery(
-                task_id=task_id, agent=t.assigned_agent,
-            )
-            if recovery is not None:
-                settled_at = datetime.now(timezone.utc).isoformat()
-                settled = db.settle_interrupted_task_completion_recovery(
-                    task_id=task_id, agent=t.assigned_agent,
-                    settled_at=settled_at,
-                    note=(
-                        "unaccepted completion recovery interrupted by daemon restart; "
-                        "recovery claim spent and settled fail-closed"
+            # A completed leaf receipt can commit immediately before its ordinary
+            # post-commit job cleanup.  Restart has no inherited live PID/control,
+            # so reuse the existing ownership-aware cleanup rather than signalling
+            # a persisted PID; terminal-child handling below reconstructs its wake.
+            selected_owner = selected_recovery_owners.get(task_id)
+            if selected_owner is not None and orchestrator is not None:
+                if t.task_type == "subtask" and selected_owner["status"] == TaskStatus.FAILED.value:
+                    from runtime.orchestrator.run_step import _submit_human_failed_recovery
+                    _submit_human_failed_recovery(orchestrator, task_id, selected_owner["agent"],
+                        selected_owner["recovery_session_id"], selected_owner["accepted_result_id"])
+                    continue
+                # The task/ledger ownership is already durable, but the ordinary
+                # cleanup helper below is deliberately asynchronous.  Record its
+                # owned-job backstop before returning to the lifespan, whose
+                # generic orphan scan otherwise can win the gap and permanently
+                # label this exact recovery-owned job ``daemon_crash``.  This
+                # transaction neither waits for nor signals a persisted PID; the
+                # later helper retains live-control termination when one exists.
+                # Restrict the eager settlement to the exact recovery-owned
+                # terminal rows selected above, so unrelated terminal/generic
+                # orphan behavior is unchanged.
+                # Revalidate the selector's full durable fingerprint at each
+                # effect boundary.  A replacement/cancellation after selection
+                # must perform no stale backstop, live cleanup, or parent wake.
+                # The guarded update itself rechecks the same fingerprint; its
+                # rowcount may be zero when no owned job remains running.
+                recovery_owner = (
+                    selected_owner["agent"], selected_owner["recovery_session_id"],
+                    selected_owner["accepted_result_id"], selected_owner["status"],
+                )
+                recovery_job_ids = db.settle_consumed_task_completion_recovery_jobs(
+                    task_id=task_id, agent=recovery_owner[0],
+                    recovery_session_id=recovery_owner[1], result_row_id=recovery_owner[2],
+                    terminal_status=recovery_owner[3],
+                    finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+                if recovery_job_ids is None:
+                    continue
+                from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
+                _kill_jobs_for_terminating_task(
+                    orchestrator, task_id, recovery_owner=recovery_owner,
+                    recovery_job_ids=recovery_job_ids,
+                    after_recovery_cleanup=(
+                        lambda task_id=task_id: _enqueue_parent_if_waiting(
+                            orchestrator, task_id, root_auto_revisit_spawned=False,
+                        ) if task_id in consumed_parent_cleanup_ids else None
                     ),
                 )
-                if settled:
-                    audit.log_daemon_restart_failure(task_id, t.assigned_agent)
+
+            # THR-247 recovery is not an ordinary THR-079 subprocess.  Its claim
+            # is durably spent before launch/PID publication, so a restart must
+            # settle it before the ordinary pid-alive leave-alone path.  Never use
+            # a persisted PID here: without a live generation-owned control it may
+            # be absent or recycled.  The transaction protects accepted callbacks,
+            # cancellation, and a newer durable owner; those winners are left
+            # wholly untouched for their own normal lifecycle path.
+            if t.assigned_agent is not None:
+                accepted_result = db.get_accepted_task_completion_recovery_result(
+                    task_id=task_id, agent=t.assigned_agent,
+                )
+                if accepted_result is not None:
+                    # An accepted recovery callback is authoritative even if a
+                    # stale PID happens to look alive after restart.  The ledger
+                    # selects this immutable row; never substitute a latest row.
                     if orchestrator is not None:
-                        from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
-                        _kill_jobs_for_terminating_task(orchestrator, task_id)
-                        _enqueue_parent_if_waiting(
-                            orchestrator, task_id,
-                            root_auto_revisit_spawned=False,
+                        accepted_report = completion_report_from_result_row(
+                            task_id, accepted_result, fallback_agent=t.assigned_agent,
                         )
-                # A claimed recovery must never fall through to PID liveness:
-                # if settlement lost, an accepted/cancelled/newer owner won.
-                continue
+                        from runtime.orchestrator.run_step import _consume_accepted_completion_recovery
+                        _consume_accepted_completion_recovery(
+                            orchestrator, task_id, accepted_report,
+                            agent=t.assigned_agent, session_id=t.current_session_id or "",
+                            result_row_id=accepted_result["id"],
+                        )
+                    continue
+                recovery = db.get_claimed_task_completion_recovery(
+                    task_id=task_id, agent=t.assigned_agent,
+                )
+                if recovery is not None:
+                    settled_at = datetime.now(timezone.utc).isoformat()
+                    with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_on_startup.recovery', root_transitions):
+                        settled = db.settle_interrupted_task_completion_recovery(
+                            task_id=task_id, agent=t.assigned_agent,
+                            settled_at=settled_at,
+                            note=(
+                                "unaccepted completion recovery interrupted by daemon restart; "
+                                "recovery claim spent and settled fail-closed"
+                            ),
+                        )
+                    if settled:
+                        audit.log_daemon_restart_failure(task_id, t.assigned_agent)
+                        if orchestrator is not None:
+                            from runtime.orchestrator.run_step import _kill_jobs_for_terminating_task
+                            _kill_jobs_for_terminating_task(orchestrator, task_id)
+                            _enqueue_parent_if_waiting(
+                                orchestrator, task_id,
+                                root_auto_revisit_spawned=False,
+                            )
+                    # A claimed recovery must never fall through to PID liveness:
+                    # if settlement lost, an accepted/cancelled/newer owner won.
+                    continue
 
-        # Branch 1 — genuinely running, killed by the restart.
-        if t.status == TaskStatus.IN_PROGRESS and t.block_kind is None:
-            # THR-079: use the persisted executor OS pid as the liveness
-            # signal instead of assuming the subprocess is dead. A running
-            # session survives a daemon restart; only genuinely dead pids
-            # (or undeterminable ones, per fail-closed default) are failed.
-            # NOTE: os.kill(pid, 0) carries a pid-recycle caveat — a recycled
-            # pid could read as falsely-alive. The probe is the ratified
-            # THR-079 approach; a falsely-alive false-positive is acceptable
-            # relative to the risk of duplicate runs from false-negative.
-            pid = t.executor_pid
-            alive = False
-            if pid is not None:
-                try:
-                    os.kill(pid, 0)  # signal 0 = existence check, no signal sent
-                except ProcessLookupError:
-                    alive = False
-                except Exception:
-                    # PermissionError, recycled-pid uncertainty, any
-                    # non-clean answer → founder fail-closed default.
-                    # Do NOT leave-alone and do NOT auto-resume on ambiguity.
-                    pid = None  # treat as undeterminable
+            # Branch 1 — genuinely running, killed by the restart.
+            if t.status == TaskStatus.IN_PROGRESS and t.block_kind is None:
+                # THR-079: use the persisted executor OS pid as the liveness
+                # signal instead of assuming the subprocess is dead. A running
+                # session survives a daemon restart; only genuinely dead pids
+                # (or undeterminable ones, per fail-closed default) are failed.
+                # NOTE: os.kill(pid, 0) carries a pid-recycle caveat — a recycled
+                # pid could read as falsely-alive. The probe is the ratified
+                # THR-079 approach; a falsely-alive false-positive is acceptable
+                # relative to the risk of duplicate runs from false-negative.
+                pid = t.executor_pid
+                alive = False
+                if pid is not None:
+                    try:
+                        os.kill(pid, 0)  # signal 0 = existence check, no signal sent
+                    except ProcessLookupError:
+                        alive = False
+                    except Exception:
+                        # PermissionError, recycled-pid uncertainty, any
+                        # non-clean answer → founder fail-closed default.
+                        # Do NOT leave-alone and do NOT auto-resume on ambiguity.
+                        pid = None  # treat as undeterminable
+                    else:
+                        alive = True
+
+                if alive:
+                    # Session still running — leave alone. No reconcile, no
+                    # re-enqueue, no auto-revisit. The live session will complete
+                    # its work and report back normally.
+                    continue
+
+                # THR-090 Track A: before failing a dead-pid task, check for an
+                # unconsumed task_result row from the CURRENT session (the
+                # definitive TASK-2625 fingerprint: a completion callback that
+                # landed after the daemon died). Session-scoping is mandatory:
+                # a prior-step result row carries a different session uuid and
+                # must never match — the task falls through to the dead-pid FAIL
+                # path instead. Governing invariant: err toward a MISS
+                # (fail-closed), NEVER replay an already-consumed decision.
+                # Only act if current_session_id is not None AND the row is found;
+                # otherwise fall through unchanged to the dead-pid FAIL path.
+                orphaned_result_row = None
+                if t.current_session_id is not None and t.assigned_agent is not None:
+                    orphaned_result_row = db.get_latest_task_result(
+                        task_id, t.assigned_agent, t.current_session_id,
+                    )
+                if orphaned_result_row is not None and orchestrator is not None:
+                    orphaned_report = completion_report_from_result_row(
+                        task_id, orphaned_result_row,
+                        fallback_agent=t.assigned_agent or "unknown",
+                    )
+                    # Audit: log the completion report so the consumed result is
+                    # visible — the original session's log_completion_report call
+                    # never ran (the daemon died before that point).
+                    orchestrator._audit.log_completion_report(report=orphaned_report)
+                    from runtime.orchestrator.run_step import _consume_completion_report
+                    _consume_completion_report(
+                        orchestrator, task_id, orphaned_report,
+                        result_row_id=orphaned_result_row.get("id"),
+                        reclaim_terminal_worktree=False,
+                    )
+                    continue
+
+                # Dead or undeterminable (no orphaned result to consume):
+                # fail-closed. No auto-revisit spawn — the THR-079 ruling
+                # supersedes the earlier heartbeat/revisit approach. The founder
+                # receives a daemon_restart_failure audit row and decides whether
+                # to re-dispatch.
+                if pid is None:
+                    reason = (
+                        "session liveness undeterminable on daemon restart -- "
+                        "executor pid null or probe inconclusive"
+                    )
                 else:
-                    alive = True
+                    reason = (
+                        "session died on daemon restart -- executor pid not alive"
+                    )
+                with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_on_startup.failure', root_transitions):
+                    db.update_task(task_id, status=TaskStatus.FAILED, note=reason)
+                audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
+                if orchestrator is not None:
+                    _enqueue_parent_if_waiting(
+                        orchestrator, task_id,
+                        root_auto_revisit_spawned=False,
+                    )
+                    from runtime.orchestrator.run_step import (
+                        _reclaim_terminal_task_worktree,
+                    )
+                    _reclaim_terminal_task_worktree(orchestrator, task_id)
 
-            if alive:
-                # Session still running — leave alone. No reconcile, no
-                # re-enqueue, no auto-revisit. The live session will complete
-                # its work and report back normally.
-                continue
+            # Branch 2 — parked on children (delegated). Re-enqueue only when all
+            # children are terminal (orphaned wake-up); else leave it parked.
+            elif t.status in _PARKED and t.block_kind == BlockKind.DELEGATED:
+                children = [db.get_task(cid) for cid in db.get_children(task_id)]
+                if all(c is not None and c.status in TERMINAL_STATES
+                       for c in children):
+                    # A recovery settlement can commit before its parent wake is
+                    # delivered.  On a second startup the terminal child is still
+                    # visible, but do not duplicate that already-pending bounded
+                    # wake.  This is intentionally limited to the delegated
+                    # parent path; ordinary pending-task startup enqueue behavior
+                    # remains unchanged.
+                    _sweep_enqueue(
+                        queue, slug, task_id, orchestrator, pending_once=True,
+                    )
 
-            # THR-090 Track A: before failing a dead-pid task, check for an
-            # unconsumed task_result row from the CURRENT session (the
-            # definitive TASK-2625 fingerprint: a completion callback that
-            # landed after the daemon died). Session-scoping is mandatory:
-            # a prior-step result row carries a different session uuid and
-            # must never match — the task falls through to the dead-pid FAIL
-            # path instead. Governing invariant: err toward a MISS
-            # (fail-closed), NEVER replay an already-consumed decision.
-            # Only act if current_session_id is not None AND the row is found;
-            # otherwise fall through unchanged to the dead-pid FAIL path.
-            orphaned_result_row = None
-            if t.current_session_id is not None and t.assigned_agent is not None:
-                orphaned_result_row = db.get_latest_task_result(
-                    task_id, t.assigned_agent, t.current_session_id,
-                )
-            if orphaned_result_row is not None and orchestrator is not None:
-                orphaned_report = completion_report_from_result_row(
-                    task_id, orphaned_result_row,
-                    fallback_agent=t.assigned_agent or "unknown",
-                )
-                # Audit: log the completion report so the consumed result is
-                # visible — the original session's log_completion_report call
-                # never ran (the daemon died before that point).
-                orchestrator._audit.log_completion_report(report=orphaned_report)
-                from runtime.orchestrator.run_step import _consume_completion_report
-                _consume_completion_report(
-                    orchestrator, task_id, orphaned_report,
-                    result_row_id=orphaned_result_row.get("id"),
-                    reclaim_terminal_worktree=False,
-                )
-                continue
+            # Branch 3 — parked on jobs (blocked_on_job). Re-enqueue only when all
+            # blocking jobs are terminal (jobs finished while the daemon was down);
+            # else leave alone. MUST exist or these fall into Branch 1 and get
+            # wrongly failed on every restart (the #1 reviewer-focus item).
+            elif t.status in _PARKED and t.block_kind == BlockKind.BLOCKED_ON_JOB:
+                try:
+                    job_ids = _json.loads(t.blocked_on_job_ids or "[]")
+                except _json.JSONDecodeError:
+                    job_ids = []
+                if job_ids and all(
+                    db.get_job_status(j) in _TERMINAL_JOB_STATES for j in job_ids
+                ):
+                    # A second startup sweep can observe the same parked carrier
+                    # before a worker claims the first wake.  Keep the ordinary
+                    # resume wake one-shot in the in-memory queue, as for the
+                    # delegated parked carrier above.
+                    _sweep_enqueue(
+                        queue, slug, task_id, orchestrator, pending_once=True,
+                    )
 
-            # Dead or undeterminable (no orphaned result to consume):
-            # fail-closed. No auto-revisit spawn — the THR-079 ruling
-            # supersedes the earlier heartbeat/revisit approach. The founder
-            # receives a daemon_restart_failure audit row and decides whether
-            # to re-dispatch.
-            if pid is None:
-                reason = (
-                    "session liveness undeterminable on daemon restart -- "
-                    "executor pid null or probe inconclusive"
-                )
-            else:
-                reason = (
-                    "session died on daemon restart -- executor pid not alive"
-                )
-            db.update_task(task_id, status=TaskStatus.FAILED, note=reason)
-            audit.log_daemon_restart_failure(task_id, t.assigned_agent or "daemon")
-            if orchestrator is not None:
-                _enqueue_parent_if_waiting(
-                    orchestrator, task_id,
-                    root_auto_revisit_spawned=False,
-                )
-                from runtime.orchestrator.run_step import (
-                    _reclaim_terminal_task_worktree,
-                )
-                _reclaim_terminal_task_worktree(orchestrator, task_id)
+            # Branch 4 — pending: re-enqueue (lost the original POST enqueue).
+            elif t.status == TaskStatus.PENDING:
+                _sweep_enqueue(queue, slug, task_id, orchestrator)
 
-        # Branch 2 — parked on children (delegated). Re-enqueue only when all
-        # children are terminal (orphaned wake-up); else leave it parked.
-        elif t.status in _PARKED and t.block_kind == BlockKind.DELEGATED:
-            children = [db.get_task(cid) for cid in db.get_children(task_id)]
-            if all(c is not None and c.status in TERMINAL_STATES
-                   for c in children):
-                # A recovery settlement can commit before its parent wake is
-                # delivered.  On a second startup the terminal child is still
-                # visible, but do not duplicate that already-pending bounded
-                # wake.  This is intentionally limited to the delegated
-                # parent path; ordinary pending-task startup enqueue behavior
-                # remains unchanged.
-                _sweep_enqueue(
-                    queue, slug, task_id, orchestrator, pending_once=True,
-                )
+            # Branch 5 — escalated: leave alone (founder owns the transition).
+            # Reached only because get_nonterminal_task_ids now yields escalated.
+            elif t.status == TaskStatus.ESCALATED:
+                pass
+            # The boot-time migration flips any legacy blocked(escalated) row
+            # before startup; this branch is reached only via new escalated rows.
 
-        # Branch 3 — parked on jobs (blocked_on_job). Re-enqueue only when all
-        # blocking jobs are terminal (jobs finished while the daemon was down);
-        # else leave alone. MUST exist or these fall into Branch 1 and get
-        # wrongly failed on every restart (the #1 reviewer-focus item).
-        elif t.status in _PARKED and t.block_kind == BlockKind.BLOCKED_ON_JOB:
-            try:
-                job_ids = _json.loads(t.blocked_on_job_ids or "[]")
-            except _json.JSONDecodeError:
-                job_ids = []
-            if job_ids and all(
-                db.get_job_status(j) in _TERMINAL_JOB_STATES for j in job_ids
-            ):
-                # A second startup sweep can observe the same parked carrier
-                # before a worker claims the first wake.  Keep the ordinary
-                # resume wake one-shot in the in-memory queue, as for the
-                # delegated parked carrier above.
-                _sweep_enqueue(
-                    queue, slug, task_id, orchestrator, pending_once=True,
-                )
+        # Branch 6 — thread reply delivery recovery (GitHub #688 Slice B).
+        # Replace ONLY the conversational REPLY portion of the generic reaper with
+        # the durable store-owned recovery primitives. BOOTSTRAP and TASK_FOLLOWUP
+        # keep the generic daemon_restart reaping below.
+        _now = datetime.now(timezone.utc).isoformat()
 
-        # Branch 4 — pending: re-enqueue (lost the original POST enqueue).
-        elif t.status == TaskStatus.PENDING:
-            _sweep_enqueue(queue, slug, task_id, orchestrator)
+        # 6a. Activate per-pair reply delivery state for every OPEN thread
+        # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
+        recovered_tokens: list[str] = []
+        for thread_id in db.list_open_thread_ids():
+            db.cutover_thread_reply_delivery_state(thread_id)
 
-        # Branch 5 — escalated: leave alone (founder owns the transition).
-        # Reached only because get_nonterminal_task_ids now yields escalated.
-        elif t.status == TaskStatus.ESCALATED:
-            pass
-        # The boot-time migration flips any legacy blocked(escalated) row
-        # before startup; this branch is reached only via new escalated rows.
+        # 6b. Durable reply-delivery recovery: retain valid queued wakes, replace
+        # interrupted running attempts with exactly one daemon_restart replacement.
+        for entry in db.recover_reply_delivery_state():
+            recovered_tokens.append(entry.invocation_token)
 
-    # Branch 6 — thread reply delivery recovery (GitHub #688 Slice B).
-    # Replace ONLY the conversational REPLY portion of the generic reaper with
-    # the durable store-owned recovery primitives. BOOTSTRAP and TASK_FOLLOWUP
-    # keep the generic daemon_restart reaping below.
-    _now = datetime.now(timezone.utc).isoformat()
+        # 6e. TASK-5966 exchange reconcile: corruption sweep (fail-closed) then
+        # idempotent closure evaluation for every open exchange. daemon_restart is
+        # an INTERRUPTION, never terminal, while a recovery replacement covering
+        # the exchange is queued/running (6b) — the quiescence predicate keeps the
+        # cohort non-quiescent until that replacement settles. Catch-up tokens
+        # minted by a stale-close are enqueued after commit like every other
+        # startup token.
+        for entry in db.reconcile_reply_exchanges():
+            recovered_tokens.append(entry.invocation_token)
 
-    # 6a. Activate per-pair reply delivery state for every OPEN thread
-    # (idempotent cutover: seeds/coalesces legacy pending REPLYs).
-    recovered_tokens: list[str] = []
-    for thread_id in db.list_open_thread_ids():
-        db.cutover_thread_reply_delivery_state(thread_id)
+        # 6c. Reap the remaining conversational REPLY rows not governed by any
+        # delivery-state ownership slot (orphan legacy receipts — e.g. archived
+        # threads cutover does not reach). Never touch the governed queued wakes
+        # retained above.
+        # Cleanup backstops run asynchronously but use this same connection.
+        # Own the whole raw UPDATE-to-commit transaction; never carry the lock
+        # into process termination/waits above.
+        with db._lock:
+            db._conn.execute(
+                "UPDATE thread_invocations SET status = 'failed', "
+                "decline_reason = ?, consumed_at = ? "
+                "WHERE status = 'pending' AND purpose = 'reply' "
+                "AND invocation_token NOT IN "
+                "(SELECT queued_invocation_token FROM thread_reply_delivery_state "
+                " WHERE queued_invocation_token IS NOT NULL) "
+                "AND invocation_token NOT IN "
+                "(SELECT running_invocation_token FROM thread_reply_delivery_state "
+                " WHERE running_invocation_token IS NOT NULL)",
+                ("daemon_restart", _now),
+            )
 
-    # 6b. Durable reply-delivery recovery: retain valid queued wakes, replace
-    # interrupted running attempts with exactly one daemon_restart replacement.
-    for entry in db.recover_reply_delivery_state():
-        recovered_tokens.append(entry.invocation_token)
-
-    # 6e. TASK-5966 exchange reconcile: corruption sweep (fail-closed) then
-    # idempotent closure evaluation for every open exchange. daemon_restart is
-    # an INTERRUPTION, never terminal, while a recovery replacement covering
-    # the exchange is queued/running (6b) — the quiescence predicate keeps the
-    # cohort non-quiescent until that replacement settles. Catch-up tokens
-    # minted by a stale-close are enqueued after commit like every other
-    # startup token.
-    for entry in db.reconcile_reply_exchanges():
-        recovered_tokens.append(entry.invocation_token)
-
-    # 6c. Reap the remaining conversational REPLY rows not governed by any
-    # delivery-state ownership slot (orphan legacy receipts — e.g. archived
-    # threads cutover does not reach). Never touch the governed queued wakes
-    # retained above.
-    # Cleanup backstops run asynchronously but use this same connection.
-    # Own the whole raw UPDATE-to-commit transaction; never carry the lock
-    # into process termination/waits above.
-    with db._lock:
-        db._conn.execute(
-            "UPDATE thread_invocations SET status = 'failed', "
-            "decline_reason = ?, consumed_at = ? "
-            "WHERE status = 'pending' AND purpose = 'reply' "
-            "AND invocation_token NOT IN "
-            "(SELECT queued_invocation_token FROM thread_reply_delivery_state "
-            " WHERE queued_invocation_token IS NOT NULL) "
-            "AND invocation_token NOT IN "
-            "(SELECT running_invocation_token FROM thread_reply_delivery_state "
-            " WHERE running_invocation_token IS NOT NULL)",
-            ("daemon_restart", _now),
+            # 6d. Preserve the generic reaper for BOOTSTRAP and TASK_FOLLOWUP exactly.
+            cursor = db._conn.execute(
+                "UPDATE thread_invocations SET status = 'failed', "
+                "decline_reason = ?, consumed_at = ? "
+                "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')",
+                ("daemon_restart", _now),
+            )
+            db._conn.commit()
+        logger.debug(
+            "startup sweep: reaped %d orphaned pending BOOTSTRAP/TASK_FOLLOWUP "
+            "invocations; recovered %d reply-delivery tokens",
+            cursor.rowcount, len(recovered_tokens),
         )
-
-        # 6d. Preserve the generic reaper for BOOTSTRAP and TASK_FOLLOWUP exactly.
-        cursor = db._conn.execute(
-            "UPDATE thread_invocations SET status = 'failed', "
-            "decline_reason = ?, consumed_at = ? "
-            "WHERE status = 'pending' AND purpose IN ('bootstrap', 'task_followup')",
-            ("daemon_restart", _now),
-        )
-        db._conn.commit()
-    logger.debug(
-        "startup sweep: reaped %d orphaned pending BOOTSTRAP/TASK_FOLLOWUP "
-        "invocations; recovered %d reply-delivery tokens",
-        cursor.rowcount, len(recovered_tokens),
-    )
-    return recovered_tokens
+        return recovered_tokens
+    except BaseException:
+        root_tail_failed = True
+        raise
+    finally:
+        root_delivery['active'] = False
+        _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+        _root_worktree_batch(orchestrator, root_transitions,
+            teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
 
 
 def _publish_v2_generations_on_startup(org, queue: TaskQueue) -> None:

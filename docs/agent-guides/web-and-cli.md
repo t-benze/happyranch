@@ -172,13 +172,16 @@ protected descendants, incomplete evidence, and identity drift refuse. A
 success receipt requires measured root-plus-descendant bytes, actual candidate
 absence, and unchanged protected-path identities.
 
-The independent forward-only terminal task-worktree hook has no Web/CLI or
-configuration surface. Its final process gate loads this same bundled scanner
-by explicit file path inside the existing task worker thread: root-owned
-processes are out of scope, only exact name-plus-expected-cgroup helpers are
-exempt, any other unreadable same-user process is uncertain, and a positive
-reference preserves. The hook retains one five-second total deadline and one
-literal non-force removal attempt.
+Root-terminal worktree reconciliation has no Web/CLI/configuration surface.
+New original owner transitions to `completed`, `failed`, `cancelled` or
+`superseded` reconsider only the parent tree, including NULL-parent workflow
+tasks. Old child deferrals stay in results/history and become advisory during
+this root pass. Fresh preservation, exact scanner and protected identity gates
+remain mandatory. The committed start INTEGER id is stable; replay or missing
+finish never retries. Async owners await the finite pass off-loop outside locks.
+Shared10s work/1s report/1s reap targets are conditional on ordinary I/O, with
+explicit caps and partial frontier/remainder. Source checks establish no
+behavioral acceptance or deployment. See [the owner/evidence contract](orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 
 ## Web UI
 
