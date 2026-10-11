@@ -1257,8 +1257,12 @@ export interface DocumentWorkflowActivationReceipt3 extends Omit<DocumentWorkflo
   format: 'workflow-activation-receipt@3';
   allowed_actions: HandoffWorkflowActivationAction[];
 }
-export type WorkflowDocumentReviewDefinition3 = Omit<WorkflowDocumentReviewDefinition, 'schema_version' | 'outcomes' | 'request_changes'> & {
+export type WorkflowDocumentReviewDefinition3 = Omit<WorkflowDocumentReviewDefinition, 'schema_version' | 'submission' | 'outcomes' | 'request_changes'> & {
   schema_version: 3;
+  submission: {
+    timing: 'on-completion' | 'while-active-or-completed';
+    delivery: 'current-author-handoff@1';
+  };
 } & ({ outcomes: ['approved']; request_changes: null } | {
   outcomes: ['approved', 'changes_requested'] | ['changes_requested', 'approved'];
   request_changes: WorkflowDocumentReturnRule;

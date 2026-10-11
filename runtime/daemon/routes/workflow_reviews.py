@@ -13,7 +13,7 @@ from runtime.workflows.activation import (AbstractRole, ActivatedTemplate, Close
 
 from runtime.daemon.auth import _require_human, optional_bearer
 from runtime.daemon.routes._org_dep import OrgDep
-from runtime.daemon.routes.workflow_submissions import ERRORS, READ_RESPONSES, TOKEN_SCHEMA, agent_transport, fail, proof_schema, query_values, raise_read_error, require_read_schema, sqlite_error_types
+from runtime.daemon.routes.workflow_submissions import ERRORS, READ_RESPONSES, TOKEN_SCHEMA, agent_transport, fail, proof_schema, query_values, raise_read_error, sqlite_error_types
 
 router = APIRouter()
 
@@ -92,11 +92,10 @@ async def get_review_request(org: OrgDep, request_id: str, request: Request,
     else:
         fail('workflow_author_handoff_invalid_request', 422)
     try:
-        require_read_schema(org, session_id)
         return await org.workflow_submissions.get_request(request_id=request_id, session_id=session_id, human=human)
     except ERRORS as exc:
         raise_read_error(exc)
     except sqlite_error_types() as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_unavailable'}) from exc
-    except ValueError as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_corrupt'}) from exc

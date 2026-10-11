@@ -299,7 +299,6 @@ class WorkflowSubmissionStore:
         activation through this helper; all other callers use _authority.
         """
         activation, context_row, binding, template, authorization = _source(conn, intent)
-        self.org.workflow_activations._closure(conn, activation['id'], actor=intent['admission_principal'])
         grant = json.loads(authorization['authority_bytes'])
         pointer = conn.execute('SELECT authorization_revision_id FROM workflow_active_authorizations WHERE namespace=?',
                                (authorization['namespace'],)).fetchone()
@@ -307,6 +306,7 @@ class WorkflowSubmissionStore:
             raise WorkflowActivationError('workflow_author_handoff_action_not_authorized')
         from runtime.workflows.activation import parse_request
         self.org.workflow_activations._roles(parse_request(grant['original_request']), json.loads(capture.ready.snapshot_bytes), template)
+        self.org.workflow_activations._closure(conn, activation['id'], actor=intent['admission_principal'])
         context = json.loads(context_row['context_bytes'])
         principals = {context['binding']['bindings'][role]['principal'] for role in context['document_contract']['reviewer_roles']}
         contributors = {r[0] for r in conn.execute('SELECT principal FROM workflow_instance_contributors WHERE instance_id=?', (intent['instance_id'],))}
@@ -468,8 +468,16 @@ class WorkflowSubmissionStore:
                     row = _record(conn, 'workflow_author_handoffs', handoff_id)
                     proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
                     intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
-                    context, binding, grant = self._authority(conn, intent, capture,
-                        {'stage-immutable-document', 'submit-immutable-document', 'collect-review'})
+                    try:
+                        context, binding, grant = self._authority(conn, intent, capture,
+                            {'stage-immutable-document', 'submit-immutable-document', 'collect-review'})
+                    except WorkflowActivationError as exc:
+                        # A normal hold belongs to THIS reservation. Full H
+                        # validation above has already rejected corruption.
+                        if exc.code in {'workflow_author_handoff_action_not_authorized',
+                                        'workflow_author_handoff_source_not_current', 'role_binding_not_authorized'}:
+                            return []
+                        raise
                     if self._projection(conn, row, capture, replayed=True)['current']['reason'] in (
                             'source_failed', 'source_cancelled', 'source_uncertain', 'source_not_current',
                             'authority_not_current', 'new_runs_disabled'):
@@ -590,6 +598,111 @@ class WorkflowSubmissionStore:
                 'Then use your actual task/session report-completion as the FINAL session action. The owned service '
                 'can fulfill the same handoff only after genuine callback and committed successful/quiescent terminal proof.\n')
 
+    def _read_schema_presence(self, conn: sqlite3.Connection) -> None:
+        # Only absent H needs operator guidance here. Present H is fully
+        # validated AFTER selected scope/grant/current-authority admission.
+        if not conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_author_handoffs'").fetchone():
+            require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
+
+    def _read_grant(self, conn: sqlite3.Connection, intent: dict, actions: set[str],
+                    owner: WorkflowTemplatePrincipal | None = None) -> None:
+        binding = _record(conn, 'workflow_binding_snapshots', intent['binding_snapshot_id'])
+        authorization = _record(conn, 'workflow_authorization_revisions', binding['authorization_revision_id'])
+        pointer = conn.execute('SELECT authorization_revision_id FROM workflow_active_authorizations WHERE namespace=?',
+                               (authorization['namespace'],)).fetchone()
+        if pointer is None or pointer[0] != authorization['id']:
+            raise WorkflowActivationError('workflow_author_handoff_read_not_authorized')
+        try:
+            grant = json.loads(authorization['authority_bytes'])
+            if owner is not None and grant['actor'] != owner.provenance:
+                raise WorkflowActivationError('workflow_author_handoff_not_found')
+            if not actions <= set(grant['original_request']['allowed_actions']):
+                raise WorkflowActivationError('workflow_author_handoff_read_not_authorized')
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError('workflow_author_handoff_storage_corrupt') from exc
+
+    def _select_handoff(self, conn: sqlite3.Connection, *, handoff_id: str, lane: str,
+                        task_agent: tuple[str, str] | None, session_id: str | None,
+                        selector: str | None, owner: WorkflowTemplatePrincipal | None) -> tuple[dict, dict, set[str]]:
+        self._read_schema_presence(conn)
+        rows = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE id=? AND org_slug=?',
+                        (handoff_id, self.org.slug))
+        if len(rows) != 1:
+            raise WorkflowActivationError('workflow_author_handoff_not_found')
+        row = rows[0]
+        # Select from relational identities, never from the private admission
+        # proof or decoded graph. Full closure follows successful admission.
+        if lane == 'source-agent' and (task_agent != (row['source_task_id'], row['principal'])
+                                      or session_id != row['source_session_id']):
+            raise WorkflowActivationError('workflow_author_handoff_not_found')
+        if lane == 'request-agent':
+            requests = _records(conn, 'SELECT q.* FROM workflow_review_requests q JOIN workflow_rounds r ON r.id=q.round_id '
+                'WHERE q.id=? AND r.submission_id=? AND r.instance_id=? AND r.current_revision=1 '
+                "AND q.status='pending' AND q.supersedes_request_id IS NULL AND q.assignment_generation=1",
+                (selector, row['submission_id'], row['instance_id']))
+            bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (selector,))
+            if (len(requests) != 1 or len(bridges) != 1
+                    or task_agent != (bridges[0]['task_id'], bridges[0]['assigned_principal'])
+                    or session_id != bridges[0]['session_id'] or bridges[0]['assignment_generation'] != 1
+                    or requests[0]['principal'] != bridges[0]['assigned_principal']):
+                raise WorkflowActivationError('workflow_author_handoff_not_found')
+        if lane == 'owner-human':
+            instances = _records(conn, 'SELECT * FROM workflow_instances WHERE id=? AND owner_principal=?',
+                                 (row['instance_id'], owner.operation_principal))
+            if len(instances) != 1:
+                raise WorkflowActivationError('workflow_author_handoff_not_found')
+        intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
+        actions = {'collect-review'}
+        if lane == 'source-agent':
+            if (selector != intent['activation_id'] or intent['session_id'] != row['source_session_id']
+                    or intent['assigned_principal'] != row['principal'] or not intent['is_current']
+                    or intent['activation_revision'] != 1 or intent['assignment_generation'] != 1 or intent['attempt_sequence'] != 1):
+                raise WorkflowActivationError('workflow_author_handoff_not_found')
+            actions = {'stage-immutable-document', 'submit-immutable-document'}
+        elif lane == 'request-agent':
+            if not intent['is_current'] or not self._current_activation(conn, intent):
+                raise WorkflowActivationError('workflow_author_handoff_not_found')
+        elif lane == 'owner-human':
+            activation = _record(conn, 'workflow_activations', intent['activation_id'])
+            if (intent['admission_principal'] != owner.operation_principal
+                    or activation['activated_by'] != owner.operation_principal):
+                raise WorkflowActivationError('workflow_author_handoff_not_found')
+        else:
+            raise WorkflowActivationError('workflow_author_handoff_invalid_request')
+        self._read_grant(conn, intent, actions, owner)
+        if lane == 'source-agent' and not self._current_activation(conn, intent):
+            raise WorkflowActivationError('workflow_author_handoff_source_not_current')
+        return row, intent, actions
+
+    def _select_request(self, conn: sqlite3.Connection, *, request_id: str,
+                        task_agent: tuple[str, str] | None, session_id: str | None,
+                        human: bool) -> tuple[dict, dict, dict]:
+        self._read_schema_presence(conn)
+        requests = _records(conn, "SELECT * FROM workflow_review_requests WHERE id=? AND status='pending' "
+                            'AND supersedes_request_id IS NULL AND assignment_generation=1', (request_id,))
+        if len(requests) != 1:
+            raise WorkflowActivationError('workflow_review_request_not_found')
+        request = requests[0]
+        bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (request_id,))
+        if human:
+            if request['principal'] != 'founder' or bridges:
+                raise WorkflowActivationError('workflow_review_request_not_found')
+        elif (len(bridges) != 1 or task_agent != (bridges[0]['task_id'], bridges[0]['assigned_principal'])
+              or session_id != bridges[0]['session_id'] or bridges[0]['assignment_generation'] != 1
+              or request['principal'] != bridges[0]['assigned_principal']):
+            raise WorkflowActivationError('workflow_review_request_not_found')
+        rows = _records(conn, 'SELECT h.* FROM workflow_author_handoffs h JOIN workflow_rounds r ON r.submission_id=h.submission_id '
+                        'AND r.instance_id=h.instance_id WHERE r.id=? AND r.current_revision=1 AND h.org_slug=?',
+                        (request['round_id'], self.org.slug))
+        if len(rows) != 1:
+            raise WorkflowActivationError('workflow_review_request_not_found')
+        row = rows[0]
+        intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
+        if not intent['is_current'] or not self._current_activation(conn, intent):
+            raise WorkflowActivationError('workflow_review_request_not_found')
+        self._read_grant(conn, intent, {'collect-review'})
+        return request, row, intent
+
     async def get_handoff(self, *, handoff_id: str, lane: str, session_id: str | None,
                           selector: str | None, owner: WorkflowTemplatePrincipal | None = None) -> dict:
         task_agent = self._session(session_id) if session_id is not None else None
@@ -599,61 +712,48 @@ class WorkflowSubmissionStore:
             self.org.workflow_activations._principal(owner)
         elif owner is not None:
             raise WorkflowActivationError('workflow_author_handoff_invalid_request')
+        selection = dict(handoff_id=handoff_id, lane=lane, task_agent=task_agent,
+                         session_id=session_id, selector=selector, owner=owner)
+        # Discovery is independent of current-authority readiness and H proof
+        # decoding. Repeat all selected facts at the actual writer boundary.
+        with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
+            with self.db._lock:
+                if session_id is not None:
+                    self._session(session_id)
+                if owner is not None:
+                    self.org.workflow_activations._principal(owner)
+                self._select_handoff(self.db._conn, **selection)
         capture = self.org.workflow_authority.capture_admission()
         async with self._lock:
             async with self.org.db_lock:
-                lease = self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext()
-                with lease:
+                with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
                     with self.org.workflow_authority.admission_writer(capture) as conn:
                         if owner is not None:
                             self.org.workflow_activations._principal(owner)
                         if session_id is not None:
                             self._session(session_id)
-                        rows = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE id=?', (handoff_id,))
-                        if len(rows) != 1 or rows[0]['org_slug'] != self.org.slug:
-                            raise WorkflowActivationError('workflow_author_handoff_not_found')
-                        row = rows[0]
+                        row, intent, actions = self._select_handoff(conn, **selection)
+                        if owner is not None:
+                            self._selected_authority(conn, intent, capture, actions)
+                        else:
+                            self._authority(conn, intent, capture, actions)
+                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
                         proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
-                        intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
-                        actions = {'collect-review'}
-                        if lane == 'source-agent':
-                            if (task_agent != (row['source_task_id'], row['principal']) or session_id != row['source_session_id']
-                                    or selector != intent['activation_id'] or intent['session_id'] != row['source_session_id']
-                                    or intent['assigned_principal'] != row['principal'] or not intent['is_current']
-                                    or intent['activation_revision'] != 1 or intent['assignment_generation'] != 1 or intent['attempt_sequence'] != 1):
-                                raise WorkflowActivationError('workflow_author_handoff_not_found')
-                            actions = {'stage-immutable-document', 'submit-immutable-document'}
-                        elif lane == 'request-agent':
+                        if lane == 'request-agent':
                             graph = validate_handoff_graph(conn, row, proof)
                             if graph is None or selector not in graph['request_ids']:
-                                raise WorkflowActivationError('workflow_author_handoff_not_found')
-                            bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (selector,))
-                            if (len(bridges) != 1 or task_agent != (bridges[0]['task_id'], bridges[0]['assigned_principal'])
-                                    or session_id != bridges[0]['session_id'] or bridges[0]['assignment_generation'] != 1):
-                                raise WorkflowActivationError('workflow_author_handoff_not_found')
-                            self.org.workflow_reviews._intent(conn, bridges[0]['task_id'])
-                        elif lane == 'owner-human':
-                            instance = _record(conn, 'workflow_instances', row['instance_id'])
-                            grant = json.loads(_record(conn, 'workflow_authorization_revisions', proof['pins']['authorization']['id'])['authority_bytes'])
-                            if (instance['owner_principal'] != owner.operation_principal or intent['admission_principal'] != owner.operation_principal
-                                    or grant['actor'] != owner.provenance):
-                                raise WorkflowActivationError('workflow_author_handoff_not_found')
-                        else:
-                            raise WorkflowActivationError('workflow_author_handoff_invalid_request')
-                        try:
-                            if owner is not None:
-                                self._selected_authority(conn, intent, capture, actions)
-                            else:
-                                self._authority(conn, intent, capture, actions)
-                        except WorkflowActivationError as exc:
-                            if exc.code == 'workflow_author_handoff_action_not_authorized':
-                                raise WorkflowActivationError('workflow_author_handoff_read_not_authorized') from exc
-                            raise
-                        receipt = self._projection(conn, row, capture, replayed=True)
-        return receipt
+                                raise ValueError('workflow_author_handoff_storage_corrupt')
+                            self.org.workflow_reviews._intent(conn, task_agent[0])
+                        return self._projection(conn, row, capture, replayed=True)
 
     async def get_request(self, *, request_id: str, session_id: str | None, human: bool) -> dict:
         task_agent = self._session(session_id) if session_id is not None else None
+        selection = dict(request_id=request_id, task_agent=task_agent, session_id=session_id, human=human)
+        with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
+            with self.db._lock:
+                if session_id is not None:
+                    self._session(session_id)
+                self._select_request(self.db._conn, **selection)
         capture = self.org.workflow_authority.capture_admission()
         async with self._lock:
             async with self.org.db_lock:
@@ -661,34 +761,21 @@ class WorkflowSubmissionStore:
                     with self.org.workflow_authority.admission_writer(capture) as conn:
                         if session_id is not None:
                             self._session(session_id)
-                        requests = _records(conn, 'SELECT * FROM workflow_review_requests WHERE id=?', (request_id,))
-                        if len(requests) != 1:
-                            raise WorkflowActivationError('workflow_review_request_not_found')
-                        request = requests[0]
+                        request, row, intent = self._select_request(conn, **selection)
+                        self._authority(conn, intent, capture, {'collect-review'})
+                        require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
                         scope = json.loads(request['request_scope_bytes'])
-                        if scope['org_slug'] != self.org.slug or request['status'] != 'pending':
-                            raise WorkflowActivationError('workflow_review_request_not_found')
-                        row = _record(conn, 'workflow_author_handoffs', scope['handoff_id'])
+                        if scope['kind'] != ('human' if human else 'agent'):
+                            raise ValueError('workflow_author_handoff_storage_corrupt')
                         proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
                         validate_handoff_graph(conn, row, proof)
-                        if human:
-                            if scope['kind'] != 'human' or request['principal'] != 'founder':
-                                raise WorkflowActivationError('workflow_review_request_not_found')
-                        else:
-                            bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (request_id,))
-                            if (len(bridges) != 1 or scope['kind'] != 'agent'
-                                    or task_agent != (bridges[0]['task_id'], bridges[0]['assigned_principal'])
-                                    or session_id != bridges[0]['session_id']):
-                                raise WorkflowActivationError('workflow_review_request_not_found')
-                            self.org.workflow_reviews._intent(conn, bridges[0]['task_id'])
-                        intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
-                        self._authority(conn, intent, capture, {'collect-review'})
+                        if not human:
+                            self.org.workflow_reviews._intent(conn, task_agent[0])
                         current = self._projection(conn, row, capture, replayed=True)['current']
-                        response = dict(format='workflow-review-request-receipt@1', request_id=request_id,
+                        return dict(format='workflow-review-request-receipt@1', request_id=request_id,
                             scope=scope, request_scope_digest=request['request_scope_digest'], status='pending',
                             signed=False, pending=True, reconciliation_required=current['reconciliation_required'],
                             submission_bytes_base64=base64.b64encode(row['candidate_bytes']).decode('ascii'))
-        return response
 
     async def discover_completed_handoffs(self, queue: Any) -> None:
         with self.db._lock:

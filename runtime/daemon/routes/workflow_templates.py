@@ -119,11 +119,14 @@ def _publication_schema() -> dict:
         request_changes={"const": {"action": "return-to-author"}}))
     definitions.append(legacy)
     for version in (2, 3):
+        submission = dict(timing={"enum": ["on-completion", "while-active-or-completed"]})
+        if version == 3:
+            submission["delivery"] = {"const": "current-author-handoff@1"}
         definition = closed(dict(kind={"const": "document-review"}, schema_version={"const": version},
             description=description, author=closed(dict(role=role, kind={"const": "agent"})),
             output=closed(dict(primitive={"const": "immutable-document-revision"}, description=description)),
             reviewers=dict(type="array", items=member, minItems=1, maxItems=3), approval=approval,
-            submission=closed(dict(timing={"enum": ["on-completion", "while-active-or-completed"]})),
+            submission=closed(submission),
             outcomes={"type": "array"}, request_changes={"anyOf": [return_rule, {"type": "null"}]}))
         definition["oneOf"] = [
             {"properties": {"outcomes": {"const": ["approved"]}, "request_changes": {"type": "null"}}},

@@ -1439,6 +1439,9 @@ The stacked draft serves only POST `/workflows/submissions/handoffs`, GET
 `/workflows/submissions/handoffs/{handoff_id}` and GET
 `/workflows/reviews/requests/{request_id}`, under `/api/v1/orgs/{slug}`.
 Matched `@3` activation request/receipt schemas coexist with historical `@1/@2`.
+Publication `@3` requires closed submission={timing,delivery}, with delivery
+`current-author-handoff@1` and timing `on-completion` or `while-active-or-completed`;
+historical `@2` remains timing-only.
 An original CURRENT author supplies `session_id` and one closed
 `workflow-author-handoff-command@1` JSON body containing operation_key,
 activation_id, expected_revision=1, submission_bytes_base64 and submission_digest.
@@ -1456,7 +1459,13 @@ malformed or mixed selectors refuse422. Agent lanes are header-free;
 a valid bearer conflicts403 auth_path_conflict, and an invalid present header
 refuses403 bearer_not_accepted. Human lanes retain the existing Founder bearer.
 Selection/current membership/grants are revalidated: invisible scope404, selected
-grant loss403, unready current authority409, stored corruption500.
+grant loss403, unready current authority409, stored corruption500. Present-H
+reads select relational source/request/owner scope and the current grant before
+decoding H admission/graph proof; admitted reads retain complete validation in
+the authority writer and binding lease. Missing-H guidance follows independent
+identity checks. Completed-handoff discovery keeps a normally revoked or
+superseded reservation held individually and continues to independently
+revalidate later reservations; stored corruption still refuses the scan.
 
 The current Founder owner can read a superseded source with the SAME active
 authorization pointer and collect-review grant, full immutable ownership closure

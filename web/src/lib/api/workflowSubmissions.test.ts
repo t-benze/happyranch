@@ -25,7 +25,7 @@ beforeEach(() => {
   sessionStorage.setItem('happyranch.token', 'cached');
 });
 
-test('owner GET preserves closed receipt and exact independent proof selector', async () => {
+test('owner GET forwards exact independent proof selector and returns the fixture unchanged', async () => {
   let observed: URL | undefined;
   server.use(http.get(endpoint + '/handoff:one', ({ request }) => {
     observed = new URL(request.url);
@@ -33,6 +33,7 @@ test('owner GET preserves closed receipt and exact independent proof selector', 
   }));
   expect(await getAuthorHandoff('alpha', 'handoff:one', { proof_kind: 'owner-human' })).toEqual(receipt);
   expect([...observed!.searchParams]).toEqual([['proof_kind', 'owner-human']]);
+  // This checks the fixture's shape; server receipt closure needs public-boundary coverage.
   expect(Object.keys(receipt.core).sort()).toEqual(['candidate_digest', 'created_at', 'handoff_id', 'instance_id', 'request_digest', 'reserved_submission_id', 'revision']);
 });
 
