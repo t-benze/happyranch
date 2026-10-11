@@ -504,12 +504,13 @@ Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
 The former default `not integration` selection was deleted, including its
 unmarked component, contract and system acceptance cases. Git history preserves
 that source; do not restore it as a hidden unit or renamed E2E suite.
-`scripts/local_ci.sh python` refuses with exit 2. `all` runs the retained Web
-checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
+`scripts/local_ci.sh python` refuses with exit 2. `all` runs source boundary lint
+plus retained Web checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
 There is no default Python selection: pytest requires explicit existing canonical
 platform file selectors, or the isolated parent with `-m integration`.
 
-Required active PR **and exact-merge main** checks are `Web (Node 24)`,
+Required active PR **and exact-merge main** checks are
+`Source Boundary Lint`, `Web (Node 24)`,
 `Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
 and applicable Docs/other retained path-specific checks. The Linux job includes
 its existing real Codex callback smoke. Unit checks are neither required nor
@@ -523,12 +524,27 @@ The existing manual `local-ci-all` runner preserves its disposable environment,
 source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
 unit entry, G named-case controls/repetitions and lab unit preflight are removed.
 The existing `all_only` boolean is compatibility-only; every manual input runs
-retained Web checks, with separate integration skipped. Existing 150-minute manual
-and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+source boundary lint and retained Web checks, with separate integration skipped.
+Existing 150-minute manual and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
 See [the reset coverage gap record](docs/python-test-reset.md) and
 [Local CI](docs/local-ci.md) for retained selectors and evidence limits.
 
 **PR800 task-scoped hold (THR228seq390).** All unit execution (Go, Web and canonical platform cases) remains suspended and nonblocking in this cycle, never PASS. Python retirement above remains permanent. Current `local_ci.sh all/web` invokes Vitest, so the held maker/reviewer/QA legs use existing nonunit components (Node24 locked setup, colour gate, lint/typecheck/build/Storybook and native compile/package/static/syntax checks) and do not run combined targets. Keep normal hooks and current wrappers intact; report any enforcement conflict. The separately named hosted actual CLI callback remains retained. Publication is manager-owned after exact-head independent gates; local candidate delivery does not consume the one later N3 allocation.
+
+Source boundary enforcement: `python scripts/check_source_boundaries.py` and
+`python scripts/validate_source_boundaries.py` use only stdlib (local Python 3.12+).
+`--source-root <root>` on the checker selects isolated repository-shaped sources.
+Only infrastructure/orchestrator `*.py` are parsed; explicit daemon import/from
+forms at module time are forbidden, including classes/ordinary flow. Syntactic
+top-level TYPE_CHECKING/typing aliases exempt true branches but not else;
+function/async-function/lambda nodes are skipped. No allowlist/opt-out, relative/
+dynamic import resolution, alias dataflow, callable metadata inspection or
+runtime isolation proof. Invalid/missing/empty roots and filesystem/decode/parse
+failures return 2; violations return 1 with file:line/target and guidance; clean
+scans return 0. No product imports occur. `boundary-lint` and `all` run baseline
+plus bounded synthetic CLI validation; unconditional PR/push-main hosted
+`Source Boundary Lint` uses Python 3.14 without project dependency installation.
+See the project-layout boundary section and [Local CI](docs/local-ci.md).
 
 ## Commands
 
@@ -547,7 +563,8 @@ scripts/build_web.sh
 cd web && npm run dev
 happyranch web [--no-open]
 
-scripts/local_ci.sh              # default: retained Web checks; units RETIRED, E2E PENDING
+scripts/local_ci.sh              # default: boundary lint + Web; units RETIRED, E2E PENDING
+scripts/local_ci.sh boundary-lint # source-only lint + synthetic validation
 scripts/local_ci.sh python       # retired target: refuses with exit 2
 scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run)
 scripts/local_ci.sh integration  # Python integration tests

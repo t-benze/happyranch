@@ -8,6 +8,22 @@ on:
 jobs:
   # THR-291 seq40: Python units and their gate are retired.
   # Fresh product E2E coverage is PENDING, not a passing check.
+  source-boundary-lint:
+    name: Source Boundary Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.14"
+      - name: Check actual source boundaries
+        run: uv run --no-project --python 3.14 python scripts/check_source_boundaries.py
+      - name: Validate lint CLI with isolated synthetic sources
+        run: uv run --no-project --python 3.14 python scripts/validate_source_boundaries.py
+
   web:
     name: Web (Node 24)
     runs-on: ubuntu-latest

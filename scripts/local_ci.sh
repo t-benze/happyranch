@@ -17,7 +17,8 @@
 #                npm run typecheck; npm run build; npm run build-storybook;
 #                npx vitest run
 #   integration  uv sync --frozen; isolated parent -> pytest tests/ -v -m integration
-#   all          Web checks (default; canonical platform gates remain hosted)
+#   boundary-lint Source-only boundary lint + bounded synthetic CLI validation
+#   all          Boundary lint + Web checks (default; platform gates remain hosted)
 #   help         Show this help
 #
 # Scratch: every Python pytest invocation gets a fresh, uniquely named
@@ -331,6 +332,12 @@ run_python() {
   return 2
 }
 
+run_boundary_lint() {
+  echo "=== Source boundary lint ==="
+  python scripts/check_source_boundaries.py "$@"
+  python scripts/validate_source_boundaries.py
+}
+
 run_web() {
   ensure_node_declared
   echo -e "${GREEN}=== Web CI ===${NC}"
@@ -356,6 +363,7 @@ run_integration() {
 }
 
 run_all() {
+  run_boundary_lint
   observe_tmp_inodes
   ensure_node_declared
   echo "Python units RETIRED (THR-291 seq40); fresh product E2E PENDING."
@@ -371,11 +379,13 @@ show_help() {
   echo ""
   echo "Targets:"
   echo "  python       Refuse retired Python unit target (THR-291 seq40; exit 2)"
+  echo "  boundary-lint Source-only lint + synthetic validation (Python 3.12+, stdlib only)"
+  echo "                Optional: --source-root <repository-shaped-root>"
   echo "  web          Run Web CI"
   echo "               (npm ci + colour gate + lint + typecheck + build + build-storybook + vitest run)"
   echo "  integration  Run Python integration tests"
   echo "               (isolated parent -> pytest tests/ -v -m integration)"
-  echo "  all          Default: runs retained Web checks; E2E coverage PENDING"
+  echo "  all          Default: runs boundary lint + retained Web checks; E2E coverage PENDING"
   echo "  help         Show this help"
   echo ""
   echo "Caveats:"
@@ -397,6 +407,7 @@ show_help() {
 
 case "${1:-all}" in
   python)       run_python ;;
+  boundary-lint) run_boundary_lint "${@:2}" ;;
   web)          run_web ;;
   integration)  run_integration ;;
   all)          run_all ;;

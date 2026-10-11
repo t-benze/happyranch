@@ -20,7 +20,7 @@ def _synchronized(method):
 
     Why: the daemon shares ONE sqlite3 connection across the event-loop thread
     (async routes) and the threadpool thread running ``Orchestrator.run_step``
-    (see ``src/daemon/queue.py``). ``DaemonState.db_lock`` is an ``asyncio.Lock``
+    (see ``runtime/daemon/queue.py``). ``DaemonState.db_lock`` is an ``asyncio.Lock``
     and can't serialize against threads; ``check_same_thread=False`` on the
     connection allows cross-thread access but not concurrent cursor/exec ops —
     overlap raises ``sqlite3.InterfaceError`` or hands back rows with None-valued
