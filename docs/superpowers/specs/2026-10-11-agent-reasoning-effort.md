@@ -21,6 +21,13 @@ validation. It does not inspect runtime capabilities, accounts or model support.
 A valid selection may still be rejected by the native model/account. Configured
 selection is distinct from provider-reported behavior and token-usage model.
 
+Task invocation selects its configured executor, model and effort from one
+canonical AgentDef byte snapshot before executor construction. An atomic save
+after that read applies to the next selection; it cannot mix separately saved
+values in the current task tuple. Missing, pending-only and terminated agents
+retain their existing refusal before construction. This is selection coherence,
+not a lock across the later invocation or a lifecycle guarantee.
+
 | CLI / verified source | Static values | Literal argv with explicit effort |
 | --- | --- | --- |
 | Claude 2.1.280 installed help | low, medium, high, xhigh, max | `--effort <level>` beside unchanged `--model <id>` when pinned |
@@ -124,6 +131,14 @@ These separately selected checks are outside automated merge CI and retired
 Python units. They use shipping factories/executors, deterministic executable
 stubs, and the actual app/save routes in an owned disposable synthetic org.
 No provider invocation, daily E2E controller or lifecycle worker is started.
+The executable check also enters the actual shipping task-selection prefix
+with synthetic canonical files and an inert task lookup. It observes the saved
+tuple at the executor-construction boundary, then stops before construction.
+Controlled ordinary atomic file transitions cover same-CLI and CLI-changing
+tuples, unset/selected effort and unavailable-agent refusals. This prefix check
+does not prove complete task execution, callbacks or recovery. Wake/schedule
+executor reload coherence remains a separately identified source issue pending
+its own scoped correction; no five-owner coherence claim is made.
 
 ```bash
 uv run python scripts/verify_reasoning_effort.py --output <task-output>

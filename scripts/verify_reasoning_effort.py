@@ -15,6 +15,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -22,6 +24,126 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def check_task_selection(root: Path, receipts: list[dict]) -> None:
+    """Observe the shipping task prefix, stopping before executor construction."""
+    import inspect
+    from runtime.orchestrator import prompt_loader
+    from runtime.orchestrator.agent_def import AgentDef, parse_agent_text, render_agent_text
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.orchestrator.orchestrator import (
+        AgentTerminatedError, AgentUnavailableError, Orchestrator,
+    )
+
+    paths = OrgPaths(root=root / 'task-selection')
+    paths.agents_dir.mkdir(parents=True)
+    canonical = paths.agents_dir / 'worker.md'
+    original = parse_agent_text(
+        '---\nname: worker\nteam: engineering\nrole: worker\nexecutor: claude\n---\n\nSynthetic prompt.\n',
+        expected_name='worker',
+    )
+
+    class ConstructionBoundary(Exception):
+        pass
+
+    observer = object.__new__(Orchestrator)
+    observer._paths = paths
+    observer._db = SimpleNamespace(get_task=lambda task_id: None)
+    observed = []
+
+    def stop_at_construction(provider: str) -> None:
+        # Model/effort are not constructor parameters. Observe their actual
+        # shipping frame values at this boundary, without executing setup,
+        # admission, a provider or a lifecycle worker. No selection is mocked.
+        frame = inspect.currentframe().f_back
+        try:
+            require(frame.f_code is Orchestrator._run_agent_impl.__code__, 'actual shipping task caller')
+            observed.append((provider, frame.f_locals['model_name'], frame.f_locals['reasoning_effort']))
+        finally:
+            del frame
+        raise ConstructionBoundary
+
+    observer._build_executor = stop_at_construction
+    real_load = prompt_loader.load_agent
+
+    def invoke(
+        expected: tuple[str, str | None, str | None], label: str,
+        next_definition: AgentDef | None = None,
+    ) -> None:
+        reads = []
+        old_hash = hashlib.sha256(canonical.read_bytes()).hexdigest()
+
+        def load_then_save(read_paths: OrgPaths, name: str) -> AgentDef | None:
+            definition = real_load(read_paths, name)
+            reads.append(name)
+            if next_definition is not None and len(reads) == 1:
+                # Ordinary canonical file replacement AFTER the real snapshot
+                # read. The returned definition stays the genuine old snapshot.
+                replacement = canonical.with_suffix('.next')
+                replacement.write_text(render_agent_text(next_definition))
+                replacement.replace(canonical)
+            return definition
+
+        with patch.object(prompt_loader, 'load_agent', load_then_save):
+            try:
+                observer._run_agent_impl('TASK-synthetic', 'worker', 'inert prefix')
+            except ConstructionBoundary:
+                pass
+            else:
+                raise AssertionError('task must reach executor-construction boundary')
+        require(observed[-1] == expected, f'{label}: observed {observed[-1]!r}, expected {expected!r}')
+        require(reads == ['worker'], f'{label}: expected one canonical selection read, observed {reads!r}')
+        current_hash = hashlib.sha256(canonical.read_bytes()).hexdigest()
+        if next_definition is not None:
+            require(old_hash != current_hash, 'controlled canonical replacement actually occurred')
+            require(canonical.read_text() == render_agent_text(next_definition), 'new saved bytes remain canonical')
+        receipts.append({'case': 'F-task-selection', 'kind': label, 'selected': observed[-1],
+                         'selection_reads': len(reads), 'before_sha256': old_hash,
+                         'after_sha256': current_hash, 'stopped_before_executor_construction': True})
+
+    for model, effort in ((None, None), ('old-model', None), ('old-model', 'high')):
+        canonical.write_text(render_agent_text(dataclasses.replace(original, model=model, reasoning_effort=effort)))
+        invoke(('claude', model, effort), f'unset-selected:{model}:{effort}')
+
+    for next_executor in ('claude', 'pi'):
+        canonical.write_text(render_agent_text(dataclasses.replace(original, model='old-model', reasoning_effort='high')))
+        saved_next = dataclasses.replace(original, executor=next_executor, model='new-model', reasoning_effort='low')
+        invoke(('claude', 'old-model', 'high'), f'atomic-save:{next_executor}:old', saved_next)
+        invoke((next_executor, 'new-model', 'low'), f'atomic-save:{next_executor}:next')
+
+    canonical.unlink()
+    for kind, expected_error, message in (
+        ('missing', AgentUnavailableError, "agent 'worker' has no active definition"),
+        ('pending-only', AgentUnavailableError, "agent 'worker' has no active definition"),
+        ('terminated', AgentTerminatedError, "agent 'worker' has been terminated"),
+    ):
+        if kind == 'pending-only':
+            paths.pending_agents_dir.mkdir(parents=True)
+            (paths.pending_agents_dir / 'worker.md').write_text(render_agent_text(original))
+        elif kind == 'terminated':
+            (paths.pending_agents_dir / 'worker.md').unlink()
+            archived = paths.agents_dir / '_terminated'
+            archived.mkdir()
+            (archived / 'worker.md').write_text(render_agent_text(original))
+        boundary_count = len(observed)
+        # The compatibility single-field callers retain the same refusals.
+        for entry in ('task', 'executor-resolver', 'model-resolver'):
+            try:
+                if entry == 'task':
+                    observer._run_agent_impl('TASK-synthetic', 'worker', 'refuse')
+                elif entry == 'executor-resolver':
+                    observer._resolve_executor_name('worker')
+                else:
+                    observer._resolve_model_name('worker')
+            except expected_error as error:
+                require(str(error) == message, f'{kind}/{entry}: exact refusal')
+            else:
+                raise AssertionError(f'{kind}/{entry}: expected {expected_error.__name__}')
+            require(len(observed) == boundary_count, 'unavailable agent cannot reach construction')
+            receipts.append({'case': 'F-task-refusal', 'kind': kind, 'entry': entry,
+                             'error': expected_error.__name__, 'message': message,
+                             'executor_construction_reached': False})
 
 
 def main():
@@ -50,6 +172,7 @@ def main():
         from runtime.orchestrator._paths import OrgPaths
         paths = OrgPaths(root=root / "synthetic")
         paths.agents_dir.mkdir(parents=True)
+        check_task_selection(root, receipts)
         settings = Settings(executor_launch_spacing_seconds=0)
         workspace = root / 'worker'
         workspace.mkdir()
