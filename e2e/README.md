@@ -3,6 +3,7 @@
 This independently authored standalone lane implements the accepted E02/E03/E06
 case design (`TASK-10476`, SHA256
 `bc4c4c9d50a73ce45085ed6b5edcae572cdf75e8e26e3b583e6b7728037fd564`).
+The bounded Pause increment below follows that original baseline closure.
 Source and design acceptance do not establish behavioral PASS. Actual disposable
 runner results, authoring proof, independent review/QA and check enforcement are
 separate delivery obligations.
@@ -191,9 +192,9 @@ Independent full review, scoped QA, normal hooks and manager guarded merge remai
 required. No old unit or full historical G-run allocation is renewed.
 
 Jobs approval/rejection/failure/single-resume, threads/replay, cancellation/late
-callback, actual daemon restart/recovery, PR1014 compatibility and authentic
+callback, restart windows beyond the bounded Pause increment below, PR1014 compatibility and authentic
 memory thresholds remain root-owned uncovered work. Provider hold and response
-loss do not establish restart/recovery. No merge or deployment follows from a
+loss in the baseline do not establish restart/recovery. No merge or deployment follows from a
 successful run. Deletion PR1024 is merged at
 `5e87e778c6968338a12bd5cd65d461e5699836be`; this lane preserves that deletion and
 all current product/Web/shared assets. The current schedule-only baseline covers
@@ -224,3 +225,91 @@ integration is SKIPPED THR243seq42. Archived THR297 Build11 remains FAILURE
 143pass/3fail/40errors/28UNTESTED with two-org cause UNKNOWN; this baseline does
 not fix fixture/systemd/interpreter gaps. TASK10582 owns detailed reconciliation.
 PR1014 compatibility/authentic-memory obligations remain unproven.
+
+## Bounded Pause source increment (THR-292 / TASK-10555)
+
+`controller.main` executes the unchanged `scenarios.exercise` closure first,
+then `pause.exercise`, inside the existing schedule-only launcher. The original
+23 variants, 9 starts, alpha 6 tasks/8 results and beta 1 task/1 result are still
+asserted before any Pause work. The manifest adds 19 separately attributed
+variants (42 combined). `observations.json` records their inputs, CLI transport,
+public projections, read-only durable snapshots, actual process identities and
+host anchors; `scenario.json` passes named variants/phases to the existing
+`result.json` and daily aggregate. Exact required-set/PASS validation remains
+unchanged: absent, failed or skipped evidence fails daily health.
+
+Authority is the current TASK-10555 consolidated step9 brief under
+THR292seq14 approving9 amended13, seq18/23 and THR291seq69/87/88. It reuses the
+accepted TASK10494 case design (SHA256
+`fc214b0aee68c9b579add9040f62bb1d12744e471a9a9bd998d8a9f2cec5e353`),
+TASK10496 DESIGN-ONLY PASS and manager acceptance. Only the external provider's
+finite `code_reviewer` input and reviewer fixture body are amended; frontmatter,
+teams, protocol, 300-second timeout, stubs, registry and enforcement are retained.
+The genuine reviewer is its own normally created child with an actual APPROVE
+callback; no worker is relabelled and no producer/session/history is seeded.
+
+Each row records requirement, public action/scenario, fixed expected observation,
+level, credible regression, nearest existing source and distinct missing seam.
+Every row answers **test-only production seam: NO**. Historical Python units in
+the accepted case map stay retired; none are recreated, imported or executed.
+
+| Group / requirement | Variant IDs and action → fixed expected observation (fresh public CLI/API/browser E2E) | Credible regression caught | Nearest existing source; distinct missing coverage |
+| --- | --- | --- | --- |
+| 1 P01a/P05 chain/drain | `Pause.chain-drain`, `Pause.drained-before-restart`: public NULL-parent root; genuine manager delegates worker then reviewer; Pause generation0→1 with live worker → unchanged lifecycle/chain/links, authentic running worker capture/blocker. One normal worker completion/exit → original INTEGER result consumed, exactly one pending reviewer/no SID, quiescent real host receipts, paused with no blockers. Bounded socket/executable/audit/admission observations deny reviewer launch until Resume. | Missing descendant gate, fabricated capture, early Paused, suppressed callback settlement or duplicate reviewer. | `scenarios.journey` covers ordinary one-child continuation without hold; no chain/Pause/host-drain seam. |
+| 2 P11/P14/P17 identity/idempotence | `Pause.child-pause-denied`, `Pause.child-resume-denied`, `Pause.pause-idempotent`, `Pause.resume-idempotent`, `Pause.stale-resume`: child controls409/root_task_required; repeated root Pause/current Resume200/changed=false preserves capture/generation/audit/queue/results/sessions in both orgs. After first Resume generation2 and genuine reviewer launch, new Pause generation3; stale Resume generation1 must409/control_generation_conflict and keep newer hold. Explicit Resume generation3→4 proceeds without duplicate work. CLI uses explicit org/generation and compares real response records without a one-wire assumption. | Name-based root scope, duplicate audit/toggle/enqueue, stale release or new session invented by retry. | Baseline E06 callback idempotence and retained Web `pause.test.tsx`/`write-path.test.tsx` cover different callback/UI seams; no real control generation arbitration. |
+| 3 P14b/c same-org progress | `Pause.same-org-unheld`: while original worker/tree held, public distinct NULL-parent root in alpha → genuine launch, CLI callback, durable/public natural done with available capacity. Reads cannot create/update Pause controls. First hold/worker identity remains. Beta baseline remains unchanged. | Org-wide hold, blocked independent capacity, GET creates control or separate tree corrupts results. | Baseline `collisions` covers different orgs; missing two independently active roots in the same org under hold. |
+| 4 P12 drained persistence/P01a finish | `Pause.drained-restart`, `Pause.restart-final`: verified paused/quiescent closure → pidfd TERM/wait on exact owned disposable daemon PID/start, start same shipping executable/same publicly initialized files, no re-init/DB writes. Control/generation/chain/child/results/consumption state exact; pending reviewer still has no launch/admission/SID. CLI Resume → one real reviewer APPROVE and one natural M2 done; original consumed results persist and exact start/end/consumption/chain counts agree. | Restart forgets hold, reaper falsely fails, replay of consumed callback, duplicate reviewer/M2 or no release discovery. | Baseline response-loss and `cancellation_hold` are transport/launcher cleanup; neither restarts the product daemon against retained files. Only this drained Pause window is authored. |
+| 5 P01b separate drain Resume | `Pause.resume-during-drain`, `Pause.drain-final`: separate root/worker; Pause then Resume before worker callback → original PID/start/SID stays alive, hold clears; normal worker completion → exactly one reviewer/M2 path with 4 authentic results and 3 tasks. No restart here. | Resume kills/relaunches worker, callback duplicated, chain wakes manager early or diverges from restart journey. | `scenarios.journey` has no control while its worker is live; distinct from group4's drained restart. |
+| 6 P16/P18 browser/readback/terminal | `Pause.overview-readonly`, `Pause.browser-pausing-en`, `Pause.browser-pausing-zh`, `Pause.browser-paused-en`, `Pause.browser-paused-zh`, `Pause.terminal-denied`: shipping Chromium responses at1440×900, user locale selector, root list/detail state/blocker/Resume, genuine child inherited/root link with no controls, alpha overview/read-only counts and restart limitation, real reload preserves generation1. Terminal browser retains completed and no Pause/Resume; both CLI controls409/task_terminal with unchanged state. `Pause.exact-closure` joins every launch/result/host count. | Synthetic-only UI masks transport drift, child control appears, locale/reload mutates state, GET queues work, missing org isolation/count honesty or terminal revival. | Retained Web `pause.test.tsx`, `pause-overview.test.tsx` and baseline Browser have synthetic projected/UI transport and ordinary live lifecycle evidence; missing actual daemon hold/restart bilingual readback. |
+
+### Restart/count phase handoff to later E04 owner
+
+No E04/job scenario or receipt-store reset is added. Preserve these literal
+boundaries when integrating after this PR merges; rebase against the final
+source and reassess the combined budget, rather than interpreting a process-local
+receipt reset as lost evidence. Host receipts expose aggregate/recent summaries,
+not session IDs: serial phase deltas, exact admitted/released/published counts,
+durable session audits and PID/start disappearance supply the join. Nothing
+claims a receipt identity field that the API does not expose.
+
+| Phase / named anchor | Actual launches since suite start | This daemon's admitted/released/published (quiescent) |
+| --- | ---: | --- |
+| Unchanged baseline closure / `baseline-before-pause` | 9 | 9/9/9 |
+| First chain M1 ended; worker live / `restart-case-worker-running` | 11 | 11/10/10, active1 |
+| Independent alpha root done; worker consumed; reviewer pending / `pre-restart-12` | 12 | 12/12/12 |
+| `pause-owned-daemon-restart`: old PID/start verified exited, new PID/start ready / `post-restart-zero` | 12 | 0/0/0 |
+| Explicit Resume reviewer live / `post-restart-reviewer-running` | 13 | 1/0/0, active1 |
+| First tree reviewer and natural M2 done / `post-restart-first-chain-2` | 14 | 2/2/2 |
+| Separate drain case M1 ended; worker live / `drain-case-worker-running`, `resumed-draining-worker-4` | 16 | 4/3/3, active1 |
+| Final closure / `final-post-restart-6` | 18 | 6/6/6 |
+
+Exact combined alpha closure is13 tasks/17 results; beta stays1/1. Each chain
+has3 tasks/4 results, root count2, each child count1, four starts/ends/consumed
+reports, exactly one chain advance and delegate→done manager decisions. Final
+socket holds are empty and every actual provider PID/start is gone. The outer
+unchanged watcher still owns all browser/relay/socket/old+new-port cleanup.
+Controller phase evidence retains old/new daemon identities and cumulative
+ports even if restart readiness fails. No serving daemon is touched.
+
+### Authored versus executed
+
+All six groups and bilingual live browser aspects above are **AUTHORED,
+UNEXECUTED**. First scheduled daily execution remains **PENDING**; local syntax,
+registration/config inspection and lint cannot establish behavior or complete
+test-authoring PASS. Timing for this combined source is unmeasured. Manifest
+600-second target, 720-second action stop, 900-second hard limit, evidence/cleanup
+reserves and provider300 remain unchanged; there is no ad hoc/direct controller,
+provider, browser or disposable-daemon execution, rerun or forged event admission.
+
+All twelve inherited deliberate-defect operations and any Pause proof are
+**UNEXECUTED/unauthorized**; no RED/restoration/GREEN or five-isolated/five-sibling
+repetitions. Authentic held-queued workflow history remains **UNAVAILABLE**;
+six P07/G4 capture interleavings, other restart windows, v2/workflow histories,
+crash-after-Resume-before-enqueue and unscheduled/unimplemented cases remain
+**UNEXECUTED**. Launcher TERM/INT cleanup is not product cancellation/restart
+coverage. General integration is **SKIPPED THR243seq42**, never PASS; former
+Python units remain **RETIRED**. No compatibility/authentic-memory/deployment or
+feature-completion acceptance. Full independent review, source/static scoped QA,
+exact-head two-lint receipts, normal hooked publication and manager guarded merge
+remain separate delivery gates. No production schema/auth/permission/enforcement,
+registry/shared stub, dependency, cadence/cap or cleanup-machinery changes.
