@@ -546,6 +546,11 @@ class WorkflowSubmissionStore:
 
     def author_instruction(self, task_id: str, session_id: str) -> str:
         with self.db._lock:
+            # OrgState attaches this service on retained F/E/G as well. The
+            # optional @3 supplement must leave ordinary F tasks workflow-free.
+            if not self.db._conn.execute(
+                    "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='workflow_author_handoffs'").fetchone():
+                return ''
             rows = _records(self.db._conn, 'SELECT * FROM workflow_draft_dispatch_intents WHERE task_id=?', (task_id,))
             if len(rows) != 1:
                 return ''
