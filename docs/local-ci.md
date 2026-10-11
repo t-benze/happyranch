@@ -813,38 +813,38 @@ The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
 unresolved. Root TASK10680 owns delivery/daily acceptance, TASK10555 owns
 first-daily/Pause (PENDING per owner). No entire-reset or test-authoring PASS.
 
-### E07 R source increment
+### E07 R hold restoration — TASK-10804
 
-TASK-10787 adds the accepted R suffix to the earlier C boundary:58 authored
-variants/40 starts=A12+B28+C0,24 tasks/32 results and39 published receipts.
-See [the complete R case/four-answer record](../e2e/README.md#e07-r-authored-suffix--task-10787).
-The sole B28 crash gap requires complete A12/B27 arrays, a genuine held CLI,
-actual daemon−9, targeted owned process closure/numeric executor absence,
-one same-files failed recovery, original-request409/full1s, C0 and normal close.
-No fixture cleanup is product release; bearer persistence is unchanged.
+THR291 seq119 held R implementation and merge pending assessed source-bound
+first-daily timing. PR1043 merged as `e4ba47ce3ab528447d7cded481f721dec07d175f`
+despite that hold; its review/static QA/lint did not release it. This bounded
+correction restores the56-case active daily baseline and39 expected starts
+(A12+B27;23 tasks/32 results), preserving the original graceful Pause restart,
+E04/E05, C and TASK10801's valid C observation/evidence corrections.
 
-Original D=min(entry+480,run+720) charges setup/original53/pre-C archive before
-D−150, C50/R75/final25; cleanup60/export120/hard900 remain separate. The355
-estimate versus330 prefix allowance is unmeasured and unresolved. Missing or
-late stages fail. Source consumers independently reopen original/C/R archives
-and require complete content, provenance, time and normal closure joins.
+R's active abrupt crash/recovery path, provider command, subreaper handshake,
+publication-gap exception and required R artifacts/aggregate expectations are
+removed. Accepted original E07/addendum and PR1043 source remain held history;
+R is unimplemented in the active daily path, unproven, and not skipped-as-PASS.
+See the [restoration and retained C assertion mapping](../e2e/README.md#e07-restart-hold-restoration--task-10804).
 
-This supersedes only the earlier R-held source milestone. Static-only local all
-and exact-head Source Boundary Lint/Web Lint(Node24), independent full review,
-scoped static QA and guarded manager merge remain required. No ad hoc E2E,
-test/build/control workload is authorized. New behavior/sensitivity/provenance/
-transport/delivery/persistence/closure/sanitation/fit evidence remains missing;
-controls UNAUTHORED, protected12/RED-restoration-GREEN/repetitions UNEXECUTED.
-General and actual CLI callback integration are SKIPPED THR243seq42. Retired
-Python units remain forbidden. Daily19UTC/default immutable source, original
-matrix/artifacts, TASK10555/JOB4257 and first-daily PENDING remain unchanged.
+D remains min(scenarios entry+480,original run+720), C50 with original
+partitions; no D−150 prefix admission, R75 or final25 allocation survives.
+Normal close uses the original order and caps inside D. Existing shared
+nested deadline clipping retains E04 inner_text10, E05 release5 and inherited
+browser response4/10; cleanup60/export120/hard900/target600/hosted15min and
+other command/interruption240 bounds remain unchanged. No new budget or
+measured-fit claim. Complete raw C evidence survives; only validated Pause
+observation stamps differ in nonmutating cross-observation copies. Aggregate
+independently reopens serialized content and exact same-observation joins.
 
-The TASK-10801 C/R correction binds complete captured responses to exact HTTP
-observation indices, validates the initial recovered alpha/beta lists against
-all shipping SQL-to-public fields and separately checks Pause root/control
-structure. Cross-observation comparison ignores only validated Pause observation
-stamps in nonmutating copies; all durable timestamps, unknown fields and ordered
-blockers remain compared. The aggregate implements its own serialized checks.
-See the [maintained assertion mapping](../e2e/README.md#cr-observation-and-recovered-list-assertions--task-10801).
-This adds no execution authority or cases; all missing proof and static-only
-gates above remain in force.
+Daily19UTC/default immutable source/Ubuntu/Python3.12,3.13,3.14 plus TERM3.12/
+INT3.14/five7day artifacts and TASK10555/JOB4257/Pause ownership are unchanged.
+Root10680 alone assesses owner timing and the hold; no new collector or run.
+Required checks remain lint/static-only, normal hooks, independent full review,
+scoped static QA and manager guarded merge. All behavior/sensitivity/provenance/
+transport/persistence/delivery/sanitation/closure/fit proof MISSING/UNEXECUTED;
+controls UNAUTHORED; protected12/RED-restoration-GREEN/repetitions unauthorized.
+General AND actual CLI callback integration SKIPPED243seq42; units RETIRED.
+Root remains INCOMPLETE for held R, wider E04, cancel-CLI mismatch and daily
+acceptance. No deployment/serving restart/Jenkins/schema/auth/permission work.

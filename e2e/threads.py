@@ -282,7 +282,7 @@ def exercise(c: Controller) -> None:
     c.durable.append(dict(threads_cases=record))
     previous = next(d["jobs_anchor"] for d in c.durable if d.get("jobs_anchor", {}).get("name") == "final-drain-B")
     require(previous["total"] == 18 and previous["projection"]["receipts"]["window_size"] + 7 <= 64, "B18 capacity before E05")
-    c.case_deadline = min(c.deadline, c.work_end, entered + 18)
+    c.case_deadline = min(c.deadline, entered + 18)
     c.publish_end()
     if c.browser_relay:
         c.browser_relay.deadline = c.effective_end()
@@ -364,7 +364,7 @@ def exercise(c: Controller) -> None:
         group["finished"] = time.monotonic()
 
         begin = time.monotonic()
-        c.case_deadline = min(c.deadline, c.work_end, begin + 8)
+        c.case_deadline = min(c.deadline, begin + 8)
         c.publish_end()
         if c.browser_relay:
             c.browser_relay.deadline = c.effective_end()
@@ -382,7 +382,7 @@ def exercise(c: Controller) -> None:
         group["finished"] = time.monotonic()
 
         begin = time.monotonic()
-        c.case_deadline = min(c.deadline, c.work_end, begin + 25)
+        c.case_deadline = min(c.deadline, begin + 25)
         c.publish_end()
         if c.browser_relay:
             c.browser_relay.deadline = c.effective_end()
@@ -422,7 +422,7 @@ def exercise(c: Controller) -> None:
         group["view"] = browser.thread_view(D, "E05 dispatch", ["E05 do one task", "E05 task accepted", "E05 task complete"], "dispatch", T)
         group["finished"] = time.monotonic()
         record["final_entered"] = time.monotonic()
-        c.case_deadline = min(c.deadline, c.work_end, record["final_entered"] + 4)
+        c.case_deadline = min(c.deadline, record["final_entered"] + 4)
         c.publish_end()
         if c.browser_relay:
             c.browser_relay.deadline = c.effective_end()

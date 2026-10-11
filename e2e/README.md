@@ -657,142 +657,106 @@ root TASK10680. TASK10555 retains first-daily/Pause acceptance; first daily is
 PENDING per owner. Authored, independently reviewed, merged, executed and
 accepted are separate milestones; this is not completion of the reset.
 
-## E07 R authored suffix — TASK-10787
+## E07 restart hold restoration — TASK-10804
 
-The accepted TASK-10782 amendment
+THR291 seq119 held R implementation and merge until root assessed actual
+source-bound first-daily prefix/archive/close timings. PR1043 nevertheless
+merged as `e4ba47ce3ab528447d7cded481f721dec07d175f` from reviewed
+`80f7cf197ca27552627fe980b524341f155653e7`. Its source review, static QA and
+lint did not satisfy that hold. This correction restores **56 active variants,
+39 expected starts=A12+B27, 23 tasks/32 results**, retaining baseline23,
+Pause19, E04six, E05five and Cthree. These remain source expectations, not
+observed execution counts. The original Pause same-files **graceful** restart
+is required and remains active.
+
+The abrupt R provider command, daemon SIGKILL/recovery/C0 path, R subreaper
+handshake and sole publication-gap exception are removed. There is no disabled
+runner, placeholder PASS, skipped variant or extra cell. The manifest and
+actual-evidence/export/aggregate requirements no longer require
+`e07-c-prefix.json`, `e07-restart.json`, `e07-predeath.json` or `e07-restart.png`.
+The aggregate again consumes complete final C39 observations and the entire
+witness stream, preserving literal ordered A12/B27 receipts without an R gap.
+Partial failures retain available sanitized C evidence and report missing
+content as failure; they receive no completion credit.
+
+The accepted TASK10763 original design
+`5e9f7f401389841748b0e018ff9988e126f7a2511dabcb140d19ee2e6dc580a7`
+and TASK10782 R addendum
 `83d892a3e6eae329879ebf7be7a9dca47854f15f6bbe67be3811c4820e1fe184`
-extends the original E07 design with exactly
-`E07.abrupt-dead-session-recovery` and `E07.restart-late-cli`.
-Earlier C-only/held-R statements above describe that delivery boundary. The
-current source expects **58 variants, 40 starts=A12+B28+C0, 24 tasks/32 results**
-(alpha23/31, beta1/1), 21 completed/two cancelled/one failed. Only **39 product
-receipts=A12+B27** exist. The sole B28 active invocation dies with boot B;
-fixture signals/reaping and new C0 cannot manufacture its terminal receipt.
-These are authored expectations, not observed execution counts.
+remain held design/history. The removed implementation and its four-answer
+record remain available in [merged PR1043](https://github.com/t-benze/happyranch/pull/1043)
+and that immutable merge's `e2e/restart.py` and README. R is unimplemented in
+the active daily path and unproven; this correction does not release it.
 
-`D=min(original scenarios entry+480, original run start+720)` remains fixed.
-Constructor, setup, original53 and full pre-C archival finish strictly before
-D−150. C retains its full50 with16/28/36/42/50 ends; R retains75 with
-10/15/25/50/60/65/75 ends; normal close/evidence receives a separate25.
-Admission requires the complete downstream reservation. Positive explicit
-socket, child, SQLite and Playwright bounds use the smaller effective end;
-return checks and the controller alarm cover operations without native timeout
-arguments. Fixed31s cache, both Pause windows, and full C/R1s observation windows
-are unchanged. Outer cleanup60/export120/hard900/target600/hosted15min stay
-separate. The estimated355 prefix versus330 ceiling remains **UNPROVEN**;
-late/missing stages fail the full manifest. No measured fit or universal
-interruptibility of OS/library calls is claimed.
+Scheduling returns to `D=min(scenarios entry+480, original run start+720)`
+with C capped at50 and its original16/28/36/42/50 partitions. There is no
+D−150 admission, R75 or separate final25 reservation. Normal close follows
+the original browser/proxy/provider-observer/daemon order within D, retaining
+the daemon's at-most20s wait, at-most1s observer/late-transport joins and
+at-most3s ordinary relay joins. Other commands
+and interruption remain240, cleanup60/export120/hard900/target600/hosted15min.
+No pre-existing operation cap or reserve is enlarged or borrowed, and no
+measured-fit claim follows.
 
-The shared response helper retains the main page's actual stored timeout:
-initial15s, E04 `job_open` at most10s, E07 `e07_detail` at most4s. An already
-clipped page default stays clipped until the next explicit transition. This
-also applies to inherited `open_task`, completion/cache revisits and bilingual
-Pause actions. E05's separate thread page retains its independent10s default.
-The response context fixes its operation end at entry, clips the native timer,
-checks immediately before the context exit can wait, and rejects late returns.
-Provider release reads the caller's existing socket cap (E05 at most5s;
-other callers retain their start/command cap), clips write/flush/read/close to
-that cap and the same effective phase end, and checks each return. Exact exit
-acknowledgement, process/private-file/CLI-child closure and evidence joins remain.
-No timeout metadata or serialized evidence shape is renamed to mask a wider cap.
+Shared deadline clipping remains necessary for the retained smaller caps:
+Controller.effective_end/bounded/publish_end bind the original scenario and
+case ends to provider sockets, generated job scripts, read-only SQLite,
+transport and direct Playwright callers. The watchdog uses that same end;
+C resets it to the original D after leaving its case, without a new allowance.
+The aggregate checks each generated E04 end against its actual case and the
+serialized scenario deadline, with no R allocation oracle. Browser.response
+retains the stored main-page cap (initial15, E04 at-most10, C at-most4);
+E05's thread page retains10 and provider release retains its caller's at-most5.
+The E04 task/Recall inner_text cap remains10. Full31s cache, both Pause windows,
+all full1s/at-most50ms C observations, genuine callbacks and literal content
+joins remain. Half-ready boot token/port capture, immediate ownership and
+numeric PID collision refusal remain valid for bootA/graceful Pause bootB
+and partial-failure sanitation; no R helper is needed by these owners.
 
-R creates one independent ordinary root through public API and joins its real
-case_manager provider to a provider-authored CLI payload, wrapper witness,
-PID/start/ancestry, accepted socket tuple/inode and full captured request.
-`e07-prefix.json` keeps original53/37; `e07-c-prefix.json` freezes actual56/39;
-`e07-restart.json` carries the distinct R record; `e07-predeath.json` freezes
-its complete archive before the signal. Complete ordered,
-duplicate-bearing A12/B27 arrays survive. Two literal B28/27/27/active1 samples
-and full SQL/public content precede exact daemon pidfd SIGKILL and actual
-Popen−9. An R-only runner-subreaper request authenticates the previously owned
-process set, signals by identity, and uses targeted waitpid(PID,WNOHANG).
-ECHILD records another parent; it is never a claimed reap. Numeric PID reuse
-fails closed. C starts once only after numeric executor absence and closed
-old tree/unit/listener evidence, over the same paths/inodes/source/registration.
+### Retained C observation correction
 
-Shipping recovery must produce literal failed/note
-`session died on daemon restart -- executor pid not alive`, preserved historical
-SID/PID/step1, NULL completed_at/cancelled_at, exactly one R restart audit and
-no result/relaunch. Real public/browser readback includes disabled Cancel and
-settled task/thread history. The bearer persists. Only after valid C readback
-does the original held request forward once:409 task_not_active/failed/
-cancelled:false, distinct dead-downstream evidence, then a full1s unchanged
-window at≤50ms sample cadence. Two genuine empty C0 samples and normal daemon
-exit0/controller close are independently required. Outer rescue cannot supply
-normal-close success.
+TASK10801/step18's finite correction remains active. `e07.frame` stores full
+raw task-list/detail/Recall responses and exact indexed GET/path/status200
+HTTP joins. Cross-observation comparison copies validate the presence and
+string type of Pause `observed_at`, parseable timezone-aware UTC and each
+blocker's equal enclosing stamp, then exclude **only** `tasks[*].pause.observed_at`
+or detail-envelope `pause.observed_at` and those projections' ordered
+`blockers[*].observed_at`. Every other key, value, shape, array order, unknown
+field and durable timestamp remains compared. Raw evidence is never changed;
+there is no broad recursive normalization or clock-order assertion.
 
-Every generation and discovered half-ready credential/port/process remains in
-the cumulative ownership and private redaction context. Partial launch records
-retain valid siblings; unknown context refuses unsafe raw export. Independent
-aggregate consumers reopen actual archive/raw/observation/result content and
-check exact boundaries, source hashes, request/response/ownership joins,
-recovery field deltas, receipt tails and time ordering. No production seam,
-schema, authorization or permission change is introduced.
+`e07.content/public_content/detail_content` applies this to C freeze, terminal
+refusals, full window, final and browser joins. The aggregate independently
+reopens serialized evidence and uses its own
+`e07_public_state/e07_detail_state/e07_pause_state` validators, including exact
+same-observation raw joins before comparison. SQL datetime serialization retains
+the shipping UTC-Z mapping. Only the R-specific recovered-list producer and
+consumer are removed. PR1042's actual-content/stub/private atomic launch,
+ownership and partial-export corrections remain intact.
 
-| Changed group | Contract and public action | Credible regression / described control | Existing gap | Actual seam and level |
-| --- | --- | --- | --- | --- |
-| Shared deadlines | Complete original prefix, C, R and normal close inside original D | Nested fresh timeout or late stage appears successful; a future delayed-readiness/close control must fail with partial evidence | C-only deadline did not reserve R/normal close | run → Controller/poll/API/Store/browser/provider/transport; harness lifecycle and real CLI/browser |
-| Named crash gap | Genuine held CLI, full B28/27/27/1, actual−9 and closed old tree | Drop/reorder an interior duplicate receipt, add a start or invent B28 release; future serialized controls must refuse | C ends settled B27 | public create/provider/CLI → HostSessionStore evidence → Owned targeted close → independent aggregate; system evidence |
-| Dead non-NULL recovery | One same-files startup yields literal failed without result/relaunch | Start before numeric death, omit sweep, or insert a result; future controls must reject field/content joins | Drained Pause restart has no live no-result task | shipping startup sweep/update_task, fresh read-only SQL/public/browser; full system |
-| Old request denial | Original captured request reaches recovered failed-task409 then full1s unchanged | Reconstruct body, forward early, expect401, or shorten window; future transport controls must reject | C only covers cancelled W | provider_command → LateTransport → shipping task-active gate; genuine CLI/HTTP/browser |
+Four answers for these retained C cases (`E07.cancel-cascade-browser`,
+`E07.cancel-terminal-unchanged`, `E07.cancelled-late-cli`):
 
-No dedicated sensitivity controls were authored or run. All new behavioral,
-sensitivity, provenance, transport, delivery, persistence, closure, sanitation,
-and successful-fit proof is **MISSING/UNEXECUTED**. Protected12,
-RED/restoration/GREEN and repetitions remain unauthorized/UNEXECUTED. General
-and actual CLI callback integration remain SKIPPED under THR243seq42; retired
-Python units stay retired. Static lint is not full test-authoring or behavioral
-PASS. First daily remains PENDING per owner. E04 output-cap/persistent-stop,
-other recovery branches, the separate live cancel-CLI mismatch and overall
-program acceptance remain root-owned. TASK10555/JOB4257 and the daily19UTC
-matrix/artifacts/triggers/retry/notification policy are unchanged.
+1. Observable contract: real browser cascade, terminal refusal and the original
+   late provider callback preserve exact state and evidence across fresh reads.
+2. Credible regression: raw timestamp equality rejects unchanged state; dropping
+   other Pause or unknown fields hides real state changes; an R artifact or
+   reservation accidentally left required rejects a complete C-only run.
+3. Coverage gap: prior C content predicates needed validated observation-only
+   comparisons; historical source/static approval supplies no behavioral proof.
+4. Actual seam: shipping task/Pause routes and real CLI/browser/HTTP boundaries
+   feed full SQL/public/evidence captures and independent reopened aggregate.
+   No production or test-only seam was added.
 
-The E04 final task/Recall direct text read also clips to the retained main-page
-operation timeout: `job_terminal` calls `job_open`, which sets at most10s;
-`open_task`/`completed` retain it. The direct read uses the smaller of that
-already clipped cap and the effective absolute end, then checks expiry again
-on return. Its literal text/Recall/PNG aggregate joins remain unchanged.
-This is an authored source bound, not an executed timeout/sensitivity result.
-
-### C/R observation and recovered-list assertions — TASK-10801
-
-Every frame retains complete list/detail/Recall responses and exact indices into
-its recorded HTTP observations. Producer and independent serialized aggregate
-require GET, exact org/path, status200 and the entire raw response at that index
-before state comparison. Browser records retain complete response bodies and
-exact event-ledger joins. No evidence is stripped or rewritten.
-
-Cross-observation C freeze/refusals/window/final, R window/final and C/R browser
-comparisons exempt only list tasks[*].pause.observed_at and its
-blockers[*].observed_at, or the detail envelope's equivalent Pause locations.
-Both validators first require a string, parseable timezone-aware UTC projection
-stamp and identical blocker stamps within that projection. Comparison copies
-retain every other field, unknown field, shape, ordered duplicate blocker,
-held/generation/evidence_complete/root/lifecycle/control value and durable
-paused_at/resumed_at/task timestamp. Recall and terminal work_status remain
-complete. Separate GET stamps may match or differ; no monotonic-clock proof is
-invented. Serialized comparison distinguishes booleans from numeric values.
-
-Before accepting the initial recovered frame, alpha and beta lists require
-next_cursor NULL, exhaustive unique SQL task identities and shipping order.
-Every TaskRecord field is joined: id becomes task_id, executor_pid is excluded,
-status/block enums serialize as strings, six datetime fields serialize as ISO
-strings (UTC Z through the locked FastAPI/Pydantic response model), SQL NULL
-step becomes0, list active_chain/active_fanout default to NULL, JSON-text fields
-stay strings, and actual session fields remain. Existing C SQL/detail timestamp
-joins use the same explicit wire mapping without dropping any timestamp.
-Pause is separately validated against the recorded org/root lineage, lifecycle,
-control held/generation/durable timestamps and source-defined blocker structure;
-it is not treated as a SQL task column. R still requires failed/literal restart
-note/session/step1/NULL completed_at/cancelled_at with every retained task.
-
-Finite authored refusals include omitted/stale R, duplicate/extra IDs, any other
-public-field mismatch, malformed/missing observation stamps or incoherent
-blocker stamps, changed stable content/shape/durable time, and raw HTTP mismatch
-even if comparison copies would match. Valid stable content with distinct valid
-observation stamps is admitted by the source conditions. These are assertions
-at existing seams, not executed defect controls or behavioral evidence. All58
-cases, budgets, full1s/<=50ms windows and complete receipt tails are unchanged.
-All behavioral/sensitivity/provenance/transport/delivery/persistence/closure/
-sanitation/fit/protected12/repetition proof remains MISSING/UNEXECUTED; controls
-UNAUTHORED. General and actual CLI callback integration remain SKIPPED243seq42.
+This is source-only restoration, not full test-authoring or behavioral PASS.
+All behavioral/sensitivity/provenance/transport/persistence/delivery/sanitation/
+closure/fit proof is MISSING/UNEXECUTED; dedicated controls UNAUTHORED.
+Protected12/RED-restoration-GREEN/repetitions remain unauthorized/unexecuted.
+General AND actual CLI callback integration remain SKIPPED THR243seq42;
+Python units RETIRED. Daily19UTC/default immutable source/Ubuntu/Python
+3.12,3.13,3.14 plus TERM3.12/INT3.14 and five7day artifacts remain unchanged.
+TASK10555/JOB4257/Pause ownership is untouched; first-daily status requires its
+owner's actual source-bound evidence. No extra collection/run/retry/schedule/
+notification, production/schema/auth/permission change, deployment or Jenkins
+work is authorized. Root TASK10680 remains INCOMPLETE and alone owns renewed
+independent full review, scoped static QA, hold assessment and guarded merge.

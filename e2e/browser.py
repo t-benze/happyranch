@@ -443,15 +443,11 @@ class Browser:
         expect(main.locator("h1").get_by_text(status, exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
         self.controller.remaining()
         cancel = main.get_by_role("button", name="Cancel", exact=True)
-        if status in {"cancelled", "failed", "completed"}:
+        if status in {"cancelled", "completed"}:
             expect(cancel).to_be_disabled(timeout=c.remaining(4)*1000)
             self.controller.remaining()
             expect(cancel).to_have_attribute("title", f"Cannot cancel a {status} task", timeout=c.remaining(4)*1000)
             self.controller.remaining()
-            if status == "failed":
-                expect(main.get_by_text("session died on daemon restart -- executor pid not alive", exact=True)).to_be_visible(timeout=c.remaining(4)*1000)
-                self.controller.remaining()
-                c.remaining()
         else:
             expect(cancel).to_be_enabled(timeout=c.remaining(4)*1000)
             self.controller.remaining()
@@ -466,7 +462,7 @@ class Browser:
             self.page.screenshot(path=str(c.root / "raw" / shot),full_page=True,timeout=c.remaining(4)*1000)
             self.controller.remaining()
             record["screenshot"] = shot
-        (c.e07.get("restart") or c.e07).setdefault("browser_events",[]).append(dict(event="detail-reload",**record))
+        c.e07.setdefault("browser_events",[]).append(dict(event="detail-reload",**record))
         require(record["detail"]["task"]["task_id"] == task and record["detail"]["task"]["status"] == status,
                 "E07 current actual browser response",record)
         return record
@@ -502,7 +498,7 @@ class Browser:
             record = dict(entered=entered,finished=time.monotonic(),path=path,method=response.request.method,
                           request=response.request.post_data_json,status=response.status,response=response.json(),
                           requests=requests,parent_view=parent_view,child_view=child_view,rationale=rationale)
-            (c.e07.get("restart") or c.e07).setdefault("browser_events",[]).append(dict(event="cancel",**record))
+            c.e07.setdefault("browser_events",[]).append(dict(event="cancel",**record))
             require(len(requests) == 1 and record["request"] == {"rationale":"E07_CANCEL_TREE"}
                     and record["status"] == 200 and record["response"] == {"ok":True,"task_id":parent,"cancelled":[parent,child],"killed":[{"task_id":child,"agent":"case_worker"}]},
                     "E07 literal shipping browser cancellation",record)
@@ -531,31 +527,10 @@ class Browser:
                       status=roots.value.status,text=main.inner_text(timeout=self.controller.remaining(4)*1000),parent_href=link.get_attribute("href", timeout=self.controller.remaining(4)*1000),
                       screenshot="e07-list.png",at=time.monotonic())
         self.controller.remaining()
-        (c.e07.get("restart") or c.e07).setdefault("browser_events",[]).append(dict(event="list-reload",**record))
+        c.e07.setdefault("browser_events",[]).append(dict(event="list-reload",**record))
         views.append(record)
         return views
 
-    def restart_thread(self, thread: str, expected: dict) -> dict:
-        c = self.controller
-        path = f"/api/v1/orgs/alpha/threads/{thread}"
-        url = self.base+f"/orgs/alpha/threads/{thread}"
-        with self.response(path) as detail, self.response(path+"/messages") as messages:
-            self.page.goto(url, timeout=c.remaining(4)*1000)
-        c.remaining()
-        main = self.page.get_by_role("main")
-        expect(main.get_by_text(expected["subject"],exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
-        c.remaining()
-        for message in expected["messages"]:
-            if message["kind"] == "message":
-                expect(main.get_by_text(message["body_markdown"],exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
-                c.remaining()
-        result = dict(thread=thread,url=self.page.url,detail=detail.value.json(),messages=messages.value.json(),
-                      detail_url=detail.value.url,messages_url=messages.value.url,
-                      status=detail.value.status,messages_status=messages.value.status,
-                      text=main.inner_text(timeout=c.remaining(4)*1000),at=time.monotonic())
-        c.remaining()
-        require(result["detail"] == expected and result["messages"]["messages"] == expected["messages"], "C browser settled thread content")
-        return result
 
     def final_observation(self) -> None:
         self.controller.remaining()
@@ -566,6 +541,7 @@ class Browser:
         self.controller.remaining()
 
     def close(self) -> None:
+        self.final_observation()
         self.controller.remaining()
         try:
             self.context.close()

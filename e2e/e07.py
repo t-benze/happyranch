@@ -1,6 +1,6 @@
 """C only: public tree cancellation and the original delayed provider callback.
 
-Restart is a separate finite suffix. No product import, writer, retry, or cleanup rescue. Missing
+Abrupt restart remains held. No product import, writer, retry, or cleanup rescue. Missing
 partial evidence is a failure; authored predicates are not execution proof.
 """
 from __future__ import annotations
@@ -135,7 +135,7 @@ def register_tree(c: Controller, start: dict) -> dict:
         proc = process_record(pid)
         require(f"E2E_ROOT={c.root}".encode() in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"), "E07 tree ownership")
         register_owned(c, [pid])
-        (c.e07.get("restart") or c.e07)["owned"].append(proc)
+        c.e07["owned"].append(proc)
         chain.append(proc)
         if pid == launch_pid:
             break
@@ -303,14 +303,7 @@ def exercise(c: Controller) -> None:
     (c.root / "raw/e07-prefix.json").write_bytes(prefix_content)
     archived_prefix = json.loads(prefix_content)
     c.remaining()
-    c.allocation["prefix_finished"] = time.monotonic()
     begin = time.monotonic()
-    admission = dict(name="C", entered=begin, end=begin+50, downstream=100, admitted=False)
-    c.allocation["stages"].append(admission)
-    require(begin+150 < c.deadline, "C requires full C50/R75/close25 reservation")
-    admission["admitted"] = True
-    c.work_end = begin+50
-    c.publish_end()
     prior = next(d["threads_cases"] for d in c.durable if "threads_cases" in d)
     raw, prefix = witnesses(c)
     require(len(c.results) == 53 and len(c.starts) == 37 and prefix == prior["witnesses"], "E07 enters only after original53 and full E05 witness prefix")
@@ -321,7 +314,7 @@ def exercise(c: Controller) -> None:
                  phases=[], anchors=[], owned=[], frames=[])
     c.e07["commands"] = c.e07_commands
     c.e07["source_files"] = {name:hashlib.sha256((c.source/name).read_bytes()).hexdigest() for name in (
-        "e2e/restart.py","e2e/owned.py","e2e/transport.py","e2e/jobs.py","e2e/threads.py",
+        "e2e/owned.py","e2e/transport.py","e2e/jobs.py","e2e/threads.py",
         "e2e/thread_provider.py","e2e/pause_browser.py","runtime/daemon/__main__.py","runtime/daemon/paths.py","e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
         "e2e/browser.py","e2e/aggregate.py","e2e/run.py","e2e/manifest.json","cli/commands/tasks.py",
         "runtime/daemon/routes/tasks.py","runtime/models.py","runtime/infrastructure/db/tasks.py",
@@ -524,3 +517,5 @@ def exercise(c: Controller) -> None:
         save(c)
         if hasattr(c,"case_deadline"):
             del c.case_deadline
+        if time.monotonic() < c.deadline:
+            c.publish_end()

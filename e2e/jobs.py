@@ -331,7 +331,7 @@ def exercise(c: Controller) -> None:
     try:
         for index, (variant, label, code, allowance, summary) in enumerate(CASES):
             entered = time.monotonic()
-            c.case_deadline = min(c.deadline, c.work_end, entered + allowance)
+            c.case_deadline = min(c.deadline, entered + allowance)
             c.publish_end()
             pre = anchor(c, variant + ":pre", 6 + 2 * index, previous)
             record = dict(method="serial-public-metrics-window-causal-v1", variant=variant, index=index, entered=entered, deadline=c.case_deadline, jobs=[], anchors=[pre],
