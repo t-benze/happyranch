@@ -709,6 +709,36 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
 - Follow existing patterns in `runtime/orchestrator/` before adding abstractions.
 - Keep changes scoped; avoid unrelated refactors and generated metadata churn.
 
+## Structural maintenance
+
+- Put behavior in its existing domain owner; `database.py`/`Database` stays the
+  shared interface, connection and coordination owner. Challenge unrelated
+  additions to `run_step.py`, `models.py` and generic utilities. Use the
+  [project layout](docs/agent-guides/project-layout.md) to locate responsibilities.
+- Preserve standalone `python scripts/check_source_boundaries.py` and its
+  local/hosted source-only lane: explicit module-time infrastructure/orchestrator
+  imports of `runtime.daemon` are forbidden, with syntactic `TYPE_CHECKING` and
+  callable-local exceptions and no allowlist. See the
+  [boundary contract](docs/agent-guides/project-layout.md#source-dependency-boundary)
+  for relative/dynamic import, alias and callable-metadata limitations. This lint
+  does not prove architecture quality; respect the existing frontend
+  [feature and layer boundaries](web/ARCHITECTURE.md#layers-strict).
+- Every code review answers: is behavior placed with its owner, does the change
+  introduce unnecessary coupling or duplicated ownership, and do the source map
+  and behavior docs agree with the code? Correct concrete violations before merge.
+- Repeated unrelated edits, merge conflicts, dependency cycles or scattered
+  feature changes trigger bounded design consideration. Size is a signal, not a
+  quota. Extract coherent responsibilities only for concrete maintenance benefit;
+  retain compatibility-sensitive code where warranted, including intentionally
+  retained bulk decline. E1/E2 remain deferred; do not reopen the decomposition
+  program.
+- Keep upkeep proportional, with necessary docs in the same PR. Record deferred
+  debt with concrete impact and an owner; do not start automatic cleanup campaigns
+  or impose tiny-move quotas.
+
+The engineering manager enforces these rules at merge. Success means locating
+and changing a responsibility without unrelated edits.
+
 ## Web Contract
 
 Every browser-callable daemon route maps to one TS function in `web/src/lib/api/`.
