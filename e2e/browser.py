@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
@@ -181,6 +182,128 @@ class Browser:
         for job in ids:
             expect(main.get_by_text(job, exact=False).first).to_be_visible()
         return dict(body=response.value.json(), text=main.inner_text(), at=time.monotonic())
+
+    def open_threads_context(self, port: int) -> None:
+        self.thread_base = f"http://127.0.0.1:{port}"
+        self.thread_events: list[dict] = []
+        self.thread_context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
+        self.thread_page = self.thread_context.new_page()
+        page = self.thread_page
+        page.set_default_timeout(self.controller.remaining(10) * 1000)
+        def request(req):
+            if req.url.startswith(self.thread_base + "/"):
+                path = req.url[len(self.thread_base):]
+                if path.split("?")[0] == "/api/v1/orgs/alpha/threads" and req.method == "POST":
+                    raw = req.post_data_buffer or b""
+                    self.thread_events.append(dict(event="compose-request", url=req.url, method=req.method,
+                                                   sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
+                                                   payload=req.post_data_json, at=time.monotonic()))
+            else:
+                self.thread_events.append(dict(event="origin-bypass", at=time.monotonic()))
+        def response(res):
+            if res.request.method == "POST" and res.url == self.thread_base + "/api/v1/orgs/alpha/threads":
+                raw = res.body()
+                self.thread_events.append(dict(event="compose-response", url=res.url, status=res.status,
+                                               sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
+                                               body=res.json(), at=time.monotonic()))
+        page.on("request", request)
+        page.on("response", response)
+        page.on("framenavigated", lambda frame: self.thread_events.append(dict(event="navigation", url=frame.url, at=time.monotonic()))
+                if frame == page.main_frame else None)
+        page.on("pageerror", lambda _error: self.thread_events.append(dict(event="pageerror", at=time.monotonic())))
+        page.goto(self.thread_base + "/orgs/alpha/threads")
+
+    def thread_compose_inputs(self) -> None:
+        page = self.thread_page
+        page.get_by_role("button", name="New thread", exact=True).click()
+        dialog = page.get_by_role("dialog")
+        dialog.get_by_label("Subject", exact=True).fill("E05 compose race")
+        dialog.get_by_label("Recipients (comma-separated agent names)", exact=True).fill("case_manager, case_worker")
+        dialog.get_by_label("Body (Markdown)", exact=True).fill("E05 opening\nliteral beta")
+        expect(dialog.get_by_role("button", name="Send", exact=True)).to_be_enabled()
+
+    def thread_event_batch(self) -> dict:
+        # Passive DOM observers only: no React internals, state changes, forced
+        # enabled properties, fetch replacement or request interception.
+        result = self.thread_page.get_by_role("dialog").evaluate("""dialog => {
+          const body = dialog.querySelector('textarea');
+          const send = [...dialog.querySelectorAll('button')].find(b => b.textContent.trim() === 'Send');
+          const rows = []; let id = 0;
+          const snap = (phase, event) => rows.push({id, phase, at: performance.now(), type:event.type,
+            defaultPrevented:event.defaultPrevented, bodyDisabled:body.disabled, sendDisabled:send.disabled,
+            bodyConnected:body.isConnected, sendConnected:send.isConnected, nonempty:!!body.value.trim(),
+            shift:!!event.shiftKey, composing:!!event.isComposing,
+            popup:[...document.querySelectorAll('[role=listbox]')].some(el => el.getClientRects().length > 0),
+            target:event.target === body ? 'body' : event.target === send ? 'send' : null, keyCode:event.keyCode || 0});
+          const capture = e => { if (e.target === body || e.target === send) snap('capture',e); };
+          const bubble = e => { if (e.target === body || e.target === send) snap('bubble',e); };
+          document.addEventListener('keydown',capture,true); document.addEventListener('click',capture,true);
+          document.addEventListener('keydown',bubble); document.addEventListener('click',bubble);
+          try {
+            for (const [target,event] of [[body,new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true,shiftKey:false,isComposing:false})],
+              [send,new MouseEvent('click',{bubbles:true,cancelable:true})],[send,new MouseEvent('click',{bubbles:true,cancelable:true})]]) {
+              ++id; snap('before',event); const dispatched = target.dispatchEvent(event); snap('after',event);
+              rows[rows.length-1].dispatched = dispatched;
+            }
+          } finally {
+            document.removeEventListener('keydown',capture,true); document.removeEventListener('click',capture,true);
+            document.removeEventListener('keydown',bubble); document.removeEventListener('click',bubble);
+          }
+          return rows;
+        }""")
+        record = dict(event="event-batch", rows=result, at=time.monotonic(), guard_sensitivity="UNPROVEN")
+        self.thread_events.append(record)
+        first = result[0]
+        require(first["nonempty"] and first["bodyConnected"] and first["sendConnected"]
+                and not any(first[k] for k in ("bodyDisabled", "sendDisabled", "popup", "shift", "composing")),
+                "initial genuine compose eligibility", first)
+        return record
+
+    def thread_created(self, thread: str) -> dict:
+        page = self.thread_page
+        expect(page.get_by_role("dialog")).to_have_count(0)
+        created_url = page.url
+        self.thread_events.append(dict(event="deliberate-revisit", url=self.thread_base+"/orgs/alpha/threads", at=time.monotonic()))
+        with page.expect_response(lambda r: r.url.split("?")[0] == self.thread_base+"/api/v1/orgs/alpha/threads" and r.status == 200):
+            page.goto(self.thread_base+"/orgs/alpha/threads")
+        link = page.get_by_role("main").locator(f'a[href="/orgs/alpha/threads/{thread}"]')
+        expect(link).to_have_count(1)
+        record = dict(event="compose-created", thread=thread, dialog_count=page.get_by_role("dialog").count(),
+                      list_rows=link.count(), url=created_url, list_url=page.url, at=time.monotonic())
+        self.thread_events.append(record)
+        return record
+
+    def thread_view(self, thread: str, subject: str, bodies: list[str], label: str, task: str | None = None) -> dict:
+        page = self.thread_page
+        page.set_default_timeout(self.controller.remaining(10) * 1000)
+        url = self.thread_base + f"/orgs/alpha/threads/{thread}"
+        path = self.thread_base + f"/api/v1/orgs/alpha/threads/{thread}"
+        self.thread_events.append(dict(event="deliberate-revisit", url=url, at=time.monotonic()))
+        with page.expect_response(lambda r: r.url.split("?")[0] == path and r.status == 200) as received:
+            page.goto(url)
+        main = page.get_by_role("main")
+        expect(main.get_by_text(subject, exact=True).first).to_be_visible()
+        for body in bodies:
+            expect(main.get_by_text(body, exact=False).first).to_be_visible()
+        if task:
+            expect(main.locator(f'a[href="/orgs/alpha/tasks/{task}"]').first).to_be_visible()
+            expect(main.get_by_text("completed", exact=False).first).to_be_visible()
+            expect(main.get_by_text(f"dispatched {task}", exact=True)).to_be_visible()
+            expect(main.get_by_text(f"task {task} completed · E05 task complete", exact=True)).to_be_visible()
+        name = f"e05-{label}.png"
+        page.screenshot(path=str(self.controller.root / "raw" / name), full_page=True)
+        result = dict(thread=thread, body=received.value.json(), text=main.inner_text(), screenshot=name, at=time.monotonic())
+        self.thread_events.append(dict(event="thread-view", **result))
+        return result
+
+    def close_threads_context(self) -> None:
+        if hasattr(self, "thread_context"):
+            try:
+                self.thread_context.close()
+                self.thread_events.append(dict(event="context-closed", at=time.monotonic()))
+            finally:
+                (self.controller.root / "raw/e05-browser-events.json").write_text(
+                    self.controller.sanitize(json.dumps(self.thread_events, indent=2)))
 
     def close(self) -> None:
         try:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import atexit
 import json
 import os
 import socket
@@ -83,20 +84,47 @@ def main() -> None:
         stream.write((json.dumps(row) + "\n").encode())
         stream.flush()
         final = False
+        thread_files: dict = {}
+        thread_actions: list[str] = []
+        atexit.register(lambda: [path.unlink(missing_ok=True) for path in thread_files.values()])
+        command_mode = None
         while True:
             instruction = json.loads(stream.readline(131072))
             if instruction == {"action": "exit"}:
+                for path in thread_files.values():
+                    path.unlink(missing_ok=True)
+                if thread_actions and thread_actions != ["thread-task-send", "thread-task-final"]:
+                    raise RuntimeError("incomplete E05 task protocol")
                 stream.write(b'{"exiting":true}\n')
                 stream.flush()
                 return
             if final:
                 raise RuntimeError("callback must be the provider's final CLI action")
-            receipt = jobs_command(instruction, row)
+            selected_mode = "thread" if instruction["action"].startswith("thread-") else "jobs"
+            if command_mode is not None and selected_mode != command_mode:
+                raise RuntimeError("provider command modes cannot be mixed")
+            command_mode = selected_mode
+            if instruction["action"].startswith("thread-"):
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from thread_provider import command
+                expected = "thread-task-send" if not thread_actions else "thread-task-final"
+                if instruction["action"] != expected or len(thread_actions) >= 2:
+                    raise RuntimeError("unexpected E05 task action")
+                receipt = command(instruction, row, None, thread_files)
+                thread_actions.append(instruction["action"])
+                # The send refusal is deliberately nonterminal; the final
+                # callback is still the provider's last actual CLI operation.
+                expected_exit = 1 if instruction["action"] == "thread-task-send" else 0
+            else:
+                receipt = jobs_command(instruction, row)
+                expected_exit = 0
             stream.write((json.dumps(receipt) + "\n").encode())
             stream.flush()
-            if receipt["exit"] != 0 or receipt["timed_out"]:
+            if receipt["exit"] != expected_exit or receipt["timed_out"] or receipt.get("output_truncated", False):
+                for path in thread_files.values():
+                    path.unlink(missing_ok=True)
                 raise RuntimeError("real provider CLI failed")
-            final = instruction["action"] in {"jobs-block", "jobs-final"}
+            final = instruction["action"] in {"jobs-block", "jobs-final", "thread-task-final"}
 
 
 if __name__ == "__main__":

@@ -156,14 +156,14 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
           "scenario/observation disagreement or observer failure")
     starts, commands = observations["starts"], observations["provider_commands"]
     durable, observer = observations["durable"], observations["provider_observer"]
-    check(len(starts) == 30 and len({s["session"] for s in starts}) == 30, "30 genuine unique providers")
+    check(len(starts) == 37 and len({s["session"] for s in starts[:30]}) == 30, "retained30 genuine prefix providers;37 composed")
     check(len(observer) >= 2 and all(0 < b["at"] - a["at"] <= 1 for a, b in zip(observer, observer[1:])),
           "continuous provider observer interval")
     check(all(a["stubs"] <= b["stubs"] and a["calls"] <= b["calls"] for a, b in zip(observer, observer[1:])),
           "observer counter rollback")
-    check(observer[-1]["stubs"] == 30 and not observer[-1]["pending"], "observer final closure")
+    check(observer[-1]["stubs"] == 37 and not observer[-1]["pending"], "observer composed final closure")
     http = observations["http"]
-    anchors = [r["jobs_anchor"] for r in durable if "jobs_anchor" in r]
+    anchors = [r["jobs_anchor"] for r in durable if "jobs_anchor" in r and not r["jobs_anchor"]["name"].startswith("E05:")]
     check(len(anchors) == 28 and len({a["name"] for a in anchors}) == 28, "complete unique boot/case/drain anchors")
     by_name = {a["name"]: a for a in anchors}
 
@@ -477,8 +477,11 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
     anchor_content(by_name["final-drain-B"], 18, 30, previous)
     final_witness = [d["jobs_final_witnesses"] for d in durable if "jobs_final_witnesses" in d]
     check(len(final_witness) == 1, "actual final witness artifact content")
-    check(observations["launch_witnesses"] == final_witness[0] and observations["witness_incomplete_line"] is False,
-          "complete actual executable witness content")
+    check(observations["launch_witnesses"][:len(final_witness[0])] == final_witness[0]
+          and observations["witness_incomplete_line"] is False, "complete unchanged E04 witness prefix")
+    e05 = [d["threads_cases"] for d in durable if "threads_cases" in d]
+    check(len(e05) == 1 and e05[0]["entered"] >= by_name["final-drain-B"]["finished"], "E05 only after complete E04")
+    prefix_commands = observations["commands"][:e05[0]["prefix_command_count"]]
     attempts = observations["provider_attempts"]
     check(len(attempts) == len(commands) and [a["command_index"] for a in attempts] == list(range(len(commands)))
           and all(a["entered"] <= a["finished"] and a["provider"]["session"] == c["provider"]["session"]
@@ -488,7 +491,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
                   <= a["entered"] + 10 for a, c in zip(attempts, commands)), "all CLI attempts accounted")
     calls = [w for w in final_witness[0] if w["kind"] == "callback"]
     stubs = [w for w in final_witness[0] if w["kind"] == "stub"]
-    check(len(calls) == len(observations["commands"]) + len(commands) and len(stubs) == 30
+    check(len(calls) == len(prefix_commands) + len(commands) and len(stubs) == 30
           and all(w["source_sha"] == row["source_sha"] for w in calls + stubs), "all authentic source-bound executable witnesses")
     for command in commands:
         check(command["exit"] == 0 and command["timed_out"] is False and command["source_sha"] == row["source_sha"]
@@ -500,6 +503,270 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
         digest = hashlib.sha256(json.dumps(command["argv"][1:]).encode()).hexdigest()
         check(len([w for w in calls if w["pid"] == command["child_pid"] and w["ppid"] == command["provider"]["pid"]
                    and w["argv_sha256"] == digest]) == 1, "provider child/PID/argv source witness")
+
+
+def validate_e05(row: dict, observations: dict, directory: Path) -> None:
+    """Independent literal-content consumer, never import the scenario oracle."""
+    import hashlib
+    from collections import Counter
+
+    def check(condition: bool, message: str) -> None:
+        if not condition:
+            raise ValueError("E05 content: " + message)
+
+    durable = observations["durable"]
+    cases = [d["threads_cases"] for d in durable if "threads_cases" in d]
+    check(len(cases) == 1, "one finite C/N/D record")
+    case = cases[0]
+    variants = ["E05.compose-race", "E05.reply-natural", "E05.self-dispatch-followup", "E05.consumed-token", "E05.nonparticipant-task-send"]
+    check(case["source_sha"] == row["source_sha"] and case["variants"] == variants
+          and all(row["variants"][v]["evidence"]["threads"] == case for v in variants), "five actual-content references")
+    check(case["final_entered"] <= case["finished"] <= case["final_deadline"] <= case["final_entered"]+4, "bounded final evidence allowance")
+    groups = case["groups"]
+    check([g["name"] for g in groups] == ["C", "N", "D"], "exact finite group order")
+    C, N, D = groups
+    starts = observations["starts"]
+    check(len(starts) == len({s["session"] for s in starts}) == 37, "37 unique runtime sessions")
+    providers = C["providers"] + N["providers"] + D["providers"]
+    check(len(providers) == 6 and len({p["token_sha256"] for p in providers}) == 6
+          and {s["session"] for s in starts[30:]} == {p["session"] for p in providers + [D["task"]]}, "six genuine thread tokens and one task")
+    check(all(p in starts and p["org"] == "alpha" and p["pid_start"] for p in providers), "actual thread socket identities")
+    anchors = [d["jobs_anchor"] for d in durable if "jobs_anchor" in d]
+    previous = next(a for a in anchors if a["name"] == "final-drain-B")
+    check(len([a for a in anchors if a["name"].startswith("E05:")]) == 4, "four E05 group/drain boundaries")
+    for group, total, count, allowance in zip(groups, (21,22,25), (33,34,37), (18,8,25)):
+        check(group["entered"] <= group["finished"] <= group["deadline"] <= group["entered"] + allowance,
+              "original finite group allowance")
+        a = group["anchor"]
+        check(a in anchors and a["name"] == "E05:" + group["name"] and a["source_sha"] == row["source_sha"]
+              and a["total"] == total and a["provider_count"] == count, "actual anchor joins")
+        check((a["daemon_pid"],a["daemon_start"]) == (previous["daemon_pid"],previous["daemon_start"])
+              and previous["finished"] <= a["entered"] <= a["finished"], "no reset or replacement")
+        samples = a["samples"]
+        check(len(samples) >= 2, "two independently read metrics samples")
+        projections = []
+        for sample in samples:
+            m = sample["metrics"]
+            check(any(h["method"] == "GET" and h["path"] == "/api/v1/metrics" and h["status"] == 200 and h["response"] == m
+                      for h in observations["http"]), "actual metrics response content")
+            h = m["host_sessions"]
+            r, adm = h["receipts"], h["admission"]
+            check(h["wired"] is True and h["backend"]["healthy"] is True and h["backend"]["name"] != "passthrough"
+                  and h["residue"]["admission_blocked"] is False and h["residue"]["survivors_count"] == 0, "live host health")
+            check(r["published_total"] == r["window_size"] == len(r["recent"]) == r["quiescent_count"] <= total <= 64
+                  and r["with_residue_count"] == 0 and all(x["quiescent"] is True and x["survivors_count"] == 0 for x in r["recent"]), "no eviction/residue")
+            delta = r["published_total"] - previous["total"]
+            check(delta >= 0 and r["recent"][delta:] == previous["projection"]["receipts"]["recent"], "retained ordered duplicate-preserving tail")
+            check(adm["cancelled_queued_total"] == 0 and adm["shutdown"] is False, "no cancelled admission")
+            projections.append(dict(admission=adm, receipts=r, executor_sessions_active=m["executor_sessions_active"], run_step_queue_depth=m["run_step_queue_depth"]))
+        p = a["projection"]
+        check(projections[-1] == projections[-2] == p and p["admission"]["admitted_total"] == p["admission"]["released_total"]
+              == p["receipts"]["published_total"] == total and p["admission"]["active"] == p["admission"]["queue_depth"]
+              == p["executor_sessions_active"] == p["run_step_queue_depth"] == 0, "settled receipt/release/live conjunction")
+        check(len(a["provider_closure"]) == count and all(x["pid"] == s["pid"] and x["start"] == s["pid_start"]
+              and x["observed_start"] != x["start"] for x,s in zip(a["provider_closure"],starts[:count])), "natural provider closure")
+        previous = a
+    final_anchor = case["final_anchor"]
+    check(final_anchor in anchors and final_anchor["name"] == "E05:final" and final_anchor["projection"] == previous["projection"]
+          and final_anchor["provider_count"] == 37 and final_anchor["entered"] >= previous["finished"], "unchanged final drain")
+    check(len(final_anchor["samples"]) >= 2 and all(s["metrics"]["host_sessions"]["receipts"] == previous["projection"]["receipts"]
+              for s in final_anchor["samples"][-2:]), "actual final rereads")
+    check(Counter(x["invocation_kind"] for x in final_anchor["projection"]["receipts"]["recent"]) == {"task":19,"thread":6}, "B25 canonical task/thread mix")
+
+    final = case["final"]["content"]
+    expected_sources = ("e2e/threads.py", "e2e/thread_provider.py", "e2e/provider.py", "e2e/controller.py", "e2e/browser.py",
+                        "e2e/transport.py", "e2e/oracles.py", "e2e/aggregate.py", "tests/integration/fake_claude.sh", "cli/commands/threads.py",
+                        "runtime/daemon/routes/threads.py", "runtime/daemon/thread_runner.py", "web/src/shared/threads/NewThreadDialog.tsx")
+    source_root = Path(__file__).resolve().parents[1]
+    check(case["source_hashes"] == {name:hashlib.sha256((source_root/name).read_bytes()).hexdigest() for name in expected_sources}, "actual immutable producer/consumer source bytes")
+    beta = [d["threads_beta"] for d in durable if "threads_beta" in d]
+    check(len(beta) == 1 and not any(beta[0][k] for k in beta[0] if k.startswith("thread") or k in {"jobs","files"}), "beta has no thread/job/file effects")
+    check(len(final["jobs"]) == 8 and {j["id"] for j in final["jobs"]} == {
+        j["id"] for d in durable if "jobs_cases" in d for r in d["jobs_cases"] for j in r["jobs"]}, "unchanged eight prior jobs")
+    check(len(case["final"]["samples"]) >= 2 and case["final"]["samples"][-1]["content"]
+          == case["final"]["samples"][-2]["content"] == final, "coherent final rereads")
+    check([len(final[k]) for k in ("threads","thread_participants","thread_messages","thread_invocations","thread_reply_delivery_state")]
+          == [3,4,8,6,4], "exact3 threads/4 participants/8 messages/6 invocations/4 delivery pairs")
+    check(all(not final[k] for k in ("thread_reply_exchange","thread_exchange_deferrals","thread_reply_breaker_episodes",
+          "thread_reply_breaker_receipts","thread_message_attachments","thread_scoped_attachments","task_attachments","files")), "no extra effect/attachment/breaker")
+    check(Counter(i["status"] for i in final["thread_invocations"]) == {"consumed":3,"declined":3}
+          and Counter(i["purpose"] for i in final["thread_invocations"]) == {"reply":5,"task_followup":1}, "terminal invocation outcome/purpose")
+    expected_messages = [
+        [(1,"founder","message","E05 opening\nliteral beta"),(2,"case_manager","message","E05 reply\n@case_worker received")],
+        [(1,"founder","message","E05 denial anchor")],
+        [(1,"founder","message","E05 do one task"),(2,"case_manager","system",None),(3,"case_manager","message","E05 task accepted"),
+         (4,"case_manager","system",None),(5,"case_manager","message","E05 task complete")]]
+    for group, expected, subject, turns, names in zip(groups,expected_messages,("E05 compose race","E05 denial venue","E05 dispatch"),
+                                                    (2,1,3), ({"case_manager","case_worker"},{"case_worker"},{"case_manager"})):
+        tid = group["thread"]
+        thread = [t for t in final["threads"] if t["id"] == tid]
+        check(len(thread) == 1 and thread[0]["subject"] == subject and thread[0]["status"] == "open"
+              and thread[0]["turns_used"] == turns and thread[0]["turn_cap"] == 500, "literal thread fields")
+        messages = [m for m in final["thread_messages"] if m["thread_id"] == tid]
+        check([(m["seq"],m["speaker"],m["kind"],m["body_markdown"]) for m in messages] == expected, "literal message timeline")
+        participants = [p for p in final["thread_participants"] if p["thread_id"] == tid]
+        check({p["agent_name"] for p in participants} == names and len(participants) == len(names), "literal participants")
+        invs = [i for i in final["thread_invocations"] if i["thread_id"] == tid]
+        public = group["settled"]["public"]
+        check(any(h["method"] == "GET" and h["path"] == f"/api/v1/orgs/alpha/threads/{tid}" and h["status"] == 200
+                  and h["response"] == public for h in observations["http"]), "actual public response reference")
+        check(public["thread_id"] == tid and public["subject"] == subject and public["turns_used"] == turns
+              and not public["reply_delivery"] and set(public["participants"]) == names and len(public["messages"]) == len(messages), "actual public thread projection")
+        check(json.loads(group["settled"]["cli"]["stdout"]) == public and group["settled"]["cli"] in observations["commands"]
+              and group["settled"]["cli"]["exit"] == 0, "actual CLI readback")
+        check(group["settled"]["messages_page"]["messages"] == public["messages"] and group["settled"]["messages_page"]["has_more"] is False,
+              "actual complete message page")
+        for message, projected in zip(messages,public["messages"]):
+            check(all(message[k] == projected[k] for k in ("seq","speaker","kind","body_markdown"))
+                  and projected["attachments"] == [], "public literal message content")
+            responders = [i for i in invs if i["triggering_seq"] == message["seq"]]
+            check(sorted((r["agent_name"],r["purpose"],r["status"]) for r in projected["responder_status"])
+                  == sorted((i["agent_name"],i["purpose"],"replied" if i["status"] == "consumed" else "declined") for i in responders),
+                  "public authentic responder purpose/outcome; no invented SID")
+        for provider in group["providers"]:
+            matches = [i for i in invs if i["invocation_token"] == "sha256:" + provider["token_sha256"]]
+            check(len(matches) == 1, "genuine delivered token digest")
+            i = matches[0]
+            check(i["session_id"] == provider["session"] and i["agent_name"] == provider["agent"] and i["purpose"] == provider["purpose"]
+                  and i["started_at"] and i["consumed_at"], "distinct genuine runtime identity")
+            expected_reply = (2 if tid == C["thread"] else 5 if i["purpose"] == "task_followup" else 3) if i["agent_name"] == "case_manager" else None
+            check(i["reply_message_seq"] == expected_reply and i["status"] == ("consumed" if expected_reply else "declined"), "exact reply linkage and decline outcomes")
+            if i["purpose"] == "reply":
+                claims = [json.loads(a["payload"]) for a in final["audit_log"] if a["action"] == "thread_reply_wake_claimed"
+                          and a["task_id"] == tid and json.loads(a["payload"]).get("token_prefix") == i["token_prefix"]]
+                seq = 2 if tid == C["thread"] and i["agent_name"] == "case_worker" and i["triggering_seq"] == 2 else 1
+                check(len(claims) == 1 and claims[0]["agent_name"] == i["agent_name"]
+                      and claims[0]["from_seq"] == claims[0]["through_seq"] == seq, "exact admitted delivery range")
+        for delivery in [r for r in final["thread_reply_delivery_state"] if r["thread_id"] == tid]:
+            watermark = 2 if tid == C["thread"] and delivery["agent_name"] == "case_worker" else 1
+            check(delivery["acknowledged_through_seq"] == delivery["required_through_seq"] == watermark
+                  and all(delivery[k] is None for k in ("queued_invocation_token","running_invocation_token","running_from_seq","running_through_seq")), "exact settled delivery watermarks")
+
+    T, sid = D["task"]["task"], D["task"]["session"]
+    dispatched = [t for t in final["tasks"] if t["dispatched_from_thread_id"] is not None]
+    check(len(dispatched) == 1, "one sourced task only")
+    t = dispatched[0]
+    check(t["id"] == T and t["dispatched_from_thread_id"] == D["thread"] and t["assigned_agent"] == "case_manager"
+          and t["team"] == "engineering" and t["brief"] == "E05 one owned task" and t["status"] == "completed"
+          and t["completed_at"] and t["current_session_id"] == sid and t["orchestration_step_count"] == 1
+          and t["note"] == "E05 task complete" and all(t[k] is None for k in ("parent_task_id","block_kind","active_chain","active_fanout","final_output_dir")), "actual single completed root")
+    result = [r for r in final["task_results"] if r["task_id"] == T]
+    check(len(result) == 1 and type(result[0]["id"]) is int and result[0]["session_id"] == sid
+          and result[0]["status"] == "completed" and result[0]["output_summary"] == "E05 task complete"
+          and json.loads(result[0]["decision_json"]) == {"action":"done","summary":"E05 task complete"}, "one genuine accepted task result")
+    task_audit = [a for a in final["audit_log"] if a["task_id"] == T]
+    required = [next((a for a in task_audit if a["action"] == name),None) for name in ("session_start","session_end","completion_report","orchestration_step")]
+    check(all(required) and all(sum(a["action"] == name for a in task_audit) == 1 for name in ("session_start","session_end","completion_report","orchestration_step"))
+          and [a["id"] for a in required] == sorted(a["id"] for a in required), "one ordered task lifecycle/consumption")
+    systems = [json.loads(m["system_payload_json"]) for m in final["thread_messages"] if m["thread_id"] == D["thread"] and m["kind"] == "system"]
+    dispatch_audit = [a for a in final["audit_log"] if a["action"] == "thread_dispatch"]
+    check(len(dispatch_audit) == 1 and dispatch_audit[0]["task_id"] == D["thread"]
+          and json.loads(dispatch_audit[0]["payload"])["task_id"] == T
+          and json.loads(dispatch_audit[0]["payload"])["dispatcher"] == "case_manager", "real original dispatch audit ownership")
+    check([i["dispatched_task_id"] for i in final["thread_invocations"] if i["dispatched_task_id"]] == [T]
+          and not any(a["action"] in {"thread_followup_skipped","thread_invocation_failed"} for a in final["audit_log"]), "no duplicate/recursive dispatch or lost followup")
+    check(systems == [dict(kind_tag="task_dispatched",task_id=T,dispatcher="case_manager",target_agent="case_manager",team="engineering",brief_preview="E05 one owned task"),
+                      dict(kind_tag="task_completed",task_id=T,original_task_id=T,root_task_id=T,status="completed",final_output_summary="E05 task complete",final_output_dir=None,cancelled=False,revisit_chain_length=1,revisit_task_id=None)], "both literal system payloads")
+    check(len(D["tasks_projection"]) == 1 and D["tasks_projection"][0]["id"] == T, "actual thread task link")
+
+    for negative, status, detail in ((C["replay"],409,dict(code="invocation_token_consumed",status="consumed")),
+                                     (D["denial"],403,dict(code="not_a_participant",composer="case_manager"))):
+        before, after, cmd = negative["before"], negative["after"], negative["command"]
+        check(before["content"] == after["content"] and before["samples"][-1]["at"] <= cmd["entered"] <= cmd["finished"] <= after["samples"][0]["at"], "coherent negative causal window")
+        for f in (before,after):
+            check(len(f["samples"]) >= 2 and f["samples"][-1]["content"] == f["samples"][-2]["content"] == f["content"], "two stable full frames")
+        check(cmd["exit"] == 1 and cmd["selected_response"] == {"detail":detail}
+              and len([w for w in cmd["wire"] if w["method"] == "POST" and w["status"] == status and w["response"] == {"detail":detail}]) == 1, "literal409/403 real CLI denial")
+    check(C["reply"]["argv"] == C["replay"]["command"]["argv"] and C["reply"]["payload_sha256"] == C["replay"]["command"]["payload_sha256"], "exact same retained live reply file")
+
+    commands, attempts = observations["thread_commands"], observations["thread_attempts"]
+    check(len(commands) == len(attempts) == 11 and [a["command_index"] for a in attempts] == list(range(11)), "finite eleven provider CLI actions")
+    witnesses = observations["launch_witnesses"]
+    check(case["witnesses"] == witnesses and len([w for w in witnesses if w["kind"] == "stub"]) == 37, "complete actual executable witnesses")
+    calls = [w for w in witnesses if w["kind"] == "callback"]
+    check(len(calls) == len(observations["commands"])+len(observations["provider_commands"])+len(commands), "every CLI accounted")
+    closures = [d["thread_process_closed"] for d in durable if "thread_process_closed" in d]
+    check(len(closures) == 7 and {r["session"] for r in closures} == {p["session"] for p in providers+[D["task"]]}, "seven actual natural process closures")
+    for provider in providers+[D["task"]]:
+        closure = next(r for r in closures if r["session"] == provider["session"])
+        key = "token_sha256" if "thread" in provider else "session"
+        own = [cmd for cmd in commands if cmd["provider"].get(key) == provider[key]]
+        check(closure["pid"] == provider["pid"] and closure["start"] == provider["pid_start"] != closure["observed_start"]
+              and len(closure["children"]) == len(own) and all(ch["pid"] == cmd["child_pid"] and ch["start"] == cmd["child_start"] != ch["observed_start"]
+              for ch,cmd in zip(closure["children"],own)), "actual provider and CLI child PID/start closure")
+        paths = [cmd["argv"][cmd["argv"].index("--from-file")+1] for cmd in own if "--from-file" in cmd["argv"]]
+        check(closure["private_files"] == [dict(path=path,exists=False) for path in paths], "actual named private payload absence")
+    for barrier, admitted, released, command_start in ((C["worker_closed"],20,19,C["reply"]["entered"]),
+                                                      (D["dispatcher_closed"],24,23,D["denial"]["command"]["entered"])):
+        check(barrier in [d["thread_live_boundary"] for d in durable if "thread_live_boundary" in d]
+              and barrier["finished"] <= command_start and len(barrier["samples"]) >= 2, "actual intermediate host barrier")
+        for sample in barrier["samples"][-2:]:
+            m = sample["metrics"]
+            a,r = m["host_sessions"]["admission"],m["host_sessions"]["receipts"]
+            check((a["admitted_total"],a["released_total"],r["published_total"],a["active"],a["queue_depth"]) == (admitted,released,released,1,0)
+                  and any(h["path"] == "/api/v1/metrics" and h["response"] == m for h in observations["http"]), "two actual release/publication/live samples")
+    check(C["held_worker"]["provider"] == C["providers"][2] and C["held_worker"]["before"] == C["held_worker"]["after"] == C["providers"][2]["pid_start"], "W2 held across same-process replay")
+    for cmd,a in zip(commands,attempts):
+        keys = ("thread","token_sha256","agent","org","purpose","pid") if "thread" in a["provider"] else ("task","session","agent","org","pid")
+        check(cmd["provider"] == {k:a["provider"][k] for k in keys} and a["provider"] in starts, "actual provider receipt identity")
+        check(cmd["source_sha"] == row["source_sha"] and cmd["timed_out"] is False and cmd["output_truncated"] is False and a["observed_start"] == a["provider"]["pid_start"]
+              and a["entered"] <= cmd["entered"] <= cmd["finished"] <= a["finished"] < a["instruction"]["deadline"]
+              <= a["entered"] + 10 and cmd["execution_deadline"] == a["instruction"]["deadline"] - 1, "original live owner/deadline")
+        check(all(w in observations["relay"] and w["dropped"] is False for w in cmd["wire"]) and cmd["wire"], "actual complete relay references")
+        digest = hashlib.sha256(json.dumps(cmd["argv"][1:]).encode()).hexdigest()
+        check(len([w for w in calls if w["pid"] == cmd["child_pid"] and w["ppid"] == cmd["provider"]["pid"]
+                   and w["argv_sha256"] == digest and w["source_sha"] == row["source_sha"]]) == 1, "independent actual CLI child/source join")
+    expected_actions = [["thread-reply","thread-reply"],["thread-decline"],["thread-decline"],["thread-decline"],
+                        ["thread-dispatch","thread-reply"],["thread-task-read","thread-reply"],["thread-task-send","thread-task-final"]]
+    for provider, actions in zip(providers+[D["task"]],expected_actions):
+        key = "token_sha256" if "thread" in provider else "session"
+        own = [cmd for cmd in commands if cmd["provider"].get(key) == provider[key]]
+        check([cmd["action"] for cmd in own] == actions, "finite per-provider action order/final callback last")
+    check(D["callback"]["selected_response"] == {"ok":True} and D["callback"]["exit"] == 0
+          and D["callback"] in commands and D["followup"] in commands and D["read"] in commands
+          and D["callback"]["finished"] <= D["providers"][1]["at"] <= D["read"]["entered"] <= D["followup"]["entered"], "task callback to natural D2 read/reply")
+    events = json.loads((directory / "e05-browser-events.json").read_text())
+    check(C["created"] in events and C["created"]["dialog_count"] == 0 and C["created"]["list_rows"] == 1, "actual dialog closure and one list row")
+    check(events and events[-1]["event"] == "context-closed" and not any(e["event"] in {"pageerror","origin-bypass"} for e in events), "real browser origin/closure")
+    requests = [e for e in events if e["event"] == "compose-request"]
+    responses = [e for e in events if e["event"] == "compose-response"]
+    proxy = [p for p in observations["thread_proxy"] if p["ordinal"] is not None]
+    check(len(requests) == len(responses) == len(proxy) == 1, "one page/upstream/original response")
+    request, response, wire = requests[0],responses[0],proxy[0]
+    transport = case["transport"]
+    check(len({transport[k] for k in ("daemon_port","cli_port","browser_port")}) == 3
+          and all(transport[k] in transport["ports"] for k in ("daemon_port","cli_port","browser_port")), "registered owned D/L/P")
+    origin = f"http://127.0.0.1:{transport['browser_port']}"
+    check(request["url"] == response["url"] == origin + "/api/v1/orgs/alpha/threads"
+          and wire["target"] == "/api/v1/orgs/alpha/threads" and request["method"] == wire["method"] == "POST"
+          and request["payload"] == wire["request"] == {"subject":"E05 compose race","recipients":["case_manager","case_worker"],"body_markdown":"E05 opening\nliteral beta"}
+          and request["sha256"] == wire["request_sha256"] and request["bytes"] == wire["request_bytes"], "exact end-to-end compose bytes")
+    check(wire["status"] == response["status"] == 200 and wire["response"] == response["body"]
+          and wire["response_sha256"] == response["sha256"] and wire["response_bytes"] == response["bytes"]
+          and wire["response"]["thread_id"] == C["thread"] and set(wire["response"]["pending_replies"]) == {"case_manager","case_worker"}, "original actual200 identity/payload")
+    check(C["armed"]["at"] <= wire["forwarded"] <= wire["upstream_complete"] <= wire["committed"] <= wire["held"] <= C["released"]
+          <= wire["delivered"] <= wire["closed"] <= C["armed"]["deadline"] <= C["armed"]["at"]+5, "single bounded hold/release timeline")
+    check(len(wire["commit"]["threads"]) == len(wire["commit"]["thread_messages"]) == 1
+          and wire["commit"]["thread_messages"][0]["body_markdown"] == "E05 opening\nliteral beta", "actual independent commit content")
+    check(not any(e["event"] == "compose-response" or (e["event"] == "navigation" and e["url"] == origin+f"/orgs/alpha/threads/{C['thread']}") for e in C["held_events"]), "no response/detail before release")
+    check(len([e for e in C["released_events"] if e["event"] == "navigation" and e["url"] == origin+f"/orgs/alpha/threads/{C['thread']}"]) == 1, "single real SPA detail entry")
+    batch = C["event_batch"]
+    check(batch in events and batch["guard_sensitivity"] == "UNPROVEN"
+          and [(e["id"],e["type"]) for e in batch["rows"] if e["phase"] == "before"] == [(1,"keydown"),(2,"click"),(3,"click")], "same synchronous finite input sequence; no causal guard claim")
+    check(all(a["at"] <= b["at"] for a,b in zip(batch["rows"],batch["rows"][1:])), "actual DOM event ordering")
+    for view, name in zip((C["initial_view"],C["view"],D["view"]), ("e05-compose.png","e05-reply.png","e05-dispatch.png")):
+        check(view["screenshot"] == name and any(e.get("event") == "thread-view" and all(e[k] == v for k,v in view.items()) for e in events)
+              and (directory/view["screenshot"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual browser view and screenshot content")
+    check(f"dispatched {T}" in D["view"]["text"] and f"task {T} completed" in D["view"]["text"], "both rendered system rows")
+    closure = [d["thread_proxy_closure"] for d in durable if "thread_proxy_closure" in d]
+    check(len(closure) == 1 and closure[0]["port"] == transport["browser_port"] and not closure[0]["errors"]
+          and closure[0]["workers_alive"] == closure[0]["connections"] == 0 and closure[0]["listener_alive"] is False, "bounded proxy/socket/listener closure")
+    final_orgs = [d for d in durable if "threads_final_org" in d]
+    check(len(final_orgs) == 2 and {d["threads_final_org"] for d in final_orgs} == {"alpha","beta"}, "both final orgs")
+    for d in final_orgs:
+        expected = (20,30) if d["threads_final_org"] == "alpha" else (1,1)
+        check((len(d["snapshot"]["tasks"]),len(d["snapshot"]["results"])) == expected
+              and all(t["status"] == "completed" for t in d["snapshot"]["tasks"]), "global21tasks31results")
 
 
 def main() -> int:
@@ -541,6 +808,7 @@ def main() -> int:
                 try:
                     validate_e04(result, json.loads((directory / "observations.json").read_text()),
                                  json.loads((directory / "browser-events.json").read_text()), directory)
+                    validate_e05(result, json.loads((directory / "observations.json").read_text()), directory)
                 except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
                     health["errors"].append(f"e2e-{version}: {exc}")
         unexpected = set(path.name for path in args.artifacts.glob("e2e-*") if path.is_dir()) - set(names)

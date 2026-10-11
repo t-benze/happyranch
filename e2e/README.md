@@ -3,7 +3,7 @@
 This independently authored standalone lane implements the accepted E02/E03/E06
 case design (`TASK-10476`, SHA256
 `bc4c4c9d50a73ce45085ed6b5edcae572cdf75e8e26e3b583e6b7728037fd564`).
-The bounded Pause and E04 increments below follow that original baseline closure.
+The bounded Pause, E04 and E05 increments below follow that original baseline closure.
 Source and design acceptance do not establish behavioral PASS. Actual disposable
 runner results, authoring proof, independent review/QA and check enforcement are
 separate delivery obligations.
@@ -94,7 +94,7 @@ new daily baseline evidence remain PENDING until observed from the schedule.
 
 Target is 600s, action cutoff720s, cleanup reserve60s, evidence reserve120s,
 hard cap900s including dependency installation and build. Baseline scenarios
-(bootstrap, baseline, Pause/restart, E04, controller close/evidence together) have
+(bootstrap, baseline, Pause/restart, E04, E05, controller close/evidence together) have
 at most480s; each other command and cancellation scenarios retain240s.
 The launcher computes `min(command entry + cap, original start + 720)` once
 before spawn, passes that exact end to the controller and uses it for its own
@@ -478,3 +478,77 @@ that collector is untouched. General integration SKIPPED THR243seq42; Python
 units RETIRED. Daily19UTC, Python3.12/3.13/3.14 plus TERM3.12/INT3.14 and only
 Source Boundary Lint/Web Lint(Node24) merge contexts remain. No deployment,
 Jenkins, compatibility/authentic-memory PASS, E05 or program completion follows.
+
+## E05 threads and replay: authored source only
+
+The accepted TASK10637 design (`832d218b693b6e6f660a2f4ca484f498cf452878ae5f0e092d278986d0924f40`)
+and TASK10653 composition addendum govern four cases/five variants. The entire
+23 baseline +19 Pause +6 E04 prefix runs unchanged before E05, giving53 source
+variants. E05 adds three public-created threads, eight messages, six genuine
+thread invocations and one genuine dispatched task/result: seven providers.
+C/N/D settle at bootB21/22/25; archived bootA12 stays separate, cumulative37.
+Final alpha20tasks30results/beta1task1result, eight prior jobs/seven scripts,
+B19task+6thread summaries and four settled delivery pairs are separate oracles.
+These counts are source expectations, not observations.
+
+| Case / variant | Contract and literal oracle | Credible regression (unexecuted) | Nearest coverage and distinct gap | Production-only seam |
+| --- | --- | --- | --- | --- |
+| Compose / `E05.compose-race` | Shipping dialog, same synchronous Enter/click/click batch, one actual POST/200/committed opening/detail entry | Duplicate POST/thread if submit guard is removed | Retained Web write-path mocks lack real SPA/proxy/SQL join; eligibility alone cannot prove guard reentry | NO |
+| Reply / `E05.reply-natural` | C has two messages, M1/W1/W2 genuine tokens, claimed1..1/1..1/2..2, one consumed/two declined; natural closure | Lost wake, duplicate reply or unsettled delivery | Retained thread integration lacks this exact public/browser/durable closed workload; baseline task replay uses different authority | NO |
+| Dispatch / `E05.self-dispatch-followup` | D has one source-linked NULL-parent Engineering task/result, system2/reply3/system4/followup5; no replacement | Duplicate dispatch, lost followup, recursive task | Retained followup integration has broader seeded cardinalities, not this finite public-created venue | NO |
+| Denials / `E05.consumed-token`, `E05.nonparticipant-task-send` | Same live M1 replays the same file for409 consumed; actual live task SID sends to worker-only N for403 not_a_participant; coherent before/after content unchanged | Removed/reordered token or participant gate permits another message/effect | Baseline E03/E06 covers task callbacks, not thread invocation replay or this participant boundary | NO |
+
+`thread_provider.py` spends only its delivered token through its own bound CLI
+and private payload file; the task plan uses its own real task/SID. Controller
+instructions carry finite literals, never replacement authority. SHA256 token
+aliases, actual socket PID/start, genuine CLI child/source/argv witnesses and
+read-only durable identities remain distinct from anonymous host summaries.
+Private files are removed before normal provider exit. No DB writer, product
+serializer oracle, altered roster, stub/registry bypass or provider substitution
+is used. Same-thread nonparticipant reply authority is not publicly constructible
+here; the actual task-session send denial is the named boundary exercised.
+
+The E05 browser context uses its own registered loopback P, forwarding to the
+actual daemon D; existing CLI relay L and original browser context remain.
+Only the first exact compose request's original200 response can be held after
+an independent commit, with one arm deadline at most5s. Ordinary content and
+SSE are forwarded as bytes, without bootstrap/auth substitution or manufactured
+responses. Partial evidence includes actual network/navigation/eligibility
+records. Disabled controls do not prove handler reentry or causal guard
+sensitivity. Owned context, listener, connections and workers close before daemon
+teardown; missing/unknown closure fails daily health.
+
+The changed fixture/consumer contracts are: controller plan/peer/source registration
+must reject unexpected authority (nearest E04 task-only plan); the provider's
+finite CLI protocol must preserve same-file replay and final-callback ordering
+(nearest jobs protocol); Browser/BrowserRelay must preserve real bytes and the
+original held response (nearest baseline CLI loss relay cannot serve a whole
+browser origin); Store.thread_frame must retain one reopened mode=ro/query_only
+transaction across all affected tables and file manifests (nearest separate
+Store.query calls are not a coherent negative frame). Credible regressions are
+respectively wrong-owner callbacks, replay-file substitution, response fabrication
+or loss, and false unchanged-state evidence. Every one has NO production-only
+seam. These are external fixture/source assertions, with sensitivity unexecuted.
+
+Controller observations and scenario references flow through unchanged run.py
+result merge/sanitized export into the existing five artifact directories.
+`aggregate.validate_e04` validates the original30-provider checkpoint from its
+actual retained witness prefix; `validate_e05` independently opens the E05 browser
+artifact and actual observations, recomputing literal messages, claims, denials,
+source/CLI joins, ordered anonymous tails and closure. Missing/empty/hash-only
+or contradictory references fail. The aggregate's regression is false healthy
+reporting from metadata/totals; nearest E04 consumer lacks thread/proxy content.
+The manifest adds exactly five IDs, preventing an omitted E05 case from passing.
+NO production-only seam is added by either consumer. Validator controls are not
+product defect proof; no new controls were executed.
+
+All E05 behavior, assertion sensitivity, proxy compatibility, guard reentry,
+token sanitation, delivery/persistence, process closure and measured budget fit
+remain MISSING/UNEXECUTED. Protected12 deliberate defects, RED/restoration/GREEN
+and repetitions remain unauthorized/unexecuted. No full test-authoring PASS.
+C18/N8/D25/final4 share the existing480 scenario allowance clipped by original720;
+cleanup60/export120 and hard900/target600 are unchanged. Arithmetic is not fit
+proof. Daily19UTC source binding and all five cells/artifacts remain unchanged.
+General integration is SKIPPED; Python units are RETIRED. TASK10555 owns the
+first-daily collector and Pause acceptance. Later cancellation/late-callback/
+restart coverage and eventual daily acceptance remain root-owned and unproven.

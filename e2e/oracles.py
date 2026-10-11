@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,32 @@ class Store:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
             return [dict(row) for row in db.execute(sql, args)]
+
+    def thread_frame(self) -> dict:
+        """One reopened coherent transaction, including all cross-thread effects."""
+        tables = ("threads", "thread_participants", "thread_messages", "thread_invocations",
+                  "thread_reply_delivery_state", "thread_reply_exchange", "thread_exchange_deferrals",
+                  "thread_reply_breaker_episodes", "thread_reply_breaker_receipts",
+                  "thread_message_attachments", "thread_scoped_attachments", "task_attachments",
+                  "tasks", "task_results", "audit_log", "jobs")
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            result = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                      for table in tables}
+            db.rollback()
+        # Canonical product files only; private provider payloads are not product
+        # attachment effects and are never read or exported by this observation.
+        result["files"] = []
+        for name in ("threads", "artifacts", "task-attachments"):
+            directory = self.path.parent / name
+            for path in sorted(directory.rglob("*")) if directory.exists() else []:
+                require(not path.is_symlink(), "unexpected thread/artifact symlink")
+                if path.is_file():
+                    result["files"].append(dict(path=str(path.relative_to(self.path.parent)),
+                                              bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+        return result
 
     def snapshot(self, task: str | None = None) -> dict:
         where = "" if task is None else " WHERE id=? OR parent_task_id=?"

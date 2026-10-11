@@ -188,3 +188,23 @@ E05 and later cancellation/restart remain future work; no entire-program PASS.
 The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
 bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
 lane, protected proof, collector action, Jenkins or deployment is authorized.
+
+### E05 authored threads/replay increment
+
+The accepted four-case/five-variant E05 source adds a real browser compose race,
+genuine finite reply closure, one provider-owned self-dispatch/task/followup,
+same-live-provider consumed-token409 replay, and genuine task-session403 send
+to a worker-only denial venue. The53-variant union preserves all48 earlier
+variants. Expected cumulative providers37 comprise archived bootA12 plus current
+bootB25; final global21tasks31results and six thread invocations are distinct.
+Actual-content consumers check coherent negative frames, literal timelines,
+source/CLI/provider identity, ordered receipt tails and proxy/browser closure.
+The full authoring map and source-only limits are in `e2e/README.md`.
+
+No behavioral or complete test-authoring PASS follows. E05 assertions, proxy
+compatibility, same-tick guard sensitivity, sanitation, persistence/delivery,
+closure and fit remain MISSING/UNEXECUTED. Protected12 deliberate defects and
+RED/restoration/GREEN/repetition proofs remain unauthorized/unexecuted. Python
+units remain RETIRED; general integration remains SKIPPED. Daily-only schedule,
+bounds, matrix, artifacts and TASK10555 collector ownership are unchanged.
+Cancellation/late-callback/restart increments and daily acceptance remain open.
