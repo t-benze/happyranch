@@ -138,12 +138,27 @@ Overview pagination displays independent timestamped observations, never summed
 counts or a complete-zero assertion; null counts/evidence limits stay explicit.
 Both locales and responsive layouts preserve original filters, dialogs, focus,
 drafts and actions. Prototype and browser-interception evidence is UI/transport
-only; full fresh backend Pause E2E remains a subsequent root-owned unit. Source/static
+only. The daily source increment in e2e/pause.py and e2e/pause_browser.py authors
+the finite P01a/P05 chain drain, P11/P14/P17 identity/idempotence/stale control,
+P14b/c same-org unheld progress, P12 drained same-files disposable product-daemon
+restart and explicit Resume, separate P01b Resume-during-drain, and P16/P18 live
+English/Chinese list/detail/child/overview/reload readback. Its 19 named Pause
+variants follow the unchanged 9-launch/23-variant baseline; exact host anchors
+are 12 before restart, 0 on restart readiness and 6 at final closure, with 18
+combined launches. This is authored source, UNEXECUTED; first daily PENDING.
+Only the existing 19:00 UTC default-branch 3.12/3.13/3.14 schedule may execute
+it, within unchanged 600/720/900-second limits. Protected assertion mutation,
+RED/restoration/GREEN and repetitions remain UNEXECUTED/unauthorized. All eight
+restart windows, authentic held-queued workflow history and P07/G4 interleavings
+remain uncovered; launcher interruption cleanup is separate. Source/static
 inspection is not behavioral acceptance. Python unit source and gates are RETIRED under THR291seq40; prior suspended
 unit/full/focused/RED-GREEN/keeper/mutation/repetition/duration receipts remain
 SKIPPED NONBLOCKING under THR291/THR228seq355, never PASS. Fresh product E2E
 remains PENDING; general integration is SKIPPED THR243seq42/THR211seq270–271.
-No replacement harness is assumed. Current Node24 Web, Python3.14 canonical and
-selected ordinary stub-Codex callback, macOS15 canonical, Docs Manual and actual
-path gates remain required. Final immutable-head independent review/QA, normal
+Current automatic PR and push-main checks are only Source Boundary Lint and
+Web Lint (Node 24), both unconditional under THR291seq69; local_ci.sh all is
+source-boundary/colour/ESLint/TypeScript static analysis only. Retained native,
+platform and actual callback source/fences remain; they are not automatic merge
+requirements. No ad hoc E2E, execution-mode or cap change is authorized.
+Final immutable-head independent review/scoped QA, normal
 publication and manager-guarded merges remain separate gates.
