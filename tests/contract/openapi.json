@@ -4127,6 +4127,33 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "instance_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/reviews/human-receipts": {
       "POST": {
         "params": [
@@ -4201,6 +4228,71 @@
         ],
         "responses": [
           "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "proof_kind",
+            "query"
+          ],
+          [
+            "revision_operation_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "revision_operation_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
           "403",
           "404",
           "409",

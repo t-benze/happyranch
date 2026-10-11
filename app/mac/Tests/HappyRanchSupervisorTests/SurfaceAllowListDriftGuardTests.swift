@@ -46,6 +46,8 @@ struct SurfaceAllowListDriftGuardTests {
         ("{attachment_id}", "att-1"),
         ("{adapter_id}", "adapter-1"),
         ("{handoff_id}", "handoff-1"),
+        ("{instance_id}", "instance-1"),
+        ("{revision_operation_id}", "revision-1"),
         ("{request_id}", "request-1"),
     ]
 

@@ -105,6 +105,7 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/workflows/submissions/handoffs"),
             // Current agent reviewer staging is not a remote human surface.
             ("POST", "/workflows/reviews/stages"),
+            ("POST", "/workflows/revisions/*/submissions"),
         ]
         for (method, path) in exactDenies {
             denied.append("\(method) \(path)")
@@ -246,6 +247,14 @@ public struct SurfaceAllowList: Sendable {
     public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
         if method == "POST", deniedMethods.contains("POST /workflows/reviews/stages"),
            [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/reviews/stages" }) {
+            return false
+        }
+        if method == "POST", deniedMethods.contains("POST /workflows/revisions/*/submissions"),
+           [rawPath, path].contains(where: {
+               let parts = Self.stageDenialCandidate($0).split(separator: "/", omittingEmptySubsequences: false)
+               return parts.count == 5 && parts[0].isEmpty && parts[1] == "workflows"
+                   && parts[2] == "revisions" && !parts[3].isEmpty && parts[4] == "submissions"
+           }) {
             return false
         }
         // This exact newly admitted family also checks the original prefixed

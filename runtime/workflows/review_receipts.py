@@ -31,6 +31,11 @@ class ArtifactHumanReviewCommand(HumanReviewCommand):
     format: Literal['workflow-human-review-command@2']
 
 
+class RevisionHumanReviewCommand(HumanReviewCommand):
+    format: Literal['workflow-human-review-command@3']
+    expected_revision: StrictInt = Field(ge=2, le=2)
+
+
 class ReviewReceiptProjection(ClosedRecord):
     format: Literal['workflow-review-receipt@1']
     receipt_id: Token
@@ -49,13 +54,18 @@ class ArtifactReviewReceiptProjection(ReviewReceiptProjection):
     format: Literal['workflow-review-receipt@2']
 
 
+class RevisionReviewReceiptProjection(ReviewReceiptProjection):
+    format: Literal['workflow-review-receipt@3']
+    assignment_generation: StrictInt = Field(ge=2)
+
+
 def recipient_receipt(receipt: dict) -> dict:
     """Project only a receipt already authenticated by its writer or complete graph."""
     proof = _stored_json(receipt['proof_bytes'], receipt['proof_digest'],
                          code='workflow_review_receipt_storage_corrupt')
-    if proof['format'] in ('workflow-human-review-proof@1', 'workflow-human-review-proof@2'):
+    if proof['format'] in ('workflow-human-review-proof@1', 'workflow-human-review-proof@2', 'workflow-human-review-proof@3'):
         command = proof['command']
-    elif proof['format'] in ('workflow-agent-review-proof@1', 'workflow-agent-review-proof@2'):
+    elif proof['format'] in ('workflow-agent-review-proof@1', 'workflow-agent-review-proof@2', 'workflow-agent-review-proof@3'):
         command = proof['stage_event']['body']['stage']['command']
     else:
         raise ValueError('workflow_review_receipt_storage_corrupt')
@@ -63,7 +73,7 @@ def recipient_receipt(receipt: dict) -> dict:
     expected = f'workflow-human-review-proof@{family}' if 'command' in proof else f'workflow-agent-review-proof@{family}'
     if proof['format'] != expected:
         raise ValueError('workflow_review_receipt_storage_corrupt')
-    model = ArtifactReviewReceiptProjection if family == 2 else ReviewReceiptProjection
+    model = {1: ReviewReceiptProjection, 2: ArtifactReviewReceiptProjection, 3: RevisionReviewReceiptProjection}[family]
     return model.model_validate(dict(
         format=f'workflow-review-receipt@{family}', receipt_id=receipt['id'],
         **{key: receipt[key] for key in ('request_id', 'submission_id', 'submission_digest',
@@ -76,8 +86,9 @@ def parse_human_review(command: object) -> dict:
     # Reuse the existing raw UTF8/base64 bounds, without entering the agent stage lane.
     from runtime.workflows.review_dispatch import parse_stage
     try:
-        family = 2 if isinstance(command, dict) and command.get('format') == 'workflow-human-review-command@2' else 1
-        model = ArtifactHumanReviewCommand if family == 2 else HumanReviewCommand
+        family = {'workflow-human-review-command@1': 1, 'workflow-human-review-command@2': 2,
+                  'workflow-human-review-command@3': 3}.get(command.get('format'), 1) if isinstance(command, dict) else 1
+        model = {1: HumanReviewCommand, 2: ArtifactHumanReviewCommand, 3: RevisionHumanReviewCommand}[family]
         parsed = model.model_validate(command).model_dump()
         parse_stage(dict(parsed, format=f'workflow-review-stage-command@{family}', action='stage-review'))
         if len(canonical_bytes(parsed)) > 2097152:
@@ -292,6 +303,9 @@ def validate_agent_receipt(conn: sqlite3.Connection, request: dict, scope: dict)
         'workflow_current_assignments': ('instance_id=? AND role_key=?', (scope['instance_id'], scope['role'])),
         'workflow_receipt_evidence': ('task_id=?', (bridge['task_id'],)),
     }
+    from runtime.workflows.submissions import history_successor
+    if scope['revision'] == 1 and history_successor(conn, scope['instance_id'], fulfilled=True):
+        selectors.pop('workflow_current_assignments')
     actual = {table: _records(conn, f'SELECT * FROM {table} WHERE {where}', args)
               for table, (where, args) in selectors.items()}
     if request['status'] == 'pending':
@@ -342,14 +356,19 @@ class WorkflowReviewReceiptStore:
                 with self.org.workflow_authority.admission_writer(capture) as conn:
                     self._human_principal(principal)
                     request, row, intent = store._select_request(conn, **selection)
-                    store._authority(conn, intent, capture, {'collect-review'})
+                    historical = not intent['is_current'] and request['status'] != 'pending'
+                    if historical:
+                        store._selected_authority(conn, intent, capture, {'collect-review'})
+                    else:
+                        store._authority(conn, intent, capture, {'collect-review'})
                     require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
-                    handoff = _handoff_record(conn, row, expected_org_slug=self.org.slug)
+                    from runtime.workflows.submissions import subject_proof
+                    handoff = subject_proof(conn, row)
                     graph = validate_handoff_graph(conn, row, handoff)
                     if graph is None or request['id'] not in graph['request_ids']:
                         raise ValueError('workflow_review_receipt_storage_corrupt')
                     current = store._projection(conn, row, capture, replayed=True)['current']
-                    if current['state'] != 'consumed' or current['reconciliation_required']:
+                    if not historical and (current['state'] != 'consumed' or current['reconciliation_required']):
                         raise WorkflowActivationError('workflow_author_handoff_source_not_current')
                     scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'],
                                          code='workflow_review_receipt_storage_corrupt')
@@ -377,10 +396,11 @@ class WorkflowReviewReceiptStore:
                         if not _same_value(saved['command'], command) or not _same_value(keys, existing):
                             raise WorkflowActivationError('workflow_human_review_operation_conflict')
                         from runtime.workflows.review_join import collect_in_writer
-                        collect_in_writer(store, conn, row['id'], capture)
+                        if not historical:
+                            collect_in_writer(store, conn, row['id'], capture)
                         self._human_principal(principal)
                         return existing[0]
-                    if keys or request['status'] != 'pending':
+                    if historical or keys or request['status'] != 'pending':
                         raise WorkflowActivationError('workflow_human_review_operation_conflict')
                     if (command['format'] != f'workflow-human-review-command@{review_family(scope)}'
                                 or command['expected_revision'] != scope['revision']
@@ -445,12 +465,10 @@ class WorkflowReviewReceiptStore:
                                      (receipt['outcome'], request['id'], 'pending'))
                     validate_agent_receipt(conn, dict(request, status=receipt['outcome']), scope)
                     self.org.workflow_reviews._intent(conn, task_id)
-                    handoffs = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE submission_id=?',
-                                        (scope['submission_id'],))
-                    if len(handoffs) != 1:
-                        raise ValueError('workflow_review_receipt_storage_corrupt')
+                    from runtime.workflows.revisions import selected_subject
+                    subject, _ = selected_subject(conn, scope)
                     from runtime.workflows.review_join import collect_in_writer
-                    collect_in_writer(store, conn, handoffs[0]['id'], capture)
+                    collect_in_writer(store, conn, subject['id'], capture)
                     return receipt['id']
 
     async def discover_completed(self) -> None:
@@ -484,6 +502,9 @@ class WorkflowReviewReceiptStore:
             handoffs = [r[0] for r in self.db._conn.execute(
                 'SELECT h.id FROM workflow_author_handoffs h JOIN workflow_rounds r '
                 "ON r.submission_id=h.submission_id WHERE r.state='reviewing' ORDER BY h.id")]
+            from runtime.workflows.revisions import exists
+            if exists(self.db._conn):
+                handoffs += [r[0] for r in self.db._conn.execute("SELECT v.id FROM workflow_document_revision_operations v JOIN workflow_rounds r ON r.instance_id=v.instance_id WHERE r.current_revision=2 AND r.state='reviewing'")]
         for handoff_id in handoffs:
             try:
                 await self.collection_current(handoff_id)

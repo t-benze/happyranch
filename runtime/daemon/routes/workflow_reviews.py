@@ -16,12 +16,12 @@ from runtime.workflows.activation import (AbstractRole, ActivatedTemplate, Close
 from runtime.daemon.auth import _require_human, optional_bearer
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.routes.workflow_submissions import ERRORS, IDENTITY_KEYS, READ_RESPONSES, TOKEN_SCHEMA, agent_transport, fail, proof_schema, query_values, raise_error, raise_read_error, sqlite_error_types
-from runtime.workflows.review_receipts import HumanReviewCommand, ReviewReceiptProjection, ArtifactHumanReviewCommand, ArtifactReviewReceiptProjection, parse_human_review, recipient_receipt
+from runtime.workflows.review_receipts import HumanReviewCommand, ReviewReceiptProjection, ArtifactHumanReviewCommand, ArtifactReviewReceiptProjection, RevisionHumanReviewCommand, RevisionReviewReceiptProjection, parse_human_review, recipient_receipt
 from runtime.workflows.templates import WorkflowTemplatePrincipal
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.draft_dispatch import DraftOwnershipError
-from runtime.workflows.review_dispatch import ReviewStageCommand, ArtifactReviewStageCommand, parse_stage
+from runtime.workflows.review_dispatch import ReviewStageCommand, ArtifactReviewStageCommand, RevisionReviewStageCommand, parse_stage
 
 router = APIRouter()
 
@@ -102,6 +102,40 @@ class ArtifactReviewRequestScope(ReviewRequestScope):
     repository_resolution: None
 
 
+class RevisionReviewArtifact(ReviewArtifact):
+    revision: StrictInt = Field(ge=2, le=2)
+
+
+class RevisionReviewRequestScope(ClosedRecord):
+    format: Literal['workflow-review-request@3']
+    org_slug: str = Field(min_length=1, max_length=40, pattern=r'^[a-z0-9-]+$')
+    instance_id: Token
+    revision_operation_id: Token
+    submission_id: Token
+    submission_digest: SHA256
+    revision: StrictInt = Field(ge=2, le=2)
+    round_id: Token
+    request_id: Token
+    role: AbstractRole
+    kind: Literal['agent', 'human']
+    principal: Token
+    team: str | None = Field(max_length=63)
+    assignment_generation: StrictInt = Field(ge=2)
+    template: ActivatedTemplate
+    activation: ReviewActivation
+    authorization: str = Field(min_length=1, max_length=256)
+    binding_snapshot_id: str = Field(min_length=1, max_length=256)
+    context_id: str = Field(min_length=1, max_length=256)
+    output: ReviewOutput | ArtifactReviewOutput
+    outcomes: list[Literal['approved', 'changes_requested']] = Field(min_length=1, max_length=2)
+    purpose: Literal['Independently review the pinned immutable artifact; requests remain unsigned.']
+    allowed_actions: list[Literal['collect-review']] = Field(min_length=1, max_length=1)
+    inputs: list[ReviewInput] = Field(max_length=32)
+
+    artifact: RevisionReviewArtifact
+    repository_resolution: None
+
+
 class ReviewRequestBase(ClosedRecord):
     format: Literal['workflow-review-request-receipt@1']
     request_id: Token
@@ -136,9 +170,32 @@ class SignedArtifactReviewRequest(SignedReviewRequest):
     receipt: ArtifactReviewReceiptProjection
 
 
+class PriorReview(ClosedRecord):
+    request_id: Token
+    request_scope_digest: SHA256
+    submission_id: Token
+    submission_digest: SHA256
+    submission_bytes_base64: str = Field(min_length=4, max_length=1398104)
+    receipt: ReviewReceiptProjection | ArtifactReviewReceiptProjection
+
+
+class PendingRevisionReviewRequest(PendingReviewRequest):
+    format: Literal['workflow-review-request-receipt@3']
+    scope: RevisionReviewRequestScope
+    prior_review: PriorReview
+
+
+class SignedRevisionReviewRequest(SignedReviewRequest):
+    format: Literal['workflow-review-request-receipt@3']
+    scope: RevisionReviewRequestScope
+    receipt: RevisionReviewReceiptProjection
+    prior_review: PriorReview
+
+
 ReviewRequestReceipt = (
     Annotated[PendingReviewRequest | SignedReviewRequest, Field(discriminator='status')]
     | Annotated[PendingArtifactReviewRequest | SignedArtifactReviewRequest, Field(discriminator='status')]
+    | Annotated[PendingRevisionReviewRequest | SignedRevisionReviewRequest, Field(discriminator='status')]
 )
 
 
@@ -152,11 +209,16 @@ class ArtifactHumanReviewReceipt(ClosedRecord):
     receipt: ArtifactReviewReceiptProjection
 
 
-HumanReceipt = HumanReviewReceipt | ArtifactHumanReviewReceipt
+class RevisionHumanReviewReceipt(ClosedRecord):
+    format: Literal['workflow-human-review-receipt@3']
+    receipt: RevisionReviewReceiptProjection
+
+
+HumanReceipt = HumanReviewReceipt | ArtifactHumanReviewReceipt | RevisionHumanReviewReceipt
 
 
 def human_command_schema() -> dict:
-    return {'anyOf': [HumanReviewCommand.model_json_schema(), ArtifactHumanReviewCommand.model_json_schema()]}
+    return {'anyOf': [HumanReviewCommand.model_json_schema(), ArtifactHumanReviewCommand.model_json_schema(), RevisionHumanReviewCommand.model_json_schema()]}
 
 
 class ReviewErrorDetail(ClosedRecord):
@@ -216,7 +278,7 @@ async def sign_human_review(org: OrgDep, request: Request,
     try:
         receipt = await org.workflow_review_receipts.admit_human(principal=principal, command=command)
         projection = recipient_receipt(receipt)
-        return dict(format='workflow-human-review-receipt@2' if projection['format'] == 'workflow-review-receipt@2' else 'workflow-human-review-receipt@1', receipt=projection)
+        return dict(format=projection['format'].replace('workflow-review-receipt', 'workflow-human-review-receipt'), receipt=projection)
     except ERRORS as exc:
         if exc.code == 'workflow_human_review_operation_conflict':
             fail(exc.code, 409)
@@ -281,7 +343,11 @@ class ArtifactReviewStageAck(ReviewStageAck):
     format: Literal['workflow-review-stage-ack@2']
 
 
-StageAck = ReviewStageAck | ArtifactReviewStageAck
+class RevisionReviewStageAck(ReviewStageAck):
+    format: Literal['workflow-review-stage-ack@3']
+
+
+StageAck = ReviewStageAck | ArtifactReviewStageAck | RevisionReviewStageAck
 
 
 class ReviewStageErrorDetail(ClosedRecord):
@@ -313,7 +379,7 @@ STAGE_RESPONSES[422]['description'] = 'Closed query, bounded strict JSON, findin
 
 
 def stage_command_schema() -> dict:
-    return {'anyOf': [ReviewStageCommand.model_json_schema(), ArtifactReviewStageCommand.model_json_schema()]}
+    return {'anyOf': [ReviewStageCommand.model_json_schema(), ArtifactReviewStageCommand.model_json_schema(), RevisionReviewStageCommand.model_json_schema()]}
 
 
 def decode_stage_command(raw: bytes) -> dict:

@@ -378,7 +378,7 @@ def _review_stage_payload(path: str) -> dict:
 
 def cmd_workflow_review_stage(args: argparse.Namespace) -> None:
     from pydantic import ValidationError
-    from runtime.daemon.routes.workflow_reviews import ReviewStageAck, ArtifactReviewStageAck
+    from runtime.daemon.routes.workflow_reviews import ReviewStageAck, ArtifactReviewStageAck, RevisionReviewStageAck
     body = _review_stage_payload(args.from_file)
     slug = resolve_org_slug(args_org=args.org, available=[])
     try:
@@ -395,7 +395,8 @@ def cmd_workflow_review_stage(args: argparse.Namespace) -> None:
     if response.status_code != 200:
         _print_error(response)
     try:
-        model = ArtifactReviewStageAck if body['format'] == 'workflow-review-stage-command@2' else ReviewStageAck
+        model = {'workflow-review-stage-command@1': ReviewStageAck, 'workflow-review-stage-command@2': ArtifactReviewStageAck,
+                 'workflow-review-stage-command@3': RevisionReviewStageAck}[body['format']]
         result = model.model_validate(response.json()).model_dump()
         # A well-formed unrelated acknowledgement is still not this command.
         from runtime.workflows.draft_dispatch import canonical_bytes, digest
@@ -411,9 +412,85 @@ def cmd_workflow_review_stage(args: argparse.Namespace) -> None:
               f"stage_event_id={result['stage_event_id']}")
 
 
+
+def cmd_workflow_revision(args: argparse.Namespace) -> None:
+    from urllib.parse import quote
+    from fastapi import HTTPException
+    from pydantic import ValidationError
+    from runtime.daemon.routes.workflow_revisions import decode_revision_command
+    from runtime.workflows.revisions import DocumentRevisionReceipt
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    action = args.revision_command
+    body = None
+    if action in ('start', 'stage'):
+        try:
+            absolute = Path(args.from_file)
+            if not absolute.is_absolute():
+                raise ValueError('absolute path required')
+            with absolute.open('rb') as source:
+                body = decode_revision_command(source.read(2097153), author=action == 'stage')
+            if action == 'stage' and body['revision_operation_id'] != args.revision_operation_id:
+                raise ValueError('path/body mismatch')
+        except (OSError, ValueError, HTTPException) as exc:
+            print('error: revision requires an absolute --from-file path containing a closed pinned command', file=sys.stderr)
+            raise SystemExit(2) from exc
+    base = f'/api/v1/orgs/{slug}/workflows'
+    params = {'session_id': args.session_id} if getattr(args, 'session_id', None) else {'proof_kind': 'owner-human'}
+    try:
+        if action == 'stage' or (action == 'show' and getattr(args, 'session_id', None)):
+            path = port_file()
+            if not path.exists():
+                raise DaemonNotRunning('daemon not running')
+            client = httpx.Client(base_url=f'http://127.0.0.1:{path.read_text().strip()}',
+                headers={'X-HappyRanch-Surface': 'cli'}, timeout=30.0)
+        else:
+            client = _founder_client()
+        with client:
+            if action == 'start':
+                response = client.post(base + '/instances/' + quote(body['instance_id'], safe='') + '/revisions', json=body)
+            elif action == 'stage':
+                response = client.post(base + '/revisions/' + quote(args.revision_operation_id, safe='') + '/submissions', params=params, json=body)
+            else:
+                response = client.get(base + '/revisions/' + quote(args.revision_operation_id, safe=''), params=params)
+    except (httpx.HTTPError, OSError, DaemonNotRunning) as exc:
+        print('error: revision transport unavailable; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code not in (200, 201):
+        _print_error(response)
+    try:
+        result = DocumentRevisionReceipt.model_validate(response.json()).model_dump()
+        if action == 'start' and result['core']['instance_id'] != body['instance_id']:
+            raise ValueError('receipt subject')
+        if action != 'start' and result['core']['revision_operation_id'] != args.revision_operation_id:
+            raise ValueError('receipt operation')
+    except (ValueError, ValidationError) as exc:
+        print('error: invalid revision receipt; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"{result['core']['revision_operation_id']}: {result['current']['state']} author_task={result['core']['author_task_id']} replayed={str(result['replayed']).lower()}")
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    revisions = workflow_sub.add_parser('revisions', help='Explicit owner return, safe receipt and new-author r2 staging')
+    revision_sub = revisions.add_subparsers(dest='revision_command', required=True)
+    for action in ('start', 'show', 'stage'):
+        command = revision_sub.add_parser(action)
+        command.add_argument('--org', required=True)
+        command.add_argument('--json', action='store_true')
+        if action != 'start':
+            command.add_argument('revision_operation_id', type=_workflow_token)
+        if action in ('start', 'stage'):
+            command.add_argument('--from-file', required=True)
+        if action == 'stage':
+            command.add_argument('--session-id', required=True, type=_workflow_token)
+        elif action == 'show':
+            proof = command.add_mutually_exclusive_group(required=True)
+            proof.add_argument('--session-id', type=_workflow_token)
+            proof.add_argument('--proof-kind', choices=['owner-human'])
+        command.set_defaults(func=cmd_workflow_revision)
     reviews = workflow_sub.add_parser('reviews', help='Stage current reviewer findings or sign a human request')
     review_sub = reviews.add_subparsers(dest='review_command', required=True)
     sign = review_sub.add_parser('sign', help='Submit a Founder-bearer human receipt')

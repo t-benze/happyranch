@@ -60,6 +60,14 @@ describe('openapi coverage', () => {
     expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe(false);
   });
 
+  test('I includes owner return and safe receipt, excluding new-author mutation', () => {
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}')).toBe(true);
+    expect(EXCLUDED_PATHS.get('POST /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions'))
+      .toBe('agent-only current-revision-author mutation');
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions')).toBe(false);
+  });
+
   test('prompt-only founder PUT is browser-included', () => {
     expect(INCLUDED_PATHS.has('PUT /api/v1/orgs/{slug}/agents/{agent_name}/system-prompt')).toBe(true);
   });

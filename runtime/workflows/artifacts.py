@@ -183,7 +183,7 @@ def require_document_subject(artifact: ArtifactRevision, scope: dict) -> None:
     if (not isinstance(artifact.subject, DocumentSubject) or artifact.review_key != expected.review_key
             or artifact.subject.content_digest != scope['submission_digest']):
         raise ValueError('artifact_subject_mismatch')
-    if review_family(scope) == 2:
+    if review_family(scope) in (2, 3):
         expected_projection = dict(identity=artifact.identity.model_dump(), submission_id=artifact.submission_id,
             revision=artifact.revision, kind='document', bytes_digest=artifact.subject.content_digest,
             subject=dict(content_digest=artifact.subject.content_digest))
@@ -249,6 +249,11 @@ def document_review_brief(scope: dict, candidate: bytes) -> str:
 
 def context_contract(context: dict) -> dict:
     """Only matched explicit original-author context families are supported."""
+    if context.get('format') == 'workflow-document-revision-context@1':
+        contract = context['contract']
+        if contract['format'] in ('workflow-document-contract@3', 'workflow-artifact-contract@4'):
+            return contract
+        raise ValueError('artifact_context_mismatch')
     if context.get('format') == 'workflow-initial-draft-context@4':
         contract = context['artifact_contract']
         if (contract['format'] != 'workflow-artifact-contract@4'
@@ -265,7 +270,7 @@ def context_contract(context: dict) -> dict:
 
 def review_family(scope: dict) -> int:
     """No unknown scope can inherit a historical proof interpretation."""
-    version = {'workflow-review-request@1': 1, 'workflow-review-request@2': 2}.get(scope.get('format'))
+    version = {'workflow-review-request@1': 1, 'workflow-review-request@2': 2, 'workflow-review-request@3': 3}.get(scope.get('format'))
     if version is None:
         raise ValueError('artifact_scope_family_unknown')
     return version

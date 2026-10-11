@@ -37,9 +37,17 @@ class ArtifactReviewStageCommand(ReviewStageCommand):
     format: Literal['workflow-review-stage-command@2']
 
 
+class RevisionReviewStageCommand(ReviewStageCommand):
+    format: Literal['workflow-review-stage-command@3']
+    expected_revision: StrictInt = Field(ge=2, le=2)
+
+
 def parse_stage(command: dict) -> dict:
     try:
-        model = (ArtifactReviewStageCommand if isinstance(command, dict) and command.get('format') == 'workflow-review-stage-command@2' else ReviewStageCommand)
+        model = ({'workflow-review-stage-command@1': ReviewStageCommand,
+                  'workflow-review-stage-command@2': ArtifactReviewStageCommand,
+                  'workflow-review-stage-command@3': RevisionReviewStageCommand}.get(command.get('format'), ReviewStageCommand)
+                 if isinstance(command, dict) else ReviewStageCommand)
         parsed = model.model_validate(command).model_dump()
         raw = base64.b64decode(parsed['findings_bytes_base64'], validate=True)
         raw.decode('utf8')
@@ -282,7 +290,7 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
         if (callback['task_id'] != bridge['task_id'] or callback['session_id'] != bridge['session_id']
                 or callback['result_id'] != bridge['result_id'] or callback['result_digest'] != accepted['digest']
                 or type(callback['accepted']) is not int or callback['accepted'] != 1
-                or type(callback['observed_revision']) is not int or callback['observed_revision'] != 1
+                or type(callback['observed_revision']) is not int or callback['observed_revision'] != outbox['artifact_revision']
                 or callback['disposition'] != accepted['disposition']
                 or callback['id'] != f"{operation['id']}:callback:{accepted['id']}"):
             raise ValueError(code)
@@ -315,7 +323,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
         def selected(conn: sqlite3.Connection) -> tuple[dict, dict]:
             bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))
             if (len(bridges) != 1 or bridges[0]['assigned_principal'] != agent
-                    or bridges[0]['assignment_generation'] != 1):
+                    or bridges[0]['assignment_generation'] not in (1, 2)):
                 raise DraftOwnershipError('workflow_review_storage_corrupt')
             bridge = bridges[0]
             request, _, source = store._select_request(conn, request_id=bridge['request_id'],
@@ -436,9 +444,8 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
             raise DraftOwnershipError('workflow_review_storage_corrupt')
         outbox = outboxes[0]
         scope = json.loads(request['request_scope_bytes'])
-        row = _record(conn, 'workflow_author_handoffs', scope['handoff_id'])
-        from runtime.infrastructure.workflow_schema import _handoff_record
-        proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
+        from runtime.workflows.revisions import selected_subject
+        row, proof = selected_subject(conn, scope)
         graph = validate_handoff_graph(conn, row, proof)
         if graph is None or request['id'] not in graph['request_ids'] or task_id not in graph['reviewer_task_ids']:
             raise DraftOwnershipError('workflow_review_storage_corrupt')
@@ -448,7 +455,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
             assignment_generation=bridge['assignment_generation'], session_id=bridge['session_id'],
             final_result_id=None if bridge['result_id'] is None else int(bridge['result_id']),
             cancellation_requested=int(operation['state'] == 'cancelled'),
-            is_current=int(request['status'] == 'pending' and scope['revision'] == 1),
+            is_current=int(request['status'] == 'pending' and _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])['is_current']),
             instance_id=bridge['instance_id'], scope=scope, bridge=bridge, operation=operation,
             intent_id=row['intent_id'], activation_id=proof['pins']['activation']['id'],
             activation_revision=1, attempt_sequence=1)
@@ -509,7 +516,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
         if kind == 'callback_recorded' and result is not None:
             _insert(conn, 'workflow_dispatch_callbacks', dict(id=f"{intent['operation_id']}:callback:{result['id']}",
                 outbox_id=intent['id'], task_id=intent['task_id'], session_id=after_bridge['session_id'],
-                result_id=str(result['id']), result_digest=result['digest'], observed_revision=1,
+                result_id=str(result['id']), result_digest=result['digest'], observed_revision=intent['scope']['revision'],
                 accepted=1, disposition=result['disposition'], created_at=now))
         if kind == 'running' and after_outbox['host_execution_id'] is not None:
             _insert(conn, 'workflow_dispatch_effects', dict(id=f"{intent['operation_id']}:host",

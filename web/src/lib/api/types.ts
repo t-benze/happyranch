@@ -1440,19 +1440,19 @@ export interface ArtifactWorkflowReviewRequestScope extends Omit<LegacyWorkflowR
   /** B1 has no repository reader or capability. */
   repository_resolution: null;
 }
-export type WorkflowReviewRequestScope = LegacyWorkflowReviewRequestScope | ArtifactWorkflowReviewRequestScope;
+export type WorkflowReviewRequestScope = LegacyWorkflowReviewRequestScope | ArtifactWorkflowReviewRequestScope | RevisionWorkflowReviewRequestScope;
 export interface ArtifactHumanReviewCommand extends Omit<LegacyHumanReviewCommand, 'format'> {
   format: 'workflow-human-review-command@2';
 }
-export type HumanReviewCommand = LegacyHumanReviewCommand | ArtifactHumanReviewCommand;
+export type HumanReviewCommand = LegacyHumanReviewCommand | ArtifactHumanReviewCommand | RevisionHumanReviewCommand;
 export interface ArtifactReviewReceiptProjection extends Omit<LegacyReviewReceiptProjection, 'format'> {
   format: 'workflow-review-receipt@2';
 }
-export type ReviewReceiptProjection = LegacyReviewReceiptProjection | ArtifactReviewReceiptProjection;
+export type ReviewReceiptProjection = LegacyReviewReceiptProjection | ArtifactReviewReceiptProjection | RevisionReviewReceiptProjection;
 export interface ArtifactHumanReviewReceipt {
   format: 'workflow-human-review-receipt@2'; receipt: ArtifactReviewReceiptProjection;
 }
-export type HumanReviewReceipt = LegacyHumanReviewReceipt | ArtifactHumanReviewReceipt;
+export type HumanReviewReceipt = LegacyHumanReviewReceipt | ArtifactHumanReviewReceipt | RevisionHumanReviewReceipt;
 export interface ArtifactWorkflowReviewRequestBase extends Omit<LegacyWorkflowReviewRequestBase, 'format' | 'scope'> {
   format: 'workflow-review-request-receipt@2'; scope: ArtifactWorkflowReviewRequestScope;
 }
@@ -1460,6 +1460,53 @@ export type ArtifactWorkflowReviewRequestReceipt = ArtifactWorkflowReviewRequest
   { status: 'pending'; signed: false; pending: true; receipt: null } |
   { status: 'approved' | 'changes_requested'; signed: true; pending: false; receipt: ArtifactReviewReceiptProjection }
 );
-export type WorkflowReviewRequestReceipt = LegacyWorkflowReviewRequestReceipt | ArtifactWorkflowReviewRequestReceipt;
+export type WorkflowReviewRequestReceipt = LegacyWorkflowReviewRequestReceipt | ArtifactWorkflowReviewRequestReceipt | RevisionWorkflowReviewRequestReceipt;
 
-export type WorkflowReviewRequestBase = LegacyWorkflowReviewRequestBase | ArtifactWorkflowReviewRequestBase;
+export type WorkflowReviewRequestBase = LegacyWorkflowReviewRequestBase | ArtifactWorkflowReviewRequestBase | RevisionWorkflowReviewRequestBase;
+
+export interface RevisionWorkflowReviewRequestScope extends Omit<ArtifactWorkflowReviewRequestScope,
+  'format' | 'handoff_id' | 'revision' | 'assignment_generation' | 'artifact' | 'output'> {
+  format: 'workflow-review-request@3';
+  revision_operation_id: string;
+  revision: 2;
+  assignment_generation: number;
+  artifact: Omit<WorkflowDocumentArtifact, 'revision'> & { revision: 2 };
+  output: LegacyWorkflowReviewRequestScope['output'] | ArtifactWorkflowReviewRequestScope['output'];
+}
+export interface RevisionHumanReviewCommand extends Omit<LegacyHumanReviewCommand, 'format' | 'expected_revision'> {
+  format: 'workflow-human-review-command@3'; expected_revision: 2;
+}
+export interface RevisionReviewReceiptProjection extends Omit<LegacyReviewReceiptProjection, 'format' | 'assignment_generation'> {
+  format: 'workflow-review-receipt@3'; assignment_generation: number;
+}
+export interface RevisionHumanReviewReceipt {
+  format: 'workflow-human-review-receipt@3'; receipt: RevisionReviewReceiptProjection;
+}
+export interface RevisionWorkflowReviewRequestBase extends Omit<LegacyWorkflowReviewRequestBase, 'format' | 'scope'> {
+  format: 'workflow-review-request-receipt@3'; scope: RevisionWorkflowReviewRequestScope;
+  prior_review: { request_id: string; request_scope_digest: string; submission_id: string; submission_digest: string;
+    submission_bytes_base64: string; receipt: LegacyReviewReceiptProjection | ArtifactReviewReceiptProjection };
+}
+export type RevisionWorkflowReviewRequestReceipt = RevisionWorkflowReviewRequestBase & (
+  { status: 'pending'; signed: false; pending: true; receipt: null } |
+  { status: 'approved' | 'changes_requested'; signed: true; pending: false; receipt: RevisionReviewReceiptProjection }
+);
+export interface DocumentRevisionCommand {
+  format: 'workflow-document-revision-command@1'; operation_key: string; instance_id: string; activation_id: string;
+  expected_revision: 1; predecessor_submission_id: string; predecessor_submission_digest: string; predecessor_round_id: string;
+  authority: LegacyWorkflowActivationReceipt['authority'];
+}
+export type DocumentRevisionProof =
+  { proof_kind: 'owner-human'; session_id?: never } | { session_id: string; proof_kind?: never };
+export interface DocumentRevisionReceipt {
+  format: 'workflow-document-revision-receipt@1'; replayed: boolean;
+  core: { revision_operation_id: string; instance_id: string; activation_id: string; predecessor_submission_id: string;
+    predecessor_round_id: string; expected_revision: 1; target_revision: 2; author_task_id: string; created_at: string };
+  current: { state: 'revision_author_queued' | 'revision_author_running' | 'revision_staged' | 'revision_reviewing' |
+    'revision_complete' | 'revision_failed' | 'revision_cancelled' | 'revision_held'; reason: string | null;
+    reconciliation_required: boolean; eligible: boolean; submission_id: string | null; submission_digest: string | null;
+    graph: { submission_id: string; round_id: string; request_ids: string[]; reviewer_task_ids: string[] } | null;
+    collection: { state: 'collecting' | 'needs_revision' | 'ready_to_join' | 'approved' | 'held'; approved_use: boolean;
+      validity: 'current' | 'held'; reason: string | null; owner_principal: 'human:founder'; required_action: string | null } | null;
+  };
+}

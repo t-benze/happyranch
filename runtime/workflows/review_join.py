@@ -56,7 +56,7 @@ def _event(conn: sqlite3.Connection, row: dict, proof: dict, graph: dict, create
             if len(selected) != 1:
                 raise ValueError('workflow_review_join_storage_corrupt')
             assignments.append(selected[0])
-    return dict(format='workflow-review-join@2' if proof['format'] == 'workflow-author-handoff@2' else 'workflow-review-join@1', event_kind='joined', org_slug=row['org_slug'],
+    return dict(format='workflow-review-join@3' if row['revision'] == 2 else 'workflow-review-join@2' if proof['format'] == 'workflow-author-handoff@2' else 'workflow-review-join@1', event_kind='joined', org_slug=row['org_slug'],
         instance_id=row['instance_id'], round_id=graph['round_id'], submission_id=row['submission_id'],
         revision=row['revision'], submission_digest=row['candidate_digest'],
         operation=dict(principal=SERVICE, operation_key=graph['round_id'], action='approve-planning-input'),
@@ -84,7 +84,9 @@ def validate_collection(conn: sqlite3.Connection, row: dict, proof: dict, graph:
         '(org_slug=? AND principal=? AND operation_key=?) OR effect_id=?',
         (row['org_slug'], SERVICE, graph['round_id'], _id('workflow-event', row['instance_id'], row['revision'], 'joined')))
     if not events:
-        if (replays or instance['status'] != 'reviewing' or round_['state'] not in ('reviewing', 'closed')
+        from runtime.workflows.submissions import history_successor
+        historical = row['revision'] == 1 and history_successor(conn, row['instance_id'])
+        if (replays or (instance['status'] != 'reviewing' and not (historical and instance['status'] == 'complete')) or round_['state'] not in ('reviewing', 'closed')
                 or (round_['state'] == 'closed' and (pending or not objection))):
             raise ValueError(code)
         return 'collecting' if pending else ('needs_revision' if objection else 'ready_to_join')
@@ -112,6 +114,8 @@ def current_collection(store: Any, conn: sqlite3.Connection, row: dict, proof: d
     state = validate_collection(conn, row, proof, graph)
     intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
     reason = None
+    from runtime.workflows.submissions import history_successor
+    historical = row['revision'] == 1 and history_successor(conn, row['instance_id'])
     try:
         store._authority(conn, intent, capture, set(ACTIONS if state in ('approved', 'ready_to_join') else ['collect-review']))
     except WorkflowActivationError as exc:
@@ -124,6 +128,8 @@ def current_collection(store: Any, conn: sqlite3.Connection, row: dict, proof: d
     actions = ACTIONS if state in ('approved', 'ready_to_join') else ['collect-review']
     if not _same_value(captured_authority(capture, actions), dict(proof['admission_authority'], actions=actions)):
         reason = 'authority_not_current'
+    if historical:
+        reason = 'noncurrent_successor'
     return dict(state=state, approved_use=state == 'approved' and reason is None,
                 validity='held' if reason else 'current', reason=reason,
                 owner_principal=_record(conn, 'workflow_instances', row['instance_id'])['owner_principal'],
@@ -134,7 +140,17 @@ def current_collection(store: Any, conn: sqlite3.Connection, row: dict, proof: d
 def collect_in_writer(store: Any, conn: sqlite3.Connection, handoff_id: str, capture: Any) -> dict | None:
     """Consume all configured responses in the caller's existing guarded writer."""
     from runtime.workflows.submissions import validate_handoff_graph
-    row = _record(conn, 'workflow_author_handoffs', handoff_id)
+    rows = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE id=? AND org_slug=?', (handoff_id, store.org.slug))
+    if rows:
+        row = rows[0]
+    else:
+        from runtime.workflows.revisions import review_row
+        operation = _record(conn, 'workflow_document_revision_operations', handoff_id)
+        if operation['org_slug'] != store.org.slug:
+            raise WorkflowActivationError('workflow_document_revision_not_found')
+        row = review_row(conn, operation)
+        if row is None:
+            return None
     intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
     # Selected grant admission precedes decoding private saved storage.
     try:
@@ -147,7 +163,8 @@ def collect_in_writer(store: Any, conn: sqlite3.Connection, handoff_id: str, cap
                 required_action='reconcile_source_or_authority')
         raise
     require_author_handoff_schema(conn, expected_org_slug=store.org.slug)
-    proof = _handoff_record(conn, row, expected_org_slug=store.org.slug)
+    from runtime.workflows.submissions import subject_proof
+    proof = subject_proof(conn, row)
     graph = validate_handoff_graph(conn, row, proof)
     if graph is None:
         return None

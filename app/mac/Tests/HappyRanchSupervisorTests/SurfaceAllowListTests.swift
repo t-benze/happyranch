@@ -75,6 +75,36 @@ struct SurfaceAllowListTests {
     }
 
 
+    @Test("revision author POST denies each one-pass raw and normalized candidate")
+    func deniesRevisionAuthorStage() {
+        let policy = SurfaceAllowList.default
+        let family = "/workflows/revisions/revision-1/submissions"
+        for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha", "/api/v42/orgs/alpha"] {
+            for suffix in ["", "/", "?session_id=sess-1", "/?session_id=sess-1"] {
+                let target = prefix + family + suffix
+                #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target))
+                #expect(!policy.isAllowed(method: "POST", path: target, rawPath: "/tasks"))
+            }
+        }
+        for target in ["/api/v1/orgs/alpha/workflows/revisions/revision-1/%73ubmissions",
+                       "/api/v1/orgs/alpha/workflows%2Frevisions%2Frevision-1%2Fsubmissions",
+                       "/%61pi/v1/%6Frgs/%FF/workflows/revisions/revision-1/submissions%2F"] {
+            #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target))
+            #expect(!policy.isAllowed(method: "POST", path: target, rawPath: "/tasks"))
+        }
+        for target in ["/workflows/revisions/revision-1/%2573ubmissions",
+                       "/workflows/revisions/revision-1/submissions//",
+                       "/workflows/revisions/revision-1/submissions/child",
+                       "/workflows/revisions//submissions",
+                       "/tasks?next=/workflows/revisions/revision-1/submissions"] {
+            #expect(policy.isAllowed(method: "POST", path: target, rawPath: target))
+        }
+        #expect(SurfaceAllowList().isAllowed(method: "POST", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "GET", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "POST", path: "/workflows/instances/instance-1/revisions",
+                                rawPath: "/api/v1/orgs/alpha/workflows/instances/instance-1/revisions"))
+    }
+
     // MARK: - Default policy exists
 
     @Test("default policy is non-empty")
@@ -433,6 +463,7 @@ struct SurfaceAllowListTests {
     /// The authoritative set of excluded routes from web/src/test/openapi-coverage.test.ts
     /// EXCLUDED_PATHS.  Tested with concrete values for template placeholders.
     private static let excludedRoutes: [(method: String, path: String)] = [
+        ("POST", "/workflows/revisions/revision-1/submissions"),
         // Task agent callbacks
         ("POST", "/tasks/TASK-123/completion"),
         ("POST", "/tasks/TASK-123/progress"),
