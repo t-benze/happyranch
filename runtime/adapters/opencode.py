@@ -28,6 +28,7 @@ class OpencodeAdapter:
         workspace: str,
         prompt: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         model_arg: list[str] | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
@@ -46,9 +47,8 @@ class OpencodeAdapter:
                 stdin on the resume form too).
         """
         cmd: list[str] = [cli_path, "run"]
-        if model and model_arg:
-            for elem in model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("opencode", model, model_arg, reasoning_effort)
         if resume_session_id:
             cmd += ["-s", resume_session_id]
         cmd += [

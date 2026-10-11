@@ -139,7 +139,7 @@ def _pid_is_live(pid: int) -> bool:
 
 
 def _agent_projection(agent, *, status: str) -> dict[str, object]:
-    return {
+    projection = {
         "allow_rules": list(agent.allow_rules),
         "description_digest": _digest((agent.description or "").encode("utf-8")),
         "executor": agent.executor,
@@ -151,6 +151,9 @@ def _agent_projection(agent, *, status: str) -> dict[str, object]:
         "system_prompt_digest": _digest(agent.system_prompt.encode("utf-8")),
         "team": agent.team,
     }
+    if agent.reasoning_effort is not None:
+        projection["reasoning_effort"] = agent.reasoning_effort
+    return projection
 
 
 class WorkflowAuthorityCoordinator:

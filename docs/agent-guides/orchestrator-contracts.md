@@ -259,12 +259,16 @@ no retry, scan, or historical reclamation.
 
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.
 
-Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `model`, and `system_prompt`. There is no `session_timeout_seconds` field.
+Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `model`, optional `reasoning_effort`, and `system_prompt`. There is no `session_timeout_seconds` field.
 
 **THR-095 single-source-of-truth:** `executor`, `repos`, and `model` are read
 exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 ``agent.yaml`` is no longer read or written by any org-agent path. See
 `docs/agent-guides/runtime-and-configuration.md#agent-configuration-single-source-of-truth-thr-095`.
+
+Selected effort follows model into existing task normal/followup/resume/recovery, thread fresh/resume/fallback, dream, wake and schedule executor calls/spec builders. `session_start` (including recovery) and `dream_started` JSON add `reasoning_effort` only when set. Thread invocations retain their existing model column and associate optional selection through `thread_reasoning_selection` audit JSON; wakes/schedules use `work_hour_reasoning_selection` / `schedule_reasoning_selection`. These record configured selection, not provider-reported actual reasoning; token usage model reporting is unchanged. No SQL field or lifecycle state is added.
+
+Workflow authority `_agent_projection` appends `reasoning_effort` only when set. Absent-field canonical bytes/digests match the prior projection; clear returns to that shape. Set values participate in canonical snapshot digest/publication/admission at the same existing writer intervals. Retained journal snapshots are immutable and never rewritten. Current profile requirement and activation readers address named agent fields and accept the optional field; digest/retained readers authenticate whole bytes. Older readers may ignore a set effort and older whole-definition writers may drop it: absent equality is not all-old-reader compatibility. Use a compatible writer and clear/reconcile before an intentional rollback. Snapshot schema remains 1; there is no migration/capsule framework. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md).
 
 `runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`, `load_terminated_agent`, `list_terminated`, `is_terminated`, and `is_name_unavailable`. Routes and orchestrator code should read through this module against the per-org root.
 

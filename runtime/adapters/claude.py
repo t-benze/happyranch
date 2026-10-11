@@ -28,6 +28,7 @@ class ClaudeAdapter:
         permission_mode: str,
         allowed_tools: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         model_arg: list[str] | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
@@ -45,9 +46,8 @@ class ClaudeAdapter:
             resume_session_id: Agent CLI session id for ``--resume``.
         """
         cmd: list[str] = [cli_path]
-        if model and model_arg:
-            for elem in model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("claude", model, model_arg, reasoning_effort)
         cmd += [
             "-p",
             "--permission-mode",

@@ -51,6 +51,8 @@ interface DirtyState {
   executor?: string;
   /** Per-agent model string; empty string = unset/default (matches CLI clear semantics). */
   model?: string;
+  reasoningEffort?: string;
+  selectionExecutor?: string;
   /** Repos as a whole-dict replace: the current (possibly edited) map. */
   repos?: Record<string, string>;
   /** Names of repos removed since last save. */
@@ -133,10 +135,13 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     setRepoAddUrl('');
   }, [agentName]);
 
-  const isDirty = dirty.executor !== undefined || dirty.model !== undefined || dirty.repos !== undefined;
+  const isDirty = dirty.executor !== undefined || dirty.model !== undefined || dirty.reasoningEffort !== undefined || dirty.repos !== undefined;
 
   const displayExecutor = dirty.executor ?? agent?.executor ?? '—';
   const displayModel = dirty.model !== undefined ? dirty.model : (agent?.model ?? '');
+  const displayEffort = dirty.reasoningEffort ?? agent?.reasoning_effort ?? '';
+  const effortValues = [...executorOptions.selectable, ...executorOptions.unavailable]
+    .find((option) => option.name === displayExecutor)?.reasoningEffortValues ?? [];
   const displayRepos = dirty.repos ?? repos;
 
   // Is the agent's current executor (or the dirty value) available as a
@@ -167,17 +172,20 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       setDirty((prev) => {
         const next = { ...prev };
         delete next.executor;
+        delete next.model;
+        delete next.reasoningEffort;
+        delete next.selectionExecutor;
         return next;
       });
     } else {
-      setDirty((prev) => ({ ...prev, executor: val }));
+      setDirty((prev) => ({ ...prev, executor: val, model: '', reasoningEffort: '', selectionExecutor: val }));
     }
     setSaveError(null);
   }, [currentExecutorName, liveSelectableNames]);
 
   const onModelChange = useCallback((val: string) => {
     const trimmed = val.trim();
-    const currentAgentModel = agent?.model ?? '';
+    const currentAgentModel = dirty.executor ? '' : (agent?.model ?? '');
     if (trimmed === (currentAgentModel || '')) {
       setDirty((prev) => {
         const next = { ...prev };
@@ -185,10 +193,10 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
         return next;
       });
     } else {
-      setDirty((prev) => ({ ...prev, model: trimmed }));
+      setDirty((prev) => ({ ...prev, model: trimmed, selectionExecutor: prev.selectionExecutor ?? displayExecutor }));
     }
     setSaveError(null);
-  }, [agent?.model]);
+  }, [agent?.model, dirty.executor, displayExecutor]);
 
   const onRepoRemove = useCallback((key: string) => {
     setDirty((prev) => {
@@ -227,6 +235,9 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
     if (dirty.executor && dirty.executor !== agent?.executor) {
       if (!liveSelectableNames.has(dirty.executor)) {
         errors.push({ kind: 'executorUnavailable', name: dirty.executor });
+        setSaving(false);
+        setSaveError(errors);
+        return;
       } else {
         try {
           await setExecutor.mutateAsync({
@@ -243,19 +254,19 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
       }
     }
 
-    // Save model if dirty
-    if (dirty.model !== undefined) {
-      const targetModel = dirty.model || null;
-      const currentModel = agent?.model ?? null;
-      if (targetModel !== currentModel) {
-        try {
-          await setModel.mutateAsync({
-            agentName,
-            body: { model: targetModel },
-          });
-        } catch (err: unknown) {
-          errors.push({ kind: 'model', view: classifyAgentError(err, 'agents.error.saveFailed') });
-        }
+    // Save model and effort together against the CLI displayed by this draft.
+    if (dirty.model !== undefined || dirty.reasoningEffort !== undefined) {
+      try {
+        await setModel.mutateAsync({
+          agentName,
+          body: {
+            ...(dirty.model !== undefined ? { model: dirty.model || null } : {}),
+            ...(dirty.reasoningEffort !== undefined ? { reasoning_effort: dirty.reasoningEffort || null } : {}),
+            expected_executor: dirty.selectionExecutor ?? dirty.executor ?? agent?.executor ?? '',
+          },
+        });
+      } catch (err: unknown) {
+        errors.push({ kind: 'model', view: classifyAgentError(err, 'agents.error.saveFailed') });
       }
     }
 
@@ -489,12 +500,33 @@ export function AgentDetailPane({ agentName, onClose, onStartThread }: AgentDeta
             type="text"
             value={displayModel}
             onChange={(e) => onModelChange(e.target.value)}
-            placeholder={agent?.executor ? t('agents.detail.modelDefault', { executor: agent.executor }) : t('agents.detail.modelUnset')}
+            placeholder={displayExecutor !== '—' ? t('agents.detail.modelDefault', { executor: displayExecutor }) : t('agents.detail.modelUnset')}
             className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-accent-soft"
             aria-label={t('agents.detail.model')}
           />
           <p className="text-text-muted mt-2 text-xs">
             {t('agents.detail.modelHelp')}
+          </p>
+        </section>
+
+        <section className="bg-surface border-border-default shadow-pasture-sm rounded-lg border p-4">
+          <label htmlFor="agent-reasoning-effort" className="text-overline text-text-muted mb-3 block tracking-wider uppercase">
+            {t('agents.detail.reasoningEffort')}
+          </label>
+          <select id="agent-reasoning-effort" value={displayEffort}
+            disabled={saving || effortValues.length === 0}
+            onChange={(event) => {
+              setDirty((prev) => ({ ...prev, reasoningEffort: event.target.value, selectionExecutor: prev.selectionExecutor ?? displayExecutor }));
+              setSaveError(null);
+            }}
+            className="border-border-subtle bg-surface w-full max-w-xs rounded-md border px-3 py-1.5 text-sm">
+            <option value="">{t('agents.detail.effortDefault')}</option>
+            {displayEffort && !effortValues.includes(displayEffort) && <option value={displayEffort}>{displayEffort}</option>}
+            {effortValues.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <p className="text-text-muted mt-2 text-xs">
+            {t(effortValues.length ? 'agents.detail.effortHelp' : 'agents.detail.effortUnsupported')}
+            {dirty.selectionExecutor && dirty.selectionExecutor !== displayExecutor && <span role="alert">{t('agents.error.effortExecutorChanged')}</span>}
           </p>
         </section>
 

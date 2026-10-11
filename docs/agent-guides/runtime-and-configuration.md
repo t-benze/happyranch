@@ -685,6 +685,7 @@ are now read and written **exclusively** through ``AgentDef``:
 | ``executor`` | ``AgentDef.executor`` | ``_resolve_executor_name``, ``thread_runner``, ``dream_runner``, ``wake_runner`` |
 | ``repos`` | ``AgentDef.repos`` | ``list_agents``, ``init_agents`` clone loop |
 | ``model`` | ``AgentDef.model`` | ``_resolve_model_name``, ``_resolve_agent_model`` |
+| ``reasoning_effort`` | ``AgentDef.reasoning_effort`` | task/thread/dream/wake/schedule launch selection |
 | ``allow_rules`` | ``AgentDef.allow_rules`` | (already .md-only before THR-095) |
 
 The workspace ``agent.yaml`` file is **no longer read or written** by any
@@ -697,6 +698,12 @@ Retired assistant workspaces remain inert; startup never repairs or consumes the
 
 See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
 `docs/agent-guides/agent-executors-and-permissions.md` (executor surface).
+
+### Optional reasoning effort
+
+`reasoning_effort` is optional frontmatter beside `model`, never a second YAML store. Omitted updates preserve it; explicit `null` clears it. A real CLI change clears omitted model/effort; an explicit new pair is validated together. Unrelated whole-definition writes preserve the field. The residual YAML importer preserves it for the same CLI, clears it on a CLI change, and refuses incompatible model/effort before replacing canonical content.
+
+Allowed values come from the static built-in catalog or approved custom input-v2 declaration, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
 
 ## Session Timeout Resolution
 

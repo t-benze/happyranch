@@ -833,6 +833,8 @@ class Orchestrator:
         workspace = self._paths.workspaces_dir / agent_name
         provider = self._resolve_executor_name(agent_name)
         model_name = self._resolve_model_name(agent_name)
+        effort_def = prompt_loader.load_agent(self._paths, agent_name)
+        reasoning_effort = effort_def.reasoning_effort if effort_def is not None else None
         executor = self._build_executor(provider)
 
         # ── D7B: CustomAdapterExecutor invocation context ──────────────
@@ -1217,7 +1219,7 @@ class Orchestrator:
                 session_id=session_id,
                 invocation_purpose=invocation_purpose,
                 executor=provider,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
             )
             if not recovery:
                 self._db.update_task(task_id, assigned_agent=agent_name)
@@ -1238,7 +1240,8 @@ class Orchestrator:
                 self._db.insert_audit_log_uncommitted(
                     task_id, agent_name, "session_start",
                     {"workspace": str(workspace), "session_id": session_id,
-                     "invocation_purpose": purpose, "executor": provider, "model": model_name},
+                     "invocation_purpose": purpose, "executor": provider, "model": model_name,
+                     **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {})},
                 )
                 if memory_digest and memory_render is not None and memory_render.digest_ids:
                     self._db.insert_audit_log_uncommitted(
@@ -1311,7 +1314,7 @@ class Orchestrator:
                     )
                 return executor.build_launch_spec(
                     workspace=workspace, prompt=full_prompt, session_id=session_id,
-                    model=model_name, org_slug=self._slug, timeout_seconds=timeout_seconds,
+                    model=model_name, reasoning_effort=reasoning_effort, org_slug=self._slug, timeout_seconds=timeout_seconds,
                     resume_session_id=resume_session_id,
                 )
 
@@ -1369,7 +1372,7 @@ class Orchestrator:
                 agent_name=agent_name,
                 workspace=workspace,
                 provider=provider,
-                model_name=model_name,
+                model_name=model_name, reasoning_effort=reasoning_effort,
                 executor=executor,
                 session_id=session_id,
                 full_prompt=full_prompt,
@@ -1414,7 +1417,7 @@ class Orchestrator:
 
     def _launch_agent_with_scratch(
         self, *, task_id: str, agent_name: str, workspace: Path, provider: str,
-        model_name: str | None, executor, session_id: str, full_prompt: str,
+        model_name: str | None, reasoning_effort: str | None, executor, session_id: str, full_prompt: str,
         timeout_seconds: int, on_started: Callable[[int], None],
         on_throttle_event, pre_launch_integrity_validator: Callable[[], None],
         recovery_launch_validator: Callable[[], None],
@@ -1433,7 +1436,7 @@ class Orchestrator:
                 agent_name=agent_name,
                 workspace=workspace,
                 provider=provider,
-                model_name=model_name,
+                model_name=model_name, reasoning_effort=reasoning_effort,
                 executor=executor,
                 session_id=session_id,
                 full_prompt=full_prompt,
@@ -1470,7 +1473,7 @@ class Orchestrator:
                     timeout_seconds=timeout_seconds,
                     on_started=on_started,
                     on_throttle_event=on_throttle_event,
-                    model=model_name,
+                    model=model_name, reasoning_effort=reasoning_effort,
                     pre_launch_validator=pre_launch_integrity_validator,
                     org_slug=self._slug,
                     resume_session_id=resume_session_id,
@@ -1508,6 +1511,7 @@ class Orchestrator:
         workspace: Path,
         provider: str,
         model_name: str | None,
+        reasoning_effort: str | None,
         executor,
         session_id: str,
         full_prompt: str,
@@ -1620,7 +1624,7 @@ class Orchestrator:
                 workspace=workspace,
                 prompt=full_prompt,
                 session_id=session_id,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 org_slug=self._slug,
                 timeout_seconds=timeout_seconds,
                 resume_session_id=resume_session_id,
@@ -1683,7 +1687,7 @@ class Orchestrator:
                 timeout_seconds=timeout_seconds,
                 on_started=on_started if not contained else None,
                 on_throttle_event=on_throttle_event,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 pre_launch_validator=(
                     pre_launch_integrity_validator if not contained else None
                 ),

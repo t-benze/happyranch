@@ -159,7 +159,7 @@ When `model` is **unset** (the default for all existing agents), the executor la
 ``agent.yaml`` is no longer read or written for model resolution. The
 ``happyranch set-model`` command writes exclusively to the ``.md`` frontmatter.
 
-Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
+Custom profiles preserve legacy input-v1 `model:null` by default. An ordinary adapter update can explicitly declare input-v2 model/effort forwarding; this declaration participates in existing exact-artifact approval. See the optional-input contract below.
 
 Missing values default to `claude`. All executors share `runtime/skills/bundled/`.
 
@@ -273,7 +273,7 @@ route through ``CustomAdapterExecutor`` instead — see
 [Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.
 
 **Custom-adapter result contract (THR-107).** Every registered custom adapter
-receives one v1 ``AdapterInput`` JSON object on stdin and MUST return one valid
+receives one ``AdapterInput`` JSON object (v1 by default, v2 only with explicit `input_options`) on stdin and MUST return one valid
 v1 ``AdapterOutput`` JSON object on stdout. This contract is mandatory; there
 is no optional sentinel envelope or legacy profile fallback. Before launch the
 daemon requires founder approval and an exact profile bind, verifies the
@@ -310,12 +310,16 @@ earned receipt remains dormant: no runner reads it in PR 2, built-ins and
 registered kimi/codebuddy ordinary behavior are unchanged, and custom profiles
 still receive fresh/full SQLite-canonical thread prompts.
 
+**Optional reasoning effort (THR298).** The static catalog is shared by the factory, adapters, compatibility fallback argv and UI metadata. Claude uses `--effort`, Codex a literal `-c model_reasoning_effort="<level>"`, Pi `--thinking`, and OpenCode `-m provider/model#variant`. Unset adds no override, including when the saved model already contains a suffix. Equal explicit/embedded variants work; conflicts refuse; OpenCode explicit effort without `provider/model` refuses. The independent OpenCode 2.0.12 `--dir`/transport mismatch remains outside this change. Exact stub argv proves transport, not native provider behavior.
+
+Custom `input_options` declares strict `version:2`, optional literal `model_arg_template`, and paired `effort_arg_template` / finite `reasoning_effort_values`. Normal registration/conformance/store/profile resolution/runtime all use that exact declaration. Templates are argv elements with one matching `{model}` or `{effort}` placeholder, never shell expressions. Input-v2 sends the actual selected model (or null) and effort object (or null); v1 still sends `model:null` and no effort member, even with a configured model. Input-v2 must acknowledge integer `adapter_metadata.input_contract_version:2`; output stays v1 with the existing identity/version/session/hash/retry checks. Legacy adapters need no reapproval. Opt-in is a normal reviewed adapter update, not a capability inspector. The [current spec](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) gives the exact declaration and wire shape.
+
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
 ``GET /api/v1/runtime/adapters/contract-reference`` — accessible during
 registration through the existing scoped registration-token posture on loopback
 (adapter-purpose ``hrreg_`` token, read-only, token is not consumed). The
-endpoint returns JSON Schemas generated from the shipping Pydantic models
+endpoint returns legacy input/output schemas plus `input_v2_schema` and `input_options_schema` generated from the shipping Pydantic models
 (``runtime/orchestrator/adapter_contract.py``) — the **server-derived schema is
 canonical**. Candidates implementing adapter wrappers must fetch this reference
 first and follow the returned schemas exactly.

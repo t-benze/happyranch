@@ -202,6 +202,9 @@ async def run_schedule(
 
     # Issue #568: forward AgentDef.model to executor.run for schedule invocations.
     model_name: str | None = agent_def.model
+    reasoning_effort = agent_def.reasoning_effort
+    if reasoning_effort is not None:
+        org_state.db.insert_audit_log(schedule_id, record.agent_name, "schedule_reasoning_selection", {"executor": agent_def.executor, "model": model_name, "reasoning_effort": reasoning_effort})
 
     workspace = org_state.root / "workspaces" / record.agent_name
     try:
@@ -337,7 +340,7 @@ async def run_schedule(
                 workspace=workspace,
                 prompt=prompt,
                 session_id=None,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 org_slug=org_state.slug,
                 timeout_seconds=settings.session_timeout_seconds,
             )
@@ -374,7 +377,7 @@ async def run_schedule(
             timeout_seconds=settings.session_timeout_seconds,
             pre_launch_validator=_pre_launch_validator if not contained else None,
             org_slug=org_state.slug,
-            model=model_name,
+            model=model_name, reasoning_effort=reasoning_effort,
             running=running if contained else None,
             throttle_backoff_seconds=() if not contained else None,
         )

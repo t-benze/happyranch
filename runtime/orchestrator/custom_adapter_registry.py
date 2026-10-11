@@ -582,6 +582,7 @@ def build_probe_input(
     invocation_id: str | None = None,
     prompt: str | None = None,
     invocation_kind: str = "task",
+    input_options: dict | None = None,
 ) -> AdapterInput:
     """Build a minimal, deterministic ``AdapterInput`` for the conformance probe.
 
@@ -599,7 +600,7 @@ def build_probe_input(
         TimeoutInfo,
     )
 
-    return AdapterInput(
+    legacy = AdapterInput(
         contract_version=1,
         invocation=InvocationInfo(
             invocation_id=invocation_id or "probe-sess-00000000-0000-0000-0000-000000000000",
@@ -639,6 +640,10 @@ def build_probe_input(
         ),
         session=session,
     )
+
+    from runtime.orchestrator.adapter_contract import opt_in_adapter_input
+    values = (input_options or {}).get("reasoning_effort_values", [])
+    return opt_in_adapter_input(legacy, input_options, "probe-model" if input_options else None, values[0] if values else None)
 
 
 def run_conformance_probe(
@@ -858,6 +863,9 @@ def run_conformance_probe(
                 f"{raw_cv} for {executable!r}; only version 1 is supported in D3"
             )
 
+    if probe_input.contract_version == 2 and (not isinstance(raw_meta, dict) or type(raw_meta.get("input_contract_version")) is not int or raw_meta.get("input_contract_version") != 2):
+        raise ValueError("Input-v2 adapter must acknowledge input_contract_version=2 in adapter_metadata")
+
     # Validate against AdapterOutput schema
     try:
         output = AdapterOutput.model_validate(output_dict)
@@ -915,6 +923,7 @@ def run_resume_conformance_probe(
     adapter_name: str,
     *,
     deadline_seconds: int = 120,
+    input_options: dict | None = None,
 ) -> AdapterOutput:
     """Earn thread resume via fresh, genuine-resume, and missing-id probes.
 
@@ -935,7 +944,7 @@ def run_resume_conformance_probe(
     with tempfile.TemporaryDirectory(prefix="thread-resume-", dir=root) as td:
         workspace = Path(td)
         fresh_input = build_probe_input(
-            adapter_name, workspace=workspace, session=None,
+            adapter_name, input_options=input_options, workspace=workspace, session=None,
             deadline_seconds=per_stage_deadline, prompt_canary=canary_a,
             invocation_id=f"probe-sess-{uuid.uuid4()}", invocation_kind="thread",
         )
@@ -958,7 +967,7 @@ def run_resume_conformance_probe(
             f"{canary_b}"
         )
         resume_input = build_probe_input(
-            adapter_name, workspace=workspace,
+            adapter_name, input_options=input_options, workspace=workspace,
             session=SessionInfo(resume_session_id=fresh.agent_session_id),
             deadline_seconds=per_stage_deadline, prompt=resume_prompt,
             invocation_id=f"probe-sess-{uuid.uuid4()}", invocation_kind="thread",
@@ -976,7 +985,7 @@ def run_resume_conformance_probe(
 
         missing_id = f"hr-probe-missing-{uuid.uuid4()}"
         missing_input = build_probe_input(
-            adapter_name, workspace=workspace,
+            adapter_name, input_options=input_options, workspace=workspace,
             session=SessionInfo(resume_session_id=missing_id),
             deadline_seconds=per_stage_deadline, prompt_canary=canary_c,
             invocation_id=f"probe-sess-{uuid.uuid4()}", invocation_kind="thread",
@@ -1063,6 +1072,7 @@ def register_custom_adapter(
     dependency_manifest_version: int | None = None,
     dependencies: list[dict] | None = None,
     verify_thread_resume: bool = False,
+    input_options: dict | None = None,
     profile_coordinator=None,
 ) -> AdapterEntry:
     """Register a custom adapter executable.
@@ -1150,6 +1160,10 @@ def register_custom_adapter(
                 f"remains retryable."
             )
 
+    if input_options is not None:
+        from runtime.orchestrator.adapter_contract import AdapterInputOptions
+        input_options = AdapterInputOptions.model_validate(input_options).model_dump(mode="json")
+
     # Step 1–4: Validate inputs (no side effects)
     executable_path = validate_executable_path(executable)
     version = validate_version(version)
@@ -1202,13 +1216,13 @@ def register_custom_adapter(
     # Step 7: Conformance probe (spawns subprocess — no durable residue on failure)
     if verify_thread_resume:
         conformance_output = run_resume_conformance_probe(
-            str(executable_path), adapter_id,
+            str(executable_path), adapter_id, input_options=input_options,
         )
         persisted_capabilities = [*capabilities, "thread_resume"]
         thread_resume_verified_at = datetime.now(timezone.utc).isoformat()
         thread_resume_contract_version = conformance_output.adapter_metadata.contract_version
     else:
-        conformance_output = run_conformance_probe(str(executable_path), adapter_id)
+        conformance_output = run_conformance_probe(str(executable_path), adapter_id, probe_input=build_probe_input(adapter_id, input_options=input_options))
         persisted_capabilities = capabilities
         thread_resume_verified_at = None
         thread_resume_contract_version = None
@@ -1299,6 +1313,7 @@ def register_custom_adapter(
                 version=version,
                 capabilities=persisted_capabilities,
                 contract_version=1,
+                input_options=input_options,
                 workspace_adapter=workspace_adapter,
                 status="pending",  # ALWAYS pending
                 registered_at=now,
@@ -1320,6 +1335,7 @@ def register_custom_adapter(
                 and existing.executable_hash == file_hash
                 and existing.version == version
                 and existing.capabilities == persisted_capabilities
+                and existing.input_options == input_options
                 and existing.workspace_adapter == workspace_adapter
                 and existing.dependency_manifest_version == dep_manifest_version
                 and existing.dependencies == normalized_deps
@@ -1332,6 +1348,7 @@ def register_custom_adapter(
                     version=entry.version,
                     capabilities=entry.capabilities,
                     contract_version=entry.contract_version,
+                    input_options=entry.input_options,
                     workspace_adapter=entry.workspace_adapter,
                     status="pending",
                     registered_at=existing.registered_at,
@@ -1535,6 +1552,7 @@ def approve_adapter(
     thread_resume_verified_at: str | None = None,
     thread_resume_contract_version: int | None = None,
     selected_profile_names: tuple[str, ...] | None = None,
+    input_options: dict | None = None,
 ) -> AdapterEntry:
     """Approve a pending custom adapter (D4 founder-gated approval gate).
 
@@ -1642,6 +1660,7 @@ def approve_adapter(
                     entry.version == version and
                     entry.capabilities == capabilities and
                     entry.contract_version == contract_version and
+                    entry.input_options == input_options and
                     entry.workspace_adapter == workspace_adapter and
                     entry.dependency_manifest_version == dependency_manifest_version and
                     _entry_deps == _req_deps and
@@ -1690,6 +1709,8 @@ def approve_adapter(
                 f"store has {entry.capabilities!r}, "
                 f"approval request has {capabilities!r}"
             )
+        if entry.input_options != input_options:
+            raise ValueError("input_options mismatch: approve the exact inspected declaration")
         if entry.contract_version != contract_version:
             raise ValueError(
                 f"contract_version mismatch for {adapter_id!r}: "
@@ -1735,6 +1756,7 @@ def approve_adapter(
             version=entry.version,
             capabilities=entry.capabilities,
             contract_version=entry.contract_version,
+            input_options=entry.input_options,
             workspace_adapter=entry.workspace_adapter,
             status="approved",
             registered_at=entry.registered_at,
@@ -1778,6 +1800,7 @@ def approve_adapter(
                     version=entry.version,
                     capabilities=entry.capabilities,
                     contract_version=entry.contract_version,
+                    input_options=entry.input_options,
                     workspace_adapter=entry.workspace_adapter,
                     status="pending",
                     registered_at=entry.registered_at,

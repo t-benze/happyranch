@@ -171,6 +171,11 @@ def _migrate_agent_yaml_to_frontmatter(
                 results[agent_name] = "unchanged (consumed)"
                 continue
 
+            # Preserve optional selection on unrelated import; clear on CLI change.
+            effort = None if executor_changed else agent_def.reasoning_effort
+            from runtime.orchestrator.executor_registry import validate_reasoning_selection
+            validate_reasoning_selection(yaml_executor, yaml_model, effort)
+
             # Build the reconciled AgentDef
             updated = AgentDef(
                 name=agent_def.name,
@@ -184,6 +189,7 @@ def _migrate_agent_yaml_to_frontmatter(
                 enrolled_at=agent_def.enrolled_at,
                 system_prompt=agent_def.system_prompt,
                 description=agent_def.description,
+                reasoning_effort=effort,
                 model=yaml_model,  # None when agent.yaml had no model key
             )
 

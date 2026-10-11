@@ -165,6 +165,9 @@ async def run_wake(
 
     # Issue #568: forward AgentDef.model to executor.run for wake invocations.
     model_name: str | None = agent_def.model
+    reasoning_effort = agent_def.reasoning_effort
+    if reasoning_effort is not None:
+        org_state.db.insert_audit_log(work_hour_id, record.agent_name, "work_hour_reasoning_selection", {"executor": agent_def.executor, "model": model_name, "reasoning_effort": reasoning_effort})
 
     parsed = parse_routines(agent_def.system_prompt)
     workspace = org_state.root / "workspaces" / record.agent_name
@@ -293,7 +296,7 @@ async def run_wake(
             timeout_seconds=settings.session_timeout_seconds,
             pre_launch_validator=_pre_launch_validator,
             org_slug=org_state.slug,
-            model=model_name,
+            model=model_name, reasoning_effort=reasoning_effort,
         ))
     else:
         # ── THR-207 supervised wiring: the wake session runs through the
@@ -322,7 +325,7 @@ async def run_wake(
                 workspace=workspace,
                 prompt=prompt,
                 session_id=session_id,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 org_slug=org_state.slug,
                 timeout_seconds=settings.session_timeout_seconds,
             )
@@ -353,7 +356,7 @@ async def run_wake(
                 timeout_seconds=settings.session_timeout_seconds,
                 pre_launch_validator=_pre_launch_validator if not contained else None,
                 org_slug=org_state.slug,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 running=running if contained else None,
                 throttle_backoff_seconds=() if not contained else None,
             )

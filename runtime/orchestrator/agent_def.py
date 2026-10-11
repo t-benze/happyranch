@@ -41,6 +41,7 @@ class AgentDef:
     system_prompt: str
     description: str | None = None
     model: str | None = None
+    reasoning_effort: str | None = None
 
 
 def _parse_iso(ts: object) -> datetime | None:
@@ -150,6 +151,10 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
         if not isinstance(model, str) or not model.strip():
             raise AgentParseError("model must be a non-empty string or null")
 
+    reasoning_effort = fm.get("reasoning_effort")
+    if reasoning_effort is not None and (not isinstance(reasoning_effort, str) or not reasoning_effort.strip()):
+        raise AgentParseError("reasoning_effort must be a non-empty string or null")
+
     return AgentDef(
         name=name,
         team=team,
@@ -163,6 +168,7 @@ def parse_agent_text(text: str, *, expected_name: str) -> AgentDef:
         system_prompt=body if body.endswith("\n") else body + "\n",
         description=description,
         model=model,
+        reasoning_effort=reasoning_effort,
     )
 
 
@@ -185,6 +191,8 @@ def render_agent_text(agent: AgentDef) -> str:
         ),
         "model": agent.model,
     }
+    if agent.reasoning_effort is not None:
+        fm["reasoning_effort"] = agent.reasoning_effort
     fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
     body = agent.system_prompt if agent.system_prompt.endswith("\n") else agent.system_prompt + "\n"
     return f"---\n{fm_text}\n---\n\n{body}"
