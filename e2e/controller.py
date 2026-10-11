@@ -38,6 +38,7 @@ class Controller:
         self.token = ""
         self.secrets: set[str] = set()
         self.provider_commands: list[dict] = []
+        self.provider_attempts: list[dict] = []
         self.observer: list[dict] = []
         self.observer_error: str | None = None
         self.observer_stop = threading.Event()
@@ -91,12 +92,15 @@ class Controller:
         connection, stream = self.holds[start["session"]]
         instruction = dict(action=action, deadline=min(self.deadline, getattr(self, "case_deadline", self.deadline)), **arguments)
         offset = len(self.relay.records)
+        attempt = dict(provider=dict(start), instruction=instruction, entered=time.monotonic(), wire_begin=offset)
+        self.provider_attempts.append(attempt)
         connection.settimeout(self.remaining(10))
         stream.write((json.dumps(instruction) + "\n").encode())
         stream.flush()
         receipt = json.loads(stream.readline(262144))
         receipt["wire"] = list(self.relay.records[offset:])
         self.provider_commands.append(receipt)  # Preserve failed commands before assertions.
+        attempt.update(finished=time.monotonic(), command_index=len(self.provider_commands) - 1)
         require(receipt["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
                 and receipt["source_sha"] == self.revision and receipt["python"] == self.python,
                 "provider-owned CLI identity/source/interpreter", receipt)
@@ -505,7 +509,15 @@ class Controller:
     def evidence(self) -> None:
         rows = dict(variants=self.results, starts=self.starts, commands=self.commands,
                     http=self.http, durable=self.durable, relay=self.relay.records if self.relay else [],
-                    provider_commands=self.provider_commands, provider_observer=self.observer, observer_error=self.observer_error)
+                    provider_commands=self.provider_commands, provider_attempts=self.provider_attempts,
+                    provider_observer=self.observer, observer_error=self.observer_error)
+        witness = self.root / "witness/identities.jsonl"
+        if witness.exists():
+            # Keep genuine partial-run source witnesses even when no final case
+            # or final closure record could be completed. Do not export headers.
+            data = witness.read_bytes()
+            rows["launch_witnesses"] = [json.loads(line) for line in data.split(b"\n")[:-1]]
+            rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
         raw = self.sanitize(json.dumps(rows, indent=2))
         (self.root / "raw" / "observations.json").write_text(raw)
         (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases))))

@@ -431,8 +431,9 @@ Evidence/control authoring records (all four answers; production seam NO):
 
 Consumers are `Controller.mark/durable/evidence` → observations.json and
 scenario.json → run.py result.json/sanitized export → existing five seven-day
-artifacts → aggregate.main/validate_e04. Partial records are appended before
-success marks and exported by the existing finally path. Cancellation uses the
+artifacts → aggregate.main/validate_e04. Partial records and CLI attempts are appended before
+success marks; partial CLI timeout streams and current executable witnesses
+are exported by the existing finally path, even without a final case record. Cancellation uses the
 preserved exit-only provider and independent diagnostic shape; it does not
 require an E04 case or its content validator. The outer Owned mechanics and
 all old/current units remain unchanged; recorded job peers join its existing

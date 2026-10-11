@@ -54,9 +54,12 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
     try:
         child_start = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
         out, err = process.communicate(timeout=remaining)
-    except BaseException:
-        # The unchanged outer owner census retains this CLI child on failure.
-        raise
+    except subprocess.TimeoutExpired as exc:
+        # Preserve partial streams; the existing containment/outer owner retains
+        # the live child. A timeout never becomes exit0 or a successful case.
+        out, err = exc.stdout or "", exc.stderr or ""
+        out = out.decode(errors="replace") if isinstance(out, bytes) else out
+        err = err.decode(errors="replace") if isinstance(err, bytes) else err
     return dict(action=action, operation=instruction.get("operation"), argv=argv, exit=process.returncode,
                 stdout=out, stderr=err, payload=payload, entered=entered, finished=time.monotonic(),
                 provider=binding, child_pid=process.pid, child_start=child_start,

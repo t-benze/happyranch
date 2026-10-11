@@ -383,6 +383,12 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
     anchor_content(by_name["final-drain-B"], 18, 30, previous)
     final_witness = [d["jobs_final_witnesses"] for d in durable if "jobs_final_witnesses" in d]
     check(len(final_witness) == 1, "actual final witness artifact content")
+    check(observations["launch_witnesses"] == final_witness[0] and observations["witness_incomplete_line"] is False,
+          "complete actual executable witness content")
+    attempts = observations["provider_attempts"]
+    check(len(attempts) == len(commands) and [a["command_index"] for a in attempts] == list(range(len(commands)))
+          and all(a["entered"] <= a["finished"] and a["provider"]["session"] == c["provider"]["session"]
+                  and a["instruction"]["action"] == c["action"] for a, c in zip(attempts, commands)), "all CLI attempts accounted")
     calls = [w for w in final_witness[0] if w["kind"] == "callback"]
     stubs = [w for w in final_witness[0] if w["kind"] == "stub"]
     check(len(calls) == len(observations["commands"]) + len(commands) and len(stubs) == 30
