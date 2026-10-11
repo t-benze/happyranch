@@ -87,7 +87,7 @@ async function api(req,res) {
 }
 class CDP {
   constructor(url){this.ws=new WebSocket(url);this.id=0;this.pending=new Map();this.ready=new Promise((ok,fail)=>{this.ws.onopen=ok;this.ws.onerror=()=>fail(new Error('CDP connection failed'));});this.ws.onmessage=event=>{const message=JSON.parse(event.data);const pending=this.pending.get(message.id);if(pending){this.pending.delete(message.id);message.error?pending.reject(new Error(JSON.stringify(message.error))):pending.resolve(message.result);}};}
-  async send(method,params={},sessionId){await this.ready;const id=++this.id;const result=new Promise((resolve,reject)=>this.pending.set(id,{resolve,reject}));this.ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));return result;}
+  async send(method,params={},sessionId){await this.ready;const id=++this.id;const result=new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error(`CDP timeout: ${method}`));},10000);this.pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}});});this.ws.send(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})}));return result;}
 }
 async function main(){
   if(!existsSync(join(dist,'index.html')))throw new Error('ordinary production dist required');
@@ -95,11 +95,13 @@ async function main(){
   const profile=mkdtempSync('/tmp/pause-ui-');
   const blank=join(dist,'pause-locale-switch.html');if(existsSync(blank))throw new Error('refuse overwrite blank page');writeFileSync(blank,'<!doctype html><title>Isolated locale storage writer</title>');
   const server=await createServer({root:dist,api:[{path:/^\/api\//,handler:api}]});
-  const chrome=spawn(chromeBin,['--headless=new','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-sandbox','--no-first-run','--disable-gpu','--disable-dev-shm-usage','--disable-background-networking','--disable-extensions','about:blank'],{stdio:'ignore'});
+  const chrome=spawn(chromeBin,['--headless=new','--remote-debugging-port=0',`--user-data-dir=${profile}`,'--no-sandbox','--no-first-run','--disable-gpu','--disable-dev-shm-usage','--disable-background-networking','--disable-crash-reporter','--disable-breakpad','--disable-extensions','about:blank'],{stdio:['ignore','ignore','pipe'],env:{...process.env,XDG_CONFIG_HOME:join(profile,'config'),XDG_CACHE_HOME:join(profile,'cache')}});
+  const chromeErrors=[];chrome.stderr.on('data',chunk=>chromeErrors.push(chunk));
   let cdp;
   const check=(name,actual,expected=true)=>{const pass=JSON.stringify(actual)===JSON.stringify(expected);checks.push({name,actual,expected,pass});if(!pass)console.error('FAIL',name,JSON.stringify(actual),'expected',JSON.stringify(expected));};
   try{
     const until=Date.now()+10000;while(!existsSync(join(profile,'DevToolsActivePort'))&&Date.now()<until)await sleep(40);
+    if(!existsSync(join(profile,'DevToolsActivePort')))throw new Error(`Chrome startup failed: code=${chrome.exitCode} signal=${chrome.signalCode}; ${Buffer.concat(chromeErrors).toString()}`);
     const [port,path]=readFileSync(join(profile,'DevToolsActivePort'),'utf8').split('\n');cdp=new CDP(`ws://127.0.0.1:${port}${path.trim()}`);
     const browser=await cdp.send('Browser.getVersion');
     async function evaluate(page,expression){const result=await cdp.send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true},page.sessionId);if(result.exceptionDetails)throw new Error(result.exceptionDetails.exception?.description||result.exceptionDetails.text);return result.result.value;}
@@ -165,11 +167,11 @@ async function main(){
     check('Conflict accessible translated copy',await evaluate(page,`document.querySelector('[data-tasks-responsive-list] [role="alert"]').textContent.includes(${quote(tr('en','tasks.pause.error.conflict'))})`));
     await close(page);
     // Independent finite observation states, plus pagination and child inherited hold.
-    for(const mode of ['loading','empty','error','partial']){
-      scenario=mode;const page=await open('/orgs/pause-org/tasks','zh-CN',390,844,'dark');
+    for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark'])for(const mode of ['loading','empty','error','partial']){
+      scenario=mode;const page=await open('/orgs/pause-org/tasks',locale,width,height,theme);
       const key=mode==='loading'?'tasks.pause.overview.loading':mode==='empty'?'tasks.pause.overview.empty':mode==='error'?'tasks.pause.overview.error':'tasks.pause.overview.partial';
-      await wait(page,`document.body.textContent.includes(${quote(tr('zh-CN',key))})`);check(`overview ${mode} localized`,true);await shot(page,`zh-390-dark-${mode}`,{locale:'zh-CN',width:390,height:844,theme:'dark',state:mode});
-      if(mode==='partial'){await enter(page,button(tr('zh-CN','tasks.pause.overview.next')));await wait(page,"document.body.textContent.includes('SEPARATE-SUCCESSOR')");check('opaque cursor preserved',ledger.some(x=>x.path.endsWith('/pause-overview')&&new URLSearchParams(x.search).get('before')==='opaque:/+cursor='));check('later page is not summed',await evaluate(page,"!document.querySelector('section[aria-label=\"任务暂停概览\"]').textContent.includes('ROOT-PAUSING')"));}
+      await wait(page,`document.body.textContent.includes(${quote(tr(locale,key))})`);check(`overview ${locale} ${width} ${theme} ${mode} localized`,true);await shot(page,`${locale}-${width}-${theme}-${mode}`,{locale,width,height,theme,state:mode});
+      if(mode==='partial'){await enter(page,button(tr(locale,'tasks.pause.overview.next')));await wait(page,"document.body.textContent.includes('SEPARATE-SUCCESSOR')");check('opaque cursor preserved',ledger.some(x=>x.path.endsWith('/pause-overview')&&new URLSearchParams(x.search).get('before')==='opaque:/+cursor='));check('later page is not summed',await evaluate(page,`![...document.querySelectorAll('section')].find(s=>s.getAttribute('aria-label')===${quote(tr(locale,'tasks.pause.overview.title'))}).textContent.includes('ROOT-PAUSING')`));}
       await close(page);
     }
     scenario='populated';const stale=await open('/orgs/pause-org/tasks');await wait(stale,`!!${button(tr('en','tasks.pause.overview.refresh'))} && !(${button(tr('en','tasks.pause.overview.refresh'))}).disabled`);scenario='stale';await enter(stale,button(tr('en','tasks.pause.overview.refresh')));await wait(stale,`document.body.textContent.includes(${quote(tr('en','tasks.pause.overview.stale'))})`);await shot(stale,'en-1440-light-stale',{locale:'en',width:1440,height:900,theme:'light',state:'stale'});await close(stale);
@@ -177,6 +179,7 @@ async function main(){
     const assets=readdirSync(join(dist,'assets')).filter(file=>/\.(js|css)$/.test(file)).map(file=>({file,sha256:digest(readFileSync(join(dist,'assets',file)))}));
     const receipt={boundary:'UI/transport only; synthetic HTTP, not backend enforcement/E2E',head,generated_at:new Date().toISOString(),node:{path:process.execPath,version:process.version},chrome:{path:chromeBin,...browser},dist:{path:dist,index_sha256:digest(readFileSync(join(dist,'index.html'))),assets},checks,screenshots,ledger,failed:checks.filter(c=>!c.pass).length};writeFileSync(join(out,'receipt.json'),JSON.stringify(receipt,null,2)+'\n');
     console.log(`${checks.length} browser assertions; ${screenshots.length} screenshots; ${receipt.failed} failures; UI/transport ONLY`);process.exitCode=receipt.failed?1:0;
-  }finally{for(const response of hung)response.destroy();cdp?.ws.close();if(chrome.exitCode===null)chrome.kill('SIGTERM');await new Promise(resolve=>{if(chrome.exitCode!==null)resolve();else{chrome.once('exit',resolve);setTimeout(()=>chrome.kill('SIGKILL'),1000).unref();}});server.server.closeAllConnections?.();await server.close();rmSync(profile,{recursive:true,force:true});rmSync(blank);}
+  }catch(error){writeFileSync(join(out,'failure.json'),JSON.stringify({head,boundary:'UI/transport only',error:error.stack,checks,screenshots,ledger},null,2)+'\n');throw error;}
+  finally{for(const response of hung)response.destroy();cdp?.ws.close();if(chrome.exitCode===null&&chrome.signalCode===null)chrome.kill('SIGTERM');await new Promise(resolve=>{if(chrome.exitCode!==null||chrome.signalCode!==null)resolve();else{chrome.once('exit',resolve);setTimeout(()=>{chrome.kill('SIGKILL');resolve();},1000).unref();}});writeFileSync(join(out,'chrome-stderr.log'),Buffer.concat(chromeErrors));server.server.closeAllConnections?.();await server.close();rmSync(profile,{recursive:true,force:true});rmSync(blank);}
 }
 main().catch(error=>{console.error(error.stack);process.exitCode=1;});
