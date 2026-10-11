@@ -409,6 +409,8 @@ class WorkflowSubmissionStore:
     def _authority(self, conn: sqlite3.Connection, intent: dict, capture: Any, actions: set[str]) -> tuple[dict, dict, dict]:
         if not intent['is_current'] or intent['cancellation_requested']:
             raise WorkflowActivationError('workflow_author_handoff_source_not_current')
+        if intent['admission_kind'] == 'revision':
+            self.org.workflow_revisions._authority(conn, intent, capture)
         selected = self._selected_authority(conn, intent, capture, actions)
         if not self._current_activation(conn, intent):
             raise WorkflowActivationError('workflow_author_handoff_source_not_current')

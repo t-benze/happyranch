@@ -165,8 +165,10 @@ def validate_author_history(conn: sqlite3.Connection, instance_id: str, records:
     intent = _record(conn, 'workflow_draft_dispatch_intents', successor['draft_intent_id'])
     links = _records(conn, 'SELECT l.* FROM workflow_submission_result_links l JOIN workflow_submissions s ON s.id=l.submission_id WHERE s.instance_id=? AND s.revision=2', (instance_id,))
     if links:
-        result = _source_result(conn, intent)
-        if len(links) != 1 or result is None or links[0]['task_result_id'] != result['id']:
+        subject = dict(submission_id=links[0]['submission_id'], source_task_id=intent['task_id'],
+            source_session_id=intent['session_id'], principal=intent['assigned_principal'])
+        result = _reviewed_source_result(conn, subject, intent)
+        if len(links) != 1 or links[0]['task_result_id'] != result['id']:
             raise ValueError(CODE)
         expected.append(dict(instance_id=instance_id, principal=intent['assigned_principal'], source_task_id=intent['task_id'],
             source_session_id=intent['session_id'], source_result_id=str(result['id']), contribution_kind='author'))
@@ -274,7 +276,7 @@ def validate_revision_record(conn: sqlite3.Connection, row: dict, *, expected_or
                 or row['binding_snapshot_id'] != first['binding_snapshot_id']
                 or row['authorization_revision_id'] != oldproof['pins']['authorization']['id']
                 or row['predecessor_round_id'] != graph['round_id'] or first['is_current'] != 0
-                or first['state'] != 'completed' or _source_result(conn, first) is None
+                or first['state'] != 'completed'
                 or task['brief'] != scope['brief'] or task['assigned_agent'] != scope['assigned_agent']
                 or task['team'] != scope['team'] or task['task_type'] != 'subtask' or task['parent_task_id'] is not None
                 or task['active_chain'] is not None or task['active_fanout'] is not None
@@ -288,6 +290,8 @@ def validate_revision_record(conn: sqlite3.Connection, row: dict, *, expected_or
                 or canonical_bytes(proof['admission_authority']) != canonical_bytes(dict(oldproof['admission_authority'],
                     actions=revision_actions(ctx)))):
             raise ValueError(CODE)
+        from runtime.workflows.submissions import _reviewed_source_result
+        _reviewed_source_result(conn, old, first)
         return proof
     except (ValueError, KeyError, TypeError, UnicodeError) as exc:
         raise ValueError(CODE) from exc
@@ -427,7 +431,7 @@ def validate_revision_storage(conn: sqlite3.Connection, *, expected_org_slug: st
                 raise ValueError(CODE)
             if rounds or conn.execute('SELECT 1 FROM workflow_events WHERE instance_id=? AND revision=2', (row['instance_id'],)).fetchone():
                 raise ValueError(CODE)
-        elif _source_result(conn, intent) is None or validate_handoff_graph(conn, subject, proof) is None:
+        elif validate_handoff_graph(conn, subject, proof) is None:
             raise ValueError(CODE)
     for submission in _records(conn, 'SELECT s.* FROM workflow_submissions s JOIN workflow_submission_operations o ON o.submission_id=s.id WHERE s.revision!=1'):
         if submission['revision'] != 2 or not any(r['instance_id'] == submission['instance_id'] for r in rows):
@@ -448,13 +452,34 @@ class WorkflowRevisionStore:
 
     def _authority(self, conn: sqlite3.Connection, intent: dict, capture: Any) -> dict:
         store = self.org.workflow_submissions
-        context, _, _ = store._selected_authority(conn, intent, capture, set(revision_actions(
-            json.loads(_record(conn, 'workflow_contexts', intent['context_id'])['context_bytes']))))
+        saved_context = json.loads(_record(conn, 'workflow_contexts', intent['context_id'])['context_bytes'])
+        if saved_context.get('format') in ('workflow-initial-draft-context@1', 'workflow-initial-draft-context@2'):
+            raise WorkflowActivationError('workflow_document_revision_source_not_current')
+        context, _, _ = store._selected_authority(conn, intent, capture, set(revision_actions(saved_context)))
         if (not store._current_activation(conn, intent)
                 or capture.ready.generation != intent['authority_generation']
                 or capture.ready.snapshot_digest != intent['authority_digest']
                 or conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled'):
             raise WorkflowActivationError('workflow_activation_authority_stale')
+        from runtime.workflows.review_join import captured_authority
+        if intent['admission_kind'] == 'revision':
+            operation = _records(conn, 'SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=?', (intent['id'],))
+            if len(operation) != 1:
+                raise ValueError(CODE)
+            proof = validate_revision_record(conn, operation[0], expected_org_slug=self.org.slug)
+        else:
+            handoffs = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE intent_id=?', (intent['id'],))
+            if len(handoffs) != 1:
+                raise WorkflowActivationError('workflow_document_revision_source_not_current')
+            proof = _handoff_record(conn, handoffs[0], expected_org_slug=self.org.slug)
+        actions = revision_actions(context)
+        if canonical_bytes(captured_authority(capture, actions)) != canonical_bytes(dict(proof['admission_authority'], actions=actions)):
+            raise WorkflowActivationError('workflow_activation_authority_stale')
+        original = intent if intent['admission_kind'] != 'revision' else _record(conn, 'workflow_draft_dispatch_intents', intent['predecessor_intent_id'])
+        if _source_result(conn, original) is None:
+            raise WorkflowActivationError('workflow_author_handoff_source_not_current')
+        if intent['admission_kind'] == 'revision' and intent['state'] == 'completed' and _source_result(conn, intent) is None:
+            raise WorkflowActivationError('workflow_author_handoff_source_not_current')
         return context
 
     async def start(self, *, principal: WorkflowTemplatePrincipal, command: object) -> dict:
@@ -477,8 +502,8 @@ class WorkflowRevisionStore:
                     instance = self._owner(principal, conn, command['instance_id'])
                     first = _record(conn, 'workflow_draft_dispatch_intents', first[0]['id'])
                     store._read_grant(conn, first, {'return-to-author'}, principal)
-                    context = self._authority(conn, first, capture)
                     require_document_revision_schema(conn, expected_org_slug=self.org.slug)
+                    context = self._authority(conn, first, capture)
                     raw = canonical_bytes(command)
                     existing = _records(conn, 'SELECT * FROM workflow_document_revision_operations WHERE org_slug=? AND principal=? AND operation_key=?',
                         (self.org.slug, principal.operation_principal, command['operation_key']))
