@@ -727,6 +727,14 @@ class WorkflowSubmissionStore:
         async with self._lock:
             async with self.org.db_lock:
                 with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
+                    # Locks may have awaited after discovery. Recheck native
+                    # identity/scope/grant before writer readiness can refuse.
+                    with self.db._lock:
+                        if owner is not None:
+                            self.org.workflow_activations._principal(owner)
+                        if session_id is not None:
+                            self._session(session_id)
+                        self._select_handoff(self.db._conn, **selection)
                     with self.org.workflow_authority.admission_writer(capture) as conn:
                         if owner is not None:
                             self.org.workflow_activations._principal(owner)
@@ -758,6 +766,10 @@ class WorkflowSubmissionStore:
         async with self._lock:
             async with self.org.db_lock:
                 with self.org.sessions.binding_lease(*task_agent) if task_agent is not None else nullcontext():
+                    with self.db._lock:
+                        if session_id is not None:
+                            self._session(session_id)
+                        self._select_request(self.db._conn, **selection)
                     with self.org.workflow_authority.admission_writer(capture) as conn:
                         if session_id is not None:
                             self._session(session_id)
