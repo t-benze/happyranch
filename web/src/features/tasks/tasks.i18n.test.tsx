@@ -173,6 +173,13 @@ async function countRequests(fn: () => Promise<void>): Promise<string[]> {
 }
 
 beforeEach(() => {
+  server.use(
+    // Independent overview fixture; these tests retain their original list/attention contract.
+    http.get('/api/v1/orgs/:slug/tasks/pause-overview', ({ params }) => HttpResponse.json({
+      org_slug: params.slug, observed_at: '2026-10-11T00:00:00Z', evidence_complete: true,
+      counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [],
+    })),
+  );
   sessionStorage.setItem('happyranch.token', 'tok');
   localStorage.clear();
   stubBase();
@@ -180,6 +187,25 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+test.each(['en', 'zh-CN'] as const)('Cancel returns keyboard focus to its original action after locale switches (%s)', async (locale) => {
+  const user = userEvent.setup();
+  mount(`/orgs/${SLUG}/tasks/TASK-77`, locale);
+  const trigger = await screen.findByRole('button', { name: locale === 'en' ? 'Cancel' : '取消' });
+  trigger.focus();
+  await user.keyboard('{Enter}');
+  const dialog = await screen.findByRole('dialog');
+  const field = within(dialog).getByRole('textbox');
+  await user.type(field, 'Preserved draft 中文');
+  await switchLocale(locale === 'en' ? 'zh-CN' : 'en');
+  await switchLocale(locale);
+  expect(within(dialog).getByRole('textbox')).toBe(field);
+  expect(field).toHaveValue('Preserved draft 中文');
+  expect(field).toHaveFocus();
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  await waitFor(() => expect(trigger).toHaveFocus());
 });
 
 describe('Tasks list i18n', () => {

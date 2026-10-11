@@ -132,6 +132,14 @@ const ROOT_FIXTURES: TaskRecord[] = [
 ] as TaskRecord[];
 
 export const mockTasksApi: TasksApi = {
+  // Prototype actions are explicitly unavailable; fixtures never claim enforcement.
+  usePauseTask: () => ({ isPending: false, mutateAsync: async () => { throw { code: 'pause_control_unavailable' }; } }),
+  useResumeTask: () => ({ isPending: false, mutateAsync: async () => { throw { code: 'pause_control_unavailable' }; } }),
+  useTaskPauseOverview: () => ({
+    ...ok({ org_slug: 'prototype', observed_at: '2026-10-11T00:00:00Z', evidence_complete: false,
+      counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [] }),
+    isFetching: false, refetch: async () => undefined,
+  }),
   useTasksList: () => ok({ tasks: FIXTURES }),
   useTasksInfiniteList: () =>
     staticInfinite({ tasks: FIXTURES, next_cursor: null }),

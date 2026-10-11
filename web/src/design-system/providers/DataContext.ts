@@ -57,6 +57,8 @@ import type {
   KBEntry,
   TaskEvent,
   TaskRecord,
+  TaskPauseOverview,
+  TaskPauseControlResponse,
   TaskRecallNode,
 } from '@/lib/api/types';
 
@@ -183,7 +185,15 @@ export interface TaskTailSSECallbacks {
   onError?: (error: unknown) => void;
 }
 
+export interface TaskPauseOverviewQuery extends QueryLike<TaskPauseOverview> {
+  isFetching: boolean;
+  refetch: () => Promise<unknown>;
+}
+
 export interface TasksApi {
+  useTaskPauseOverview: (params?: { before?: string }) => TaskPauseOverviewQuery;
+  usePauseTask: (taskId: string) => MutationLike<{ expected_generation: number }, TaskPauseControlResponse>;
+  useResumeTask: (taskId: string) => MutationLike<{ expected_generation: number }, TaskPauseControlResponse>;
   useTasksList: (params?: {
     status?: string;
     limit?: number;

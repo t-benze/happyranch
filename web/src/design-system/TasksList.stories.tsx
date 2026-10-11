@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { useNavigate } from 'react-router-dom';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import type { Meta, StoryObj } from '@storybook/react';
@@ -6,11 +7,13 @@ import { PrototypeProvider } from './providers/PrototypeProvider';
 import { DataContext, useData, type TasksApi } from './providers/DataContext';
 import { mockTasksApi } from './providers/_mock-tasks';
 import { AppBar } from './layouts/AppShell/AppBar';
+import type { TaskPauseProjection } from '@/lib/api/types';
 import { TasksPage } from '@/features/tasks/TasksPage';
 
-type State = 'populated' | 'loading' | 'empty' | 'error' | 'long' | 'no-escalated';
+type State = 'populated' | 'loading' | 'empty' | 'error' | 'long' | 'no-escalated' | 'pause-pausing' | 'pause-paused' | 'pause-unavailable';
 function Fixture({ state, children }: { state: State; children: ReactNode }) {
   const data = useData();
+  const org = useOrgSlugOptional();
   const navigate = useNavigate();
   useEffect(() => { navigate('/orgs/demo-org/tasks', { replace: true }); }, [navigate]);
   const attempts = useRef(0);
@@ -21,6 +24,16 @@ function Fixture({ state, children }: { state: State; children: ReactNode }) {
       queryFn: async () => {
         if (state === 'error' && attempts.current++ === 0) throw new Error('Synthetic story error');
         const base = mockTasksApi.useTasksRootsInfinite(params).data!.pages[0];
+        if (state.startsWith('pause-')) {
+          const paused = state === 'pause-paused';
+          const pause: TaskPauseProjection = { org_slug: org ?? 'prototype', root_task_id: 'TASK-PAUSE-ROOT', lifecycle_status: 'in_progress',
+            held: true, effective_hold: true, generation: 3, control_state: paused ? 'paused' : 'pausing',
+            paused_at: '2026-10-11T00:00:00Z', resumed_at: null, observed_at: '2026-10-11T00:00:00Z',
+            evidence_complete: paused, blockers: paused ? [] : [{ kind: 'unknown', task_id: 'TASK-PAUSE-ROOT', job_id: 'JOB-PAUSE', owner_kind: 'host', reason: 'tree_evidence_unavailable', observed_at: '2026-10-11T00:00:00Z' }] };
+          return { tasks: params?.status ? [] : [{ ...base.tasks[0], task_id: pause.root_task_id,
+            status: 'in_progress' as const, severity_rollup: 'in_progress', block_kind: 'delegated' as const,
+            pause: state === 'pause-unavailable' ? undefined : pause }], next_cursor: null };
+        }
         if (state === 'no-escalated') {
           return { tasks: base.tasks.filter((task) => task.status !== 'escalated'), next_cursor: null };
         }
@@ -65,3 +78,8 @@ export const LongContent: Story = { parameters: { taskState: 'long' } };
 
 /** No escalated roots: no 'Waiting on you' group, heading or empty card. */
 export const NoEscalated: Story = { parameters: { taskState: 'no-escalated' } };
+
+/** UI fixtures only: prototype control submissions refuse as unavailable, never simulate enforcement. */
+export const PausingRoot: Story = { parameters: { taskState: 'pause-pausing' } };
+export const PausedRoot: Story = { parameters: { taskState: 'pause-paused' } };
+export const PauseProjectionUnavailable: Story = { parameters: { taskState: 'pause-unavailable' } };
