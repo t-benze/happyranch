@@ -334,7 +334,7 @@ class Browser:
         with self.response(path) as detail, self.response(path + "/recall") as recall:
             self.page.reload(timeout=c.remaining(4)*1000)
         main = self.page.get_by_role("main")
-        expect(main.get_by_text(status, exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
+        expect(main.locator("h1").get_by_text(status, exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
         cancel = main.get_by_role("button", name="Cancel", exact=True)
         if status == "cancelled":
             expect(cancel).to_be_disabled(timeout=c.remaining(4)*1000)
