@@ -70,6 +70,8 @@ class BuiltinAdapterDescriptor:
     readiness_marker_fragment: str
     model_arg: tuple[str, ...] | None
     adapter_cls: type
+    reasoning_effort_values: tuple[str, ...] = ()
+    effort_arg: tuple[str, ...] | None = None
 
     @property
     def workspace_adapter_id(self) -> str:
@@ -99,6 +101,8 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         readiness_marker_fragment=".claude/skills/start-task/SKILL.md",
         model_arg=("--model", "{model}"),
         adapter_cls=ClaudeAdapter,
+        reasoning_effort_values=('low', 'medium', 'high', 'xhigh', 'max'),
+        effort_arg=('--effort', '{effort}'),
     ),
     BuiltinAdapterDescriptor(
         name="codex",
@@ -107,6 +111,8 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         readiness_marker_fragment="AGENTS.md",
         model_arg=("-m", "{model}"),
         adapter_cls=CodexAdapter,
+        reasoning_effort_values=('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'),
+        effort_arg=('-c', 'model_reasoning_effort="{effort}"'),
     ),
     BuiltinAdapterDescriptor(
         name="opencode",
@@ -115,6 +121,8 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         readiness_marker_fragment="AGENTS.md",
         model_arg=("-m", "{model}"),
         adapter_cls=OpencodeAdapter,
+        reasoning_effort_values=('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'),
+        effort_arg=None,
     ),
     BuiltinAdapterDescriptor(
         name="pi",
@@ -123,6 +131,8 @@ _BUILTIN_CATALOG: tuple[BuiltinAdapterDescriptor, ...] = (
         readiness_marker_fragment="AGENTS.md",
         model_arg=("--model", "{model}"),
         adapter_cls=PiAdapter,
+        reasoning_effort_values=('off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'),
+        effort_arg=('--thinking', '{effort}'),
     ),
 )
 
@@ -181,3 +191,31 @@ __all__ = [
     "get_builtin_catalog",
     "get_first_party_adapter",
 ]
+
+
+def model_effort_args(
+    cli: str, model: str | None, model_arg: list[str] | None,
+    reasoning_effort: str | None = None,
+) -> list[str]:
+    """Literal argv only; unset preserves the existing model transport exactly."""
+    descriptor = next(d for d in _BUILTIN_CATALOG if d.name == cli)
+    if reasoning_effort is not None:
+        if not isinstance(reasoning_effort, str) or reasoning_effort not in descriptor.reasoning_effort_values:
+            raise ValueError(f"Unsupported reasoning_effort for {cli}: {reasoning_effort!r}")
+        if cli == "opencode":
+            if not model or not model_arg:
+                raise ValueError("OpenCode reasoning_effort requires a pinned provider/model")
+            base, sep, variant = model.partition("#")
+            if not base or "/" not in base or base.startswith("/") or base.endswith("/"):
+                raise ValueError("OpenCode reasoning_effort requires provider/model")
+            if sep and variant != reasoning_effort:
+                raise ValueError("OpenCode model variant conflicts with reasoning_effort")
+            model = f"{base}#{reasoning_effort}"
+        elif cli == "pi" and model:
+            _, sep, suffix = model.rpartition(":")
+            if sep and suffix in descriptor.reasoning_effort_values and suffix != reasoning_effort:
+                raise ValueError("Pi model thinking suffix conflicts with reasoning_effort")
+    args = [part.replace("{model}", model) for part in (model_arg or [])] if model else []
+    if reasoning_effort is not None and descriptor.effort_arg:
+        args.extend(part.replace("{effort}", reasoning_effort) for part in descriptor.effort_arg)
+    return args

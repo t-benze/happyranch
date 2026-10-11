@@ -16,10 +16,15 @@
  *    unknown code render verbatim; an empty code / non-string detail falls back
  *    to localized copy — never the synthetic `API <status>` message.
  */
-import { act, fireEvent, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { Route, Routes } from 'react-router-dom';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'vitest';
+import { QueryClient } from '@tanstack/react-query';
+import { AppProvider } from '@/design-system/providers/AppProvider';
+import { I18nProvider } from '@/hooks/i18n';
+import { translate } from '@/lib/i18n';
 import { AppRoutes } from '@/routes';
 import { EligibilityEditorDialog } from '@/shared/work-hours/EligibilityEditorDialog';
 import { LocaleTestSwitch, renderWithProviders, savedLocaleAdapter } from '@/test/render';
@@ -616,5 +621,78 @@ describe('Work Hours dialogs keep draft and focus across locale switches', () =>
     const dialog = await screen.findByRole('dialog', { name: '编辑资格' });
     expect(within(dialog).getByText('名册中没有智能体。')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: '取消' })).toBeInTheDocument();
+  });
+});
+
+describe('C10 human-team schedule draft and query recovery', () => {
+  // Radix's normal pointer path uses browser methods absent from jsdom.
+  // Restore each descriptor; geometry/pointer capture remain browser-only.
+  const methods = ['hasPointerCapture', 'setPointerCapture', 'releasePointerCapture', 'scrollIntoView'] as const;
+  const originals = methods.map(name => Object.getOwnPropertyDescriptor(HTMLElement.prototype, name));
+  beforeAll(() => methods.forEach(name => Object.defineProperty(HTMLElement.prototype, name, {
+    configurable: true, value: name === 'hasPointerCapture' ? () => false : () => undefined,
+  })));
+  afterAll(() => methods.forEach((name, i) => {
+    if (originals[i]) Object.defineProperty(HTMLElement.prototype, name, originals[i]!);
+    else Reflect.deleteProperty(HTMLElement.prototype, name);
+  }));
+  test.each(['en', 'zh-CN'] as const)('%s preserves team selection and exact tier draft through locale and team Retry', async (locale) => {
+    stub({ agents: [{ ...agent('consultant_head', 'Advice.'), team: 'default' }, { ...agent('consultant_codex', 'Advice.'), team: 'default' }] });
+    let failed = false;
+    const writes: unknown[] = [];
+    const snapshot = settingsBody(wh({ teams: {} }));
+    server.use(
+      http.get(`/api/v1/orgs/${SLUG}/dashboard/summary`, () => HttpResponse.json({})),
+      http.get(`/api/v1/orgs/${SLUG}/teams`, () => failed ? HttpResponse.json({}, { status: 503 })
+        : HttpResponse.json({ teams: [
+          { name: 'default', manager: null, manager_kind: 'human', human_manager: 'founder', is_default: true,
+            workers: ['consultant_head', 'consultant_codex'] },
+          { name: 'eng', manager: 'lead', workers: [] },
+        ] })),
+      http.put(`/api/v1/orgs/${SLUG}/settings/org`, async ({ request }) => {
+        writes.push(await request.json());
+        return HttpResponse.json(snapshot);
+      }),
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
+    render(<MemoryRouter initialEntries={[`/orgs/${SLUG}/work-hours`]}>
+      <I18nProvider adapter={savedLocaleAdapter(locale)}><AppProvider client={client}><AppRoutes />{SWITCHES}</AppProvider></I18nProvider>
+    </MemoryRouter>);
+    await screen.findByRole('link', { name: 'consultant_codex' });
+    const user = userEvent.setup();
+    await user.click(screen.getByText(translate(locale, 'workHours.editTeamPlaceholder')).closest('button')!);
+    await user.click(await screen.findByRole('option', { name: `default · ${translate(locale, 'agents.team.founderManaged')}` }));
+    const dialog = await screen.findByRole('dialog');
+    const interval = within(dialog).getByPlaceholderText('2h');
+    fireEvent.change(interval, { target: { value: '4h' } });
+    interval.focus(); (interval as HTMLInputElement).setSelectionRange(0, 2);
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const next = locale === 'en' ? 'zh-CN' : 'en';
+    const requests = await countRequests(async () => { await switchLocale(next); });
+    expect(requests).toEqual([]);
+    expect(within(screen.getByRole('dialog')).getByPlaceholderText('2h')).toBe(interval);
+    expect(interval).toHaveValue('4h'); expect(interval).toHaveFocus();
+    expect((interval as HTMLInputElement).selectionStart).toBe(0);
+    expect((interval as HTMLInputElement).selectionEnd).toBe(2);
+    failed = true;
+    await act(async () => { await client.invalidateQueries({ queryKey: ['teams', SLUG], exact: true }); });
+    // The dialog hides the background roster from accessibility navigation.
+    expect(await screen.findByRole('alert', { hidden: true })).toHaveTextContent(translate(next, 'workHours.roster.loadError'));
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(interval).toHaveValue('4h'); expect(interval).toHaveFocus();
+    failed = false;
+    // Retry is behind the modal; use the real query client to refetch the
+    // background transport, then retain normal dialog interaction.
+    await act(async () => { await client.refetchQueries({ queryKey: ['teams', SLUG], exact: true }); });
+    expect(interval).toHaveValue('4h'); expect(interval).toHaveFocus();
+    await waitFor(() => expect(screen.queryByText(translate(next, 'workHours.roster.loadError'))).not.toBeInTheDocument());
+    fireEvent.click(within(dialog).getByRole('button', { name: translate(next, 'workHours.dialog.reviewImpact') }));
+    expect(within(dialog).getByText(/consultant_head, consultant_codex/)).toBeInTheDocument();
+    expect(writes).toEqual([]);
+    fireEvent.click(within(dialog).getByRole('button', { name: translate(next, 'workHours.dialog.confirmSave') }));
+    await waitFor(() => expect(writes).toEqual([{ working_hours: { teams: { default: {
+      mode: null, interval: '4h', window: { start: null, end: null, timezone: null },
+      days: null, catch_up_on_startup: null,
+    } } } }]));
   });
 });

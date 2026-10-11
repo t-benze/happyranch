@@ -8,6 +8,13 @@
 import type { MessageKey } from '@/lib/i18n';
 
 const TASKS_ERROR_KEYS: Record<string, MessageKey> = {
+  control_generation_conflict: 'tasks.pause.error.conflict',
+  root_task_required: 'tasks.pause.error.rootRequired',
+  task_not_in_progress: 'tasks.pause.error.notInProgress',
+  task_terminal: 'tasks.pause.error.terminal',
+  pause_control_unavailable: 'tasks.pause.error.unavailable',
+  root_paused: 'tasks.pause.error.rootPaused',
+  unknown_task: 'tasks.error.notFound',
   task_not_escalated: 'tasks.error.notEscalated',
   cannot_revisit: 'tasks.error.cannotRevisit',
   invalid_decision: 'tasks.error.invalidDecision',
@@ -26,6 +33,9 @@ export type TaskErrorView = { kind: 'message'; key: MessageKey } | { kind: 'raw'
  *  - otherwise -> the localized `fallback`, so an error is never blank.
  */
 export function classifyTaskError(err: unknown, fallback: MessageKey): TaskErrorView {
+  const status = (err as { status?: number } | null | undefined)?.status;
+  if (status === 401) return { kind: 'message', key: 'tasks.pause.error.unauthorized' };
+  if (status === 403) return { kind: 'message', key: 'tasks.pause.error.forbidden' };
   const code = (err as { code?: string } | null | undefined)?.code;
   if (code) {
     if (Object.prototype.hasOwnProperty.call(TASKS_ERROR_KEYS, code)) {

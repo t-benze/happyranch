@@ -7,7 +7,8 @@ on:
 
 jobs:
   # THR-291 seq40: Python units and their gate are retired.
-  # Fresh product E2E coverage is PENDING, not a passing check.
+  # THR-291 seq69: PR/main automation is lint/static only.
+  # Behavioral sources survive; Product E2E runs in its separate daily workflow.
   source-boundary-lint:
     name: Source Boundary Lint
     runs-on: ubuntu-latest
@@ -25,7 +26,7 @@ jobs:
         run: uv run --no-project --python 3.14 python scripts/validate_source_boundaries.py
 
   web:
-    name: Web (Node 24)
+    name: Web Lint (Node 24)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -47,91 +48,64 @@ jobs:
         run: npm run lint
       - name: Typecheck
         run: npm run typecheck
-      - name: Build
-        run: npm run build
-      - name: Build Storybook
-        run: npm run build-storybook
-      # Bare `vitest` is watch mode and would hang CI; `vitest run` is non-watch.
-      - name: Report Web unit suspension
-        run: echo "SKIPPED - Web units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
-      - name: Test (non-watch)
-        # Retain the unit command; restore only after founder release.
-        if: ${{ false }}
-        run: npx vitest run
-
-  # ── Linux canonical skill store validation (same-owner, unconditional) ──
-  # Runs the production canonical-store boundary against the real Linux
-  # adapter using the existing explicit platform selection.
-  linux-canonical-validation:
-    name: Linux Canonical Store Validation (Ubuntu)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          python-version: "3.14"
-
-      - name: Sync dependencies
-        run: uv sync --frozen --group build
-
-      - name: Managed Linux package shipping seam
-        run: |
-          set -eux
-          package_tmp="$(mktemp -d)"
-          trap 'rm -rf "$package_tmp"' EXIT
-          # Retained unit command: (cd app/linux/tsnet-sidecar && go test ./...)
-          echo "SKIPPED - Go units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
-          (cd app/linux/tsnet-sidecar && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$package_tmp/happyranch-tsnet-sidecar" ./cmd/happyranch-tsnet-sidecar)
-          uv build --wheel --out-dir "$package_tmp"
-          wheel="$(find "$package_tmp" -maxdepth 1 -name 'happyranch-*.whl' -print -quit)"
-          uv run python app/linux/package/build_connector.py --wheel "$wheel" --output "$package_tmp/happyranch-connector"
-          (cd "$package_tmp" && ./happyranch-connector --help)
-          uv run python app/linux/package/build_package.py --sidecar "$package_tmp/happyranch-tsnet-sidecar" --connector "$package_tmp/happyranch-connector" --wheel "$wheel" --version ci --output "$package_tmp/happyranch-linux-amd64.tar"
-          PACKAGE_TMP="$package_tmp" uv run python -c 'from pathlib import Path; from runtime.remote_access.linux_package import install_linux_package; import os; root=Path(os.environ["PACKAGE_TMP"])/"fixture-root"; install_linux_package(Path(os.environ["PACKAGE_TMP"])/"happyranch-linux-amd64.tar", root); print(root)'
-
-      - name: Report Linux canonical unit suspension
-        run: echo "SKIPPED - Linux canonical units SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
-      - name: Run canonical store + validation tests
-        # Retain the seven-file selection; shipping and actual callback stay enabled.
-        if: ${{ false }}
-        env:
-          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
-          HAPPYRANCH_TEST_REAL_PLATFORM: "1"
-        run: |
-          set -eux
-          uv run pytest \
-            tests/test_canonical_skill_store.py \
-            tests/test_canonical_production_bound.py \
-            tests/test_skill_cutover_completeness.py \
-            tests/test_thr070_skill_freshness.py \
-            tests/test_system_contract_materialization.py \
-            tests/test_workspace_adapters.py \
-            tests/test_prelaunch_integrity_validation.py \
-            -v --tb=short
-
-      - name: Run real daemon + executor smoke test
-        env:
-          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci-smoke
-          HAPPYRANCH_TEST_REAL_PLATFORM: "1"
-        run: >-
-          uv run python tests/helpers/integration_parent.py -- pytest -m integration
-          tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback
-          -v --tb=short
 
   managed-n3-real-systemd:
     name: Managed N3 Real systemd (Ubuntu 24.04)
+    # THR228seq402: exactly the ordinary PR800 synchronization from the
+    # published head, attempt 1. Later updates, reopen/main/manual/rerun events
+    # cannot renew this allocation. before/after belong to synchronize payloads.
+    if: >-
+      ${{ github.event_name == 'pull_request' &&
+          github.event.action == 'synchronize' &&
+          github.event.number == 800 &&
+          github.repository == 't-benze/happyranch' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.event.pull_request.head.ref == 'task/TASK-6475' &&
+          github.event.pull_request.base.ref == 'main' &&
+          github.event.before == '5f849b2c14bffca552501f86e30a862b35e41847' &&
+          github.event.after != '' &&
+          github.event.after != github.event.before &&
+          github.event.after == github.event.pull_request.head.sha &&
+          github.run_attempt == '1' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      # Repeat the refusal at the step boundary as well as job selection:
+      # rerunning an old selected job must never reach package build/execution.
+      - name: Validate single-update allocation before any build
+        env:
+          N3_EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYGUARD'
+          import json
+          import os
+          import re
+          from pathlib import Path
+          event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+          pr = event.get("pull_request", {})
+          head = pr.get("head", {})
+          base = pr.get("base", {})
+          after = event.get("after")
+          allowed = (
+              os.environ.get("N3_EVENT_NAME") == "pull_request"
+              and os.environ.get("GITHUB_RUN_ATTEMPT") == "1"
+              and os.environ.get("GITHUB_REPOSITORY") == "t-benze/happyranch"
+              and event.get("action") == "synchronize"
+              and type(event.get("number")) is int and event["number"] == 800
+              and head.get("ref") == "task/TASK-6475"
+              and head.get("repo", {}).get("full_name") == "t-benze/happyranch"
+              and base.get("ref") == "main"
+              and event.get("before") == "5f849b2c14bffca552501f86e30a862b35e41847"
+              and isinstance(after, str) and re.fullmatch(r"[0-9a-f]{40}", after) is not None
+              and after != event["before"] and after == head.get("sha")
+          )
+          if not allowed:
+              raise SystemExit("Managed N3 allocation refused")
+          PYGUARD
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.after }}
       - name: Install uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
@@ -154,12 +128,12 @@ jobs:
       - name: Exercise actual packaged composite against pinned Headscale and peer
         env:
           PACKAGE_TAR: ${{ env.PACKAGE_TMP }}/happyranch-linux-amd64.tar
-          PROOF_SUBJECT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PROOF_SUBJECT_SHA: ${{ github.event.after }}
           N3_DIAGNOSTICS_DIR: ${{ runner.temp }}/managed-n3-evidence
         run: app/linux/package/real_systemd_n3.sh
       - name: Validate successful Managed N3 execution artifact
         if: success()
-        run: python app/linux/package/n3_evidence.py validate "${{ runner.temp }}/managed-n3-evidence/execution-evidence.json" --expected-subject "${{ github.event.pull_request.head.sha || github.sha }}"
+        run: python app/linux/package/n3_evidence.py validate "${{ runner.temp }}/managed-n3-evidence/execution-evidence.json" --expected-subject "${{ github.event.after }}"
       - name: Upload Managed N3 execution evidence and diagnostics
         if: always()
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
@@ -168,53 +142,9 @@ jobs:
           path: ${{ runner.temp }}/managed-n3-evidence
           if-no-files-found: error
 
-  # ── macOS canonical skill store validation (same-owner, unconditional) ──
-  # Executor and daemon share the same OS identity — same-owner is the only
-  # supported delivery mode. No distinct-account provisioning or sudo.
-  # Canonical unit coverage is suspended; checkout/setup are not behavior PASS.
-  macos-canonical-validation:
-    name: macOS Canonical Store Validation (macOS 15)
-    runs-on: macos-15
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
-        with:
-          enable-cache: true
-          python-version: "3.14"
-
-      - name: Sync dependencies
-        run: uv sync --frozen
-
-      - name: Report macOS canonical unit suspension
-        run: echo "SKIPPED - macOS canonical units SUSPENDED under THR-291 / THR-228 seq355; setup is not a behavior PASS."
-      - name: Run canonical store + validation tests
-        # Retain the seven-file selection; restore only after founder release.
-        if: ${{ false }}
-        env:
-          HAPPYRANCH_DAEMON_HOME: /tmp/happyranch-ci
+      - name: Remove owned package scratch
+        if: always()
         run: |
-          set -eux
-          # Run canonical store and validation test suites on real macOS.
-          # These tests verify:
-          # - Canonical store build, hash-addressing, path-traversal rejection
-          # - Symlink materializer create/repair/withdrawal
-          # - Platform identity checks (same-owner: executor == daemon uid)
-          # - Direct executor launch under daemon identity
-          # - Cutover completeness (no legacy copy remains)
-          # - Skill freshness (31 tests)
-          # - Per-launch/retry pre-Popen integrity validation
-          # - Hardening failure compensation (no executor launch)
-          # - Same-owner adversarial limits (detection, not prevention)
-          uv run pytest \
-            tests/test_canonical_skill_store.py \
-            tests/test_canonical_production_bound.py \
-            tests/test_skill_cutover_completeness.py \
-            tests/test_thr070_skill_freshness.py \
-            tests/test_system_contract_materialization.py \
-            tests/test_workspace_adapters.py \
-            tests/test_prelaunch_integrity_validation.py \
-            -v --tb=short
+          if [[ -n "${PACKAGE_TMP:-}" && -d "$PACKAGE_TMP" ]]; then
+            rm -rf -- "$PACKAGE_TMP"
+          fi

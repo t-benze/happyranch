@@ -1,7 +1,10 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+**Optional reasoning effort (THR298 seq15).** AgentDef frontmatter owns `reasoning_effort` beside `model`. Unset adds no CLI effort override and no workflow agent-projection key. Saves validate the selected executor's static catalog/declaration; support is not provider/model/account acceptance. CLI changes clear omitted model/effort, unrelated writes preserve them, explicit null clears. Custom adapters retain input-v1 `model:null` unless an ordinary exact-artifact update declares input-v2. See [current contract](docs/superpowers/specs/2026-10-11-agent-reasoning-effort.md) and the four agent guides. `CLAUDE.md` remains the raw symlink to this canonical file.
+
+**G submission-schema migration (THR139 seq395; retained F/E→G path).**
+The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.
+Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
@@ -30,9 +33,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
@@ -115,8 +118,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   unchanged inert version-1 foundation F from `OrgState.load`, after
   generic `Database` preflight/migrations and before teams, settings,
   membership validation, or orchestrator construction. Deliberate POST /orgs
-  creation proves a fresh skeleton, then initializes complete G (F plus the
-  reviewed E draft extension and exact THR139seq395 submission definitions/additions) in one
+  creation proves a fresh skeleton, then initializes complete H (F plus the
+  reviewed E/G definitions/additions and exact THR139seq445 handoff table) in one
   transaction before attachment. Existing startup/reopen/enable never installs
   E: use `python scripts/migrate_workflow_draft_schema.py --runtime-root <absolute-root> --org <slug> [--check]`
   only with operator authorization. Check exits0 ready, 3 migration-needed,
@@ -133,7 +136,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   histories require the actual org slug), refusing missing, extra, malformed, conflicting, newer, or
   wrong-owner state without repair. The legacy authority hook's release
   reference uses a private temporary generic database, applies this same
-  canonical F, E or G reference after full layout/history/data validation, caches
+  canonical F, E, G or H reference after full layout/history/data validation, caches
   independently by layout, and hashes every non-null sqlite_master SQL object; it never filters
   workflow objects or installs them into a persistent generic/runtime-audit
   store. `WorkflowCutoverStore` now owns the existing seven-state one-way chain
@@ -142,7 +145,7 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   strict action/key/generation input; request/fence commits precede separate
   bounded reconciliation. Every authoritative reread validates the full layout
   and org-bound deterministic event chain; cold load advances only authentic
-  committed requests only on ready E/G before teams/settings mutation. F keeps
+  committed requests only on ready E/G/H before teams/settings mutation. F keeps
   authentic history and actionable script guidance without recovery advancement.
   GET/preflight never advance.
   SQLite integrity/FKs and contradictory pre-enable work block verification;
@@ -193,7 +196,8 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
   CLI `workflows activate --org ... --from-file /absolute/request.json` and
   `workflows activations list/show` use the existing Founder client; parser2,
   domain/transport1, valid receipt including pending0. This adds no DDL or
-  migration, no reassignment/reactivation API, and no U3 submission/approval.
+  migration or reassignment/reactivation API. S2 alone grants no U3 submission/approval;
+  staged U3a(b) ownership is documented separately below.
   Source is not deployment or Phase1/operator acceptance.
 
 - **Task-scratch reclamation contract (THR-195 B1).** `runtime/daemon/task_scratch_reclamation.py` accepts only immutable finalized ledger rows for valid canonical manifested `TASK-*` roots. Its caller-constructible `*Assertions` values are explicitly untrusted shapes, have no permissive defaults, and reject missing, malformed, stale-boot, truncated, ambiguous, unsupported-platform, recovery/job/live-reference, unavailable, or internally inconsistent values; B1 does not establish their provenance or independently validate lifecycle/liveness/current-boot authority, whose producers are deferred to B2/B3. The private `collect_revalidate_seal_consume_disposable` seam retains the typed values from each existing bounded E/C admission, compares liveness/session/process and complete coverage projections (including bucket classification/accounting and dominance) across E1..E4/C1..C3 while excluding collection timestamps, and binds final C3's canonical workspace/root/manifest/census fields to its successfully sealed stack-local row. It refuses malformed/private-identity/boot-mismatched or exhausted bounded observations before execution, and a partial executor failure claims zero while preserving the remainder for a fresh refusal. The sole production caller is the bounded pre-agent `run_step` hook. It is disabled by default through the strict boolean `workspace_cleanup.reclamation_actions_enabled` (default `false`), and disabling affects later admissions only — it cannot revoke an already admitted consumer call. It acts only on a third-or-later cleanup ordinal whose scheduler-created preclaim owner is assigned to a registered in-memory `TeamsRegistry` agent and reconciles to this invocation's initial successful `0 -> 1` claim (the first two runs stay report-only), applies one shared one-second deadline and at most 23 read/load admissions with no refill or recovery, and makes at most five best-effort calls to the unchanged consumer. Each attempt records the owner `workspace_cleanup_reclamation_attempt` audit before the prompt carries the known facts into the ordinary completion summary; the transported remainder is exactly the returned `after` accounting or `null`; scheduler triggering/order remains unchanged. It adds no writer fence or future-writer/same-UID guarantee. Sealing also re-derives the canonical root and applies the 60-second newest-mtime floor. Execution hard-skips Git/worktree/bare-repository ancestor or descendant evidence and cross-device ambiguity, uses fd-relative no-follow pathname removal with verified parent/root identity, exact allocated-byte/inode accounting, and complete protected manifest/lock/parent/directory-entry/sibling postconditions. Detected pre-action identity mismatches fail the row with zero reclaimed claims. Portable POSIX unlink/rmdir is not inode-bound: the threat contract deliberately excludes a hostile same-UID replacement in the final identity-check-to-pathname-syscall window, and does not promise that replacement survives. The separate report-only coordinator remains report-only after teardown and through the existing daily trigger; deployment, legacy-backlog eligibility, and activation beyond the explicitly enabled hook remain absent. Unmanifested `.happyranch/tmp`, `.tmp`, `.task-cache`, `.t`, shared `/tmp`, and pre-contract roots remain ineligible.
@@ -266,16 +270,22 @@ Detailed contracts: `docs/agent-guides/agent-executors-and-permissions.md` § "C
 - The temporary containment roots above are workspace-owned and measurable; they are not cleanup-eligible.
 - Packaged Python source is `runtime` and `cli`; `pyproject.toml` currently builds those packages. Do not treat top-level `src/` as canonical source unless tracked `.py` files and packaging/imports are updated.
 - The daemon is FastAPI in `runtime/daemon/`; the CLI is a thin HTTP client in `cli/`; the SPA is in `web/` and builds to `web/dist/`.
-- **Managed N3 composite readiness (THR-097 seq502).** Connector and tsnet-sidecar remain separate concurrently-started services and each retains `NotifyAccess=main`. The connector's Go MainPID launches the frozen Python child without `NOTIFY_SOCKET`, accepts only canonical generation-bound monotonic child records, and emits READY/WATCHDOG only while the sidecar unit is also fully active (its READY covers enrollment, ExpectedPeers, listener, and connector reachability). The tsnet adapter uses one caller-bounded, non-refreshing readiness/peer-wait context capped by the established 80-second startup envelope; its contextless upstream initialization is checked before a positive receipt. Only complete post-READY health refreshes the watchdog window. Each post-READY window keeps an absolute freshness deadline: the sidecar query is bounded by its remaining time and the existing one-second query cap, with expiry re-checked after result delivery and immediately before WATCHDOG publication. A completed healthy result delivered after expiry cannot emit WATCHDOG or renew the window, even if its pending timer event has not been selected. Only a timely successful publication establishes the next configured window; notification delivery does not restart elapsed time. Expiry latches terminal readiness even when sidecar admission removal is refused or unknown, without authorizing child cleanup. Both pre-READY composite health observations are bounded by and re-checked against the original absolute startup deadline, so a query that completes late can never refresh or extend it; expiry, failure, cancellation or any stop decision permanently latches terminal readiness and suppresses further READY/WATCHDOG independently of the separate sidecar-admission permission that gates connector child cleanup. Cancellation is re-checked at every positive publication boundary, so an already-completed health query whose delivery is released after the supervisor context is canceled can never emit READY or WATCHDOG; the terminal STOPPING notification uses one at-most-once latch shared by the stop and child-exit paths, so a refused admission stop followed by a spontaneous child exit emits exactly one STOPPING while the failed exit classification and the independent child-cleanup permission are retained. A completed child Wait and its authoritative reaped state are fenced before every positive READY/WATCHDOG publication boundary, so a completed healthy observation held across a spontaneous child exit can never publish after that child was reaped, while the single Wait owner, the failed exit classification, and the admission-before-child-TERM rule are preserved. The supervisor-owned health-reader scanner uses cancellation-aware delivery and is closed and joined within a bounded lifecycle on every return path, so a decoded record pending on the unbuffered channel cannot outlive supervisor return. Malformed, stale, missing, duplicated, reordered, partial, or exited-service health fails closed.
+- **Managed N3 composite readiness (THR-097 seq502).** Connector and tsnet-sidecar remain separate concurrently-started services and each retains `NotifyAccess=main`. The connector's Go MainPID launches the frozen Python child without `NOTIFY_SOCKET`, accepts only canonical generation-bound monotonic child records, and emits READY/WATCHDOG only while the sidecar unit is also fully active (its READY covers enrollment, ExpectedPeers, listener, and connector reachability). The tsnet adapter uses one caller-bounded, non-refreshing readiness/peer-wait context with an 80-second ceiling, clipped by Sidecar.Start’s enclosing 75-second acceptance deadline; its contextless upstream initialization is checked before a positive receipt. Only complete post-READY health refreshes the watchdog window. Each post-READY window keeps an absolute freshness deadline: the sidecar query is bounded by its remaining time and the existing one-second query cap, with expiry re-checked after result delivery and immediately before WATCHDOG publication. A completed healthy result delivered after expiry cannot emit WATCHDOG or renew the window, even if its pending timer event has not been selected. Only a timely successful publication establishes the next configured window; notification delivery does not restart elapsed time. Expiry latches terminal readiness even when sidecar admission removal is refused or unknown, without authorizing child cleanup. Both pre-READY composite health observations are bounded by and re-checked against the original absolute startup deadline, so a query that completes late can never refresh or extend it; expiry, failure, cancellation or any stop decision permanently latches terminal readiness and suppresses further READY/WATCHDOG independently of the separate sidecar-admission permission that gates connector child cleanup. Cancellation is re-checked at every positive publication boundary, so an already-completed health query whose delivery is released after the supervisor context is canceled can never emit READY or WATCHDOG; the terminal STOPPING notification uses one at-most-once latch shared by the stop and child-exit paths, so a refused admission stop followed by a spontaneous child exit emits exactly one STOPPING while the failed exit classification and the independent child-cleanup permission are retained. A completed child Wait and its authoritative reaped state are fenced before every positive READY/WATCHDOG publication boundary, so a completed healthy observation held across a spontaneous child exit can never publish after that child was reaped, while the single Wait owner, the failed exit classification, and the admission-before-child-TERM rule are preserved. The supervisor-owned health-reader scanner uses cancellation-aware delivery and is closed and joined within a bounded lifecycle on every return path, so a decoded record pending on the unbuffered channel cannot outlive supervisor return. Malformed, stale, missing, duplicated, reordered, partial, or exited-service health fails closed.
 
 - **Managed N1/N3 credential custody (THR-097 seq448/seq514/seq528/seq538/seq543/seq546/seq550).** Both packaged units share one category-only credential-capability preflight: before publication it distinguishes absent, wrong type, unsafe symlink, wrong custody, staging-incompatible, and valid root-owned `0600` sources; at start each unit requires its exact `/run/credentials/<unit>` provenance and exact expected basename, then validates only service-observable capabilities of its own systemd-staged credential: regular, non-symlink, readable, and non-writable, without assuming a fixed staged mode or owner UID (`daemon.token` for connector, `enrollment.key` for sidecar). The sidecar never receives the daemon bearer. First enrollment uses a bounded transient systemd `LoadCredential` drop-in; the sidecar never copies or unlinks staged bytes and uses exact `StateDirectoryMode=0700`. After READY and durable consumption, the privileged helper removes the drop-in and successfully reloads the manager before retiring the source, so ordinary, crash, and stopped-service restarts are credential-free. The privileged preflight repeats the reload before deleting a retained source or marker-authorized `.retiring` residue even when interrupted unlink already removed the drop-in; absence is not proof of reload. A failed reload preserves the source/residue and consumed marker, and both retirement commands return exit 1 with only `error: enrollment_source_retirement_failed` on stderr. Missing consumed state fails closed. Fresh re-enrollment is only the explicit stopped-service operator transition that installs a new root-owned `0600` one-use source, replaces the marker, republishes the transient drop-in, and reruns enrollment. Before any consumed-marker/drop-in mutation or daemon reload, `prepare-fresh-enrollment` requires one bounded successful `systemctl show` observation whose explicit named properties affirmatively prove the sidecar unit is loaded and stopped (`LoadState=loaded`, `ActiveState=inactive`, `SubState=dead`). The query is an owned child whose stdout is read incrementally under one absolute five-second deadline shared by reading, exit observation and final affirmative acceptance after the strict property validation; at most 4096 accepted bytes plus one overflow-detection sentinel are retained (maximum 4097), an over-cap producer is stopped and reaped, and the owned child/pipe are closed on every path; after the observation deadline expires, a separate explicitly bounded kill/reap allowance (which never restarts reading or authorizes a refused observation) confirms the owned child is reaped before the query returns, and an unconfirmed reap refuses category-only rather than being silently ignored. Raw record framing is validated before any normalization: only LF-delimited named records are accepted (optional single trailing LF), while CR/CRLF, VT, FF, FS/GS/RS, NEL, LS/PS, embedded invalid UTF-8 and control bytes are refused. A nonzero query status, timeout (child killed and reaped), missing executable/manager/unit, unknown, missing/empty/duplicate/extra/malformed/oversize/unsupported-framing/contradictory record, or any active/transitional/failed state refuses with the existing category-only failure and a completely unchanged source/marker/drop-in snapshot, no temporary publication residue and no reload. Server-side one-use and <=10-minute expiry remain authoritative.
 - **Managed N3 failure diagnostics (THR-097 seq566; THR-228 seq396).** The historical THR-097 seq566 baseline comprised four redacted categories: `credential_input`, `engine_start`, `network_join`, and `durable_commit`. The current THR-228 seq396 local source contract extends that baseline to seven category/phase pairs: `credential_input/input_acquisition`, `engine_start/engine_initialization`, `network_join/peer_establishment`, `durable_commit/receipt_commit`, `connector/connector_probe`, `listener/listener_admission`, and `configuration/configuration_validation`. Configuration diagnosis covers direct `Start` validation; main pre-validation remains unchanged. These are source-only diagnostic mappings, not observed startup or restart acceptance. Exact-head evidence records mapped phase, actor/unit, failed terminal outcome, and completed assertion; validation rejects missing, duplicate, prose-only, unmapped, inconsistent, incomplete, or secret-bearing receipts. A bounded closed-value snapshot anchors its microsecond collection window before the failing positive start, uses the corresponding epoch-seconds journal bound and compact boot identity, and first captures sidecar state, completed start-job results proven by journald-trusted PID-1/UID-0 system-manager provenance plus the exact supported systemd lifecycle-completion identities, and the sidecar's current-invocation receipt through separately reserved bounded sections before observing connector, target, or credential presence. Typed loss in one observation or section never consumes a later section, never retains raw journal/error prose, and capture or cleanup never replaces the initiating status. The deliberate missing-credential negative leg remains category-identical but carries an expected-negative harness ID and closed marker. Observation helpers restore the caller's shell options, so a bounded capture cannot re-arm errexit under the EXIT handler: an independently failing stop, disable, or reset cannot abort the remaining teardown, and EXIT/INT/TERM share exactly one teardown pass that preserves the saved initiating status. This diagnoses the current packaged seam only; the separate credential-delivery redesign remains held.
+
+**Bounded connector acceptance (THR-228 seq402).** `Sidecar.Start` anchors one 75-second acceptance deadline at entry; caller cancellation or an earlier caller deadline wins. The engine receives this enclosing context, so its private 80-second readiness ceiling cannot renew or escape the total. Connector probing uses at most 10 seconds and the remaining total, at most one second per dial, cancellable 200-millisecond spacing and at most nine attempts. Immediate success has no retry delay. Only `errors.Is` connection-refused identity or an actual per-attempt deadline with deadline-error identity retries while the caller, phase and total remain live; arbitrary timeout text or a generic `net.Error` does not qualify. Cancellation, enclosing expiry, late success, nil successful connection and any probe close failure refuse. Every returned nonnil probe, including connection-plus-error, closes exactly once before a retry decision. Credential reading/redemption and engine startup occur once, with consumption commit in its original position before connector work. Listener failure, a late listener return or a Stop that wins admission closes the returned listener before engine teardown and cannot establish READY. Accepted serving retains the caller lifetime after the temporary startup context ends; main rechecks caller cancellation/deadline before READY publication.
+
+These are acceptance deadlines, not a hard wall-clock limit on contextless initialization, `Listen`, close or cleanup. Rendered units omit `TimeoutStartSec` and retain `TimeoutStopSec=10`; the actual runner effective start timeout, systemd version and per-attempt credential staging were not captured. The connector supervisor's separate 80-second timer remains unchanged. The one-shot connector-race hypothesis remains unmeasured; marker/inventory/unknown diagnostics prove neither a unique attempt, completed durable commit nor sole historical cause. Credential custody, staged-input refusal, retirement/reload and historical receipts remain unchanged. Retained cases are authored source only: behavior, red/green, mutation, repetition and executable QA remain UNEXECUTED/SUSPENDED; general integration is SKIPPED THR243seq42 and former Python units remain RETIRED.
+
+**Single N3 publication selection (THR-228 seq402).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=5f849b2c14bffca552501f86e30a862b35e41847`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. This local candidate spends no allocation; the manager owns one publication after fresh independent full review and scoped QA, then the actual run/result before any further repair or rerun.
 
 **Credential input and pinned logging correction (THR-228 seq390).** Enrollment input strips only surrounding Go `bytes.TrimSpace` whitespace (including LF/CRLF); clean and interior bytes are unchanged. Empty/whitespace-only input refuses before engine work. Existing owner/mode/symlink checks, consumed-marker refusal and one-use commit order remain. The entire owned file-read buffer is cleared on every read result; startup clears the independent normalized buffer after every engine result. The tsnet adapter drops its AuthKey string reference immediately after every returned initialization result, including errors or an expired caller, before any readiness work. This clears owned byte buffers and releases the string reference; it does not promise erasure of upstream/Go runtime copies.
 
 The pinned Headscale 0.25.1 fixture explicitly requests `log.format: json` and `log.level: info`. Source at `ade7f2a2b1795768ce146913e25011cd11a1a012` nevertheless hardwires zerolog ConsoleWriter in `cmd/headscale/headscale.go`; the JSON-output switch in `cli/root.go` is commented out. Effective JSON output is therefore **unverified and unsupported by that source**, and bounded console parsing remains necessary. The fixed event allowlist binds exact producer message, level and caller suffix for `hscontrol/noise.go` and `cmd/headscale/cli/serve.go`; JSON uses zerolog 1.33.0 `level`, `caller`, `message` fields, while actual console records use RFC3339 time, abbreviated severity and caller. Extra error/key/SQL fields never leave the collector. Unknown events remain `unclassified`; malformed or incomplete records remain `parse_loss`, with timeout/unavailable/truncated states preserved. Registration refusals in `auth.go`/`noise.go` emit no dedicated event at the configured level, and database logging is silent without debug. JSON configuration or valid event counts establish neither an auth-refusal discriminator nor the sole historical cause. No live registration experiment or new diagnostic run is authorized here.
 
-**Bounded diagnostic detail (THR-228 seq322).** Only `network_join` adds fixed `sub_reason`: `unclassified`, `context_cancelled`, `deadline_exceeded`, `up_backend_error`, `up_no_ip`, `up_error_unclassified`, `up_status_unavailable`, `up_not_running`, `peer_status_error`, `peer_status_unavailable`, `peer_not_running`, `peer_wait_deadline`, or `expected_peer_missing`. These describe observed adapter stages; generic upstream errors remain unclassified. Embedded tsnet uses tailscale.com v1.78.0, distinct from the harness peer v1.102.3. Safe error text, category/phase/exit status, one shared 80-second readiness context and all admission/consumption decisions remain unchanged. Both receipt channels reject duplicates, extra fields, invalid types/enums and nonfinite values, preserving old field omission; the plain channel reserializes allowlisted fields before its retained-output caps.
+**Bounded diagnostic detail (THR-228 seq322).** Only `network_join` adds fixed `sub_reason`: `unclassified`, `context_cancelled`, `deadline_exceeded`, `up_backend_error`, `up_no_ip`, `up_error_unclassified`, `up_status_unavailable`, `up_not_running`, `peer_status_error`, `peer_status_unavailable`, `peer_not_running`, `peer_wait_deadline`, or `expected_peer_missing`. These describe observed adapter stages; generic upstream errors remain unclassified. Embedded tsnet uses tailscale.com v1.78.0, distinct from the harness peer v1.102.3. Safe error text, category/phase/exit status, the adapter’s shared readiness context and consumption decisions are preserved; its 80-second ceiling is now clipped by the seq402 enclosing 75-second acceptance deadline. Both receipt channels reject duplicates, extra fields, invalid types/enums and nonfinite values, preserving old field omission; the plain channel reserializes allowlisted fields before its retained-output caps.
 
 The two failure-only snapshots also read the existing Headscale fixture before any teardown. `headscale` exposes only process state, bounded fixed log-event counts (`unsupported_client`, `missing_upgrade`, `initialization_error`, `server_shutdown_error`, `unclassified`) and exact synthetic peer/sidecar count/state projections. Log events are fixture history without authenticated attribution to a sidecar invocation. A complete successful node query can establish empty/absent; unavailable, failed, timed-out, truncated or malformed observations cannot. Partial valid records retain counts with unknown completeness/state; exact `name` is required, with no given-name fallback. The pinned Headscale v0.25.1 omitted `online` boolean means false. These observations establish no credential usability, listener readiness or historical cause.
 
@@ -342,6 +352,82 @@ The reader SQL is unchanged. Breaker delivery listing and mint use sequential
 serializes connection access; removal can cause a logged sweep error. Cancellation
 can leave a worker running or a committed pending token for later recovery.
 There is no added orgs_lock hold, worker drain or lifespan guarantee.
+
+## Founder-managed teams (THR296)
+
+Historical TASK10394/TASK10553 PR1022 runs used the finite
+L1/L4/L5/L7/L8/L9/W10 selections with the closed integration parent,
+independently pinned b317 reader and transient exact browser tooling.
+Merged PR1025/THR291seq69 supersedes that automatic PR entry with lint-only
+checks and daily-only Product E2E; retained case source grants no new execution.
+See `docs/local-ci.md`. Python units remain RETIRED and broad integration SKIPPED.
+M, compatible restore, reboot, live operations and after-M acceptance remain
+held. Source checks are not behavioral proof; preserve exits and missing evidence.
+
+
+C10 uses the existing built SPA and isolated integration fixture, with en/zh-CN
+at 390×844 and 1440×900. Authored availability/empty-team projections are UI
+boundaries; real after-migration browser acceptance requires the actual C6 M
+check/apply/receipt. Header locale selection transfers focus to its trigger;
+modal external-tab locale updates preserve their focused drafts. Work Hours
+roster loading/error/Retry is distinct from empty. Emitted completion guidance
+references the canonical start-task skill: worker-owned roots have only
+server-authorized `done`, self-only `delegate` or `escalate` decisions;
+delegated leaves return plain completions. An attempted non-root founder
+escalation fails the child and wakes its parent; manager-only operations stay
+restricted.
+
+The bounded roster maintenance source pins effective registration and the clean
+Python3.14 reader, independently closes org/shared-store restore inventories,
+and performs final pre-reset CAS. Complete/compensate and two same-manifest
+replays retain native reset/publication ownership; compensation preserves the
+original receipt and records its NEW coherent generation separately. C6/C8/C9
+source and 28 publication/3 replay localizations are AUTHORED, not executed.
+M launch/observer/reboot capability remains unproved; see the operator runbook.
+
+Team managers may be existing agent names or closed tagged principals
+`{kind: agent|human, principal: ...}`. The sole human principal is `founder`;
+its executable manager is absent. Founder never enters AgentDef, all_agents,
+workspace, callback or executor identity. Attachment validates duplicates and
+both directions of active/pending roster and AgentDef role/team agreement.
+An exactly registered pending bootstrap manager may attach only with matching
+team/manager role and a unique active-or-pending identity. It stays absent from
+the active launch roster and current policy eligibility; workflow authority
+remains fenced until ordinary authenticated approval publishes an ACTIVE manager.
+Missing/mismatched definitions and active/pending duplicates refuse attachment.
+HTTP removal of a still-active declared worker is invalid and rolls back; native
+registry add/remove roundtrips are separate serialization coverage.
+
+Existing omitted task routing defaults to Engineering unless an explicit
+`task_default_team` is present. Proven fresh org creation adds empty human
+Default and writes both `default_team` and `task_default_team` as Default.
+Selecting a human team requires an active executable owner before task,
+attachment or queue persistence (`422 owner_required_for_human_team`). Malformed
+active definitions after attachment also refuse owner admission before allocation. Workers
+remain ordinary decision owners of roots, with self-only decomposition.
+
+New workflow authority uses schema2 typed managers and both routing pointers;
+retained schema1 bytes/digests and pinned workflow contexts keep their original
+interpretation. Human manager principals are never executable role candidates
+or policy-selector managers. Startup never moves or reconstructs the roster.
+Human delegated outcomes name the valid persisted executable parent owner, or
+`unknown_manager` on invalid ancestry. Only absent verdict maps implicitly;
+blank/custom/standard strings remain exact. These are agent outcome records,
+not authenticated Founder approval.
+
+Selected human failed-leaf recovery uses exact positive INTEGER result identity,
+complete selected-only history and separate guarded commits. The review/history
+precede the consumed marker. A finite process-local operation retains the same
+identity, phase and original parent effect through writer contention; 50ms
+outside-lock retries have no count cap. Pending is never settlement, and
+shutdown leaves authentic residue for next-start recovery. Native drain exception
+or cancellation retains the original exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns recovery_required without
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Healthy finished same-result reentry renews the current
+owner/history checks; cached done is not authority. Agent-team and
+completed-leaf transaction behavior is preserved. See the current THR296 spec
+and operator runbook; source authoring is not behavioral verification.
 
 ## Workflow authority publication (U2A)
 
@@ -464,13 +550,25 @@ An operational accepted epoch and its independent within48h health duty are
 separate from source tests, review, CI and deployment. See the memory sections in
 `features-and-invariants.md`, `web-and-cli.md` and the current corrective spec.
 
-Integration collection and execution use deterministic external CLI stubs through
+Retained pytest integration collection and execution use deterministic external CLI stubs through
 `tests/helpers/integration_parent.py` before pytest/runtime imports. Use disposable
 GitHub runners or a separately authorized Mac Linux guest; the live Linux daemon
 host cannot run integration tests, including through jobs. See `docs/local-ci.md`
 for parent isolation, explicit plans, source/callback identity and bounded two-org
 exception observation. General integration remains SKIPPED under THR-243 seq42;
 a focused task authorization does not establish full-suite health.
+
+THR-291's separately authorized standalone `e2e/run.py` uses public bootstrap,
+registered deterministic external stubs and actual CLI/HTTP/browser boundaries,
+without pytest, integration-parent monkeypatches or product hooks. It runs only
+on disposable GitHub Ubuntu with exact Python/browser inputs, Node24, bounded
+owned-process cleanup and complete variant/cell receipts. Retained pytest
+integration/platform/callback selections keep the existing parent fences.
+`Product E2E` admits only the daily default-branch schedule under THR-291 seq69.
+First scheduled execution remains PENDING; historical baseline is separate evidence.
+The aggregate also requires real TERM/INT launcher diagnostics with non-success
+and complete owned cleanup; product cancellation remains uncovered.
+See `e2e/README.md` and `docs/local-ci.md`. Old units remain retired.
 ### Finite document-review templates and initial drafts (THR-139 seq410)
 
 New `schema_version: 2` / `kind: document-review` definitions compile finite data:
@@ -500,36 +598,141 @@ Completion is draft-only: submission, review requests/receipts/joins, revision a
 mounted UI remain later units. Source implementation is not review/QA/CI acceptance,
 operator observation, deployment or Phase1 completion.
 
-Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
-The former default `not integration` selection was deleted, including its
-unmarked component, contract and system acceptance cases. Git history preserves
-that source; do not restore it as a hidden unit or renamed E2E suite.
-`scripts/local_ci.sh python` refuses with exit 2. `all` runs source boundary lint
-plus retained Web checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
-There is no default Python selection: pytest requires explicit existing canonical
-platform file selectors, or the isolated parent with `-m integration`.
+**H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
+initializes H (complete G plus the exact `workflow_author_handoffs` table: 17
+columns, six automatic constraint indexes, no marker or explicit index).
+Existing F/E/G startup, reopen and enable validate their installed layout and
+never add H. F/E must use the separately approved G migration first. The
+explicit offline org-only command is
+`python scripts/migrate_workflow_author_handoff_schema.py --org-root <absolute-org-root> --org-slug <slug> [--check]`.
+For this H command, `--check` returns 1 for valid G requiring migration, 0 for
+validated H; ordinary migration/repeat returns 0, refusal 1, parser error 2.
+One short writer rechecks source ownership and complete independent references,
+adds only the approved table, validates the target and retained rows, then
+commits; failures roll back. Operator stop/ownership cooperation is required;
+the script stops no process and cannot exclude an arbitrary concurrent start.
+Even empty H requires an H-compatible reader. F/E/G SQL, IDs, history, permanent
+NULL active legacy result and genuine INTEGER result links retain their meaning.
+Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
+generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
 
-Required active PR **and exact-merge main** checks are
-`Source Boundary Lint`, `Web (Node 24)`,
-`Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
-and applicable Docs/other retained path-specific checks. The Linux job includes
-its existing real Codex callback smoke. Unit checks are neither required nor
-passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
-Independent review, QA, exact-head/completed checks and normal hooks remain
-mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
-never PASS; integration requires a disposable authorized venue away from the live
-daemon host and deterministic external provider stubs.
+Complete H validation authenticates historical profile readiness from the saved
+full dependency/store/registry mirror. Every closed variant preserves raw
+nonempty source profile names; namespace and consumer identities are nonblank
+UTF8 strings of 1..256 bytes without NUL, generations are exact integers in
+0..9223372036854775807, and digests are full lowercase SHA256 strings. Native
+row grouping/order and unrelated or removed rows remain intact. The historical
+org's active requirements must have matching active store and registry
+generations, and their full names, digests and ordered consumer membership must
+reconstruct the pinned canonical profile projection. Empty mirror with required
+profiles, missing/mismatched required rows or unbound requirements refuse
+`workflow_author_handoff_storage_corrupt` before graph creation; an empty
+required projection remains valid. Readiness, the offline script and producers
+share this reader. Admitted GET exposes only category500; invisible scope404 and
+selected-grant403 retain earlier precedence. Today's mutable mirror is never
+historical evidence; a genuine later authority change remains a current hold.
 
-The existing manual `local-ci-all` runner preserves its disposable environment,
-source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
-unit entry, G named-case controls/repetitions and lab unit preflight are removed.
-The existing `all_only` boolean is compatibility-only; every manual input runs
-source boundary lint and retained Web checks, with separate integration skipped.
-Existing 150-minute manual and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
+U3a(b) adds matched immutable `@3` template/activation/context readers,
+`submissions.validate_handoff_graph` and the internal handoff/review producers.
+Historical `@1`/`@2` families and pins retain their interpretation. An original
+CURRENT author with stage+submit authority reserves immutable bytes only. SAME
+operation fulfillment requires its genuine INTEGER/full callback and committed
+successful/quiescent terminal proof, plus current authority and independence.
+The atomic graph retains NULL legacy result, appends the authentic result link,
+and creates one unsigned request per configured slot. Actual agent tasks alone
+populate the ordered 0..3 reviewer-task IDs; roles, kinds, outcomes and timing
+come from immutable template data. Inputs remain filtered to each recipient.
+
+The review owner reuses the existing scheduler/native host lifecycle and
+Pause/Resume final admission, publication, prompt reader and cancellation fences.
+Completed-source discovery precedes workers and periodic enqueue hints; possible
+launch without affirmative proof remains uncertain. No callback is a signature.
+U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
+with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
+cancellation and portability owner selection. This complete U3a composition remains
+unaccepted pending renewed independent same-head assessment and current static gates.
+
+Current Founder-owner handoff GET may read a superseded source, including a
+configuration with zero human reviewers, only with current instance ownership,
+the SAME active authorization pointer and collect-review grant, full immutable
+closure and coherent current authority. Source/request-agent selection remains
+strict; staging, consumption and review dispatch retain current-source fences.
+After valid admission, corruption refuses500; failed/cancelled sources retain
+their actual reconciliation flags. Otherwise projection precedence is disabled
+(held/new_runs_disabled), superseded (held/source_not_current), changed coherent
+authority (held/authority_not_current), then uncertain/missing proof and eligible
+graph/callback states. Core stays identical; every held graph is hidden and GET
+creates no domain, queue or launch effects. Callback-before-clear original-current
+GET remains allowed; cleared sessions refuse through existing session admission.
+
+Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
+acceptance remain later units. Full independent review, honest same-head QA,
+unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
+manager guarded merge remain required under THR291 seq69. Actual CLI callback
+sources and isolation fences remain retained; execution is not a merge check.
+Manager-owned bounded two-template public smoke must precede Founder invitation.
+No live migration/enable/assignment/deploy/restart follows.
+
+Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
+Required checks at the final PR head and exact merge on main are exactly
+`Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
+path applicability. The manager supplies these two names to `pr_ci_waiter`;
+`pr_ci_merge` retains its independent review/QA, pinned-head and guarded-merge
+contract. Freshly observed GitHub protection has empty required contexts/checks
+and `strict=false`; source configuration is not external enforcement.
+
+Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
+ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
+Behavioral tests and builds are outside all/pre-push/required merge checks.
+Normal hooks stay enabled; never bypass hooks or the guarded worktree.
+Independent full code review and scoped QA remain mandatory. Static checks
+cannot establish lifecycle, callback, browser or platform correctness;
+behavioral regressions can be detected only later when their coverage executes.
+
+Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
+Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
+3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+`Daily Product E2E Health`. It is never a merge check. No local E2E alias,
+manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
+First scheduled execution is **PENDING**; prior first-slice receipts remain
+historical evidence at their own source, not daily/final-head verification.
+Engineering_manager owns daily failure/missing-evidence triage through existing
+tasks/threads; no new notifications or guaranteed response SLA is implied.
+
+Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
+under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
+the named actual CLI callback and their isolation fences retain their sources.
+Docs Manual build and the real tenant-isolation harness retain manual-only
+workflows, outside PR/main. Manual/tag macOS packaging is a separate release
+activity and invokes no fresh E2E. Legacy nightly integration remains separate
+at 07:00 UTC, with its historical failures and fixtures unchanged; its manual
+`all_only` input runs the same lint/static all selection. No legacy repair or
+run is authorized by this cadence change.
+
 See [the reset coverage gap record](docs/python-test-reset.md) and
 [Local CI](docs/local-ci.md) for retained selectors and evidence limits.
 
-**PR800 task-scoped hold (THR228seq390).** All unit execution (Go, Web and canonical platform cases) remains suspended and nonblocking in this cycle, never PASS. Python retirement above remains permanent. Current `local_ci.sh all/web` invokes Vitest, so the held maker/reviewer/QA legs use existing nonunit components (Node24 locked setup, colour gate, lint/typecheck/build/Storybook and native compile/package/static/syntax checks) and do not run combined targets. Keep normal hooks and current wrappers intact; report any enforcement conflict. The separately named hosted actual CLI callback remains retained. Publication is manager-owned after exact-head independent gates; local candidate delivery does not consume the one later N3 allocation.
+**PR800 task-scoped hold (THR228seq355/390/402).** Go, Web and canonical platform unit execution remains suspended and nonblocking, never PASS; Python retirement remains permanent. The seq402 candidate integrates current main's lint/static-only `local_ci.sh all/web` and automation selection. Use permitted source syntax/format/static lanes and normal hooks; no local N3, build/test campaign, ad hoc Product E2E or hosted CLI-callback execution follows. Publication and its single automatic N3 remain manager-owned after fresh independent exact-candidate review and honest scoped QA. Source-only candidate delivery does not consume that allocation.
 
 Source boundary enforcement: `python scripts/check_source_boundaries.py` and
 `python scripts/validate_source_boundaries.py` use only stdlib (local Python 3.12+).
@@ -548,6 +751,22 @@ See the project-layout boundary section and [Local CI](docs/local-ci.md).
 
 ## Commands
 
+PR1022's TASK10553 continuation retains all 224 C4 parameters and the finite
+L/W source. Historical PR shards are superseded by merged PR1025's THR291seq69
+lint-only automation; retained behavioral sources are not automatic merge gates. Feature-only phase tracebacks/checkpoints survive earlier
+than final teardown; parent/command inner deadlines fail visibly within the
+unchanged 90-minute hosted limit. W10 retains exact accessible unforced worker
+selection using observed adjacent agent/team text. Held M fixtures no longer
+import retired unit helpers, but M/restore/reboot/paired-observer/causal/repetition
+proof remains absent. See docs/local-ci.md and the roster migration runbook;
+no feature or maintenance readiness follows from source correction.
+
+W10's owned HTTP proxy forwards actual daemon SSE headers and frames as streams.
+Finite-request settlement excludes only streams whose headers were forwarded;
+browser disconnect/fixture cleanup closes idle upstreams, and a 30-minute stream
+deadline fails visibly. `C10-http-prefix.json` survives a failed browser oracle;
+it is partial diagnostic evidence, never the completed 29-row browser receipt.
+
 OpenAPI operator (no tests/lifespan): `uv run python scripts/generate_openapi_snapshot.py --check`
 (default, non-writing), or explicit reviewed `uv run python scripts/generate_openapi_snapshot.py --write`
 (atomic snapshot replacement).
@@ -563,10 +782,10 @@ scripts/build_web.sh
 cd web && npm run dev
 happyranch web [--no-open]
 
-scripts/local_ci.sh              # default: boundary lint + Web; units RETIRED, E2E PENDING
+scripts/local_ci.sh              # default: lint/static only; daily E2E PENDING
 scripts/local_ci.sh boundary-lint # source-only lint + synthetic validation
 scripts/local_ci.sh python       # retired target: refuses with exit 2
-scripts/local_ci.sh web          # Web CI (lint + typecheck + build + vitest run)
+scripts/local_ci.sh web          # Web static CI (colour scan + ESLint + typecheck)
 scripts/local_ci.sh integration  # Python integration tests
 scripts/local_ci.sh help         # List targets and caveats
 # Full guide: docs/local-ci.md
@@ -614,6 +833,36 @@ Integration tests spawn a real daemon and fake CLIs. Run them before changes tou
 - Use `StrEnum` for enumerations when an enum is appropriate.
 - Follow existing patterns in `runtime/orchestrator/` before adding abstractions.
 - Keep changes scoped; avoid unrelated refactors and generated metadata churn.
+
+## Structural maintenance
+
+- Put behavior in its existing domain owner; `database.py`/`Database` stays the
+  shared interface, connection and coordination owner. Challenge unrelated
+  additions to `run_step.py`, `models.py` and generic utilities. Use the
+  [project layout](docs/agent-guides/project-layout.md) to locate responsibilities.
+- Preserve standalone `python scripts/check_source_boundaries.py` and its
+  local/hosted source-only lane: explicit module-time infrastructure/orchestrator
+  imports of `runtime.daemon` are forbidden, with syntactic `TYPE_CHECKING` and
+  callable-local exceptions and no allowlist. See the
+  [boundary contract](docs/agent-guides/project-layout.md#source-dependency-boundary)
+  for relative/dynamic import, alias and callable-metadata limitations. This lint
+  does not prove architecture quality; respect the existing frontend
+  [feature and layer boundaries](web/ARCHITECTURE.md#layers-strict).
+- Every code review answers: is behavior placed with its owner, does the change
+  introduce unnecessary coupling or duplicated ownership, and do the source map
+  and behavior docs agree with the code? Correct concrete violations before merge.
+- Repeated unrelated edits, merge conflicts, dependency cycles or scattered
+  feature changes trigger bounded design consideration. Size is a signal, not a
+  quota. Extract coherent responsibilities only for concrete maintenance benefit;
+  retain compatibility-sensitive code where warranted, including intentionally
+  retained bulk decline. E1/E2 remain deferred; do not reopen the decomposition
+  program.
+- Keep upkeep proportional, with necessary docs in the same PR. Record deferred
+  debt with concrete impact and an owner; do not start automatic cleanup campaigns
+  or impose tiny-move quotas.
+
+The engineering manager enforces these rules at merge. Success means locating
+and changing a responsibility without unrelated edits.
 
 ## Web Contract
 
@@ -666,3 +915,47 @@ Root Pause/Resume (THR-292) is an org-owned control, separate from TaskStatus/Bl
 Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
+
+
+The original PR1022 L4 run at `6472d886` retained an internal timeout exit 124,
+not complete recovery proof. Its incremental traces identify a missing bound
+completion audit for successful human-team leaf recovery, two failed-recovery
+reads of a nonexistent supervisor method, and fixture startup fingerprint
+refusals. Human-team completed recovery now atomically records the actual
+INTEGER result and recovery session in its completion audit; historical
+agent-team payloads retain their prior shape. Failed recovery reads shutdown
+from the existing admission controller without changing host enforcement.
+Test-side compiled-code fingerprints use marshal format 2, retaining full
+code comparison while excluding object-sharing reference flags. All 224 C4
+parameters and their original behavioral assertions remain. These corrections
+are source readiness; final-head hosted execution and the existing held proof
+inventory remain required, and no partial result is a feature-readiness claim.
+
+C10 canonical enrollment readback includes the existing AgentDef writer's final LF.
+The exact submitted draft/POST, focus/selection and all 89 assertions remain;
+four readable draft screenshots do not establish completed 29-row browser proof.
+
+
+The original PR1022 L4 archive at `18e01cfa` retains parent/command exit124,
+45 failed calls, 24 passed calls, two setup errors and one interrupted setup-only
+case; it is not complete 224-case proof. Its task teardown emitted the existing
+informational `task_scratch_report`, which the human failed-recovery reader had
+incorrectly treated as foreign causal history. That exact report action remains
+informational. Failed recovery permits only the native task-scoped memory
+observations: `memory_added`, `memory_digest_impression`, `memory_search`,
+`memory_runtime_intent`, `memory_runtime_identity`, `memory_runtime_expectation`,
+`memory_runtime_binding`, `memory_runtime_launched`, `memory_runtime_terminal`,
+and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycle
+rows are outside this task history; collection acceptance/invalidation controls
+are not informational recovery exemptions. Unknown actions, including a
+dictionary-payload `memory_unrecognized_transition`, refuse as
+`ambiguous_history` before failure, review, marker, job or parent effects.
+Selected result/session/owner, review ordering and replay fences are unchanged.
+Fixture jobs are submitted
+by the original ordinary child before clean omission, never by the purpose-bound
+completion-recovery session. The restart-only no-job observer excludes the initial
+marker-interruption launch. Native diagnostic events link fully flushed JSON
+without replacing existing events, and actual job-submit refusals are retained
+before assertions. All 224 C4 cases and their behavioral assertions remain.
+These are source corrections only: no new behavioral execution, GREEN,
+causal/restoration/repetition or held migration/restore/reboot proof is claimed.

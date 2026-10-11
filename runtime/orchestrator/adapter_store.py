@@ -107,6 +107,7 @@ class AdapterEntry:
     version: str
     capabilities: list[str] = field(default_factory=list)
     contract_version: int = 1
+    input_options: dict | None = None
     workspace_adapter: str = "pi"
     status: str = "pending"
     registered_at: str = ""
@@ -139,6 +140,8 @@ class AdapterEntry:
             "registered_at": self.registered_at,
             "registered_by": self.registered_by,
         }
+        if self.input_options is not None:
+            d["input_options"] = self.input_options
         if self.approved_at is not None:
             d["approved_at"] = self.approved_at
         if self.approved_by is not None:
@@ -167,6 +170,7 @@ class AdapterEntry:
             version=d.get("version", ""),
             capabilities=d.get("capabilities", []),
             contract_version=d.get("contract_version", 1),
+            input_options=d.get("input_options"),
             workspace_adapter=d.get("workspace_adapter", "pi"),
             status=d.get("status", "pending"),
             registered_at=d.get("registered_at", ""),

@@ -1,7 +1,51 @@
 # Web And CLI
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+U3a(c) mounts the H/@3 public handoff and unsigned selected-request surfaces,
+with CLI/TypeScript/OpenAPI/native mirrors and F5 callback/replay/cancellation/
+portability owner selection. Direct-submit/reviewer-stage public/deny deferral
+remains. Requests and real callbacks are unsigned; genuine receipts and joins
+remain later units. Independent same-head assessment, unconditional Source Boundary Lint and
+Web Lint (Node 24) under THR291 seq69,
+manager-owned two-template public smoke and operator acceptance remain pending.
+Source parity is not behavioral PASS or native reachability authority.
+
+Complete H validation authenticates historical profile readiness from the saved
+full dependency/store/registry mirror. Every closed variant preserves raw
+nonempty source profile names; namespace and consumer identities are nonblank
+UTF8 strings of 1..256 bytes without NUL, generations are exact integers in
+0..9223372036854775807, and digests are full lowercase SHA256 strings. Native
+row grouping/order and unrelated or removed rows remain intact. The historical
+org's active requirements must have matching active store and registry
+generations, and their full names, digests and ordered consumer membership must
+reconstruct the pinned canonical profile projection. Empty mirror with required
+profiles, missing/mismatched required rows or unbound requirements refuse
+`workflow_author_handoff_storage_corrupt` before graph creation; an empty
+required projection remains valid. Readiness, the offline script and producers
+share this reader. Admitted GET exposes only category500; invisible scope404 and
+selected-grant403 retain earlier precedence. Today's mutable mirror is never
+historical evidence; a genuine later authority change remains a current hold.
+
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
+**G submission-schema migration (THR139 seq395).** The retained F/E-to-G path
+precedes explicit G-to-H migration; deliberate fresh org creation now initializes H. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
@@ -23,11 +67,51 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
+
+## Founder-managed Default (THR296)
+
+
+C10 covers the existing views in English and Chinese. The shipped header locale
+control receives focus after selection; returning to an editor is an explicit
+user focus transfer. Open modal drafts use the supported external-tab locale
+mirror because the header is outside their focus trap. Locale changes make no
+API request or mutation; bounded observations distinguish already-due polling.
+Work Hours shows roster loading/error/Retry separately from empty. Engineering's
+current v2 editor retains exact text and target through locale/query changes;
+Stay/Discard and confirmation remain required. Browser geometry, screenshots
+and real after-M acceptance are held independently of mounted Web tests.
+
+The offline roster utility remains operator-only. Its real checked manifest
+binds clean candidate/Python3.14 reader and detached runtime registration;
+apply/recovery requires that exact digest. Compensation retains the original
+successful receipt and records a new coherent original-roster generation in
+`compensation-receipt.json`. No transfer UI/API or startup migration is added.
+See the migration runbook for commands and AUTHORED-versus-executed case maps.
+
+GET teams/settings retain string manager names for agent teams; human rows
+carry manager:null, manager_kind:human, human_manager:founder and is_default.
+Both TypeScript wire types and existing real/mock providers accept this shape.
+Settings accepts coherent worker additions and preserves pointers/principals.
+Removing a still-active declared worker returns teams_consistency_drift and rolls
+back. A native registry serialization add/remove roundtrip does not prove valid
+HTTP removal; the coordinated offline utility owns the approved team move.
+Existing Agent selectors/detail and Work Hours display localized Founder
+leadership while preserving executable worker selection. Demoted consultants
+are ineligible for manager policy views; no transfer UI is introduced.
+The existing roster shows localized loading/error/empty states and Retry;
+a recovered first fetch still selects the ordinary worker detail pane.
+Worker enrollment distinguishes teams loading, failed fetch with Retry and a
+successful empty roster. Retry and locale changes preserve the enrollment
+draft; Create requires the selected team to remain in the current roster.
+`happyranch run --team default` requires an explicit active executable --owner.
+Omitted requests follow task_default_team (legacy Engineering). Founder cannot
+be selected as an executor. Normal and recovered review_verdict audits record
+agent outcomes, not authenticated human approval.
 
 ## Daemon-managed workspace cleanup
 
@@ -664,7 +748,7 @@ The Agents page (`web/src/features/agents/`) shows the active agent roster plus 
 
 - **Repositories** — `repos` map from org/agents/<name>.md frontmatter (THR-095), shown as badge chips in the detail header.
 - **System prompt** — collapsible, with Edit / Save / Cancel. The founder-only `PUT /agents/{agent_name}/system-prompt` accepts exactly `system_prompt` and the matching lowercase 64-hex `expected_revision` from `GET /agents`. Description remains read-only.
-- **Model** — per-agent model string (`model` field in `GET /agents`, additive THR-067 field). Web UI field is PR-2 (separate follow-up).
+- **Model and reasoning effort** — editable per-agent selection beside Executor, with localized default, static-support limits and unsupported-custom explanation. CLI switches clear the draft pair. Locale changes preserve draft/focus/actions without a save.
 
 Prompt saves preserve unrelated definition fields and normalize multiline/Unicode text through the existing parser and protected-input validators. The exact 200 receipt is `{agent, system_prompt, revision}` from one canonical byte snapshot. The editor freezes the draft base and captured org/target, disables typing/Save/Cancel through PUT and an explicit uncached GET, and shows Saved only when both body and revision match. Polling never rebases a dirty draft. Validated uncached prompt observations reconcile only the captured org/target prompt and revision in the roster cache, so leaving and returning preserves that observed base. Unrelated fields and agents stay unchanged; a newer prompt observed during readback wins and requires another explicit inspection instead of Saved. Ordinary reads already in flight are cancelled without reverting cached observations before reconciliation. Initial loading/error/empty/missing-revision/disappeared-target states refuse editing; close/selection/navigation discard locally and ignore late responses. en/zh-CN switching preserves the mounted draft, focus and selection. Errors retain the draft; inspect an explicit fresh read before deliberate reapply, with no automatic PUT retry. Cancelling the request can leave an admitted save committed: its started renderer and terminal reconciliation finish before the writer gate releases, so inspect fresh canonical state before reapplying.
 
@@ -694,6 +778,13 @@ happyranch web
 The SPA fetches the daemon bearer token once via `GET /api/v1/auth/bootstrap`, which is localhost-gated, then caches it in `sessionStorage` and attaches it to HTTP and SSE calls. CLI bearer-token behavior is unchanged.
 
 ## CLI
+
+`happyranch cancel <task_id>` prints the daemon's cancelled-task summary, then
+each successful cancellation-delivery record in response order. An opaque
+control record without a PID prints `Cancellation delivered -> <task_id>
+(<agent>)` on one line; it does not identify a signal or claim process closure.
+A legacy PID-bearing record retains `SIGTERM -> <task_id> (<agent>, pid=<pid>)`.
+An empty or absent delivery list retains `No live subprocesses attached.`
 
 The CLI is an HTTP client. Start the daemon first.
 
@@ -986,9 +1077,8 @@ Two CLI entrypoints (invoked as jobs or on task resume, not as `happyranch` subc
 # Poll job (submitted via happyranch jobs submit):
 python -m runtime.daemon.pr_ci_waiter \
   --repo owner/repo --pr N --head-sha <40-char-sha> \
-  --expected-check "Web (Node 24)" \
-  --expected-check "Linux Canonical Store Validation (Ubuntu)" \
-  --expected-check "macOS Canonical Store Validation (macOS 15)" \
+  --expected-check "Source Boundary Lint" \
+  --expected-check "Web Lint (Node 24)" \
   --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
 
 # Merge (triggered by resumed task):
@@ -998,9 +1088,11 @@ python -m runtime.daemon.pr_ci_merge \
   --review-task-id TASK-xxx --qa-task-id TASK-yyy
 ```
 
-For HappyRanch, include applicable Docs/other retained path-specific names too.
-The same active check policy applies to the exact merge on main. Python units
-are retired and fresh E2E is PENDING; other repositories use their own policy.
+For HappyRanch under THR-291 seq69, the two names above are unconditional on
+both PR and exact-merge main. Daily Product E2E Health, manual Docs/lab and
+release packaging are outside expected-check lists. Protection contexts/checks
+are observed empty with strict=false, not enforced by these examples. First
+scheduled E2E is PENDING; other repositories use their own policy.
 
 Both print structured JSON verdicts to stdout and exit with mapped codes (0 = success).
 The review/QA evidence extraction follows the **Merge-evidence contract** in
@@ -1016,7 +1108,7 @@ get raw `gh pr merge` grants. The full workflow narrative (submit → blocked �
 merge/revise) is documented in `runtime/skills/bundled/jobs/SKILL.md` and
 `docs/agent-guides/features-and-invariants.md`.
 
-### Per-agent model selection
+### Per-agent model and reasoning-effort selection
 
 Set or clear the model an agent uses via the `set-model` CLI command (mirrors `set-executor`):
 
@@ -1028,9 +1120,17 @@ happyranch set-model --org <org> dev_agent --model claude-sonnet-5
 happyranch set-model --org <org> dev_agent
 ```
 
+```bash
+# Effort-only update preserves the selected model
+happyranch set-model --org <org> dev_agent --reasoning-effort high
+# Effort-only clear preserves model; cannot combine with --reasoning-effort
+happyranch set-model --org <org> dev_agent --clear-reasoning-effort
+```
+
+The CLI with no model/effort options still clears model. The UI presents Default and the selected CLI's static list; a custom adapter without an input-v2 effort declaration is disabled with an English/zh-CN explanation. Unsupported levels and conflicts show localized errors and retain the draft; Save uses actual persistence and refetch. OpenCode requires a pinned `provider/model`, while existing `#variant` or Pi thinking suffixes are preserved when effort is unset and must agree when explicit. [Static mappings and custom opt-in](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) describe transport only; account/model support and native OpenCode transport remain separate limits.
+
 The backend route is `PUT /api/v1/orgs/{slug}/agents/{agent_name}/model` with payload
-`{"model": "<id>" | null}`. It reconciles the org `.md` frontmatter (`model:` field) and
-the org/agents/<name>.md frontmatter in one call (THR-095).
+`{"model": "<id>" | null, "reasoning_effort": "<level>" | null, "expected_executor": "<profile>"}`. Each selection member is optional: omission preserves it and null clears it. Invalid types/values or unsupported/conflicting effort return422 before canonical replacement. The UI binds each draft to its selected CLI; a saved CLI mismatch returns409 `reasoning_executor_changed`. It atomically updates the selection in org/agents/<name>.md frontmatter (THR-095).
 
 When a model is set AND the executor profile has a `model_arg` template (all four built-in
 profiles do — verified per CLI), the executor injects the substituted model flags into the
@@ -1038,7 +1138,7 @@ CLI argv at launch time. When unset, each CLI uses its own default model (today'
 for every existing agent).
 
 Executor changes and model overrides are coupled: changing an existing
-agent's executor clears its old configured model, while selecting the already
+agent's executor clears its old configured model and effort, while selecting the already
 configured executor preserves it. In the team-manager `manage-agent` update
 contract, an explicitly supplied `model` (including `null`) is the model choice
 for the new executor; if `model` is omitted during a real executor change, the
@@ -1284,6 +1384,11 @@ These are invoked by skills inside agent sessions. Do not invoke them by hand; d
 
 Callbacks should use `--from-file <path>` where payloads have multiple fields. **The path MUST be absolute** (e.g. `/tmp/completion.json`). A relative path silently resolves against the agent's cwd and can litter stray files under the runtime orgs root. The CLI rejects relative paths with a clear error in the callback family (`report-completion`, `threads reply/decline/dispatch/compose`). See `docs/agent-guides/agent-executors-and-permissions.md`.
 
+A successful `threads decline` prints `ok: declined on <thread_id>` using the
+returned thread ID. Silent declines return status `declined` without a message
+sequence because they create no transcript row. Callback errors retain the
+existing nonzero exit and error output.
+
 ### Retired System Assistant
 
 System Assistant is retired (THR-294). Its HTTP/WebSocket routes, CLI commands,
@@ -1406,8 +1511,8 @@ which records actual checkout/source/tool provenance and the
 minutes; general integration retains its 30-minute cap and exact schedule-only
 predicate, so all three manual input cases skip it. THR-291 seq40 retired
 Python unit source, G named-case controls/repetitions and the PR1011 unit entry.
-The wrapper verifies retained Web checks only, with units RETIRED and fresh E2E
-PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
+The wrapper verifies source boundary and Web static checks only under seq69,
+with units RETIRED and first daily E2E PENDING. General integration remains SKIPPED under THR243 seq42, never PASS.
 See `docs/local-ci.md` for current checks and selectors.
 
 ### OpenAPI snapshot operator
@@ -1422,4 +1527,84 @@ classification. This operator does not run tests.
 
 ## Root task Pause and Resume (THR-292)
 
-Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. Backend PR1 supplies transport; browser controls/bilingual UI belong to PR2. [Contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. The Tasks page adds bilingual root-only Pause/Resume in existing list/detail action areas and a separate org-scoped Task pause overview. Pending roots remain visible in the overview without Pause; parked in_progress roots can Pause. Descendants show inherited hold and the actual root link. Escalated/terminal lifecycle and waiting/attention/lineage remain separate; terminal drain diagnostics stay visible and Resume never resolves escalation or revives a terminal task. Missing projection or unsafe/missing generation is unavailable. Each deliberate action uses the displayed generation once in the task provider; repeated submissions are disabled while pending, conflicts/refusals are accessible and translated, and the provider refreshes the originating org's list families, all details and overview without automatically replaying or opposing the action. The shared HTTP client's existing401 bootstrap/retry is unchanged and is authentication recovery, not Pause enforcement evidence. Overview pages carry server timestamps, evidence_complete and nullable counts; a next page replaces the observation, never a summed completeness/zero claim. The overview is independent of task-list filters and has loading, empty, error, partial, stale and retry states. Other roots/thread/dream/wake/scheduled activity and eligible manager-created separate unheld successor roots stay independent; this is never a safe-restart certification. Prototype controls refuse as unavailable. The task-owned pause browser harness records ordinary-build UI/transport requests and bilingual responsive/keyboard evidence without a live daemon. [Contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+
+
+### U3a(c) public handoff and unsigned request surfaces
+
+The stacked draft serves only POST `/workflows/submissions/handoffs`, GET
+`/workflows/submissions/handoffs/{handoff_id}` and GET
+`/workflows/reviews/requests/{request_id}`, under `/api/v1/orgs/{slug}`.
+Matched `@3` activation request/receipt schemas coexist with historical `@1/@2`.
+Publication `@3` requires closed submission={timing,delivery}, with delivery
+`current-author-handoff@1` and timing `on-completion` or `while-active-or-completed`;
+historical `@2` remains timing-only.
+An original CURRENT author supplies `session_id` and one closed
+`workflow-author-handoff-command@1` JSON body containing operation_key,
+activation_id, expected_revision=1, submission_bytes_base64 and submission_digest.
+The command is bounded to 2MiB; the exact strict UTF8 document is 1..1MiB.
+Stage commits201; exact before-callback replay returns200. Every post-callback
+POST refuses409 source_not_current; after tracker clearing the session refusal
+precedes replay. Staging returns no graph, launch, signature or approval.
+
+Handoff GET chooses exactly one current proof: session_id+activation_id for the
+original author; session_id+request_id for the selected actual reviewer; or
+proof_kind=owner-human for the current Founder owner, including zero-human-review
+configurations. Request GET uses session_id for the actual agent recipient or
+proof_kind=human for the selected human recipient. Unknown, duplicate, blank,
+malformed or mixed selectors refuse422. Agent lanes are header-free;
+a valid bearer conflicts403 auth_path_conflict, and an invalid present header
+refuses403 bearer_not_accepted. Human lanes retain the existing Founder bearer.
+Selection/current membership/grants are revalidated: invisible scope404, selected
+grant loss403, unready current authority409, stored corruption500. Present-H
+reads select relational source/request/owner scope and the current grant before
+decoding H admission/graph proof; admitted reads retain complete validation in
+the authority writer and binding lease. Missing-H guidance follows independent
+identity checks. Completed-handoff discovery keeps a normally revoked or
+superseded reservation held individually and continues to independently
+revalidate later reservations; stored corruption still refuses the scan.
+
+The current Founder owner can read a superseded source with the SAME active
+authorization pointer and collect-review grant, full immutable ownership closure
+and coherent current authority; no human reviewer row is required. Source and
+request agent selection remains strict. An original-current source GET after
+callback and before tracker clear is allowed; tracker clear refuses the session.
+After valid admission, corruption refuses500 and genuine failed/cancelled sources
+retain their actual reconciliation flags. Otherwise disabled cutover takes
+precedence over supersession, authority change and uncertainty:
+held/new_runs_disabled, then held/source_not_current, then
+held/authority_not_current, then uncertain/missing proof and eligible graph or
+callback states. Every held graph is null, with the same immutable core and no
+domain/queue/launch effects. Historical owner reads grant no POST/consume authority.
+
+H receipts contain exactly format/core/replayed/current. Core has only
+handoff_id, reserved_submission_id, instance_id, revision, candidate_digest,
+request_digest and created_at. Current contains state, pending,
+reconciliation_required, reason and graph; graph is null unless currently
+consumed-authorized and then holds submission_id, round_id, request_ids and every
+actual configured agent reviewer_task_id in declared role order (0..3).
+Private source, admission, result, host, capability and input bytes never enter
+an H receipt. Unsigned request receipts instead expose the pinned document and
+only the selected recipient's inputs; they are pending with signed=false.
+Callbacks preserve actual execution evidence and never sign a review.
+
+CLI commands are `workflows submissions stage --org ORG --session-id SID
+--from-file /absolute/command.json [--json]`, `workflows submissions show H
+--org ORG --session-id SID --activation-id A` (or --request-id R), and
+`workflows submissions show H --org ORG --proof-kind owner-human`.
+`workflows submissions request-show R --org ORG` requires either --session-id SID
+or --proof-kind human. Every command forwards the exact payload/query once;
+syntax/unknown fields exit2, domain/transport failure exits1, pending/held/success
+exits0. Lost responses retain the original key; no automatic operation replay.
+
+TypeScript exports stageAuthorHandoff/getAuthorHandoff/getWorkflowReviewRequest
+through the unchanged shared client.ts. Bearer-sending agent TS calls expect403;
+owner reads can return200. One logical operation uses one endpoint fetch, with
+only the existing generic first401 token refresh permitting a second fetch of
+the same URL/body/key. Domain403/409 and response loss do not replay operations.
+Method/path classification includes the common GETs and excludes only the agent
+POST. SurfaceAllowList denies that exact normalized/prefixed POST, adding no GET
+grant or broader permission change. Actual operator UI, genuine receipts/joins,
+revisions/reassignment/recovery and independent acceptance remain later units;
+the manager-owned same-runtime two-template public smoke is required before
+Founder invitation. Source parity is not behavioral verification.

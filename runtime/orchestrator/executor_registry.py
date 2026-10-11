@@ -95,6 +95,18 @@ class ExecutorProfile:
     # ── D7A envelope enforcement (custom profiles only) ────────────────
     # None = legacy compatibility, "strict" = mandatory v1 enforcement
 
+    @property
+    def reasoning_effort_values(self) -> tuple[str, ...]:
+        from runtime.adapters import get_builtin_catalog
+        descriptor = next((d for d in get_builtin_catalog() if self.kind == "builtin" and d.name == self.name), None)
+        return descriptor.reasoning_effort_values if descriptor is not None else ()
+
+    @property
+    def effort_arg(self) -> tuple[str, ...] | None:
+        from runtime.adapters import get_builtin_catalog
+        descriptor = next((d for d in get_builtin_catalog() if self.kind == "builtin" and d.name == self.name), None)
+        return descriptor.effort_arg if descriptor is not None else None
+
     def __post_init__(self):
         """Enforce D6 canonical-alias consistency.
 
@@ -324,6 +336,7 @@ class ExecutorRegistry:
             "contract_version": entry.contract_version,
             "dependency_manifest_version": entry.dependency_manifest_version,
             "dependencies": entry.dependencies,
+            "input_options": entry.input_options,
         }
 
     @classmethod
@@ -614,6 +627,7 @@ def build_executor(
             adapter_version=binding["version"],
             adapter_contract_version=binding["contract_version"],
             provider=name,
+            input_options=binding.get("input_options"),
         )
         # THR-107 seq244: set dependency manifest on the executor
         executor.set_dependency_manifest(
@@ -623,3 +637,28 @@ def build_executor(
         return executor
 
     raise ValueError(_CUSTOM_ADAPTER_GUIDANCE)
+
+
+def reasoning_effort_values(name: str) -> tuple[str, ...]:
+    profile = get_registry().get_profile(name)
+    if profile is None:
+        return ()
+    if profile.kind == "builtin":
+        return profile.reasoning_effort_values
+    from runtime.orchestrator.adapter_store import get_adapter
+    entry = get_adapter((profile.command_adapter_id or "").removeprefix("custom-adapter:"))
+    if entry is None or entry.input_options is None:
+        return ()
+    from runtime.orchestrator.adapter_contract import AdapterInputOptions
+    return tuple(AdapterInputOptions.model_validate(entry.input_options).reasoning_effort_values)
+
+
+def validate_reasoning_selection(name: str, model: str | None, effort: str | None) -> None:
+    if effort is None:
+        return
+    if not isinstance(effort, str) or effort not in reasoning_effort_values(name):
+        raise ValueError(f"Unsupported reasoning_effort for {name}: {effort!r}")
+    profile = get_registry().get_profile(name)
+    if profile is not None and profile.kind == "builtin":
+        from runtime.adapters import model_effort_args
+        model_effort_args(profile.name, model, profile.model_arg, effort)

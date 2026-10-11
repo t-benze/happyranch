@@ -11,9 +11,10 @@ import (
 	"tailscale.com/tsnet"
 )
 
-// The connector's independent startup timer is 80 seconds. The adapter uses
-// that same upper envelope as a cap, but does not claim that the two clocks
-// are identical or alter the connector's timer.
+// Keep the adapter's private 80-second ceiling. Sidecar.Start supplies its
+// enclosing 75-second acceptance context (or an earlier caller deadline), so
+// this cap cannot renew or escape that budget. The connector supervisor's
+// independent 80-second timer is unchanged; the clocks are not identical.
 const tsnetStartupBudget = 80 * time.Second
 
 // tsnetServer is intentionally small so the production adapter can be driven

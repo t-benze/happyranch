@@ -132,6 +132,7 @@ class TaskInvocation:
     final_prompt: Callable[[], Any] | None = None
     last_spec: Any = None
     prompt_reader: Callable[[], str] | None = None
+    workflow_dispatcher: Any = None
 
     @property
     def store(self) -> TaskPauseStore:
@@ -215,7 +216,8 @@ class TaskInvocation:
             if settled.status not in {"settled", "already_settled_exact"}:
                 raise DeferredRootPause("v2 settlement refused")
         elif self.owner == "draft":
-            self.orch._workflow_drafts._claim_launch_uncommitted(self)
+            dispatcher = self.workflow_dispatcher or self.orch._workflow_drafts
+            dispatcher._claim_launch_uncommitted(self)
         elif self.owner == "ordinary":
             if not db._try_claim_for_step_uncommitted(
                     self.task.id, self.task.status, self.task.block_kind, self.task.orchestration_step_count + 1):
@@ -246,7 +248,7 @@ class TaskInvocation:
 
     def commit(self, ctx: Any = None) -> bool:
         if self.owner == "draft":
-            drafts = self.orch._workflow_drafts
+            drafts = self.workflow_dispatcher or self.orch._workflow_drafts
             return drafts._on_loop(drafts._commit_pause_launch(self, ctx))
         return self._commit_local(ctx)
 
@@ -734,6 +736,8 @@ async def discover_pause_work(org: Any, queue: Any) -> None:
                     ownership = classify_task(org.db, task_id, org_slug=org.slug)
                     if ownership.kind == "draft":
                         org.workflow_drafts.notify_queued(task_id, queue)
+                    elif ownership.kind == "f5":
+                        org.workflow_reviews.notify_queued(task_id, queue)
                     elif ownership.kind == "legacy":
                         enqueue_task_generation_aware(org.orchestrator, queue, org.slug, task_id)
             for entry in entries:
@@ -817,15 +821,16 @@ def pause_overview(org: Any, *, limit: int, before: str | None) -> dict:
                     elif dispatch.kind not in {"absent", "retired"}:
                         runnable = False
                         projection["evidence_complete"] = False
-                elif ownership.kind == "draft" and ownership.state == "queued" and capture is not None:
+                elif ownership.kind in ("draft", "f5") and ownership.state == "queued" and capture is not None:
                     try:
                         # This is a snapshot observation, never an admission
                         # validator/lease. The final writer still uses the sole
                         # authoritative captured-value validator.
                         if org.workflow_authority._pointer(conn, org.workflow_authority.namespace) != capture.pointer:
                             raise PauseControlError("pause_control_unavailable")
-                        intent = org.workflow_drafts._intent(conn, task_id)
-                        org.workflow_drafts._eligible(conn, intent, capture, sessions)
+                        dispatcher = org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts
+                        intent = dispatcher._intent(conn, task_id)
+                        dispatcher._eligible(conn, intent, capture, sessions)
                         runnable = True
                     except Exception:
                         pass

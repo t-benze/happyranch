@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -22,10 +23,14 @@ type fakeEngine struct {
 	events                        *[]string
 	listenEntered, listenRelease  chan struct{}
 	closed                        chan struct{}
+	startFn                       func(context.Context, EngineConfig, []byte) (RedemptionReceipt, error)
 }
 
-func (f *fakeEngine) Start(context.Context, EngineConfig, []byte) (RedemptionReceipt, error) {
+func (f *fakeEngine) Start(ctx context.Context, cfg EngineConfig, credential []byte) (RedemptionReceipt, error) {
 	*f.events = append(*f.events, "start")
+	if f.startFn != nil {
+		return f.startFn(ctx, cfg, credential)
+	}
 	return f.receipt, f.startErr
 }
 func (f *fakeEngine) Listen(string) (net.Listener, error) {
@@ -164,13 +169,17 @@ func TestStartSuccessConsumesCredentialThenProxiesRawBytes(t *testing.T) {
 	listener := &oneListener{conn: tailServer, blockAfter: true, closed: make(chan struct{}), accepted: make(chan struct{}), events: &events}
 	e := &fakeEngine{listener: listener, receipt: RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, events: &events}
 	dials := []net.Conn{probeClient, connectorClient}
-	dial := dialFunc(func(context.Context, string, string) (net.Conn, error) {
+	caller := context.Background()
+	dial := dialFunc(func(ctx context.Context, _, _ string) (net.Conn, error) {
+		if len(dials) == 1 && (ctx != caller || ctx.Err() != nil) {
+			return nil, errors.New("proxy did not retain caller lifetime")
+		}
 		c := dials[0]
 		dials = dials[1:]
 		return c, nil
 	})
 	s := New(cfg, e, dial)
-	if err := s.Start(context.Background()); err != nil {
+	if err := s.Start(caller); err != nil {
 		t.Fatal(err)
 	}
 	_ = probeServer.Close()
@@ -313,6 +322,9 @@ func TestStopWhileListenBlockedRejectsPostShutdownAdmission(t *testing.T) {
 	startResult := make(chan error, 1)
 	go func() { startResult <- s.Start(context.Background()) }()
 	<-entered
+	if err := s.Start(context.Background()); err != ErrListener || count(events, "start") != 1 {
+		t.Fatal("concurrent Start escaped admission fence")
+	}
 	_ = probeServer.Close()
 	stopResult := make(chan error, 1)
 	go func() { stopResult <- s.Stop() }()
@@ -1023,3 +1035,421 @@ func count(xs []string, s string) int {
 }
 
 var _ = time.Second
+
+// Connector cases use the shipping Engine/Dialer/Listener boundaries. Budgets
+// use real context deadlines; no production clock, sleeper or retry seam.
+type countedProbe struct {
+	net.Conn
+	closes   int
+	closeErr error
+	onClose  func()
+}
+
+func (p *countedProbe) Close() error {
+	p.closes++
+	if p.onClose != nil {
+		p.onClose()
+	}
+	return p.closeErr
+}
+
+type timeoutLookingError struct{}
+
+func (timeoutLookingError) Error() string   { return "dial timeout: connection refused" }
+func (timeoutLookingError) Timeout() bool   { return true }
+func (timeoutLookingError) Temporary() bool { return true }
+
+func connectorFixture(t *testing.T, dial Dialer) (*Sidecar, *fakeEngine, *[]string) {
+	t.Helper()
+	events := []string{}
+	listener := &oneListener{blockAfter: true, closed: make(chan struct{}), accepted: make(chan struct{}), events: &events}
+	engine := &fakeEngine{listener: listener, receipt: RedemptionReceipt{true, true, true}, events: &events}
+	return New(validConfig(t), engine, dial), engine, &events
+}
+
+func TestConnectorImmediateAndDelayedSuccessAdmitExactlyOnce(t *testing.T) {
+	for _, first := range []string{"immediate", "refused", "attempt-timeout"} {
+		t.Run(first, func(t *testing.T) {
+			probes := []*countedProbe{}
+			calls := 0
+			var svc *Sidecar
+			var key []byte
+			var engineDeadline time.Time
+			dial := dialFunc(func(ctx context.Context, network, address string) (net.Conn, error) {
+				calls++
+				if network != "tcp" || address != svc.cfg.ConnectorAddr {
+					t.Fatal("probe target changed")
+				}
+				deadline, ok := ctx.Deadline()
+				if !ok || deadline.After(time.Now().Add(time.Second)) || deadline.After(engineDeadline) {
+					t.Fatal("dial budget escaped enclosing context")
+				}
+				for _, b := range key {
+					if b != 0 {
+						t.Fatal("engine credential buffer retained")
+					}
+				}
+				if _, err := os.Stat(svc.cfg.CredentialFile); !os.IsNotExist(err) {
+					t.Fatal("credential commit moved after connector")
+				}
+				if _, err := os.Stat(filepath.Join(svc.cfg.StateDir, consumedMarker)); err != nil {
+					t.Fatal("missing pre-probe consumption commit")
+				}
+				probe := &countedProbe{}
+				probes = append(probes, probe)
+				if calls == 1 && first == "refused" {
+					return probe, fmt.Errorf("private: %w", syscall.ECONNREFUSED)
+				}
+				if calls == 1 && first == "attempt-timeout" {
+					<-ctx.Done()
+					return probe, fmt.Errorf("private: %w", ctx.Err())
+				}
+				return probe, nil
+			})
+			s, engine, events := connectorFixture(t, dial)
+			svc = s
+			entry := time.Now()
+			engine.startFn = func(ctx context.Context, _ EngineConfig, credential []byte) (RedemptionReceipt, error) {
+				key = credential
+				engineDeadline, _ = ctx.Deadline()
+				if engineDeadline.Before(entry.Add(75*time.Second)) || engineDeadline.After(time.Now().Add(75*time.Second)) {
+					t.Fatal("total deadline is not anchored at Start entry")
+				}
+				return RedemptionReceipt{true, true, true}, nil
+			}
+			if err := svc.Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			want := 2
+			if first == "immediate" {
+				want = 1
+			}
+			if calls != want || count(*events, "start") != 1 || count(*events, "listen") != 1 {
+				t.Fatalf("calls=%d events=%v", calls, *events)
+			}
+			for _, probe := range probes {
+				if probe.closes != 1 {
+					t.Fatalf("owned connection closes=%d", probe.closes)
+				}
+			}
+			if err := svc.Stop(); err != nil {
+				t.Fatal(err)
+			}
+			if count(*events, "engine-close") != 1 || count(*events, "listener-close") != 1 {
+				t.Fatal(*events)
+			}
+		})
+	}
+}
+
+func TestConnectorTerminalResultsNeverRetryOrListen(t *testing.T) {
+	for _, outcome := range []string{"unclassified", "timeout-text-and-net-error", "deadline-identity-before-expiry", "nil-success", "success-close-failure", "refused-close-failure", "connection-with-terminal-error"} {
+		t.Run(outcome, func(t *testing.T) {
+			probe := &countedProbe{}
+			calls := 0
+			svc, _, events := connectorFixture(t, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+				calls++
+				switch outcome {
+				case "unclassified":
+					return nil, errors.New("private failure")
+				case "timeout-text-and-net-error":
+					return nil, timeoutLookingError{}
+				case "deadline-identity-before-expiry":
+					return nil, context.DeadlineExceeded
+				case "nil-success":
+					return nil, nil
+				case "success-close-failure":
+					probe.closeErr = errors.New("private close")
+					return probe, nil
+				case "refused-close-failure":
+					probe.closeErr = errors.New("private close")
+					return probe, syscall.ECONNREFUSED
+				default:
+					return probe, errors.New("private failure")
+				}
+			}))
+			if err := svc.Start(context.Background()); err != ErrConnector {
+				t.Fatalf("error=%v", err)
+			}
+			if calls != 1 || contains(*events, "listen") {
+				t.Fatalf("calls=%d events=%v", calls, *events)
+			}
+			wantCloses := 0
+			if strings.Contains(outcome, "close-failure") || outcome == "connection-with-terminal-error" {
+				wantCloses = 1
+			}
+			if probe.closes != wantCloses {
+				t.Fatalf("closes=%d want=%d", probe.closes, wantCloses)
+			}
+			_ = svc.Stop()
+			if count(*events, "engine-close") != 1 {
+				t.Fatal(*events)
+			}
+		})
+	}
+}
+
+func TestConnectorPersistentRefusalExhaustsNineAttempts(t *testing.T) {
+	calls := 0
+	probes := []*countedProbe{}
+	var last time.Time
+	svc, _, events := connectorFixture(t, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+		if calls > 0 && time.Since(last) < 200*time.Millisecond {
+			t.Fatal("retry spacing shortened")
+		}
+		last = time.Now()
+		calls++
+		probe := &countedProbe{}
+		probes = append(probes, probe)
+		return probe, fmt.Errorf("private: %w", syscall.ECONNREFUSED)
+	}))
+	if svc.Start(context.Background()) != ErrConnector || calls != 9 || contains(*events, "listen") {
+		t.Fatalf("calls=%d events=%v", calls, *events)
+	}
+	for _, probe := range probes {
+		if probe.closes != 1 {
+			t.Fatal("connection+error was not closed exactly once")
+		}
+	}
+	_ = svc.Stop()
+	if count(*events, "start") != 1 || count(*events, "engine-close") != 1 {
+		t.Fatal(*events)
+	}
+}
+
+func TestConnectorPhaseClipsNinthAttemptAtTenSeconds(t *testing.T) {
+	calls := 0
+	var firstEntry, firstDeadline, lastDeadline time.Time
+	svc, _, events := connectorFixture(t, dialFunc(func(ctx context.Context, _, _ string) (net.Conn, error) {
+		calls++
+		if calls == 1 {
+			firstEntry = time.Now()
+			firstDeadline, _ = ctx.Deadline()
+		}
+		lastDeadline, _ = ctx.Deadline()
+		if lastDeadline.After(time.Now().Add(time.Second)) {
+			t.Fatal("attempt exceeds one second")
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}))
+	entry := time.Now()
+	if svc.Start(context.Background()) != ErrConnector || contains(*events, "listen") {
+		t.Fatal(*events)
+	}
+	if calls != 9 || lastDeadline.After(firstEntry.Add(10*time.Second)) || !lastDeadline.Before(firstDeadline.Add(8*(time.Second+200*time.Millisecond))) {
+		t.Fatalf("calls=%d first=%s last=%s", calls, firstDeadline, lastDeadline)
+	}
+	if elapsed := time.Since(entry); elapsed < 10*time.Second || elapsed > 12*time.Second {
+		t.Fatalf("phase elapsed=%s", elapsed)
+	}
+	_ = svc.Stop()
+}
+
+func TestConnectorCallerCancellationRefusesBeforeDuringDialAndSpacing(t *testing.T) {
+	for _, stage := range []string{"before", "dial", "spacing", "close"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if stage == "before" {
+				cancel()
+			}
+			calls := 0
+			probe := &countedProbe{}
+			if stage == "close" {
+				probe.onClose = cancel
+			}
+			svc, _, events := connectorFixture(t, dialFunc(func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+				calls++
+				switch stage {
+				case "dial":
+					cancel()
+					<-dialCtx.Done()
+					return probe, context.Canceled
+				case "spacing":
+					go func() { time.Sleep(50 * time.Millisecond); cancel() }()
+					return probe, syscall.ECONNREFUSED
+				default:
+					return probe, nil
+				}
+			}))
+			err := svc.Start(ctx)
+			if stage == "before" {
+				assertNetworkReason(t, err, "context_cancelled")
+				if len(*events) != 0 || calls != 0 {
+					t.Fatal("cancelled caller started work")
+				}
+				if _, err := os.Stat(svc.cfg.CredentialFile); err != nil {
+					t.Fatal("cancelled entry consumed credential")
+				}
+				return
+			}
+			if err != ErrConnector || calls != 1 || probe.closes != 1 || contains(*events, "listen") {
+				t.Fatalf("error=%v calls=%d closes=%d events=%v", err, calls, probe.closes, *events)
+			}
+			_ = svc.Stop()
+			if count(*events, "engine-close") != 1 {
+				t.Fatal(*events)
+			}
+		})
+	}
+}
+
+func TestStartEngineUsesTotalAndEarlierCallerDeadlineWithoutRenewal(t *testing.T) {
+	for _, budget := range []string{"total-75s", "earlier-parent"} {
+		t.Run(budget, func(t *testing.T) {
+			ctx := context.Background()
+			var callerDeadline time.Time
+			if budget == "earlier-parent" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
+				defer cancel()
+				callerDeadline, _ = ctx.Deadline()
+			}
+			calls := 0
+			svc, engine, events := connectorFixture(t, dialFunc(func(context.Context, string, string) (net.Conn, error) { calls++; return nil, nil }))
+			entry := time.Now()
+			engine.startFn = func(startup context.Context, _ EngineConfig, _ []byte) (RedemptionReceipt, error) {
+				deadline, ok := startup.Deadline()
+				if !ok || deadline.After(time.Now().Add(75*time.Second)) {
+					t.Fatal("engine escaped total acceptance")
+				}
+				if !callerDeadline.IsZero() && deadline != callerDeadline {
+					t.Fatal("engine renewed parent deadline")
+				}
+				if callerDeadline.IsZero() && deadline.Before(entry.Add(75*time.Second)) {
+					t.Fatal("wrong total deadline")
+				}
+				<-startup.Done() // Actual budget consumption, including the full75s case.
+				return RedemptionReceipt{true, true, true}, nil
+			}
+			assertNetworkReason(t, svc.Start(ctx), "deadline_exceeded")
+			if calls != 0 || contains(*events, "listen") {
+				t.Fatal("expired engine budget renewed connector phase")
+			}
+			if _, err := os.Stat(svc.cfg.CredentialFile); err != nil {
+				t.Fatal("late engine committed credential")
+			}
+			if _, err := os.Stat(filepath.Join(svc.cfg.StateDir, consumedMarker)); !os.IsNotExist(err) {
+				t.Fatal("late engine created marker")
+			}
+			_ = svc.Stop()
+			if count(*events, "start") != 1 || count(*events, "engine-close") != 1 {
+				t.Fatal(*events)
+			}
+		})
+	}
+}
+
+func TestConnectorLateDialOrCloseSuccessCannotAdmit(t *testing.T) {
+	for _, stage := range []string{"dial", "close", "attempt-dial", "attempt-close"} {
+		t.Run(stage, func(t *testing.T) {
+			budget := 30 * time.Millisecond
+			if strings.HasPrefix(stage, "attempt-") {
+				budget = 3 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			defer cancel()
+			calls := 0
+			probe := &countedProbe{}
+			if stage == "close" {
+				probe.onClose = func() { <-ctx.Done() }
+			}
+			svc, _, events := connectorFixture(t, dialFunc(func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+				calls++
+				deadline, _ := dialCtx.Deadline()
+				parentDeadline, _ := ctx.Deadline()
+				if !strings.HasPrefix(stage, "attempt-") && deadline != parentDeadline {
+					t.Fatal("dial escaped remaining total")
+				}
+				if stage == "dial" || stage == "attempt-dial" {
+					<-dialCtx.Done()
+				}
+				if stage == "attempt-close" {
+					probe.onClose = func() { <-dialCtx.Done() }
+				}
+				return probe, nil // A producer can return a resource after cancellation.
+			}))
+			if svc.Start(ctx) != ErrConnector || calls != 1 || probe.closes != 1 || contains(*events, "listen") {
+				t.Fatalf("calls=%d closes=%d events=%v", calls, probe.closes, *events)
+			}
+			_ = svc.Stop()
+		})
+	}
+}
+
+func TestLateListenerAndListenerWithErrorCloseBeforeEngine(t *testing.T) {
+	for _, outcome := range []string{"late", "resource-with-error"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+			defer cancel()
+			probe := &countedProbe{}
+			svc, engine, events := connectorFixture(t, dialFunc(func(context.Context, string, string) (net.Conn, error) { return probe, nil }))
+			listener := engine.listener.(*oneListener)
+			if outcome == "late" {
+				engine.listenEntered, engine.listenRelease = make(chan struct{}), make(chan struct{})
+				go func() { <-ctx.Done(); close(engine.listenRelease) }()
+			} else {
+				engine.listenErr = errors.New("private listener failure")
+			}
+			if svc.Start(ctx) != ErrListener {
+				t.Fatal("failed or late listener admitted")
+			}
+			select {
+			case <-listener.accepted:
+				t.Fatal("failed listener accepted")
+			default:
+			}
+			_ = svc.Stop()
+			if probe.closes != 1 || strings.Join(*events, ",") != "start,listen,listener-close,engine-close" {
+				t.Fatal(*events)
+			}
+		})
+	}
+}
+
+// A context whose timer delivery is pending still has a real elapsed deadline.
+type pendingDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c pendingDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+func TestStartupAbsoluteDeadlineRefusesPendingTimerDelivery(t *testing.T) {
+	ctx := pendingDeadlineContext{Context: context.Background(), deadline: time.Now().Add(-time.Nanosecond)}
+	if ctx.Err() != nil || startupContextError(ctx) != context.DeadlineExceeded {
+		t.Fatal("elapsed deadline relied on timer delivery")
+	}
+}
+
+func TestConnectorConsumedCallerBudgetCannotRenewRetrySpacing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	calls := 0
+	probe := &countedProbe{}
+	svc, engine, events := connectorFixture(t, dialFunc(func(context.Context, string, string) (net.Conn, error) {
+		calls++
+		return probe, syscall.ECONNREFUSED
+	}))
+	engine.startFn = func(startup context.Context, _ EngineConfig, _ []byte) (RedemptionReceipt, error) {
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-startup.Done():
+			return RedemptionReceipt{}, startup.Err()
+		}
+		return RedemptionReceipt{true, true, true}, nil
+	}
+	if svc.Start(ctx) != ErrConnector || calls != 1 || probe.closes != 1 || contains(*events, "listen") {
+		t.Fatalf("calls=%d events=%v", calls, *events)
+	}
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Fatal("retry did not preserve consumed caller deadline")
+	}
+	_ = svc.Stop()
+	if count(*events, "start") != 1 || count(*events, "engine-close") != 1 {
+		t.Fatal(*events)
+	}
+}

@@ -25,6 +25,7 @@ class PiAdapter:
         cli_path: str,
         prompt: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         model_arg: list[str] | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
@@ -44,9 +45,8 @@ class PiAdapter:
                 (message omission) and is never used on the thread path.
         """
         cmd: list[str] = [cli_path]
-        if model and model_arg:
-            for elem in model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("pi", model, model_arg, reasoning_effort)
         cmd += [
             "-p",
             "--mode",

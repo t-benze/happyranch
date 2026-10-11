@@ -19,6 +19,8 @@ const AGENT_ERROR_KEYS: Record<string, MessageKey> = {
   agent_exists: 'agents.error.agentExists',
   team_exists: 'agents.error.teamExists',
   unknown_team: 'agents.error.unknownTeam',
+  invalid_reasoning_effort: 'agents.error.invalidEffort',
+  reasoning_executor_changed: 'agents.error.effortExecutorChanged',
 };
 
 export type AgentErrorView = { kind: 'message'; key: MessageKey } | { kind: 'raw'; text: string };

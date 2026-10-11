@@ -1,0 +1,9 @@
+session_timeout_seconds: 300
+dreaming:
+  enabled: false
+working_hours:
+  enabled: false
+workspace_cleanup:
+  enabled: false
+threads:
+  enabled: false

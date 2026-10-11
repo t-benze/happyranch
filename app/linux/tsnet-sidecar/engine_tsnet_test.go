@@ -806,3 +806,36 @@ func TestCredentialWhitespaceAtProductionAuthKeyInput(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionAdapterViaSidecarReceivesSeventyFiveSecondAcceptanceCeiling(t *testing.T) {
+	cfg := validConfig(t)
+	cfg.ExpectedPeers = []string{"expected"}
+	events := []string{}
+	listener := &oneListener{blockAfter: true, closed: make(chan struct{}), accepted: make(chan struct{}), events: &events}
+	server := &fakeTSNetServer{upStatus: runningWithPeer("expected", ""), listener: listener}
+	probe := &countedProbe{}
+	engine := testTSNetEngine(server)
+	svc := New(cfg, engine, dialFunc(func(ctx context.Context, _, _ string) (net.Conn, error) {
+		deadline, _ := ctx.Deadline()
+		if deadline.After(server.upDeadline) {
+			t.Fatal("connector renewed engine acceptance budget")
+		}
+		return probe, nil
+	}))
+	entry := time.Now()
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if server.upDeadline.Before(entry.Add(75*time.Second)) || server.upDeadline.After(time.Now().Add(75*time.Second)) {
+		t.Fatalf("adapter deadline=%s; independent80s cap escaped enclosing75s", server.upDeadline)
+	}
+	if server.startCalls != 1 || server.upCalls != 1 || server.listenCalls != 1 || server.clearAuthKeyCalls != 1 || probe.closes != 1 {
+		t.Fatal("startup/redeem/admission repeated")
+	}
+	if err := svc.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	if server.closeCalls != 1 {
+		t.Fatal("engine not closed exactly once")
+	}
+}

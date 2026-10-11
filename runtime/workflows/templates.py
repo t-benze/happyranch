@@ -195,12 +195,12 @@ def _validate_legacy_definition(definition: object) -> bytes:
 
 
 def _compile_document_definition(definition: object) -> dict:
-    """Compile only the finite @2 data contract, without principal authority."""
+    """Compile a matched finite document family without principal authority."""
     root = _closed_dict(definition, {
         "kind", "schema_version", "description", "author", "output", "reviewers",
         "outcomes", "approval", "request_changes", "submission",
     })
-    if (type(root["schema_version"]) is not int or root["schema_version"] != 2
+    if (type(root["schema_version"]) is not int or root["schema_version"] not in (2, 3)
             or root["kind"] != "document-review"):
         raise WorkflowTemplateError("invalid_template_definition")
     for description in (root["description"], _closed_dict(
@@ -242,27 +242,31 @@ def _compile_document_definition(definition: object) -> dict:
             raise WorkflowTemplateError("invalid_template_definition")
     elif root["request_changes"] is not None:
         raise WorkflowTemplateError("invalid_template_definition")
-    submission = _closed_dict(root["submission"], {"timing"})
+    version = root["schema_version"]
+    submission = _closed_dict(root["submission"], {"timing", "delivery"} if version == 3 else {"timing"})
+    if version == 3 and submission["delivery"] != "current-author-handoff@1":
+        raise WorkflowTemplateError("invalid_template_definition")
     if submission["timing"] not in ("on-completion", "while-active-or-completed"):
         raise WorkflowTemplateError("invalid_template_definition")
     # Store the operator's ordering. Neither a name nor a numerical publication
     # version participates in policy selection.
-    return dict(format="workflow-document-contract@2", author_role=author["role"],
+    return dict(format=f"workflow-document-contract@{version}", author_role=author["role"],
                 role_kinds=kinds, reviewer_roles=reviewer_roles, output=root["output"],
                 outcomes=outcomes, approval=approval, request_changes=root["request_changes"],
                 submission=submission)
 
 
 def _validate_definition(definition: object) -> bytes:
-    if isinstance(definition, dict) and type(definition.get("schema_version")) is int and definition["schema_version"] == 2:
+    if isinstance(definition, dict) and type(definition.get("schema_version")) is int and definition["schema_version"] in (2, 3):
         _compile_document_definition(definition)
         return _canonical_json(definition, code="invalid_template_definition")
     return _validate_legacy_definition(definition)
 
 
 def _definition_pins(definition: dict) -> tuple[str, str, str]:
-    if type(definition.get("schema_version")) is int and definition["schema_version"] == 2:
-        return "workflow-compiler@2", "workflow-validator@2", "operator-input@2"
+    if type(definition.get("schema_version")) is int and definition["schema_version"] in (2, 3):
+        version = definition["schema_version"]
+        return f"workflow-compiler@{version}", f"workflow-validator@{version}", f"operator-input@{version}"
     return _COMPILER_PIN, _VALIDATOR_PIN, _SOURCE_PIN
 
 
@@ -282,7 +286,7 @@ def _document_contract(template: WorkflowTemplateVersion) -> dict | None:
                                         validator_pin=template.validator_pin, source_pin=template.source_pin)
         if raw != template.definition_bytes:
             raise WorkflowTemplateError("template_storage_corrupt")
-        if _definition_pins(definition)[0] == "workflow-compiler@2":
+        if _definition_pins(definition)[0] in ("workflow-compiler@2", "workflow-compiler@3"):
             return _compile_document_definition(definition)
         return None
     except (ValueError, TypeError, UnicodeError) as exc:
@@ -369,6 +373,9 @@ class WorkflowTemplateStore:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 principal.revalidate()
+                if compiler_pin == "workflow-compiler@3":
+                    from runtime.infrastructure.workflow_schema import require_author_handoff_schema
+                    require_author_handoff_schema(conn, expected_org_slug=org_slug)
                 prior = conn.execute(
                     "SELECT request_digest,template_identity_id,result_version,template_version_id "
                     "FROM workflow_template_publish_operations "

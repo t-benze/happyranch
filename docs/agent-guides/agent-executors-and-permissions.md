@@ -1,8 +1,44 @@
 # Agent Executors And Permissions
 
+## Founder-managed Default (THR296)
+
+
+The generated task-completion section refers to the canonical start-task skill
+for task-owner decision scope. Ordinary worker roots may use only their
+server-authorized `done`, self-only `delegate` or `escalate` decisions;
+delegated leaves return plain completions. An attempted non-root founder
+escalation fails the child and wakes its parent.
+Manager-only operations remain restricted. This wording does not grant powers
+or change callback identity, ordering, schemas or materialization algorithms.
+
+Maintenance rejects unexpected generated permission/skill grants before
+mutation; it does not change the native permission/materializer algorithms.
+Generated/global fault cuts name only checked finite paths. The paired observer
+refuses unsupported descriptor transfers or lost receipts; it is not an executor
+enforcement mechanism or a positive M inhibition certificate.
+
+Moving consultant_head and consultant_codex changes their current roster
+membership and demotes the former manager. Canonical names, providers,
+workspaces, runtime/provider memory, Git registrations and history remain in
+place. An attached pending bootstrap manager has no executable active definition
+or current manager-policy eligibility; approval/init use the existing lifecycle.
+The hosted Codex smoke stages that exact pending definition before attachment,
+then retains real authenticated approval and the genuine callback/launch witness.
+Founder is not an executor. Ordinary workers keep self-only delegation
+and acquire no manager/admin/policy/template powers. Existing supported
+materializers refresh declared generated instructions/skill links; their
+permission and authentication algorithms are unchanged. The bounded operator
+uses the existing task/thread/wake/dream/schedule/bootstrap union materializer
+for both workers and its normal package/both-root integrity validator, then
+flushes the verified output before readiness. Operator migration
+clears both agents' provider resume IDs/watermarks using the native atomic
+reset/audit helper, while preserving thread delivery and breaker continuity.
+
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
-> Product contracts are unchanged; replacement E2E is PENDING. See
+> THR-291 seq69: merge CI/default/all/pre-push are lint/static only; normal hooks
+> remain enabled. Daily-only E2E at19:00UTC is separate, first scheduled run PENDING.
+> Retained platform/callback sources are not automatic merge gates. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
 ## Bundled skill sources and canonical delivery
@@ -157,7 +193,7 @@ When `model` is **unset** (the default for all existing agents), the executor la
 ``agent.yaml`` is no longer read or written for model resolution. The
 ``happyranch set-model`` command writes exclusively to the ``.md`` frontmatter.
 
-Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
+Custom profiles preserve legacy input-v1 `model:null` by default. An ordinary adapter update can explicitly declare input-v2 model/effort forwarding; this declaration participates in existing exact-artifact approval. See the optional-input contract below.
 
 Missing values default to `claude`. All executors share `runtime/skills/bundled/`.
 
@@ -271,7 +307,7 @@ route through ``CustomAdapterExecutor`` instead — see
 [Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.
 
 **Custom-adapter result contract (THR-107).** Every registered custom adapter
-receives one v1 ``AdapterInput`` JSON object on stdin and MUST return one valid
+receives one ``AdapterInput`` JSON object (v1 by default, v2 only with explicit `input_options`) on stdin and MUST return one valid
 v1 ``AdapterOutput`` JSON object on stdout. This contract is mandatory; there
 is no optional sentinel envelope or legacy profile fallback. Before launch the
 daemon requires founder approval and an exact profile bind, verifies the
@@ -308,12 +344,16 @@ earned receipt remains dormant: no runner reads it in PR 2, built-ins and
 registered kimi/codebuddy ordinary behavior are unchanged, and custom profiles
 still receive fresh/full SQLite-canonical thread prompts.
 
+**Optional reasoning effort (THR298).** The static catalog is shared by the factory, adapters, compatibility fallback argv and UI metadata. Claude uses `--effort`, Codex a literal `-c model_reasoning_effort="<level>"`, Pi `--thinking`, and OpenCode `-m provider/model#variant`. Unset adds no override, including when the saved model already contains a suffix. Equal explicit/embedded variants work; conflicts refuse; OpenCode explicit effort without `provider/model` refuses. The independent OpenCode 2.0.12 `--dir`/transport mismatch remains outside this change. Exact stub argv proves transport, not native provider behavior.
+
+Custom `input_options` declares strict `version:2`, optional literal `model_arg_template`, and paired `effort_arg_template` / finite `reasoning_effort_values`. Normal registration/conformance/store/profile resolution/runtime all use that exact declaration. Templates are argv elements with one matching `{model}` or `{effort}` placeholder, never shell expressions. Input-v2 sends the actual selected model (or null) and effort object (or null); v1 still sends `model:null` and no effort member, even with a configured model. Input-v2 must acknowledge integer `adapter_metadata.input_contract_version:2`; output stays v1 with the existing identity/version/session/hash/retry checks. Legacy adapters need no reapproval. Opt-in is a normal reviewed adapter update, not a capability inspector. The [current spec](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) gives the exact declaration and wire shape.
+
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
 ``GET /api/v1/runtime/adapters/contract-reference`` — accessible during
 registration through the existing scoped registration-token posture on loopback
 (adapter-purpose ``hrreg_`` token, read-only, token is not consumed). The
-endpoint returns JSON Schemas generated from the shipping Pydantic models
+endpoint returns legacy input/output schemas plus `input_v2_schema` and `input_options_schema` generated from the shipping Pydantic models
 (``runtime/orchestrator/adapter_contract.py``) — the **server-derived schema is
 canonical**. Candidates implementing adapter wrappers must fetch this reference
 first and follow the returned schemas exactly.
@@ -506,7 +546,7 @@ architecture §2
 
 ## Deterministic integration executables
 
-All integration selections, including marked daemon/platform/remote-access siblings
+All retained pytest integration selections, including marked daemon/platform/remote-access siblings
 and the hosted Codex callback smoke, enter `tests/helpers/integration_parent.py`
 before importing pytest/runtime. The test-only fence retains production registry
 resolution and checks exact temporary stub paths/hashes, complete registry keys,
@@ -515,6 +555,18 @@ are unavailable until a separately authored deterministic fixture exists. No rea
 agent executable, model request, agentic download, production registry/configuration
 or credential inheritance is allowed. This test fence does not modify production
 permissions, resolver policy or `_nested_daemon_env`. See `docs/local-ci.md`.
+
+The separately authorized THR-291 standalone `e2e/run.py` lane is outside pytest.
+It uses public runtime/org/agent initialization and executor-binary registration,
+unchanged external stubs/guard checks, absolute interpreter and source/hash-bound
+callback wrappers, and an immutable finite external plan. It never loads
+`integration_parent`, sitecustomize or `guard.install`, and never replaces a
+product method. Only disposable GitHub Ubuntu runners are admitted; no real
+provider credentials or host executables are available. Read-only reopened
+SQLite and built-browser observations are independent oracles. Exact PID/start,
+native backend, cgroup/unit and port/socket/data cleanup evidence is mandatory.
+This exception does not weaken any retained pytest/callback fence. See
+`e2e/README.md` for cases, budgets and unfulfilled behavioral evidence.
 
 ## Spawn-Environment Invariant and Worktree Isolation
 

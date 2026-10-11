@@ -25,6 +25,28 @@ Parameters:
                                 # carry the orchestration capabilities block here)
 ```
 
+## Workflow-owned document tasks
+
+For a workflow-owned task, follow its immutable document contract and only its
+recipient-filtered inputs. Do not use generic delegation, fanout, coding, approval
+or merge actions. Historical @1/@2 tasks retain their original drafting contract.
+A newly pinned @3 original author with explicit stage+submit authority receives
+its bound handoff supplement: preserve exact UTF8 output under one stable
+operation key before the genuine final completion callback. Staging reserves
+bytes only; the owned service fulfills that SAME operation after committed
+successful/quiescent terminal proof and current authority checks. The stage
+CLI is `happyranch workflows submissions stage --org ORG --session-id SID
+--from-file /absolute/command.json`. Supply the closed bound command, keep its
+original key on transport loss, and stage before the final callback. If the
+compatible adapter is unavailable, report that dependency; never fabricate a
+result or substitute an unapproved direct-submit/reviewer-stage operation.
+
+Configured review tasks independently assess their pinned document and filtered
+inputs, then report through their actual task/session callback. Requests and
+callbacks remain unsigned; do not claim a receipt, joined approval or another
+principal's signature. Report unavailable dependencies honestly. In every lane,
+retain this skill's FINAL report-completion action and current session binding.
+
 ## Steps
 
 1. **Parse parameters.** Extract `task_id`, `session_id`, `brief`, and (when present) `role_guidance` from the prompt above. Hold `session_id` in a variable for the lifetime of this session — every callback to `happyranch` must include it. When the `role_guidance` block is absent (typical worker spawn), treat `brief` as your complete per-task instruction.
@@ -194,12 +216,23 @@ Parameters:
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `output_dir`) may be omitted.
 
+   Ordinary worker-owned root tasks also return a decision: task_type=task
+   defines the decision owner. A worker root may finish, self-delegate or escalate
+   within its server-authorized contract. It may delegate only to itself; it gains
+   no peer/fanout, manager administration, policy or template rights. Human
+   Founder manages the team but never executes as an agent. Worker-owned
+   delegated leaves return plain completions. Their review_verdict records an
+   agent outcome attributed to the executable parent owner, not human approval.
+
    - If your role is to issue a verdict (code review, QA, design review, etc.), include `"verdict": "<value>"` in your payload. Free string; your team's workflow KB entry documents the vocabulary. Optional — workers without verdicts simply omit the field.
 
-   **Team-manager only — add a `decision` field.** Alongside the prose
-   `summary`, a team-manager session must include a top-level `decision`
-   object that the orchestrator will execute. Workers omit it. Omitting it
-   from a manager session escalates the task. See the response-format
+   **Decision-owning roots — add a `decision` field.** Alongside the prose
+   `summary`, a root task owner includes the supported top-level `decision`.
+   An ordinary worker root may use `done`, self-only `delegate` or `escalate`
+   within its server-authorized contract, with no peer, fanout or manager
+   administration. Delegated worker leaves omit decisions.
+   Team-manager roots retain their existing decision and escalation contract.
+   See the response-format
    section of your role_guidance for the exact shapes. The runtime request models and transition handlers enforce the
    contract; this skill explains
    the valid actions:
@@ -241,13 +274,14 @@ Parameters:
      failure cannot be bypassed with a remote historical link. A repeated
      failed slice wakes its owning manager for a revised-work or escalation
      decision; no runtime retry-ceiling successor is created.
-   - `supersede` — root-only replanning; requires `successor_brief`, `rationale`,
+   - `supersede` — manager-only root replanning; requires `successor_brief`, `rationale`,
      and the validated recovery attestation. This replanning disposition is
      root-scoped: if a non-root task owner returns it, the runtime fails that
      child through the ordinary terminal tail and wakes its parent to decide;
      no successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
-   - `escalate` — the task needs founder intervention; requires `reason`.
+   - `escalate` — a decision-owning root's request for founder intervention;
+     requires `reason`. Ordinary worker roots retain this server-authorized action.
      This founder-facing disposition is root-scoped: if a non-root task owner
      returns it, the runtime fails that child and wakes its parent to decide.
 
@@ -397,7 +431,10 @@ the fields your injected role contract requires:
   live job wait exists);
 - a **reviewer/QA** role additionally sends `"verdict": "<value>"` (its role
   contract defines the vocabulary);
-- a **team-manager** session additionally sends a top-level `"decision"` object.
+- a **decision-owning root**, including an ordinary worker root, additionally
+  sends a top-level `"decision"` object within its server-authorized contract.
+  A delegated worker leaf omits `decision`. Team-manager roots retain their
+  existing manager decision and policy contract.
   Its injected role guidance conditionally requires `manager_self_evaluation`
   for a versioned policy-bound escalation. When required, the active policy
   block is authoritative: it shows the exact required object and a filled
@@ -410,7 +447,11 @@ the fields your injected role contract requires:
   Do not invent policy wording, clause identifiers, a canonical phrase, or a
   second evaluation. For decisions where the injected guidance
   does not require that assessment, omit the field.
-  A worker must **never** manufacture a manager decision.
+  A worker must **never** manufacture a manager decision or manager policy
+  assessment. Its own root decision is limited to the server-authorized `done`,
+  self-only `delegate` or `escalate` contract; a delegated worker leaf omits
+  `decision`. An attempted non-root founder escalation fails the child and wakes
+  its parent under the existing runtime contract.
 
 **Real waits only.** `waiting_on_job_ids` requires `status="blocked"` and must
 list only real, currently non-terminal jobs owned by this task. An explicitly

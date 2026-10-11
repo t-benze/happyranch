@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 var (
@@ -62,6 +63,14 @@ func NetworkJoinSubReason(err error) string {
 }
 
 const consumedMarker = "credential.consumed"
+
+const (
+	startupBudget       = 75 * time.Second
+	connectorBudget     = 10 * time.Second
+	connectorDialBudget = time.Second
+	connectorSpacing    = 200 * time.Millisecond
+	connectorAttempts   = 9
+)
 
 type Config struct {
 	StateDir, CredentialFile, ControlURL, RoleIdentity string
@@ -138,6 +147,13 @@ func New(cfg Config, engine Engine, dialer Dialer) *Sidecar {
 }
 
 func (s *Sidecar) Start(ctx context.Context) error {
+	// This deadline begins at entry, including credential and engine work.
+	// Serving retains ctx; cancelling startup must not cancel accepted proxies.
+	startup, cancel := context.WithDeadline(ctx, time.Now().Add(startupBudget))
+	defer cancel()
+	if err := startupContextError(startup); err != nil {
+		return terminalNetworkFailure(err)
+	}
 	if err := s.cfg.Validate(); err != nil {
 		return err
 	}
@@ -156,11 +172,18 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		close(done)
 		s.mu.Unlock()
 	}()
+	if err := startupContextError(startup); err != nil {
+		return terminalNetworkFailure(err)
+	}
 	credential, err := consumeInput(s.cfg)
 	if err != nil {
 		return ErrCredentialInput
 	}
-	receipt, err := s.engine.Start(ctx, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeers}, credential)
+	if err := startupContextError(startup); err != nil {
+		clear(credential)
+		return terminalNetworkFailure(err)
+	}
+	receipt, err := s.engine.Start(startup, EngineConfig{s.cfg.StateDir, s.cfg.ControlURL, s.cfg.RoleIdentity, s.cfg.ExpectedPeers}, credential)
 	for i := range credential {
 		credential[i] = 0
 	}
@@ -171,6 +194,10 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		}
 		return ErrEngineStart
 	}
+	if err := startupContextError(startup); err != nil {
+		s.closeEngine()
+		return terminalNetworkFailure(err)
+	}
 	if !receipt.Redeemed || !receipt.Durable {
 		s.closeEngine()
 		return ErrDurableCommit
@@ -179,24 +206,34 @@ func (s *Sidecar) Start(ctx context.Context) error {
 		s.closeEngine()
 		return NetworkJoinFailure{SubReason: "expected_peer_missing"}
 	}
+	if err := startupContextError(startup); err != nil {
+		s.closeEngine()
+		return terminalNetworkFailure(err)
+	}
 	if len(credential) != 0 {
 		if err := commitConsumption(s.cfg); err != nil {
 			s.closeEngine()
 			return ErrDurableCommit
 		}
 	}
-	probe, err := s.dialer.DialContext(ctx, "tcp", s.cfg.ConnectorAddr)
-	if err != nil || probe == nil || probe.Close() != nil {
+	if s.probeConnector(startup) != nil {
+		s.closeEngine()
+		return ErrConnector
+	}
+	if startupContextError(startup) != nil {
 		s.closeEngine()
 		return ErrConnector
 	}
 	l, err := s.engine.Listen(s.cfg.ListenAddr)
 	if err != nil || l == nil {
+		if l != nil {
+			_ = l.Close()
+		}
 		s.closeEngine()
 		return ErrListener
 	}
 	s.mu.Lock()
-	if s.stopping {
+	if s.stopping || startupContextError(startup) != nil {
 		s.mu.Unlock()
 		_ = l.Close()
 		s.closeEngine()
@@ -207,6 +244,72 @@ func (s *Sidecar) Start(ctx context.Context) error {
 	s.mu.Unlock()
 	go s.acceptLoop(ctx, l)
 	return nil
+}
+
+// Timer delivery can lag behind an absolute deadline. Positive admission and
+// retry decisions must check the clock as well as context cancellation.
+func startupContextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func (s *Sidecar) probeConnector(startup context.Context) error {
+	phase, cancel := context.WithTimeout(startup, connectorBudget)
+	defer cancel()
+	for attempt := 0; attempt < connectorAttempts; attempt++ {
+		if startupContextError(phase) != nil {
+			return ErrConnector
+		}
+		dialCtx, cancelDial := context.WithTimeout(phase, connectorDialBudget)
+		if startupContextError(dialCtx) != nil {
+			cancelDial()
+			return ErrConnector
+		}
+		probe, err := s.dialer.DialContext(dialCtx, "tcp", s.cfg.ConnectorAddr)
+		dialErr := startupContextError(dialCtx)
+		// Own every returned resource, even when DialContext also returns an
+		// error. Close exactly once before any success or retry decision.
+		var closeErr error
+		if probe != nil {
+			closeErr = probe.Close()
+		}
+		afterCloseErr := startupContextError(dialCtx)
+		cancelDial()
+		if closeErr != nil || startupContextError(phase) != nil {
+			return ErrConnector
+		}
+		if err == nil {
+			if probe == nil || dialErr != nil || afterCloseErr != nil {
+				return ErrConnector
+			}
+			return nil
+		}
+		// A timeout identity is eligible only after the actual per-attempt
+		// deadline. Text and generic net.Error implementations are insufficient.
+		attemptTimeout := errors.Is(dialErr, context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded)
+		if !errors.Is(err, syscall.ECONNREFUSED) && !attemptTimeout {
+			return ErrConnector
+		}
+		if attempt+1 == connectorAttempts {
+			return ErrConnector
+		}
+		timer := time.NewTimer(connectorSpacing)
+		select {
+		case <-phase.Done():
+			timer.Stop()
+			return ErrConnector
+		case <-timer.C:
+		}
+		if startupContextError(phase) != nil {
+			return ErrConnector
+		}
+	}
+	return ErrConnector
 }
 
 func consumeInput(c Config) ([]byte, error) {

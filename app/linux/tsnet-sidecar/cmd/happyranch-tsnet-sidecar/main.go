@@ -59,7 +59,7 @@ func main() {
 		os.Exit(1)
 	}
 	notifier, err := sdnotify.New()
-	if err != nil || notifier.Notify("READY=1", "STATUS=sidecar listener ready") != nil {
+	if err != nil || publishSidecarReady(ctx, notifier) != nil {
 		_ = svc.Stop()
 		fmt.Fprintln(os.Stderr, "readiness_unavailable")
 		os.Exit(1)
@@ -129,6 +129,18 @@ type systemdNotifier interface {
 }
 
 var _ systemdNotifier = (*sdnotify.Notifier)(nil)
+
+// Start has admitted the listener; recheck the caller at the publication
+// boundary so cancellation delivered during notifier setup cannot emit READY.
+func publishSidecarReady(ctx context.Context, notifier systemdNotifier) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return notifier.Notify("READY=1", "STATUS=sidecar listener ready")
+}
 
 func watchdogLoop(ctx context.Context, cancel context.CancelFunc, notifier systemdNotifier, interval time.Duration, failed chan<- error) {
 	ticker := time.NewTicker(interval)

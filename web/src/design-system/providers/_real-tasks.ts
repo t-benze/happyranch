@@ -1,5 +1,6 @@
 import {
   useInfiniteQuery,
+  useIsMutating,
   useMutation,
   useQuery,
   useQueryClient,
@@ -43,21 +44,23 @@ function invalidateTaskViews(
   qc: ReturnType<typeof useQueryClient>,
   slug: string,
   taskId?: string,
-): void {
-  qc.invalidateQueries({
+  allDetails = false,
+): Promise<void> {
+  const refreshes = [qc.invalidateQueries({
     predicate: (query) => {
       const key = query.queryKey;
       return (
         Array.isArray(key) &&
         typeof key[0] === 'string' &&
-        key[0].startsWith('tasks') &&
+        (key[0].startsWith('tasks') || (allDetails && key[0] === 'task')) &&
         key[1] === slug
       );
     },
-  });
+  })];
   if (taskId) {
-    qc.invalidateQueries({ queryKey: ['task', slug, taskId] });
+    refreshes.push(qc.invalidateQueries({ queryKey: ['task', slug, taskId] }));
   }
+  return Promise.all(refreshes).then(() => undefined);
 }
 
 function useTasksList(params?: { status?: string; limit?: number }) {
@@ -152,7 +155,7 @@ function useTask(taskId: string | undefined) {
     queryKey: ['task', slug, taskId],
     queryFn: () => tasksApi.getTask(slug, taskId as string),
     // Daemon returns an envelope; consumers want the bare TaskRecord.
-    select: (response) => response.task,
+    select: (response) => ({ ...response.task, pause: response.pause ?? response.task.pause }),
     enabled: !!slug && !!taskId,
   });
 }
@@ -229,7 +232,51 @@ function useResolveEscalation(taskId: string): MutationLike<ResolveEscalationArg
   });
 }
 
+function useTaskPauseOverview(params?: { before?: string }) {
+  const slug = useRealOrgSlug();
+  return useQuery({
+    queryKey: ['tasks-pause-overview', slug, params],
+    queryFn: () => tasksApi.getTaskPauseOverview(slug, { limit: 20, ...params }),
+    enabled: !!slug,
+    retry: false,
+    refetchInterval: 10_000,
+  });
+}
+
+function usePauseTask(taskId: string): ReturnType<TasksApi['usePauseTask']> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  const mutationKey = ['task-pause-control', slug, taskId];
+  const active = useIsMutating({ mutationKey });
+  const mutation = useMutation({
+    mutationKey,
+    mutationFn: (body: { expected_generation: number }) => tasksApi.pauseTask(slug, taskId, body.expected_generation),
+    retry: false,
+    onSuccess: () => invalidateTaskViews(qc, slug, undefined, true),
+    onError: () => invalidateTaskViews(qc, slug, undefined, true),
+  });
+  return { mutateAsync: mutation.mutateAsync, isPending: mutation.isPending || active > 0 };
+}
+
+function useResumeTask(taskId: string): ReturnType<TasksApi['useResumeTask']> {
+  const slug = useRealOrgSlug();
+  const qc = useQueryClient();
+  const mutationKey = ['task-pause-control', slug, taskId];
+  const active = useIsMutating({ mutationKey });
+  const mutation = useMutation({
+    mutationKey,
+    mutationFn: (body: { expected_generation: number }) => tasksApi.resumeTask(slug, taskId, body.expected_generation),
+    retry: false,
+    onSuccess: () => invalidateTaskViews(qc, slug, undefined, true),
+    onError: () => invalidateTaskViews(qc, slug, undefined, true),
+  });
+  return { mutateAsync: mutation.mutateAsync, isPending: mutation.isPending || active > 0 };
+}
+
 export const realTasksApi: TasksApi = {
+  useTaskPauseOverview,
+  usePauseTask,
+  useResumeTask,
   useTasksList,
   useTasksInfiniteList,
   useTasksRoots,

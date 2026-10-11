@@ -798,3 +798,29 @@ func TestAdmissionRemovalUsesRealNamedQueryAndStop(t *testing.T) {
 		t.Fatal("stop failure was reported as removed admission")
 	}
 }
+
+func TestSidecarReadyPublicationRechecksCaller(t *testing.T) {
+	for _, state := range []string{"live", "cancelled", "deadline"} {
+		t.Run(state, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if state == "cancelled" {
+				cancel()
+			}
+			if state == "deadline" {
+				var cancelDeadline context.CancelFunc
+				ctx, cancelDeadline = context.WithDeadline(ctx, time.Now().Add(-time.Nanosecond))
+				defer cancelDeadline()
+			}
+			notifier := &recordingNotifier{}
+			err := publishSidecarReady(ctx, notifier)
+			if state == "live" {
+				if err != nil || strings.Join(notifier.calls, ",") != "READY=1,STATUS=sidecar listener ready" {
+					t.Fatalf("error=%v calls=%v", err, notifier.calls)
+				}
+			} else if err == nil || len(notifier.calls) != 0 {
+				t.Fatalf("terminal caller published READY: error=%v calls=%v", err, notifier.calls)
+			}
+		})
+	}
+}

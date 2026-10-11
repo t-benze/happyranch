@@ -57,6 +57,8 @@ import type {
   KBEntry,
   TaskEvent,
   TaskRecord,
+  TaskPauseOverview,
+  TaskPauseControlResponse,
   TaskRecallNode,
 } from '@/lib/api/types';
 
@@ -183,7 +185,15 @@ export interface TaskTailSSECallbacks {
   onError?: (error: unknown) => void;
 }
 
+export interface TaskPauseOverviewQuery extends QueryLike<TaskPauseOverview> {
+  isFetching: boolean;
+  refetch: () => Promise<unknown>;
+}
+
 export interface TasksApi {
+  useTaskPauseOverview: (params?: { before?: string }) => TaskPauseOverviewQuery;
+  usePauseTask: (taskId: string) => MutationLike<{ expected_generation: number }, TaskPauseControlResponse>;
+  useResumeTask: (taskId: string) => MutationLike<{ expected_generation: number }, TaskPauseControlResponse>;
   useTasksList: (params?: {
     status?: string;
     limit?: number;
@@ -329,7 +339,9 @@ export interface AgentsApi {
   useReadAgentSystemPrompt: () => MutationLike<
     { slug: string; agentName: string }, import('@/lib/api/types').AgentSummary | undefined
   >;
-  useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
+  useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }> & {
+    refetch: () => Promise<unknown>;
+  };
   /** Pending enrollments — `status` filter narrows the file scan. */
   useEnrollmentsList: (
     params?: { status?: 'pending' | 'approved' },
@@ -415,7 +427,9 @@ export interface AgentsRoutes {
 // ---------------------------------------------------------------------------
 
 export interface TeamsApi {
-  useTeamsList: () => QueryLike<{ teams: import('@/lib/api/teams').TeamSummary[] }>;
+  useTeamsList: () => QueryLike<{ teams: import('@/lib/api/teams').TeamSummary[] }> & {
+    refetch: () => Promise<unknown>;
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -962,6 +962,18 @@ class TestConcurrentMaterialization:
         settings = Settings(project_root=tmp_path)
 
         from runtime.orchestrator.teams import TeamsRegistry
+        # Local canonical roster/role setup reaches the original real
+        # materializer fault; no admission guard is replaced or bypassed.
+        from dataclasses import replace
+        from tests.conftest import seed_test_agents
+        from runtime.orchestrator.agent_def import parse_agent_text, render_agent_text
+        seed_test_agents(org_paths, ("engineering_head", "dev_agent"))
+        worker_path = org_paths.agents_dir / "dev_agent.md"
+        worker = parse_agent_text(worker_path.read_text(), expected_name="dev_agent")
+        worker_path.write_text(render_agent_text(replace(worker, role="worker")))
+        (org_paths.root / "org" / "teams.yaml").write_text(
+            "teams:\n  engineering:\n    manager: engineering_head\n    workers: [dev_agent]\n",
+        )
         teams = TeamsRegistry.load(org_paths.root)
         orch = Orchestrator(
             db=db, settings=settings, paths=org_paths, slug="test",
@@ -994,8 +1006,7 @@ class TestConcurrentMaterialization:
         )
 
         with mock_patch.object(orch, "_build_executor", return_value=mock_executor):
-            # Create task and set assigned_agent so _default_agent_for_root
-            # (which requires a configured teams registry) is not invoked.
+            # Explicit worker execution follows valid manager admission.
             task_id = orch.create_task(
                 "Test permission error fail-closed", team="engineering",
             )

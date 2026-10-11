@@ -5,8 +5,90 @@
 > Product contracts are unchanged; replacement E2E is PENDING. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+**H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
+initializes H (complete G plus the exact `workflow_author_handoffs` table: 17
+columns, six automatic constraint indexes, no marker or explicit index).
+Existing F/E/G startup, reopen and enable validate their installed layout and
+never add H. F/E must use the separately approved G migration first. The
+explicit offline org-only command is
+`python scripts/migrate_workflow_author_handoff_schema.py --org-root <absolute-org-root> --org-slug <slug> [--check]`.
+For this H command, `--check` returns 1 for valid G requiring migration, 0 for
+validated H; ordinary migration/repeat returns 0, refusal 1, parser error 2.
+One short writer rechecks source ownership and complete independent references,
+adds only the approved table, validates the target and retained rows, then
+commits; failures roll back. Operator stop/ownership cooperation is required;
+the script stops no process and cannot exclude an arbitrary concurrent start.
+Even empty H requires an H-compatible reader. F/E/G SQL, IDs, history, permanent
+NULL active legacy result and genuine INTEGER result links retain their meaning.
+Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
+generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
+
+Complete H validation authenticates historical profile readiness from the saved
+full dependency/store/registry mirror. Every closed variant preserves raw
+nonempty source profile names; namespace and consumer identities are nonblank
+UTF8 strings of 1..256 bytes without NUL, generations are exact integers in
+0..9223372036854775807, and digests are full lowercase SHA256 strings. Native
+row grouping/order and unrelated or removed rows remain intact. The historical
+org's active requirements must have matching active store and registry
+generations, and their full names, digests and ordered consumer membership must
+reconstruct the pinned canonical profile projection. Empty mirror with required
+profiles, missing/mismatched required rows or unbound requirements refuse
+`workflow_author_handoff_storage_corrupt` before graph creation; an empty
+required projection remains valid. Readiness, the offline script and producers
+share this reader. Admitted GET exposes only category500; invisible scope404 and
+selected-grant403 retain earlier precedence. Today's mutable mirror is never
+historical evidence; a genuine later authority change remains a current hold.
+
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
+U3a(b) adds matched immutable `@3` template/activation/context readers,
+`submissions.validate_handoff_graph` and the internal handoff/review producers.
+Historical `@1`/`@2` families and pins retain their interpretation. An original
+CURRENT author with stage+submit authority reserves immutable bytes only. SAME
+operation fulfillment requires its genuine INTEGER/full callback and committed
+successful/quiescent terminal proof, plus current authority and independence.
+The atomic graph retains NULL legacy result, appends the authentic result link,
+and creates one unsigned request per configured slot. Actual agent tasks alone
+populate the ordered 0..3 reviewer-task IDs; roles, kinds, outcomes and timing
+come from immutable template data. Inputs remain filtered to each recipient.
+
+The review owner reuses the existing scheduler/native host lifecycle and
+Pause/Resume final admission, publication, prompt reader and cancellation fences.
+Completed-source discovery precedes workers and periodic enqueue hints; possible
+launch without affirmative proof remains uncertain. No callback is a signature.
+U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
+with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
+cancellation and portability owner selection. This complete U3a composition remains
+unaccepted pending renewed independent same-head assessment and current static gates.
+Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
+acceptance remain later units. Full independent review, honest same-head QA,
+unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
+manager guarded merge remain required under THR291 seq69. Actual CLI callback
+sources and isolation fences remain retained; execution is not a merge check.
+Manager-owned bounded two-template public smoke must precede Founder invitation.
+No live migration/enable/assignment/deploy/restart follows.
+
+**G submission-schema migration (THR139 seq395; retained F/E→G path).**
+The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.
+Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
@@ -28,11 +110,55 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
+
+## Founder-managed Default (THR296)
+
+
+Task-completion prompt wording follows the task owner: a worker-owned root may
+finish, self-delegate or escalate within its server-authorized contract. An
+attempted non-root founder escalation fails the child and wakes its parent.
+Manager-only operations retain their restrictions; the canonical start-task skill owns the
+payload guidance. Delegated leaves still omit decisions and callback identity
+and final-action ordering remain unchanged.
+
+Offline roster recovery uses the retained native operation/journal/request
+identity. Replay performs no reset/materializer/publication when actual durable
+completion is already established. Explicit compensation publishes a new
+coherent original-roster generation, retaining cleared resumes and audits; the
+original successful receipt is preserved. C6/C8/C9 observers/localizations are
+authored source, with M/guest-reboot behavior unexecuted.
+
+Attachment and executable authority are distinct. An exactly registered pending
+bootstrap manager can attach without a current manager grant; owner admission and
+workflow capture still require its ordinary supported promotion to ACTIVE. Active/
+pending duplicate identities or mismatched pending manager role/team refuse.
+
+Founder-managed teams use a human principal without an executable manager.
+Explicit active worker owners may run ordinary roots and self-decompose; they
+have no peer/fanout, manager administration, policy or template authority.
+Missing owners for a human team are refused before persistence. Malformed active
+definitions after attachment produce the existing unknown_owner admission refusal
+before task/attachment allocation. Delegated
+outcomes use a valid persisted executable parent owner, with unknown_manager
+for invalid ancestry. Null verdict uses the native implicit mapping; blank and
+custom strings remain exact. This audit is an agent outcome, never human approval.
+Selected human failed-leaf recovery is result-scoped and conservatively refuses
+foreign/multiple/unreadable history. Separate evidence, chain, fanout, FAILED,
+review and marker commits remain separate; history and review precede marker.
+Retained loop retries wait 50ms outside locks without a retry cap. Busy/pending
+is not settlement; parent handoff follows genuine owned cleanup. A native drain
+exception or cancellation retains the exceptional operation, phase and captured
+jobs. Same-process same-result reentry returns `recovery_required` without new
+settlement, parent handoff or success-only bookkeeping; FAILED job rows do not
+prove cleanup. Pending callers join the original owner. Shutdown preserves
+accepted/consumed residue for existing next-start recovery. Healthy finished
+same-result reentry checks current ownership/history again; cancellation or a
+replacement binding cannot receive a cached done disposition.
 
 ## Conventions
 
@@ -177,12 +303,16 @@ no retry, scan, or historical reclamation.
 
 `AgentDef` in `runtime/orchestrator/agent_def.py` represents an agent file: markdown with YAML frontmatter parsed/rendered by `parse_agent_text` and `render_agent_text`.
 
-Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `model`, and `system_prompt`. There is no `session_timeout_seconds` field.
+Fields: `name`, `team`, `role`, `executor`, `description`, `allow_rules`, `repos`, `enrolled_by`, `enrolled_at_task`, `enrolled_at`, `model`, optional `reasoning_effort`, and `system_prompt`. There is no `session_timeout_seconds` field.
 
 **THR-095 single-source-of-truth:** `executor`, `repos`, and `model` are read
 exclusively from ``AgentDef`` (the ``.md`` frontmatter). The workspace
 ``agent.yaml`` is no longer read or written by any org-agent path. See
 `docs/agent-guides/runtime-and-configuration.md#agent-configuration-single-source-of-truth-thr-095`.
+
+Selected effort follows model into existing task normal/followup/resume/recovery, thread fresh/resume/fallback, dream, wake and schedule executor calls/spec builders. `session_start` (including recovery) and `dream_started` JSON add `reasoning_effort` only when set. Thread invocations retain their existing model column and associate optional selection through `thread_reasoning_selection` audit JSON; wakes/schedules use `work_hour_reasoning_selection` / `schedule_reasoning_selection`. Task/thread/dream/wake/schedule selection uses one loaded canonical AgentDef for executor/model/effort. Wake/schedule selection audit `executor` records the effective lowercase registered provider, or the existing Claude fallback for an unregistered provider; `model` and `reasoning_effort` remain the configured overrides from that same definition. Fallback does not clear those overrides or guarantee native acceptance. The same effective provider reaches materialization and executor construction. An atomic save after the read applies to the next selection. These records describe selection, not provider-reported actual reasoning; token usage model reporting is unchanged. No SQL field or lifecycle state is added.
+
+Workflow authority `_agent_projection` appends `reasoning_effort` only when set. Absent-field canonical bytes/digests match the current projection baseline without effort; clear returns to that shape. Set values participate in canonical snapshot digest/publication/admission at the same existing writer intervals. Retained journal snapshots are immutable and never rewritten. Current profile requirement and activation readers address named agent fields and accept the optional field; digest/retained readers authenticate whole bytes. Older readers may ignore a set effort and older whole-definition writers may drop it: absent equality is not all-old-reader compatibility. Use a compatible writer and clear/reconcile before an intentional rollback. Effort adds no snapshot format bump of its own: the inherited roster writer emits schema2, and current version-aware readers retain schema1 and schema2 roster meanings. Historical bytes and meaning are preserved; effort adds no migration/capsule framework. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md).
 
 `runtime/orchestrator/prompt_loader.py` is the API for reading/writing agent files: `load_agent`, `list_agents`, `list_pending`, `write_pending_agent`, `approve_agent`, `reject_agent`, `load_terminated_agent`, `list_terminated`, `is_terminated`, and `is_name_unavailable`. Routes and orchestrator code should read through this module against the per-org root.
 
@@ -2100,7 +2230,7 @@ parent propagation, retry/delegation or F5 submission/review producer is used.
 Complete legacy release references also cover independently pinned v0 and
 historical authority-v2 constructor inputs, including the organic additive
 migration order. Each reference runs current generic migrations and the
-requested F/E/G installer on its own disposable database; the comparison
+requested F/E/G/H installer on its own disposable database; the comparison
 includes every SQL object. A candidate never supplies a baseline, and any
 required reference failure or unrelated object still refuses. This changes
 no observed-only authority-v2 claim rule.
@@ -2117,3 +2247,52 @@ Retained Pause retries admitted through v2 preserve their original tagged genera
 The existing job runner has no descendant-tree quiescence receipt: actual job terminal status still settles waits, while its committed launch journal becomes an unknown drain blocker. Only affirmative failure before runner entry closes a no-launch reservation. No PID absence, terminal row or caught runner exception establishes tree closure.
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
+
+
+The original PR1022 L4 run at `6472d886` retained an internal timeout exit 124,
+not complete recovery proof. Its incremental traces identify a missing bound
+completion audit for successful human-team leaf recovery, two failed-recovery
+reads of a nonexistent supervisor method, and fixture startup fingerprint
+refusals. Human-team completed recovery now atomically records the actual
+INTEGER result and recovery session in its completion audit; historical
+agent-team payloads retain their prior shape. Failed recovery reads shutdown
+from the existing admission controller without changing host enforcement.
+Test-side compiled-code fingerprints use marshal format 2, retaining full
+code comparison while excluding object-sharing reference flags. All 224 C4
+parameters and their original behavioral assertions remain. These corrections
+are source readiness; final-head hosted execution and the existing held proof
+inventory remain required, and no partial result is a feature-readiness claim.
+
+
+The original PR1022 L4 archive at `18e01cfa` retains parent/command exit124,
+45 failed calls, 24 passed calls, two setup errors and one interrupted setup-only
+case; it is not complete 224-case proof. Its task teardown emitted the existing
+informational `task_scratch_report`, which the human failed-recovery reader had
+incorrectly treated as foreign causal history. That exact report action remains
+informational. Failed recovery permits only the native task-scoped memory
+observations: `memory_added`, `memory_digest_impression`, `memory_search`,
+`memory_runtime_intent`, `memory_runtime_identity`, `memory_runtime_expectation`,
+`memory_runtime_binding`, `memory_runtime_launched`, `memory_runtime_terminal`,
+and `memory_collection_seal`. Agent-scoped memory read/update/promotion/lifecycle
+rows are outside this task history; collection acceptance/invalidation controls
+are not informational recovery exemptions. Unknown actions, including a
+dictionary-payload `memory_unrecognized_transition`, refuse as
+`ambiguous_history` before failure, review, marker, job or parent effects.
+Selected result/session/owner, review ordering and replay fences are unchanged.
+Fixture jobs are submitted
+by the original ordinary child before clean omission, never by the purpose-bound
+completion-recovery session. The restart-only no-job observer excludes the initial
+marker-interruption launch. Native diagnostic events link fully flushed JSON
+without replacing existing events, and actual job-submit refusals are retained
+before assertions. All 224 C4 cases and their behavioral assertions remain.
+These are source corrections only: no new behavioral execution, GREEN,
+causal/restoration/repetition or held migration/restore/reboot proof is claimed.
+
+U3a(c) completion routes select the existing draft or F5 review owner for exact
+full callback replay, and recheck ownership under org.db_lock before the existing
+binding lease and synchronized INTEGER result transaction. Generation/current
+session, cancellation, Pause/Resume and uncertain containment fences remain.
+Workflow trackers clear only through their existing terminal owner, preserving
+callback-before-terminal reads. Cancellation and portability select that same
+owner; a transport result or PID cannot prove quiescence. No callback is a
+signature and no reviewer request is automatically approved.

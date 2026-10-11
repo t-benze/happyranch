@@ -1,0 +1,194 @@
+"""Independent read-only durable expectations. Never import product writers."""
+from __future__ import annotations
+
+import json
+import hashlib
+import sqlite3
+import time
+from contextlib import closing, contextmanager
+from pathlib import Path
+from typing import Any
+
+
+def require(condition: bool, message: str, observed: Any = None) -> None:
+    if not condition:
+        raise AssertionError(f"{message}; observed={observed!r}")
+
+
+class Store:
+    def __init__(self, root: Path, org: str, deadline=None) -> None:
+        self.deadline = deadline
+        self.path = root / "runtime" / "orgs" / org / "happyranch.db"
+
+    @contextmanager
+    def connection(self):
+        # A fresh read-only connection and a shared absolute end, including
+        # SQLite busy waits and long VM execution. No product writer is imported.
+        end = self.deadline() if self.deadline else time.monotonic() + 5
+        require(end > time.monotonic(), "SQLite observation deadline")
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True,
+                                     timeout=min(5, end-time.monotonic()))) as db:
+            db.set_progress_handler(lambda: int(time.monotonic() >= end), 100)
+            yield db
+            require(time.monotonic() < end, "SQLite returned after observation deadline")
+
+    def query(self, sql: str, args: tuple = ()) -> list[dict]:
+        # Reopen on EVERY observation. immutable=1 would hide a live WAL.
+        with self.connection() as db:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+            return [dict(row) for row in db.execute(sql, args)]
+
+    def thread_frame(self) -> dict:
+        """One reopened coherent transaction, including all cross-thread effects."""
+        tables = ("threads", "thread_participants", "thread_messages", "thread_invocations",
+                  "thread_reply_delivery_state", "thread_reply_exchange", "thread_exchange_deferrals",
+                  "thread_reply_breaker_episodes", "thread_reply_breaker_receipts",
+                  "thread_message_attachments", "thread_scoped_attachments", "task_attachments",
+                  "tasks", "task_results", "audit_log", "jobs")
+        with self.connection() as db:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            result = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+                      for table in tables}
+            db.rollback()
+        # Canonical product files only; private provider payloads are not product
+        # attachment effects and are never read or exported by this observation.
+        result["files"] = []
+        for name in ("threads", "artifacts", "task-attachments"):
+            directory = self.path.parent / name
+            for path in sorted(directory.rglob("*")) if directory.exists() else []:
+                require(not path.is_symlink(), "unexpected thread/artifact symlink")
+                if path.is_file():
+                    result["files"].append(dict(path=str(path.relative_to(self.path.parent)),
+                                              bytes=path.stat().st_size, sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+        return result
+
+    def cancellation_frame(self) -> dict:
+        """All relevant SQL content from ONE real reopened ro transaction.
+
+        File observations are explicitly outside that SQL transaction.
+        """
+        with self.connection() as db:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            names = [row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                if row[0] in {"tasks", "task_results", "audit_log", "jobs", "threads"}
+                or row[0].startswith(("task_", "thread_"))]
+            tables = {name: [dict(row) for row in db.execute('SELECT * FROM "' + name + '" ORDER BY rowid')]
+                      for name in names}
+            db.rollback()
+        files = []
+        for name in ("threads", "artifacts", "task-attachments", "jobs"):
+            directory = self.path.parent / name
+            for path in sorted(directory.rglob("*")) if directory.exists() else []:
+                require(not path.is_symlink(), "E07 product file symlink")
+                if path.is_file():
+                    raw = path.read_bytes()
+                    files.append(dict(path=str(path.relative_to(self.path.parent)), bytes=len(raw),
+                                      sha256=hashlib.sha256(raw).hexdigest()))
+        return dict(tables=tables, files=files)
+
+    def snapshot(self, task: str | None = None) -> dict:
+        where = "" if task is None else " WHERE id=? OR parent_task_id=?"
+        tasks = self.query("SELECT * FROM tasks" + where + " ORDER BY id",
+                           () if task is None else (task, task))
+        ids = [row["id"] for row in tasks]
+        marks = ",".join("?" for _ in ids) or "NULL"
+        return {
+            "tasks": tasks,
+            "results": self.query(f"SELECT * FROM task_results WHERE task_id IN ({marks}) ORDER BY id", tuple(ids)),
+            "audit": self.query(f"SELECT * FROM audit_log WHERE task_id IN ({marks}) ORDER BY id", tuple(ids)),
+        }
+
+    def jobs(self, task: str) -> dict:
+        snapshot = self.snapshot(task)
+        snapshot["jobs"] = self.query(
+            "SELECT id,task_id,agent_name,title,rationale,script_text,interpreter,cwd_hint,"
+            "status,exit_code,reason,stdout_head,stderr_head,stdout_path,stderr_path,"
+            "duration_ms,started_at,finished_at,reviewed_at,reviewed_by,reject_reason,"
+            "cwd_resolved,max_runtime_seconds,max_output_bytes,review_required,persistent,created_at "
+            "FROM jobs WHERE task_id=? ORDER BY id", (task,))
+        return snapshot
+
+    def jobs_parked(self, task: str, session: str, ids: list[str]) -> dict | None:
+        snapshot = self.jobs(task)
+        require(len(snapshot["tasks"]) == 1, "jobs root has no children", snapshot)
+        row = snapshot["tasks"][0]
+        if row["block_kind"] != "blocked_on_job":
+            return None
+        require(row["status"] == "in_progress" and row["current_session_id"] == session
+                and row["orchestration_step_count"] == 1
+                and json.loads(row["blocked_on_job_ids"]) == sorted(ids), "literal parked job owner", row)
+        require(len(snapshot["results"]) == 1 and snapshot["results"][0]["status"] == "blocked"
+                and snapshot["results"][0]["session_id"] == session, "S1 genuinely blocked result", snapshot)
+        for action in ("session_start", "session_end", "completion_report", "task_blocked_on_jobs"):
+            count = sum(a["action"] == action for a in snapshot["audit"])
+            require(count <= 1, "no duplicate S1 lifecycle audit", action)
+            if count == 0:
+                return None  # Task publication and subsequent audit are separate commits.
+        require(not any(a["action"] == "task_resumed_from_jobs" for a in snapshot["audit"]), "no premature wake")
+        return snapshot
+
+    def ordinary(self) -> None:
+        selectors = self.query("SELECT team,family FROM authority_policy_active_selector")
+        require(selectors == [{"team": "engineering", "family": "empty"}],
+                "fresh public org must use empty ordinary policy", selectors)
+        require(not self.query("SELECT * FROM authority_policy_v2_session_bindings"),
+                "unexpected v2 session binding")
+
+    def result(self, payload: dict) -> dict:
+        rows = self.query("SELECT * FROM task_results WHERE task_id=? AND agent=? AND session_id=?",
+                          (payload["task_id"], payload["agent"], payload["session_id"]))
+        require(len(rows) == 1, "exactly one committed result per invocation", rows)
+        row = rows[0]
+        require(row["status"] == "completed" and row["output_summary"] == payload["summary"],
+                "committed original result retained", row)
+        decision = json.loads(row["decision_json"]) if row["decision_json"] else None
+        require(decision == payload.get("decision"), "exact accepted decision", decision)
+        require(row["confidence_score"] == 90, "confidence persisted", row)
+        return row
+
+    def finished(self, root: str, payloads: list[dict], starts: list[dict], *, child: str | None = None) -> dict:
+        snapshot = self.snapshot(root)
+        tasks = {row["id"]: row for row in snapshot["tasks"]}
+        expected_ids = {root} if child is None else {root, child}
+        require(set(tasks) == expected_ids, "exact task closure", tasks)
+        require(len(snapshot["results"]) == len(payloads), "exact result count", snapshot["results"])
+        for payload in payloads:
+            self.result(payload)
+        for task_id, row in tasks.items():
+            require(row["status"] == "completed" and row["completed_at"] is not None,
+                    "task completed durably", row)
+            for key in ("block_kind", "active_chain", "active_fanout"):
+                require(row[key] is None, f"terminal {key} cleared", row[key])
+            require(row["assigned_agent"] == ("case_manager" if task_id == root else "case_worker"),
+                    "task owner retained", row)
+            latest = next(p for p in reversed(payloads) if p["task_id"] == task_id)
+            require(row["current_session_id"] == latest["session_id"], "durable current generation", row)
+        require(tasks[root]["parent_task_id"] is None, "root linkage", tasks[root])
+        require(tasks[root]["orchestration_step_count"] == (2 if child else 1), "decision step count", tasks[root])
+        if child:
+            require(tasks[child]["parent_task_id"] == root, "child linkage", tasks[child])
+        expected_sessions = [p["session_id"] for p in payloads]
+        require([s["session"] for s in starts] == expected_sessions, "actual launch order", starts)
+        audit = snapshot["audit"]
+        by_action = {key: [r for r in audit if r["action"] == key]
+                     for key in ("session_start", "session_end", "completion_report", "orchestration_step", "chain_auto_advance")}
+        for key in ("session_start", "session_end", "completion_report"):
+            require(len(by_action[key]) == len(payloads), f"exact {key} count", by_action[key])
+        require(not by_action["chain_auto_advance"], "no ordinary chain advance", by_action)
+        require([json.loads(r["payload"])["decision"]["action"] for r in by_action["orchestration_step"]]
+                == (["delegate", "done"] if child else ["done"]), "consumed decision order", by_action)
+        for index, payload in enumerate(payloads):
+            start, end, completion = (by_action[key][index] for key in ("session_start", "session_end", "completion_report"))
+            require(json.loads(start["payload"])["session_id"] == payload["session_id"], "intended/actual session join", start)
+            require(start["task_id"] == end["task_id"] == completion["task_id"] == payload["task_id"], "audit task join")
+            require(start["id"] < end["id"] < completion["id"], "start/end/consumption order", [start, end, completion])
+        if child:
+            require(by_action["orchestration_step"][0]["id"] < by_action["session_start"][1]["id"], "delegate before worker")
+            require(by_action["completion_report"][1]["id"] < by_action["session_start"][2]["id"], "worker completion before natural M2")
+        return snapshot

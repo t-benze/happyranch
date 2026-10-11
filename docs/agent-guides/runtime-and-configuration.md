@@ -1,7 +1,89 @@
 # Runtime And Configuration
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+**H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
+initializes H (complete G plus the exact `workflow_author_handoffs` table: 17
+columns, six automatic constraint indexes, no marker or explicit index).
+Existing F/E/G startup, reopen and enable validate their installed layout and
+never add H. F/E must use the separately approved G migration first. The
+explicit offline org-only command is
+`python scripts/migrate_workflow_author_handoff_schema.py --org-root <absolute-org-root> --org-slug <slug> [--check]`.
+For this H command, `--check` returns 1 for valid G requiring migration, 0 for
+validated H; ordinary migration/repeat returns 0, refusal 1, parser error 2.
+One short writer rechecks source ownership and complete independent references,
+adds only the approved table, validates the target and retained rows, then
+commits; failures roll back. Operator stop/ownership cooperation is required;
+the script stops no process and cannot exclude an arbitrary concurrent start.
+Even empty H requires an H-compatible reader. F/E/G SQL, IDs, history, permanent
+NULL active legacy result and genuine INTEGER result links retain their meaning.
+Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
+generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
+
+Complete H validation authenticates historical profile readiness from the saved
+full dependency/store/registry mirror. Every closed variant preserves raw
+nonempty source profile names; namespace and consumer identities are nonblank
+UTF8 strings of 1..256 bytes without NUL, generations are exact integers in
+0..9223372036854775807, and digests are full lowercase SHA256 strings. Native
+row grouping/order and unrelated or removed rows remain intact. The historical
+org's active requirements must have matching active store and registry
+generations, and their full names, digests and ordered consumer membership must
+reconstruct the pinned canonical profile projection. Empty mirror with required
+profiles, missing/mismatched required rows or unbound requirements refuse
+`workflow_author_handoff_storage_corrupt` before graph creation; an empty
+required projection remains valid. Readiness, the offline script and producers
+share this reader. Admitted GET exposes only category500; invisible scope404 and
+selected-grant403 retain earlier precedence. Today's mutable mirror is never
+historical evidence; a genuine later authority change remains a current hold.
+
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
+U3a(b) adds matched immutable `@3` template/activation/context readers,
+`submissions.validate_handoff_graph` and the internal handoff/review producers.
+Historical `@1`/`@2` families and pins retain their interpretation. An original
+CURRENT author with stage+submit authority reserves immutable bytes only. SAME
+operation fulfillment requires its genuine INTEGER/full callback and committed
+successful/quiescent terminal proof, plus current authority and independence.
+The atomic graph retains NULL legacy result, appends the authentic result link,
+and creates one unsigned request per configured slot. Actual agent tasks alone
+populate the ordered 0..3 reviewer-task IDs; roles, kinds, outcomes and timing
+come from immutable template data. Inputs remain filtered to each recipient.
+
+The review owner reuses the existing scheduler/native host lifecycle and
+Pause/Resume final admission, publication, prompt reader and cancellation fences.
+Completed-source discovery precedes workers and periodic enqueue hints; possible
+launch without affirmative proof remains uncertain. No callback is a signature.
+U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
+with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
+cancellation and portability owner selection. This complete U3a composition remains
+unaccepted pending renewed independent same-head assessment and current static gates.
+Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
+acceptance remain later units. Full independent review, honest same-head QA,
+unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
+manager guarded merge remain required under THR291 seq69. Actual CLI callback
+sources and isolation fences remain retained; execution is not a merge check.
+Manager-owned bounded two-template public smoke must precede Founder invitation.
+No live migration/enable/assignment/deploy/restart follows.
+
+**G submission-schema migration (THR139 seq395; retained F/E→G path).**
+The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.
+Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
@@ -23,11 +105,43 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
+
+## Founder-managed Default (THR296)
+
+
+C10's browser-owned pre-attach fixture adds Product/product_head alongside the
+unchanged Engineering/engineering_head and Content/content_manager controls.
+HTTP availability is modeled at its owned proxy; normal actions settle through
+the real isolated daemon. Empty Default is a coherent transport projection,
+not a migration receipt. Existing startup and operator-maintenance gates stay
+unchanged; no browser invocation on the development host is authorized.
+
+Offline roster check/apply pins the real detached registered RuntimeDir and
+resolved candidate/interpreter bytes. Both closed org and canonical-store
+restore inventories are independently checked before apply; final pre-reset
+CAS includes canonical/generated metadata and authority/profile controls.
+Persistent launcher inhibition is externally owned and remains required across
+process loss/reboot. The current adapter cannot certify ordinary unmasked
+command-bearing units; see the bounded migration runbook.
+
+`teams.yaml` preserves default_team and task_default_team. Existing missing
+task pointers retain Engineering routing. Proven fresh org creation writes an
+empty Founder-managed Default and explicitly sets both pointers to Default.
+Attachment validates duplicate memberships and both registry→definition and
+definition→registry team/role agreement; pending enrollment keeps its supported
+semantics. Exactly matching pending bootstrap managers may attach, while missing,
+wrong-team/role and duplicate active/pending identities refuse. Pending managers
+remain non-executable and cannot make workflow authority ready; ordinary approval
+must promote them and publish the coherent active roster. Startup performs no roster move. Tagged managers have exactly kind
+and principal; human principal is founder and has no executable-agent name.
+New workflow authority snapshots use schema2 typed principals and pointers.
+Historical schema1 snapshots/bindings retain their original bytes and digests;
+version-aware readers exclude human principals from executable membership.
 
 ## Settings
 
@@ -364,13 +478,15 @@ roster without another directory scan. It holds every canonically ordered
 referenced profile lease through coherent synchronization/publication and
 shared-map insertion; its mirror
 digest must equal the current global digest before readiness is exposed.
-Startup does not dispatch, activate, or admit workflow work.
+Startup preserves existing workflow ownership. Before workers start, U3a(b)
+may fulfill an already committed completed H operation under current authority;
+it creates no new author activation or host execution.
 
 THR139 S1 separates existing and new databases. Existing `OrgState.load` retains
-foundation installation where required, validates full F/E/G before workflow
-recovery, and never adds the draft extension. F remains usable for legacy work;
-its cutover projection/log names the operator migration and recovery waits for validated E/G.
-POST /orgs creates a fresh skeleton, initializes complete G before attachment,
+foundation installation where required, validates full F/E/G/H before workflow
+recovery, and never adds the draft or handoff extension. F remains usable for legacy work;
+its cutover projection/log names the operator migration and recovery waits for validated E/G/H.
+POST /orgs creates a fresh skeleton, initializes complete H before attachment,
 and retains its existing cleanup/error ownership. Empty files/missing tables or
 startup discovery are not proof of new creation. Generic Database/runtime-audit
 construction remains workflow-free.
@@ -396,7 +512,7 @@ draft tables/six indexes and version1 marker, validates E, then commits. Partial
 unknown/corrupt layouts and nonorg/missing/symlink targets refuse; complete E/G
 replay preserves existing data and labels its actual layout. `--check` performs no migration, exits0 for ready
 E/G or3 for migration-needed F; refusal1, parser2. Pristine F retains preceding-reader
-compatibility until migration. **Every E/G requires a compatible reader**, including
+compatibility until migration. **Every E/G/H requires a compatible reader**, including
 new empty orgs; no downgrade stripping or live migration is implied by shipping
 this script. Read-only WAL inspection can use SQLite sidecars; crash rollback may
 leave a non-hot journal, while original data/schema/files remain intact.
@@ -601,6 +717,7 @@ are now read and written **exclusively** through ``AgentDef``:
 | ``executor`` | ``AgentDef.executor`` | ``_resolve_executor_name``, ``thread_runner``, ``dream_runner``, ``wake_runner`` |
 | ``repos`` | ``AgentDef.repos`` | ``list_agents``, ``init_agents`` clone loop |
 | ``model`` | ``AgentDef.model`` | ``_resolve_model_name``, ``_resolve_agent_model`` |
+| ``reasoning_effort`` | ``AgentDef.reasoning_effort`` | task/thread/dream/wake/schedule launch selection |
 | ``allow_rules`` | ``AgentDef.allow_rules`` | (already .md-only before THR-095) |
 
 The workspace ``agent.yaml`` file is **no longer read or written** by any
@@ -613,6 +730,12 @@ Retired assistant workspaces remain inert; startup never repairs or consumes the
 
 See also: `docs/agent-guides/orchestrator-contracts.md` (resolver contract),
 `docs/agent-guides/agent-executors-and-permissions.md` (executor surface).
+
+### Optional reasoning effort
+
+`reasoning_effort` is optional frontmatter beside `model`, never a second YAML store. Omitted updates preserve it; explicit `null` clears it. A real CLI change clears omitted model/effort; an explicit new pair is validated together. Unrelated whole-definition writes preserve the field. The residual YAML importer preserves it for the same CLI, clears it on a CLI change, and refuses incompatible model/effort before replacing canonical content.
+
+Allowed values come from the static built-in catalog or approved custom input-v2 declaration, surfaced through existing executor prerequisite metadata. Unset preserves existing model transport and emits no effort override. Static support says nothing about the chosen model/account accepting a level. OpenCode requires `provider/model`; embedded OpenCode `#variant` and recognized Pi `:thinking` must agree with explicit effort. See the [current contract](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) for mappings/defaults and compatibility limits.
 
 ## Session Timeout Resolution
 
@@ -829,27 +952,47 @@ Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
 The former default `not integration` selection was deleted, including its
 unmarked component, contract and system acceptance cases. Git history preserves
 that source; do not restore it as a hidden unit or renamed E2E suite.
-`scripts/local_ci.sh python` refuses with exit 2. `all` runs the retained Web
-checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
+`scripts/local_ci.sh python` refuses with exit 2. `all` runs source boundary and
+Web lint/static checks on Node 24 and reports units RETIRED and daily E2E PENDING.
 There is no default Python selection: pytest requires explicit existing canonical
 platform file selectors, or the isolated parent with `-m integration`.
 
-Required active PR **and exact-merge main** checks are `Web (Node 24)`,
-`Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
-and applicable Docs/other retained path-specific checks. The Linux job includes
-its existing real Codex callback smoke. Unit checks are neither required nor
-passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
-Independent review, QA, exact-head/completed checks and normal hooks remain
-mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
-never PASS; integration requires a disposable authorized venue away from the live
-daemon host and deterministic external provider stubs.
+Founder THR-291 seq69 makes automated PR/main merge CI **lint/static only**.
+Required checks at the final PR head and exact merge on main are exactly
+`Source Boundary Lint` and `Web Lint (Node 24)`, both unconditional with no
+path applicability. The manager supplies these two names to `pr_ci_waiter`;
+`pr_ci_merge` retains its independent review/QA, pinned-head and guarded-merge
+contract. Freshly observed GitHub protection has empty required contexts/checks
+and `strict=false`; source configuration is not external enforcement.
 
-The existing manual `local-ci-all` runner preserves its disposable environment,
-source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
-unit entry, G named-case controls/repetitions and lab unit preflight are removed.
-The existing `all_only` boolean is compatibility-only; every manual input runs
-retained Web checks, with separate integration skipped. Existing 150-minute manual
-and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+Default/`all` and `web` run only source boundary lint (all), Node24 colour scan,
+ESLint and TypeScript `--noEmit` analysis, with locked `npm ci` setup.
+Behavioral tests and builds are outside all/pre-push/required merge checks.
+Normal hooks stay enabled; never bypass hooks or the guarded worktree.
+Independent full code review and scoped QA remain mandatory. Static checks
+cannot establish lifecycle, callback, browser or platform correctness;
+behavioral regressions can be detected only later when their coverage executes.
+
+Fresh Product E2E runs **schedule only**, `0 19 * * *` (19:00 UTC / 03:00
+Asia/Shanghai), on default-branch immutable `github.sha`. Baseline Python
+3.12/3.13/3.14 and existing TERM3.12/INT3.14 launcher diagnostics feed
+`Daily Product E2E Health`. It is never a merge check. No local E2E alias,
+manual/PR/push/release dispatch, auto-retry or extra schedule is supported.
+First scheduled execution is **PENDING**; prior first-slice receipts remain
+historical evidence at their own source, not daily/final-head verification.
+Engineering_manager owns daily failure/missing-evidence triage through existing
+tasks/threads; no new notifications or guaranteed response SLA is implied.
+
+Python units stay RETIRED; `python` exits2. General integration is **SKIPPED**
+under THR-243 seq42, never PASS. Web Vitest, native/platform, integration,
+the named actual CLI callback and their isolation fences retain their sources.
+Docs Manual build and the real tenant-isolation harness retain manual-only
+workflows, outside PR/main. Manual/tag macOS packaging is a separate release
+activity and invokes no fresh E2E. Legacy nightly integration remains separate
+at 07:00 UTC, with its historical failures and fixtures unchanged; its manual
+`all_only` input runs the same lint/static all selection. No legacy repair or
+run is authorized by this cadence change.
+
 See [the reset coverage gap record](../python-test-reset.md) and
 [Local CI](../local-ci.md) for retained selectors and evidence limits.
 
@@ -928,14 +1071,19 @@ Unclaimed completion recovery retains the actual original return and SIDs while 
 
 ## Managed Linux enrollment input
 
-The sidecar normalizes surrounding enrollment-file whitespace before the actual tsnet AuthKey input, refuses blank input, and preserves interior bytes and existing custody/one-use safeguards. Owned read/normalized buffers are cleared on every returned path; the adapter releases its key reference after initialization, including failure. See [the maintained Linux package guide](../operations/managed-remote-access-linux-package.md) for the pinned Headscale logging limitation and bounded category-only capture. THR228seq390 keeps all unit execution suspended for PR800; authored Go regressions are UNEXECUTED, and retired Python units must not return. The published PR800 lineage’s combined local-CI Web targets still invoke Vitest; use only permitted scoped static components for this unpublished diagnostic correction.
+The sidecar normalizes surrounding enrollment-file whitespace before the actual tsnet AuthKey input, refuses blank input, and preserves interior bytes and existing custody/one-use safeguards. Owned read/normalized buffers are cleared on every returned path; the adapter releases its key reference after initialization, including failure. See [the maintained Linux package guide](../operations/managed-remote-access-linux-package.md) for the pinned Headscale logging limitation and bounded category-only capture. THR228seq390 keeps all unit execution suspended for PR800; authored Go regressions are UNEXECUTED, and retired Python units must not return. The seq402 unpublished candidate integrates current-main lint/static-only local-CI selection; use permitted source syntax/format/static checks and normal hooks.
 
 PR800's THR228seq396 local diagnostic correction adds finite connector, listener
 and direct-Start configuration categories to both receipt consumers; the Linux
 package guide records exact phases and limits. Main pre-validation retains its
-original exit-2 plain configuration message. No startup, retry or credential
-acceptance change follows. Authored retained cases and behavioral/proof results
+original exit-2 plain configuration message. That diagnostic delta alone changed no startup, retry or credential
+acceptance behavior; the seq402 connector contract below is separately authorized. Authored retained cases and behavioral/proof results
 remain UNEXECUTED under the THR228 hold. Merged PR1025's current-main all/hooks
-are lint/static only under THR291seq69; the unpublished PR800 lineage retains
-historical combined build/Vitest selection and must use only permitted scoped
-static checks until ordinary reviewed integration. No daily execution is proved.
+are lint/static only under THR291seq69; the seq402 candidate integrates that selection and retains only the specifically
+authorized single Managed N3 job beside static checks. No daily execution is proved.
+
+**Bounded connector acceptance (THR-228 seq402).** `Sidecar.Start` anchors one 75-second acceptance deadline at entry; caller cancellation or an earlier caller deadline wins. The engine receives this enclosing context, so its private 80-second readiness ceiling cannot renew or escape the total. Connector probing uses at most 10 seconds and the remaining total, at most one second per dial, cancellable 200-millisecond spacing and at most nine attempts. Immediate success has no retry delay. Only `errors.Is` connection-refused identity or an actual per-attempt deadline with deadline-error identity retries while the caller, phase and total remain live; arbitrary timeout text or a generic `net.Error` does not qualify. Cancellation, enclosing expiry, late success, nil successful connection and any probe close failure refuse. Every returned nonnil probe, including connection-plus-error, closes exactly once before a retry decision. Credential reading/redemption and engine startup occur once, with consumption commit in its original position before connector work. Listener failure, a late listener return or a Stop that wins admission closes the returned listener before engine teardown and cannot establish READY. Accepted serving retains the caller lifetime after the temporary startup context ends; main rechecks caller cancellation/deadline before READY publication.
+
+These are acceptance deadlines, not a hard wall-clock limit on contextless initialization, `Listen`, close or cleanup. Rendered units omit `TimeoutStartSec` and retain `TimeoutStopSec=10`; the actual runner effective start timeout, systemd version and per-attempt credential staging were not captured. The connector supervisor's separate 80-second timer remains unchanged. The one-shot connector-race hypothesis remains unmeasured; marker/inventory/unknown diagnostics prove neither a unique attempt, completed durable commit nor sole historical cause. Credential custody, staged-input refusal, retirement/reload and historical receipts remain unchanged. Retained cases are authored source only: behavior, red/green, mutation, repetition and executable QA remain UNEXECUTED/SUSPENDED; general integration is SKIPPED THR243seq42 and former Python units remain RETIRED.
+
+**Single N3 publication selection (THR-228 seq402).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=5f849b2c14bffca552501f86e30a862b35e41847`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. This local candidate spends no allocation; the manager owns one publication after fresh independent full review and scoped QA, then the actual run/result before any further repair or rerun.

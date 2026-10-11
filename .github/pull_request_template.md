@@ -8,10 +8,19 @@
 
 - Base/head, Native Impact Evidence, final diff/radius and maintained doc parity:
 - Commands, actual exits, source/runtime receipts and affected case record:
-- Required clean-head `scripts/local_ci.sh all` receipt and exact-head hosted CI:
+- Required clean-head lint/static `scripts/local_ci.sh all` receipt and exact-head
+  `Source Boundary Lint` + `Web Lint (Node 24)` (both unconditional), including
+  exact-merge main readback by manager; normal hooks and guarded merge:
 - General integration disposition: SKIPPED under Founder THR-243 seq42 (never PASS).
 - For changed tests: four authoring answers, named test/producer mapping,
   attributable RED, byte-exact restoration/GREEN and keeper disposition:
+  Under THR-291 seq69 cadence acceptance, preserve historical four answers and
+  explicitly record unauthorized/unexecuted protected proof separately; no
+  behavioral/test-authoring PASS from scoped policy review/QA.
+- Daily-only19:00UTC Product E2E health: first scheduled run PENDING until observed;
+  historical receipts/source, missing behavioral evidence and static limits:
+- Protection observation (empty required contexts/checks, strict=false when observed);
+  distinguish supported manager check policy from GitHub enforcement:
 
 ## Web bilingual review (when affected)
 

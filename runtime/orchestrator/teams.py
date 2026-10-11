@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
@@ -11,15 +11,46 @@ import yaml
 
 @dataclass(frozen=True)
 class TeamManager:
-    name: str
+    name: str | None
     team: str
     workers: tuple[str, ...]
+    kind: str = "agent"
+    principal: str | None = None
+    tagged: bool = False
+
+    def __post_init__(self) -> None:
+        principal = self.principal if self.principal is not None else self.name
+        if self.kind not in {"agent", "human"} or not isinstance(principal, str) or not principal.strip():
+            raise ValueError("invalid team manager principal")
+        if self.kind == "human" and (principal != "founder" or self.name is not None):
+            raise ValueError("human team manager must be founder, with no executable name")
+        if self.kind == "agent" and self.name != principal:
+            raise ValueError("agent team manager name must match principal")
+        object.__setattr__(self, "principal", principal)
+
+    def manager_value(self, *, typed: bool = False) -> str | dict[str, str]:
+        if typed or self.tagged or self.kind == "human":
+            return {"kind": self.kind, "principal": self.principal}
+        return self.name
 
 
 class TeamsRegistry:
-    def __init__(self, teams: dict[str, TeamManager], root: Path | None = None) -> None:
+    def __init__(self, teams: dict[str, TeamManager], root: Path | None = None, *, metadata: dict | None = None) -> None:
         self._teams = dict(teams)
         self._root = root
+        self._metadata = dict(metadata or {})
+        for pointer in ("default_team", "task_default_team"):
+            value = self._metadata.get(pointer)
+            if pointer in self._metadata and (not isinstance(value, str) or value not in self._teams):
+                raise ValueError(f"invalid {pointer}: {value!r}")
+
+    @property
+    def default_team(self) -> str:
+        return self._metadata.get("default_team", "engineering")
+
+    @property
+    def task_default_team(self) -> str:
+        return self._metadata.get("task_default_team", "engineering")
 
     # ---- construction ----
 
@@ -31,19 +62,36 @@ class TeamsRegistry:
         if not path.exists():
             return cls({}, root=root)
         raw = yaml.safe_load(path.read_text()) or {}
+        if not isinstance(raw, dict):
+            raise ValueError("teams.yaml must be a mapping")
         layout = raw.get("teams") or {}
-        return cls._from_layout(layout, root)
+        return cls._from_layout(layout, root, metadata={key: value for key, value in raw.items() if key != "teams"})
 
     @classmethod
-    def _from_layout(cls, layout: dict[str, dict[str, object]], root: Path | None = None) -> "TeamsRegistry":
+    def _from_layout(cls, layout: dict[str, dict[str, object]], root: Path | None = None, *, metadata: dict | None = None) -> "TeamsRegistry":
+        if not isinstance(layout, dict):
+            raise ValueError("teams must be a mapping")
         teams: dict[str, TeamManager] = {}
         for team_name, entry in layout.items():
+            if not isinstance(team_name, str) or not team_name.strip() or not isinstance(entry, dict):
+                raise ValueError("invalid team entry")
             manager = entry.get("manager")
-            workers = tuple(entry.get("workers") or ())
-            if not isinstance(manager, str) or not manager:
-                raise ValueError(f"team {team_name!r} missing manager")
-            teams[team_name] = TeamManager(name=manager, team=team_name, workers=workers)
-        return cls(teams, root=root)
+            workers = entry.get("workers", [])
+            if workers is None:
+                workers = []
+            if not isinstance(workers, list) or any(not isinstance(w, str) or not w.strip() for w in workers):
+                raise ValueError(f"team {team_name!r} invalid workers")
+            if isinstance(manager, str):
+                kind, principal, tagged = "agent", manager, False
+            elif isinstance(manager, dict) and set(manager) == {"kind", "principal"}:
+                kind, principal, tagged = manager["kind"], manager["principal"], True
+            else:
+                raise ValueError(f"team {team_name!r} invalid manager")
+            teams[team_name] = TeamManager(
+                name=principal if kind == "agent" else None, team=team_name,
+                workers=tuple(workers), kind=kind, principal=principal, tagged=tagged,
+            )
+        return cls(teams, root=root, metadata=metadata)
 
     @classmethod
     def seed_empty(cls, root: Path) -> None:
@@ -61,9 +109,10 @@ class TeamsRegistry:
             raise RuntimeError("TeamsRegistry.save requires a root path (none supplied and none stored)")
         path = target / "org" / "teams.yaml"
         payload = {"teams": {
-            team: {"manager": m.name, "workers": list(m.workers)}
+            team: {"manager": m.manager_value(), "workers": list(m.workers)}
             for team, m in sorted(self._teams.items())
         }}
+        payload = {**self._metadata, **payload}
         path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write: temp file in same dir, then rename.
         fd, tmp = tempfile.mkstemp(prefix=".teams.", suffix=".yaml", dir=str(path.parent))
@@ -88,6 +137,17 @@ class TeamsRegistry:
             raise KeyError(team)
         return self._teams[team]
 
+    def executable_manager_for_team(self, team: str) -> str | None:
+        return self.manager_for_team(team).name
+
+    def team_row(self, team: str) -> dict:
+        manager = self.manager_for_team(team)
+        row = {"name": team, "manager": manager.name, "workers": list(manager.workers)}
+        if manager.kind == "human":
+            row.update(manager_kind="human", human_manager=manager.principal,
+                       is_default=team == self.default_team)
+        return row
+
     def team_for_agent(self, name: str) -> str | None:
         for team, m in self._teams.items():
             if name in m.workers or name == m.name:
@@ -96,7 +156,7 @@ class TeamsRegistry:
 
     def team_for_manager(self, manager_name: str) -> str | None:
         for team, m in self._teams.items():
-            if m.name == manager_name:
+            if m.kind == "agent" and m.name == manager_name:
                 return team
         return None
 
@@ -107,15 +167,16 @@ class TeamsRegistry:
         helper remains for non-authority compatibility consumers.
         """
         return tuple(sorted(team for team, manager in self._teams.items()
-                            if manager.name == manager_name))
+                            if manager.kind == "agent" and manager.name == manager_name))
 
     def is_team_manager(self, name: str) -> bool:
-        return any(m.name == name for m in self._teams.values())
+        return any(m.kind == "agent" and m.name == name for m in self._teams.values())
 
     def all_agents(self) -> list[str]:
         out: list[str] = []
         for m in self._teams.values():
-            out.append(m.name)
+            if m.name is not None:
+                out.append(m.name)
             out.extend(m.workers)
         return out
 
@@ -127,9 +188,7 @@ class TeamsRegistry:
         m = self._teams[team]
         if agent in m.workers:
             return
-        self._teams[team] = TeamManager(
-            name=m.name, team=m.team, workers=tuple([*m.workers, agent]),
-        )
+        self._teams[team] = replace(m, workers=(*m.workers, agent))
         if self._root is not None:
             self.save()
 
@@ -139,10 +198,7 @@ class TeamsRegistry:
         m = self._teams[team]
         if agent not in m.workers:
             return
-        self._teams[team] = TeamManager(
-            name=m.name, team=m.team,
-            workers=tuple(w for w in m.workers if w != agent),
-        )
+        self._teams[team] = replace(m, workers=tuple(w for w in m.workers if w != agent))
         if self._root is not None:
             self.save()
 

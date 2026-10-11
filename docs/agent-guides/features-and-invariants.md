@@ -5,8 +5,104 @@
 > Product contracts are unchanged; replacement E2E is PENDING. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+**H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
+initializes H (complete G plus the exact `workflow_author_handoffs` table: 17
+columns, six automatic constraint indexes, no marker or explicit index).
+Existing F/E/G startup, reopen and enable validate their installed layout and
+never add H. F/E must use the separately approved G migration first. The
+explicit offline org-only command is
+`python scripts/migrate_workflow_author_handoff_schema.py --org-root <absolute-org-root> --org-slug <slug> [--check]`.
+For this H command, `--check` returns 1 for valid G requiring migration, 0 for
+validated H; ordinary migration/repeat returns 0, refusal 1, parser error 2.
+One short writer rechecks source ownership and complete independent references,
+adds only the approved table, validates the target and retained rows, then
+commits; failures roll back. Operator stop/ownership cooperation is required;
+the script stops no process and cannot exclude an arbitrary concurrent start.
+Even empty H requires an H-compatible reader. F/E/G SQL, IDs, history, permanent
+NULL active legacy result and genuine INTEGER result links retain their meaning.
+Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
+generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
+
+Complete H validation authenticates historical profile readiness from the saved
+full dependency/store/registry mirror. Every closed variant preserves raw
+nonempty source profile names; namespace and consumer identities are nonblank
+UTF8 strings of 1..256 bytes without NUL, generations are exact integers in
+0..9223372036854775807, and digests are full lowercase SHA256 strings. Native
+row grouping/order and unrelated or removed rows remain intact. The historical
+org's active requirements must have matching active store and registry
+generations, and their full names, digests and ordered consumer membership must
+reconstruct the pinned canonical profile projection. Empty mirror with required
+profiles, missing/mismatched required rows or unbound requirements refuse
+`workflow_author_handoff_storage_corrupt` before graph creation; an empty
+required projection remains valid. Readiness, the offline script and producers
+share this reader. Admitted GET exposes only category500; invisible scope404 and
+selected-grant403 retain earlier precedence. Today's mutable mirror is never
+historical evidence; a genuine later authority change remains a current hold.
+
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
+U3a(b) adds matched immutable `@3` template/activation/context readers,
+`submissions.validate_handoff_graph` and the internal handoff/review producers.
+Historical `@1`/`@2` families and pins retain their interpretation. An original
+CURRENT author with stage+submit authority reserves immutable bytes only. SAME
+operation fulfillment requires its genuine INTEGER/full callback and committed
+successful/quiescent terminal proof, plus current authority and independence.
+The atomic graph retains NULL legacy result, appends the authentic result link,
+and creates one unsigned request per configured slot. Actual agent tasks alone
+populate the ordered 0..3 reviewer-task IDs; roles, kinds, outcomes and timing
+come from immutable template data. Inputs remain filtered to each recipient.
+
+The review owner reuses the existing scheduler/native host lifecycle and
+Pause/Resume final admission, publication, prompt reader and cancellation fences.
+Completed-source discovery precedes workers and periodic enqueue hints; possible
+launch without affirmative proof remains uncertain. No callback is a signature.
+U3a(c) mounts the closed handoff POST/GET and unsigned selected-request GET,
+with CLI/TypeScript/OpenAPI/native parity and existing F5 callback, replay,
+cancellation and portability owner selection. This complete U3a composition remains
+unaccepted pending renewed independent same-head assessment and current static gates.
+
+Current Founder-owner handoff GET may read a superseded source, including a
+configuration with zero human reviewers, only with current instance ownership,
+the SAME active authorization pointer and collect-review grant, full immutable
+closure and coherent current authority. Source/request-agent selection remains
+strict; staging, consumption and review dispatch retain current-source fences.
+After valid admission, corruption refuses500; failed/cancelled sources retain
+their actual reconciliation flags. Otherwise projection precedence is disabled
+(held/new_runs_disabled), superseded (held/source_not_current), changed coherent
+authority (held/authority_not_current), then uncertain/missing proof and eligible
+graph/callback states. Core stays identical; every held graph is hidden and GET
+creates no domain, queue or launch effects. Callback-before-clear original-current
+GET remains allowed; cleared sessions refuse through existing session admission.
+
+Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
+acceptance remain later units. Full independent review, honest same-head QA,
+unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
+manager guarded merge remain required under THR291 seq69. Actual CLI callback
+sources and isolation fences remain retained; execution is not a merge check.
+Manager-owned bounded two-template public smoke must precede Founder invitation.
+No live migration/enable/assignment/deploy/restart follows.
+
+**G submission-schema migration (THR139 seq395; retained F/E→G path).**
+The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.
+Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
@@ -28,15 +124,54 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
 This file serves two purposes. The **Feature Modules Overview** below is an orientation map of the product's feature modules — each module is one short paragraph (what it does) plus a pointer to its authoritative spec or implementation. The per-surface sections after it are the original feature-specific traps, to be read only when touching the relevant surface; the overview points down to those sections where one exists rather than restating them.
 
 For current behavior use implementation, tests, and the OpenAPI snapshot; `docs/agent-guides/` explains those sources. Prefer them over the design specs — `docs/superpowers/specs/` is append-only design history unless `docs/superpowers/specs/README.md` marks a spec `current`.
+
+## Founder-managed Default (THR296)
+
+
+Existing Agents/detail/enrollment, recipient selectors and Work Hours retain
+ordinary consultant identities and Default membership. Work Hours distinguishes
+roster loading and failure with Retry from a successful empty roster. Human
+leadership is a localized label, never an executable option or synthetic null
+row. Engineering/Product policy eligibility remains guarded; worker policy GET
+and mutation denial require server evidence, not merely hidden controls.
+
+The bounded roster utility preserves unrelated canonical literal text and
+closed memory/history/thread delivery/breaker/frozen evidence. Completed replay
+requires operation-specific audit/journal/pointer facts, including zero rows and
+already-cleared rows; equality alone supplies no no-helper/no-write proof.
+C6/C8/C9 source assertions and finite crash/localization selections remain
+unexecuted under the existing Python/M holds.
+
+Selected human failed-leaf recovery retains its original exceptional operation
+after native drain exception or cancellation. Same-process same-result reentry
+returns `recovery_required`, preserving its phase, jobs and control residue for
+next-start discovery; it performs no new settlement, parent effect or success
+bookkeeping. FAILED job rows alone do not prove native cleanup. Pending callers
+join the original owner; a distinct result identity uses its own operation.
+
+Human team leadership never adds an AgentDef or launch identity. Native
+thread-session invalidation atomically commits each consultant's resume reset
+and its audit, without changing delivery/breaker state, messages, memory or
+history. Compensation retains safely cleared resumes and publishes a new
+coherent authority generation; it never restores an old ready pointer.
+Workflow profile closure and version-aware authority readers must agree before
+readiness. Supported-version, malformed-principal/team/routing and current-capture
+checks refuse before new graph writes. Schema1 historical admission contexts,
+IDs and digests remain unchanged through schema2 publication and cold replay;
+template-definition schema1 and its @1 pins remain separate from authority JSON.
+Portability remains preflight/reconcile plus explicitly authorized
+closed-copy/restore/reopen; no archive/export/import service is added. The
+bounded utility requires stopped service, persistent external restart inhibition,
+closed verified backups and exact current-file CAS. No live migration is authorized.
 
 ## Feature Modules Overview
 
@@ -50,9 +185,9 @@ short writer reservation. GET and downgrade preflight never advance. Historical
 request replay reconstructs the original action/CAS before obsolete gates and
 returns its identity separately from current pending/enabled/draining state.
 
-Foundation installation still writes only generation1/event1. S1 independently
-validates complete F/E/G; only explicit POST /orgs fresh creation
-initializes G automatically. Existing F requires the operator script documented in
+Historical S1/G foundation evidence writes only generation1/event1 and
+validates complete F/E/G; at that checkpoint only explicit POST /orgs fresh creation
+initialized G automatically. Current H initialization/readers are described above. Existing F requires the operator script documented in
 runtime-and-configuration.md; startup/reopen/enable never adds draft DDL. Cold
 `OrgState.load` forwards actual org context and resumes committed requests only
 on ready E/G, retaining earlier F history and actionable guidance. Existing templates,

@@ -17,6 +17,7 @@ export interface ExecutorOption {
   /** The kind — builtin, custom, or unregistered_builtin (unavailable). */
   kind: 'builtin' | 'custom' | 'unregistered_builtin';
   hint: string | null;
+  reasoningEffortValues?: string[];
 }
 
 export interface ExecutorOptionsResult {
@@ -67,6 +68,7 @@ export function useExecutorOptions(): ExecutorOptionsResult {
         present: p.present,
         kind: 'custom' as const,
         hint: null,
+        reasoningEffortValues: prereqs.find((item) => item.tool === p.name)?.reasoning_effort_values ?? [],
       };
       if (p.present) {
         selectableCustoms.push(opt);
@@ -87,6 +89,7 @@ export function useExecutorOptions(): ExecutorOptionsResult {
         present: p.present,
         kind: p.present ? 'builtin' : 'unregistered_builtin',
         hint: p.hint,
+        reasoningEffortValues: p.reasoning_effort_values ?? [],
       };
       if (p.present) {
         selectableBuiltins.push(opt);
