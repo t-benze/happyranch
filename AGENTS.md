@@ -522,6 +522,16 @@ types; historical event numeric semantics remain unchanged. A mismatch refuses
 `workflow_author_handoff_storage_corrupt` before graph effects, with the same
 selected scope/grant precedence.
 
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
 U3a(b) adds matched immutable `@3` template/activation/context readers,
 `submissions.validate_handoff_graph` and the internal handoff/review producers.
 Historical `@1`/`@2` families and pins retain their interpretation. An original

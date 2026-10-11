@@ -33,6 +33,16 @@ types; historical event numeric semantics remain unchanged. A mismatch refuses
 `workflow_author_handoff_storage_corrupt` before graph effects, with the same
 selected scope/grant precedence.
 
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
 **G submission-schema migration (THR139 seq395).** The retained F/E-to-G path
 precedes explicit G-to-H migration; deliberate fresh org creation now initializes H. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
