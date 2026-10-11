@@ -144,14 +144,25 @@ if {timeout!r}:
 Path({str(sentinel)!r}).write_text(json.dumps(dict(token={token!r}, pid=os.getpid())))
 sys.stdout.write({('E04_' + label + '_OUT' + chr(10))!r}); sys.stdout.flush()
 sys.stderr.write({('E04_' + label + '_ERR' + chr(10))!r}); sys.stderr.flush()
+end = {c.effective_end()!r}
+def remaining():
+    value = end - time.monotonic()
+    if value <= 0:
+        raise TimeoutError("E04 script absolute deadline")
+    return min(20, value)
 with socket.socket(socket.AF_UNIX) as peer:
-    peer.settimeout(20)
+    peer.settimeout(remaining())
     peer.connect({str(socket_path)!r})
+    peer.settimeout(remaining())
     peer.sendall((json.dumps(dict(token={token!r}, pid=os.getpid())) + "\\n").encode())
+    remaining()
     if {timeout!r}:
         while True:
             signal.pause()
-    if peer.recv(1) != b"R":
+    peer.settimeout(remaining())
+    released = peer.recv(1)
+    remaining()
+    if released != b"R":
         raise RuntimeError("missing external release")
 raise SystemExit({code})
 '''
@@ -189,7 +200,9 @@ def run_script(c: Controller, task: str, job: dict, server: socket.socket) -> No
     (c.root / "owned.tmp").write_text(json.dumps([*owned, pid]))
     (c.root / "owned.tmp").replace(c.root / "owned.json")
     stream = connection.makefile("rb")
+    connection.settimeout(c.remaining(3))
     hello = json.loads(stream.readline(4096))
+    c.remaining()
     peer["hello"] = hello
     job["peer"] = peer
     require(hello == {"token": job["token"], "pid": pid} and peer["pgid"] == pid, "actual token/PID/PGID handshake", peer)
@@ -201,7 +214,9 @@ def run_script(c: Controller, task: str, job: dict, server: socket.socket) -> No
     job["running_browser"] = c.browser.job_open(job["id"], "running")
     require(identity(pid) == start, "script live through running browser read")
     if job["code"] != -9:
+        connection.settimeout(c.remaining(3))
         connection.sendall(b"R")
+        c.remaining()
         job["released"] = time.monotonic()
     def terminal() -> dict | None:
         row = raw_job(c, task, job["id"])
@@ -209,7 +224,9 @@ def run_script(c: Controller, task: str, job: dict, server: socket.socket) -> No
     job["terminal"] = c.poll(terminal, "real product terminal job", cap=17)
     c.poll(lambda: identity(pid) != start and not group_members(pid), "natural job process/group closure", cap=3)
     connection.settimeout(c.remaining(2))
-    require(stream.read(1) == b"", "script socket EOF after natural terminal")
+    eof = stream.read(1)
+    c.remaining()
+    require(eof == b"", "script socket EOF after natural terminal")
     job["closure"] = dict(pid=pid, start=start, observed_start=identity(pid), pgid=pid,
                           members=group_members(pid), eof=True, at=time.monotonic())
     stream.close()
@@ -314,7 +331,8 @@ def exercise(c: Controller) -> None:
     try:
         for index, (variant, label, code, allowance, summary) in enumerate(CASES):
             entered = time.monotonic()
-            c.case_deadline = min(c.deadline, entered + allowance)
+            c.case_deadline = min(c.deadline, c.work_end, entered + allowance)
+            c.publish_end()
             pre = anchor(c, variant + ":pre", 6 + 2 * index, previous)
             record = dict(method="serial-public-metrics-window-causal-v1", variant=variant, index=index, entered=entered, deadline=c.case_deadline, jobs=[], anchors=[pre],
                           source_sha=c.revision, observer_begin=len(c.observer), commands_begin=len(c.provider_commands))
@@ -328,7 +346,7 @@ def exercise(c: Controller) -> None:
                 token = hashlib.sha256((c.revision + first["session"] + job_label).encode()).hexdigest()[:24]
                 program, sentinel = script(c, token, job_label, 0 if job_code is None else job_code, path)
                 cap = 5 if job_code == -9 else 30
-                job = dict(token=token, script=program, script_sha256=hashlib.sha256(program.encode()).hexdigest(), sentinel=sentinel,
+                job = dict(token=token, effective_end=c.effective_end(), scenario_deadline=c.deadline, script=program, script_sha256=hashlib.sha256(program.encode()).hexdigest(), sentinel=sentinel,
                            code=job_code, cap=cap, label=job_label, pending=[], out="" if job_code is None else f"E04_{job_label}_OUT\n",
                            err="" if job_code is None else f"E04_{job_label}_ERR\n")
                 record["jobs"].append(job)
@@ -416,12 +434,14 @@ def exercise(c: Controller) -> None:
             record["anchors"].append(previous)
             c.browser.open_task("alpha", task, variant)
             c.browser.completed("alpha", task, variant, summary, shot="e04-task-" + str(index))
-            record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(),
+            record["task_browser"] = dict(text=c.browser.page.get_by_role("main").inner_text(timeout=c.remaining(15)*1000),
                                           screenshot=f"e04-task-{index}.png", at=time.monotonic())
+            c.remaining()
             record.update(finished=time.monotonic(), observer_end=len(c.observer), commands_end=len(c.provider_commands))
             require(record["finished"] < record["deadline"], "case stays within original shared allowance")
             c.mark(variant, dict(host_cleanup_attribution=record))
             del c.case_deadline
+            c.publish_end()
         final = anchor(c, "final-drain-B", 18, previous)
         require(len(c.starts) == 30 and len(c.results) == 48 and sum(len(r["jobs"]) for r in records) == 8
                 and sum("peer" in j for r in records for j in r["jobs"]) == 7, "exact E04 prefix workload")

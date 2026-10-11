@@ -812,3 +812,29 @@ General/actual callback integration SKIPPED THR243seq42; retired units untouched
 The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
 unresolved. Root TASK10680 owns delivery/daily acceptance, TASK10555 owns
 first-daily/Pause (PENDING per owner). No entire-reset or test-authoring PASS.
+
+### E07 R source increment
+
+TASK-10787 adds the accepted R suffix to the earlier C boundary:58 authored
+variants/40 starts=A12+B28+C0,24 tasks/32 results and39 published receipts.
+See [the complete R case/four-answer record](../e2e/README.md#e07-r-authored-suffix--task-10787).
+The sole B28 crash gap requires complete A12/B27 arrays, a genuine held CLI,
+actual daemon−9, targeted owned process closure/numeric executor absence,
+one same-files failed recovery, original-request409/full1s, C0 and normal close.
+No fixture cleanup is product release; bearer persistence is unchanged.
+
+Original D=min(entry+480,run+720) charges setup/original53/pre-C archive before
+D−150, C50/R75/final25; cleanup60/export120/hard900 remain separate. The355
+estimate versus330 prefix allowance is unmeasured and unresolved. Missing or
+late stages fail. Source consumers independently reopen original/C/R archives
+and require complete content, provenance, time and normal closure joins.
+
+This supersedes only the earlier R-held source milestone. Static-only local all
+and exact-head Source Boundary Lint/Web Lint(Node24), independent full review,
+scoped static QA and guarded manager merge remain required. No ad hoc E2E,
+test/build/control workload is authorized. New behavior/sensitivity/provenance/
+transport/delivery/persistence/closure/sanitation/fit evidence remains missing;
+controls UNAUTHORED, protected12/RED-restoration-GREEN/repetitions UNEXECUTED.
+General and actual CLI callback integration are SKIPPED THR243seq42. Retired
+Python units remain forbidden. Daily19UTC/default immutable source, original
+matrix/artifacts, TASK10555/JOB4257 and first-daily PENDING remain unchanged.

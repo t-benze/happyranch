@@ -1,6 +1,6 @@
 """C only: public tree cancellation and the original delayed provider callback.
 
-No restart scenario, product import, writer, retry, or cleanup rescue. Missing
+Restart is a separate finite suffix. No product import, writer, retry, or cleanup rescue. Missing
 partial evidence is a failure; authored predicates are not execution proof.
 """
 from __future__ import annotations
@@ -74,7 +74,7 @@ def host(record: dict, admitted: int, released: int, active: int, previous: dict
 def register_owned(c: Controller, pids: list[int]) -> None:
     """Controller is the sole registry writer; publish the full union at once."""
     path = c.root / "owned.json"
-    prior = json.loads(path.read_text())
+    prior = json.loads(path.read_text()) if path.exists() else []
     temporary = c.root / "owned.tmp"
     temporary.write_text(json.dumps(sorted(set(prior + pids))))
     temporary.replace(path)
@@ -86,14 +86,16 @@ def command(c: Controller, start: dict, action: str, wait: bool) -> dict:
     c.e07_commands.append(record)
     end = c.case_deadline
     # Held CLI retains original C end, so it cannot time out before cancellation.
-    instruction = dict(action=action, execution_deadline=c.e07["end"] if not wait else end)
+    instruction = dict(action=action, execution_deadline=c.e07["end"] if not wait else end, ack_deadline=end)
     record["instruction"] = instruction
     connection.settimeout(c.remaining())
     stream.write((json.dumps(instruction) + "\n").encode())
+    connection.settimeout(c.remaining())
     stream.flush()
     connection.settimeout(c.remaining())
     launch = json.loads(stream.readline(131072))["e07_launch"]
     record["launch"] = launch
+    c.remaining()
     c.e07["owned"].append(launch["child"])
     register_owned(c, [launch["child"]["pid"]])
     require(launch["provider"] == {k:start[k] for k in ("task", "session", "agent", "org", "pid")}
@@ -125,7 +127,7 @@ def register_tree(c: Controller, start: dict) -> dict:
         proc = process_record(pid)
         require(f"E2E_ROOT={c.root}".encode() in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"), "E07 tree ownership")
         register_owned(c, [pid])
-        c.e07["owned"].append(proc)
+        (c.e07.get("restart") or c.e07)["owned"].append(proc)
         chain.append(proc)
         if pid == launch_pid:
             break
@@ -229,7 +231,15 @@ def exercise(c: Controller) -> None:
     prefix_content = (c.root / "raw/observations.json").read_bytes()
     (c.root / "raw/e07-prefix.json").write_bytes(prefix_content)
     archived_prefix = json.loads(prefix_content)
+    c.remaining()
+    c.allocation["prefix_finished"] = time.monotonic()
     begin = time.monotonic()
+    admission = dict(name="C", entered=begin, end=begin+50, downstream=100, admitted=False)
+    c.allocation["stages"].append(admission)
+    require(begin+150 < c.deadline, "C requires full C50/R75/close25 reservation")
+    admission["admitted"] = True
+    c.work_end = begin+50
+    c.publish_end()
     prior = next(d["threads_cases"] for d in c.durable if "threads_cases" in d)
     raw, prefix = witnesses(c)
     require(len(c.results) == 53 and len(c.starts) == 37 and prefix == prior["witnesses"], "E07 enters only after original53 and full E05 witness prefix")
@@ -240,7 +250,8 @@ def exercise(c: Controller) -> None:
                  phases=[], anchors=[], owned=[], frames=[])
     c.e07["commands"] = c.e07_commands
     c.e07["source_files"] = {name:hashlib.sha256((c.source/name).read_bytes()).hexdigest() for name in (
-        "e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
+        "e2e/restart.py","e2e/owned.py","e2e/transport.py","e2e/jobs.py","e2e/threads.py",
+        "e2e/thread_provider.py","e2e/pause_browser.py","runtime/daemon/__main__.py","runtime/daemon/paths.py","e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
         "e2e/browser.py","e2e/aggregate.py","e2e/run.py","e2e/manifest.json","cli/commands/tasks.py",
         "runtime/daemon/routes/tasks.py","runtime/orchestrator/run_step.py",
         "web/src/features/tasks/CancelTaskDialog.tsx")}
@@ -250,6 +261,7 @@ def exercise(c: Controller) -> None:
             require(time.monotonic() <= c.e07["phases"][-1]["end"], "E07 prior partition overrun")
         c.case_deadline = min(begin+offset,c.e07["end"],c.deadline)
         c.e07["phases"].append(dict(name=name, entered=time.monotonic(), end=c.case_deadline))
+        c.publish_end()
         c.remaining()
     try:
         phase("capture",16)
@@ -424,7 +436,8 @@ def exercise(c: Controller) -> None:
         require(len(c.starts) == 39 and len({s["session"] for s in c.starts}) == 39 and not c.holds
                 and sum(w["kind"] == "stub" for w in rows) == 39
                 and sum(w["kind"] == "callback" for w in rows) == len(c.commands)+len(c.provider_commands)+len(c.thread_commands)+len(c.e07_commands),"E07 exact39 starts and every CLI accounted")
-        c.e07["transport_closure"] = relay.close()
+        relay.deadline = c.case_deadline
+        c.e07["transport_closure"] = relay.close(c.case_deadline)
         c.late_transport = None
         require(not any(c.e07["transport_closure"][k] for k in ("listener_alive","workers_alive","sockets","errors")),"E07 transport final closure")
         c.e07["finished"] = time.monotonic()

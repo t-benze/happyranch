@@ -656,3 +656,80 @@ unchanged-bound disposition and all daily behavioral acceptance remain with
 root TASK10680. TASK10555 retains first-daily/Pause acceptance; first daily is
 PENDING per owner. Authored, independently reviewed, merged, executed and
 accepted are separate milestones; this is not completion of the reset.
+
+## E07 R authored suffix — TASK-10787
+
+The accepted TASK-10782 amendment
+`83d892a3e6eae329879ebf7be7a9dca47854f15f6bbe67be3811c4820e1fe184`
+extends the original E07 design with exactly
+`E07.abrupt-dead-session-recovery` and `E07.restart-late-cli`.
+Earlier C-only/held-R statements above describe that delivery boundary. The
+current source expects **58 variants, 40 starts=A12+B28+C0, 24 tasks/32 results**
+(alpha23/31, beta1/1), 21 completed/two cancelled/one failed. Only **39 product
+receipts=A12+B27** exist. The sole B28 active invocation dies with boot B;
+fixture signals/reaping and new C0 cannot manufacture its terminal receipt.
+These are authored expectations, not observed execution counts.
+
+`D=min(original scenarios entry+480, original run start+720)` remains fixed.
+Constructor, setup, original53 and full pre-C archival finish strictly before
+D−150. C retains its full50 with16/28/36/42/50 ends; R retains75 with
+10/15/25/50/60/65/75 ends; normal close/evidence receives a separate25.
+Admission requires the complete downstream reservation. Positive explicit
+socket, child, SQLite and Playwright bounds use the smaller effective end;
+return checks and the controller alarm cover operations without native timeout
+arguments. Fixed31s cache, both Pause windows, and full C/R1s observation windows
+are unchanged. Outer cleanup60/export120/hard900/target600/hosted15min stay
+separate. The estimated355 prefix versus330 ceiling remains **UNPROVEN**;
+late/missing stages fail the full manifest. No measured fit or universal
+interruptibility of OS/library calls is claimed.
+
+R creates one independent ordinary root through public API and joins its real
+case_manager provider to a provider-authored CLI payload, wrapper witness,
+PID/start/ancestry, accepted socket tuple/inode and full captured request.
+`e07-prefix.json` keeps original53/37; `e07-c-prefix.json` freezes actual56/39;
+`e07-restart.json` carries the distinct R record; `e07-predeath.json` freezes
+its complete archive before the signal. Complete ordered,
+duplicate-bearing A12/B27 arrays survive. Two literal B28/27/27/active1 samples
+and full SQL/public content precede exact daemon pidfd SIGKILL and actual
+Popen−9. An R-only runner-subreaper request authenticates the previously owned
+process set, signals by identity, and uses targeted waitpid(PID,WNOHANG).
+ECHILD records another parent; it is never a claimed reap. Numeric PID reuse
+fails closed. C starts once only after numeric executor absence and closed
+old tree/unit/listener evidence, over the same paths/inodes/source/registration.
+
+Shipping recovery must produce literal failed/note
+`session died on daemon restart -- executor pid not alive`, preserved historical
+SID/PID/step1, NULL completed_at/cancelled_at, exactly one R restart audit and
+no result/relaunch. Real public/browser readback includes disabled Cancel and
+settled task/thread history. The bearer persists. Only after valid C readback
+does the original held request forward once:409 task_not_active/failed/
+cancelled:false, distinct dead-downstream evidence, then a full1s unchanged
+window at≤50ms sample cadence. Two genuine empty C0 samples and normal daemon
+exit0/controller close are independently required. Outer rescue cannot supply
+normal-close success.
+
+Every generation and discovered half-ready credential/port/process remains in
+the cumulative ownership and private redaction context. Partial launch records
+retain valid siblings; unknown context refuses unsafe raw export. Independent
+aggregate consumers reopen actual archive/raw/observation/result content and
+check exact boundaries, source hashes, request/response/ownership joins,
+recovery field deltas, receipt tails and time ordering. No production seam,
+schema, authorization or permission change is introduced.
+
+| Changed group | Contract and public action | Credible regression / described control | Existing gap | Actual seam and level |
+| --- | --- | --- | --- | --- |
+| Shared deadlines | Complete original prefix, C, R and normal close inside original D | Nested fresh timeout or late stage appears successful; a future delayed-readiness/close control must fail with partial evidence | C-only deadline did not reserve R/normal close | run → Controller/poll/API/Store/browser/provider/transport; harness lifecycle and real CLI/browser |
+| Named crash gap | Genuine held CLI, full B28/27/27/1, actual−9 and closed old tree | Drop/reorder an interior duplicate receipt, add a start or invent B28 release; future serialized controls must refuse | C ends settled B27 | public create/provider/CLI → HostSessionStore evidence → Owned targeted close → independent aggregate; system evidence |
+| Dead non-NULL recovery | One same-files startup yields literal failed without result/relaunch | Start before numeric death, omit sweep, or insert a result; future controls must reject field/content joins | Drained Pause restart has no live no-result task | shipping startup sweep/update_task, fresh read-only SQL/public/browser; full system |
+| Old request denial | Original captured request reaches recovered failed-task409 then full1s unchanged | Reconstruct body, forward early, expect401, or shorten window; future transport controls must reject | C only covers cancelled W | provider_command → LateTransport → shipping task-active gate; genuine CLI/HTTP/browser |
+
+No dedicated sensitivity controls were authored or run. All new behavioral,
+sensitivity, provenance, transport, delivery, persistence, closure, sanitation,
+and successful-fit proof is **MISSING/UNEXECUTED**. Protected12,
+RED/restoration/GREEN and repetitions remain unauthorized/UNEXECUTED. General
+and actual CLI callback integration remain SKIPPED under THR243seq42; retired
+Python units stay retired. Static lint is not full test-authoring or behavioral
+PASS. First daily remains PENDING per owner. E04 output-cap/persistent-stop,
+other recovery branches, the separate live cancel-CLI mismatch and overall
+program acceptance remain root-owned. TASK10555/JOB4257 and the daily19UTC
+matrix/artifacts/triggers/retry/notification policy are unchanged.

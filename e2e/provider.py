@@ -12,6 +12,16 @@ import time
 from pathlib import Path
 
 
+def remaining(root: Path, cap: float = 300, end: float | None = None) -> float:
+    bound = json.loads((root / "coord/work-end.json").read_text())
+    absolute = min(bound["scenario_deadline"], bound["effective_end"],
+                   end if end is not None else bound["scenario_deadline"])
+    value = absolute - time.monotonic()
+    if value <= 0 or cap <= 0:
+        raise TimeoutError("provider absolute deadline")
+    return min(cap, value)
+
+
 def jobs_command(instruction: dict, binding: dict) -> dict:
     """Run the real bound CLI as a child of this genuinely admitted provider."""
     root = Path(os.environ["E2E_ROOT"])
@@ -45,8 +55,8 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
         payload = None
     else:
         raise RuntimeError("unexpected jobs instruction")
-    remaining = instruction["execution_deadline"] - time.monotonic()
-    if remaining <= 0:
+    available = instruction["execution_deadline"] - time.monotonic()
+    if available <= 0:
         raise RuntimeError("provider common deadline exhausted")
     env = dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(root / "client"))
     argv = [str(callback), *args]
@@ -56,7 +66,7 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
     try:
         child_start = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
         # Setup/spawn time consumes the same absolute child allowance.
-        out, err = process.communicate(timeout=max(0, instruction["execution_deadline"] - time.monotonic()))
+        out, err = process.communicate(timeout=remaining(root, end=instruction["execution_deadline"]))
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         # Preserve partial streams; the existing containment/outer owner retains
@@ -64,6 +74,8 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
         out, err = exc.stdout or "", exc.stderr or ""
         out = out.decode(errors="replace") if isinstance(out, bytes) else out
         err = err.decode(errors="replace") if isinstance(err, bytes) else err
+    if not timed_out and time.monotonic() >= instruction["execution_deadline"]:
+        timed_out = True
     return dict(action=action, operation=instruction.get("operation"), argv=argv, exit=process.returncode,
                 stdout=out, stderr=err, payload=payload, entered=entered, finished=time.monotonic(),
                 timed_out=timed_out, execution_deadline=instruction["execution_deadline"],
@@ -72,31 +84,43 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
 
 
 def main() -> None:
+    root = Path(os.environ["E2E_ROOT"])
     task, session, agent, org = sys.argv[1:]
     if org not in {"alpha", "beta"} or agent not in {"case_manager", "case_worker", "code_reviewer"}:
         raise RuntimeError("unexpected external invocation")
     os.setsid()
     with socket.socket(socket.AF_UNIX) as connection:
-        connection.settimeout(300)
+        connection.settimeout(remaining(root))
         connection.connect(os.environ["E2E_SOCKET"])
+        remaining(root)
         stream = connection.makefile("rwb")
         row = dict(task=task, session=session, agent=agent, org=org, pid=os.getpid())
+        connection.settimeout(remaining(root))
         stream.write((json.dumps(row) + "\n").encode())
+        remaining(root)
+        connection.settimeout(remaining(root))
         stream.flush()
+        remaining(root)
         final = False
         thread_files: dict = {}
         thread_actions: list[str] = []
         atexit.register(lambda: [path.unlink(missing_ok=True) for path in thread_files.values()])
         command_mode = None
         while True:
+            connection.settimeout(remaining(root))
             instruction = json.loads(stream.readline(131072))
+            remaining(root)
             if instruction == {"action": "exit"}:
                 for path in thread_files.values():
                     path.unlink(missing_ok=True)
                 if thread_actions and thread_actions != ["thread-task-send", "thread-task-final"]:
                     raise RuntimeError("incomplete E05 task protocol")
+                connection.settimeout(remaining(root))
                 stream.write(b'{"exiting":true}\n')
+                remaining(root)
+                connection.settimeout(remaining(root))
                 stream.flush()
+                remaining(root)
                 return
             if final:
                 raise RuntimeError("callback must be the provider's final CLI action")
@@ -108,10 +132,14 @@ def main() -> None:
             if selected_mode == "e07":
                 sys.path.insert(0, str(Path(__file__).resolve().parent))
                 from late_transport import provider_command
-                receipt = provider_command(instruction, row, stream)
+                receipt = provider_command(instruction, row, stream, connection)
+                connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
                 stream.write((json.dumps(dict(e07_return=receipt)) + "\n").encode())
+                remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
+                connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
                 stream.flush()
-                if instruction["action"] == "e07-held" or receipt["exit"] != 0 or receipt["timed_out"]:
+                remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
+                if instruction["action"] in {"e07-held", "e07-restart-held"} or receipt["exit"] != 0 or receipt["timed_out"]:
                     raise RuntimeError("E07 held provider returned or parent failed")
                 final = True
                 continue
@@ -129,8 +157,12 @@ def main() -> None:
             else:
                 receipt = jobs_command(instruction, row)
                 expected_exit = 0
+            connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
             stream.write((json.dumps(receipt) + "\n").encode())
+            remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
+            connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
             stream.flush()
+            remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
             if receipt["exit"] != expected_exit or receipt["timed_out"] or receipt.get("output_truncated", False):
                 for path in thread_files.values():
                     path.unlink(missing_ok=True)

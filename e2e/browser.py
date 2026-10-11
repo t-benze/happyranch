@@ -19,12 +19,17 @@ if TYPE_CHECKING:
 class Browser:
     def __init__(self, controller: Controller) -> None:
         self.controller = controller
+        self.controller.remaining()
         self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch()
+        self.controller.remaining()
+        self.browser = self.playwright.chromium.launch(timeout=self.controller.remaining(30)*1000)
+        self.controller.remaining()
         from importlib.metadata import version
         self.controller.durable.append(dict(playwright_version=version("playwright"), chromium_version=self.browser.version))
         self.context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
+        self.controller.remaining()
         self.page = self.context.new_page()
+        self.controller.remaining()
         self.page.set_default_timeout(15000)
         self.events: list[dict] = []
         # Deliberately never collect headers, bootstrap bodies or storage. This
@@ -36,25 +41,34 @@ class Browser:
         self.base = f"http://127.0.0.1:{controller.port}"
 
     def response(self, path: str) -> Any:
-        return self.page.expect_response(lambda response: response.url.split("?")[0] == self.base + path and response.status == 200)
+        result = self.page.expect_response(lambda response: response.url.split("?")[0] == self.base + path and response.status == 200, timeout=self.controller.remaining(15)*1000)
+        self.controller.remaining()
+        return result
 
     def open_task(self, org: str, task: str, brief: str, *, switch: bool = False,
                   cached_recall: bool = False, alien: str | None = None) -> None:
         roots = f"/api/v1/orgs/{org}/tasks/roots"
         with self.response(roots):
             if switch:
-                self.page.get_by_role("combobox", name="Active org", exact=True).click()
-                self.page.get_by_role("option", name=org, exact=True).click()
+                self.page.get_by_role("combobox", name="Active org", exact=True).click(timeout=self.controller.remaining(15)*1000)
+                self.controller.remaining()
+                self.page.get_by_role("option", name=org, exact=True).click(timeout=self.controller.remaining(15)*1000)
+                self.controller.remaining()
             else:
-                self.page.goto(f"{self.base}/orgs/{org}/tasks")
+                self.page.goto(f"{self.base}/orgs/{org}/tasks", timeout=self.controller.remaining(15)*1000)
+                self.controller.remaining()
         main = self.page.get_by_role("main")
-        expect(main.get_by_text(brief, exact=False).first).to_be_visible()
+        expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         if alien:
-            expect(main.get_by_text(alien, exact=False)).to_have_count(0)
+            expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
             other = "beta" if org == "alpha" else "alpha"
-            expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0)
+            expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
         link = main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first
-        expect(link).to_be_visible()
+        expect(link).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         detail_path = f"/api/v1/orgs/{org}/tasks/{task}"
         recall_path = detail_path + "/recall"
         with ExitStack() as responses:
@@ -70,8 +84,10 @@ class Browser:
             else:
                 responses.enter_context(self.response(detail_path))
                 responses.enter_context(self.response(recall_path))
-            link.click()
-        expect(main.get_by_text(brief, exact=False).first).to_be_visible()
+            link.click(timeout=self.controller.remaining(15)*1000)
+            self.controller.remaining()
+        expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
 
     def revisit_after_cache_expiry(self, org: str, task: str) -> None:
         # AppProvider's shipping staleTime is 30s. Keep this same populated
@@ -79,12 +95,14 @@ class Browser:
         require(self.controller.remaining(32) >= 31, "cache revisit fits action budget")
         begin = time.monotonic()
         main = self.page.get_by_role("main")
-        main.locator(f'a[href="/orgs/{org}/tasks"]').first.click()
+        main.locator(f'a[href="/orgs/{org}/tasks"]').first.click(timeout=self.controller.remaining(15)*1000)
+        self.controller.remaining()
         self.page.wait_for_timeout(31000)
         self.controller.remaining()
         self.events.append(dict(event="navigation", action="cache-expired-revisit", org=org, task=task))
         with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
-            main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click()
+            main.locator(f'a[href="/orgs/{org}/tasks/{task}"]').first.click(timeout=self.controller.remaining(15)*1000)
+            self.controller.remaining()
         self.controller.phases.append(dict(name="browser-cache-revisit", seconds=time.monotonic() - begin))
 
     def completed(self, org: str, task: str, brief: str, summary: str, *, child: str | None = None,
@@ -97,55 +115,79 @@ class Browser:
             require(self.page.url == f"{self.base}/orgs/{org}/tasks/{task}", "refresh owns expected task")
             self.events.append(dict(event="navigation", action="reload", org=org, task=task))
             with self.response(f"/api/v1/orgs/{org}/tasks/{task}"), self.response(f"/api/v1/orgs/{org}/tasks/{task}/recall"):
-                self.page.reload()
+                self.page.reload(timeout=self.controller.remaining(15)*1000)
+                self.controller.remaining()
         main = self.page.get_by_role("main")
-        expect(main.get_by_text(brief, exact=False).first).to_be_visible()
-        expect(main.get_by_text(summary, exact=True).first).to_be_visible()
-        expect(main.get_by_text("completed", exact=True).first).to_be_visible()
+        expect(main.get_by_text(brief, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(main.get_by_text(summary, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(main.get_by_text("completed", exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         # Recall heading and its containing section own their own assertions.
         recall_heading = main.get_by_role("heading", name="Recall tree", exact=True)
-        expect(recall_heading).to_be_visible()
+        expect(recall_heading).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         recall = recall_heading.locator("..")
-        expect(recall.get_by_text("Outcome", exact=True).first).to_be_visible()
-        expect(recall.get_by_text(summary, exact=True)).to_be_visible()
-        expect(recall.locator(f'a[href="/orgs/{org}/tasks/{task}"]')).to_be_visible()
+        expect(recall.get_by_text("Outcome", exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(recall.get_by_text(summary, exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(recall.locator(f'a[href="/orgs/{org}/tasks/{task}"]')).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         if child:
-            expect(recall.locator(f'a[href="/orgs/{org}/tasks/{child}"]')).to_be_visible()
-            expect(recall.get_by_text(child_summary, exact=True)).to_be_visible()
-            expect(recall.get_by_text("completed", exact=True)).to_have_count(2)
+            expect(recall.locator(f'a[href="/orgs/{org}/tasks/{child}"]')).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(recall.get_by_text(child_summary, exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(recall.get_by_text("completed", exact=True)).to_have_count(2, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
         if alien:
-            expect(main.get_by_text(alien, exact=False)).to_have_count(0)
+            expect(main.get_by_text(alien, exact=False)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
             other = "beta" if org == "alpha" else "alpha"
-            expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0)
-        self.page.screenshot(path=str(self.controller.root / "raw" / f"{shot}.png"), full_page=True)
+            expect(main.locator(f'a[href^="/orgs/{other}/tasks/"]')).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+        self.page.screenshot(path=str(self.controller.root / "raw" / f"{shot}.png"), full_page=True, timeout=self.controller.remaining(15)*1000)
+        self.controller.remaining()
         require(not any(row["event"] == "pageerror" for row in self.events), "built-browser JavaScript error", self.events)
 
     def job_open(self, job: str, status: str) -> dict:
         self.page.set_default_timeout(self.controller.remaining(10) * 1000)
         path = f"/api/v1/orgs/alpha/jobs/{job}"
         with self.response(path) as response:
-            self.page.goto(f"{self.base}/orgs/alpha/jobs/{job}")
+            self.page.goto(f"{self.base}/orgs/alpha/jobs/{job}", timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
         body = response.value.json()
         require(body["id"] == job and body["status"] == status, "fresh browser job state", body)
-        expect(self.page.get_by_role("main").get_by_text(status, exact=True).first).to_be_visible()
+        expect(self.page.get_by_role("main").get_by_text(status, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         return body
 
     def job_action(self, job: str, cap: int, pending_check: Any, *, reject: bool = False) -> dict:
         self.job_open(job, "pending")
         action = "Reject" if reject else "Approve & run"
-        self.page.get_by_role("main").get_by_role("button", name=action, exact=True).click()
+        self.page.get_by_role("main").get_by_role("button", name=action, exact=True).click(timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
         dialog = self.page.get_by_role("dialog")
-        expect(dialog).to_be_visible()
-        expect(dialog.get_by_text(action + " " + job, exact=True)).to_be_visible()
+        expect(dialog).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(dialog.get_by_text(action + " " + job, exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         if reject:
-            dialog.get_by_label("Reason", exact=True).fill("E04_REJECTED_BY_REVIEW")
+            dialog.get_by_label("Reason", exact=True).fill("E04_REJECTED_BY_REVIEW", timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
         else:
-            expect(dialog.get_by_label("Timeout (seconds)", exact=True)).to_have_value(str(cap))
-            expect(dialog.get_by_label("Working directory override", exact=True)).to_have_value("")
+            expect(dialog.get_by_label("Timeout (seconds)", exact=True)).to_have_value(str(cap), timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(dialog.get_by_label("Working directory override", exact=True)).to_have_value("", timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
         pending_check()  # Still no launch with the real confirmation open.
         path = f"/api/v1/orgs/alpha/jobs/{job}/" + ("reject" if reject else "run")
-        with self.page.expect_response(lambda r: r.url == self.base + path and r.request.method == "POST") as received:
-            dialog.get_by_role("button", name=action, exact=True).click()
+        with self.page.expect_response(lambda r: r.url == self.base + path and r.request.method == "POST", timeout=self.controller.remaining(10)*1000) as received:
+            dialog.get_by_role("button", name=action, exact=True).click(timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
+        self.controller.remaining()
         response = received.value
         request = response.request.post_data_json
         expected = {"reason": "E04_REJECTED_BY_REVIEW"} if reject else {}
@@ -158,37 +200,55 @@ class Browser:
         body = self.job_open(job, status)
         main = self.page.get_by_role("main")
         if status == "rejected":
-            expect(main.get_by_text("E04_REJECTED_BY_REVIEW", exact=True)).to_be_visible()
-            expect(main.get_by_role("heading", name="Output", exact=True)).to_have_count(0)
+            expect(main.get_by_text("E04_REJECTED_BY_REVIEW", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main.get_by_role("heading", name="Output", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
         else:
             label = main.get_by_text("Exit code", exact=True)
-            expect(label).to_be_visible()
-            expect(label.locator("..").get_by_text(str(exit_code), exact=True)).to_be_visible()
+            expect(label).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(label.locator("..").get_by_text(str(exit_code), exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
             for stream, content in (("stdout", out), ("stderr", err)):
                 heading = main.get_by_role("heading", name=stream, exact=True)
-                expect(heading.locator("..").locator("pre")).to_have_text(content)
+                expect(heading.locator("..").locator("pre")).to_have_text(content, timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
             if status == "failed":
-                expect(main.get_by_text("timeout", exact=True)).to_be_visible()
-        expect(main.get_by_role("button", name="Approve & run", exact=True)).to_have_count(0)
-        expect(main.get_by_role("button", name="Reject", exact=True)).to_have_count(0)
-        self.page.screenshot(path=str(self.controller.root / "raw" / f"e04-{job}.png"), full_page=True)
-        return dict(body=body, text=main.inner_text(), screenshot=f"e04-{job}.png", at=time.monotonic())
+                expect(main.get_by_text("timeout", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+                self.controller.remaining()
+        expect(main.get_by_role("button", name="Approve & run", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        expect(main.get_by_role("button", name="Reject", exact=True)).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
+        self.page.screenshot(path=str(self.controller.root / "raw" / f"e04-{job}.png"), full_page=True, timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
+        result = dict(body=body, text=main.inner_text(timeout=self.controller.remaining(10)*1000), screenshot=f"e04-{job}.png", at=time.monotonic())
+        self.controller.remaining()
+        return result
 
     def jobs_waiting(self, task: str, ids: list[str]) -> dict:
         path = f"/api/v1/orgs/alpha/tasks/{task}"
         with self.response(path) as response, self.response(path + "/recall"):
-            self.page.goto(f"{self.base}/orgs/alpha/tasks/{task}")
+            self.page.goto(f"{self.base}/orgs/alpha/tasks/{task}", timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
         main = self.page.get_by_role("main")
-        expect(main.get_by_text("waiting on jobs", exact=False).first).to_be_visible()
+        expect(main.get_by_text("waiting on jobs", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         for job in ids:
-            expect(main.get_by_text(job, exact=False).first).to_be_visible()
-        return dict(body=response.value.json(), text=main.inner_text(), at=time.monotonic())
+            expect(main.get_by_text(job, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+        result = dict(body=response.value.json(), text=main.inner_text(timeout=self.controller.remaining(10)*1000), at=time.monotonic())
+        self.controller.remaining()
+        return result
 
     def open_threads_context(self, port: int) -> None:
         self.thread_base = f"http://127.0.0.1:{port}"
         self.thread_events: list[dict] = []
         self.thread_context = self.browser.new_context(locale="en-US", viewport={"width": 1440, "height": 900})
+        self.controller.remaining()
         self.thread_page = self.thread_context.new_page()
+        self.controller.remaining()
         page = self.thread_page
         page.set_default_timeout(self.controller.remaining(10) * 1000)
         def request(req):
@@ -205,27 +265,37 @@ class Browser:
             if res.request.method == "POST" and res.url == self.thread_base + "/api/v1/orgs/alpha/threads":
                 record = dict(event="compose-response", url=res.url, status=res.status, at=time.monotonic())
                 self.thread_events.append(record)
+                self.controller.remaining()
                 raw = res.body()
+                self.controller.remaining()
                 record.update(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw), body=res.json())
             elif res.request.method == "GET" and re.fullmatch(re.escape(self.thread_base) + r"/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?", res.url.split("?")[0]):
                 record = dict(event="thread-response", url=res.url, method=res.request.method, status=res.status, at=time.monotonic())
                 self.thread_events.append(record)
+                self.controller.remaining()
                 record["body"] = res.json()
+                self.controller.remaining()
         page.on("request", request)
         page.on("response", response)
         page.on("framenavigated", lambda frame: self.thread_events.append(dict(event="navigation", url=frame.url, at=time.monotonic()))
                 if frame == page.main_frame else None)
         page.on("pageerror", lambda _error: self.thread_events.append(dict(event="pageerror", at=time.monotonic())))
-        page.goto(self.thread_base + "/orgs/alpha/threads")
+        page.goto(self.thread_base + "/orgs/alpha/threads", timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
 
     def thread_compose_inputs(self) -> None:
         page = self.thread_page
-        page.get_by_role("button", name="New thread", exact=True).click()
+        page.get_by_role("button", name="New thread", exact=True).click(timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
         dialog = page.get_by_role("dialog")
-        dialog.get_by_label("Subject", exact=True).fill("E05 compose race")
-        dialog.get_by_label("Recipients (comma-separated agent names)", exact=True).fill("case_manager, case_worker")
-        dialog.get_by_label("Body (Markdown)", exact=True).fill("E05 opening\nliteral beta")
-        expect(dialog.get_by_role("button", name="Send", exact=True)).to_be_enabled()
+        dialog.get_by_label("Subject", exact=True).fill("E05 compose race", timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
+        dialog.get_by_label("Recipients (comma-separated agent names)", exact=True).fill("case_manager, case_worker", timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
+        dialog.get_by_label("Body (Markdown)", exact=True).fill("E05 opening\nliteral beta", timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
+        expect(dialog.get_by_role("button", name="Send", exact=True)).to_be_enabled(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
 
     def thread_event_batch(self) -> dict:
         # Passive DOM observers only: no React internals, state changes, forced
@@ -255,7 +325,8 @@ class Browser:
             document.removeEventListener('keydown',bubble); document.removeEventListener('click',bubble);
           }
           return rows;
-        }""")
+        }""", timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
         record = dict(event="event-batch", rows=result, at=time.monotonic(), guard_sensitivity="UNPROVEN")
         self.thread_events.append(record)
         first = result[0]
@@ -270,13 +341,17 @@ class Browser:
 
     def thread_created(self, thread: str) -> dict:
         page = self.thread_page
-        expect(page.get_by_role("dialog")).to_have_count(0)
+        expect(page.get_by_role("dialog")).to_have_count(0, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         created_url = page.url
         self.thread_events.append(dict(event="deliberate-revisit", url=self.thread_base+"/orgs/alpha/threads", at=time.monotonic()))
-        with page.expect_response(lambda r: r.url.split("?")[0] == self.thread_base+"/api/v1/orgs/alpha/threads" and r.status == 200):
-            page.goto(self.thread_base+"/orgs/alpha/threads")
+        with page.expect_response(lambda r: r.url.split("?")[0] == self.thread_base+"/api/v1/orgs/alpha/threads" and r.status == 200, timeout=self.controller.remaining(10)*1000):
+            page.goto(self.thread_base+"/orgs/alpha/threads", timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
+        self.controller.remaining()
         link = page.get_by_role("main").locator(f'a[href="/orgs/alpha/threads/{thread}"]')
-        expect(link).to_have_count(1)
+        expect(link).to_have_count(1, timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         record = dict(event="compose-created", thread=thread, dialog_count=page.get_by_role("dialog").count(),
                       list_rows=link.count(), url=created_url, list_url=page.url, at=time.monotonic())
         self.thread_events.append(record)
@@ -288,21 +363,30 @@ class Browser:
         url = self.thread_base + f"/orgs/alpha/threads/{thread}"
         path = self.thread_base + f"/api/v1/orgs/alpha/threads/{thread}"
         self.thread_events.append(dict(event="deliberate-revisit", url=url, at=time.monotonic()))
-        with page.expect_response(lambda r: r.url.split("?")[0] == path and r.status == 200) as received, \
-                page.expect_response(lambda r: r.url.split("?")[0] == path + "/messages" and r.status == 200) as messages:
-            page.goto(url)
+        with page.expect_response(lambda r: r.url.split("?")[0] == path and r.status == 200, timeout=self.controller.remaining(10)*1000) as received, \
+                page.expect_response(lambda r: r.url.split("?")[0] == path + "/messages" and r.status == 200, timeout=self.controller.remaining(10)*1000) as messages:
+            page.goto(url, timeout=self.controller.remaining(10)*1000)
+            self.controller.remaining()
+        self.controller.remaining()
         main = page.get_by_role("main")
-        expect(main.get_by_text(subject, exact=True).first).to_be_visible()
+        expect(main.get_by_text(subject, exact=True).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+        self.controller.remaining()
         for body in bodies:
-            expect(main.get_by_text(body, exact=False).first).to_be_visible()
+            expect(main.get_by_text(body, exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
         if task:
-            expect(main.locator(f'a[href="/orgs/alpha/tasks/{task}"]').first).to_be_visible()
-            expect(main.get_by_text("completed", exact=False).first).to_be_visible()
-            expect(main.get_by_text(f"dispatched {task}", exact=True)).to_be_visible()
-            expect(main.get_by_text(f"task {task} completed · E05 task complete", exact=True)).to_be_visible()
+            expect(main.locator(f'a[href="/orgs/alpha/tasks/{task}"]').first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main.get_by_text("completed", exact=False).first).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main.get_by_text(f"dispatched {task}", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
+            expect(main.get_by_text(f"task {task} completed · E05 task complete", exact=True)).to_be_visible(timeout=self.controller.remaining(5)*1000)
+            self.controller.remaining()
         name = f"e05-{label}.png"
-        page.screenshot(path=str(self.controller.root / "raw" / name), full_page=True)
-        result = dict(thread=thread, body=received.value.json(), text=main.inner_text(), screenshot=name,
+        page.screenshot(path=str(self.controller.root / "raw" / name), full_page=True, timeout=self.controller.remaining(10)*1000)
+        self.controller.remaining()
+        result = dict(thread=thread, body=received.value.json(), text=main.inner_text(timeout=self.controller.remaining(10)*1000), screenshot=name,
                       url=page.url, response_url=received.value.url, method=received.value.request.method,
                       status=received.value.status, messages_body=messages.value.json(), messages_url=messages.value.url,
                       messages_status=messages.value.status, messages_method=messages.value.request.method,
@@ -311,13 +395,16 @@ class Browser:
                         body: article.querySelector('.gl-prose')?.innerText,
                         visible: article.getClientRects().length > 0
                       }))"""), at=time.monotonic())
+        self.controller.remaining()
         self.thread_events.append(dict(event="thread-view", **result))
         return result
 
     def close_threads_context(self) -> None:
         if hasattr(self, "thread_context"):
+            self.controller.remaining()
             try:
                 self.thread_context.close()
+                self.controller.remaining()
                 self.thread_events.append(dict(event="context-closed", at=time.monotonic()))
             finally:
                 (self.controller.root / "raw/e05-browser-events.json").write_text(
@@ -329,28 +416,40 @@ class Browser:
         self.page.set_default_navigation_timeout(c.remaining(4) * 1000)
         path = f"/api/v1/orgs/alpha/tasks/{task}"
         url = self.base + f"/orgs/alpha/tasks/{task}"
-        self.page.goto(url)
+        self.page.goto(url, timeout=self.controller.remaining(4)*1000)
+        self.controller.remaining()
         # Real reload and real responses even if a previous React cache exists.
         with self.response(path) as detail, self.response(path + "/recall") as recall:
             self.page.reload(timeout=c.remaining(4)*1000)
+            self.controller.remaining()
         main = self.page.get_by_role("main")
         expect(main.locator("h1").get_by_text(status, exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         cancel = main.get_by_role("button", name="Cancel", exact=True)
-        if status == "cancelled":
+        if status in {"cancelled", "failed", "completed"}:
             expect(cancel).to_be_disabled(timeout=c.remaining(4)*1000)
-            expect(cancel).to_have_attribute("title", "Cannot cancel a cancelled task", timeout=c.remaining(4)*1000)
+            self.controller.remaining()
+            expect(cancel).to_have_attribute("title", f"Cannot cancel a {status} task", timeout=c.remaining(4)*1000)
+            self.controller.remaining()
+            if status == "failed":
+                expect(main.get_by_text("session died on daemon restart -- executor pid not alive", exact=True)).to_be_visible(timeout=c.remaining(4)*1000)
+                self.controller.remaining()
+                c.remaining()
         else:
             expect(cancel).to_be_enabled(timeout=c.remaining(4)*1000)
+            self.controller.remaining()
         record = dict(task=task, url=self.page.url, detail_url=detail.value.url, detail=detail.value.json(),
                       detail_method=detail.value.request.method, detail_status=detail.value.status,
                       recall_url=recall.value.url, recall=recall.value.json(), recall_status=recall.value.status,
-                      recall_method=recall.value.request.method, text=main.inner_text(),
-                      cancel_disabled=cancel.is_disabled(), cancel_title=cancel.get_attribute("title"),
+                      recall_method=recall.value.request.method, text=main.inner_text(timeout=self.controller.remaining(4)*1000),
+                      cancel_disabled=cancel.is_disabled(timeout=self.controller.remaining(4)*1000), cancel_title=cancel.get_attribute("title", timeout=self.controller.remaining(4)*1000),
                       badges=main.get_by_text(status,exact=True).all_text_contents(), at=time.monotonic())
+        self.controller.remaining()
         if shot:
             self.page.screenshot(path=str(c.root / "raw" / shot),full_page=True,timeout=c.remaining(4)*1000)
+            self.controller.remaining()
             record["screenshot"] = shot
-        c.e07.setdefault("browser_events",[]).append(dict(event="detail-reload",**record))
+        (c.e07.get("restart") or c.e07).setdefault("browser_events",[]).append(dict(event="detail-reload",**record))
         require(record["detail"]["task"]["task_id"] == task and record["detail"]["task"]["status"] == status,
                 "E07 current actual browser response",record)
         return record
@@ -362,25 +461,31 @@ class Browser:
         require("waiting on subtasks" in parent_view["text"] and child_view["detail"]["task"]["block_kind"] is None,
                 "E07 waiting parent and running child rendered")
         self.page.get_by_role("main").get_by_role("button",name="Cancel",exact=True).click(timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         dialog = self.page.get_by_role("dialog")
         expect(dialog.get_by_role("heading",name="Cancel task",exact=True)).to_be_visible(timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         dialog.get_by_placeholder("Reason for cancellation (optional)",exact=True).fill("E07_CANCEL_TREE",timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         path = f"/api/v1/orgs/alpha/tasks/{parent}/cancel"
         requests = []
         def capture(request):
             if request.method == "POST" and request.url == self.base + path:
                 requests.append(dict(method=request.method,url=request.url,body=request.post_data_json,at=time.monotonic()))
         self.page.on("request",capture)
-        rationale = dialog.get_by_role("textbox").input_value()
+        rationale = dialog.get_by_role("textbox").input_value(timeout=self.controller.remaining(4)*1000)
+        self.controller.remaining()
         entered = time.monotonic()
         try:
             with self.page.expect_response(lambda r:r.url == self.base+path and r.request.method == "POST",timeout=c.remaining()*1000) as received:
                 dialog.get_by_role("button",name="Cancel task",exact=True).click(timeout=c.remaining()*1000)
+                self.controller.remaining()
+            self.controller.remaining()
             response = received.value
             record = dict(entered=entered,finished=time.monotonic(),path=path,method=response.request.method,
                           request=response.request.post_data_json,status=response.status,response=response.json(),
                           requests=requests,parent_view=parent_view,child_view=child_view,rationale=rationale)
-            c.e07.setdefault("browser_events",[]).append(dict(event="cancel",**record))
+            (c.e07.get("restart") or c.e07).setdefault("browser_events",[]).append(dict(event="cancel",**record))
             require(len(requests) == 1 and record["request"] == {"rationale":"E07_CANCEL_TREE"}
                     and record["status"] == 200 and record["response"] == {"ok":True,"task_id":parent,"cancelled":[parent,child],"killed":[{"task_id":child,"agent":"case_worker"}]},
                     "E07 literal shipping browser cancellation",record)
@@ -393,25 +498,63 @@ class Browser:
         views = [self.e07_detail(parent,"cancelled","e07-parent.png"),self.e07_detail(child,"cancelled","e07-child.png")]
         path = "/api/v1/orgs/alpha/tasks/roots"
         self.page.goto(self.base+"/orgs/alpha/tasks",timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         with self.response(path) as roots:
             self.page.reload(timeout=c.remaining(4)*1000)
+            self.controller.remaining()
         main = self.page.get_by_role("main")
         expect(main.get_by_text("Cancelled",exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         link = main.locator(f'a[href="/orgs/alpha/tasks/{parent}"]').first
         expect(link).to_be_visible(timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         self.page.screenshot(path=str(c.root/"raw/e07-list.png"),full_page=True,timeout=c.remaining(4)*1000)
+        self.controller.remaining()
         record = dict(url=self.page.url,roots_url=roots.value.url,roots=roots.value.json(),method=roots.value.request.method,
-                      status=roots.value.status,text=main.inner_text(),parent_href=link.get_attribute("href"),
+                      status=roots.value.status,text=main.inner_text(timeout=self.controller.remaining(4)*1000),parent_href=link.get_attribute("href", timeout=self.controller.remaining(4)*1000),
                       screenshot="e07-list.png",at=time.monotonic())
-        c.e07.setdefault("browser_events",[]).append(dict(event="list-reload",**record))
+        self.controller.remaining()
+        (c.e07.get("restart") or c.e07).setdefault("browser_events",[]).append(dict(event="list-reload",**record))
         views.append(record)
         return views
 
+    def restart_thread(self, thread: str, expected: dict) -> dict:
+        c = self.controller
+        path = f"/api/v1/orgs/alpha/threads/{thread}"
+        url = self.base+f"/orgs/alpha/threads/{thread}"
+        with self.response(path) as detail, self.response(path+"/messages") as messages:
+            self.page.goto(url, timeout=c.remaining(4)*1000)
+        c.remaining()
+        main = self.page.get_by_role("main")
+        expect(main.get_by_text(expected["subject"],exact=True).first).to_be_visible(timeout=c.remaining(4)*1000)
+        c.remaining()
+        for message in expected["messages"]:
+            if message["kind"] == "message":
+                expect(main.get_by_text(message["body_markdown"],exact=False).first).to_be_visible(timeout=c.remaining(4)*1000)
+                c.remaining()
+        result = dict(thread=thread,url=self.page.url,detail=detail.value.json(),messages=messages.value.json(),
+                      detail_url=detail.value.url,messages_url=messages.value.url,
+                      status=detail.value.status,messages_status=messages.value.status,
+                      text=main.inner_text(timeout=c.remaining(4)*1000),at=time.monotonic())
+        c.remaining()
+        require(result["detail"] == expected and result["messages"]["messages"] == expected["messages"], "C browser settled thread content")
+        return result
+
+    def final_observation(self) -> None:
+        self.controller.remaining()
+        (self.controller.root / "raw/browser-events.json").write_text(
+            self.controller.sanitize(json.dumps(self.events, indent=2)))
+        self.page.screenshot(path=str(self.controller.root / "raw/browser-final.png"),
+                             full_page=True, timeout=self.controller.remaining(4)*1000)
+        self.controller.remaining()
+
     def close(self) -> None:
+        self.controller.remaining()
         try:
-            (self.controller.root / "raw" / "browser-events.json").write_text(self.controller.sanitize(json.dumps(self.events, indent=2)))
-            self.page.screenshot(path=str(self.controller.root / "raw" / "browser-final.png"), full_page=True)
             self.context.close()
+            self.controller.remaining()
             self.browser.close()
+            self.controller.remaining()
         finally:
             self.playwright.stop()
+            self.controller.remaining()

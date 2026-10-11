@@ -111,10 +111,11 @@ def command(instruction: dict, binding: dict, token: str | None, files: dict) ->
     child_start = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
     timed_out = False
     try:
-        out, err = process.communicate(timeout=max(0, end - time.monotonic()))
+        out, err = process.communicate(timeout=remaining(root, end=end))
     except subprocess.TimeoutExpired as exc:
         timed_out = True
         out, err = exc.stdout or b"", exc.stderr or b""
+    timed_out = timed_out or time.monotonic() >= end
     retained = redaction_context(root, token)
     if not secrets <= retained:
         raise RuntimeError("E05 retained redaction context lost identities")
@@ -159,7 +160,11 @@ def command(instruction: dict, binding: dict, token: str | None, files: dict) ->
                              callback_sha256=manifest["callback_sha256"]))
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from provider import remaining
+
 def main() -> None:
+    root = Path(os.environ["E2E_ROOT"])
     thread, token, agent, org, purpose = sys.argv[1:]
     if not re.fullmatch(r"THR-\d+", thread) or not token or org != "alpha" or agent not in {"case_manager", "case_worker"} or purpose not in {"reply", "task_followup"}:
         raise RuntimeError("unexpected E05 thread invocation")
@@ -169,14 +174,21 @@ def main() -> None:
     files: dict[str, Path] = {}
     try:
         with socket.socket(socket.AF_UNIX) as connection:
-            connection.settimeout(300)  # Outer failure fence, never an action allowance.
+            connection.settimeout(remaining(root))
             connection.connect(os.environ["E2E_SOCKET"])
+            remaining(root)
             stream = connection.makefile("rwb")
+            connection.settimeout(remaining(root))
             stream.write((json.dumps(binding) + "\n").encode())
+            remaining(root)
+            connection.settimeout(remaining(root))
             stream.flush()
+            remaining(root)
             actions = []
             while True:
+                connection.settimeout(remaining(root))
                 instruction = json.loads(stream.readline(131072))
+                remaining(root)
                 if instruction == {"action": "exit"}:
                     if actions not in (["thread-decline"], ["thread-reply", "thread-reply"],
                                        ["thread-dispatch", "thread-reply"], ["thread-task-read", "thread-reply"]):
@@ -184,8 +196,12 @@ def main() -> None:
                     for path in files.values():
                         path.unlink()
                     files.clear()
+                    connection.settimeout(remaining(root))
                     stream.write(b'{"exiting":true}\n')
+                    remaining(root)
+                    connection.settimeout(remaining(root))
                     stream.flush()
+                    remaining(root)
                     return
                 action = instruction["action"]
                 allowed = {(): {"thread-decline", "thread-reply", "thread-dispatch", "thread-task-read"},
@@ -194,8 +210,12 @@ def main() -> None:
                 if action not in allowed.get(tuple(actions), set()):
                     raise RuntimeError("unexpected E05 turn action/order")
                 receipt = command(instruction, binding, token, files)
+                connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
                 stream.write((json.dumps(receipt) + "\n").encode())
+                remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
+                connection.settimeout(remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline"))))
                 stream.flush()
+                remaining(root, end=instruction.get("deadline", instruction.get("execution_deadline")))
                 expected = 1 if actions == ["thread-reply"] else 0
                 if receipt["exit"] != expected or receipt["timed_out"] or receipt["output_truncated"]:
                     raise RuntimeError("E05 real CLI failed")

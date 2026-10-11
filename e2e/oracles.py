@@ -4,7 +4,8 @@ from __future__ import annotations
 import json
 import hashlib
 import sqlite3
-from contextlib import closing
+import time
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +16,25 @@ def require(condition: bool, message: str, observed: Any = None) -> None:
 
 
 class Store:
-    def __init__(self, root: Path, org: str) -> None:
+    def __init__(self, root: Path, org: str, deadline=None) -> None:
+        self.deadline = deadline
         self.path = root / "runtime" / "orgs" / org / "happyranch.db"
+
+    @contextmanager
+    def connection(self):
+        # A fresh read-only connection and a shared absolute end, including
+        # SQLite busy waits and long VM execution. No product writer is imported.
+        end = self.deadline() if self.deadline else time.monotonic() + 5
+        require(end > time.monotonic(), "SQLite observation deadline")
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True,
+                                     timeout=min(5, end-time.monotonic()))) as db:
+            db.set_progress_handler(lambda: int(time.monotonic() >= end), 100)
+            yield db
+            require(time.monotonic() < end, "SQLite returned after observation deadline")
 
     def query(self, sql: str, args: tuple = ()) -> list[dict]:
         # Reopen on EVERY observation. immutable=1 would hide a live WAL.
-        with sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True) as db:
+        with self.connection() as db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
             return [dict(row) for row in db.execute(sql, args)]
@@ -32,7 +46,7 @@ class Store:
                   "thread_reply_breaker_episodes", "thread_reply_breaker_receipts",
                   "thread_message_attachments", "thread_scoped_attachments", "task_attachments",
                   "tasks", "task_results", "audit_log", "jobs")
-        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+        with self.connection() as db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
             db.execute("BEGIN")
@@ -56,7 +70,7 @@ class Store:
 
         File observations are explicitly outside that SQL transaction.
         """
-        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+        with self.connection() as db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA query_only=ON")
             db.execute("BEGIN")

@@ -17,6 +17,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Any, Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -32,7 +33,15 @@ class Controller:
     def __init__(self, args: argparse.Namespace) -> None:
         self.root, self.source = args.root, args.source
         self.revision, self.deadline = args.sha, args.deadline
-        self.env = dict(os.environ)
+        self.work_end = args.deadline - 150 if args.exercise == "baseline" else args.deadline
+        self.local_bounds = threading.local()
+        self.allocation = dict(scenario_deadline=args.deadline, prefix_end=self.work_end,
+                               initialized=time.monotonic(), stages=[])
+        self.normal_close = {}
+        self.boots = []
+        self.r_commands = []
+        self.env = dict(os.environ, E2E_SCENARIO_DEADLINE=str(args.deadline))
+        self.publish_end()
         self.python = str(self.root / "venv" / "bin" / "python")
         self.port = 0
         self.token = ""
@@ -66,7 +75,7 @@ class Controller:
         self.socket_path = self.root / "coord" / "provider.sock"
         self.server.bind(str(self.socket_path))
         self.server.listen(8)
-        self.stores = {org: Store(self.root, org) for org in ("alpha", "beta")}
+        self.stores = {org: Store(self.root, org, self.effective_end) for org in ("alpha", "beta")}
         self.observer_thread = threading.Thread(target=self.observe_providers, daemon=True)
         self.observer_thread.start()
 
@@ -133,12 +142,14 @@ class Controller:
         require(send_remaining > 0, "provider CLI exchange exhausted before send")
         connection.settimeout(send_remaining)
         stream.write((json.dumps(instruction) + "\n").encode())
+        connection.settimeout(self.remaining(min(10, deadline-time.monotonic())))
         stream.flush()
         require(time.monotonic() < deadline, "provider CLI send exhausted exchange")
-        connection.settimeout(deadline - time.monotonic())
+        connection.settimeout(self.remaining(deadline - time.monotonic()))
         receipt = json.loads(stream.readline(262144))
         receipt["wire"] = list(self.relay.records[offset:])
         self.provider_commands.append(receipt)  # Preserve failed commands before assertions.
+        self.remaining(deadline-time.monotonic())
         attempt.update(finished=time.monotonic(), command_index=len(self.provider_commands) - 1)
         require(receipt["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
                 and receipt["source_sha"] == self.revision and receipt["python"] == self.python,
@@ -165,16 +176,55 @@ class Controller:
             self.payloads[start["session"]] = payload
         return receipt
 
+    def effective_end(self) -> float:
+        return min(self.deadline, self.work_end, getattr(self, "case_deadline", self.deadline),
+                   getattr(self.local_bounds, "end", self.deadline))
+
+    def publish_end(self) -> None:
+        end = self.effective_end()
+        require(end > time.monotonic(), "effective work deadline exhausted")
+        path = self.root / "coord/work-end.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(dict(scenario_deadline=self.deadline, effective_end=end)))
+        temporary.replace(path)
+        if getattr(self, "browser_relay", None) and not getattr(self, "browser_relay_closed", False):
+            self.browser_relay.deadline = end
+        if threading.current_thread() is threading.main_thread():
+            left = end-time.monotonic()
+            require(left > 0, "deadline exhausted while publishing bound")
+            signal.setitimer(signal.ITIMER_REAL, left)
+
+    @contextmanager
+    def bounded(self, end: float):
+        previous = getattr(self.local_bounds, "end", self.deadline)
+        self.local_bounds.end = min(previous, end)
+        try:
+            self.remaining()
+            if threading.current_thread() is threading.main_thread():
+                left = self.effective_end()-time.monotonic()
+                require(left > 0, "predicate deadline exhausted")
+                signal.setitimer(signal.ITIMER_REAL, left)
+            yield
+            self.remaining()
+        finally:
+            self.local_bounds.end = previous
+            if threading.current_thread() is threading.main_thread():
+                left = self.effective_end()-time.monotonic()
+                if left > 0:
+                    signal.setitimer(signal.ITIMER_REAL, left)
+
     def remaining(self, cap: float = 30) -> float:
-        require(self.observer_error is None and self.observer_thread.is_alive(), "continuous provider observation", self.observer_error)
-        remaining = min(self.deadline, getattr(self, "case_deadline", self.deadline)) - time.monotonic()
-        require(remaining > 0, "action deadline exceeded")
+        if not self.observer_stop.is_set():
+            require(self.observer_error is None and self.observer_thread.is_alive(), "continuous provider observation", self.observer_error)
+        remaining = self.effective_end() - time.monotonic()
+        require(remaining > 0 and cap > 0, "action deadline exceeded")
         return min(remaining, cap)
 
     def poll(self, predicate: Callable[[], Any], name: str, cap: float = 30) -> Any:
         end = time.monotonic() + self.remaining(cap)
         while time.monotonic() < end:
-            value = predicate()
+            with self.bounded(end):
+                value = predicate()
             if value:
                 return value
             time.sleep(min(0.05, max(0, end - time.monotonic())))
@@ -186,9 +236,18 @@ class Controller:
             headers["Authorization"] = "Bearer " + (self.token if bearer == "valid" else bearer)
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=self.remaining())
         try:
+            connection.connect()
+            upstream_socket = connection.sock
+            self.remaining()
+            connection.sock.settimeout(self.remaining())
             connection.request(method, path, json.dumps(body) if body is not None else None, headers)
+            self.remaining()
+            connection.sock.settimeout(self.remaining())
             response = connection.getresponse()
+            self.remaining()
+            upstream_socket.settimeout(self.remaining())
             data = json.loads(response.read())
+            self.remaining()
             self.http.append(dict(method=method, path=path, status=response.status, response=data))
             return response.status, data
         finally:
@@ -206,6 +265,7 @@ class Controller:
         command = [str(self.root / "bin" / "happyranch"), *args]
         begin = time.monotonic()
         result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True, timeout=self.remaining())
+        self.remaining()
         self.commands.append(dict(argv=command, exit=result.returncode, stdout=result.stdout,
                                   stderr=result.stderr, seconds=time.monotonic() - begin))
         return result
@@ -308,15 +368,40 @@ class Controller:
         controls.append(dict(control="registry-missing", exit=result.returncode, stderr=result.stderr))
         self.durable.append(dict(binding_controls=controls))
 
+    def discover_daemon(self, record: dict) -> None:
+        home = self.root / "daemon"
+        token_path = home / "daemon.token"
+        if token_path.exists():
+            token = token_path.read_text().strip()
+            if token:
+                self.secrets.add(token)
+                self.remember_thread_secrets([])
+                record["bearer_sha256"] = hashlib.sha256(token.encode()).hexdigest()
+        port_path = home / "daemon.port"
+        if port_path.exists():
+            port = int(port_path.read_text())
+            path = self.root / "ports.json"
+            ports = json.loads(path.read_text()) if path.exists() else []
+            if port not in ports:
+                path.write_text(json.dumps([*ports, port]))
+            record.setdefault("discovered_ports", [])
+            if port not in record["discovered_ports"]:
+                record["discovered_ports"].append(port)
+
     def bootstrap(self) -> None:
         self.wrappers()
         program = f"import sys,runpy;sys.path.insert(0,{str(self.source)!r});runpy.run_module('runtime.daemon',run_name='__main__')"
         self.daemon_log = (self.root / "raw" / "daemon.txt").open("w")
         self.daemon = subprocess.Popen([self.python, "-I", "-c", program], cwd=self.root,
                                        env=self.env, stdout=self.daemon_log, stderr=subprocess.STDOUT, start_new_session=True)
+        from e07 import register_owned
+        from owned import identity
+        register_owned(self, [self.daemon.pid])
+        self.boots.append(dict(pid=self.daemon.pid, start=identity(self.daemon.pid), entered=time.monotonic()))
         def ready() -> bool:
             require(self.daemon.poll() is None, "daemon died during bootstrap")
             home = self.root / "daemon"
+            self.discover_daemon(self.boots[-1])
             if not all((home / f"daemon.{name}").exists() for name in ("port", "token", "pid")):
                 return False
             require(int((home / "daemon.pid").read_text()) == self.daemon.pid, "new daemon PID")
@@ -331,7 +416,7 @@ class Controller:
             except ConnectionError:
                 return False
         self.poll(ready, "owned daemon readiness")
-        (self.root / "ports.json").write_text(json.dumps([self.port]))
+        self.discover_daemon(self.boots[-1])
         result = self.cli(["init", str(self.root / "runtime")])
         require(result.returncode == 0, "public runtime init", result.stdout)
         for provider in ("claude", "codex", "opencode"):
@@ -357,8 +442,9 @@ class Controller:
                 "real tree cleanup capability required", health)
         require(health["admission"]["cap"] >= 2, "two concurrent colliding sessions supported", health)
         self.durable.append(dict(health=health))
-        self.relay = Relay(self.port, self.prove_committed)
-        (self.root / "ports.json").write_text(json.dumps([self.port, self.relay.port]))
+        self.relay = Relay(self.port, self.prove_committed, self.effective_end)
+        ports = json.loads((self.root / "ports.json").read_text())
+        (self.root / "ports.json").write_text(json.dumps(sorted(set([*ports,self.port,self.relay.port]))))
         (self.root / "client" / "daemon.port").write_text(str(self.relay.port))
         token = self.root / "client" / "daemon.token"
         token.write_text(self.token)
@@ -389,10 +475,15 @@ class Controller:
         finally:
             os.close(descriptor)
         exit_code = self.daemon.wait(timeout=self.remaining(20))
+        self.remaining()
         require(exit_code == 0 and identity(old["pid"]) != old["start"], "graceful owned daemon exit", exit_code)
         program = f"import sys,runpy;sys.path.insert(0,{str(self.source)!r});runpy.run_module('runtime.daemon',run_name='__main__')"
         self.daemon = subprocess.Popen([self.python, "-I", "-c", program], cwd=self.root,
                                        env=self.env, stdout=self.daemon_log, stderr=subprocess.STDOUT, start_new_session=True)
+        from e07 import register_owned
+        from owned import identity
+        register_owned(self, [self.daemon.pid])
+        self.boots.append(dict(pid=self.daemon.pid, start=identity(self.daemon.pid), entered=time.monotonic()))
         new = dict(pid=self.daemon.pid, start=identity(self.daemon.pid))
         require(new["start"] is not None and (new["pid"], new["start"]) != (old["pid"], old["start"]),
                 "new owned daemon identity", new)
@@ -403,6 +494,7 @@ class Controller:
         def ready() -> bool:
             require(self.daemon.poll() is None and identity(new["pid"]) == new["start"], "restarted daemon live")
             home = self.root / "daemon"
+            self.discover_daemon(self.boots[-1])
             if not all((home / f"daemon.{name}").exists() for name in ("port", "token", "pid")):
                 return False
             if int((home / "daemon.pid").read_text()) != new["pid"]:
@@ -435,12 +527,14 @@ class Controller:
 
     def start(self, org: str, task: str | None, agent: str) -> dict:
         self.validate_bindings()
+        self.publish_end()
         self.server.settimeout(self.remaining())
         connection, _ = self.server.accept()
         connection.settimeout(self.remaining())
         stream = connection.makefile("rwb")
         self.peer_connections.append((connection, stream))
         row = json.loads(stream.readline(4096))
+        self.remaining()
         import struct
         peer_pid, peer_uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
         require(peer_pid == row["pid"] and peer_uid == os.getuid(), "actual owned socket peer", row)
@@ -501,9 +595,14 @@ class Controller:
 
     def release(self, start: dict) -> None:
         connection, stream = self.holds.pop(start["session"])
+        connection.settimeout(self.remaining())
         stream.write(b'{"action":"exit"}\n')
+        connection.settimeout(self.remaining())
         stream.flush()
-        require(json.loads(stream.readline()) == {"exiting": True}, "provider exit acknowledgement")
+        connection.settimeout(self.remaining())
+        acknowledgement = json.loads(stream.readline())
+        self.remaining()
+        require(acknowledgement == {"exiting": True}, "provider exit acknowledgement")
         stream.close()
         connection.close()
 
@@ -523,54 +622,88 @@ class Controller:
         self.results[variant] = dict(status="PASS", evidence=evidence or {}, at=time.monotonic())
 
     def close(self) -> None:
-        failures = []
-        try:
-            self.capture_thread_secrets()
-        except Exception:
-            failures.append("unknown E05 token redaction context")
-        if self.browser_relay:
-            self.browser_relay.release.set()
+        # All live observations precede TERM; independent disposal overlaps the
+        # daemon's own drain. The outer cleanup reserve cannot confer PASS here.
+        from owned import identity
+        entered = time.monotonic()
+        end = min(entered+25, self.deadline)
+        self.work_end = end
+        if hasattr(self, "case_deadline"):
+            del self.case_deadline
+        record = self.normal_close
+        record.update(entered=entered, end=end, complete=False, failures=[])
+        self.publish_end()
+        self.capture_thread_secrets()
+        with self.bounded(min(entered+4, end)):
+            if self.browser:
+                self.browser.final_observation()
+        if self.daemon and self.daemon.poll() is None:
+            pid = self.daemon.pid
+            start = identity(pid)
+            record["daemon"] = dict(pid=pid, start=start, port=self.port)
+            require(start is not None and f"E2E_ROOT={self.root}".encode()
+                    in Path(f"/proc/{pid}/environ").read_bytes().split(b"\0"), "normal close owned daemon")
+            descriptor = os.pidfd_open(pid)
             try:
+                require(identity(pid) == start, "normal close exact identity")
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                record["signalled"] = time.monotonic()
+            finally:
+                os.close(descriptor)
+        close_end = min(entered+24, end-1)
+        self.work_end = close_end
+        self.publish_end()
+        try:
+            if self.browser_relay and not getattr(self, "browser_relay_closed", False):
+                self.browser_relay.release.set()
                 if self.browser:
                     self.browser.close_threads_context()
-            except Exception as exc:
-                failures.append(type(exc).__name__ + ": E05 browser close")
-            finally:
-                closure = self.browser_relay.close()
+                closure = self.browser_relay.close(close_end)
                 self.durable.append(dict(thread_proxy_closure=closure))
-                if closure["workers_alive"] or closure["listener_alive"] or closure["connections"] or closure["errors"]:
-                    failures.append("E05 proxy closure/transport failure")
-        if self.late_transport:
-            closure = self.late_transport.close()
-            self.e07["transport_closure"] = closure
-            if closure["listener_alive"] or closure["workers_alive"] or closure["sockets"] or closure["errors"]:
-                failures.append("E07 transport closure")
-        if self.browser:
-            try:
+                require(not any(closure[k] for k in ("workers_alive", "listener_alive", "connections", "errors")), "thread proxy normal close")
+            if self.late_transport:
+                closure = self.late_transport.close(close_end)
+                self.e07.setdefault("restart", {})["transport_closure"] = closure
+                require(not any(closure[k] for k in ("listener_alive", "workers_alive", "sockets", "errors")), "late transport normal close")
+            if self.browser:
                 self.browser.close()
-            except Exception as exc:
-                failures.append(repr(exc))
-        for connection, stream in self.peer_connections:
-            stream.close()
-            connection.close()
-        self.observer_stop.set()
-        self.observer_thread.join(timeout=1)
-        failures.extend([self.observer_error] if self.observer_error else [])
-        if self.observer_thread.is_alive():
-            failures.append("provider observer did not stop")
-        self.server.close()
-        self.socket_path.unlink(missing_ok=True)
-        if self.relay:
-            self.relay.close()
-        if self.daemon and self.daemon.poll() is None:
-            self.daemon.send_signal(signal.SIGTERM)
-            try:
-                self.daemon.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                pass  # Outer watcher owns verified-PID escalation and failure receipt.
-        if hasattr(self, "daemon_log"):
-            self.daemon_log.close()
-        require(not failures, "browser cleanup/evidence failed", failures)
+                self.remaining()
+            for connection, stream in self.peer_connections:
+                if connection.fileno() != -1:
+                    connection.settimeout(self.remaining())
+                stream.close()
+                connection.close()
+                self.remaining()
+            self.observer_stop.set()
+            self.observer_thread.join(timeout=self.remaining(1))
+            require(not self.observer_thread.is_alive() and self.observer_error is None, "normal observer close")
+            self.server.close()
+            self.socket_path.unlink(missing_ok=True)
+            if self.relay:
+                record["cli_relay"] = self.relay.close(close_end)
+                require(self.relay.error is None, "CLI relay close/transport error")
+            if "signalled" in record:
+                wait_end = min(record["signalled"]+20, close_end)
+                require(wait_end > time.monotonic(), "normal daemon wait budget")
+                record["exit"] = self.daemon.wait(timeout=wait_end-time.monotonic())
+                record["waited"] = time.monotonic()
+                record["observed_start"] = identity(pid)
+                from restart import listener_absent
+                record["listener_absent"] = listener_absent(self.port)
+                require(record["exit"] == 0 and record["observed_start"] is None
+                        and record["listener_absent"] and record["waited"] < wait_end, "normal daemon closure")
+            else:
+                raise RuntimeError("normal close has no live daemon")
+            if hasattr(self, "daemon_log"):
+                self.daemon_log.close()
+            self.remaining()
+            record.update(closed=time.monotonic(), complete=True)
+        except BaseException as exc:
+            record["failures"].append(type(exc).__name__)
+            raise
+        finally:
+            self.work_end = end
+            self.publish_end()
 
     def collect_e07_launches(self) -> tuple[list[dict], list[dict]]:
         """Retain each valid record; a missing sibling cannot erase evidence."""
@@ -581,8 +714,8 @@ class Controller:
 
         records, failures = [], []
         expected = set()
-        for index, command in enumerate(self.e07_commands):
-            if command["action"] not in {"e07-parent", "e07-held"}:
+        for index, command in enumerate([*self.e07_commands, *self.r_commands]):
+            if command["action"] not in {"e07-parent", "e07-held", "e07-restart-held"}:
                 continue
             # The ledger is registered before sending the real instruction.
             # Even an interrupted send requires evidence or an explicit failure.
@@ -651,7 +784,8 @@ class Controller:
             launches, failures = self.collect_e07_launches()
             self.e07.update(partial_launches=launches, launch_record_failures=failures)
             (self.root / "raw/e07.json").write_text(self.sanitize(json.dumps(self.e07, indent=2)))
-        rows.update(e07=self.e07, e07_commands=self.e07_commands)
+        rows.update(e07=self.e07, e07_commands=self.e07_commands, r_commands=self.r_commands,
+                    allocation=self.allocation, boots=self.boots, normal_close=self.normal_close)
         rows.update(thread_commands=self.thread_commands, thread_attempts=self.thread_attempts,
                     thread_proxy=self.browser_relay.records if self.browser_relay else [])
         witness = self.root / "witness/identities.jsonl"
@@ -666,7 +800,16 @@ class Controller:
             rows["witness_incomplete_line"] = bool(data and not data.endswith(b"\n"))
         raw = self.sanitize(json.dumps(rows, indent=2))
         (self.root / "raw" / "observations.json").write_text(raw)
-        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases, e07=self.e07))))
+        (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(variants=self.results, scenario_phases=self.phases, e07=self.e07, allocation=self.allocation, normal_close=self.normal_close))))
+        if self.normal_close.get("complete"):
+            self.remaining()
+            self.normal_close["evidence_finished"] = time.monotonic()
+            rows["normal_close"] = self.normal_close
+            (self.root / "raw/observations.json").write_text(self.sanitize(json.dumps(rows, indent=2)))
+            (self.root / "scenario.json").write_text(self.sanitize(json.dumps(dict(
+                variants=self.results, scenario_phases=self.phases, e07=self.e07,
+                allocation=self.allocation, normal_close=self.normal_close))))
+            self.remaining()
         # Fail only after all available sanitized evidence has been serialized.
         # Sanitation/context errors above remain fatal and are never caught here.
         require(not self.e07.get("launch_record_failures"), "E07 launch record evidence incomplete")
@@ -706,6 +849,9 @@ def main() -> None:
     parser.add_argument("--deadline", type=float, required=True)
     parser.add_argument("--exercise", choices=["baseline", "cancellation"], default="baseline")
     args = parser.parse_args()
+    def expired(_signum, _frame):
+        raise TimeoutError("controller absolute work deadline")
+    signal.signal(signal.SIGALRM, expired)
     controller = Controller(args)
     def interrupted(signum: int, _frame: object) -> None:
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -734,6 +880,8 @@ def main() -> None:
                 exercise_threads(controller)
                 from e07 import exercise as exercise_cancellation
                 exercise_cancellation(controller)
+                from restart import exercise as exercise_restart
+                exercise_restart(controller)
         finally:
             controller.phases.append(dict(name="actions", seconds=time.monotonic() - begin))
     except BaseException:
