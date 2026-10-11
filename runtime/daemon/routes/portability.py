@@ -276,12 +276,13 @@ async def reconcile_portability(
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(org.db, task_id, org_slug=org.slug)
     if ownership.kind != "legacy":
-        if ownership.kind != "draft":
+        if ownership.kind not in ('draft', 'f5'):
             raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
+        owner = org.workflow_reviews if ownership.kind == 'f5' else org.workflow_drafts
         if body.disposition == "cancel":
-            return org.workflow_drafts.cancel(task_id)
+            return owner.cancel(task_id)
         # A transport result/PID cannot establish finalized containment.
-        org.workflow_drafts.reconcile(task_id)
+        owner.reconcile(task_id)
         raise HTTPException(status_code=409, detail={"code": "workflow_host_quiescence_unavailable"})
 
     async with org.db_lock:

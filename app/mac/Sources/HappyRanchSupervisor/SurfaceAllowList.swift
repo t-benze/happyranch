@@ -101,6 +101,8 @@ public struct SurfaceAllowList: Sendable {
             // Org-portability (CLI-only / founder-only — no browser consumer)
             ("GET", "/portability-preflight"),
             ("POST", "/reconcile-portability"),
+            // Original-current author staging is a native-sensitive mutation.
+            ("POST", "/workflows/submissions/handoffs"),
         ]
         for (method, path) in exactDenies {
             denied.append("\(method) \(path)")
@@ -210,6 +212,13 @@ public struct SurfaceAllowList: Sendable {
     ///   - rawPath: The original raw path from the request.
     /// - Returns: `true` if the request is allowed, `false` if it is denied.
     public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
+        // This exact newly admitted family also checks the original prefixed
+        // form; it does not grant reachability to any GET or adjacent route.
+        if method == "POST",
+           DaemonPathNormalizer.stripApiPrefix(rawPath) == "/workflows/submissions/handoffs",
+           deniedMethods.contains("POST /workflows/submissions/handoffs") {
+            return false
+        }
         // Build the set of paths to check: the normalized path plus its
         // /api/v1-prefixed form (for defense-in-depth with unprefixed client requests).
         let pathsToCheck = [path, "/api/v1\(path)"]

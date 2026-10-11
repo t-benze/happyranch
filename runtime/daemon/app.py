@@ -39,6 +39,8 @@ from runtime.daemon.routes import (
     workflow_templates,
     workflow_cutover,
     workflow_activations,
+    workflow_submissions,
+    workflow_reviews,
     work_hours,
     schedules,
 )
@@ -453,6 +455,8 @@ def create_app(state: DaemonState) -> FastAPI:
     app.include_router(workflow_cutover.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-cutover"])
     app.include_router(workflow_activations.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-activations"])
     app.include_router(workflow_templates.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-templates"])
+    app.include_router(workflow_submissions.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-submissions"])
+    app.include_router(workflow_reviews.router, prefix="/api/v1/orgs/{slug}", tags=["workflow-reviews"])
     app.include_router(kb.router, prefix="/api/v1/orgs/{slug}")
     app.include_router(skills.router, prefix="/api/v1/orgs/{slug}", tags=["skills"])
     app.include_router(skills.agent_skills_router, prefix="/api/v1/orgs/{slug}", tags=["skills"])

@@ -679,8 +679,9 @@ async def task_events(task_id: str, org: OrgDep):
 async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> dict:
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
-    workflow_draft = ownership.kind == "draft"
-    if ownership.kind not in {"legacy", "draft"}:
+    workflow_draft = ownership.kind in {"draft", "f5"}
+    workflow_owner = (org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts) if workflow_draft else None
+    if ownership.kind not in {"legacy", "draft", "f5"}:
         raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
     draft_prior = org.db.get_latest_task_result(task_id, body.agent, body.session_id) if workflow_draft else None
     # Task-active gate runs BEFORE session ownership (see _require_task_active).
@@ -763,7 +764,7 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
                 retry_wait_ids = (sorted(set(body.waiting_on_job_ids)) or None
                                   if "waiting_on_job_ids" in body.model_fields_set else body.waiting_on_job_ids or None)
                 try:
-                    valid = org.workflow_drafts.callback_replay(
+                    valid = workflow_owner.callback_replay(
                         task_id=task_id, agent=body.agent, session_id=body.session_id,
                         payload=dict(output_summary=body.output_summary, confidence_score=body.confidence,
                                      status=body.status, risks_flagged=body.risks_flagged, output_dir=body.output_dir,
@@ -935,6 +936,9 @@ async def submit_completion(task_id: str, body: CompletionBody, org: OrgDep) -> 
     local_ci_json = _json.dumps(local_ci.model_dump()) if local_ci is not None else None
     decision_json = _json.dumps(decision_payload) if decision_payload is not None else None
     async with org.db_lock:
+        current_ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
+        if current_ownership.kind != ownership.kind:
+            raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
         # The pre-await guards above give callers stable error ordering.  They
         # are not admission authority: cancellation or a newer generation can
         # land while this callback waits for the shared DB lock.
@@ -1823,11 +1827,12 @@ async def cancel_task(
     from runtime.workflows.recovery import classify_task
     ownership = classify_task(org.db, task_id, org_slug=getattr(org, "slug", None))
     if ownership.kind != "legacy":
-        if ownership.kind != "draft":
+        if ownership.kind not in {"draft", "f5"}:
             raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
-        # Initial draft has no ordinary delegated subtree. Its durable fence
+        # Workflow-owned execution has no ordinary delegated subtree. Its durable fence
         # precedes containment, whose controls run outside org.db_lock.
-        return org.workflow_drafts.cancel(task_id)
+        owner = org.workflow_reviews if ownership.kind == "f5" else org.workflow_drafts
+        return owner.cancel(task_id)
     if root.status in _TERMINAL_TASK_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
