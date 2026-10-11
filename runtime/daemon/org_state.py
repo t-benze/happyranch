@@ -39,6 +39,8 @@ from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
 from runtime.workflows.activation import WorkflowActivationStore
 from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
+from runtime.workflows.submissions import WorkflowSubmissionStore
+from runtime.workflows.review_dispatch import WorkflowReviewDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,8 @@ class OrgState:
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
+    workflow_submissions: WorkflowSubmissionStore = field(init=False)
+    workflow_reviews: WorkflowReviewDispatcher = field(init=False)
     memory_collection: CollectionObserver | None = field(init=False, default=None)
     memory_collection_unavailable: str | None = field(init=False, default=None)
     sessions: SessionTracker = field(default_factory=SessionTracker)
@@ -121,9 +125,14 @@ class OrgState:
         )
         self.workflow_activations = WorkflowActivationStore(self)
         self.workflow_drafts = WorkflowDraftDispatcher(self)
+        self.workflow_submissions = WorkflowSubmissionStore(self)
+        self.workflow_reviews = WorkflowReviewDispatcher(self)
         if self.orchestrator is not None:
             self.orchestrator._workflow_drafts = self.workflow_drafts
+            self.orchestrator._workflow_submissions = self.workflow_submissions
+            self.orchestrator._workflow_reviews = self.workflow_reviews
         self.db._workflow_drafts = self.workflow_drafts
+        self.db._workflow_reviews = self.workflow_reviews
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,
         )
@@ -257,11 +266,6 @@ class OrgState:
                     org_slug=slug, runtime_root=str(root.parent.parent),
                 ))
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
-            from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
-            install_pause_schema(db, org_slug=slug)
-            db._task_pause_store = TaskPauseStore(db, slug)
-            with db._lock:
-                validate_workflow_schema(db._conn, expected_org_slug=slug)
             teams = TeamsRegistry.load(root)
             # THR-095: one-shot seed — copy the 4 web-writable knobs from
             # config.yaml into the org_settings DB table exactly once per org.
@@ -295,8 +299,6 @@ class OrgState:
                 teams=teams,
                 authority_evaluator=_build_authority_evaluator(),
             )
-            from runtime.orchestrator.task_pause import restore_pause_preparations
-            restore_pause_preparations(orchestrator)
             state = cls(
                 slug=slug,
                 root=root,
