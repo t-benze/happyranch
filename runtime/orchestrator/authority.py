@@ -824,7 +824,7 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", *, pause_l
     includes both layout and source history; unavailable construction fails closed.
     """
     global _release_schema_digest_cache
-    if layout not in ("F", "E", "G") or history not in _RELEASE_REFERENCE_HISTORIES:
+    if layout not in ("F", "E", "G", "H") or history not in _RELEASE_REFERENCE_HISTORIES:
         return "unavailable"
     if _release_schema_digest_cache is None:
         _release_schema_digest_cache = {}
@@ -858,7 +858,7 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", *, pause_l
                     with fresh.workflow_schema_transaction() as conn:
                         migrate_draft_schema(conn, expected_org_slug="release-reference")
                 else:
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference")
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout)
                 if pause_layout:
                     from runtime.infrastructure.task_pause_controls import install_pause_schema
                     install_pause_schema(fresh, org_slug="release-reference")

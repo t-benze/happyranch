@@ -73,6 +73,7 @@ Tracked source is split by product surface:
 |-- labs/tenant_isolation/       # isolated tenant-isolation research harness
 |-- packaging/                   # daemon packaging/build entrypoints
 |-- scripts/                     # daemon/web helpers, local CI, and migrations
+|   |-- migrate_workflow_author_handoff_schema.py # explicit offline org-only G→H; no startup upgrade
 |   `-- migrations/              # forward-only DB/filesystem migration scripts
 |-- skills/happyranch/           # founder-facing CLI skill and shell helper
 |-- docs/

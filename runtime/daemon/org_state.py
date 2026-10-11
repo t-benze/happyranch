@@ -28,6 +28,7 @@ from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import (
     draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
+    author_handoff_migration_guidance,
 )
 from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
@@ -256,6 +257,8 @@ class OrgState:
                 logger.warning("org %r: %s", slug, submission_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
                 ))
+            if layout == "G":
+                logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
             install_pause_schema(db, org_slug=slug)

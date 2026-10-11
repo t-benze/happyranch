@@ -5,8 +5,36 @@
 > Product contracts are unchanged; replacement E2E is PENDING. See
 > [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+**H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
+initializes H (complete G plus the exact `workflow_author_handoffs` table: 17
+columns, six automatic constraint indexes, no marker or explicit index).
+Existing F/E/G startup, reopen and enable validate their installed layout and
+never add H. F/E must use the separately approved G migration first. The
+explicit offline org-only command is
+`python scripts/migrate_workflow_author_handoff_schema.py --org-root <absolute-org-root> --org-slug <slug> [--check]`.
+For this H command, `--check` returns 1 for valid G requiring migration, 0 for
+validated H; ordinary migration/repeat returns 0, refusal 1, parser error 2.
+One short writer rechecks source ownership and complete independent references,
+adds only the approved table, validates the target and retained rows, then
+commits; failures roll back. Operator stop/ownership cooperation is required;
+the script stops no process and cannot exclude an arbitrary concurrent start.
+Even empty H requires an H-compatible reader. F/E/G SQL, IDs, history, permanent
+NULL active legacy result and genuine INTEGER result links retain their meaning.
+Whole-database F/E/G/H references preserve the independent Pause/Resume dimension;
+generic Database/runtime-audit remain workflow-free and authority-v2 observed-only.
+
+This is a dependency-incomplete draft storage slice: populated H still needs the
+separately delivered matched `@3` template/activation/context readers and
+`submissions.validate_handoff_graph` for full absent/present graph closure.
+Reads refuse when these dependencies are unavailable; no success is inferred.
+Submission/dispatch producers and public API/CLI/TS remain follow-ons. Independent
+full review, same-head QA, applicable retained CI/real hosted CLI callback and
+manager guarded merge remain required before acceptance. No live migration,
+enable, assignment, deployment or restart is authorized by this change.
+
+**G submission-schema migration (THR139 seq395; retained F/E→G path).**
+The earlier fresh initializer selected G; U3a(a) now selects H under the H contract.
+Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
