@@ -17,6 +17,11 @@ import type { ActiveChainResponse, JobRecord, TaskEvent, TaskRecord } from '@/li
 
 beforeEach(() => {
   server.use(
+    // Independent overview fixture; these tests retain their original list/attention contract.
+    http.get('/api/v1/orgs/:slug/tasks/pause-overview', ({ params }) => HttpResponse.json({
+      org_slug: params.slug, observed_at: '2026-10-11T00:00:00Z', evidence_complete: true,
+      counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [],
+    })),
     http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: SLUG, root: '/x' }] })),
     http.get('/api/v1/orgs/:slug/dashboard/summary', () => HttpResponse.json({ org_age_days: 1 })),
   );

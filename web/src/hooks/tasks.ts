@@ -71,3 +71,15 @@ export const useRevisitTask: ReturnType<typeof useData>['tasks']['useRevisitTask
 export const useResolveEscalation: ReturnType<typeof useData>['tasks']['useResolveEscalation'] = (
   taskId,
 ) => useData().tasks.useResolveEscalation(taskId);
+
+export const useTaskPauseOverview: ReturnType<typeof useData>['tasks']['useTaskPauseOverview'] = (
+  params,
+) => useData().tasks.useTaskPauseOverview(params);
+
+export const usePauseTask: ReturnType<typeof useData>['tasks']['usePauseTask'] = (
+  taskId,
+) => useData().tasks.usePauseTask(taskId);
+
+export const useResumeTask: ReturnType<typeof useData>['tasks']['useResumeTask'] = (
+  taskId,
+) => useData().tasks.useResumeTask(taskId);

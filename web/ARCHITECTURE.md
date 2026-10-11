@@ -329,3 +329,31 @@ ordinary threads.
 Loaded inbox rows keep the newest accepted projection for each repeated thread ID, then use the complete active bucket comparator before literal subject-or-ID filtering. Open uses pin/numeric-ID/start/ID rank; Archived uses archive-or-start/ID rank; All uses global start/ID rank. This projection preserves each committed page’s authoritative totals, sample, cursor and termination metadata. Live movement can repeat IDs; only quiescent refresh/traversal promises the complete current set.
 
 The palette also chooses the newest repeated-ID projection within each committed page stream before its existing cross-cache deduplication; legacy array extraction stays unchanged and performs no fetch.
+
+
+## Root-task Pause/Resume frontend (THR-292 PR2)
+
+`hooks/tasks` forwards Pause, Resume and the independent org-scoped overview to
+`DataContext.TasksApi`. Real providers use the shipped tasks client; prototypes
+show unavailable evidence and refuse mutations instead of simulating enforcement.
+The real detail selector preserves the envelope's authoritative pause projection,
+falling back only to an actually supplied record projection. Missing or unsafe
+frontend generation is unavailable, never a synthesized unheld generation0.
+
+Task-local controls render only for actual NULL-parent eligible roots and sit
+beside existing lifecycle/action areas. Descendants link their actual projected
+root; terminal drain diagnostics remain visible without terminal control revival.
+Shared pending mutation keys suppress repeat controls across list/overview views.
+Each deliberate action posts its displayed generation with the selected org and
+actual root ID. The provider does not retry mutations or send an opposite action;
+success/refusal invalidation refreshes all task-list families, all task details and
+the overview in the originating org. Existing shared HTTP authentication recovery
+remains unchanged; a401 can bootstrap and retry once at that transport boundary.
+
+The overview is independent of loaded task pages/filters. Its own cursor-keyed
+query shows one observation page at a time, with server timestamp, evidence flag,
+nullable counts and typed blockers. Switching org resets the cursor and isolates
+cache keys; later pages are never summed into completeness or authoritative zero.
+English and Simplified Chinese ship together. Locale changes keep stable nodes,
+query keys and mutation ownership. UI/transport fixtures and browser screenshots
+prove their observed boundary only, never backend Pause enforcement or safe restart.
