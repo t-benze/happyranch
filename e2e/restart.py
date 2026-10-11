@@ -14,7 +14,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from e07 import frame, host, register_owned, register_tree, closure, witnesses
+from e07 import (frame, host, register_owned, register_tree, closure, witnesses,
+                 authenticate_public, pause_content, public_content, detail_content, sql_datetime)
 from late_transport import LateTransport, process_record, public_stream
 from oracles import require
 from owned import identity
@@ -64,7 +65,72 @@ def save(c: Controller) -> None:
     (c.root/"raw/e07.json").write_text(c.sanitize(json.dumps(c.e07, indent=2)))
 
 
-def recovered(c: Controller, before: dict, after: dict, start: dict) -> None:
+def recovered_lists(c: Controller, sample: dict) -> None:
+    """Shipping list TaskRecord -> _task_to_dict -> JSON, plus separate Pause."""
+    authenticate_public(sample, c.http)
+    fields = ("status assigned_agent team task_type brief parent_task_id revisit_of_task_id "
+              "dispatched_from_thread_id block_kind blocked_on_job_ids note final_output_dir "
+              "revision_count session_timeout_seconds current_session_id").split()
+    dates = ("created_at", "updated_at", "completed_at", "cancelled_at", "last_heartbeat", "zombie_flagged_at")
+    for org in ("alpha", "beta"):
+        tables = sample["sql"][org]["tables"]
+        rows = tables["tasks"]
+        tasks = {t["id"]:t for t in rows}
+        body = sample["public"][org]
+        require(body["next_cursor"] is None and isinstance(body["tasks"], list)
+                and len(tasks) == len(rows) == len(body["tasks"]) < 100, "R complete recovered task page")
+        identities = [t["task_id"] for t in body["tasks"]]
+        require(len(set(identities)) == len(identities) and set(identities) == set(tasks),
+                "R exhaustive unique public task identities")
+        require(identities == [t["id"] for t in sorted(rows, key=lambda t:(t["created_at"],t["id"]), reverse=True)],
+                "R shipping list order")
+        for public in body["tasks"]:
+            sql = tasks[public["task_id"]]
+            expected = {k:sql[k] for k in fields}
+            expected.update(task_id=sql["id"], orchestration_step_count=sql["orchestration_step_count"] or 0,
+                            active_chain=None, active_fanout=None)
+            expected.update({k:sql_datetime(sql[k]) for k in dates})
+            require("id" not in public and "executor_pid" not in public
+                    and json.dumps({k:public[k] for k in expected}, sort_keys=True) == json.dumps(expected, sort_keys=True),
+                    "R all shipping list fields, literal sessions and JSON-text strings")
+            pause = public["pause"]
+            pause_content(pause)  # Validate stamps without changing the captured object.
+            root = sql
+            seen = set()
+            while root["parent_task_id"] is not None:
+                require(root["id"] not in seen, "R finite actual root lineage")
+                seen.add(root["id"])
+                root = tasks[root["parent_task_id"]]
+            controls = [r for r in tables["task_pause_controls"] if r["root_task_id"] == root["id"]]
+            require(len(controls) <= 1, "R unique root Pause control")
+            control = controls[0] if controls else None
+            held = bool(control and control["held"])
+            effective = held and root["status"] not in {"completed", "failed", "cancelled", "superseded"}
+            require(type(pause["evidence_complete"]) is bool and type(pause["generation"]) is int,
+                    "R Pause evidence/generation types")
+            expected_pause = dict(org_slug=org, root_task_id=root["id"], lifecycle_status=root["status"],
+                                  held=held, effective_hold=effective, generation=control["generation"] if control else 0,
+                                  paused_at=control["paused_at"] if control else None,
+                                  resumed_at=control["resumed_at"] if control else None,
+                                  control_state="unheld" if not effective else "pausing" if pause["blockers"] or not pause["evidence_complete"] else "paused")
+            require(json.dumps({k:pause[k] for k in expected_pause}, sort_keys=True) == json.dumps(expected_pause, sort_keys=True),
+                    "R source-defined Pause root/lifecycle/control, separate from task SQL")
+            descendants = {root["id"]}
+            for _ in rows:
+                descendants.update(t["id"] for t in rows if t["parent_task_id"] in descendants)
+            require(len(pause["blockers"]) <= 100, "R bounded ordered Pause blockers")
+            for blocker in pause["blockers"]:
+                require(blocker["kind"] in {"unknown", "task_session", "launch", "result_processing", "job"}
+                        and blocker["task_id"] in descendants
+                        and all(isinstance(blocker[k], str) and blocker[k] for k in ("owner_kind", "reason"))
+                        and (blocker["job_id"] is None or isinstance(blocker["job_id"], str)), "R source-defined Pause blocker structure")
+            require(pause["evidence_complete"] == (not any(b["kind"] == "unknown" for b in pause["blockers"])),
+                    "R Pause unknown evidence is incomplete")
+
+
+def recovered(c: Controller, before: dict, sample: dict, start: dict) -> None:
+    recovered_lists(c, sample)
+    after = sample["sql"]
     task = start["task"]
     old = next(t for t in before["alpha"]["tables"]["tasks"] if t["id"] == task)
     now = next(t for t in after["alpha"]["tables"]["tasks"] if t["id"] == task)
@@ -315,8 +381,10 @@ def exercise(c: Controller) -> None:
         phase("recovery-readback",60)
         fresh = frame(c,task,task)
         record["recovered"] = fresh
-        recovered(c,record["down"],fresh["sql"],start)
+        recovered(c,record["down"],fresh,start)
         record["view"] = c.browser.e07_detail(task,"failed","e07-restart.png")
+        require(detail_content(record["view"]["detail"]) == detail_content(fresh["public"][task][""])
+                and record["view"]["recall"] == fresh["public"][task]["/recall"], "R complete browser recovery content")
         record["retained_views"] = [c.browser.e07_detail(c.e07[k]["task"],"cancelled") for k in ("parent","worker")]
         record["retained_views"].append(c.browser.e07_detail(c.e07["completed_target"]["id"],"completed"))
         record["threads"] = []
@@ -343,7 +411,7 @@ def exercise(c: Controller) -> None:
         while True:
             sample = frame(c,task,task)
             window["samples"].append(sample)
-            require(sample["sql"] == fresh["sql"] and sample["public"] == fresh["public"]
+            require(sample["sql"] == fresh["sql"] and public_content(sample["public"]) == public_content(fresh["public"])
                     and sample["witnesses"] == fresh["witnesses"], "R unchanged full recovery after old request")
             host(sample,0,0,0,dict(published_total=0,recent=[]))
             previous = window["entered"] if len(window["samples"]) == 1 else window["samples"][-2]["entered"]
@@ -357,7 +425,7 @@ def exercise(c: Controller) -> None:
         phase("final-content-and-close",75)
         record["final"] = [frame(c,task,task),frame(c,task,task)]
         require(host(record["final"][0],0,0,0,dict(published_total=0,recent=[])) == host(record["final"][1],0,0,0,dict(published_total=0,recent=[])), "two healthy empty C0 projections")
-        require(all(f["sql"] == fresh["sql"] and f["public"] == fresh["public"] and f["witnesses"] == fresh["witnesses"] for f in record["final"]), "R final full content")
+        require(all(f["sql"] == fresh["sql"] and public_content(f["public"]) == public_content(fresh["public"]) and f["witnesses"] == fresh["witnesses"] for f in record["final"]), "R final full content")
         require(len(c.starts) == len({s["session"] for s in c.starts}) == 40 and c.starts[:39] == prefix["starts"] and c.starts[39:] == [start] and not c.holds, "one R authentic suffix only")
         relay.deadline = c.case_deadline
         record["transport_closure"] = relay.close(c.case_deadline)

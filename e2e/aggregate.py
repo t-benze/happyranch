@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import signal
+from datetime import datetime, timedelta
 
 from cancellation import validate as validate_cancellation
 from run import BASELINE_ARTIFACTS, daily_admission, validate_timing
@@ -999,6 +1000,142 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
               and all(t["status"] == "completed" for t in d["snapshot"]["tasks"]), "global21tasks31results")
 
 
+def e07_sql_date(value: str | None) -> str | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    encoded = parsed.isoformat()
+    if parsed.utcoffset() == timedelta(0):
+        encoded = encoded.removesuffix("+00:00")+"Z"
+    return encoded
+
+
+def e07_pause_state(raw: dict) -> dict:
+    """Independent serialized validator; never consume a producer verdict/copy."""
+    if not isinstance(raw, dict) or not isinstance(raw["observed_at"], str):
+        raise ValueError("E07 serialized Pause observation missing/string")
+    stamp = raw["observed_at"]
+    instant = datetime.fromisoformat(stamp)
+    if "T" not in stamp or instant.tzinfo is None or instant.utcoffset() != timedelta(0):
+        raise ValueError("E07 serialized Pause observation must be timezone-aware UTC")
+    if not isinstance(raw["blockers"], list):
+        raise ValueError("E07 serialized Pause blockers must be an ordered array")
+    for blocker in raw["blockers"]:
+        if not isinstance(blocker, dict) or not isinstance(blocker["observed_at"], str) or blocker["observed_at"] != stamp:
+            raise ValueError("E07 serialized blocker observation disagrees")
+    result = copy.deepcopy(raw)
+    del result["observed_at"]
+    for blocker in result["blockers"]:
+        del blocker["observed_at"]
+    return result
+
+
+def e07_detail_state(raw: dict) -> str:
+    value = copy.deepcopy(raw)
+    value["pause"] = e07_pause_state(raw["pause"])
+    return json.dumps(value, sort_keys=True)
+
+
+def e07_public_state(sample: dict, http: list[dict]) -> str:
+    raw = sample["public"]
+    indices = sample["http_indices"]
+    if set(indices) != set(raw):
+        raise ValueError("E07 serialized HTTP observation keys")
+    value = copy.deepcopy(raw)
+    for key, body in raw.items():
+        entries = [(indices[key], f"/api/v1/orgs/{key}/tasks?limit=100", body)] if key in ("alpha", "beta") else [
+            (indices[key][suffix], f"/api/v1/orgs/alpha/tasks/{key}"+suffix, response) for suffix,response in body.items()]
+        if key not in ("alpha", "beta") and set(indices[key]) != set(body):
+            raise ValueError("E07 serialized detail/recall observation keys")
+        for index, path, response in entries:
+            if type(index) is not int or not 0 <= index < len(http):
+                raise ValueError("E07 serialized HTTP observation index")
+            actual = http[index]
+            if ((actual["method"], actual["path"], actual["status"]) != ("GET", path, 200)
+                    or json.dumps(actual["response"], sort_keys=True) != json.dumps(response, sort_keys=True)):
+                raise ValueError("E07 raw same-observation HTTP response mismatch")
+        # Authenticated RAW response above; only then construct comparison state.
+        if key in ("alpha", "beta"):
+            if not isinstance(body["tasks"], list):
+                raise ValueError("E07 serialized task page array")
+            for task in value[key]["tasks"]:
+                task["pause"] = e07_pause_state(task["pause"])
+        else:
+            value[key][""] = json.loads(e07_detail_state(body[""]))
+    return json.dumps(value, sort_keys=True)
+
+
+def e07_recovered_lists(sample: dict, http: list[dict]) -> None:
+    """Recompute all list fields from reopened SQL; Pause is a separate read."""
+    e07_public_state(sample, http)
+    for org in ("alpha", "beta"):
+        tables = sample["sql"][org]["tables"]
+        sql_rows = tables["tasks"]
+        page = sample["public"][org]
+        sql_ids = [t["id"] for t in sql_rows]
+        ids = [t["task_id"] for t in page["tasks"]]
+        if (page["next_cursor"] is not None or len(sql_ids) >= 100 or len(set(sql_ids)) != len(sql_ids)
+                or len(set(ids)) != len(ids) or len(ids) != len(sql_ids) or set(ids) != set(sql_ids)):
+            raise ValueError("E07 R recovered list omitted/duplicate/extra identity or pagination")
+        ordered = sorted(sql_rows, key=lambda row:(row["created_at"],row["id"]), reverse=True)
+        if ids != [t["id"] for t in ordered]:
+            raise ValueError("E07 R recovered list shipping order")
+        for raw, sql in zip(page["tasks"], ordered):
+            expected = {
+                "task_id":sql["id"], "status":sql["status"], "assigned_agent":sql["assigned_agent"],
+                "team":sql["team"], "task_type":sql["task_type"], "brief":sql["brief"],
+                "parent_task_id":sql["parent_task_id"], "revisit_of_task_id":sql["revisit_of_task_id"],
+                "dispatched_from_thread_id":sql["dispatched_from_thread_id"], "block_kind":sql["block_kind"],
+                "blocked_on_job_ids":sql["blocked_on_job_ids"], "active_chain":None, "active_fanout":None,
+                "note":sql["note"], "final_output_dir":sql["final_output_dir"],
+                "orchestration_step_count":sql["orchestration_step_count"] or 0,
+                "revision_count":sql["revision_count"], "session_timeout_seconds":sql["session_timeout_seconds"],
+                "current_session_id":sql["current_session_id"],
+            }
+            for field in ("created_at", "updated_at", "completed_at", "cancelled_at", "last_heartbeat", "zombie_flagged_at"):
+                expected[field] = e07_sql_date(sql[field])
+            if ("id" in raw or "executor_pid" in raw
+                    or any(json.dumps(raw[k], sort_keys=True) != json.dumps(v, sort_keys=True) for k,v in expected.items())):
+                raise ValueError("E07 R recovered list public/SQL field mismatch")
+            root = sql
+            visited = []
+            while root["parent_task_id"] is not None:
+                if root["id"] in visited:
+                    raise ValueError("E07 R cyclic root lineage")
+                visited.append(root["id"])
+                root = next(t for t in sql_rows if t["id"] == root["parent_task_id"])
+            controls = [t for t in tables["task_pause_controls"] if t["root_task_id"] == root["id"]]
+            if len(controls) > 1:
+                raise ValueError("E07 R duplicate Pause root control")
+            control = controls[0] if controls else None
+            pause = raw["pause"]
+            held = bool(control and control["held"])
+            effective = held and root["status"] not in ("completed", "failed", "cancelled", "superseded")
+            state = "unheld" if not effective else "pausing" if pause["blockers"] or not pause["evidence_complete"] else "paused"
+            expected_pause = {
+                "org_slug":org, "root_task_id":root["id"], "lifecycle_status":root["status"],
+                "held":held, "effective_hold":effective, "generation":control["generation"] if control else 0,
+                "paused_at":control["paused_at"] if control else None,
+                "resumed_at":control["resumed_at"] if control else None, "control_state":state,
+            }
+            if (type(pause["evidence_complete"]) is not bool or type(pause["generation"]) is not int
+                    or any(json.dumps(pause[k], sort_keys=True) != json.dumps(v, sort_keys=True) for k,v in expected_pause.items())):
+                raise ValueError("E07 R separate Pause root/lifecycle/control mismatch")
+            descendants = {root["id"]}
+            for _ in sql_rows:
+                descendants |= {t["id"] for t in sql_rows if t["parent_task_id"] in descendants}
+            if len(pause["blockers"]) > 100:
+                raise ValueError("E07 R Pause blocker overflow")
+            for blocker in pause["blockers"]:
+                if (blocker["kind"] not in ("unknown", "task_session", "launch", "result_processing", "job")
+                        or blocker["task_id"] not in descendants
+                        or any(not isinstance(blocker[k], str) or not blocker[k] for k in ("owner_kind", "reason"))
+                        or (blocker["job_id"] is not None and not isinstance(blocker["job_id"], str))):
+                    raise ValueError("E07 R Pause blocker structure")
+            if pause["evidence_complete"] != (not any(b["kind"] == "unknown" for b in pause["blockers"])):
+                raise ValueError("E07 R unknown Pause blocker requires incomplete evidence")
+
+
 def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     """Reopen serialized C evidence; no producer oracle or expected helper import."""
     import hashlib
@@ -1115,7 +1252,8 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
     source_names = ["e2e/restart.py","e2e/owned.py","e2e/transport.py","e2e/jobs.py","e2e/threads.py",
         "e2e/thread_provider.py","e2e/pause_browser.py","runtime/daemon/__main__.py","runtime/daemon/paths.py","e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
                     "e2e/browser.py","e2e/aggregate.py","e2e/run.py","e2e/manifest.json","cli/commands/tasks.py",
-                    "runtime/daemon/routes/tasks.py","runtime/orchestrator/run_step.py","web/src/features/tasks/CancelTaskDialog.tsx"]
+                    "runtime/daemon/routes/tasks.py","runtime/models.py","runtime/infrastructure/db/tasks.py",
+        "runtime/infrastructure/task_pause_controls.py","runtime/orchestrator/run_step.py","web/src/features/tasks/CancelTaskDialog.tsx"]
     check(set(case["source_files"]) == set(source_names) and all(
         hashlib.sha256((Path(__file__).resolve().parents[1]/name).read_bytes()).hexdigest() == case["source_files"][name]
         for name in source_names), "actual complete harness/shipping seam source hashes")
@@ -1241,7 +1379,8 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
               and t["cancelled_at"] is not None and t["cancelled_at"] == t["completed_at"] == tasks[P]["cancelled_at"]
               and t["current_session_id"] == start["session"], "exact shared cancellation stamp and owner")
         check(freeze["public"][task][""]["task"]["task_id"] == task
-              and all(freeze["public"][task][""]["task"][k] == t[k] for k in ("status","block_kind","note","cancelled_at","completed_at","current_session_id")), "actual detail fields agree with coherent frame")
+              and all(freeze["public"][task][""]["task"][k] == (e07_sql_date(t[k]) if k in ("cancelled_at","completed_at") else t[k])
+                      for k in ("status","block_kind","note","cancelled_at","completed_at","current_session_id")), "actual detail fields agree with coherent frame")
     changed_fields = {"status","block_kind","note","cancelled_at","completed_at"}
     for task in (P,W):
         check({k:v for k,v in live_tasks[task].items() if k not in changed_fields}
@@ -1274,7 +1413,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
             check(now == old, "unchanged entire jobs/thread/delivery content " + name)
     check(len(tables["jobs"]) == 8 and freeze["sql"]["alpha"]["files"] == baseline["alpha"]["files"], "unchanged8 jobs/seven scripts and product files")
     for sample in [second,case["after_refusals"],*case["window"]["samples"],case["final"]]:
-        check(sample["sql"] == freeze["sql"] and sample["public"] == freeze["public"], "full task/result/audit/lineage/job/thread/public unchanged")
+        check(sample["sql"] == freeze["sql"] and e07_public_state(sample, observations["http"]) == e07_public_state(freeze, observations["http"]), "full task/result/audit/lineage/job/thread/public unchanged")
         projection(sample,27,27,0,freeze["metrics"]["host_sessions"]["receipts"])
     tree = case["tree"]
     check(tree["chain"][0]["pid"] == worker["pid"] and tree["chain"][-1]["pid"] == tree["launch_pid"] == live_tasks[W]["executor_pid"]
@@ -1317,7 +1456,7 @@ def validate_e07(row: dict, observations: dict, directory: Path) -> None:
         check(dict(event="detail-reload",**view) in events and view["url"].endswith(f"/orgs/alpha/tasks/{task}")
               and view["detail_url"].endswith(f"/api/v1/orgs/alpha/tasks/{task}") and view["recall_url"] == view["detail_url"]+"/recall"
               and view["detail_method"] == view["recall_method"] == "GET" and view["detail_status"] == view["recall_status"] == 200
-              and view["detail"] == freeze["public"][task][""] and view["recall"] == freeze["public"][task]["/recall"]
+              and e07_detail_state(view["detail"]) == e07_detail_state(freeze["public"][task][""]) and view["recall"] == freeze["public"][task]["/recall"]
               and view["cancel_disabled"] is True and view["cancel_title"] == "Cannot cancel a cancelled task"
               and view["badges"] and all(x == "cancelled" for x in view["badges"]) and "cancelled" in view["text"]
               and view["screenshot"] == name and (directory/name).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual terminal detail/reload/literal badge/disabled control")
@@ -1544,9 +1683,12 @@ def validate_restart(row: dict, observations: dict, directory: Path) -> None:
     projection(r["predeath"],True)
     check(r["down"] == r["predeath"]["sql"] == live["sql"], "actual down-state unchanged before startup")
     fresh = r["recovered"]
+    e07_recovered_lists(fresh, observations["http"])
     tables = fresh["sql"]["alpha"]["tables"]
     now = next(t for t in tables["tasks"] if t["id"] == task)
     check(now["status"] == "failed" and now["note"] == "session died on daemon restart -- executor pid not alive"
+          and now["current_session_id"] == start["session"] and now["orchestration_step_count"] == 1
+          and now["completed_at"] is None and now["cancelled_at"] is None
           and {k:v for k,v in now.items() if k not in {"status","note","updated_at"}} == {k:v for k,v in old.items() if k not in {"status","note","updated_at"}}, "only literal selected recovery field delta")
     check(len(tables["tasks"]) == 23 and len(tables["task_results"]) == 31
           and Counter(t["status"] for t in tables["tasks"]) == {"completed":20,"cancelled":2,"failed":1}
@@ -1581,7 +1723,12 @@ def validate_restart(row: dict, observations: dict, directory: Path) -> None:
               and view["url"] == f"http://127.0.0.1:{boot['port']}/orgs/alpha/threads/{actual['thread']}"
               and all(' '.join(m["body_markdown"].split()) in ' '.join(view["text"].split()) for m in actual["detail"]["messages"] if m["kind"] == "message"), "same settled E05 delivery rendered through new C origin")
     view = r["view"]
-    check(view["detail"] == fresh["public"][task][""] and view["recall"] == fresh["public"][task]["/recall"]
+    check(dict(event="detail-reload", **view) in r["browser_events"]
+          and view["detail_method"] == view["recall_method"] == "GET"
+          and view["detail_status"] == view["recall_status"] == 200
+          and view["detail_url"] == f"http://127.0.0.1:{boot['port']}/api/v1/orgs/alpha/tasks/{task}"
+          and view["recall_url"] == view["detail_url"]+"/recall", "R complete actual browser observation join")
+    check(e07_detail_state(view["detail"]) == e07_detail_state(fresh["public"][task][""]) and view["recall"] == fresh["public"][task]["/recall"]
           and view["cancel_disabled"] is True and view["cancel_title"] == "Cannot cancel a failed task"
           and view["badges"] and all(b == "failed" for b in view["badges"]) and now["note"] in view["text"]
           and view["url"] == f"http://127.0.0.1:{boot['port']}/orgs/alpha/tasks/{task}"
@@ -1596,7 +1743,7 @@ def validate_restart(row: dict, observations: dict, directory: Path) -> None:
           and all(s["finished"]-s["entered"] <= .05 for s in samples), "full1s unchanged fresh <=50ms window")
     check(len(r["final"]) == 2 and projection(r["final"][0],False) == projection(r["final"][1],False), "two complete coherent C0 samples")
     for sample in [*samples,*r["final"]]:
-        check(sample["sql"] == fresh["sql"] and sample["public"] == fresh["public"] and sample["witnesses"] == fresh["witnesses"] == rows, "no extra result/start/delivery/persistence effect")
+        check(sample["sql"] == fresh["sql"] and e07_public_state(sample, observations["http"]) == e07_public_state(fresh, observations["http"]) and sample["witnesses"] == fresh["witnesses"] == rows, "no extra result/start/delivery/persistence effect")
         projection(sample,False)
     closed = r["transport_closure"]
     check(closed["forward_count"] == 1 and closed["port"] == transport["port"] and not any(closed[k] for k in ("listener_alive","workers_alive","sockets","errors")), "normal one-shot R relay close")

@@ -753,3 +753,46 @@ operation timeout: `job_terminal` calls `job_open`, which sets at most10s;
 already clipped cap and the effective absolute end, then checks expiry again
 on return. Its literal text/Recall/PNG aggregate joins remain unchanged.
 This is an authored source bound, not an executed timeout/sensitivity result.
+
+### C/R observation and recovered-list assertions — TASK-10801
+
+Every frame retains complete list/detail/Recall responses and exact indices into
+its recorded HTTP observations. Producer and independent serialized aggregate
+require GET, exact org/path, status200 and the entire raw response at that index
+before state comparison. Browser records retain complete response bodies and
+exact event-ledger joins. No evidence is stripped or rewritten.
+
+Cross-observation C freeze/refusals/window/final, R window/final and C/R browser
+comparisons exempt only list tasks[*].pause.observed_at and its
+blockers[*].observed_at, or the detail envelope's equivalent Pause locations.
+Both validators first require a string, parseable timezone-aware UTC projection
+stamp and identical blocker stamps within that projection. Comparison copies
+retain every other field, unknown field, shape, ordered duplicate blocker,
+held/generation/evidence_complete/root/lifecycle/control value and durable
+paused_at/resumed_at/task timestamp. Recall and terminal work_status remain
+complete. Separate GET stamps may match or differ; no monotonic-clock proof is
+invented. Serialized comparison distinguishes booleans from numeric values.
+
+Before accepting the initial recovered frame, alpha and beta lists require
+next_cursor NULL, exhaustive unique SQL task identities and shipping order.
+Every TaskRecord field is joined: id becomes task_id, executor_pid is excluded,
+status/block enums serialize as strings, six datetime fields serialize as ISO
+strings (UTC Z through the locked FastAPI/Pydantic response model), SQL NULL
+step becomes0, list active_chain/active_fanout default to NULL, JSON-text fields
+stay strings, and actual session fields remain. Existing C SQL/detail timestamp
+joins use the same explicit wire mapping without dropping any timestamp.
+Pause is separately validated against the recorded org/root lineage, lifecycle,
+control held/generation/durable timestamps and source-defined blocker structure;
+it is not treated as a SQL task column. R still requires failed/literal restart
+note/session/step1/NULL completed_at/cancelled_at with every retained task.
+
+Finite authored refusals include omitted/stale R, duplicate/extra IDs, any other
+public-field mismatch, malformed/missing observation stamps or incoherent
+blocker stamps, changed stable content/shape/durable time, and raw HTTP mismatch
+even if comparison copies would match. Valid stable content with distinct valid
+observation stamps is admitted by the source conditions. These are assertions
+at existing seams, not executed defect controls or behavioral evidence. All58
+cases, budgets, full1s/<=50ms windows and complete receipt tails are unchanged.
+All behavioral/sensitivity/provenance/transport/delivery/persistence/closure/
+sanitation/fit/protected12/repetition proof remains MISSING/UNEXECUTED; controls
+UNAUTHORED. General and actual CLI callback integration remain SKIPPED243seq42.

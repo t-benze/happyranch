@@ -11,6 +11,7 @@ import os
 import select
 import subprocess
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -37,18 +38,25 @@ def save(c: Controller) -> None:
 
 
 def frame(c: Controller, parent: str | None = None, child: str | None = None) -> dict:
-    record = dict(entered=time.monotonic(), sql={}, public={})
+    record = dict(entered=time.monotonic(), sql={}, public={}, http_indices={})
     for org in ("alpha", "beta"):
         record["sql"][org] = c.stores[org].cancellation_frame()
         record["public"][org] = c.get(f"/api/v1/orgs/{org}/tasks?limit=100")
+        record["http_indices"][org] = len(c.http)-1
         require(record["public"][org]["next_cursor"] is None, "E07 full public task page")
     if parent and child:
         for task in (parent, child):
             base = f"/api/v1/orgs/alpha/tasks/{task}"
-            record["public"][task] = {suffix: c.get(base + suffix) for suffix in ("", "/recall", "/recall?tree=true")}
+            record["public"][task], record["http_indices"][task] = {}, {}
+            for suffix in ("", "/recall", "/recall?tree=true"):
+                record["public"][task][suffix] = c.get(base + suffix)
+                record["http_indices"][task][suffix] = len(c.http)-1
     raw, rows = witnesses(c)
     record.update(metrics=c.get("/api/v1/metrics"), witnesses=rows, witness_bytes=len(raw),
-                  pending=bool(select.select([c.server], [], [], 0)[0]), finished=time.monotonic())
+                  pending=bool(select.select([c.server], [], [], 0)[0]))
+    authenticate_public(record, c.http)
+    public_content(record["public"])
+    record["finished"] = time.monotonic()
     return record
 
 
@@ -171,7 +179,8 @@ def cancelled(c: Controller, value: dict, parent: dict, worker: dict, result: di
                 and t["cancelled_at"] is not None and t["completed_at"] == t["cancelled_at"]
                 and t["current_session_id"] == start["session"], "E07 terminal task fields", t)
         public = value["public"][t["id"]][""]["task"]
-        require(all(public[k] == t[k] for k in ("status","block_kind","note","cancelled_at","completed_at","current_session_id")), "E07 fresh public task matches coherent SQL")
+        require(all(public[k] == (sql_datetime(t[k]) if k in ("cancelled_at","completed_at") else t[k])
+                    for k in ("status","block_kind","note","cancelled_at","completed_at","current_session_id")), "E07 fresh public task matches coherent SQL")
     require(p["cancelled_at"] == w["cancelled_at"] and w["parent_task_id"] == p["id"], "E07 single cascade stamp and lineage")
     tree = value["public"][p["id"]]["/recall?tree=true"]
     require(tree["task_id"] == p["id"] and tree["status"] == "cancelled"
@@ -190,8 +199,70 @@ def cancelled(c: Controller, value: dict, parent: dict, worker: dict, result: di
             and not any(a["task_id"] == w["id"] and a["action"] in {"completion_report","orchestration_step"} for a in audits), "E07 child ended once without decision/consumption")
 
 
+def sql_datetime(value: str | None) -> str | None:
+    # TaskRecord datetime -> FastAPI's dict response model -> Pydantic JSON.
+    if value is None:
+        return None
+    stamp = datetime.fromisoformat(value).isoformat()
+    return stamp[:-6]+"Z" if stamp.endswith("+00:00") else stamp
+
+
+def pause_content(value: dict) -> dict:
+    """Comparison copy only. Every raw response keeps its observation metadata."""
+    require(isinstance(value, dict), "E07 Pause projection object")
+    stamp = value["observed_at"]
+    require(isinstance(stamp, str), "E07 required Pause observation string")
+    parsed = datetime.fromisoformat(stamp)
+    require("T" in stamp and parsed.tzinfo is not None and parsed.utcoffset() == timedelta(0),
+            "E07 timezone-aware UTC Pause observation")
+    blockers = value["blockers"]
+    require(isinstance(blockers, list), "E07 ordered Pause blockers")
+    for blocker in blockers:
+        require(isinstance(blocker, dict) and isinstance(blocker["observed_at"], str)
+                and blocker["observed_at"] == stamp, "E07 coherent blocker observation")
+    # No recursion: durable timestamps, unknown fields and duplicate/order remain.
+    result = dict(value)
+    del result["observed_at"]
+    result["blockers"] = [{k:v for k,v in b.items() if k != "observed_at"} for b in blockers]
+    return result
+
+
+def detail_content(value: dict) -> str:
+    return json.dumps({**value, "pause": pause_content(value["pause"])}, sort_keys=True)
+
+
+def public_content(value: dict) -> str:
+    result = {}
+    for key, body in value.items():
+        if key in ("alpha", "beta"):
+            require(isinstance(body["tasks"], list), "E07 public list shape")
+            result[key] = {**body, "tasks": [{**t, "pause": pause_content(t["pause"])} for t in body["tasks"]]}
+        else:
+            # Only the detail envelope has Pause. Recalls remain complete.
+            result[key] = {**body, "": json.loads(detail_content(body[""]))}
+    # JSON comparison also distinguishes false from 0 and lists from objects.
+    return json.dumps(result, sort_keys=True)
+
+
+def authenticate_public(record: dict, http: list[dict]) -> None:
+    require(set(record["http_indices"]) == set(record["public"]), "E07 complete HTTP observation indices")
+    for key, body in record["public"].items():
+        if key in ("alpha", "beta"):
+            entries = [(record["http_indices"][key], f"/api/v1/orgs/{key}/tasks?limit=100", body)]
+        else:
+            require(set(record["http_indices"][key]) == set(body), "E07 detail/recall HTTP indices")
+            entries = [(record["http_indices"][key][suffix], f"/api/v1/orgs/alpha/tasks/{key}"+suffix, response)
+                       for suffix,response in body.items()]
+        for index, path, response in entries:
+            require(type(index) is int and 0 <= index < len(http), "E07 actual HTTP observation index")
+            observed = http[index]
+            require((observed["method"], observed["path"], observed["status"]) == ("GET", path, 200)
+                    and json.dumps(observed["response"], sort_keys=True) == json.dumps(response, sort_keys=True),
+                    "E07 exact same-observation raw response join")
+
+
 def content(record: dict) -> dict:
-    return {key:record[key] for key in ("sql", "public")}
+    return dict(sql=record["sql"], public=public_content(record["public"]))
 
 
 def terminal_cli(c: Controller, task: str, status: str, rationale: str) -> dict:
@@ -253,7 +324,8 @@ def exercise(c: Controller) -> None:
         "e2e/restart.py","e2e/owned.py","e2e/transport.py","e2e/jobs.py","e2e/threads.py",
         "e2e/thread_provider.py","e2e/pause_browser.py","runtime/daemon/__main__.py","runtime/daemon/paths.py","e2e/e07.py","e2e/late_transport.py","e2e/provider.py","e2e/controller.py","e2e/oracles.py",
         "e2e/browser.py","e2e/aggregate.py","e2e/run.py","e2e/manifest.json","cli/commands/tasks.py",
-        "runtime/daemon/routes/tasks.py","runtime/orchestrator/run_step.py",
+        "runtime/daemon/routes/tasks.py","runtime/models.py","runtime/infrastructure/db/tasks.py",
+        "runtime/infrastructure/task_pause_controls.py","runtime/orchestrator/run_step.py",
         "web/src/features/tasks/CancelTaskDialog.tsx")}
     c.e07["ports"] = json.loads((c.root / "ports.json").read_text())
     def phase(name: str, offset: int) -> None:
@@ -384,6 +456,9 @@ def exercise(c: Controller) -> None:
 
         phase("terminal-ui-and-refusals",36)
         c.e07["views"] = c.browser.e07_terminal(P,W)
+        for view, task in zip(c.e07["views"][:2], (P,W)):
+            require(detail_content(view["detail"]) == detail_content(freeze["public"][task][""])
+                    and view["recall"] == freeze["public"][task]["/recall"], "C complete browser terminal content")
         complete = next(t for t in baseline["sql"]["alpha"]["tables"]["tasks"] if t["parent_task_id"] is None and t["status"] == "completed")
         c.e07["completed_target"] = complete
         c.e07["refusals"] = [terminal_cli(c,P,"cancelled","E07_DUPLICATE"), terminal_cli(c,complete["id"],"completed","E07_TERMINAL")]

@@ -838,3 +838,13 @@ controls UNAUTHORED, protected12/RED-restoration-GREEN/repetitions UNEXECUTED.
 General and actual CLI callback integration are SKIPPED THR243seq42. Retired
 Python units remain forbidden. Daily19UTC/default immutable source, original
 matrix/artifacts, TASK10555/JOB4257 and first-daily PENDING remain unchanged.
+
+The TASK-10801 C/R correction binds complete captured responses to exact HTTP
+observation indices, validates the initial recovered alpha/beta lists against
+all shipping SQL-to-public fields and separately checks Pause root/control
+structure. Cross-observation comparison ignores only validated Pause observation
+stamps in nonmutating copies; all durable timestamps, unknown fields and ordered
+blockers remain compared. The aggregate implements its own serialized checks.
+See the [maintained assertion mapping](../e2e/README.md#cr-observation-and-recovered-list-assertions--task-10801).
+This adds no execution authority or cases; all missing proof and static-only
+gates above remain in force.
