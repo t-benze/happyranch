@@ -104,6 +104,22 @@ engine/finalization, coordinator and terminal-before-resume integration,
 CLI/API/UI, deployment, and activation are explicitly unimplemented. No S1
 model authorizes work, authenticates a peer, or changes existing local jobs.
 
+## Current local-job output-cap support (2026-10-12)
+
+Public submission currently uses a fixed default of **50 MiB (52428800 bytes)
+per stream**, separately for stdout and stderr. `SubmitBody` has no
+`max_output_bytes` field; submission constructs `JobRecord` with its default,
+which is persisted and passed to the runner. Forwarding that key in CLI JSON
+does not provide an effective override. The stored/internal field is not a
+supported public submission option.
+
+A configurable per-job output cap remains **unimplemented design intent**.
+The original plan (`docs/superpowers/plans/2026-05-26-jobs.md`) retains that
+planned support as historical design, not current API behavior. This
+clarification neither implements nor withdraws it. The current examples and
+cap-specific guidance below reflect the implemented limitation; unrelated
+historical design sections retain their original scope.
+
 ## 1. Goal
 
 Today's `scripts` module exists to solve one problem — an agent hits a permission wall, founder runs the command, agent unblocks via revisit. It can't address a second problem that turns out to be just as common: **agents block on shell calls that don't return** (dev servers, watchers, polling loops, long builds). The current bash tool synchronously blocks until the command exits or the session times out — at which point the task is marked terminal FAILED and the agent has made no progress.
@@ -139,7 +155,7 @@ In scope but minimal:
 
 - Interpreter set: `bash`, `sh`, `zsh`, `python3`. Same as the current SR module.
 - Output truncation: ~64 KB head per stream in DB; full streams written to disk.
-- Output-size ceiling: `max_output_bytes` per stream (default 50 MB), kill with `kill_reason=output_cap` when exceeded.
+- Output-size ceiling: the internal `max_output_bytes` defaults to 50 MiB (52428800 bytes) per stream; public submission currently uses that fixed default. Cap detection signals the runner to kill with `reason=output_cap` (see §10). A public override remains unimplemented design intent.
 
 ## 3. Module rename — `scripts` → `jobs`
 
@@ -188,8 +204,7 @@ The agent's submission payload is a JSON object with these fields. **Everything 
   "rationale": "Need live server to verify component renders.",
   "review_required": false,
   "persistent": true,
-  "max_runtime_seconds": null,
-  "max_output_bytes": 52428800
+  "max_runtime_seconds": null
 }
 ```
 
@@ -213,7 +228,12 @@ The four cells of (review × persistent) are all valid; nothing is special-cased
 - `cwd_hint` — relative path under the agent's workspace; absent = workspace root. Same semantics as the current SR module.
 - `rationale` — required when `review_required=true` (founder needs context to approve). Optional otherwise; recorded in audit even when blank.
 - `max_runtime_seconds` — agent-imposed runtime ceiling. When `null` and `persistent=false`, defaults to 300 s. When `null` and `persistent=true`, no ceiling. When positive, enforced regardless of `persistent`.
-- `max_output_bytes` — per-stream cap. Default 50 MB. On exceed, daemon kills the subprocess with `kill_reason=output_cap` and transitions the row to `failed`.
+
+`max_output_bytes` is not a supported public optional field. Current submissions
+use the `JobRecord` default of 50 MiB (52428800 bytes) per stream. The internal
+record/schema field remains; configurable submission is an unimplemented design
+gap. When a pump detects the cap, it signals the runner, which kills the process
+group and records `failed` with `reason=output_cap` (see §10).
 
 ### 4.4 Honor system
 
@@ -306,7 +326,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
     -- Limits
     max_runtime_seconds INTEGER,                           -- NULL = no agent-imposed ceiling
-    max_output_bytes    INTEGER NOT NULL DEFAULT 52428800, -- 50 MB
+    max_output_bytes    INTEGER NOT NULL DEFAULT 52428800, -- 50 MiB per stream
 
     -- Status
     status              TEXT NOT NULL DEFAULT 'pending',   -- {pending, rejected, running, completed, failed}
@@ -550,7 +570,12 @@ You fill in a JSON payload with these fields:
 
 **Required:** `task_id`, `session_id`, `title`, `script`, `interpreter`.
 **Allowed `interpreter`:** `bash`, `sh`, `zsh`, `python3`.
-**Optional:** `cwd_hint`, `rationale`, `max_runtime_seconds`, `max_output_bytes`.
+**Optional:** `cwd_hint`, `rationale`, `max_runtime_seconds`.
+
+**Current output-cap limitation:** public submission uses a fixed default of
+50 MiB (52428800 bytes) per stream (stdout and stderr separately).
+`max_output_bytes` is an internal record/runner field, not a supported public
+input. A configurable submission override remains unimplemented design intent.
 
 ### The two policy flags
 
@@ -626,7 +651,7 @@ Retry once after 1 second on any non-listed error.
 Rename of `scripts_runner.py` with three behavioral changes:
 
 1. **Optional timeout.** The `run_script(..., timeout_seconds: int | None)` becomes `run_job(..., max_runtime_seconds: int | None)`. When `None`, no `asyncio.wait_for` wrapper — `await proc.wait()` runs to natural completion. Otherwise unchanged.
-2. **Output-size cap.** The `_pump_stream` helper gains a `max_bytes: int | None` parameter. When `byte_counter[0] >= max_bytes`, the pump triggers a kill signal back to the parent (via an `asyncio.Event` shared with the runner), and the runner SIGTERM-then-SIGKILL the subprocess with `kill_reason=output_cap`. The pump continues draining whatever's already buffered, then exits.
+2. **Output-size cap (current implementation).** Each `_pump_stream` writes a chunk to disk and increments its stream's byte counter. If `max_bytes` and `cap_event` are supplied, `byte_counter[0] >= max_bytes`, and the shared event is not already set, that pump sets the event and returns immediately, before processing that chunk into the head buffer or line events. The `run_job` cap watcher closes both read transports and sends SIGKILL to the process group; the runner records `failed` with `reason=output_cap`. This describes the detecting branch, not a strict file-size or total overshoot guarantee for both streams sharing the event.
 3. **Task-terminal kill API.** A new module-level function `terminate_jobs_for_task(task_id: str)` returns the in-flight JOB-NNN ids matching that task, sends SIGTERM to each (5 s grace), then SIGKILL. Called from the task-status update path (§11).
 
 The in-flight registry, `register_runner_task`, shutdown await pattern, and
@@ -703,7 +728,7 @@ Integration tests (under `tests/integration/`, opt-in via `-m integration`):
 ## 16. Open questions / known limitations
 
 - **No daemon-side allow_rules validation.** Misclassified `review_required=false` submissions can run anything the daemon can run. Tradeoff acceptable for the one-person org context; revisitable when multi-tenant or multi-founder org variants are introduced.
-- **No output rotation.** Disk files for persistent jobs can grow unbounded *up to* `max_output_bytes` (default 50 MB). For a multi-day dev server this is fine; for an unusually chatty process the agent should set a lower cap or just stop the job periodically.
+- **No output rotation or public cap override.** Current public submissions use a fixed 50 MiB (52428800-byte) default per stream. Cap detection follows §10; it is not a strict on-disk byte ceiling. Agents cannot currently request a lower cap through the submission form. For a chatty process, reduce output at its source or stop the job when no longer needed. Configurable per-job output caps remain unimplemented design intent.
 - **No job dependencies / queueing.** All `review_required=false` jobs auto-run in parallel. A future enhancement could add a per-agent or per-org concurrency cap if the founder observes resource problems.
 - **Task-terminal kill is best-effort SIGTERM → SIGKILL.** A subprocess that ignores both (extremely unlikely with the 5s grace) would survive — the daemon would log the failure but not block the task transition. The startup recovery scan catches such zombies on next restart by force-failing any `running` row whose subprocess is unreachable.
 - **No agent introspection of other agents' jobs.** Agent A cannot see or stop agent B's jobs even within the same org. Founder can see and stop everything. Adequate for v1; cross-agent coordination is the job of threads.
