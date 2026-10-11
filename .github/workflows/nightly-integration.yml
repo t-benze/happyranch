@@ -67,10 +67,6 @@ jobs:
     timeout-minutes: 20
     env:
       EXPECTED_SOURCE_SHA: ${{ inputs.expected_source_sha }}
-      QA_EVIDENCE: ${{ runner.temp }}/thr299-scoped-qa/evidence
-      QA_SCRATCH: ${{ runner.temp }}/thr299-scoped-qa/scratch
-      QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
-      QA_RUNNER_NAME: ${{ runner.name }}
     steps:
       - name: Checkout exact event source
         timeout-minutes: 1
@@ -79,6 +75,10 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Admit immutable source before dependency or product setup
+        env:
+          QA_EVIDENCE: ${{ runner.temp }}/thr299-scoped-qa/evidence
+          QA_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          QA_RUNNER_NAME: ${{ runner.name }}
         run: |
           python3 -I - <<'PY'
           import hashlib, json, os, pathlib, re, subprocess
@@ -114,6 +114,8 @@ jobs:
         timeout-minutes: 4
         run: uv sync --frozen --python 3.14
       - name: Record effective interpreter
+        env:
+          QA_EVIDENCE: ${{ runner.temp }}/thr299-scoped-qa/evidence
         run: |
           .venv/bin/python -I - <<'PY'
           import hashlib, json, os, pathlib, sys
@@ -127,6 +129,9 @@ jobs:
       - name: Run only the five retained THR299 nodes through the unmodified parent
         timeout-minutes: 6
         shell: bash
+        env:
+          QA_EVIDENCE: ${{ runner.temp }}/thr299-scoped-qa/evidence
+          QA_SCRATCH: ${{ runner.temp }}/thr299-scoped-qa/scratch
         run: |
           mkdir -m 700 "$QA_SCRATCH"
           export TMPDIR="$QA_SCRATCH" TMP="$QA_SCRATCH" TEMP="$QA_SCRATCH"
@@ -146,6 +151,9 @@ jobs:
           exit "$status"
       - name: Retain exact case outcomes and observe cleanup even after failure
         if: ${{ always() }}
+        env:
+          QA_EVIDENCE: ${{ runner.temp }}/thr299-scoped-qa/evidence
+          QA_SCRATCH: ${{ runner.temp }}/thr299-scoped-qa/scratch
         run: |
           python3 -I - <<'PY'
           import json, os, pathlib, xml.etree.ElementTree as ET

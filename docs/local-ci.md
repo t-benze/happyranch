@@ -129,6 +129,14 @@ registered deterministic-stub fences. Natural synthetic IDs and the unmodified
 real public fixture retain their existing assertions. No patched queue/claim
 launcher or exact synthetic producer grant is selected.
 
+Runner-dependent paths and identity values are bound in each consuming step's
+`env`, where GitHub permits the `runner` context; job-level `env` holds only the
+expected input SHA. The always-run evidence/cleanup step binds its own evidence
+and scratch paths, and upload resolves the same evidence path in step `with`.
+These bindings remain available after an early checkout, admission or setup
+failure without depending on a successful initializer step. Missing command or
+case results still report incomplete evidence.
+
 Only these five nodes in
 `tests/integration/test_verified_supersession_retry_shipping.py` run, with
 `-m integration`, verbose case output and JUnit:
