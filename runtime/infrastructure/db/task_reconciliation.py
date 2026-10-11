@@ -143,7 +143,7 @@ def text_digest(value: str | None) -> str | None:
     return None if value is None else hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def strict_json(raw: str | bytes, code: str = "malformed_evidence") -> dict:
+def strict_json(raw: str | bytes, code: str = "malformed_evidence", *, allow_floats: bool = False) -> dict:
     def pairs(items: list[tuple[str, Any]]) -> dict:
         result = {}
         for key, value in items:
@@ -156,7 +156,7 @@ def strict_json(raw: str | bytes, code: str = "malformed_evidence") -> dict:
         raise ValueError("noninteger number")
 
     try:
-        value = json.loads(raw, object_pairs_hook=pairs, parse_float=reject_number,
+        value = json.loads(raw, object_pairs_hook=pairs, parse_float=float if allow_floats else reject_number,
                            parse_constant=reject_number)
         if not isinstance(value, dict):
             raise ValueError("object required")
@@ -245,7 +245,7 @@ class TaskReconciliation:
                          (SCOPE["owner"],))
         matches = []
         for row in rows:
-            payload = strict_json(row["payload"], "original_session_evidence")
+            payload = strict_json(row["payload"], "original_session_evidence", allow_floats=True)
             if payload.get("session_id") == sid:
                 matches.append((row, payload))
         require(len(matches) == 1, "original_session_evidence")
@@ -271,7 +271,7 @@ class TaskReconciliation:
         row = self.conn.execute("SELECT * FROM audit_log WHERE id=?",
                                 (binding["session_start_audit_id"],)).fetchone()
         require(row is not None, "original_session_evidence")
-        payload = strict_json(row["payload"], "original_session_evidence")
+        payload = strict_json(row["payload"], "original_session_evidence", allow_floats=True)
         require(row["action"] == "session_start" and row["task_id"] == SCOPE["owner"],
                 "original_session_evidence")
         try:
@@ -469,7 +469,7 @@ class TaskReconciliation:
         tasks = {r["id"]: r for r in roots + children}
         for task_id in visited:
             tasks[task_id] = self.task(task_id)
-        return {"scope": {**SCOPE, "operation_key": body["operation_key"]}, "registry": registry,
+        snapshot = {"scope": {**SCOPE, "operation_key": body["operation_key"]}, "registry": registry,
                 "tasks": [self.task_projection(tasks[k]) for k in sorted(tasks)], "operator_binding": binding,
                 "operator_result_present": False,
                 "origin": {"thread_id": origin["id"], "composed_by": origin["composed_by"],
@@ -478,6 +478,10 @@ class TaskReconciliation:
                 "holds": holds, "dispatch_bindings": dispatches,
                 "edge_bindings": sorted(edges, key=lambda e: (e["producer"], e["predecessor_id"], e["successor_id"], e["records"][0]["id"])),
                 "local_retry": {"parent_id": current["id"], "agents": local}, "operation_ownership": []}
+        # Preflight must not release a digest for a malformed frozen claim;
+        # run the same closed historical-data checks before either admission.
+        self.validate_frozen(snapshot, self.claim(owner))
+        return snapshot
 
     @staticmethod
     def claim(owner: dict) -> dict:
