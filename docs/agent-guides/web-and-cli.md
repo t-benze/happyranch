@@ -1,7 +1,51 @@
 # Web And CLI
 
-**G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
-initializes the complete G layout before attachment. Existing F/E startup,
+U3a(c) mounts the H/@3 public handoff and unsigned selected-request surfaces,
+with CLI/TypeScript/OpenAPI/native mirrors and F5 callback/replay/cancellation/
+portability owner selection. Direct-submit/reviewer-stage public/deny deferral
+remains. Requests and real callbacks are unsigned; genuine receipts and joins
+remain later units. Independent same-head assessment, unconditional Source Boundary Lint and
+Web Lint (Node 24) under THR291 seq69,
+manager-owned two-template public smoke and operator acceptance remain pending.
+Source parity is not behavioral PASS or native reachability authority.
+
+Complete H validation authenticates historical profile readiness from the saved
+full dependency/store/registry mirror. Every closed variant preserves raw
+nonempty source profile names; namespace and consumer identities are nonblank
+UTF8 strings of 1..256 bytes without NUL, generations are exact integers in
+0..9223372036854775807, and digests are full lowercase SHA256 strings. Native
+row grouping/order and unrelated or removed rows remain intact. The historical
+org's active requirements must have matching active store and registry
+generations, and their full names, digests and ordered consumer membership must
+reconstruct the pinned canonical profile projection. Empty mirror with required
+profiles, missing/mismatched required rows or unbound requirements refuse
+`workflow_author_handoff_storage_corrupt` before graph creation; an empty
+required projection remains valid. Readiness, the offline script and producers
+share this reader. Admitted GET exposes only category500; invisible scope404 and
+selected-grant403 retain earlier precedence. Today's mutable mirror is never
+historical evidence; a genuine later authority change remains a current hold.
+
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
+New F5 review-dispatch events also preserve types across every before/after
+projection, immutable transition, adjacent event and final retained row. Each
+intermediate projection anchors immutable fields to native rows and validates
+mutable field types; the initial projection derives the producer's queued
+values. Complete callback records and reused results retain native task_results
+types, acceptance is exact integer 1, and host quiescence is genuine Boolean
+true. Boolean/integer substitutions refuse before owned effects, using
+`workflow_review_storage_corrupt` internally and the existing admitted H
+category500 mapping. Authentic flags and historical S2 numeric semantics remain.
+
+**G submission-schema migration (THR139 seq395).** The retained F/E-to-G path
+precedes explicit G-to-H migration; deliberate fresh org creation now initializes H. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
 The explicit org-only operator command is
 `python scripts/migrate_workflow_submission_schema.py --runtime-root <absolute-root> --org <slug> [--check]`.
@@ -23,9 +67,9 @@ writer; it stops no process and provides no exclusion against an arbitrary
 concurrent daemon start. Operator cooperation is a precondition. Active-origin
 submissions retain NULL legacy result identity; separate authenticated operation
 and INTEGER ordinary-result links preserve the actual result evidence.
-Submission/review/link/finalizer producers, U3-U6, independent operator
-acceptance, and the separate real Founder UI Request changes and Sign off are
-still pending. This implementation work does not authorize live migration,
+U3a(b) internal submission/review/link producers are staged in the stacked draft.
+Genuine receipts/joins/finalization, later U3-U6 units and
+independent operator acceptance, including real Founder UI actions, remain pending. This implementation work does not authorize live migration,
 enablement, deployment or a Phase1-completion claim.
 
 
@@ -1464,3 +1508,83 @@ classification. This operator does not run tests.
 ## Root task Pause and Resume (THR-292)
 
 Use `happyranch pause TASK --org ORG`, `resume TASK --org ORG` and `tasks --org ORG --pause-overview`. Controls read the generation and POST once unless --expected-generation is supplied; stale conflicts are not retried. --json preserves the separate pause projection; details supports --json. Overview requires explicit --org, uses bounded root pages (--all-pages follows them), reports unavailable counts honestly and never promises a safe restart. API POST /tasks/{task_id}/pause|resume accepts only expected_generation; GET /tasks/pause-overview precedes dynamic task routes. TS task client/types and OpenAPI/classification share this contract. The Tasks page adds bilingual root-only Pause/Resume in existing list/detail action areas and a separate org-scoped Task pause overview. Pending roots remain visible in the overview without Pause; parked in_progress roots can Pause. Descendants show inherited hold and the actual root link. Escalated/terminal lifecycle and waiting/attention/lineage remain separate; terminal drain diagnostics stay visible and Resume never resolves escalation or revives a terminal task. Missing projection or unsafe/missing generation is unavailable. Each deliberate action uses the displayed generation once in the task provider; repeated submissions are disabled while pending, conflicts/refusals are accessible and translated, and the provider refreshes the originating org's list families, all details and overview without automatically replaying or opposing the action. The shared HTTP client's existing401 bootstrap/retry is unchanged and is authentication recovery, not Pause enforcement evidence. Overview pages carry server timestamps, evidence_complete and nullable counts; a next page replaces the observation, never a summed completeness/zero claim. The overview is independent of task-list filters and has loading, empty, error, partial, stale and retry states. Other roots/thread/dream/wake/scheduled activity and eligible manager-created separate unheld successor roots stay independent; this is never a safe-restart certification. Prototype controls refuse as unavailable. The task-owned pause browser harness records ordinary-build UI/transport requests and bilingual responsive/keyboard evidence without a live daemon. [Contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+
+
+### U3a(c) public handoff and unsigned request surfaces
+
+The stacked draft serves only POST `/workflows/submissions/handoffs`, GET
+`/workflows/submissions/handoffs/{handoff_id}` and GET
+`/workflows/reviews/requests/{request_id}`, under `/api/v1/orgs/{slug}`.
+Matched `@3` activation request/receipt schemas coexist with historical `@1/@2`.
+Publication `@3` requires closed submission={timing,delivery}, with delivery
+`current-author-handoff@1` and timing `on-completion` or `while-active-or-completed`;
+historical `@2` remains timing-only.
+An original CURRENT author supplies `session_id` and one closed
+`workflow-author-handoff-command@1` JSON body containing operation_key,
+activation_id, expected_revision=1, submission_bytes_base64 and submission_digest.
+The command is bounded to 2MiB; the exact strict UTF8 document is 1..1MiB.
+Stage commits201; exact before-callback replay returns200. Every post-callback
+POST refuses409 source_not_current; after tracker clearing the session refusal
+precedes replay. Staging returns no graph, launch, signature or approval.
+
+Handoff GET chooses exactly one current proof: session_id+activation_id for the
+original author; session_id+request_id for the selected actual reviewer; or
+proof_kind=owner-human for the current Founder owner, including zero-human-review
+configurations. Request GET uses session_id for the actual agent recipient or
+proof_kind=human for the selected human recipient. Unknown, duplicate, blank,
+malformed or mixed selectors refuse422. Agent lanes are header-free;
+a valid bearer conflicts403 auth_path_conflict, and an invalid present header
+refuses403 bearer_not_accepted. Human lanes retain the existing Founder bearer.
+Selection/current membership/grants are revalidated: invisible scope404, selected
+grant loss403, unready current authority409, stored corruption500. Present-H
+reads select relational source/request/owner scope and the current grant before
+decoding H admission/graph proof; admitted reads retain complete validation in
+the authority writer and binding lease. Missing-H guidance follows independent
+identity checks. Completed-handoff discovery keeps a normally revoked or
+superseded reservation held individually and continues to independently
+revalidate later reservations; stored corruption still refuses the scan.
+
+The current Founder owner can read a superseded source with the SAME active
+authorization pointer and collect-review grant, full immutable ownership closure
+and coherent current authority; no human reviewer row is required. Source and
+request agent selection remains strict. An original-current source GET after
+callback and before tracker clear is allowed; tracker clear refuses the session.
+After valid admission, corruption refuses500 and genuine failed/cancelled sources
+retain their actual reconciliation flags. Otherwise disabled cutover takes
+precedence over supersession, authority change and uncertainty:
+held/new_runs_disabled, then held/source_not_current, then
+held/authority_not_current, then uncertain/missing proof and eligible graph or
+callback states. Every held graph is null, with the same immutable core and no
+domain/queue/launch effects. Historical owner reads grant no POST/consume authority.
+
+H receipts contain exactly format/core/replayed/current. Core has only
+handoff_id, reserved_submission_id, instance_id, revision, candidate_digest,
+request_digest and created_at. Current contains state, pending,
+reconciliation_required, reason and graph; graph is null unless currently
+consumed-authorized and then holds submission_id, round_id, request_ids and every
+actual configured agent reviewer_task_id in declared role order (0..3).
+Private source, admission, result, host, capability and input bytes never enter
+an H receipt. Unsigned request receipts instead expose the pinned document and
+only the selected recipient's inputs; they are pending with signed=false.
+Callbacks preserve actual execution evidence and never sign a review.
+
+CLI commands are `workflows submissions stage --org ORG --session-id SID
+--from-file /absolute/command.json [--json]`, `workflows submissions show H
+--org ORG --session-id SID --activation-id A` (or --request-id R), and
+`workflows submissions show H --org ORG --proof-kind owner-human`.
+`workflows submissions request-show R --org ORG` requires either --session-id SID
+or --proof-kind human. Every command forwards the exact payload/query once;
+syntax/unknown fields exit2, domain/transport failure exits1, pending/held/success
+exits0. Lost responses retain the original key; no automatic operation replay.
+
+TypeScript exports stageAuthorHandoff/getAuthorHandoff/getWorkflowReviewRequest
+through the unchanged shared client.ts. Bearer-sending agent TS calls expect403;
+owner reads can return200. One logical operation uses one endpoint fetch, with
+only the existing generic first401 token refresh permitting a second fetch of
+the same URL/body/key. Domain403/409 and response loss do not replay operations.
+Method/path classification includes the common GETs and excludes only the agent
+POST. SurfaceAllowList denies that exact normalized/prefixed POST, adding no GET
+grant or broader permission change. Actual operator UI, genuine receipts/joins,
+revisions/reassignment/recovery and independent acceptance remain later units;
+the manager-owned same-runtime two-template public smoke is required before
+Founder invitation. Source parity is not behavioral verification.

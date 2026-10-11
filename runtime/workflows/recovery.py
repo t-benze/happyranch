@@ -77,6 +77,10 @@ def classify_task(db: Any, task_id: str, *, org_slug: str | None) -> WorkflowTas
                      bridge["assigned_principal"], bridge["assignment_generation"]),
                 ).fetchall()
                 if len(closure) == 1:
+                    reviewer = getattr(db, '_workflow_reviews', None)
+                    if reviewer is None or reviewer.org.slug != org_slug:
+                        return WorkflowTaskOwnership('reconciliation_required')
+                    reviewer._intent(conn, task_id)
                     return WorkflowTaskOwnership("f5", state=bridge["state"])
             return WorkflowTaskOwnership("reconciliation_required")
         except (ValueError, TypeError, sqlite3.DatabaseError):
@@ -93,6 +97,10 @@ def route_owned_task(orch: Any, task_id: str) -> bool:
     dispatcher = getattr(orch, "_workflow_drafts", None)
     if ownership.kind == "draft" and dispatcher is not None:
         dispatcher.dispatch(task_id)
+    elif ownership.kind == 'f5':
+        reviewer = getattr(orch, '_workflow_reviews', None)
+        if reviewer is not None:
+            reviewer.dispatch(task_id)
     # An unavailable dispatcher/host is pending execution, never permission
     # to call legacy launch, retry, delegation or parent propagation. Existing
     # F5 producers remain deferred and reconciliation-owned.
@@ -103,7 +111,7 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
     ownership = classify_task(db, task_id, org_slug=slug)
     if ownership.kind == "legacy":
         return False
-    if ownership.kind == "draft" and ownership.state == "queued":
+    if ownership.kind in ('draft', 'f5') and ownership.state == "queued":
         # This is discovery of the committed intent, not reinsertion or host
         # launch. All ownership effects occur at the dispatcher claim seam.
         queue.enqueue_if_absent(slug, task_id)
@@ -113,5 +121,12 @@ def recover_owned_task(db: Any, queue: Any, slug: str, task_id: str, *, orchestr
             dispatcher.reconcile(task_id)
             current = classify_task(db, task_id, org_slug=slug)
             if current.kind == "draft" and current.state == "queued":
+                queue.enqueue_if_absent(slug, task_id)
+    elif ownership.kind == 'f5':
+        reviewer = getattr(orchestrator, '_workflow_reviews', None)
+        if reviewer is not None:
+            reviewer.reconcile(task_id)
+            current = classify_task(db, task_id, org_slug=slug)
+            if current.kind == 'f5' and current.state == 'queued':
                 queue.enqueue_if_absent(slug, task_id)
     return True

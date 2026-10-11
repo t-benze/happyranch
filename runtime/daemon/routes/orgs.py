@@ -203,7 +203,7 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
             raise ValueError("fresh_org_database_already_exists")
         database = Database(db_path)
         try:
-            initialize_complete_org_schema(database, expected_org_slug=body.slug)
+            initialize_complete_org_schema(database, expected_org_slug=body.slug, layout="H")
             from runtime.infrastructure.task_pause_controls import install_pause_schema
             install_pause_schema(database, org_slug=body.slug)
         finally:

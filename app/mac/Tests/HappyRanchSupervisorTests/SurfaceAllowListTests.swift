@@ -5,6 +5,22 @@ import Foundation
 @Suite("SurfaceAllowList deny gate")
 struct SurfaceAllowListTests {
 
+    @Test("handoff POST denies normalized and raw prefixed forms only")
+    func deniesAuthorHandoffPost() {
+        let policy = SurfaceAllowList.default
+        let normalized = "/workflows/submissions/handoffs"
+        for raw in [normalized, "/api/v1" + normalized,
+                    "/orgs/alpha" + normalized, "/api/v1/orgs/alpha" + normalized,
+                    "/api/v42/orgs/alpha" + normalized] {
+            #expect(!policy.isAllowed(method: "POST", path: normalized, rawPath: raw))
+            // A mismatched normalized caller path cannot evade the raw denial.
+            #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: raw))
+        }
+        #expect(policy.isAllowed(method: "GET", path: normalized + "/handoff-one",
+                                 rawPath: "/api/v1/orgs/alpha" + normalized + "/handoff-one"))
+    }
+
+
     // MARK: - Default policy exists
 
     @Test("default policy is non-empty")
