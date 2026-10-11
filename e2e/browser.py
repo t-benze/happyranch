@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import time
 from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any
@@ -202,10 +203,14 @@ class Browser:
                 self.thread_events.append(dict(event="origin-bypass", at=time.monotonic()))
         def response(res):
             if res.request.method == "POST" and res.url == self.thread_base + "/api/v1/orgs/alpha/threads":
+                record = dict(event="compose-response", url=res.url, status=res.status, at=time.monotonic())
+                self.thread_events.append(record)
                 raw = res.body()
-                self.thread_events.append(dict(event="compose-response", url=res.url, status=res.status,
-                                               sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw),
-                                               body=res.json(), at=time.monotonic()))
+                record.update(sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw), body=res.json())
+            elif res.request.method == "GET" and re.fullmatch(re.escape(self.thread_base) + r"/api/v1/orgs/alpha/threads/THR-\d+(?:/messages)?", res.url.split("?")[0]):
+                record = dict(event="thread-response", url=res.url, method=res.request.method, status=res.status, at=time.monotonic())
+                self.thread_events.append(record)
+                record["body"] = res.json()
         page.on("request", request)
         page.on("response", response)
         page.on("framenavigated", lambda frame: self.thread_events.append(dict(event="navigation", url=frame.url, at=time.monotonic()))
@@ -259,6 +264,10 @@ class Browser:
                 "initial genuine compose eligibility", first)
         return record
 
+    def thread_snapshot(self, name: str) -> list[dict]:
+        self.thread_events.append(dict(event="snapshot", name=name, at=time.monotonic()))
+        return list(self.thread_events)
+
     def thread_created(self, thread: str) -> dict:
         page = self.thread_page
         expect(page.get_by_role("dialog")).to_have_count(0)
@@ -279,7 +288,8 @@ class Browser:
         url = self.thread_base + f"/orgs/alpha/threads/{thread}"
         path = self.thread_base + f"/api/v1/orgs/alpha/threads/{thread}"
         self.thread_events.append(dict(event="deliberate-revisit", url=url, at=time.monotonic()))
-        with page.expect_response(lambda r: r.url.split("?")[0] == path and r.status == 200) as received:
+        with page.expect_response(lambda r: r.url.split("?")[0] == path and r.status == 200) as received, \
+                page.expect_response(lambda r: r.url.split("?")[0] == path + "/messages" and r.status == 200) as messages:
             page.goto(url)
         main = page.get_by_role("main")
         expect(main.get_by_text(subject, exact=True).first).to_be_visible()
@@ -292,7 +302,15 @@ class Browser:
             expect(main.get_by_text(f"task {task} completed · E05 task complete", exact=True)).to_be_visible()
         name = f"e05-{label}.png"
         page.screenshot(path=str(self.controller.root / "raw" / name), full_page=True)
-        result = dict(thread=thread, body=received.value.json(), text=main.inner_text(), screenshot=name, at=time.monotonic())
+        result = dict(thread=thread, body=received.value.json(), text=main.inner_text(), screenshot=name,
+                      url=page.url, response_url=received.value.url, method=received.value.request.method,
+                      status=received.value.status, messages_body=messages.value.json(), messages_url=messages.value.url,
+                      messages_status=messages.value.status, messages_method=messages.value.request.method,
+                      rendered_messages=main.locator("article").evaluate_all("""articles => articles.map(article => ({
+                        header: article.querySelector('header')?.innerText,
+                        body: article.querySelector('.gl-prose')?.innerText,
+                        visible: article.getClientRects().length > 0
+                      }))"""), at=time.monotonic())
         self.thread_events.append(dict(event="thread-view", **result))
         return result
 

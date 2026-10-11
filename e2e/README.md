@@ -542,6 +542,30 @@ The manifest adds exactly five IDs, preventing an omitted E05 case from passing.
 NO production-only seam is added by either consumer. Validator controls are not
 product defect proof; no new controls were executed.
 
+The R1–R3 correction extends these same four-answer records, without a new
+proof framework or variant. All source predicates below are authored; dedicated
+contradictory-receipt/browser-ledger/sanitation controls are **UNAUTHORED** and
+assertion sensitivity remains **UNEXECUTED**.
+
+| Existing case or fixture/consumer | Required contract | Credible regression rejected by named source predicates | Nearest coverage / remaining gap | Production-only seam |
+| --- | --- | --- | --- | --- |
+| Compose / `E05.compose-race`; Browser snapshots and `BrowserRelay` | Complete chronological event ledger, exact held/released prefixes and actual proxy release interval; zero premature navigation, one automatic entry, four paired intentional revisits; actual initial GET/messages and rendered opening | A premature event omitted from a case snapshot, duplicate automatic navigation or empty/wrong opening fails `R2` prefix/navigation/projection/bubble checks | Earlier PNG and snapshot membership checks did not validate chronology or rendered semantics; same-tick eligibility is retained, guard sensitivity UNPROVEN | NO |
+| Reply / `E05.reply-natural`; provider and aggregate | Every decline/reply equals its canonical receipt and original instruction; exact argv, request, route, status, selected response, exit and shipping stdout; both literal C messages in their own sequence bubbles | Accepted SQL state with exit1/KeyError on decline, wrong endpoint/body, detached receipt or omitted rendered reply fails `R1` outcome and `R2` bubble checks | Earlier identity/source/terminal-row joins did not prove positive CLI delivery or actual rendering | NO |
+| Dispatch / `E05.self-dispatch-followup`; N/D compose, task read and final callback | Full founder compose command/wire joins; exact dispatch and replies; D2 GET returns this completed task/result/summary and prints literal details; callback remains last; full D system payloads and distinct rendered reply/summary | Wrong task/details summary or an absent D reply hidden by the completion system summary fails `R1` task/read and `R2` per-bubble/system checks | Earlier two-substring D check and selected-response presence did not establish all literal content | NO |
+| Denials / `E05.consumed-token`, `E05.nonparticipant-task-send`; Relay E05 request capture | Exact original instruction/real409 or403/request/response/error stdout, same retained file/live owner and coherent unchanged frame | Another endpoint/status/body or detached denial cannot pass by retaining valid durable rows | Existing negative frame checks are retained; dedicated contradictory artifact controls remain unauthored | NO |
+| `thread_provider.redaction_context/command`; Controller sanitation/export closure | Validate private retained context before and after capture, including current/old bearer and invocation tokens; sanitize full binary streams before16384-byte clipping or JSON/socket output; original byte counts/flags, safe digest identities | Boundary-straddling credential, multibyte output, timeout suffix or missing/unsafe/lost context cannot take the old clip-before-redact path; unknown context raises fixed text and withholds output | Existing full-string exporter cannot repair a fragment already clipped by a producer; sanitation and timeout behavior remain unproved | NO |
+| `aggregate.validate_e05`, threads command/compose/settled producers, browser response/DOM producers | Reopen existing artifacts and recompute actual command, public response, full ledger and rendered content joins; PNG signature proves file format only | Metadata-only or valid durable rows cannot substitute for public outcome/content | Extends the existing actual-content consumer; no executed controls or full test-authoring PASS | NO |
+
+The CLI relay captures request JSON/response text only after E05 starts; the
+original baseline/Pause/E04 wire receipts keep their prior shape. The controller
+sanitizes retained observations with the complete credential context; the
+unchanged launcher keeps its unsafe-export refusal. Binary provider capture
+preserves original stdout/stderr byte counts and per-stream cap flags. Complete
+secrets are removed before clipping; timeout capture also withholds a trailing
+credential prefix, and UTF-8 clipping drops incomplete codepoints. Private
+context failure emits only a fixed error and no captured output. Token/payload
+digests remain identity evidence, never credentials or sanitation proof.
+
 All E05 behavior, assertion sensitivity, proxy compatibility, guard reentry,
 token sanitation, delivery/persistence, process closure and measured budget fit
 remain MISSING/UNEXECUTED. Protected12 deliberate defects, RED/restoration/GREEN

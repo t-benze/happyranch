@@ -782,3 +782,13 @@ original720, cleanup60/export120, target600/hard900 and existing five artifacts
 are unchanged. TASK10555 retains first-daily collection/Pause acceptance; collected
 results must be joined to their actual source SHA. Later cancellation/late-callback/
 restart and full daily acceptance remain unfinished root-owned work.
+
+E05 PR1040 R1–R3 source correction binds every named CLI receipt to its
+canonical command/instruction and actual public outcome, derives hold/navigation
+from the complete browser ledger with literal per-message rendering joins, and
+redacts full captured streams with retained credentials before byte clipping.
+Original48/total53 and A12+B25=37 source expectations remain unchanged. Dedicated
+contradictory-artifact and sanitation controls are UNAUTHORED; all behavior,
+sensitivity, proxy/guard, sanitation, delivery/persistence, closure, fit and
+protected proof remain MISSING/UNEXECUTED. This is static source correction only;
+the existing daily-only policy and all execution holds remain in effect.

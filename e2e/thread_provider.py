@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -13,8 +14,31 @@ import time
 from pathlib import Path
 
 
+def redaction_context(root: Path, token: str | None) -> set[str]:
+    """Read the retained private context; never echo unsafe bytes on failure."""
+    try:
+        path = root / "coord/redaction-context.json"
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "r") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600:
+                raise ValueError
+            context = json.load(stream)
+        bearer = (root / "daemon/daemon.token").read_text().strip()
+        if (not isinstance(context, list) or not context or not bearer
+                or not all(isinstance(s, str) and s for s in context)
+                or bearer not in context or (token is not None and token not in context)):
+            raise ValueError
+        for secret in context:
+            secret.encode("utf-8", errors="strict")
+        return set(context)
+    except Exception:
+        raise RuntimeError("E05 private redaction context unavailable or unsafe") from None
+
+
 def command(instruction: dict, binding: dict, token: str | None, files: dict) -> dict:
     root = Path(os.environ["E2E_ROOT"])
+    secrets = redaction_context(root, token)
     manifest = json.loads((root / "coord/manifest.json").read_text())
     callback = Path(manifest["callback"])
     if hashlib.sha256(callback.read_bytes()).hexdigest() != manifest["callback_sha256"]:
@@ -83,26 +107,56 @@ def command(instruction: dict, binding: dict, token: str | None, files: dict) ->
         raise RuntimeError("E05 command deadline exhausted")
     argv = [str(callback), *args]
     process = subprocess.Popen(argv, cwd=root, env=dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(root / "client")),
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     child_start = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
     timed_out = False
     try:
         out, err = process.communicate(timeout=max(0, end - time.monotonic()))
     except subprocess.TimeoutExpired as exc:
         timed_out = True
-        out, err = exc.stdout or "", exc.stderr or ""
-        out = out.decode(errors="replace") if isinstance(out, bytes) else out
-        err = err.decode(errors="replace") if isinstance(err, bytes) else err
-    # No raw authority crosses the coordination socket, including exceptions.
-    output_truncated = len(out.encode()) > 16384 or len(err.encode()) > 16384
-    public = json.dumps(dict(action=action, provider=binding, argv=argv, exit=process.returncode,
-                             stdout=out.encode()[:16384].decode(errors="replace"), stderr=err.encode()[:16384].decode(errors="replace"), output_truncated=output_truncated,
+        out, err = exc.stdout or b"", exc.stderr or b""
+    retained = redaction_context(root, token)
+    if not secrets <= retained:
+        raise RuntimeError("E05 retained redaction context lost identities")
+    secrets |= retained
+
+    def sanitize(value: object) -> object:
+        if isinstance(value, str):
+            for secret in sorted(secrets, key=len, reverse=True):
+                value = value.replace(secret, "[REDACTED]")
+            return value
+        if isinstance(value, dict):
+            return {sanitize(k): sanitize(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [sanitize(v) for v in value]
+        return value
+
+    def public_stream(raw: bytes) -> str:
+        # Sanitize ALL captured bytes BEFORE the public cap. A timed-out read
+        # may itself end inside a credential, so withhold that suffix too.
+        safe = raw
+        encoded = [s.encode() for s in sorted(secrets, key=len, reverse=True)]
+        if timed_out:
+            suffix = max((n for secret in encoded for n in range(1, min(len(secret), len(safe)) + 1)
+                          if safe.endswith(secret[:n])), default=0)
+            if suffix:
+                safe = safe[:-suffix] + b"[REDACTED]"
+        for secret in encoded:
+            safe = safe.replace(secret, b"[REDACTED]")
+        # Drop only an incomplete UTF-8 codepoint at the public byte boundary.
+        return safe[:16384].decode(errors="ignore")
+
+    # Raw byte counts describe capture, not the shorter sanitized stream.
+    output_truncated = len(out) > 16384 or len(err) > 16384
+    return sanitize(dict(action=action, provider=binding, argv=argv, exit=process.returncode,
+                             stdout=public_stream(out), stderr=public_stream(err), output_truncated=output_truncated,
+                             stdout_bytes=len(out), stderr_bytes=len(err),
+                             stdout_truncated=len(out) > 16384, stderr_truncated=len(err) > 16384,
                              payload=payload, entered=entered, finished=time.monotonic(),
                              payload_sha256=hashlib.sha256(path.read_bytes()).hexdigest() if payload is not None else None,
                              child_pid=process.pid, child_start=child_start, timed_out=timed_out,
                              execution_deadline=end, python=sys.executable, source_sha=manifest["revision"],
                              callback_sha256=manifest["callback_sha256"]))
-    return json.loads(public.replace(token, "[REDACTED]") if token else public)
 
 
 def main() -> None:

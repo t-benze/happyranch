@@ -576,7 +576,10 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     final = case["final"]["content"]
     expected_sources = ("e2e/threads.py", "e2e/thread_provider.py", "e2e/provider.py", "e2e/controller.py", "e2e/browser.py",
                         "e2e/transport.py", "e2e/oracles.py", "e2e/aggregate.py", "tests/integration/fake_claude.sh", "cli/commands/threads.py",
-                        "runtime/daemon/routes/threads.py", "runtime/daemon/thread_runner.py", "web/src/shared/threads/NewThreadDialog.tsx")
+                        "runtime/daemon/routes/threads.py", "runtime/daemon/thread_runner.py", "web/src/shared/threads/NewThreadDialog.tsx", "cli/_shared.py", "cli/commands/tasks.py",
+         "runtime/daemon/routes/tasks.py", "web/src/features/threads/ThreadsPage.tsx",
+         "web/src/design-system/patterns/MessageBubble.tsx", "web/src/design-system/patterns/Markdown.tsx",
+         "web/src/design-system/patterns/AgentChip.tsx")
     source_root = Path(__file__).resolve().parents[1]
     check(case["source_hashes"] == {name:hashlib.sha256((source_root/name).read_bytes()).hexdigest() for name in expected_sources}, "actual immutable producer/consumer source bytes")
     beta = [d["threads_beta"] for d in durable if "threads_beta" in d]
@@ -713,6 +716,11 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
               and a["entered"] <= cmd["entered"] <= cmd["finished"] <= a["finished"] < a["instruction"]["deadline"]
               <= a["entered"] + 10 and cmd["execution_deadline"] == a["instruction"]["deadline"] - 1, "original live owner/deadline")
         check(all(w in observations["relay"] and w["dropped"] is False for w in cmd["wire"]) and cmd["wire"], "actual complete relay references")
+        check(all(type(cmd[k + '_bytes']) is int and cmd[k + '_bytes'] >= 0
+                  and cmd[k + '_truncated'] == (cmd[k + '_bytes'] > 16384)
+                  and len(cmd[k].encode()) <= 16384 for k in ('stdout','stderr'))
+              and cmd['output_truncated'] == (cmd['stdout_truncated'] or cmd['stderr_truncated']),
+              'R3 original byte counts and per-stream truncation diagnostics')
         digest = hashlib.sha256(json.dumps(cmd["argv"][1:]).encode()).hexdigest()
         check(len([w for w in calls if w["pid"] == cmd["child_pid"] and w["ppid"] == cmd["provider"]["pid"]
                    and w["argv_sha256"] == digest and w["source_sha"] == row["source_sha"]]) == 1, "independent actual CLI child/source join")
@@ -725,6 +733,144 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
     check(D["callback"]["selected_response"] == {"ok":True} and D["callback"]["exit"] == 0
           and D["callback"] in commands and D["followup"] in commands and D["read"] in commands
           and D["callback"]["finished"] <= D["providers"][1]["at"] <= D["read"]["entered"] <= D["followup"]["entered"], "task callback to natural D2 read/reply")
+    # Fixed case receipts must be the actual eleven ledger entries, each joined
+    # to its original finite instruction. Durable acceptance alone is not CLI success.
+    specifications = [
+        (C['initial_decline'], C['providers'][1], 'thread-decline', dict(reason='E05 initial observed', in_response_to_seq=1), 200, None),
+        (C['reply'], C['providers'][0], 'thread-reply', dict(body_markdown='E05 reply\n@case_worker received', in_response_to_seq=1), 200, 2),
+        (C['replay']['command'], C['providers'][0], 'thread-reply', dict(body_markdown='E05 reply\n@case_worker received', in_response_to_seq=1), 409, None),
+        (C['last_decline'], C['providers'][2], 'thread-decline', dict(reason='E05 reply observed', in_response_to_seq=2), 200, None),
+        (N['decline'], N['providers'][0], 'thread-decline', dict(reason='E05 denial venue observed', in_response_to_seq=1), 200, None),
+        (D['dispatch'], D['providers'][0], 'thread-dispatch', dict(brief='E05 one owned task', target_agent='case_manager', team='engineering'), 200, None),
+        (D['reply'], D['providers'][0], 'thread-reply', dict(body_markdown='E05 task accepted', in_response_to_seq=1), 200, 3),
+        (D['denial']['command'], D['task'], 'thread-task-send', dict(body_markdown='E05 forbidden post'), 403, None),
+        (D['callback'], D['task'], 'thread-task-final', dict(status='completed', confidence=90, summary='E05 task complete', decision=dict(action='done', summary='E05 task complete')), 200, None),
+        (D['read'], D['providers'][1], 'thread-task-read', None, 200, None),
+        (D['followup'], D['providers'][1], 'thread-reply', dict(body_markdown='E05 task complete', in_response_to_seq=4), 200, 5),
+    ]
+    check([s[0] for s in specifications] == commands, 'R1 every named receipt equals canonical ordered command ledger')
+    for index, (cmd, provider, action, supplied, status, seq) in enumerate(specifications):
+        attempt = attempts[index]
+        expected_instruction = dict(action=action, deadline=attempt['instruction']['deadline'], execution_deadline=cmd['execution_deadline'])
+        if supplied is not None:
+            expected_instruction['payload'] = supplied
+        if action == 'thread-task-send':
+            expected_instruction['thread'] = N['thread']
+        if action == 'thread-task-read':
+            expected_instruction['task'] = T
+        check(attempt['provider'] == provider and attempt['instruction'] == expected_instruction and cmd['action'] == action,
+              'R1 named owner/action/original instruction equality')
+        tid = provider.get('thread')
+        expected_payload = None
+        if action in {'thread-reply', 'thread-decline', 'thread-dispatch'}:
+            operation = action.removeprefix('thread-')
+            expected_payload = dict(supplied, thread_id=tid, invocation_token='[REDACTED]')
+            expected_payload['dispatcher' if operation == 'dispatch' else 'speaker'] = provider['agent']
+            args = ['threads', operation, '--org', 'alpha', '--thread-id', tid]
+            method, path = 'POST', f'/api/v1/orgs/alpha/threads/{tid}/{operation}'
+            request_body = expected_payload
+        elif action == 'thread-task-send':
+            expected_payload = dict(supplied, composer='case_manager')
+            args = ['threads', 'send', '--thread-id', N['thread'], '--task-id', T, '--session-id', sid, '--org', 'alpha']
+            method, path = 'POST', f"/api/v1/orgs/alpha/threads/{N['thread']}/send"
+            request_body = dict(expected_payload, task_id=T, session_id=sid)
+        elif action == 'thread-task-final':
+            expected_payload = dict(supplied, task_id=T, session_id=sid, agent='case_manager')
+            args = ['report-completion', '--org', 'alpha']
+            method, path = 'POST', f'/api/v1/orgs/alpha/tasks/{T}/completion'
+            request_body = dict(session_id=sid, agent='case_manager', status='completed', confidence=90,
+                                output_summary='E05 task complete', risks_flagged=[], dependencies=[],
+                                suggested_reviewer_focus=[], decision=dict(action='done', summary='E05 task complete'))
+        else:
+            args = ['details', '--org', 'alpha', T]
+            method, path, request_body = 'GET', f'/api/v1/orgs/alpha/tasks/{T}', None
+        if expected_payload is not None:
+            private_path = cmd['argv'][-1]
+            check(Path(private_path).is_absolute() and Path(private_path).parent == Path(cmd['argv'][0]).parent.parent / 'coord'
+                  and Path(private_path).name.startswith('e05-private-'), 'R1 actual private payload argv scope')
+            args += ['--from-file', private_path]
+        check(cmd['argv'][1:] == args and cmd['payload'] == expected_payload and cmd['exit'] == (0 if status == 200 else 1)
+              and cmd['stderr'] == '', 'R1 exact CLI argv/payload/success or denial exit and stderr')
+        selected = [w for w in cmd['wire'] if w['method'] == method and w['path'] == path]
+        check(len(selected) == 1, 'R1 exact selected method and endpoint')
+        wire = selected[0]
+        check(wire['status'] == status and wire['request'] == request_body and wire['response'] == cmd['selected_response']
+              and json.loads(wire['response_text']) == wire['response'], 'R1 request/status/selected actual response equality')
+        discovery = [w for w in cmd['wire'] if w != wire]
+        check(len(discovery) == (0 if action == 'thread-task-final' else 1)
+              and all(w['method'] == 'GET' and w['path'] == '/api/v1/orgs' and w['request'] is None and w['status'] == 200 for w in discovery)
+              and all(cmd['entered'] <= w['entered'] <= cmd['finished'] for w in cmd['wire']), 'R1 full command wire window; only shipping org discovery')
+        if status != 200:
+            expected = {'detail': {'code':'invocation_token_consumed','status':'consumed'} if status == 409 else {'code':'not_a_participant','composer':'case_manager'}}
+            stdout = f"Error ({status}): {wire['response_text']}\n"
+        elif action == 'thread-decline':
+            expected, stdout = dict(thread_id=tid, status='declined'), f'ok: declined on {tid}\n'
+        elif action == 'thread-reply':
+            expected, stdout = dict(thread_id=tid, seq=seq, kind='message'), f'ok: reply seq={seq} on {tid}\n'
+        elif action == 'thread-dispatch':
+            expected = dict(task_id=T, team='engineering', assigned_agent='case_manager', dispatched_from_thread_id=D['thread'], system_message_seq=2, superseded_task_id=None)
+            stdout = f"ok: dispatched {T} from {D['thread']}\n"
+        elif action == 'thread-task-final':
+            expected, stdout = {'ok':True}, ''
+        else:
+            details = wire['response']
+            actual_task, results = details['task'], details['results']
+            check(all(actual_task[k] == v for k,v in dict(task_id=T, status='completed', assigned_agent='case_manager',
+                  team='engineering', brief='E05 one owned task', dispatched_from_thread_id=D['thread'], parent_task_id=None).items())
+                  and len(results) == 1 and all(results[0][k] == v for k,v in dict(task_id=T, session_id=sid, agent='case_manager',
+                  status='completed', confidence_score=90, output_summary='E05 task complete').items()), 'R1 D2 actual dispatched completed task/result summary')
+            lines = cmd['stdout'].splitlines()
+            check(all(line in lines for line in (f'Task:       {T}', 'Team:       engineering', 'Status:     completed',
+                  'Agent:      case_manager', 'Brief:      E05 one owned task', 'Results (1):',
+                  '  - [case_manager] confidence=90  E05 task complete')), 'R1 D2 shipping literal details lines')
+            expected, stdout = details, cmd['stdout']
+        check(wire['response'] == expected and cmd['stdout'] == stdout, 'R1 literal selected outcome and shipping stdout')
+
+    for group in groups:
+        settled = group['settled']
+        cmd, wires = settled['cli'], settled['wire_records']
+        check(observations['commands'][settled['command_index']] == cmd and observations['commands'].count(cmd) == 1
+              and cmd['argv'][1:] == ['threads','show','--org','alpha',group['thread'],'--json']
+              and cmd['exit'] == 0 and cmd['stderr'] == '', 'R1 named settled read canonical ledger and literal CLI')
+        check(len(wires) == 2 and [(w['method'],w['path']) for w in wires] == [('GET','/api/v1/orgs'),('GET',f"/api/v1/orgs/alpha/threads/{group['thread']}")]
+              and all(w in observations['relay'] and w['status'] == 200 and w['request'] is None and w['dropped'] is False
+                      and settled['cli_entered'] <= w['entered'] <= settled['cli_finished'] for w in wires)
+              and wires[-1]['response'] == settled['public'] == json.loads(cmd['stdout']), 'R1 settled read full canonical actual wire window')
+
+    for group, subject, recipient, body in ((N,'E05 denial venue','case_worker','E05 denial anchor'),
+                                            (D,'E05 dispatch','case_manager','E05 do one task')):
+        compose = group['compose']
+        cmd, wire = compose['command'], compose['wire']
+        check(observations['commands'].count(cmd) == 1 and wire in observations['relay'] and wire['dropped'] is False,
+              'R1 named N/D compose joins canonical command and relay')
+        check(cmd['argv'][1:] == ['threads','compose','--org','alpha','--subject',subject,'--recipients',recipient,'--body',body]
+              and cmd['exit'] == 0 and cmd['stderr'] == '' and wire['method'] == 'POST' and wire['path'] == '/api/v1/orgs/alpha/threads'
+              and wire['status'] == 200 and wire['request'] == dict(subject=subject, recipients=[recipient], body_markdown=body)
+              and wire['response'] == compose['response'], 'R1 N/D exact compose command/request/response')
+        check(observations['commands'][compose['command_index']] == cmd and len(compose['wire_records']) == 2
+              and compose['wire_records'][-1] == wire
+              and [(w['method'],w['path']) for w in compose['wire_records']] == [('GET','/api/v1/orgs'),('POST','/api/v1/orgs/alpha/threads')]
+              and compose['wire_records'][0]['request'] is None
+              and all(w in observations['relay'] and w['status'] == 200 and w['dropped'] is False
+                      and compose['entered'] <= w['entered'] <= compose['finished'] for w in compose['wire_records']),
+              'R1 N/D complete canonical wire and command-index window')
+        response = compose['response']
+        stored = next(r for r in final['threads'] if r['id'] == group['thread'])
+        check(response == dict(thread_id=group['thread'], started_at=stored['started_at'], pending_replies=[recipient]),
+              'R1 N/D original compose identity and literal pending list')
+        # Producer records the child-local formatted timestamp; independently
+        # validate its UTC offset conversion against the actual stored instant.
+        from datetime import datetime, timedelta, timezone
+        stamp = datetime.fromisoformat(response['started_at'].replace('Z', '+00:00'))
+        offset = compose['utc_offset_seconds']
+        check(type(offset) is int and abs(offset) < 86400, 'R1 compose local timezone evidence')
+        formatted = stamp.astimezone(timezone(timedelta(seconds=offset))).strftime('%Y-%m-%d %H:%M:%S')
+        check(cmd['stdout'] == f"{group['thread']}  started={formatted}  pending={[recipient]}\n",
+              'R1 full shipping founder compose stdout')
+        digest = hashlib.sha256(json.dumps(cmd['argv'][1:]).encode()).hexdigest()
+        check(len([w for w in calls if w['argv_sha256'] == digest and w['source_sha'] == row['source_sha']]) == 1,
+              'R1 N/D independent executable source/argv witness')
+
     events = json.loads((directory / "e05-browser-events.json").read_text())
     check(C["created"] in events and C["created"]["dialog_count"] == 0 and C["created"]["list_rows"] == 1, "actual dialog closure and one list row")
     check(events and events[-1]["event"] == "context-closed" and not any(e["event"] in {"pageerror","origin-bypass"} for e in events), "real browser origin/closure")
@@ -748,16 +894,88 @@ def validate_e05(row: dict, observations: dict, directory: Path) -> None:
           <= wire["delivered"] <= wire["closed"] <= C["armed"]["deadline"] <= C["armed"]["at"]+5, "single bounded hold/release timeline")
     check(len(wire["commit"]["threads"]) == len(wire["commit"]["thread_messages"]) == 1
           and wire["commit"]["thread_messages"][0]["body_markdown"] == "E05 opening\nliteral beta", "actual independent commit content")
-    check(not any(e["event"] == "compose-response" or (e["event"] == "navigation" and e["url"] == origin+f"/orgs/alpha/threads/{C['thread']}") for e in C["held_events"]), "no response/detail before release")
-    check(len([e for e in C["released_events"] if e["event"] == "navigation" and e["url"] == origin+f"/orgs/alpha/threads/{C['thread']}"]) == 1, "single real SPA detail entry")
+    check(all(isinstance(e['at'], (int, float)) and not isinstance(e['at'], bool) for e in events)
+          and all(a['at'] <= b['at'] for a,b in zip(events, events[1:])), 'R2 complete browser ledger chronological order')
+    for name, snapshot in (('held', C['held_events']), ('released', C['released_events'])):
+        indices = [i for i,e in enumerate(events) if e['event'] == 'snapshot' and e['name'] == name]
+        check(len(indices) == 1 and snapshot == events[:indices[0]+1], 'R2 actual held/released full ledger prefix equality')
+    check([e['name'] for e in events if e['event'] == 'snapshot'] == ['held','released'], 'R2 exactly two ordered snapshot markers')
+    check(wire['held'] <= C['held_events'][-1]['at'] <= C['released'] <= wire['release_observed']
+          <= response['at'] <= C['released_events'][-1]['at'], 'R2 snapshots and response bind actual proxy release interval')
+    detail = origin + f"/orgs/alpha/threads/{C['thread']}"
+    inbox = origin + '/orgs/alpha/threads'
+    # Classify EVERY navigation, including intentional revisits. An extra event
+    # anywhere in the full ledger cannot be hidden by a case snapshot.
+    navigation = [(e['event'], e['url']) for e in events if e['event'] in {'navigation','deliberate-revisit'}]
+    expected_navigation = [('navigation',inbox), ('navigation',detail)]
+    for target in (inbox, detail, detail, origin + f"/orgs/alpha/threads/{D['thread']}"):
+        expected_navigation += [('deliberate-revisit',target), ('navigation',target)]
+    check(navigation == expected_navigation, 'R2 one automatic detail entry and four explicitly paired later revisits; no extras')
+    check(not any(e['at'] < wire['release_observed'] and (e['event'] == 'compose-response'
+                  or (e['event'] == 'navigation' and e['url'] != inbox)) for e in events),
+          'R2 zero held response/detail navigation recomputed from full ledger')
+    auto_entry = [e for e in events if e['event'] == 'navigation'][1]
+    first_revisit = next(e for e in events if e['event'] == 'deliberate-revisit')
+    check(response['at'] <= auto_entry['at'] <= C['released_events'][-1]['at'] <= first_revisit['at']
+          and C['created']['url'] == detail and C['created']['list_url'] == inbox,
+          'R2 original response to automatic entry precedes every intentional revisit')
     batch = C["event_batch"]
     check(batch in events and batch["guard_sensitivity"] == "UNPROVEN"
           and [(e["id"],e["type"]) for e in batch["rows"] if e["phase"] == "before"] == [(1,"keydown"),(2,"click"),(3,"click")], "same synchronous finite input sequence; no causal guard claim")
     check(all(a["at"] <= b["at"] for a,b in zip(batch["rows"],batch["rows"][1:])), "actual DOM event ordering")
-    for view, name in zip((C["initial_view"],C["view"],D["view"]), ("e05-compose.png","e05-reply.png","e05-dispatch.png")):
-        check(view["screenshot"] == name and any(e.get("event") == "thread-view" and all(e[k] == v for k,v in view.items()) for e in events)
-              and (directory/view["screenshot"]).read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "actual browser view and screenshot content")
-    check(f"dispatched {T}" in D["view"]["text"] and f"task {T} completed" in D["view"]["text"], "both rendered system rows")
+    views = (C['initial_view'], C['view'], D['view'])
+    check([dict(event='thread-view', **v) for v in views] == [e for e in events if e['event'] == 'thread-view'],
+          'R2 all three actual view records in ledger order')
+    for view, group, count, name in zip(views, (C,C,D), (1,2,5), ('e05-compose.png','e05-reply.png','e05-dispatch.png')):
+        tid = group['thread']
+        public = group['settled']['public']
+        body = view['body']
+        check(view['screenshot'] == name and (directory/name).read_bytes().startswith(b'\x89PNG\r\n\x1a\n'),
+              'R2 named PNG bytes only; rendered semantics checked separately')
+        view_index = events.index(dict(event='thread-view', **view))
+        revisit_index = max(i for i,e in enumerate(events[:view_index]) if e['event'] == 'deliberate-revisit')
+        response_rows = [e for e in events[revisit_index+1:view_index] if e['event'] == 'thread-response'
+                         and e['url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}' and e['body'] == body]
+        check(view['url'] == origin + f'/orgs/alpha/threads/{tid}' and view['response_url'] == origin + f'/api/v1/orgs/alpha/threads/{tid}'
+              and view['method'] == 'GET' and view['status'] == 200 and response_rows
+              and response_rows[0]['method'] == 'GET' and response_rows[0]['status'] == 200,
+              'R2 rendered view joins exact thread and actual public GET response in its revisit interval')
+        check(body['thread_id'] == tid and body['subject'] == public['subject'] and body['status'] == 'open'
+              and body['turns_used'] == (1 if count == 1 else public['turns_used'])
+              and sorted(body['participants']) == sorted(public['participants']) and len(body['messages']) == count,
+              'R2 initial/reply/dispatch public identity and exact projection cardinality')
+        for actual, expected in zip(body['messages'], public['messages'][:count]):
+            check(all(actual[k] == expected[k] for k in ('seq','speaker','kind','body_markdown','attachments','system_payload')),
+                  'R2 rendered response literal message and complete system-payload projection')
+        message_rows = [e for e in events[revisit_index+1:view_index] if e['event'] == 'thread-response'
+                        and e['url'] == view['messages_url'] and e['body'] == view['messages_body']]
+        check(view['messages_url'].split('?')[0] == origin + f'/api/v1/orgs/alpha/threads/{tid}/messages'
+              and view['messages_status'] == 200 and view['messages_method'] == 'GET' and message_rows
+              and message_rows[0]['status'] == 200 and message_rows[0]['method'] == 'GET'
+              and len(view['messages_body']['messages']) == count and view['messages_body']['has_more'] is False,
+              'R2 actual browser message-page response joins displayed projection')
+        for detail_message, page_message in zip(body['messages'], view['messages_body']['messages']):
+            check(all(detail_message[k] == page_message[k] for k in ('seq','speaker','kind','body_markdown','attachments','system_payload','created_at')),
+                  'R2 detail/message-page immutable content equality; initial responder state may advance')
+        if count != 1:
+            check(view['messages_body']['messages'] == public['messages'], 'R2 settled message-page full public projection')
+        expected_bubbles = [m for m in body['messages'] if m['kind'] == 'message']
+        check(len(view['rendered_messages']) == len(expected_bubbles), 'R2 exact rendered message bubble count')
+        for rendered, message in zip(view['rendered_messages'], expected_bubbles):
+            check(rendered['visible'] is True and f"#{message['seq']} · " in rendered['header']
+                  and message['speaker'] in rendered['header']
+                  and ' '.join(rendered['body'].split()) == ' '.join(message['body_markdown'].split()),
+                  'R2 each literal reply/opening belongs to its own rendered sequence bubble')
+        if count != 1:
+            check(body == public, 'R2 settled rendered response equals full observed public projection')
+        normalized = ' '.join(view['text'].split())
+        literals = [public['subject']] + [m['body_markdown'] for m in public['messages'][:count] if m['kind'] == 'message']
+        if group is D:
+            literals += [f'dispatched {T}', f'task {T} completed · E05 task complete']
+            check([m['system_payload'] for m in body['messages'] if m['kind'] == 'system'] == systems,
+                  'R2 full D dispatched/completed payloads and summary')
+        check(all(' '.join(literal.split()) in normalized for literal in literals),
+              'R2 every full opening/reply/dispatch/followup/summary literal rendered (DOM whitespace normalized)')
     closure = [d["thread_proxy_closure"] for d in durable if "thread_proxy_closure" in d]
     check(len(closure) == 1 and closure[0]["port"] == transport["browser_port"] and not closure[0]["errors"]
           and closure[0]["workers_alive"] == closure[0]["connections"] == 0 and closure[0]["listener_alive"] is False, "bounded proxy/socket/listener closure")

@@ -126,6 +126,7 @@ class BrowserRelay:
                                 relay.held.set()
                                 if not relay.release.wait(remaining()):
                                     raise TimeoutError("original compose hold expired")
+                                record["release_observed"] = time.monotonic()
                             except Exception as exc:
                                 relay.errors.append(type(exc).__name__ + ": compose proof/hold failed")
                                 relay.release.set()
@@ -252,6 +253,7 @@ class Relay:
         self.upstream = upstream
         self.proof = proof
         self.records: list[dict] = []
+        self.capture_e05 = False
         self.armed: tuple[str, str] | None = None
         self.error: str | None = None
         relay = self
@@ -277,6 +279,12 @@ class Relay:
                     parsed = json.loads(body)
                     record = dict(path=self.path, method=self.command, body_sha256=digest,
                                   status=response.status, response=parsed, dropped=False)
+                    if relay.capture_e05:
+                        # E05 only; no headers or credentials are exported.
+                        # Controller retains this in memory until full-context
+                        # sanitation, including partial/failing observations.
+                        record.update(request=json.loads(raw) if raw else None,
+                                      response_text=body.decode(), entered=time.monotonic())
                     if (relay.armed is not None and self.command == "POST"
                             and relay.armed == (self.path, json.loads(raw).get("session_id"))):
                         relay.armed = None

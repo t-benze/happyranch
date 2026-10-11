@@ -208,3 +208,13 @@ RED/restoration/GREEN/repetition proofs remain unauthorized/unexecuted. Python
 units remain RETIRED; general integration remains SKIPPED. Daily-only schedule,
 bounds, matrix, artifacts and TASK10555 collector ownership are unchanged.
 Cancellation/late-callback/restart increments and daily acceptance remain open.
+
+E05 PR1040 R1–R3 source correction binds every named CLI receipt to its
+canonical command/instruction and actual public outcome, derives hold/navigation
+from the complete browser ledger with literal per-message rendering joins, and
+redacts full captured streams with retained credentials before byte clipping.
+Original48/total53 and A12+B25=37 source expectations remain unchanged. Dedicated
+contradictory-artifact and sanitation controls are UNAUTHORED; all behavior,
+sensitivity, proxy/guard, sanitation, delivery/persistence, closure, fit and
+protected proof remain MISSING/UNEXECUTED. This is static source correction only;
+the existing daily-only policy and all execution holds remain in effect.

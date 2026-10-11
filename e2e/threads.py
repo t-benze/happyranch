@@ -9,6 +9,7 @@ import socket
 import struct
 import time
 from pathlib import Path
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from jobs import anchor, witnesses
@@ -114,7 +115,12 @@ def command(c: Controller, provider: dict, action: str, status: int = 200, **arg
     require(receipt["exit"] == (0 if status == 200 else 1) and not receipt["timed_out"] and not receipt["output_truncated"]
             and receipt["execution_deadline"] == end - 1 and receipt["finished"] <= time.monotonic() < end
             and c.relay.error is None, "E05 real CLI exit within original deadline", receipt)
-    if action != "thread-task-read":
+    if action == "thread-task-read":
+        wire = [w for w in receipt["wire"] if w["method"] == "GET" and w["path"] == f"/api/v1/orgs/alpha/tasks/{arguments['task']}"]
+        require(len(wire) == 1 and wire[0]["status"] == 200 and wire[0]["dropped"] is False,
+                "actual followup task details response")
+        receipt["selected_response"] = wire[0]["response"]
+    else:
         if action == "thread-task-final":
             path = f"/api/v1/orgs/alpha/tasks/{provider['task']}/completion"
             expected = {"ok": True}
@@ -191,12 +197,16 @@ def reply(c: Controller, provider: dict, body: str, seq: int) -> dict:
 
 def compose(c: Controller, subject: str, recipient: str, body: str) -> dict:
     offset = len(c.relay.records)
+    entered = time.monotonic()
     result = c.cli(["threads", "compose", "--org", "alpha", "--subject", subject, "--recipients", recipient, "--body", body], relay=True)
     wire = [w for w in c.relay.records[offset:] if w["method"] == "POST" and w["path"] == "/api/v1/orgs/alpha/threads"]
     require(result.returncode == 0 and len(wire) == 1 and wire[0]["status"] == 200, "real founder thread compose")
     response = wire[0]["response"]
     require(result.stdout.split()[0] == response["thread_id"] and response["pending_replies"] == [recipient], "actual compose identity")
-    return dict(response=response, command=c.commands[-1], wire=wire[0])
+    return dict(response=response, command=c.commands[-1], wire=wire[0],
+                wire_records=list(c.relay.records[offset:]), entered=entered, finished=time.monotonic(),
+                command_index=len(c.commands)-1,
+                utc_offset_seconds=int(datetime.fromisoformat(response["started_at"].replace("Z", "+00:00")).astimezone().utcoffset().total_seconds()))
 
 
 def settled_thread(c: Controller, thread: str, subject: str, bodies: list[tuple], providers: list[dict], turns: int) -> dict:
@@ -223,7 +233,10 @@ def settled_thread(c: Controller, thread: str, subject: str, bodies: list[tuple]
     require(not snapshot["thread_reply_exchange"] and not snapshot["thread_exchange_deferrals"]
             and not snapshot["thread_reply_breaker_episodes"] and not snapshot["thread_reply_breaker_receipts"], "no exchange/breaker leftovers")
     public = c.get(f"/api/v1/orgs/alpha/threads/{thread}")
+    offset = len(c.relay.records)
+    entered = time.monotonic()
     result = c.cli(["threads", "show", "--org", "alpha", thread, "--json"], relay=True)
+    finished = time.monotonic()
     require(result.returncode == 0 and json.loads(result.stdout) == public, "actual thread CLI/public projection")
     require(public["subject"] == subject and public["turns_used"] == turns
             and len(public["participants"]) == len(set(public["participants"]))
@@ -231,7 +244,9 @@ def settled_thread(c: Controller, thread: str, subject: str, bodies: list[tuple]
     messages_page = c.get(f"/api/v1/orgs/alpha/threads/{thread}/messages")
     require(messages_page["messages"] == public["messages"] and messages_page["has_more"] is False
             and not public["reply_delivery"] and not messages_page["reply_delivery"], "public full messages and settled delivery")
-    return dict(content=snapshot, public=public, messages_page=messages_page, cli=c.commands[-1], at=time.monotonic())
+    return dict(content=snapshot, public=public, messages_page=messages_page, cli=c.commands[-1],
+                wire_records=list(c.relay.records[offset:]), command_index=len(c.commands)-1,
+                cli_entered=entered, cli_finished=finished, at=time.monotonic())
 
 
 def negative(c: Controller, provider: dict, action: str, status: int, **arguments) -> dict:
@@ -250,12 +265,16 @@ def negative(c: Controller, provider: dict, action: str, status: int, **argument
 def exercise(c: Controller) -> None:
     require(len(c.results) == 48 and len(c.starts) == 30, "full unchanged 48-case prefix")
     c.threads_active = True
+    c.relay.capture_e05 = True
     entered = time.monotonic()
     record = dict(source_sha=c.revision, entered=entered, groups=[], variants=list(VARIANTS), prefix_command_count=len(c.commands))
     record["source_hashes"] = {name: hashlib.sha256((c.source/name).read_bytes()).hexdigest() for name in
         ("e2e/threads.py", "e2e/thread_provider.py", "e2e/provider.py", "e2e/controller.py", "e2e/browser.py",
          "e2e/transport.py", "e2e/oracles.py", "e2e/aggregate.py", "tests/integration/fake_claude.sh", "cli/commands/threads.py",
-         "runtime/daemon/routes/threads.py", "runtime/daemon/thread_runner.py", "web/src/shared/threads/NewThreadDialog.tsx")}
+         "runtime/daemon/routes/threads.py", "runtime/daemon/thread_runner.py", "web/src/shared/threads/NewThreadDialog.tsx", "cli/_shared.py", "cli/commands/tasks.py",
+         "runtime/daemon/routes/tasks.py", "web/src/features/threads/ThreadsPage.tsx",
+         "web/src/design-system/patterns/MessageBubble.tsx", "web/src/design-system/patterns/Markdown.tsx",
+         "web/src/design-system/patterns/AgentChip.tsx")}
     c.durable.append(dict(threads_cases=record))
     previous = next(d["jobs_anchor"] for d in c.durable if d.get("jobs_anchor", {}).get("name") == "final-drain-B")
     require(previous["total"] == 18 and previous["projection"]["receipts"]["window_size"] + 7 <= 64, "B18 capacity before E05")
@@ -298,7 +317,7 @@ def exercise(c: Controller) -> None:
             browser.thread_page.wait_for_timeout(10)
             require(not proxy.errors, "original response hold", proxy.errors)
         require(proxy.held.is_set(), "real response entered hold")
-        group["held_events"] = list(browser.thread_events)
+        group["held_events"] = browser.thread_snapshot("held")
         require(len([r for r in browser.thread_events if r["event"] == "compose-request"]) == 1
                 and not any(r["event"] == "compose-response" for r in browser.thread_events)
                 and browser.thread_page.url == browser.thread_base + "/orgs/alpha/threads", "one POST/no detail while HELD")
@@ -307,7 +326,7 @@ def exercise(c: Controller) -> None:
         group["released"] = time.monotonic()
         proxy.release.set()
         browser.thread_page.wait_for_url(browser.thread_base + f"/orgs/alpha/threads/{C}", timeout=c.remaining(5)*1000)
-        group["released_events"] = list(browser.thread_events)
+        group["released_events"] = browser.thread_snapshot("released")
         require(proxy.matches == 1 and not proxy.errors, "original response delivered once")
         group["created"] = browser.thread_created(C)
         group["initial_view"] = browser.thread_view(C, "E05 compose race", ["E05 opening", "literal beta"], "compose")
@@ -333,7 +352,7 @@ def exercise(c: Controller) -> None:
         previous = anchor(c, "E05:C", 21, previous)
         group["anchor"] = previous
         group["settled"] = settled_thread(c, C, "E05 compose race", [(1,"founder","message",OPENING),(2,"case_manager","message",REPLY)], group["providers"], 2)
-        group["view"] = browser.thread_view(C, "E05 compose race", ["E05 opening", "E05 reply", "received"], "reply")
+        group["view"] = browser.thread_view(C, "E05 compose race", ["E05 opening", "literal beta", "E05 reply", "@case_worker received"], "reply")
         group["finished"] = time.monotonic()
 
         begin = time.monotonic()

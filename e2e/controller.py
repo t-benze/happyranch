@@ -86,7 +86,7 @@ class Controller:
             self.observer_error = repr(exc)
 
     def sanitize(self, text: str) -> str:
-        for secret in self.secrets | {self.token}:
+        for secret in sorted(self.secrets | {self.token}, key=len, reverse=True):
             if secret:
                 text = text.replace(secret, "[REDACTED]")
         return text
