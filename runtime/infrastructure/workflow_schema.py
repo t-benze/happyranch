@@ -1697,6 +1697,8 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         start = ddl.index('CREATE TABLE workflow_draft_dispatch_intents')
         end = ddl.index('CREATE TABLE workflow_draft_dispatch_events')
         _execute_ddl(conn, ddl[start:end])
+        conn.execute('CREATE INDEX workflow_draft_activation_idx '
+                     'ON workflow_draft_dispatch_intents(activation_id,attempt_sequence)')
         columns = ','.join(r[1] for r in conn.execute('PRAGMA table_info(workflow_draft_dispatch_intents)'))
         conn.execute(f'INSERT INTO workflow_draft_dispatch_intents(rowid,{columns}) SELECT * FROM revision_intents')
         _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)

@@ -458,7 +458,9 @@ async def stage_agent_review(org: OrgDep, request: Request,
     command = decode_stage_command(bytes(raw))
     try:
         acknowledgement = await org.workflow_reviews.stage_review(session_id=pairs[0][1], command=command)
-        model = ArtifactReviewStageAck if command['format'] == 'workflow-review-stage-command@2' else ReviewStageAck
+        model = {'workflow-review-stage-command@1': ReviewStageAck,
+                 'workflow-review-stage-command@2': ArtifactReviewStageAck,
+                 'workflow-review-stage-command@3': RevisionReviewStageAck}[command['format']]
         model.model_validate(acknowledgement)
         return acknowledgement
     except ERRORS as exc:

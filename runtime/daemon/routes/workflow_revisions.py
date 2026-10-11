@@ -73,9 +73,18 @@ WRITE_RESPONSES = dict(READ_RESPONSES)
 WRITE_RESPONSES[200] = {'model': DocumentRevisionReceipt, 'description': 'Exact stable operation replay with live current projection'}
 
 
+def owner_command_schema() -> dict:
+    schema = DocumentRevisionCommand.model_json_schema()
+    # This request-body schema is nested in OpenAPI; root $defs pointers
+    # cannot resolve its local AuthorityPin. Inline the same closed definition.
+    definitions = schema.pop('$defs')
+    schema['properties']['authority'] = definitions['AuthorityPin']
+    return schema
+
+
 @router.post('/workflows/instances/{instance_id}/revisions', status_code=201,
     response_model=DocumentRevisionReceipt, responses=WRITE_RESPONSES,
-    openapi_extra={'requestBody': {'required': True, 'content': {'application/json': {'schema': DocumentRevisionCommand.model_json_schema()}}}})
+    openapi_extra={'requestBody': {'required': True, 'content': {'application/json': {'schema': owner_command_schema()}}}})
 async def start_revision(org: OrgDep, instance_id: str, request: Request, response: Response,
                          has_bearer: bool = optional_bearer()) -> dict:
     principal = human_principal(org, has_bearer)
