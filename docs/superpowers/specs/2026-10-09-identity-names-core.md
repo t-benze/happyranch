@@ -538,6 +538,10 @@ that ordinary OrgState attachment installs.
 
 A10 seeds the default configured code_reviewer as an active worker before
 DaemonState construction, then checks actual authority readiness before launch.
+The direct ASGI fixture also invokes the shipping daemon token initializer in
+its asserted isolated tmp_home before publishing the port, just as the daemon
+entrypoint does. It records only token readiness, never the token value; real
+CLI authentication and callback-route authority remain unchanged.
 It waits for either a genuine held callback or the actual executor return, and
 retains bounded return code/error/session/report or exception diagnostics in
 ownership.json on failure. Each error message is capped at 2048 characters; the
@@ -552,8 +556,12 @@ data; its retired unit helper import is removed. It no longer claims that
 helper's joined workflow graph. The seventeen-selector/twelve-scenario runner
 is unchanged. No old 233-case execution is required or added.
 
-These corrections are source changes only until an attributed disposable run
-proves the integrated candidate. Historical attempt3 remains 16/17 PASS with
-A10 callback timeout; its missing callback/denial tail and unvisited Codex and
-OpenCode cases remain absent. Unit source and gates are RETIRED, general
+Run38102419156 attempt1 at f3abbfed1 executed the integrated reviewer/readiness
+and diagnostic repair: 16/17 passed, with A10 failing before callback arrival.
+Its bounded executor result proves the real CLI exited1 because the disposable
+daemon token was absent; authority readiness and cleanup succeeded. The token
+initialization correction remains unverified until a new attributed disposable
+run reaches the genuine callback/session/result and forged-label denial tail
+for all three providers. Historical attempt3 remains 16/17 with its timeout;
+neither failure is erased or relabeled. Unit source and gates are RETIRED, general
 integration is SKIPPED, and PR1025 is not an established replacement gate.

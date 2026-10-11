@@ -742,7 +742,8 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
         ownership={'parent_pid':os.getpid(),'case':case,'sessions_limit':16,'aggregate_limit':64,
                    'process_limit':128,'memory_bytes':4*1024**3,'writable_bytes':512*1024**2,
                    'deadline_seconds':30,'plan_sha256':hashlib.sha256(plan.read_bytes()).hexdigest(),
-                   'authority_ready_before_launch':False,'callback_arrived':False,
+                   'authority_ready_before_launch':False,'daemon_token_ready':False,
+                   'callback_arrived':False,
                    'worker_joined':False,'server_closed':False}
         (location/'ownership.json').write_text(json.dumps(ownership))
         state=DaemonState.from_runtime(runtime,Settings());org=state.orgs['alpha']
@@ -759,6 +760,13 @@ def test_a10_bound_callback_continuity(tmp_path,tmp_home,monkeypatch,fake_claude
             assert len(raw.encode()) <= 65536, 'A10 diagnostic receipt exceeds bound'
             (location/'ownership.json').write_text(raw)
         try:
+            # The direct ASGI fixture skips __main__.main, which initializes
+            # the token before publishing the port. Use that same initializer
+            # only in tmp_home; the real CLI and route still authenticate it.
+            assert daemon_paths.daemon_home().resolve() == tmp_home.resolve()
+            daemon_paths.ensure_token()
+            assert daemon_paths.read_token(), 'disposable daemon token absent'
+            ownership['daemon_token_ready'] = True
             org.workflow_authority.verify_admission_ready()
             ownership['authority_ready_before_launch'] = True
             ContextBuilder(org.settings,paths,slug='alpha').ensure_workspace_ready(root/'workspaces/maker','maker','You are maker.',provider=case)
