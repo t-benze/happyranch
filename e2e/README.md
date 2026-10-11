@@ -95,8 +95,8 @@ Target is 600s, action cutoff720s, cleanup reserve60s, evidence reserve120s,
 hard cap900s including dependency installation and build. The workflow starts
 the monotonic clock before checkout/tool setup. No budget exhaustion becomes a
 skip. Every enumerated variant must be present with PASS, and failed/missing
-matrix jobs fail the stable `Product E2E` aggregate. The aggregate's bounded
-controls prove refusal of missing cells, skips, failed/missing variants, wrong
+matrix jobs fail the stable `Daily Product E2E Health` aggregate. The aggregate's
+bounded controls prove refusal of missing cells, skips, failed/missing variants, wrong
 SHA, failed jobs and failed cleanup; these controls are not product evidence.
 
 ## Accepted case record
@@ -180,12 +180,15 @@ and attributable proof are complete.
 
 ## Enforcement and uncovered work
 
-The YAML defines triggers and a stable aggregate; it does not configure GitHub
-rulesets. Required-check status must be read back independently at exact PR and
-merge heads. Existing Web Node24, Linux Canonical with actual callback, macOS15
-Canonical, Docs and applicable real hostile lab gates remain required. No old
-unit or full historical G-run allocation is renewed. `local_ci.sh all` remains
-retained Web only and cannot establish this lane's success.
+The YAML defines the daily schedule and health aggregate; it does not configure
+GitHub rulesets. Only `Source Boundary Lint` and `Web Lint (Node 24)` are automated
+merge checks, both unconditional at the final PR head and exact merge on main;
+read their status back independently. `local_ci.sh all` runs source-boundary
+lint plus Web static checks, and cannot establish Product E2E success. Docs and
+the real hostile lab are manual-only; retained canonical/platform/native and
+actual CLI callback sources keep their fences and are not automated merge gates.
+Independent full review, scoped QA, normal hooks and manager guarded merge remain
+required. No old unit or full historical G-run allocation is renewed.
 
 Jobs approval/rejection/failure/single-resume, threads/replay, cancellation/late
 callback, actual daemon restart/recovery, PR1014 compatibility and authentic
@@ -193,8 +196,11 @@ memory thresholds remain root-owned uncovered work. Provider hold and response
 loss do not establish restart/recovery. No merge or deployment follows from a
 successful run. Deletion PR1024 is merged at
 `5e87e778c6968338a12bd5cd65d461e5699836be`; this lane preserves that deletion and
-all current product/Web/shared assets. Main/release3.13 execution remains future
-work, not evidence supplied by a two-cell PR run.
+all current product/Web/shared assets. The current schedule-only baseline covers
+Python3.12/3.13/3.14, with TERM3.12/INT3.14 launcher diagnostics at 19:00 UTC /
+03:00 Asia/Shanghai from immutable default-branch source. First daily execution
+is PENDING. Historical TASK10532/run38035241095 at `afb46cbb6` supplies only the
+3.12/3.14 baseline and launcher cleanup, not current-head or daily evidence.
 
 ## Cadence delivery and remaining test-authoring evidence (THR-291 seq69)
 
