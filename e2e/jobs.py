@@ -369,9 +369,19 @@ def exercise(c: Controller) -> None:
                     record["anchors"].append(anchor(c, variant + ":pre-second-action", 7 + 2 * index, s1))
             second = c.start("alpha", task, "case_manager")
             record["starts"].append(second)
-            record["live_s2"] = c.stores["alpha"].jobs(task)
-            require(record["live_s2"]["tasks"][0]["current_session_id"] == second["session"] and len(record["live_s2"]["results"]) == 1,
-                    "outcome reads precede final S2 callback")
+            live = dict(source_sha=c.revision, provider=dict(second), entered=time.monotonic())
+            record["live_s2"] = live  # Retain a partial frame before any assertion.
+            live["snapshot"] = c.stores["alpha"].jobs(task)
+            live.update(observed_start=identity(second["pid"]), finished=time.monotonic())
+            snap = live["snapshot"]
+            require(len(snap["tasks"]) == 1 and snap["tasks"][0]["id"] == task
+                    and snap["tasks"][0]["status"] == "in_progress"
+                    and snap["tasks"][0]["current_session_id"] == second["session"]
+                    and snap["results"] == record["parked"]["results"]
+                    and len(snap["results"]) == 1 and snap["results"][0]["status"] == "blocked"
+                    and snap["results"][0]["session_id"] == first["session"]
+                    and live["observed_start"] == second["pid_start"],
+                    "live S2 retains only the historical blocked S1 result before outcome reads")
             for job in record["jobs"]:
                 reads = {}
                 job["reads"] = reads
@@ -386,13 +396,14 @@ def exercise(c: Controller) -> None:
                 require(receipt["output"] == expected_output and json.loads(reads["output"]["stdout"]) == receipt, "full actual structured output")
                 require(reads["tail"]["stdout"] == job["out"] and json.loads(reads["wait"]["stdout"]) == dict(status=raw["status"], timed_out=False), "tail/wait outcome truth")
                 show = reads["show"]["stdout"]
-                require(raw["status"] in show, "human CLI status")
+                require(show.splitlines() and show.splitlines()[0] == f"{job['id']}   {raw['status']}   submitted {raw['created_at']}",
+                        "human CLI first-line ID/status/created timestamp")
                 if job["code"] is not None:
-                    require(f"Exit code:    {job['code']}" in show, "human CLI literal exit")
+                    require(f"Exit code:    {job['code']}" in show.splitlines(), "human CLI literal exit")
                 if job["code"] == -9:
-                    require("Reason:       timeout" in show, "human CLI timeout reason")
+                    require("Reason:       timeout" in show.splitlines(), "human CLI timeout reason")
                 if job["code"] is None:
-                    require("E04_REJECTED_BY_REVIEW" in show, "human CLI rejection reason")
+                    require("Reject reason: E04_REJECTED_BY_REVIEW" in show.splitlines(), "human CLI rejection reason")
             final = c.provider_cli(second, "jobs-final", payload=dict(status="completed", confidence=90, summary=summary,
                                     decision=dict(action="done", summary=summary)))
             record["final_callback"] = final

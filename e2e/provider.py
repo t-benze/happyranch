@@ -44,17 +44,20 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
         payload = None
     else:
         raise RuntimeError("unexpected jobs instruction")
-    remaining = min(10, instruction["deadline"] - time.monotonic())
+    remaining = instruction["execution_deadline"] - time.monotonic()
     if remaining <= 0:
         raise RuntimeError("provider common deadline exhausted")
     env = dict(os.environ, HAPPYRANCH_DAEMON_HOME=str(root / "client"))
     argv = [str(callback), *args]
     entered = time.monotonic()
     process = subprocess.Popen(argv, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    timed_out = False
     try:
         child_start = Path(f"/proc/{process.pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
-        out, err = process.communicate(timeout=remaining)
+        # Setup/spawn time consumes the same absolute child allowance.
+        out, err = process.communicate(timeout=max(0, instruction["execution_deadline"] - time.monotonic()))
     except subprocess.TimeoutExpired as exc:
+        timed_out = True
         # Preserve partial streams; the existing containment/outer owner retains
         # the live child. A timeout never becomes exit0 or a successful case.
         out, err = exc.stdout or "", exc.stderr or ""
@@ -62,6 +65,7 @@ def jobs_command(instruction: dict, binding: dict) -> dict:
         err = err.decode(errors="replace") if isinstance(err, bytes) else err
     return dict(action=action, operation=instruction.get("operation"), argv=argv, exit=process.returncode,
                 stdout=out, stderr=err, payload=payload, entered=entered, finished=time.monotonic(),
+                timed_out=timed_out, execution_deadline=instruction["execution_deadline"],
                 provider=binding, child_pid=process.pid, child_start=child_start,
                 python=sys.executable, source_sha=manifest["revision"], callback_sha256=manifest["callback_sha256"])
 
@@ -90,7 +94,7 @@ def main() -> None:
             receipt = jobs_command(instruction, row)
             stream.write((json.dumps(receipt) + "\n").encode())
             stream.flush()
-            if receipt["exit"] != 0:
+            if receipt["exit"] != 0 or receipt["timed_out"]:
                 raise RuntimeError("real provider CLI failed")
             final = instruction["action"] in {"jobs-block", "jobs-final"}
 

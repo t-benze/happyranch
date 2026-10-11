@@ -146,6 +146,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
     The metadata-only controls above do not establish this oracle's sensitivity.
     """
     import hashlib
+    from urllib.parse import parse_qs, urlsplit
 
     def check(condition: bool, message: str) -> None:
         if not condition:
@@ -267,6 +268,25 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
               confidence=90, summary="waiting for genuine IDs", waiting_on_job_ids=[j["id"] for j in jobs]), "real blocked callback payload")
         check(record["parked"]["tasks"][0]["block_kind"] == "blocked_on_job"
               and record["parked"]["results"][0]["status"] == "blocked", "S1 parked durable evidence")
+        live = record["live_s2"]
+        live_snapshot = live["snapshot"]
+        check(live["source_sha"] == row["source_sha"] and live["provider"] == second
+              and live["observed_start"] == second["pid_start"] is not None
+              and checkpoints[1]["finished"] < live["entered"] <= live["finished"]
+              < record["final_callback"]["entered"], "source-bound live S2 frame before callback")
+        check(len(live_snapshot["tasks"]) == 1 and len(live_snapshot["results"]) == 1,
+              "live S2 one task and one historical result")
+        live_task, blocked = live_snapshot["tasks"][0], live_snapshot["results"][0]
+        check(live_task["id"] == blocked["task_id"] == task and live_task["status"] == "in_progress"
+              and live_task["current_session_id"] == second["session"]
+              and live_task["orchestration_step_count"] == 2 and live_task["completed_at"] is None
+              and live_task["block_kind"] is None and live_task["parent_task_id"] is None
+              and json.loads(live_task["blocked_on_job_ids"]) == ids
+              and blocked["status"] == "blocked" and blocked["session_id"] == first["session"]
+              and blocked["agent"] == "case_manager" and live_snapshot["results"] == record["parked"]["results"],
+              "live S2 binding with unchanged blocked S1 result")
+        check(live_snapshot["jobs"] == sorted([j["oracle"]["row"] for j in jobs], key=lambda j: j["id"]),
+              "live S2 durable job outcomes")
         for job in jobs:
             all_jobs.append(job["id"])
             label = (["OK"], ["REJECT"], ["EXIT7"], ["TIMEOUT"], ["A", "B"], ["B", "A"])[index][jobs.index(job)]
@@ -307,12 +327,73 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
             check([o["text"] for o in job["oracle"]["outputs"]] == [job["out"], job["err"]]
                   and [o["bytes"] for o in job["oracle"]["outputs"]] == [len(job["out"].encode()), len(job["err"].encode())], "literal output file content")
             reads = job["reads"]
-            receipt = json.loads(reads["receipt"]["stdout"])
-            check(receipt["authentication"] == dict(task_id=task, session_id=second["session"])
-                  and all(raw[k] == value for k, value in receipt["job"].items()) and receipt["output"] == output
-                  and json.loads(reads["output"]["stdout"]) == receipt
-                  and reads["tail"]["stdout"] == job["out"]
-                  and json.loads(reads["wait"]["stdout"]) == dict(status=status, timed_out=False), "real live-S2 receipt/output/tail/wait")
+            check(set(reads) == {"show", "receipt", "output", "tail", "wait"}, "all five declared read operations")
+            # Shipping routes expose the full JobRecord for show/wait, and a
+            # closed identity for receipt/output. Build both from the raw row,
+            # never from whichever fields the CLI happened to return.
+            detail = dict(raw, review_required=bool(raw["review_required"]), persistent=bool(raw["persistent"]))
+            receipt = dict(authentication=dict(task_id=task, session_id=second["session"]),
+                           job={k: raw[k] for k in ("id", "task_id", "agent_name", "title", "rationale", "script_text",
+                                "interpreter", "cwd_hint", "cwd_resolved", "status", "exit_code", "reason", "duration_ms",
+                                "created_at", "started_at", "finished_at")}, output=output)
+            tail = dict(stream="stdout", lines=job["out"].splitlines())
+            expected_bodies = dict(show=detail, receipt=receipt, output=receipt, tail=tail,
+                                   wait=dict(detail, timed_out=False))
+            previous_read_end = live["finished"]
+            for operation in ("receipt", "show", "output", "tail", "wait"):
+                command = reads[operation]
+                check(command["action"] == "jobs-read" and command["operation"] == operation
+                      and command["provider"] == {k: second[k] for k in ("task", "session", "agent", "org", "pid")}
+                      and previous_read_end <= command["entered"] <= command["finished"] < record["final_callback"]["entered"],
+                      "actual live S2 ordered read identity/time")
+                previous_read_end = command["finished"]
+                verb = "show" if operation == "receipt" else operation
+                argv = ["jobs", verb, job["id"], "--org", "alpha"]
+                if operation in {"receipt", "output"}:
+                    argv += ["--json", "--task-id", task, "--session-id", second["session"]]
+                if operation == "wait":
+                    argv += ["--timeout-seconds", "1"]
+                if operation in {"tail", "wait"}:
+                    argv += ["--task-id", task, "--session-id", second["session"]]
+                check(command["argv"][1:] == argv, "shipping read argv")
+                suffix = "" if operation == "show" else "/receipt" if operation in {"receipt", "output"} else "/" + operation
+                query = {} if operation == "show" else dict(task_id=[task], session_id=[second["session"]])
+                if operation == "output":
+                    query.update(stream=["both"], max_bytes=["1048576"])
+                elif operation == "tail":
+                    query.update(stream=["stdout"], lines=["50"])
+                elif operation == "wait":
+                    query.update(timeout_seconds=["1"])
+                # Org discovery stays in wire evidence but cannot satisfy a
+                # job read. Count only the job operation, not all requests.
+                wire = [w for w in command["wire"] if "/jobs/" in urlsplit(w["path"]).path]
+                check(len(wire) == 1, "one actual job operation per read")
+                actual = wire[0]
+                url = urlsplit(actual["path"])
+                check(actual["method"] == ("POST" if operation == "wait" else "GET")
+                      and url.path == f"/api/v1/orgs/alpha/jobs/{job['id']}{suffix}"
+                      and not url.scheme and not url.netloc and not url.fragment
+                      and parse_qs(url.query, keep_blank_values=True, strict_parsing=True) == query
+                      and actual["status"] == 200 and actual["dropped"] is False
+                      and actual["response"] == expected_bodies[operation], "shipping read HTTP200/query/actual body vs durable row")
+                if operation in {"receipt", "output"}:
+                    check(json.loads(command["stdout"]) == actual["response"], "CLI JSON equals actual receipt response")
+                elif operation == "tail":
+                    check(command["stdout"] == "".join(line + "\n" for line in actual["response"]["lines"]) == job["out"],
+                          "CLI tail equals actual response and durable output")
+                elif operation == "wait":
+                    check(json.loads(command["stdout"]) == dict(status=actual["response"]["status"], timed_out=False),
+                          "CLI wait equals actual terminal response")
+                else:
+                    lines = command["stdout"].splitlines()
+                    check(bool(lines) and lines[0] == f"{job['id']}   {status}   submitted {raw['created_at']}",
+                          "human show first-line ID/status/timestamp, independent of title")
+                    if code is not None:
+                        check(f"Exit code:    {code}" in lines, "human show literal exit")
+                    if code == -9:
+                        check("Reason:       timeout" in lines, "human show timeout reason")
+                    if code is None:
+                        check("Reject reason: E04_REJECTED_BY_REVIEW" in lines, "human show rejection reason")
             audits = job["oracle"]["audits"]
             terminal = "job_rejected" if code is None else "job_run_failed" if code == -9 else "job_run_completed"
             check([a["action"] for a in audits] == (["job_submitted", terminal] if code is None else ["job_submitted", "job_run_started", terminal])
@@ -340,6 +421,18 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
         snap = record["final_snapshot"]
         check(len(snap["tasks"]) == 1 and len(snap["results"]) == 2 and [r["status"] for r in snap["results"]] == ["blocked", "completed"]
               and [r["session_id"] for r in snap["results"]] == [first["session"], second["session"]], "actual final two-generation results")
+        check(blocked == snap["results"][0] and all(a in snap["audit"] for a in live_snapshot["audit"]),
+              "live S1 result/audit content retained through final S2 consumption")
+        live_actions = {k: [a for a in live_snapshot["audit"] if a["action"] == k] for k in
+                        ("session_start", "session_end", "completion_report", "task_blocked_on_jobs", "task_resumed_from_jobs")}
+        check([len(live_actions[k]) for k in live_actions] == [2, 1, 1, 1, 1]
+              and [json.loads(a["payload"])["session_id"] for a in live_actions["session_start"]]
+                  == [first["session"], second["session"]]
+              and json.loads(live_actions["completion_report"][0]["payload"])["session_id"] == first["session"]
+              and all(a["task_id"] == task for rows in live_actions.values() for a in rows)
+              and live_actions["completion_report"][0]["id"] < live_actions["task_blocked_on_jobs"][0]["id"]
+                  < live_actions["task_resumed_from_jobs"][0]["id"] < live_actions["session_start"][1]["id"],
+              "captured natural S2 start after consumed S1/wake and before S2 completion")
         task_row = snap["tasks"][0]
         check(task_row["status"] == "completed" and task_row["completed_at"] and task_row["parent_task_id"] is None
               and task_row["orchestration_step_count"] == 2 and task_row["current_session_id"] == second["session"]
@@ -374,6 +467,7 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
               and rendered["screenshot"] == f"e04-task-{index}.png" and (directory / rendered["screenshot"]).is_file(), "rendered final task/Recall")
         own = commands[record["commands_begin"]:record["commands_end"]]
         check(own and own[-1] == record["final_callback"] and own[-1]["action"] == "jobs-final"
+              and own[-1]["payload"]["task_id"] == task and own[-1]["payload"]["session_id"] == second["session"]
               and "waiting_on_job_ids" not in own[-1]["payload"]
               and own[-1]["payload"]["summary"] == snap["results"][1]["output_summary"]
               and json.loads(snap["results"][1]["decision_json"]) == own[-1]["payload"]["decision"], "last real final callback")
@@ -388,13 +482,17 @@ def validate_e04(row: dict, observations: dict, browser: list[dict], directory: 
     attempts = observations["provider_attempts"]
     check(len(attempts) == len(commands) and [a["command_index"] for a in attempts] == list(range(len(commands)))
           and all(a["entered"] <= a["finished"] and a["provider"]["session"] == c["provider"]["session"]
-                  and a["instruction"]["action"] == c["action"] for a, c in zip(attempts, commands)), "all CLI attempts accounted")
+                  and a["instruction"]["action"] == c["action"]
+                  and c["execution_deadline"] == a["instruction"]["execution_deadline"] == a["instruction"]["deadline"] - 1
+                  and a["entered"] <= c["entered"] <= c["finished"] <= a["finished"] < a["instruction"]["deadline"]
+                  <= a["entered"] + 10 for a, c in zip(attempts, commands)), "all CLI attempts accounted")
     calls = [w for w in final_witness[0] if w["kind"] == "callback"]
     stubs = [w for w in final_witness[0] if w["kind"] == "stub"]
     check(len(calls) == len(observations["commands"]) + len(commands) and len(stubs) == 30
           and all(w["source_sha"] == row["source_sha"] for w in calls + stubs), "all authentic source-bound executable witnesses")
     for command in commands:
-        check(command["exit"] == 0 and command["source_sha"] == row["source_sha"] and command["entered"] <= command["finished"]
+        check(command["exit"] == 0 and command["timed_out"] is False and command["source_sha"] == row["source_sha"]
+              and command["entered"] <= command["finished"]
               and command["wire"] and all(w in observations["relay"] and w["dropped"] is False for w in command["wire"]), "actual CLI/wire record")
         if command["action"] in {"jobs-block", "jobs-final"}:
             callbacks = [w for w in command["wire"] if w["method"] == "POST" and w["path"] == f"/api/v1/orgs/alpha/tasks/{command['provider']['task']}/completion"]

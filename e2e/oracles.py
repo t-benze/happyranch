@@ -41,7 +41,7 @@ class Store:
             "SELECT id,task_id,agent_name,title,rationale,script_text,interpreter,cwd_hint,"
             "status,exit_code,reason,stdout_head,stderr_head,stdout_path,stderr_path,"
             "duration_ms,started_at,finished_at,reviewed_at,reviewed_by,reject_reason,"
-            "cwd_resolved,max_runtime_seconds,review_required,persistent,created_at "
+            "cwd_resolved,max_runtime_seconds,max_output_bytes,review_required,persistent,created_at "
             "FROM jobs WHERE task_id=? ORDER BY id", (task,))
         return snapshot
 

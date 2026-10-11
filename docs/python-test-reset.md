@@ -172,6 +172,13 @@ owned process oracles. BootA12 is archived across the existing Pause restart;
 bootB closes18, cumulative30 providers, alpha19tasks29results/beta1/1, eight
 jobs/seven script starts. Actual-content aggregate validation reads observation
 and browser artifacts and rechecks serial receipt windows and outcome joins.
+Each jobs read is joined to its shipping method, job URL/query, HTTP200 and
+actual response/CLI content against the durable row. A source-timed live-S2
+snapshot must retain exactly the blocked S1 result before reads/final callback;
+human show must match the exact first ID/status/timestamp line. CLI subprocess
+expiry precedes the original bounded caller deadline by one second to deliver
+partial timeout evidence through the existing sanitized exporter. These source
+corrections have no behavioral, persistence, sanitation or fit proof yet.
 
 The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
 carry all four authoring answers and consumer mapping. Source/static checks do

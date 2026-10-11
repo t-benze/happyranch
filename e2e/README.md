@@ -400,7 +400,25 @@ S2 runs show/receipt/output/tail/wait, then exactly one completed/done callback
 as its final CLI action and naturally exits. Read-command exit0 never means
 job success. `Controller.provider_cli` retains command/argv/child PID-start/
 parent PID/source/interpreter/payload/HTTP receipts. Existing org discovery is
-retained and reconciled without assuming one request per read. Completed-only
+retained and reconciled without assuming one request per read. For each of all
+six variants, `validate_e04` requires the shipping method, exact alpha/job path,
+query (including genuine S2 binding), literal HTTP200 and actual body: human
+show GET detail, JSON show/output GET receipt, tail GET and wait POST. It
+compares full detail/wait rows (including the captured output cap), the closed
+receipt identity and exact output/tail bytes against raw durable evidence;
+CLI JSON/text must agree with those responses. Discovery-only or error wire
+cannot satisfy a job read. `jobs.exercise` and the aggregate both require the
+first human-show line to equal returned ID, literal status and created timestamp;
+a completed/failed word in the title cannot substitute. Independent literal
+exit7, timeout/-9/reason and rejection-reason lines remain required.
+
+The live-S2 frame now retains source, actual provider identity/PID-start and
+snapshot entry/finish times. The aggregate requires one in-progress task bound
+to S2, exactly the unchanged blocked S1 result, literal terminal job rows and
+the natural S1-consumption → wake → S2-start audit chain, with no S2 end/result.
+Its snapshot must precede all actual S2 reads and the final callback, and its
+result/audit rows must reconcile with the final durable snapshot. Missing or
+contradictory live frames fail. Completed-only
 `Store.result` is not used for S1; `Store.jobs_parked` and `jobs.final_task`
 inspect literal blocked/completed results and original historical wait IDs.
 
@@ -421,19 +439,31 @@ Evidence/control authoring records (all four answers; production seam NO):
 
 | Named fixture/control or consumer | Contract / assertion mapping | Credible regression; nearest coverage/gap |
 | --- | --- | --- |
-| Provider jobs protocol + wrapper child witness | `jobs_command`/`provider_cli`/final witness reconciliation enforce actual child PID, parent, argv digest, source and genuine SID; block/final last-CLI rule. | Controller impersonation or post-final CLI; existing exit-only provider covers neither. |
+| Provider jobs protocol + wrapper child witness | `jobs_command`/`provider_cli` order absolute child/exchange deadlines with one-second receipt delivery room, append partial timeout evidence before refusal, bind actual child PID/parent/argv/source/SID and enforce block/final last-CLI rule. | Equal caller/child timeouts lose streams/identity; controller impersonation or post-final CLI. Exit-only provider lacks these command/evidence boundaries; persistence and sensitivity are unexecuted. |
 | Owned submitted-script socket/sentinel | `pending`/`run_script` bind exact script/token/job to SO_PEERCRED, E2E_ROOT, PID/start/PGID, natural EOF/closure and untruncated streams. | Launch before approval, wrong peer, controller substituting timeout; baseline provider socket is a different process family. |
 | Passive observer + boot/window records | `anchor`, passive Pause archive hooks, unchanged baseline/Pause boundary assertions and `aggregate.validate_e04` recompute A0→9→12/B0→6→18, serial+1/+1 and pair+0, full tails/counters and observed source identities. | Missing/reset/evicted window, extra attempt without provider, duplicate summaries deduplicated, receipt-before-S1/after-S2 confusion; old aggregate only checked metadata. |
 | Browser jobs fixture | `job_action` captures actual unchanged-cap body, status, dialog-open no-launch; `job_terminal`/`jobs_waiting` read fresh shipping detail, output, Recall and screenshots. | Wrong dialog/action, stale outcome or exit7 laundered; existing Browser covers only ordinary tasks. |
-| Actual-content daily aggregate | `validate_e04` reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, rejects empty/hash-only/disagreeing content. | Forged PASS/count-only artifact or dropped references; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
+| Actual-content daily aggregate | `validate_e04` reads observations and browser events, resolves records and screenshots, recomputes source/boot/counter/CLI/job/audit/process/result joins, five method/path/query/HTTP200/body/stdout/durable read joins, source-timed live-S2/blocked-S1 chronology and exact human-show first header; rejects empty/hash-only/disagreeing content. | Discovery-only/error/contradictory job wire, missing live S2, title masquerading as status or forged PASS/count-only content; metadata controls cannot validate these joins. Dedicated synthetic E04 aggregate fixtures are not authored or executed; sensitivity remains MISSING. |
 | Existing metadata `controls` fixture with48 manifest entries | Existing `validate` controls still exercise missing/failed/skip/source/cleanup/timing envelope, now against the48-ID manifest. They are explicitly metadata-only; daily main additionally requires actual-content validation. | An omitted E04 name slips past stale manifest; old42-ID fixture covered baseline/Pause only. No control was executed for this delivery. |
 | Failure export / redaction context | `Controller.sanitize` + private retained old/new bearer context feed `run.collect_evidence/redact` before observations/scenario/browser-event/failure export; PR1036 unknown-context withholding and reserves remain. | Old boot secret survives final-token-only redaction, or failure loses partial chain; original exporter retained only final bearer. |
 
 Consumers are `Controller.mark/durable/evidence` → observations.json and
 scenario.json → run.py result.json/sanitized export → existing five seven-day
 artifacts → aggregate.main/validate_e04. Partial records and CLI attempts are appended before
-success marks; partial CLI timeout streams and current executable witnesses
-are exported by the existing finally path, even without a final case record. Cancellation uses the
+success marks. R1 uses a single absolute exchange deadline set by the controller
+before send: min(now+10, case end, common scenario end). The provider's absolute
+subprocess deadline is one second earlier; manifest/payload/spawn work consumes
+that same allowance, and communicate uses only its remaining time. A call with
+at most one second remaining refuses before dispatch. Socket send/read consume
+the original exchange end, never a fresh ten seconds. On subprocess timeout,
+the provider returns actual child identity and partial streams with explicit
+timed_out/non-success before raising; the controller appends that receipt before
+asserting success. The one-second delivery room covers serialization/transport
+inside the existing cap, not cleanup/export reserves. Existing sanitized
+finally export carries the partial receipt and executable witnesses, even
+without a final case record. Unknown secret context still withholds unsafe text;
+OS scheduling/transport loss or watchdog termination is not a persistence or
+runtime-fit guarantee, and delivery/sanitation proof remains UNEXECUTED. Cancellation uses the
 preserved exit-only provider and independent diagnostic shape; it does not
 require an E04 case or its content validator. The outer Owned mechanics and
 all old/current units remain unchanged; recorded job peers join its existing

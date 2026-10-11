@@ -90,13 +90,22 @@ class Controller:
         from owned import identity
         require(identity(start["pid"]) == start["pid_start"], "provider CLI requires live issued SID")
         connection, stream = self.holds[start["session"]]
-        instruction = dict(action=action, deadline=min(self.deadline, getattr(self, "case_deadline", self.deadline)), **arguments)
+        entered = time.monotonic()
+        deadline = min(entered + self.remaining(10), self.deadline, getattr(self, "case_deadline", self.deadline))
+        # One absolute exchange end; the child stops one second earlier so its
+        # partial receipt can reach the existing sanitized finally exporter.
+        require(deadline - entered > 1, "provider CLI requires receipt delivery room")
+        instruction = dict(action=action, deadline=deadline, execution_deadline=deadline - 1, **arguments)
         offset = len(self.relay.records)
-        attempt = dict(provider=dict(start), instruction=instruction, entered=time.monotonic(), wire_begin=offset)
+        attempt = dict(provider=dict(start), instruction=instruction, entered=entered, wire_begin=offset)
         self.provider_attempts.append(attempt)
-        connection.settimeout(self.remaining(10))
+        send_remaining = deadline - time.monotonic()
+        require(send_remaining > 0, "provider CLI exchange exhausted before send")
+        connection.settimeout(send_remaining)
         stream.write((json.dumps(instruction) + "\n").encode())
         stream.flush()
+        require(time.monotonic() < deadline, "provider CLI send exhausted exchange")
+        connection.settimeout(deadline - time.monotonic())
         receipt = json.loads(stream.readline(262144))
         receipt["wire"] = list(self.relay.records[offset:])
         self.provider_commands.append(receipt)  # Preserve failed commands before assertions.
@@ -104,7 +113,9 @@ class Controller:
         require(receipt["provider"] == {k: start[k] for k in ("task", "session", "agent", "org", "pid")}
                 and receipt["source_sha"] == self.revision and receipt["python"] == self.python,
                 "provider-owned CLI identity/source/interpreter", receipt)
-        require(receipt["action"] == action and receipt["exit"] == 0 and self.relay.error is None, "actual provider CLI exit/relay", receipt)
+        require(receipt["action"] == action and receipt["exit"] == 0 and receipt["timed_out"] is False
+                and receipt["execution_deadline"] == instruction["execution_deadline"]
+                and receipt["finished"] <= time.monotonic() < deadline and self.relay.error is None, "actual provider CLI exit/relay", receipt)
         if "payload" in arguments:
             expected = dict(arguments["payload"], task_id=start["task"], session_id=start["session"])
             if action != "jobs-submit":
