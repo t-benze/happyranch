@@ -2209,3 +2209,17 @@ Workflow trackers clear only through their existing terminal owner, preserving
 callback-before-terminal reads. Cancellation and portability select that same
 owner; a transport result or PID cannot prove quiescence. No callback is a
 signature and no reviewer request is automatically approved.
+
+The U3b(a) internal checkpoint extends the SAME F5 chain with an immutable,
+state-preserving findings stage. `WorkflowReviewDispatcher.terminal` first lets
+the inherited native owner commit the actual callback/host closure, then invokes
+agent receipt admission after releasing internal locks and before tracker clear
+and supervisor capacity release. Lifespan/reaper handoff discovery also invokes
+completed-review receipt discovery for result-before-consumption recovery. Neither
+consumer relaunches uncertain work or infers quiescence from PID/TTL absence.
+The authority writer appends authentic INTEGER-backed result/assignment/receipt
+identities atomically; matched graph readers reject partial/forged closure.
+Stage/callback/verdict alone is unsigned. Human response, public stage/signed
+request transport parity and template join are later units; this checkpoint must
+remain draft/unaccepted/unmerged until those dependencies are assessed. See the
+exact internal grammar in [Features And Invariants](features-and-invariants.md).

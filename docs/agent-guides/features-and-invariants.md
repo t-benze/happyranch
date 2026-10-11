@@ -1,5 +1,43 @@
 # Features And Invariants
 
+**U3b(a) internal agent checkpoint — THR139 D5/G395/generic410/H445/457/465.**
+`WorkflowReviewDispatcher.stage_review` is an internal operation; no public or
+native stage surface is mounted. Its closed `workflow-review-stage-command@1`
+requires action `stage-review`, operation/request tokens using the existing
+1..128 `[A-Za-z0-9._:-]` grammar, strict integer expected_revision=1, the exact
+request-scope digest, a template-declared outcome, canonical base64 UTF8 findings
+of 1..1048576 bytes (encoded field 4..1398104 characters), and raw SHA256.
+The existing sequenced F5 event stores `workflow-review-stage@1`: the closed
+lifecycle envelope plus `stage={command,request_digest,scope,outbox_id,session_id}`.
+The digest covers the full canonical command; scope and before/after projections
+bind the actual selected reviewer/session, subject, revision, request, role kind,
+assignment generation, context, binding, template and authority pins. One stage
+per current request is immutable; org/principal/operation-key reuse across requests
+conflicts. Eligible current-session exact full-body replay
+returns its original event, and a changed body/key conflicts. Before and after
+are identical, result and terminal evidence are null, and the acknowledgment
+counts zero signatures. Cancelled, stale, nonrecipient and contributor actors,
+undeclared outcomes and Boolean/integer substitutions refuse before effects.
+
+`WorkflowReviewReceiptStore.admit_completed` consumes that stage only after the
+exact actual INTEGER/full callback and committed successful/quiescent F5 terminal,
+current native task/session assignment, source/activation/grant/authority and
+instance-wide contributor independence revalidate. It atomically appends the
+real completed instance-task/result/current-assignment/receipt/evidence bridge
+and updates only that request's outcome. All proof bytes are reconstructed by
+matched closed graph readers. Callback verdict alone cannot sign; absent stages,
+failed/blocked/cancelled/uncertain evidence or manager effects remain unsigned.
+The native terminal hook and existing lifespan/reaper discovery consume committed
+results without another scheduler, host launch or PID/TTL inference. Roles and
+outcomes come from pinned template data, including agent-looking human labels.
+
+This dependency-incomplete checkpoint stays unaccepted/unmerged: human receipts,
+public stage transport and signed-request projections with CLI/TS/native parity,
+collect-all closure/automatic template join, and root-owned two-template public
+scratch smoke465 remain later units. Existing public request GET accepts pending
+requests only; a signed agent request is no longer selectable there. No joined
+event, fourth signature, schema/migration, auth, permission or host API change.
+
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > Product contracts are unchanged; replacement E2E is PENDING. See

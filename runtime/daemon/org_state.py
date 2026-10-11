@@ -42,6 +42,7 @@ from runtime.workflows.activation import WorkflowActivationStore
 from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
 from runtime.workflows.submissions import WorkflowSubmissionStore
 from runtime.workflows.review_dispatch import WorkflowReviewDispatcher
+from runtime.workflows.review_receipts import WorkflowReviewReceiptStore
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class OrgState:
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
     workflow_submissions: WorkflowSubmissionStore = field(init=False)
     workflow_reviews: WorkflowReviewDispatcher = field(init=False)
+    workflow_review_receipts: WorkflowReviewReceiptStore = field(init=False)
     memory_collection: CollectionObserver | None = field(init=False, default=None)
     memory_collection_unavailable: str | None = field(init=False, default=None)
     sessions: SessionTracker = field(default_factory=SessionTracker)
@@ -128,6 +130,7 @@ class OrgState:
         self.workflow_drafts = WorkflowDraftDispatcher(self)
         self.workflow_submissions = WorkflowSubmissionStore(self)
         self.workflow_reviews = WorkflowReviewDispatcher(self)
+        self.workflow_review_receipts = WorkflowReviewReceiptStore(self)
         if self.orchestrator is not None:
             self.orchestrator._workflow_drafts = self.workflow_drafts
             self.orchestrator._workflow_submissions = self.workflow_submissions

@@ -1,5 +1,17 @@
 # Product-design workflow U0 feasibility evidence
 
+**U3b(a) internal checkpoint, THR139 D5/G395/generic410/H445/457/465.**
+The actual F5 reviewer/session can internally stage immutable findings/outcome
+in the sequenced event chain; only an exact successful INTEGER/full callback,
+committed host quiescence, current authority/assignment and contributor
+independence can populate its agent receipt/provenance bridge. Producer and
+closed graph readers ship together, with existing terminal/reaper consumers.
+Human receipt/public stage/signed-request CLI/TS/native parity, collect-all
+closure/automatic template join and root-owned two-template public smoke465 are
+still dependencies. No joined event or fourth signature exists in this slice;
+keep it draft/unaccepted/unmerged. Exact bounds and pure-data event grammar:
+[Features And Invariants](../../agent-guides/features-and-invariants.md).
+
 **H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
 initializes H (complete G plus the exact `workflow_author_handoffs` table: 17
 columns, six automatic constraint indexes, no marker or explicit index).

@@ -187,7 +187,7 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
         scope = review_scope(row=row, proof=proof, context=context, contract=contract, role=role,
                              request_id=q['id'], round_id=round_['id'], binding=bindings[role])
         if (q['id'] != _id('workflow-request', round_['id'], role, principal, 1)
-                or q['status'] != 'pending' or q['supersedes_request_id'] is not None
+                or q['status'] not in ('pending', 'approved', 'changes_requested') or q['supersedes_request_id'] is not None
                 or canonical_bytes(scope) != q['request_scope_bytes']
                 or digest(q['request_scope_bytes']) != q['request_scope_digest']):
             raise ValueError(code)
@@ -195,7 +195,8 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
         bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (q['id'],))
         dispatch = _records(conn, 'SELECT * FROM workflow_dispatch_operations WHERE request_id=?', (q['id'],))
         if contract['role_kinds'][role] == 'human':
-            if bridges or dispatch:
+            if bridges or dispatch or q['status'] != 'pending' or conn.execute(
+                    'SELECT 1 FROM workflow_review_receipts WHERE request_id=?', (q['id'],)).fetchone():
                 raise ValueError(code)
             continue
         if len(bridges) != 1 or len(dispatch) != 1:
@@ -225,8 +226,8 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
                 or op['round_id'] != round_['id'] or op['request_digest'] != q['request_scope_digest']):
             raise ValueError(code)
         tasks.append(task['id'])
-        from runtime.workflows.review_dispatch import validate_review_dispatch_storage
-        validate_review_dispatch_storage(conn, request_id=q['id'])
+        from runtime.workflows.review_receipts import validate_agent_receipt
+        validate_agent_receipt(conn, q, scope)
     if len(tasks) > 3 or len(set(tasks)) != len(tasks) or len(set(expected)) != len(expected):
         raise ValueError(code)
     events = _records(conn, "SELECT * FROM workflow_events WHERE instance_id=? AND revision=1 AND event_kind='submitted'",
@@ -803,3 +804,6 @@ class WorkflowSubmissionStore:
             tasks = await self.consume_completed_handoff(handoff_id)
             for task_id in tasks:
                 queue.enqueue_if_absent(self.org.slug, task_id)
+        # Reuse lifespan/reaper discovery for result-before-consumption recovery.
+        # No new scheduler and no replay of an uncertain host launch.
+        await self.org.workflow_review_receipts.discover_completed()

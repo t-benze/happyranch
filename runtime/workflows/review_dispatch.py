@@ -1,8 +1,8 @@
 """F5 request owner using the unchanged native host lifecycle interface."""
 from __future__ import annotations
 
-import json
 import base64
+import json
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -69,7 +69,19 @@ def validate_stage(conn: sqlite3.Connection, body: dict, *, outbox: dict, bridge
             or not _same_value(before, body['after'])
             or body['result'] is not None or body['terminal_evidence'] is not None):
         raise ValueError(code)
+    matches = _stages_for_key(conn, org_slug=body['org_slug'], principal=scope['principal'],
+                              operation_key=command['operation_key'])
+    if len(matches) != 1 or matches[0]['operation_id'] != bridge['operation_id']:
+        raise ValueError(code)
     return stage
+
+
+def _stages_for_key(conn: sqlite3.Connection, *, org_slug: str, principal: str, operation_key: str) -> list[dict]:
+    rows = _records(conn, "SELECT e.* FROM workflow_dispatch_events e JOIN workflow_dispatch_operations o "
+                    "ON o.id=e.operation_id WHERE o.org_slug=? AND o.principal=? AND e.event_kind='review_staged'",
+                    (org_slug, principal))
+    return [e for e in rows if _stored_json(e['event_bytes'], e['event_digest'],
+            code='workflow_review_storage_corrupt')['stage']['command']['operation_key'] == operation_key]
 
 
 def _same_value(left: Any, right: Any) -> bool:
@@ -316,6 +328,10 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
                             raise WorkflowActivationError('workflow_activation_authority_stale')
                         if conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled':
                             raise WorkflowActivationError('workflow_new_runs_disabled')
+                        keyed = _stages_for_key(conn, org_slug=self.org.slug, principal=agent,
+                                                operation_key=command['operation_key'])
+                        if keyed and (len(keyed) != 1 or keyed[0]['operation_id'] != intent['operation_id']):
+                            raise WorkflowActivationError('workflow_review_stage_operation_conflict')
                         stages = _records(conn, "SELECT * FROM workflow_dispatch_events WHERE operation_id=? AND event_kind='review_staged'",
                                           (intent['operation_id'],))
                         if stages:
@@ -432,6 +448,17 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
         if len(rows) != 1:
             return None
         return json.loads(rows[0]['event_bytes'])['result']
+
+    def terminal(self, task_id: str, agent: str, session_id: str, outcome: Any, *, expected_request: Any = None) -> None:
+        super().terminal(task_id, agent, session_id, outcome, expected_request=expected_request)
+        # The original native owner has committed and released its locks.
+        # Tracker clear and supervisor capacity release still follow this hook.
+        with self.db._lock:
+            bridge = _records(self.db._conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))
+            completed = (len(bridge) == 1 and bridge[0]['state'] == 'completed'
+                         and bridge[0]['assigned_principal'] == agent and bridge[0]['session_id'] == session_id)
+        if completed:
+            self._on_loop(self.org.workflow_review_receipts.admit_completed(task_id))
 
     def cancel(self, task_id: str) -> dict:
         with self._writer() as conn:
