@@ -779,6 +779,13 @@ The SPA fetches the daemon bearer token once via `GET /api/v1/auth/bootstrap`, w
 
 ## CLI
 
+`happyranch cancel <task_id>` prints the daemon's cancelled-task summary, then
+each successful cancellation-delivery record in response order. An opaque
+control record without a PID prints `Cancellation delivered -> <task_id>
+(<agent>)` on one line; it does not identify a signal or claim process closure.
+A legacy PID-bearing record retains `SIGTERM -> <task_id> (<agent>, pid=<pid>)`.
+An empty or absent delivery list retains `No live subprocesses attached.`
+
 The CLI is an HTTP client. Start the daemon first.
 
 ```bash
