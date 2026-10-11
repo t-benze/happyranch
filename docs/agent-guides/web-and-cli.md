@@ -1,5 +1,24 @@
 # Web And CLI
 
+**Artifact boundary A (THR139seq480/477).** Internal frozen artifact projection
+now verifies existing document submission and human/agent receipt subjects.
+Legacy scope/brief/purpose bytes and all public request/receipt/OpenAPI/CLI/TS/
+native contracts are unchanged. Code-change descriptors are representation-only,
+with repository/algorithm/full head/optional base identity and pinned navigation;
+no repository reader, generic-template admission or new public/native surface is
+mounted. B owns matched versioned admission and authorized immutable-object reads;
+C owns fresh revisions/sign-offs, reassignment/recovery and mounted UI/CLI. Seq475
+reviewer-stage endpoint/native decision remains PENDING. Historical @1/@2/@3 pins,
+H revision1/unique intent, selection-before-private-decode and after-wait current
+authority retain their owners. Product-design and a differently named one-human
+proposal map through the same document adapter; code maps as representation only.
+Founder465 public two-template journey/revision acceptance and real Founder UI
+Request changes/Sign off remain UNOBSERVED. Ordered coding stages, CI/guarded merge
+adapters and fork-join remain Phase2. Source-only dispositions do not prove behavior;
+see [Features And Invariants](features-and-invariants.md) for exact descriptor bounds
+and execution exclusions. Independent full review/scoped QA renew on the final head.
+
+
 U3a(c) mounts the H/@3 public handoff and unsigned selected-request surfaces,
 with CLI/TypeScript/OpenAPI/native mirrors and F5 callback/replay/cancellation/
 portability owner selection. Direct-submit/reviewer-stage public/deny deferral

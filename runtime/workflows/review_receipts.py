@@ -9,6 +9,7 @@ from pydantic import Field, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id
+from runtime.workflows.artifacts import document_from_submission, require_document_subject
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.submissions import _insert, _record
 from runtime.workflows.templates import WorkflowTemplatePrincipal
@@ -112,6 +113,27 @@ def _human_receipts_for_key(conn: sqlite3.Connection, *, org_slug: str, operatio
     return matches
 
 
+def _validate_submission_subject(conn: sqlite3.Connection, submission: dict, scope: dict) -> None:
+    """Supply stored namespace/provenance to the pure adapter, with caller-owned errors."""
+    code = 'workflow_review_receipt_storage_corrupt'
+    try:
+        operations = _records(conn, 'SELECT * FROM workflow_submission_operations WHERE submission_id=?',
+                              (submission['id'],))
+        links = _records(conn, 'SELECT * FROM workflow_submission_result_links WHERE submission_id=?',
+                         (submission['id'],))
+        if len(operations) != 1 or len(links) != 1:
+            raise ValueError(code)
+        contributors = tuple(_records(conn, 'SELECT * FROM workflow_instance_contributors WHERE instance_id=?',
+                                      (submission['instance_id'],)))
+        artifact = document_from_submission(submission, org_namespace=operations[0]['org_slug'],
+            pins={key: scope[key] for key in ('template', 'activation', 'authorization',
+                                              'binding_snapshot_id', 'context_id')},
+            source_result_id=links[0]['task_result_id'], contributors=contributors)
+        require_document_subject(artifact, scope)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(code) from exc
+
+
 def validate_human_receipt(conn: sqlite3.Connection, request: dict, scope: dict, handoff: dict) -> None:
     """Authenticate closed historical data only; it supplies no current bearer authority."""
     from runtime.workflows.review_dispatch import _same_value
@@ -151,13 +173,9 @@ def validate_human_receipt(conn: sqlite3.Connection, request: dict, scope: dict,
             or command['request_id'] != request['id'] or command['expected_revision'] != scope['revision']
             or command['request_scope_digest'] != request['request_scope_digest']
             or command['outcome'] not in scope['outcomes'] or request['status'] != command['outcome']
-            or request['principal'] in contributors
-            or submission['instance_id'] != scope['instance_id']
-            or not _same_value(submission['revision'], scope['revision'])
-            or submission['submission_digest'] != scope['submission_digest']
-            or digest(submission['submission_bytes']) != scope['submission_digest']):
+            or request['principal'] in contributors):
         raise ValueError(code)
-    submission['submission_bytes'].decode('utf8')
+    _validate_submission_subject(conn, submission, scope)
     expected = _human_proof(request, scope, handoff, command, created_at)
     if (not _same_value(proof, expected)
             or not _same_value(receipt, _human_receipt_row(request, scope, expected))
@@ -197,10 +215,7 @@ def _completed_proof(conn: sqlite3.Connection, request: dict, scope: dict) -> tu
     if result['decision_json'] is not None or result['waiting_on_job_ids'] is not None:
         return None
     submission = _record(conn, 'workflow_submissions', scope['submission_id'])
-    if (submission['instance_id'] != scope['instance_id'] or submission['revision'] != scope['revision']
-            or submission['submission_digest'] != scope['submission_digest']
-            or digest(submission['submission_bytes']) != scope['submission_digest']):
-        raise ValueError(code)
+    _validate_submission_subject(conn, submission, scope)
     contributors = {r[0] for r in conn.execute('SELECT principal FROM workflow_instance_contributors WHERE instance_id=?',
                                               (scope['instance_id'],))}
     contributors |= {r[0] for r in conn.execute('SELECT principal FROM workflow_submission_operations WHERE instance_id=?',

@@ -19,6 +19,9 @@ from runtime.models import TaskRecord
 from runtime.workflows.activation import (
     ClosedRecord, SHA256, Token, WorkflowActivationError, _id,
 )
+from runtime.workflows.artifacts import (
+    document_from_handoff, document_from_submission, document_review_brief, document_review_scope,
+)
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, _document_contract
 
@@ -173,18 +176,9 @@ def _reviewed_source_result(conn: sqlite3.Connection, row: dict, intent: dict) -
 
 def review_scope(*, row: dict, proof: dict, context: dict, contract: dict, role: str,
                  request_id: str, round_id: str, binding: dict) -> dict:
-    """Only the selected recipient's input bytes and pins enter its scope."""
-    inputs = [item for item in context['inputs'] if role in item['pin']['recipients']]
-    return dict(format='workflow-review-request@1', org_slug=row['org_slug'], instance_id=row['instance_id'],
-                handoff_id=row['id'], submission_id=row['submission_id'], submission_digest=row['candidate_digest'],
-                revision=1, round_id=round_id, request_id=request_id, role=role,
-                kind=contract['role_kinds'][role], principal=binding['principal'], team=binding['team'],
-                assignment_generation=1, template=proof['pins']['template'],
-                activation=proof['pins']['activation'], authorization=proof['pins']['authorization']['id'],
-                binding_snapshot_id=proof['pins']['binding']['id'], context_id=proof['pins']['context']['id'],
-                output=contract['output'], outcomes=contract['outcomes'],
-                purpose='Independently review the pinned immutable document; requests remain unsigned.',
-                allowed_actions=['collect-review'], inputs=inputs)
+    """Keep the historical entry point and document-specific serializer."""
+    return document_review_scope(row=row, proof=proof, context=context, contract=contract,
+                                 role=role, request_id=request_id, round_id=round_id, binding=binding)
 
 
 def validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) -> dict | None:
@@ -208,7 +202,13 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
     intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
     # A saved review graph uses immutable linked source evidence. Current
     # source validity belongs to mutation/approved-use admission, not history.
-    _reviewed_source_result(conn, row, intent)
+    result = _reviewed_source_result(conn, row, intent)
+    # Pure integrity projection only; keep full H/F5/receipt oracles in their callers.
+    candidate = document_from_handoff(row, proof, source_result_id=result['id'])
+    submission = document_from_submission(_record(conn, 'workflow_submissions', row['submission_id']),
+        org_namespace=operations[0]['org_slug'], pins=proof['pins'], source_result_id=result['id'])
+    if candidate.review_key != submission.review_key:
+        raise ValueError(code)
     round_ = rounds[0]
     if (round_['submission_id'] != row['submission_id'] or round_['state'] not in ('reviewing', 'closed')
             or round_['id'] != _id('workflow-round', row['instance_id'], 1, row['submission_id'])):
@@ -300,12 +300,7 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
 
 
 def review_brief(scope: dict, candidate: bytes) -> str:
-    return ("Workflow document review. Independently assess only the pinned document and your authorized inputs. "
-            "Do not delegate, implement code, merge, approve planning input, or sign on behalf of another principal. "
-            "Report your findings through your actual task/session completion callback as the final session action. "
-            "This request and its callback remain unsigned; genuine review receipts and joins are later units.\n\n"
-            + canonical_bytes(dict(scope=scope,
-                submission_bytes_base64=base64.b64encode(candidate).decode('ascii'))).decode())
+    return document_review_brief(scope, candidate)
 
 
 class WorkflowSubmissionStore:
@@ -554,6 +549,12 @@ class WorkflowSubmissionStore:
                           submission_bytes=row['candidate_bytes'], submission_digest=row['candidate_digest'], storage_ref=None,
                           source_task_id=row['source_task_id'], source_session_id=row['source_session_id'], source_result_id=None,
                           author_principal=row['principal'])
+        # Existing conflict precedence is retained; validate before the first insert.
+        candidate = document_from_handoff(row, proof, source_result_id=result['id'])
+        projected = document_from_submission(submission, org_namespace=self.org.slug,
+                                             pins=proof['pins'], source_result_id=result['id'])
+        if candidate.review_key != projected.review_key:
+            raise ValueError('workflow_author_handoff_storage_corrupt')
         _insert(conn, 'workflow_submissions', submission)
         operation = dict(submission_id=row['submission_id'], org_slug=self.org.slug, principal=row['principal'],
                          operation_key=row['operation_key'], request_digest=row['request_digest'], instance_id=row['instance_id'],
