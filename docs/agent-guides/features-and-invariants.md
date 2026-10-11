@@ -39,6 +39,15 @@ share this reader. Admitted GET exposes only category500; invisible scope404 and
 selected-grant403 retain earlier precedence. Today's mutable mirror is never
 historical evidence; a genuine later authority change remains a current hold.
 
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
 U3a(b) adds matched immutable `@3` template/activation/context readers,
 `submissions.validate_handoff_graph` and the internal handoff/review producers.
 Historical `@1`/`@2` families and pins retain their interpretation. An original

@@ -24,6 +24,15 @@ share this reader. Admitted GET exposes only category500; invisible scope404 and
 selected-grant403 retain earlier precedence. Today's mutable mirror is never
 historical evidence; a genuine later authority change remains a current hold.
 
+New H structured witnesses compare canonical JSON bytes against authentic
+retained or derived projections, including the row, immutable source intent,
+activation/template and byte pins, context, snapshot, saved pointer and profile
+closure. Boolean true/false cannot substitute for integer 1/0 in any such
+witness. Exact integers and legitimate embedded snapshot booleans retain their
+types; historical event numeric semantics remain unchanged. A mismatch refuses
+`workflow_author_handoff_storage_corrupt` before graph effects, with the same
+selected scope/grant precedence.
+
 **G submission-schema migration (THR139 seq395).** The retained F/E-to-G path
 precedes explicit G-to-H migration; deliberate fresh org creation now initializes H. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.

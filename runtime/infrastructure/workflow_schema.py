@@ -1175,6 +1175,11 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         if not condition:
             raise ValueError(code)
 
+    def same(value: object, expected: object) -> bool:
+        # New H witnesses retain JSON types recursively: bool is not int.
+        # Authentic embedded snapshot booleans remain booleans.
+        return _canonical_bytes(value) == _canonical_bytes(expected)
+
     def closed(value: object, keys: str) -> dict:
         check(isinstance(value, dict) and set(value) == set(keys.split()))
         return value
@@ -1210,7 +1215,7 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         check(proof['format'] == 'workflow-author-handoff@1')
         expected_row = {k: v.hex() if isinstance(v, bytes) else v for k, v in row.items()
                         if k not in ('admission_bytes', 'admission_digest')}
-        check(proof['handoff'] == expected_row)
+        check(same(proof['handoff'], expected_row))
         command = closed(proof['client_request'], 'format operation_key activation_id expected_revision submission_bytes_base64 submission_digest')
         check(command['format'] == 'workflow-author-handoff-command@1' and type(command['expected_revision']) is int
               and command['expected_revision'] == 1 and command['operation_key'] == row['operation_key'])
@@ -1225,8 +1230,8 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         check(row['submission_id'] == 'workflow-submission:' + hashlib.sha256(_canonical_bytes(
             [row['instance_id'], 1, row['org_slug'], row['principal'], row['operation_key'], 'workflow-author-handoff@1'])).hexdigest())
         intent = one('workflow_draft_dispatch_intents', row['intent_id'])
-        check(proof['source_intent'] == {k: v.hex() if isinstance(v, bytes) else v
-                                        for k, v in intent.items() if k not in _DRAFT_MUTABLE})
+        check(same(proof['source_intent'], {k: v.hex() if isinstance(v, bytes) else v
+                                          for k, v in intent.items() if k not in _DRAFT_MUTABLE}))
         check(len(proof['source_intent']) == 25 and intent['admission_kind'] == 'initial'
               and intent['predecessor_intent_id'] is None and intent['activation_revision'] == 1
               and intent['attempt_sequence'] == 1 and intent['assignment_generation'] == 1
@@ -1261,15 +1266,15 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         pins = closed(proof['pins'], 'template activation authorization binding context scope contract')
         activation = one('workflow_activations', intent['activation_id'])
         instance = one('workflow_instances', row['instance_id'])
-        check(pins['activation'] == dict(id=intent['activation_id'], revision=1, request_digest=activation['request_digest']))
+        check(same(pins['activation'], dict(id=intent['activation_id'], revision=1, request_digest=activation['request_digest'])))
         from runtime.workflows.templates import WorkflowTemplateStore, _document_contract
         mapping = _records(conn, 'SELECT * FROM workflow_template_identity_versions WHERE template_version_id=?', (activation['template_version_id'],))
         check(len(mapping) == 1)
         template = WorkflowTemplateStore._read_version(conn, identity_id=activation['template_identity_id'],
             version=mapping[0]['version'], expected_version_id=activation['template_version_id'])
-        check(pins['template'] == dict(identity_id=template.identity_id, version_id=template.version_id, version=template.version,
+        check(same(pins['template'], dict(identity_id=template.identity_id, version_id=template.version_id, version=template.version,
               definition_digest=template.definition_digest, compiler_pin='workflow-compiler@3',
-              validator_pin='workflow-validator@3', source_pin='operator-input@3')
+              validator_pin='workflow-validator@3', source_pin='operator-input@3'))
               and (template.compiler_pin, template.validator_pin, template.source_pin) ==
               ('workflow-compiler@3', 'workflow-validator@3', 'operator-input@3'))
         contract = _document_contract(template)
@@ -1283,7 +1288,7 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
                 ('scope', intent['task_id'], intent['task_scope_bytes'], intent['task_scope_digest']),
                 ('contract', template.version_id, _canonical_bytes(contract), hashlib.sha256(_canonical_bytes(contract)).hexdigest())):
             pin = closed(pins[kind], 'id bytes_hex digest')
-            check(pin == dict(id=identity, bytes_hex=raw.hex(), digest=dg)
+            check(same(pin, dict(id=identity, bytes_hex=raw.hex(), digest=dg))
                   and len(identity) <= 256 and 1 <= len(raw) <= 1048576)
             _handoff_json(hex_bytes(pin['bytes_hex'], 1048576), pin['digest'])
         grant = _handoff_json(authorization['authority_bytes'], authorization['authority_digest'])
@@ -1291,7 +1296,7 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         ctx = _handoff_json(context['context_bytes'], context['context_digest'])
         check(grant['format'] == 'workflow-authorization@3' and bound['format'] == 'workflow-binding@3'
               and ctx['format'] == 'workflow-initial-draft-context@3' and contract['format'] == 'workflow-document-contract@3'
-              and ctx['document_contract'] == contract and ctx['authorization'] == grant and ctx['binding'] == bound
+              and same(ctx['document_contract'], contract) and same(ctx['authorization'], grant) and same(ctx['binding'], bound)
               and ctx['binding_snapshot_id'] == binding['id'] and ctx['authorization_revision_id'] == authorization['id']
               and ctx['intent_id'] == intent['id'] and ctx['org_slug'] == expected_org_slug
               and instance['root_task_id'] == intent['task_id'] and instance['context_id'] == context['id']
@@ -1302,12 +1307,12 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         journal = _records(conn, 'SELECT * FROM workflow_publication_journals WHERE namespace=? AND generation=? AND snapshot_digest=?',
                            (ready['namespace'], ready['generation'], ready['snapshot_digest']))
         check(len(journal) == 1 and journal[0]['snapshot_bytes'].hex() == ready['snapshot_bytes_hex']
-              and journal[0]['state'] == 'cache_installed' and snapshot == ctx['authority_snapshot']
+              and journal[0]['state'] == 'cache_installed' and same(snapshot, ctx['authority_snapshot'])
               and ready['namespace'] == f'org/{expected_org_slug}' and type(ready['generation']) is int
               and ready['generation'] == intent['authority_generation'] and ready['snapshot_digest'] == intent['authority_digest'])
-        check(captured['pointer'] == dict(current_generation=ready['generation'], journal_id=journal[0]['id'],
-              snapshot_digest=ready['snapshot_digest'], state='ready', profile_fence=journal[0]['profile_fence']))
-        check(captured['cutover'] == 'enabled' and captured['actions'] == ['stage-immutable-document', 'submit-immutable-document']
+        check(same(captured['pointer'], dict(current_generation=ready['generation'], journal_id=journal[0]['id'],
+              snapshot_digest=ready['snapshot_digest'], state='ready', profile_fence=journal[0]['profile_fence'])))
+        check(captured['cutover'] == 'enabled' and same(captured['actions'], ['stage-immutable-document', 'submit-immutable-document'])
               and set(captured['actions']) <= set(grant['original_request']['allowed_actions']))
         def namespace(value: object) -> None:
             check(type(value) is str and bool(value.strip()) and '\x00' not in value
@@ -1343,8 +1348,8 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
             closed(profile, 'name digest')
             profile_name(profile['name'])
             digest_value(profile['digest'])
-        check(captured['profiles'] == [dict(name=p['profile_name'], digest=p['profile_digest'])
-                                      for p in snapshot_profiles])
+        check(same(captured['profiles'], [dict(name=p['profile_name'], digest=p['profile_digest'])
+                                        for p in snapshot_profiles]))
         check(isinstance(captured['mirror'], list) and len(captured['mirror']) <= 16384)
         grouped: list[tuple] = []
         dependencies: list[dict] = []
@@ -1393,7 +1398,7 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
                                                     profile_digest=store['profile_digest'], profile_name=name))
             check(profile['generation'] == bound_generation and profile['profile_digest'] == store['profile_digest'])
             profile['consumers'].append(dependency['consumer_identity'])
-        check([required[name] for name in sorted(required)] == snapshot_profiles)
+        check(same([required[name] for name in sorted(required)], snapshot_profiles))
         return proof
     except (ValueError, KeyError, TypeError, AttributeError, UnicodeError, sqlite3.DatabaseError) as exc:
         raise ValueError(code) from exc
