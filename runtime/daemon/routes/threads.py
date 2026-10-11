@@ -1090,6 +1090,23 @@ class ThreadListResponse(BaseModel):
     threads: list[ThreadListRowResponse]
 
 
+class ThreadListTotals(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    open: int
+    archived: int
+    all: int
+    dream_origin: int
+
+
+class ThreadListPageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    threads: list[ThreadListRowResponse]
+    totals: ThreadListTotals
+    has_more: bool
+    next_cursor: str | None
+    sampled_at: str
+
+
 def _thread_row_to_dict(t: ThreadRecord, *, participants: list[str] | None = None) -> dict:
     return {
         "thread_id": t.id,
@@ -1170,13 +1187,32 @@ def _msg_to_dict(m, responders: list[dict] | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/threads", response_model=ThreadListResponse)
+@router.get(
+    "/threads", response_model=ThreadListResponse | ThreadListPageResponse,
+    responses={400: {"description": "invalid_thread_cursor: malformed or wrong-scope continuation"},
+               422: {"description": "Invalid query or pagination combination"}},
+)
 async def list_threads_endpoint(
     slug: str,
     org: OrgDep,
+    request: Request,
     status: str | None = None,
     limit: int = 50,
-) -> ThreadListResponse:
+    page_size: Annotated[int | None, Query(ge=1, le=100, description="Opt in to pages; cannot be combined with explicit limit")] = None,
+    cursor: Annotated[str | None, Query(description="Requires page_size; bound to org, bucket and page size")] = None,
+) -> ThreadListResponse | ThreadListPageResponse:
+    if (page_size is None and cursor is not None) or (page_size is not None and "limit" in request.query_params):
+        raise HTTPException(status_code=422, detail={"code": "invalid_thread_pagination"})
+    if page_size is not None:
+        if status not in (None, "open", "archived"):
+            raise HTTPException(status_code=422, detail={"code": "invalid_thread_bucket"})
+        try:
+            page = org.db.list_threads_page(org=slug, status=status, page_size=page_size, cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail={"code": "invalid_thread_cursor"}) from exc
+        participants = page.pop("participants")
+        page["threads"] = [_thread_row_to_dict(t, participants=participants[t.id]) for t in page["threads"]]
+        return ThreadListPageResponse(**page)
     rows = org.db.list_threads(status=status, limit=min(limit, 500))
     participants = org.db.list_thread_participant_names_for_threads([t.id for t in rows])
     return ThreadListResponse(
@@ -1649,6 +1685,8 @@ async def dispatch_from_thread_endpoint(
                 status_code=404,
                 detail={"code": "predecessor_not_found", "resolves": resolves},
             )
+        from runtime.orchestrator.task_pause import assert_origin_unheld
+        assert_origin_unheld(org, resolves)
         pred_block_kind = _eligible_supersede_block_kind(org, predecessor)
         if pred_block_kind is None:
             raise HTTPException(
@@ -1689,51 +1727,53 @@ async def dispatch_from_thread_endpoint(
         family_closed = []
     else:
         async with org.db_lock:
-            cur_inv = org.db.get_pending_invocation(body.invocation_token)
-            if cur_inv is None or cur_inv.dispatched_task_id is not None:
-                raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
-            task_id = org.db.next_task_id()
-            org.db.insert_task(TaskRecord(
-                id=task_id, brief=brief, team=effective_team,
-                assigned_agent=effective_target,
-                dispatched_from_thread_id=thread_id,
-            ))
-            sys_seq = org.db.append_thread_message(
-                thread_id=thread_id, speaker=dispatcher,
-                kind=ThreadMessageKind.SYSTEM,
-                system_payload={
-                    "kind_tag": "task_dispatched",
-                    "task_id": task_id,
-                    "dispatcher": dispatcher,
-                    "target_agent": effective_target,
-                    "team": effective_team,
-                    "brief_preview": brief[:160],
-                },
-            )
-            org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
-            audit = AuditLogger(org.db)
-            audit.log_thread_dispatch(
-                thread_id, task_id=task_id, dispatcher=dispatcher,
-                target_agent=effective_target, team=effective_team,
-            )
-            # Canonical supersede tail shared with resolve_escalation_in_process
-            # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
-            # and emits thread followups.
-            family_closed: list[str] = []
-            if resolves and predecessor is not None:
-                from runtime.daemon.routes.tasks import (
-                    _close_predecessor_family_and_run_tail,
+            from runtime.orchestrator.task_pause import origin_guard
+            with origin_guard(org, resolves):
+                cur_inv = org.db.get_pending_invocation(body.invocation_token)
+                if cur_inv is None or cur_inv.dispatched_task_id is not None:
+                    raise HTTPException(status_code=409, detail={"code": "dispatch_already_used"})
+                task_id = org.db.next_task_id()
+                org.db.insert_task(TaskRecord(
+                    id=task_id, brief=brief, team=effective_team,
+                    assigned_agent=effective_target,
+                    dispatched_from_thread_id=thread_id,
+                ))
+                sys_seq = org.db.append_thread_message(
+                    thread_id=thread_id, speaker=dispatcher,
+                    kind=ThreadMessageKind.SYSTEM,
+                    system_payload={
+                        "kind_tag": "task_dispatched",
+                        "task_id": task_id,
+                        "dispatcher": dispatcher,
+                        "target_agent": effective_target,
+                        "team": effective_team,
+                        "brief_preview": brief[:160],
+                    },
                 )
-                family_closed = _close_predecessor_family_and_run_tail(
-                    org, audit,
-                    predecessor=predecessor,
-                    successor_root=task_id,
-                    pred_block_kind=pred_block_kind,
-                    actor="thread-dispatch",
-                    note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
-                    thread_id=thread_id,
-                    close_revisit_family=True,
+                org.db.record_dispatch_on_invocation(body.invocation_token, task_id=task_id)
+                audit = AuditLogger(org.db)
+                audit.log_thread_dispatch(
+                    thread_id, task_id=task_id, dispatcher=dispatcher,
+                    target_agent=effective_target, team=effective_team,
                 )
+                # Canonical supersede tail shared with resolve_escalation_in_process
+                # (THR-080 #4).  Closes predecessor + revisit family, wakes parents,
+                # and emits thread followups.
+                family_closed: list[str] = []
+                if resolves and predecessor is not None:
+                    from runtime.daemon.routes.tasks import (
+                        _close_predecessor_family_and_run_tail,
+                    )
+                    family_closed = _close_predecessor_family_and_run_tail(
+                        org, audit,
+                        predecessor=predecessor,
+                        successor_root=task_id,
+                        pred_block_kind=pred_block_kind,
+                        actor="thread-dispatch",
+                        note_suffix=f"thread {thread_id} dispatch by {dispatcher}",
+                        thread_id=thread_id,
+                        close_revisit_family=True,
+                    )
 
     enqueue_task(state, slug, task_id)
 

@@ -47,11 +47,6 @@ def daemon_state(runtime: RuntimeDir) -> DaemonState:
 
 
 @pytest.fixture
-def daemon_state_idle() -> DaemonState:
-    return DaemonState.idle(Settings())
-
-
-@pytest.fixture
 def org_state(daemon_state: DaemonState) -> OrgState:
     return daemon_state.orgs["alpha"]
 
@@ -59,11 +54,6 @@ def org_state(daemon_state: DaemonState) -> OrgState:
 @pytest.fixture
 def app(tmp_home: Path, daemon_state: DaemonState):
     return create_app(daemon_state)
-
-
-@pytest.fixture
-def app_idle(daemon_state_idle: DaemonState):
-    return create_app(daemon_state_idle)
 
 
 @pytest.fixture
@@ -90,17 +80,3 @@ def client_with_runtime(tmp_home, daemon_state: DaemonState):
     # Attach auth token to every request automatically.
     client.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
     yield client, daemon_state.orgs["alpha"]
-
-
-@pytest.fixture
-def client(tmp_home, daemon_state: DaemonState):
-    """TestClient bound to a runtime-backed app (no lifespan, auth pre-attached).
-
-    Returns the TestClient directly (not a tuple). Suitable for tests that
-    only need HTTP access and not direct DB/state manipulation.
-    """
-    from fastapi.testclient import TestClient
-    app = create_app(daemon_state)
-    tc = TestClient(app)
-    tc.headers.update({"Authorization": f"Bearer {paths_mod.read_token()}"})
-    return tc

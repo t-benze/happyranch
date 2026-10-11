@@ -95,7 +95,11 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	if e.server == nil {
 		return RedemptionReceipt{}, ErrEngineStart
 	}
-	if err := e.server.Start(); err != nil {
+	startErr := e.server.Start()
+	// Release the adapter's string reference on every returned Start result,
+	// including failures and late initialization; this admits no further work.
+	e.server.ClearAuthKey()
+	if startErr != nil {
 		return RedemptionReceipt{}, ErrEngineStart
 	}
 	now := e.now
@@ -108,7 +112,6 @@ func (e *TSNetEngine) Start(ctx context.Context, c EngineConfig, credential []by
 	if deadline, ok := ctx.Deadline(); ok && !now().Before(deadline) {
 		return RedemptionReceipt{}, terminalNetworkFailure(context.DeadlineExceeded)
 	}
-	e.server.ClearAuthKey()
 	if readyCtx.Err() != nil {
 		return RedemptionReceipt{}, terminalNetworkFailure(readyCtx.Err())
 	}

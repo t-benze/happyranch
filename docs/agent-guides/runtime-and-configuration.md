@@ -791,38 +791,67 @@ fallback to the fresh `daemon.port` file.
 
 The full founder-facing CLI is documented in `skills/happyranch/SKILL.md`.
 
+### Task-scoped audit index installation (THR-278)
+
+`Database` uses its existing connection and initialization path to install one
+nonunique, nonpartial `idx_audit_log_task_id ON audit_log(task_id)` after the
+audit table exists. It applies to fresh and existing databases and is idempotent
+on reopen. It preserves historical rows, raw scopes, payload bytes, IDs and
+writer transaction boundaries; it adds no `task_results` index.
+
+For a separately authorized operator, install the reviewed source using the
+deployment procedure for that runtime, with its locked dependencies and
+compatible binaries. Before the ordinary restart, drain active consumers and
+take the normal consistent database backup. Use `scripts/daemon.sh start` and
+`scripts/daemon.sh status` under that operational authorization; the existing
+startup initializer installs the index. No standalone live SQL repair is needed.
+Verify the installed source revision, normal health/readiness and each org's
+ready/fenced receipt separately. With a read-only SQLite inspection, verify the
+exact index SQL, `PRAGMA index_list('audit_log')` nonunique/nonpartial flags and
+`PRAGMA index_info('idx_audit_log_task_id')` single `task_id` key; the unchanged
+task-scoped query should report `SEARCH audit_log USING INDEX
+idx_audit_log_task_id` without a temporary ORDER BY tree. Read back retained
+audit IDs/raw scopes and actual decoded results. Measure live startup after
+installation before claiming readiness within the default 30 seconds.
+
+Rollback uses a reviewed compatible release that understands the complete
+indexed schema and preserves the index/history. A preceding reader whose v1
+reference lacks the index can refuse full-schema comparison; do not claim it
+is downgrade compatible, drop the index live, or rewrite failed attempt residue.
+Merged source alone proves neither installed schema nor live settings repair.
+
 ## Running Tests
 
-For where new test files belong, see the forward-only
-[test-placement rule](project-layout.md#test-placement).
+For current retained-lane boundaries, see
+[test placement](project-layout.md#test-placement).
 
-The founder suspended Python unit-suite execution in THR-291 seq5
-(TASK-10169). While this pause applies, do not launch Python unit tests,
-including focused tests or duration measurements. The `python-unit` GitHub
-job is skipped; `scripts/local_ci.sh python` reports **SUSPENDED**, and `all`
-reports the same suspension before continuing Web CI. This also pauses the
-unit invocation in the hosted manual `local-ci-all` lane. A successful wrapper
-exit or an `all` receipt establishes only the remaining checks, never a unit
-PASS. Preserve test sources, selections and coverage definitions. Web,
-canonical validation and integration jobs retain their own existing contracts;
-no hook bypass is authorized. Existing historical workflow reruns and old
-checkouts do not acquire this pause automatically and must not be used to
-launch the unit suite. Restore execution only after founder release of the
-stop instruction, by reverting the TASK-10169 pause commit through normal
-review and merge. The ordinary commands below describe the restored behavior.
+Python unit tests and their gate are **RETIRED** by founder THR-291 seq40.
+The former default `not integration` selection was deleted, including its
+unmarked component, contract and system acceptance cases. Git history preserves
+that source; do not restore it as a hidden unit or renamed E2E suite.
+`scripts/local_ci.sh python` refuses with exit 2. `all` runs the retained Web
+checks on Node 24 and explicitly reports units RETIRED and fresh E2E PENDING.
+There is no default Python selection: pytest requires explicit existing canonical
+platform file selectors, or the isolated parent with `-m integration`.
 
-The manual `local-ci-all` workflow step invokes the fixed
-`uv run python scripts/nightly_local_ci_all.py` entry from the checkout root.
-Its G follow-on retains the fixed unit-suspension guard and zero-child receipt;
-source provenance authenticates both this script and the workflow YAML.
-Source-copy keepers read the script from their own archived checkout. See
-[Local CI](../local-ci.md) for the retained dormant plan and source controls.
+Required active PR **and exact-merge main** checks are `Web (Node 24)`,
+`Linux Canonical Store Validation (Ubuntu)`, `macOS Canonical Store Validation (macOS 15)`,
+and applicable Docs/other retained path-specific checks. The Linux job includes
+its existing real Codex callback smoke. Unit checks are neither required nor
+passing. Fresh product E2E is **PENDING**, with no ready/required check claimed.
+Independent review, QA, exact-head/completed checks and normal hooks remain
+mandatory. General broken integration remains **SKIPPED** under THR-243 seq42,
+never PASS; integration requires a disposable authorized venue away from the live
+daemon host and deterministic external provider stubs.
 
-```bash
-uv run pytest tests/ -v -n 4              # unit tests only (default; -n 4 = pytest-xdist parallel)
-uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m integration  # disposable only
-uv run python tests/helpers/integration_parent.py -- pytest tests/ -v -m ""  # disposable only
-```
+The existing manual `local-ci-all` runner preserves its disposable environment,
+source/tool/exit receipts and bounded full-log capture. The obsolete PR1011 full
+unit entry, G named-case controls/repetitions and lab unit preflight are removed.
+The existing `all_only` boolean is compatibility-only; every manual input runs
+retained Web checks, with separate integration skipped. Existing 150-minute manual
+and 30-minute scheduled caps are unchanged. No historical allocation is renewed.
+See [the reset coverage gap record](../python-test-reset.md) and
+[Local CI](../local-ci.md) for retained selectors and evidence limits.
 
 Direct pytest uses `tmp_path_retention_policy = "failed"`: passing `tmp_path`
 and `tmpdir` fixture directories are removed best effort; ordinary failed-call
@@ -832,7 +861,7 @@ uv environment (currently pytest 9.0.3); the option requires pytest 7.3+, while
 the declared `pytest>=7.0` range also admits unsupported 7.0–7.2. See
 [pytest scratch scope and limits](../local-ci.md#per-run-pytest-scratch-lifecycle)
 for factory directories, explicit basetemp, version compatibility and cleanup
-limits. Full unit selections containing real daemon/socket tests also belong
+limits. Unit selections are retired; retained integration belongs only
 in the documented disposable CI venue.
 
 Integration tests run real production orchestration with deterministic external
@@ -889,3 +918,14 @@ under workflow_recovery and blocks drain until genuine containment evidence exis
 Disable fences new admission/prelaunch and preserves ownership of already admitted
 work. No startup deployment, live migration, enable, assignment or restart follows
 from publishing S2 source.
+
+
+## Root task Pause and Resume (THR-292)
+
+The supported single daemon per org owns task_pause_controls installation/complete validation before recovery/admission; fresh org creation initializes the same literal extension. Generic Database and runtime-audit remain pause-free. No new config, dependency or permission switch is introduced. Durable holds/release intent and deferred original owners survive lost notifications. Startup preserves possible-launch/ACTION uncertainty and uses actual existing callback consumers, never consumed-result replay. Complete independent schema references include the pause dimension without weakening F/E/G/H comparisons; v2 raw schema is still observed-only. Rollback requires compatible code, including for an empty extension. Deployment/restart/live migration require their separate operator authority. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+
+Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
+
+## Managed Linux enrollment input
+
+The sidecar normalizes surrounding enrollment-file whitespace before the actual tsnet AuthKey input, refuses blank input, and preserves interior bytes and existing custody/one-use safeguards. Owned read/normalized buffers are cleared on every returned path; the adapter releases its key reference after initialization, including failure. See [the maintained Linux package guide](../operations/managed-remote-access-linux-package.md) for the pinned Headscale logging limitation and bounded category-only capture. THR228seq390 keeps all unit execution suspended for PR800; authored Go regressions are UNEXECUTED, and retired Python units must not return. Current combined local-CI Web targets still invoke Vitest; use the permitted existing nonunit components only in this cycle.

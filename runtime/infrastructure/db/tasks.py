@@ -1514,45 +1514,61 @@ class TasksMixin:
         it authenticates the exact metadata token G.  Roots with no pending
         pointer keep their unchanged ordinary behavior.
         """
-        now = datetime.now(timezone.utc).isoformat()
-        began = False
-        if not self._conn.in_transaction:
+        began = not self._conn.in_transaction
+        if began:
             self._conn.execute("BEGIN IMMEDIATE")
-            began = True
         try:
-            pending_generation = self._conn.execute(
-                """SELECT 1 FROM authority_policy_v2_root_dispatch
-                    WHERE root_task_id=? AND state='pending'""",
-                (task_id,),
-            ).fetchone()
-            if pending_generation is not None:
+            pause = getattr(self, "_task_pause_store", None)
+            if pause is not None:
+                pause.held_uncommitted(task_id)
+            claimed = self._try_claim_for_step_uncommitted(
+                task_id, expected_status, expected_block_kind, new_count,
+            )
+            if claimed is None:
                 if began:
                     self._conn.rollback()
                 return False
-            if expected_block_kind is None:
-                cursor = self._conn.execute(
-                    """UPDATE tasks
-                       SET status = ?, block_kind = NULL, note = NULL,
-                           orchestration_step_count = ?, updated_at = ?
-                       WHERE id = ? AND status = ? AND block_kind IS NULL""",
-                    (TaskStatus.IN_PROGRESS.value, new_count, now,
-                     task_id, expected_status.value),
-                )
-            else:
-                cursor = self._conn.execute(
-                    """UPDATE tasks
-                       SET status = ?, block_kind = NULL, note = NULL,
-                           orchestration_step_count = ?, updated_at = ?
-                       WHERE id = ? AND status = ? AND block_kind = ?""",
-                    (TaskStatus.IN_PROGRESS.value, new_count, now,
-                     task_id, expected_status.value, expected_block_kind.value),
-                )
             self._conn.commit()
-            return cursor.rowcount == 1
-        except Exception:
+            return claimed
+        except BaseException:
             if began:
                 self._conn.rollback()
             raise
+
+    def _try_claim_for_step_uncommitted(
+        self, task_id: str, expected_status: TaskStatus,
+        expected_block_kind: BlockKind | None, new_count: int,
+    ) -> bool | None:
+        """Compose the original CAS in the caller's admission transaction."""
+        if not self._conn.in_transaction:
+            raise RuntimeError("task admission requires a writer transaction")
+        now = datetime.now(timezone.utc).isoformat()
+        pending_generation = self._conn.execute(
+            """SELECT 1 FROM authority_policy_v2_root_dispatch
+                WHERE root_task_id=? AND state='pending'""",
+            (task_id,),
+        ).fetchone()
+        if pending_generation is not None:
+            return None
+        if expected_block_kind is None:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = NULL,
+                       orchestration_step_count = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind IS NULL""",
+                (TaskStatus.IN_PROGRESS.value, new_count, now,
+                 task_id, expected_status.value),
+            )
+        else:
+            cursor = self._conn.execute(
+                """UPDATE tasks
+                   SET status = ?, block_kind = NULL, note = NULL,
+                       orchestration_step_count = ?, updated_at = ?
+                   WHERE id = ? AND status = ? AND block_kind = ?""",
+                (TaskStatus.IN_PROGRESS.value, new_count, now,
+                 task_id, expected_status.value, expected_block_kind.value),
+            )
+        return cursor.rowcount == 1
 
     @_synchronized
     def try_fail_over_budget(
@@ -2001,47 +2017,63 @@ class TasksMixin:
         """
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            task = self._conn.execute(
-                "SELECT status, cancelled_at, assigned_agent, current_session_id "
-                "FROM tasks WHERE id = ?", (task_id,)
-            ).fetchone()
-            if task is None or task["cancelled_at"] is not None or task["status"] != TaskStatus.IN_PROGRESS.value \
-                    or task["assigned_agent"] != agent or task["current_session_id"] != origin_session_id:
-                self._conn.rollback()
-                return False
-            existing = self._conn.execute(
-                "SELECT 1 FROM task_results WHERE task_id = ? AND agent = ? AND session_id = ?",
-                (task_id, agent, origin_session_id),
-            ).fetchone()
-            if existing is not None:
-                self._conn.rollback()
-                return False
-            prior = self._conn.execute(
-                "SELECT 1 FROM task_completion_recoveries "
-                "WHERE task_id = ? AND agent = ? AND origin_session_id = ?",
-                (task_id, agent, origin_session_id),
-            ).fetchone()
-            live_episode = self._conn.execute(
-                "SELECT 1 FROM task_completion_recoveries "
-                "WHERE task_id = ? AND agent = ? AND state = 'claimed'",
-                (task_id, agent),
-            ).fetchone()
-            if prior is not None or live_episode is not None:
-                self._conn.rollback()
-                return False
-            self._conn.execute(
-                """INSERT INTO task_completion_recoveries
-                   (task_id, agent, origin_session_id, recovery_session_id,
-                    provider_session_id, claimed_at, expires_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (task_id, agent, origin_session_id, recovery_session_id,
-                 provider_session_id, claimed_at, expires_at),
+            store = getattr(self, "_task_pause_store", None)
+            if store is not None:
+                store.held_uncommitted(task_id)
+            outcome = self._claim_task_completion_recovery_uncommitted(
+                task_id=task_id, agent=agent, origin_session_id=origin_session_id,
+                recovery_session_id=recovery_session_id, provider_session_id=provider_session_id,
+                claimed_at=claimed_at, expires_at=expires_at,
             )
+            if not outcome:
+                self._conn.rollback()
+                return False
             self._conn.commit()
-            return True
-        except Exception:
+            return outcome
+        except BaseException:
             self._conn.rollback()
             raise
+
+    def _claim_task_completion_recovery_uncommitted(
+        self, *, task_id: str, agent: str, origin_session_id: str,
+        recovery_session_id: str, provider_session_id: str,
+        claimed_at: str, expires_at: str,
+    ) -> bool:
+        """Reuse original checks in a caller-owned admission transaction."""
+        task = self._conn.execute(
+            "SELECT status, cancelled_at, assigned_agent, current_session_id "
+            "FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if task is None or task["cancelled_at"] is not None or task["status"] != TaskStatus.IN_PROGRESS.value \
+                or task["assigned_agent"] != agent or task["current_session_id"] != origin_session_id:
+            return False
+        existing = self._conn.execute(
+            "SELECT 1 FROM task_results WHERE task_id = ? AND agent = ? AND session_id = ?",
+            (task_id, agent, origin_session_id),
+        ).fetchone()
+        if existing is not None:
+            return False
+        prior = self._conn.execute(
+            "SELECT 1 FROM task_completion_recoveries "
+            "WHERE task_id = ? AND agent = ? AND origin_session_id = ?",
+            (task_id, agent, origin_session_id),
+        ).fetchone()
+        live_episode = self._conn.execute(
+            "SELECT 1 FROM task_completion_recoveries "
+            "WHERE task_id = ? AND agent = ? AND state = 'claimed'",
+            (task_id, agent),
+        ).fetchone()
+        if prior is not None or live_episode is not None:
+            return False
+        self._conn.execute(
+            """INSERT INTO task_completion_recoveries
+               (task_id, agent, origin_session_id, recovery_session_id,
+                provider_session_id, claimed_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (task_id, agent, origin_session_id, recovery_session_id,
+             provider_session_id, claimed_at, expires_at),
+        )
+        return True
 
     @_synchronized
     def publish_task_completion_recovery_binding(
@@ -2051,25 +2083,39 @@ class TasksMixin:
         """Publish a claimed recovery only while its origin still owns the task."""
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            cursor = self._conn.execute(
-                """UPDATE tasks SET assigned_agent = ?, current_session_id = ?
-                   WHERE id = ? AND status = ? AND cancelled_at IS NULL
-                     AND assigned_agent = ? AND current_session_id = ?
-                     AND EXISTS (
-                       SELECT 1 FROM task_completion_recoveries
-                       WHERE task_id = ? AND agent = ?
-                         AND origin_session_id = ?
-                         AND recovery_session_id = ? AND state = 'claimed'
-                     )""",
-                (agent, recovery_session_id, task_id, TaskStatus.IN_PROGRESS.value,
-                 agent, origin_session_id, task_id, agent, origin_session_id,
-                 recovery_session_id),
+            store = getattr(self, "_task_pause_store", None)
+            if store is not None:
+                store.held_uncommitted(task_id)
+            outcome = self._publish_task_completion_recovery_binding_uncommitted(
+                task_id=task_id, agent=agent, origin_session_id=origin_session_id,
+                recovery_session_id=recovery_session_id,
             )
             self._conn.commit()
-            return cursor.rowcount == 1
-        except Exception:
+            return outcome
+        except BaseException:
             self._conn.rollback()
             raise
+
+    def _publish_task_completion_recovery_binding_uncommitted(
+        self, *, task_id: str, agent: str, origin_session_id: str,
+        recovery_session_id: str,
+    ) -> bool:
+        """Reuse original checks in a caller-owned admission transaction."""
+        cursor = self._conn.execute(
+            """UPDATE tasks SET assigned_agent = ?, current_session_id = ?
+               WHERE id = ? AND status = ? AND cancelled_at IS NULL
+                 AND assigned_agent = ? AND current_session_id = ?
+                 AND EXISTS (
+                   SELECT 1 FROM task_completion_recoveries
+                   WHERE task_id = ? AND agent = ?
+                     AND origin_session_id = ?
+                     AND recovery_session_id = ? AND state = 'claimed'
+                 )""",
+            (agent, recovery_session_id, task_id, TaskStatus.IN_PROGRESS.value,
+             agent, origin_session_id, task_id, agent, origin_session_id,
+             recovery_session_id),
+        )
+        return cursor.rowcount == 1
 
     @_synchronized
     def task_completion_recovery_launch_allowed(

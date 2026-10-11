@@ -78,7 +78,7 @@ func TestValidateRejectsUnsafeTopology(t *testing.T) {
 }
 
 func TestCredentialFailuresOccurBeforeListenAndAreRedacted(t *testing.T) {
-	for _, name := range []string{"missing", "symlink", "loose", "empty", "replay"} {
+	for _, name := range []string{"missing", "symlink", "loose", "empty", "whitespace", "replay"} {
 		t.Run(name, func(t *testing.T) {
 			cfg := validConfig(t)
 			events := []string{}
@@ -93,13 +93,15 @@ func TestCredentialFailuresOccurBeforeListenAndAreRedacted(t *testing.T) {
 				os.Chmod(target, 0o644)
 			case "empty":
 				os.WriteFile(target, nil, 0o600)
+			case "whitespace":
+				os.WriteFile(target, []byte(" \t\r\n\u00a0"), 0o600)
 			case "replay":
 				os.WriteFile(filepath.Join(cfg.StateDir, consumedMarker), []byte("1"), 0o600)
 			}
 			e := &fakeEngine{receipt: RedemptionReceipt{Redeemed: true, Durable: true, ExpectedPeerVisible: true}, events: &events}
 			s := New(cfg, e, &net.Dialer{})
 			err := s.Start(context.Background())
-			if err == nil || strings.Contains(err.Error(), "secret") || contains(events, "listen") {
+			if err == nil || strings.Contains(err.Error(), "secret") || len(events) != 0 {
 				t.Fatalf("err=%v events=%v", err, events)
 			}
 		})

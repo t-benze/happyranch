@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from datetime import datetime
+from uuid import uuid4
 
 from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
 from runtime.models import (
@@ -15,6 +18,54 @@ from runtime.models import (
     ThreadRecord,
     ThreadStatus,
 )
+
+
+def _thread_page_order(bucket: str) -> list[tuple[str, str]]:
+    if bucket == "open":
+        return [
+            ("CASE WHEN t.pinned_at IS NOT NULL THEN 0 ELSE 1 END", "ASC"),
+            ("CASE WHEN t.pinned_at IS NOT NULL THEN CAST(SUBSTR(t.id, 5) AS INTEGER) ELSE 0 END", "DESC"),
+            ("t.started_at COLLATE BINARY", "DESC"),
+            ("t.id COLLATE BINARY", "DESC"),
+        ]
+    stamp = "COALESCE(t.archived_at, t.started_at)" if bucket == "archived" else "t.started_at"
+    return [(f"{stamp} COLLATE BINARY", "DESC"), ("t.id COLLATE BINARY", "DESC")]
+
+
+def _thread_page_cursor(
+    cursor: str, *, org: str, bucket: str, page_size: int,
+) -> list[int | str]:
+    """Validate an unsigned continuation hint against its complete read scope."""
+    try:
+        if not cursor or len(cursor) > 4096 or any(c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for c in cursor):
+            raise ValueError
+        raw = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+        def unique_fields(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            fields: dict[str, object] = {}
+            for name, value in pairs:
+                if name in fields:
+                    raise ValueError
+                fields[name] = value
+            return fields
+
+        value = json.loads(raw, object_pairs_hook=unique_fields)
+        if not isinstance(value, dict) or set(value) != {"v", "org", "bucket", "size", "key"}:
+            raise ValueError
+        if type(value["v"]) is not int or value["v"] != 1 or type(value["size"]) is not int:
+            raise ValueError
+        if (value["org"], value["bucket"], value["size"]) != (org, bucket, page_size):
+            raise ValueError
+        key = value["key"]
+        types = [int, int, str, str] if bucket == "open" else [str, str]
+        if not isinstance(key, list) or len(key) != len(types) or any(type(k) is not kind for k, kind in zip(key, types)):
+            raise ValueError
+        if bucket == "open" and (key[0] not in (0, 1) or not -(2**63) <= key[1] < 2**63 or (key[0] == 1 and key[1] != 0)):
+            raise ValueError
+        if not key[-1] or not key[-2]:
+            raise ValueError
+        return key
+    except (ValueError, TypeError, UnicodeError, binascii.Error, RecursionError) as exc:
+        raise ValueError("invalid_thread_cursor") from exc
 
 
 class ThreadsMixin:
@@ -142,6 +193,78 @@ class ThreadsMixin:
             params = (limit,)
         cursor = self._conn.execute(query, params)
         return [self._row_to_thread(r) for r in cursor.fetchall()]
+
+    @_synchronized
+    def list_threads_page(
+        self, *, org: str, status: str | None = None,
+        page_size: int = 50, cursor: str | None = None,
+    ) -> dict:
+        """One live keyset page and org-wide totals from one owned read snapshot.
+
+        The saved tuple need not identify a surviving anchor. No transaction,
+        cursor or cross-request snapshot is held beyond this call. An ambient
+        caller transaction remains owned by that caller, even on failure.
+        """
+        if type(page_size) is not int or not 1 <= page_size <= 100:
+            raise ValueError("invalid_thread_page_size")
+        if status not in (None, "open", "archived"):
+            raise ValueError("invalid_thread_bucket")
+        bucket = status or "all"
+        order = _thread_page_order(bucket)
+        key = _thread_page_cursor(cursor, org=org, bucket=bucket, page_size=page_size) if cursor is not None else None
+        conditions = ["t.status IN ('open', 'archived')"]
+        params: list = []
+        if status:
+            conditions.append("t.status = ?")
+            params.append(status)
+        if key is not None:
+            after = []
+            for index, (expression, direction) in enumerate(order):
+                prefix = [f"{order[j][0]} = ?" for j in range(index)]
+                prefix.append(f"{expression} {'>' if direction == 'ASC' else '<'} ?")
+                after.append("(" + " AND ".join(prefix) + ")")
+                params.extend(key[:index + 1])
+            conditions.append("(" + " OR ".join(after) + ")")
+        keys = ", ".join(f"{expression} AS page_key_{i}" for i, (expression, _) in enumerate(order))
+        ordering = ", ".join(f"{expression} {direction}" for expression, direction in order)
+        # Unique name avoids colliding with an ambient savepoint on this connection.
+        savepoint = f"thread_page_{uuid4().hex}"
+        self._conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            totals_row = self._conn.execute(
+                "SELECT COALESCE(SUM(status = 'open'), 0) AS open, "
+                "COALESCE(SUM(status = 'archived'), 0) AS archived, "
+                "COUNT(*) AS 'all', "
+                "COALESCE(SUM(composed_from_dream_id IS NOT NULL), 0) AS dream_origin "
+                "FROM threads WHERE status IN ('open', 'archived')"
+            ).fetchone()
+            sampled_at = _now().isoformat()
+            rows = self._conn.execute(
+                f"SELECT t.*, {keys}, "
+                "(SELECT tm.speaker FROM thread_messages tm WHERE tm.thread_id = t.id "
+                "ORDER BY tm.seq DESC LIMIT 1) AS last_speaker, "
+                "(SELECT MAX(tm.created_at) FROM thread_messages tm WHERE tm.thread_id = t.id) AS last_activity_at "
+                f"FROM threads t WHERE {' AND '.join(conditions)} ORDER BY {ordering} LIMIT ?",
+                (*params, page_size + 1),
+            ).fetchall()
+            has_more = len(rows) > page_size
+            returned = rows[:page_size]
+            records = [self._row_to_thread(row) for row in returned]
+            participants = self.list_thread_participant_names_for_threads([t.id for t in records])
+            next_cursor = None
+            if has_more:
+                value = {"v": 1, "org": org, "bucket": bucket, "size": page_size,
+                         "key": [returned[-1][f"page_key_{i}"] for i in range(len(order))]}
+                next_cursor = base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).decode().rstrip("=")
+            result = {"threads": records, "participants": participants,
+                      "totals": dict(totals_row), "has_more": has_more,
+                      "next_cursor": next_cursor, "sampled_at": sampled_at}
+            self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            return result
+        except BaseException:
+            self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
 
     @_synchronized
     def list_threads_by_composed_from_task_id(

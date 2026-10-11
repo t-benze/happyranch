@@ -260,9 +260,18 @@ For PR-producing engineering tasks, do not hand-roll CI polling scripts. Submit 
 ```bash
 python -m runtime.daemon.pr_ci_waiter \
   --repo owner/repo --pr N --head-sha <40-char-sha> \
-  --expected-check "Python CI" --expected-check "Web CI" \
+  --expected-check "Web (Node 24)" \
+  --expected-check "Linux Canonical Store Validation (Ubuntu)" \
+  --expected-check "macOS Canonical Store Validation (macOS 15)" \
   --timeout-seconds 3600 --settle-seconds 120 --poll-interval-seconds 15
 ```
+
+For HappyRanch, add applicable Docs/other retained path-specific checks to the
+three active names above, on both PR and exact-merge main. THR-291 seq40 retired
+Python units; neither unit PASS nor a ready fresh E2E check may be claimed.
+Other repositories use their own current check names. The waiter accepts an
+explicit nonempty policy; it does not discover or enforce repository branch
+protection. Verify the expected names and actual completed outcomes.
 
 This polls GitHub checks for the pinned head SHA and prints a structured verdict JSON to stdout. It exits 0 for `ci_pass`, non-zero for all other verdicts. **The poll job performs NO merge.**
 
@@ -314,3 +323,10 @@ Before reporting your task complete, stop any of your own jobs you no longer nee
 - `409 session_mismatch` — daemon spawned a newer session for this `(task_id, agent)`. Exit immediately.
 
 Retry once after 1 second on any non-listed error.
+
+
+## Root task Pause outcomes
+
+Task-root Pause may leave an authorized submitted job Pending. Founder approval/run and deferred automatic launch are gated at the actual origin root; rejection/stop remain available. Only an ordinary-purpose actual running session (including a normal v2-admitted manager session) captured by that pause generation has the unreviewed auto-run exception, subject to fresh exact task/agent/SID validation. A submission ID, tracker binding or host lease is not running evidence. Preserve truthful pending/terminal receipts; never describe deferral as a PASS or grant broader authority.
+
+Pause capture reconciles current tracker bindings and durable real-running evidence at the serialized control COMMIT. A pre-request snapshot grants no exception; new bindings are considered, ended/replaced bindings are excluded, and duplicate Pause never renews capture. Every actual job run still revalidates current ordinary purpose, exact task/agent/SID and the held generation; founder approval/run never uses this exception.

@@ -17,13 +17,13 @@ on:
   pull_request:
     paths:
       - 'labs/tenant_isolation/**'
-      - 'tests/tenant_isolation/**'
+      - 'tests/contract/managed_remote_access/**'
       - '.github/workflows/lab-tenant-isolation.yml'
   push:
     branches: [main]
     paths:
       - 'labs/tenant_isolation/**'
-      - 'tests/tenant_isolation/**'
+      - 'tests/contract/managed_remote_access/**'
       - '.github/workflows/lab-tenant-isolation.yml'
   workflow_dispatch:
 
@@ -42,8 +42,6 @@ jobs:
           python-version: '3.12'
       - name: Sync dependencies (frozen)
         run: uv sync --frozen
-      - name: Unit + contract tests
-        run: uv run pytest tests/tenant_isolation/ tests/contract/test_managed_remote_access_contract.py -q
       - name: Run hostile isolation harness (real runtime)
         id: harness
         run: |

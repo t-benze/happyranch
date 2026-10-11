@@ -327,7 +327,7 @@ func TestTSNetEngineDoesNotRenewBudgetAfterContextlessStart(t *testing.T) {
 	waitSignal(t, server.startEntered, "Start")
 	releaseStart()
 	assertNetworkReason(t, waitResult(t, result), "deadline_exceeded")
-	if server.clearAuthKeyCalls != 0 || server.upCalls != 0 || server.statusCalls != 0 {
+	if server.clearAuthKeyCalls != 1 || server.upCalls != 0 || server.statusCalls != 0 {
 		t.Fatalf("late start minted post-start work: clear=%d up=%d status=%d", server.clearAuthKeyCalls, server.upCalls, server.statusCalls)
 	}
 }
@@ -710,7 +710,7 @@ func TestProductionAdapterViaSidecarTerminalContextWinsOverLateResult(t *testing
 					}
 					releaseCall()
 					assertNetworkReason(t, waitResult(t, result), terminal)
-					if stage == "start" && (server.clearAuthKeyCalls != 0 || server.upCalls != 0 || server.statusCalls != 0) {
+					if stage == "start" && (server.clearAuthKeyCalls != 1 || server.upCalls != 0 || server.statusCalls != 0) {
 						t.Fatal("late contextless Start admitted post-start work")
 					}
 					_ = svc.Stop()
@@ -725,6 +725,84 @@ func TestProductionAdapterViaSidecarTerminalContextWinsOverLateResult(t *testing
 					}
 				})
 			}
+		}
+	}
+}
+
+// THR228seq390: authored while all unit execution is suspended.
+func TestCredentialWhitespaceAtProductionAuthKeyInput(t *testing.T) {
+	for _, tc := range []struct{ name, input, want string }{
+		{"clean", "key-value", "key-value"},
+		{"lf", "key-value\n", "key-value"},
+		{"crlf", "key-value\r\n", "key-value"},
+		{"surrounding", " \t\r\nkey-value\r\n\t ", "key-value"},
+		{"unicode_edges", "\u00a0key-value\u2003", "key-value"},
+		{"interior", " \tkey \t\r\nvalue\x00\xff \r\n", "key \t\r\nvalue\x00\xff"},
+	} {
+		for _, failure := range []string{"success", "start", "up"} {
+			t.Run(tc.name+"/"+failure, func(t *testing.T) {
+				cfg := validConfig(t)
+				if err := os.WriteFile(cfg.CredentialFile, []byte(tc.input), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				listener := &oneListener{accepted: make(chan struct{}), blockAfter: true, closed: make(chan struct{})}
+				server := &fakeTSNetServer{upStatus: runningWithPeer("mac-client-123", ""), listener: listener}
+				if failure == "start" {
+					server.startErr = errors.New("SECRET_CANARY")
+				}
+				if failure == "up" {
+					server.upErr = errors.New("tsnet.Up: backend: SECRET_CANARY")
+				}
+				engine := NewTSNetEngine()
+				factory := engine.newServer
+				var owned []byte
+				calls := 0
+				engine.newServer = func(c EngineConfig, credential []byte) tsnetServer {
+					calls++
+					owned = credential // retain alias to verify Start's clearing on return
+					production := factory(c, credential).(productionTSNetServer)
+					if production.server.AuthKey != tc.want {
+						t.Fatal("production AuthKey bytes differ")
+					}
+					production.ClearAuthKey()
+					if production.server.AuthKey != "" {
+						t.Fatal("production AuthKey reference retained")
+					}
+					return server // never launch a real provider in a regression
+				}
+				probeClient, probeServer := net.Pipe()
+				defer probeServer.Close()
+				defer probeClient.Close()
+				svc := New(cfg, engine, dialFunc(func(context.Context, string, string) (net.Conn, error) { return probeClient, nil }))
+				err := svc.Start(context.Background())
+				_ = svc.Stop()
+				if calls != 1 || server.clearAuthKeyCalls != 1 {
+					t.Fatal("credential consumer/clear count differs")
+				}
+				for _, b := range owned[:cap(owned)] {
+					if b != 0 {
+						t.Fatal("owned credential buffer retained bytes")
+					}
+				}
+				_, markerErr := os.Stat(filepath.Join(cfg.StateDir, consumedMarker))
+				_, fileErr := os.Stat(cfg.CredentialFile)
+				if failure == "success" {
+					if err != nil || markerErr != nil || !os.IsNotExist(fileErr) {
+						t.Fatal("success did not durably consume once")
+					}
+					// A reintroduced key must refuse even after successful normalization.
+					if err := os.WriteFile(cfg.CredentialFile, []byte(tc.input), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := consumeInput(cfg); !errors.Is(err, ErrCredentialInput) {
+						t.Fatal("consumed input replay accepted")
+					}
+				} else {
+					if err == nil || strings.Contains(err.Error(), "SECRET_CANARY") || !os.IsNotExist(markerErr) || fileErr != nil {
+						t.Fatal("failed startup changed one-use lifecycle or leaked")
+					}
+				}
+			})
 		}
 	}
 }

@@ -1,5 +1,10 @@
 # Orchestrator Contracts
 
+> Test-policy update (THR-291 seq40): former Python unit tests and unit-only
+> fixtures referenced in historical implementation evidence below are retired.
+> Product contracts are unchanged; replacement E2E is PENDING. See
+> [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
+
 **G submission-schema migration (THR139 seq395).** Deliberate fresh org creation
 initializes the complete G layout before attachment. Existing F/E startup,
 reopen and enable retain their installed layout; S2 remains available on E.
@@ -648,6 +653,22 @@ retain full-DB fail-closed comparison with S1 F/E reference selection. The check
 in `tests/authority_v2_historical_schema.py` remain real migration-path test
 support; organic `ADD COLUMN` histories, including `agent_enrollments`, require
 no special acceptance list.
+
+THR-278 adds the nonunique, nonpartial `idx_audit_log_task_id` in the generic
+fresh/upgrade initializer. The legacy v1 independently constructed complete
+schema references include that index; missing or unapproved objects still
+produce full-schema drift. V2 records the index in actual coherent raw and
+inventory digests/count on K/P and remains observed-only. The audit reader
+still uses exact `task_id = ?`, ascending audit ID and the original JSON
+decoder, preserving literal task/config/thread/artifact scope identities.
+Failed-claim/no-candidate attempts remain discoverable with authenticated
+housekeeping obligations. A present malformed canonical attempt still fails
+whole discovery closed, exact-target/startup returns remain unavailable, and
+the accepted-recovery, PID-failure and ordinary Pending sweep branches stay
+fenced; workflow-owned recovery retains its earlier independent ordering.
+Offline scan timings do not establish live readiness or attribute the separately
+unassigned post-discovery interval. Runtime installation/health verification
+and compatible-code rollback are documented in the runtime guide.
 
 Checkpoint C3b lands the durable v2 candidate/pin claim and the SEPARATE
 claim-audit stages. The Database owns synchronization and the transaction
@@ -2083,3 +2104,16 @@ requested F/E/G installer on its own disposable database; the comparison
 includes every SQL object. A candidate never supplies a baseline, and any
 required reference failure or unrelated object still refuses. This changes
 no observed-only authority-v2 claim rule.
+
+
+## Root task Pause and Resume (THR-292)
+
+Pause gates future execution commitment of the actual root tree, not the lifecycle or accepted-result consumer. Pure preparation precedes the short final admission writer. The existing workflow authority validator is shared by public admission_writer and private draft composition; profile/publisher ownership and short lease transactions precede binding/root/DB/terminal ownership, with rollback before release and no ownership across waits. Final admitted cleanup ACTION runs unlocked under its real scheduler owner; known prompt suffix is retained and interrupted ACTION stays unknown. SAME-owner retry/recovery retains original identity and budgets and is durably rediscovered. Genuine manager supersession keeps its separate NULL-parent unheld successor; a held predecessor does not hold that root. Terminal cleanup refuses uncertain/held execution. Details: [current Pause contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
+
+Pause reads all current non-recovery tracker bindings inside the serialized root/DB writer and keeps the short tracker mutex through COMMIT. Durable positively-running evidence, exact current task/agent/SID and server-admitted ordinary purpose must agree. New or moved bindings are considered there; ended or replaced SIDs are excluded. Advisory pre-request snapshots never decide capture. The tracker mutex is a leaf lock: no binding lease is acquired beneath root/DB, and no await, host/provider operation or backoff runs under these locks. Duplicate Pause preserves capture; Resume followed by a new Pause replaces previous-generation capture.
+
+Retained Pause retries admitted through v2 preserve their original tagged generation and authenticate full already-settled proof at rediscovery, adoption and final commitment. Ordinary-purpose running entitlement includes normal v2-admitted managers; workflow document-only and completion-recovery sessions remain excluded. Unheld pending auto-jobs require the original server submission audit and immutable job digest after session settlement. Late genuine callbacks use existing result consumers while held without launching a provider. Interrupted result-processing tails retain unknown tree evidence after producer settlement.
+
+The existing job runner has no descendant-tree quiescence receipt: actual job terminal status still settles waits, while its committed launch journal becomes an unknown drain blocker. Only affirmative failure before runner entry closes a no-launch reservation. No PID absence, terminal row or caught runner exception establishes tree closure.
+
+Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.

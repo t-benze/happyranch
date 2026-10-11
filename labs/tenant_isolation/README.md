@@ -41,7 +41,7 @@ disabled DERP or control-plane TCP.
   artifacts by digest/sha256. If the relay tooling is unavailable, the REAL
   preflight declines with the exact prerequisite — proof is never weakened.
 - **The manager/authoring host has no Docker/Podman/Go/Headscale/Tailscale.**
-  `--runtime mock` and the unit tests exercise orchestration/parsing/assertion
+  `--runtime mock` exercises orchestration/parsing/assertion
   logic only. **A mocked/unit-only pass is NOT proof of tenant isolation** and
   every summary labels its `runtime_kind` honestly (`real` / `mock` / `none`);
   `hostile_proof` is `true` only for a real run whose genuinely executed
@@ -50,6 +50,17 @@ disabled DERP or control-plane TCP.
   prerequisite evidence — never fabricated runtime proof.
 
 ## What the harness proves (semantically consumed from the contract)
+
+The route-policy pin includes the already merged route removals in
+[PR #754](https://github.com/t-benze/happyranch/pull/754)
+(`a8cf692e20010e233ff49163f511a4367de1c04c`, mention-routing) and
+[PR #1017](https://github.com/t-benze/happyranch/pull/1017)
+(`b3179b123fddbb0f0f604ed9e0d148f1b23455f3`, ten Assistant entries).
+Relative to the original `01ebc8b38` / `aa67985ff` fixture, only `allow`
+changed: eleven removals and no additions. The other three fixture pins are
+unchanged. A pin update requires provenance review of the merged fixture
+changes; a drift refusal alone is never authority to repin. Matching digests
+only admit preflight, not prove real isolation or cleanup.
 
 The harness reads `tests/contract/managed_remote_access/*.json` at runtime
 (read-only; pinned digests in `manifest.json`, drift fails closed):
@@ -81,11 +92,11 @@ The harness reads `tests/contract/managed_remote_access/*.json` at runtime
 - results are category-level prose only: no sentinel credential shapes, no raw
   exception text, no synthetic hostnames/IPs/keys, no concrete tenant ids.
 
-## Required mutation probes (checked-in red/green TDD evidence)
+## Historical unit mutation evidence (source retired)
 
-`tests/tenant_isolation/test_orchestrator.py`, `test_policy.py`,
-`test_probes.py`, and `test_redact.py` prove each of the brief's mandated
-mutations **fails for its intended reason**:
+THR-291 seq40 removed the former orchestrator/policy/probe/redaction unit
+checks. The table records their historical intent; it is no current RED/GREEN
+or compatibility claim. Fresh replacement proof remains pending:
 
 | Mutation | Guard | Test |
 |---|---|---|
@@ -125,17 +136,16 @@ labs/tenant_isolation/
     probes.py          threat-category → recipe mapping, outcome classifier, evaluate (assertion layer)
     orchestrator.py    preflight, lifecycle, cleanup, residue check, post-run guards, evidence
     main.py            CLI: --check-runtime / --runtime {auto,real,mock,none} / bounds
-tests/tenant_isolation/   focused unit tests (122) incl. the mandated mutation probes
 .github/workflows/lab-tenant-isolation.yml   the one path-scoped lab workflow
 ```
+
+Python unit/preflight cases were retired by THR-291 seq40. The real hostile
+lab and its four consumed contract fixtures remain; mock execution is not
+real tenant-isolation proof.
 
 ## Run locally (no runtime proof)
 
 ```bash
-# 1. unit + contract tests (TDD surface; fast, hermetic)
-uv run pytest tests/tenant_isolation/ -q
-uv run pytest tests/contract/ -q
-
 # 2. labeled dry-run of the orchestrator (fake backend; hostile_proof=false)
 uv run python -m labs.tenant_isolation.harness.main \
     --runtime mock --results-dir /tmp/hs-mock

@@ -1,5 +1,9 @@
 # Thread / Talk Self-Dispatch-Only Rule — Design Spec
 
+> Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
+> are retired. Product invariants and acceptance obligations remain unchanged;
+> replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
+
 **Date:** 2026-05-28
 **Status:** Draft, pending implementation.
 **Origin:** Founder-reported pattern on THR-010 (2026-05-28): `engineering_head` (manager) used the thread itself as a phase-management board, thread-dispatching TASK-546 (PM, worker) and TASK-547 (senior_dev, worker) as separate root tasks; when TASK-547's design-review came back REQUEST_CHANGES, the `TASK_FOLLOWUP` turn could not dispatch the PM-revision (per `2026-05-28-thread-task-followup-design.md` §6.4), and the thread stalled with a dangling commitment EH could not fulfil. Founder diagnosis: the orchestrator already provides iterative manager-worker loops inside a task tree; threads should be reserved for **founder-visible coordination + cross-team handoffs**, not for in-thread phase management.

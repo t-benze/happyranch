@@ -251,11 +251,16 @@ HEADSCALE_LINES = 256
 HEADSCALE_NODES = 64
 HEADSCALE_OUTPUT = 2048
 HEADSCALE_ROLES = {"peer": "synthetic-peer-ci", "sidecar": "home-sidecar-ci"}
+# Headscale v0.25.1 (ade7f2a2): these producers call Caller(), then Msg().
+# Zerolog v1.33.0 uses level/caller/message; Err and key/SQL fields are never
+# projected. Its CLI hardwires ConsoleWriter despite log.format=json, so retain
+# that pinned format too. No auth-key refusal event is emitted by auth.go or
+# noiseServer.NoiseRegistrationHandler; do not invent one from generic errors.
 HEADSCALE_EVENTS = {
     "unsupported client connected": ("error", "hscontrol/noise.go", "unsupported_client"),
     "No Upgrade header in TS2021 request. If headscale is behind a reverse proxy, make sure it is configured to pass WebSockets through.": ("warn", "hscontrol/noise.go", "missing_upgrade"),
-    "Error initializing": ("fatal", "cli/serve.go", "initialization_error"),
-    "Headscale ran into an error and had to shut down.": ("fatal", "cli/serve.go", "server_shutdown_error"),
+    "Error initializing": ("fatal", "cmd/headscale/cli/serve.go", "initialization_error"),
+    "Headscale ran into an error and had to shut down.": ("fatal", "cmd/headscale/cli/serve.go", "server_shutdown_error"),
 }
 
 
@@ -320,11 +325,12 @@ def project_headscale_log(raw: bytes) -> dict[str, Any]:
                 record = _closed_json(text)
                 if not isinstance(record, dict):
                     raise ValueError
-                level, caller, message = record.get("level"), record.get("caller", ""), record.get("message")
+                level, caller, message = record.get("level"), record.get("caller", ""), record.get("message", "")
                 if not isinstance(level, str) or level not in {"trace", "debug", "info", "warn", "error", "fatal", "panic"} or not isinstance(caller, str) or not isinstance(message, str) or any(ord(c) < 32 or ord(c) == 127 for c in message + caller):
                     raise ValueError
             else:
-                # zerolog ConsoleWriter RFC3339, optional SGR styling only.
+                # Pinned cmd/headscale/headscale.go: ConsoleWriter RFC3339,
+                # with optional SGR styling; no arbitrary text/error matching.
                 text = re.sub(r"\x1b\[[0-9;]*m", "", text)
                 if any(ord(c) < 32 or ord(c) == 127 for c in text):
                     raise ValueError

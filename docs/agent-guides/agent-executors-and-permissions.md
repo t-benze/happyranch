@@ -1,5 +1,10 @@
 # Agent Executors And Permissions
 
+> Test-policy update (THR-291 seq40): former Python unit tests and unit-only
+> fixtures referenced in historical implementation evidence below are retired.
+> Product contracts are unchanged; replacement E2E is PENDING. See
+> [coverage gaps](../python-test-reset.md) and [current lanes](../local-ci.md).
+
 ## Bundled skill sources and canonical delivery
 
 Release-owned instructions and supporting assets live in

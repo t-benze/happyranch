@@ -14,7 +14,11 @@ For current behavior, use these sources before old specs:
   agent guide instead; the old in-spec pathname is historical design text.
 - Historical `protocol/` references identify documents retired after `01d5ede5`;
   use Git history for their original contents.
-- `tests/contract/openapi.json`, route tests, and implementation for executable truth.
+- `tests/contract/openapi.json`, retained lanes, and implementation for executable truth.
+- [Python test reset](../../python-test-reset.md) for current test retirement and uncovered obligations.
+  THR-291 seq40 supersedes Python unit execution/keeper requirements in all current
+  specs. Historical test paths describe past evidence, not executable gates.
+  Product contracts and acceptance obligations remain unchanged; fresh E2E is PENDING.
 
 When a spec conflicts with those sources, treat the spec as historical unless this index marks it `current`.
 
@@ -39,6 +43,7 @@ New specs should include a short status block near the top:
 
 | Spec | Status | Current source / notes |
 | --- | --- | --- |
+| [2026-10-10-root-task-pause-resume.md](2026-10-10-root-task-pause-resume.md) | current | Separate org root control, final commitment, truthful drain, API/CLI/overview and compatible rollback |
 | `2026-10-01-escalation-reason-display.md` | implemented | THR-279 read-side current-episode reason projection; current contract in `docs/agent-guides/web-and-cli.md`. |
 | `2026-09-20-web-i18n-design.md` | current | THR-118 W1 web i18n foundation (typed en/zh-CN catalog, resolver, adapter seam, coverage manifest). Current contract: `web/src/lib/i18n/`, `web/src/hooks/i18n.tsx`, `web/ARCHITECTURE.md`. Route translation is W2-W4; native persistence is N1. |
 | `2026-09-10-delegated-failure-manager-routing.md` | implemented | Current routing contract: `docs/agent-guides/orchestrator-contracts.md` and `runtime/orchestrator/run_step.py`. |

@@ -4,6 +4,7 @@
 package sidecar
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -237,10 +238,18 @@ func consumeInput(c Config) ([]byte, error) {
 		return nil, ErrCredentialInput
 	}
 	b, err := os.ReadFile(c.CredentialFile)
-	if err != nil || len(strings.TrimSpace(string(b))) == 0 {
+	// TrimSpace returns a view. Always clear the entire owned read buffer,
+	// including partial reads and the bytes outside that view on refusal.
+	defer clear(b)
+	if err != nil {
 		return nil, ErrCredentialInput
 	}
-	return b, nil
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) == 0 {
+		return nil, ErrCredentialInput
+	}
+	// Start owns and clears this independent copy after every engine result.
+	return bytes.Clone(trimmed), nil
 }
 
 func requireOwnerDir(path string) error {

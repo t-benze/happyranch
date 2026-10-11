@@ -270,6 +270,42 @@ describe('useThreadTailSSE — thread-detail invalidation for reply_delivery (GH
 // ---------------------------------------------------------------------------
 
 describe('useSetThreadPinned — optimistic pin (THR-209)', () => {
+  it('reorders loaded Open pages, preserves page metadata and rolls back the owned snapshot', async () => {
+    const qc = makeClient();
+    const ordinary = { thread_id: THREAD_ID, subject: 'Target', pinned: false, pinned_at: null, started_at: '2026-01-01T00:00:00Z' };
+    const pinned = { thread_id: 'THR-10', subject: 'Existing', pinned: true, pinned_at: '2026-01-01T00:00:00Z', started_at: '2026-01-02T00:00:00Z' };
+    const totals = { open: 2, archived: 0, all: 2, dream_origin: 0 };
+    const initial = { pages: [
+      { threads: [pinned], totals, has_more: true, next_cursor: 'next', sampled_at: 'one' },
+      { threads: [ordinary], totals, has_more: false, next_cursor: null, sampled_at: 'two' },
+    ], pageParams: [null, 'next'] };
+    const key = ['threads', SLUG, { status: 'open', page_size: 1 }];
+    const allKey = ['threads', SLUG, { page_size: 1 }];
+    qc.setQueryData(key, initial);
+    qc.setQueryData(allKey, initial);
+    qc.setQueryData(['thread', SLUG, THREAD_ID], { ...ordinary, messages: [], participants: [], reply_delivery: [] });
+    let reject!: (error: Error) => void;
+    (threadsApi.setThreadPinned as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise((_resolve, failure) => { reject = failure; }));
+    const { result } = renderHook(() => realThreadsApi.useSetThreadPinned(THREAD_ID), { wrapper: wrapper(qc) });
+    let pending!: Promise<unknown>;
+    let rejected!: Promise<void>;
+    act(() => {
+      pending = result.current.mutateAsync({ pinned: true });
+      rejected = expect(pending).rejects.toThrow('pin failed');
+    });
+    await waitFor(() => expect(qc.getQueryData<typeof initial>(key)?.pages[0].threads[0].thread_id).toBe(THREAD_ID));
+    expect(qc.getQueryData<number>(['thread-list-pin', SLUG])).toBe(1);
+    const optimistic = qc.getQueryData<typeof initial>(key)!;
+    expect(optimistic.pageParams).toEqual([null, 'next']);
+    expect(optimistic.pages.map(({ threads: _threads, ...metadata }) => metadata)).toEqual(initial.pages.map(({ threads: _threads, ...metadata }) => metadata));
+    expect(qc.getQueryData<typeof initial>(allKey)?.pages.flatMap((p) => p.threads.map((t) => t.thread_id))).toEqual(['THR-10', THREAD_ID]);
+    reject(new Error('pin failed'));
+    await act(async () => { await rejected; });
+    expect(qc.getQueryData(key)).toEqual(initial);
+    expect(qc.getQueryData(allKey)).toEqual(initial);
+    expect(qc.getQueryData<{ pinned: boolean }>(['thread', SLUG, THREAD_ID])?.pinned).toBe(false);
+    expect(qc.getQueryData<number>(['thread-list-pin', SLUG])).toBe(0);
+  });
   interface PinState {
     thread_id: string;
     subject: string;

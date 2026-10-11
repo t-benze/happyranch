@@ -1,6 +1,7 @@
 import { http, HttpResponse } from 'msw';
 import { describe, expect, test } from 'vitest';
 import { server } from '../../test/server';
+import { transferableAbortController } from 'node:util';
 import {
   abortReplies,
   archiveThread,
@@ -22,6 +23,42 @@ const SLUG = 'alpha';
 const seedToken = () => sessionStorage.setItem('happyranch.token', 'tok');
 
 describe('threads api mirror', () => {
+  test('listThreads page overload preserves metadata and sends the opaque continuation without limit', async () => {
+    seedToken();
+    let query: URLSearchParams | undefined;
+    const page = { threads: [], totals: { open: 53, archived: 8, all: 61, dream_origin: 9 },
+      has_more: false, next_cursor: null, sampled_at: '2026-10-07T00:00:00Z' };
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, ({ request }) => {
+      query = new URL(request.url).searchParams;
+      return HttpResponse.json(page);
+    }));
+    const response = await listThreads(SLUG, { status: 'archived', page_size: 50, cursor: 'opaque/+ hint' });
+    expect(response).toEqual(page);
+    expect(Object.fromEntries(query!)).toEqual({ status: 'archived', page_size: '50', cursor: 'opaque/+ hint' });
+  });
+
+  test('listThreads forwards cancellation to the actual transport', async () => {
+    seedToken();
+    const controller = transferableAbortController();
+    let signal: AbortSignal | undefined;
+    let release!: () => void;
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const responseGate = new Promise<void>((resolve) => { release = resolve; });
+    server.use(http.get(`/api/v1/orgs/${SLUG}/threads`, async ({ request }) => {
+      signal = request.signal;
+      entered();
+      await responseGate;
+      return HttpResponse.json({ threads: [] });
+    }));
+    const pending = listThreads(SLUG, { page_size: 50 }, controller.signal);
+    const cancelled = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await ready;
+    controller.abort();
+    expect(signal?.aborted).toBe(true);
+    release();
+    await cancelled;
+  });
   test('composeThread POSTs the right body', async () => {
     seedToken();
     let received: unknown = null;

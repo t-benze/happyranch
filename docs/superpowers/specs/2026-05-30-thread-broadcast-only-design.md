@@ -1,5 +1,9 @@
 # Threads: Broadcast-Only, Remove `addressed_to` — Design Spec
 
+> Test-policy amendment (THR-291 seq40): Python unit source and gates cited below
+> are retired. Product invariants and acceptance obligations remain unchanged;
+> replacement E2E coverage is PENDING. See [the coverage gap record](../../python-test-reset.md).
+
 **Date:** 2026-05-30
 **Status:** Draft, pending implementation.
 **Superseded (2026-08-25, THR-198 seq 108-110 + Slice B):** the Phase-2 thread

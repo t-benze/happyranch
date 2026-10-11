@@ -61,7 +61,7 @@ python "$GUARD" setup \
 
 # 5. All subsequent repo commands MUST use $WORKTREE_ROOT:
 #    cd "$WORKTREE_ROOT"
-#    uv run pytest "$WORKTREE_ROOT/tests/" -v
+#    scripts/local_ci.sh all  # retained Web checks; Python units retired
 #    git -C "$WORKTREE_ROOT" diff --stat
 ```
 

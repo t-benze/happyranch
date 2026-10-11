@@ -12,12 +12,12 @@
 #   scripts/local_ci.sh [TARGET]
 #
 # Targets:
-#   python       Report founder-suspended Python unit suite (no execution)
+#   python       Refuse retired Python unit target (exit 2; no execution)
 #   web          cd web; npm ci; design-system colour gate; npm run lint;
 #                npm run typecheck; npm run build; npm run build-storybook;
-#                report suspended scanner regression and Vitest (no units)
-#   integration  uv sync --frozen; uv run pytest tests/ -v -m integration
-#   all          python + web (default; mirrors GitHub PR CI)
+#                npx vitest run
+#   integration  uv sync --frozen; isolated parent -> pytest tests/ -v -m integration
+#   all          Web checks (default; canonical platform gates remain hosted)
 #   help         Show this help
 #
 # Scratch: every Python pytest invocation gets a fresh, uniquely named
@@ -142,11 +142,7 @@ run_pytest_suite() {
   PYTEST_BASETEMP="$basetemp"
   uv sync --frozen || status=$?
   if [ "$status" -eq 0 ]; then
-    if [[ " $* " == *" -m integration "* ]]; then
-      uv run python tests/helpers/integration_parent.py -- pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
-    else
-      uv run pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
-    fi
+    uv run python tests/helpers/integration_parent.py -- pytest "$@" --basetemp "$PYTEST_BASETEMP" || status=$?
   fi
   if ! cleanup_pytest_basetemp; then
     if [ "$status" -eq 0 ]; then
@@ -330,11 +326,9 @@ ensure_node_declared() {
 }
 
 run_python() {
-  # Founder THR-291 seq5 / TASK-10169: suspend the unit invocation, including
-  # the manual hosted all lane. Restore only after founder release.
-  # Retained unit command: run_pytest_suite tests/ -v -n 4
-  echo "SKIPPED: Python unit suite SUSPENDED by founder THR-291 seq5 (TASK-10169)."
-  echo "No Python unit tests executed; this is not a unit-test PASS."
+  echo "RETIRED: Python unit suite deleted by founder THR-291 seq40."
+  echo "No unit PASS exists. Fresh product E2E coverage is PENDING."
+  return 2
 }
 
 run_web() {
@@ -352,9 +346,8 @@ run_web() {
   npm run build
   echo -e "${YELLOW}--- Storybook static build ---${NC}"
   npm run build-storybook
-  # Retained non-watch unit command; restore only after founder release.
-  # npx vitest run
-  echo "SKIPPED: Web unit suite SUSPENDED under THR-291 / THR-228 seq355; not a unit-test PASS."
+  echo -e "${YELLOW}--- Test (non-watch) ---${NC}"
+  npx vitest run
 }
 
 run_integration() {
@@ -365,7 +358,7 @@ run_integration() {
 run_all() {
   observe_tmp_inodes
   ensure_node_declared
-  run_python
+  echo "Python units RETIRED (THR-291 seq40); fresh product E2E PENDING."
   echo ""
   run_web
 }
@@ -377,13 +370,12 @@ show_help() {
   echo "GitHub CI remains authoritative; this is pre-push feedback only."
   echo ""
   echo "Targets:"
-  echo "  python       Report Python unit suite SUSPENDED (THR-291 seq5); no tests run"
+  echo "  python       Refuse retired Python unit target (THR-291 seq40; exit 2)"
   echo "  web          Run Web CI"
-  echo "               (npm ci + production colour scan + lint + typecheck + build + build-storybook)"
-  echo "               Scanner regression and Vitest units SUSPENDED / SKIPPED (THR-228 seq355)"
+  echo "               (npm ci + colour gate + lint + typecheck + build + build-storybook + vitest run)"
   echo "  integration  Run Python integration tests"
-  echo "               (uv run pytest tests/ -v -m integration)"
-  echo "  all          Default: runs python + web (mirrors GitHub PR CI)"
+  echo "               (isolated parent -> pytest tests/ -v -m integration)"
+  echo "  all          Default: runs retained Web checks; E2E coverage PENDING"
   echo "  help         Show this help"
   echo ""
   echo "Caveats:"
@@ -391,16 +383,14 @@ show_help() {
   echo "    repository .nvmrc declaration, matching the GitHub Web (Node 24)"
   echo "    job); the wrapper verifies this before any work and exits nonzero"
   echo "    otherwise."
-  echo "  - Python tests use the installed uv + Python interpreter, not the"
-  echo "    GHA 3.12/3.13/3.14 matrix."
-  echo "  - Integration tests spawn an isolated daemon per test (tmp"
-  echo "    HAPPYRANCH_DAEMON_HOME + ephemeral port), so a production"
-  echo "    daemon does not conflict. Both share machine RAM."
-  echo "  - Retained vitest run (non-watch) is SUSPENDED; no unit-test PASS."
+  echo "  - Retained integration uses the installed uv + Python interpreter, not the"
+  echo "    future E2E matrix (which remains PENDING)."
+  echo "  - Integration requires an authorized disposable venue; never the live daemon host."
+  echo "  - Web CI runs vitest run (non-watch mode), matching GHA behavior."
   echo "  - uv sync --frozen ensures lockfile parity; run 'uv lock' first if"
   echo "    you've changed pyproject.toml."
-  echo "  - Every executed pytest invocation creates a fresh --basetemp under the"
-  echo "    effective TMPDIR and removes that directory on success,"
+  echo "  - integration creates a fresh pytest --basetemp under the"
+  echo "    effective TMPDIR and removes exactly that directory on success,"
   echo "    failure, and catchable HUP/INT/TERM. SIGKILL, power loss, and"
   echo "    kernel crash are uncatchable and leave scratch behind."
 }

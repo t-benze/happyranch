@@ -132,7 +132,8 @@ definition for the post-merge Mac integration job. Declarative Pipeline keeps
 the node selection, sole parameter, absolute timeout, and unconditional evidence
 publication in one versioned definition; the stdlib-only host logic lives in
 `scripts/jenkins_mac_integration.py` so its validation, argv, cleanup, and exit
-mapping are unit tested with a fake `container` executable. This is separate from
+mapping had unit evidence with a fake `container` executable; that source
+was retired by THR-291 seq40. This is separate from
 the repository-root Jenkinsfile parked in PR #864.
 
 The job has one parameter: `SOURCE_SHA`, which must be exactly 40 hexadecimal
@@ -298,20 +299,11 @@ it is never extra allowance after setup. macOS has no GNU
 `timeout`; all host-side bounds are Python subprocess deadlines and do not leave
 watchdog children holding Jenkins pipes open.
 
-Focused shipping-boundary verification in an authorized disposable runner is
-`uv run python -m pytest tests/scripts/test_jenkins_mac_integration.py tests/scripts/test_jenkins_mac_guest.py -v -m 'not integration'`.
-These include actual emitted wrapper/committed-parent invocation, harmless real
-pytest/conftest success and refusal cases, exit/log limits, owned self-expiring
-children and private SQLite fixtures. The stub-only launch control establishes
-argv/environment/exit composition; it is distinct from real pytest execution.
-The emitted-setup control exposes a selected real Git executable only when
-its external apt stand-in receives the Git install request, then invokes the
-unchanged committed parent. It proves setup/argv composition and refusal on
-omission, not apt installation in the pinned arm64 image. Actual resolved Git
-and transitive versions remain unavailable until the authorized guest run.
-The complete focused command includes socket cases and integration collection
-in child processes, so it must never run on the live Linux daemon host, even
-through a job. On-host checks are restricted to demonstrably pure offline units.
+The former focused Python launcher/guest unit tests were retired by THR-291
+seq40. Their historical evidence is not current compatibility coverage. The
+integration parent, guest collector and two-org observer remain unchanged;
+THR297 owns existing integration defects and execution. See
+[coverage gaps](python-test-reset.md). No Jenkins allocation is renewed here.
 Clean committed-head `scripts/local_ci.sh all` runs in the existing manually
 dispatched `.github/workflows/nightly-integration.yml` Python 3.14/Node 24 lane.
 Use finite durable task-owned observation and authenticate the workflow head,
