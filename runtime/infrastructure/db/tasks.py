@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
+from runtime.infrastructure.db.task_reconciliation import (
+    ReconciliationError, TaskReconciliation, strict_json,
+)
 from runtime.models import (
     BlockKind,
     ScheduleStatus,
@@ -1065,6 +1068,28 @@ class TasksMixin:
             raise _RetryEvidenceRefusal("malformed_evidence")
 
     @_synchronized
+    def reconcile_failed_continuation(self, org: object, predecessor_id: str, body: dict) -> dict:
+        """Caller holds ordinary owner lease and both sorted root gates."""
+        return TaskReconciliation(self).reconcile(org, predecessor_id, body)
+
+    def _retry_reconciliation_rows(self, *, incoming: str | None = None, outgoing: str | None = None) -> list[dict]:
+        validator = TaskReconciliation(self)
+        result = []
+        try:
+            for row, payload in validator.operations():
+                semantic = strict_json(payload["canonical_command"])
+                if (incoming == semantic.get("existing_successor_id")
+                        or outgoing == semantic.get("predecessor_id")):
+                    validator.receipt(payload["operation_key"])
+                    result.append({"task_id": row["task_id"], "successor_root": semantic["existing_successor_id"],
+                                   "audit_id": row["id"]})
+        except ReconciliationError as exc:
+            raise _RetryEvidenceRefusal(exc.code) from exc
+        except (ValueError, TypeError, KeyError, IndexError, RecursionError) as exc:
+            raise _RetryEvidenceRefusal("malformed_evidence") from exc
+        return result
+
+    @_synchronized
     def verify_retry_link(self, parent_id: str, target_agent: str, failed_id: str | None) -> VerifiedRetry | InvalidLineage:
         """Verify an explicit retry through recorded supersessions in this org DB.
 
@@ -1126,7 +1151,10 @@ class TasksMixin:
                     "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.successor_root') END=?",
                     (current["id"],),
                 ).fetchall()
-                predecessors = {r["predecessor_task_id"] for r in manager_rows} | {r["task_id"] for r in escalation_rows}
+                reconciliation_rows = self._retry_reconciliation_rows(incoming=current["id"])
+                predecessors = ({r["predecessor_task_id"] for r in manager_rows}
+                                | {r["task_id"] for r in escalation_rows}
+                                | {r["task_id"] for r in reconciliation_rows})
                 if not predecessors:
                     raise _RetryEvidenceRefusal("no_verified_supersession")
                 if len(predecessors) != 1:
@@ -1135,7 +1163,8 @@ class TasksMixin:
                 if predecessor_id in path:
                     raise _RetryEvidenceRefusal("lineage_cycle")
                 predecessor = self._conn.execute("SELECT * FROM tasks WHERE id=?", (predecessor_id,)).fetchone()
-                if predecessor is None or predecessor["status"] != "superseded":
+                if (predecessor is None or predecessor["status"] !=
+                        ("failed" if reconciliation_rows else "superseded")):
                     raise _RetryEvidenceRefusal("predecessor_not_superseded")
                 outgoing = {r[0] for r in self._conn.execute(
                     "SELECT successor_task_id FROM manager_supersessions WHERE predecessor_task_id=?", (predecessor_id,),
@@ -1146,11 +1175,16 @@ class TasksMixin:
                     if audit_actor != "founder" or not isinstance(successor_id, str) or not successor_id:
                         raise _RetryEvidenceRefusal("malformed_evidence")
                     outgoing.add(successor_id)
+                outgoing_reconciliations = self._retry_reconciliation_rows(outgoing=predecessor_id)
+                outgoing.update(row["successor_root"] for row in outgoing_reconciliations)
                 if len(outgoing) > 1:
                     raise _RetryEvidenceRefusal("competing_successors")
-                if manager_rows and escalation_rows:
+                if sum(bool(rows) for rows in (manager_rows, escalation_rows, reconciliation_rows)) > 1:
                     raise _RetryEvidenceRefusal("ambiguous_predecessor")
-                if manager_rows:
+                if reconciliation_rows:
+                    if len(reconciliation_rows) != 1 or outgoing_reconciliations != reconciliation_rows:
+                        raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                elif manager_rows:
                     self._retry_manager_edge(predecessor, current, manager_rows)
                 else:
                     normalized = {json.dumps(payload, sort_keys=True) for _, payload in outgoing_audits}

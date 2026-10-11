@@ -39,6 +39,21 @@ independent operator acceptance, including real Founder UI actions, remain pendi
 enablement, deployment or a Phase1-completion claim.
 
 
+**THR299 exact failed-continuation remedy.** Only the genuine ordinary
+TASK10725 engineering_manager session in happyranch/engineering may write the
+current-time authenticated FAILED10343 → existing10554 receipt, preserving
+10565, older10319 and original FAILED dev10450/QA10329. The bounded verifier
+adds this fully validated producer without changing old edges, failed-child
+ownership,20-root/19-edge bounds, local failure or final-spawn/Committed enqueue
+fences. One closed GET provides nonmutating advisory retry/preflight/historical
+receipt modes; historical original-session evidence does not require live owner.
+No task allocation, schema/auth/permission/queue change or startup reconciliation
+occurs. Compatible-reader rollback is required. See
+[the closed contract](docs/agent-guides/orchestrator-contracts.md#exact-failed-continuation-reconciliation-thr299)
+and CLI/runtime guides. Founder299seq11 leaves unreachable synthetic positive
+and dependent proof UNPROVEN; merge/install/real reconciliation remain separate,
+owned by SAME TASK10725 before naming use.
+
 HappyRanch is an org-agnostic runtime for operating a multi-agent organization supervised by a single human founder. The repo provides the system kernel; each organization is loaded from `<runtime>/orgs/<slug>/org/`.
 
 **Current THR-259 workspace-cleanup safety contract.** The shared cleanup procedure accepts only a closed-schema, non-truncated host-job receipt binding the current task/session to the actual job, agent, stored command, interpreter, resolved cwd, timestamps, terminal result, complete output totals, and exact scanner coverage; it has no direct fallback. PR evidence is completely paginated and repeated, and open, closed-unmerged, duplicate, changing, conflicting, or malformed rows refuse. A removable containing worktree must be registered at its owning primary checkout's exact `.claude/worktrees/<TASK>` path on `task/<TASK>`. A cache must be positively Git-ignored, untracked, and absent from status before isolation. Before action and again at the action boundary, the literal candidate is completely walked without following symlinks; nested mounts, cross-device or foreign-owned entries, protected descendants, unreadable/capped/changing evidence, and identity drift refuse. The only external-link exception is a recorded `python`/`python3`/`python3.N` link directly under an owned literal `.venv/bin`, resolving to its configured uv store or `pyvenv.cfg` home outside every protected/workspace/candidate root; deletion unlinks and never follows it. Measurement includes the root inode, and success requires literal absence plus unchanged protected-path identities. Failed restoration after isolation is measured `isolation_anomaly`; failure after deletion starts is measured `removed_with_anomaly`. Both are exit-3 batch halts, never refusals, and account for original, isolated, and isolation-directory residuals without false zeroes. Batch resume accepts only a unique closed-schema terminal row exactly bound to the current manifest and argv; timeout, signal, malformed/mismatched output, unreceipted nonzero exit, runner exception, exit 3, or any unclassifiable outcome halts after journaling and before another candidate.

@@ -1355,3 +1355,66 @@ export interface WorkflowReviewRequestReceipt {
   reconciliation_required: boolean;
   submission_bytes_base64: string;
 }
+/** THR299 receipt authority is server-bound to the sole ordinary operator. */
+export interface FailedContinuationCommand {
+  version: 1;
+  operation_key: string;
+  existing_successor_id: string;
+  current_descendant_id: string;
+  thread_id: string;
+  operator_task_id: string;
+  session_id: string;
+  expected_state_digest: string;
+}
+
+export interface ReconciliationOperatorBinding {
+  task_id: string;
+  agent: string;
+  session_start_audit_id: number;
+  session_start_row_digest: string;
+  session_id_sha256: string;
+  invocation_purpose: 'manager_decision';
+}
+
+export interface FailedContinuationReceipt {
+  audit_id: number;
+  timestamp: string;
+  task_id: string;
+  agent: string;
+  action: 'failed_continuation_reconciled';
+  version: 1;
+  operation_key: string;
+  canonical_command: string;
+  command_sha256: string;
+  state_digest: string;
+  operator_binding: ReconciliationOperatorBinding;
+  payload_sha256: string;
+}
+
+export interface FailedContinuationResponse {
+  version: 1;
+  org: string;
+  receipt: FailedContinuationReceipt;
+  receipt_sha256: string;
+  replayed: boolean;
+}
+
+export type RetryVerificationInput =
+  | { mode: 'retry'; target_agent: string; failed_child_id?: string }
+  | { mode: 'receipt'; operation_key: string }
+  | { mode: 'preflight'; version: '1'; operation_key: string; existing_successor_id: string;
+      current_descendant_id: string; thread_id: string; operator_task_id: string; session_id: string };
+
+export type RetryVerificationResponse =
+  | { version: 1; mode: 'retry'; org: string; parent_id: string; target_agent: string;
+      failed_child_id: string | null; valid: boolean; path: string[]; reason: string | null; advisory: true }
+  | { version: 1; mode: 'preflight'; org: string; predecessor_id: string; operation_key: string;
+      eligible: true; target: { team: string; manager: string; existing_successor_id: string;
+        current_descendant_id: string; thread_id: string; operator_task_id: string };
+      operator_binding: ReconciliationOperatorBinding; expected_state_digest: string; advisory: true }
+  | { version: 1; mode: 'receipt'; org: string; historical: true;
+      receipt: FailedContinuationReceipt; receipt_sha256: string };
+
+export interface ReconciliationRefusal {
+  detail: { code: string };
+}

@@ -1068,3 +1068,33 @@ from publishing S2 source.
 The supported single daemon per org owns task_pause_controls installation/complete validation before recovery/admission; fresh org creation initializes the same literal extension. Generic Database and runtime-audit remain pause-free. No new config, dependency or permission switch is introduced. Durable holds/release intent and deferred original owners survive lost notifications. Startup preserves possible-launch/ACTION uncertainty and uses actual existing callback consumers, never consumed-result replay. Complete independent schema references include the pause dimension without weakening F/E/G/H comparisons; v2 raw schema is still observed-only. Rollback requires compatible code, including for an empty extension. Deployment/restart/live migration require their separate operator authority. [Current contract](../superpowers/specs/2026-10-10-root-task-pause-resume.md).
 
 Unclaimed completion recovery retains the actual original return and SIDs while held, with no running deadline. Its 120-second deadline is pinned atomically with the accepted real admission/claim, binding and launch journal. Preclaim/admission waiting spends nothing; claimed recovery retains its expiry across Resume, duplicates, retry and restart, including committed no-launch failure. Unresolved original host/tree evidence is separately retained under the original session/owner/generation before recovery conversion. It remains an unknown drain blocker after callbacks, terminal lifecycle, restart or quiescent recovery, without owning a new producer. Known-quiescent originals add no unknown blocker, and deferred unclaimed recovery alone is not execution.
+
+
+## THR299 compatible reconciliation installation
+
+The [exact receipt producer/reader](orchestrator-contracts.md#exact-failed-continuation-reconciliation-thr299)
+has no schema migration or startup reconciliation. Existing org load/reopen
+never creates its audit receipt. Only SAME TASK10725 owns the later guarded
+merge, supported compatible installation and exact operation; source delivery
+by a child authorizes no production install/restart/write. Preserve naming
+TASK10565 and its active work while coordinating supported drain/installation.
+
+Supported source install remains `uv sync` from the selected clean reviewed
+source, then `uv run happyranch --help`. Daemon lifecycle uses
+`scripts/daemon.sh start`, `status`, `stop --force`; there is no `happyranch start`.
+No live command is implied here. Record exact reviewed SHA/file digests,
+Python interpreter/CLI import origin and actual launch cwd/PID/start identity;
+health/status/doctor alone do not identify serving bytes. Then only the actual
+ordinary TASK10725 session may obtain fresh preflight, submit one exact receipt,
+verify canonical replay and BOTH original advisory retry paths before naming
+use. A changed binding/provenance/state refuses; do not extend the pair or
+allocate a replacement operator. Keep original command/key on uncertain COMMIT
+and inspect historical receipt before replay.
+
+Once the new audit producer exists, old code that ignores it is an unsafe
+operational rollback for retry consumers even though schema is unchanged.
+Rollback requires a compatible receipt validator/verifier; never delete an
+audit, reparent children, revive failure, or rewrite history to downgrade. Real
+post-install positive and running-source evidence remain separate obligations;
+naturally allocated synthetic positive/replay/crash proof is UNPROVEN under
+Founder299seq11, never full behavioral PASS.

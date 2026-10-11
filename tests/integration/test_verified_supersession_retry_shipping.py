@@ -22,6 +22,120 @@ from tests.integration.conftest import seed_workspace
 pytestmark = pytest.mark.integration
 
 
+def test_thr299_public_read_and_scope_refusal(live_daemon: str, runtime: Path, tmp_path: Path) -> None:
+    """C03/C09 only: real HTTP/CLI negative/read; no new-producer acceptance.
+
+    Uses the retained isolated parent and unmodified real daemon fixture, never
+    this file's old queue/claim-patched launcher. A naturally allocated root
+    cannot qualify as the exact THR299 operator. Terminal startup/launch effects
+    are settled before independent read-only residue snapshots.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.runtime import read_token
+
+    base = f"http://127.0.0.1:{live_daemon}/api/v1"
+    headers = {"Authorization": f"Bearer {read_token()}"}
+    task_id = _submit(base, headers, "bounded THR299 public read/refusal")
+    _wait_task(base, headers, task_id, "failed")
+    db_path = OrgPaths(root=runtime).db_path
+
+    def snapshot() -> dict:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
+            db.execute("BEGIN")
+            return {name: db.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall()
+                    for name in ("tasks", "task_results", "audit_log", "manager_supersessions", "task_pause_controls")}
+
+    before = snapshot()
+    route = f"{base}/orgs/test/tasks/{task_id}/retry-verification"
+    response = httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent"}, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"version": 1, "mode": "retry", "org": "test", "parent_id": task_id,
+                               "target_agent": "dev_agent", "failed_child_id": None, "valid": True,
+                               "path": [task_id], "reason": None, "advisory": True}
+    missing = httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent", "failed_child_id": "missing"}, headers=headers)
+    assert missing.status_code == 200 and missing.json()["reason"] == "retry_not_found"
+    forbidden = httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent"},
+                         headers={**headers, "X-HappyRanch-Task-Session": "not-an-authority"})
+    assert forbidden.status_code == 422 and forbidden.json() == {"detail": {"code": "invalid_request"}}
+    duplicate = httpx.get(route + "?mode=retry&mode=receipt&target_agent=dev_agent", headers=headers)
+    assert duplicate.status_code == 422
+    assert httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent"}).status_code == 401
+    body = {"version": 1, "operation_key": "synthetic-negative", "existing_successor_id": task_id,
+            "current_descendant_id": task_id, "thread_id": "synthetic", "operator_task_id": task_id,
+            "session_id": "not-an-authority", "expected_state_digest": "0" * 64}
+    write = httpx.post(route.replace("retry-verification", "reconcile-failed-continuation"), headers=headers, json=body)
+    assert write.status_code == 403 and write.json() == {"detail": {"code": "operation_scope"}}
+    malformed = httpx.post(route.replace("retry-verification", "reconcile-failed-continuation"), headers=headers,
+                          content=json.dumps(body)[:-1] + ',"version":1}', timeout=3)
+    assert malformed.status_code == 422
+    preflight = httpx.get(route, headers={**headers, "X-HappyRanch-Task-Session": "not-an-authority"},
+                         params={"mode": "preflight", **{k: str(v) for k, v in body.items()
+                                 if k not in ("session_id", "expected_state_digest")}})
+    assert preflight.status_code == 403 and preflight.json() == {"detail": {"code": "operation_scope"}}
+    history = httpx.get(route, params={"mode": "receipt", "operation_key": "synthetic-negative"}, headers=headers)
+    assert history.status_code == 403 and history.json() == {"detail": {"code": "operation_scope"}}
+    cli = Path(os.environ["HAPPYRANCH_TEST_PARENT_MANIFEST"]).parent / "bin/happyranch"
+    for child, expected in ((None, 0), ("missing", 1)):
+        args = [str(cli), "verify-retry-link", task_id, "--org", "test", "--mode", "retry",
+                "--target-agent", "dev_agent", "--json"]
+        if child:
+            args += ["--failed-child-id", child]
+        process = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        assert process.returncode == expected, process.stderr
+        assert json.loads(process.stdout)["valid"] is (child is None)
+    bad_cli = subprocess.run([str(cli), "verify-retry-link", task_id, "--org", "test", "--mode", "receipt"],
+                             capture_output=True, text=True, timeout=10)
+    assert bad_cli.returncode == 2 and json.loads(bad_cli.stdout) == {"detail": {"code": "invalid_request"}}
+    command_file = tmp_path / "negative-command.json"
+    command_file.write_text(json.dumps(body))
+    refusal = subprocess.run([str(cli), "reconcile-failed-continuation", task_id, "--org", "test",
+                              "--from-file", str(command_file)], capture_output=True, text=True, timeout=10)
+    assert refusal.returncode == 1 and json.loads(refusal.stdout) == {"detail": {"code": "operation_scope"}}
+    assert snapshot() == before
+
+
+def test_thr299_isolated_old_validator_bound_and_local_failure(tmp_path: Path) -> None:
+    """C05/C06: isolated row fixtures, not authenticated producer evidence.
+
+    Arbitrary synthetic root names deliberately cannot enter the new writer.
+    Retains the existing founder/manual old-producer contract and checks the
+    inclusive twenty-root boundary and failed-child/local-failure priority.
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.db.tasks import InvalidLineage, VerifiedRetry
+    from runtime.models import TaskRecord
+
+    db = Database(tmp_path / "isolated-validator.db")
+    try:
+        for index in range(21):
+            db.insert_task(TaskRecord(id=f"synthetic-root-{index:02}", team="engineering", assigned_agent="synthetic-manager",
+                                      brief="isolated fixture", status="superseded" if index < 20 else "in_progress"))
+        for index in range(20):
+            predecessor, successor = f"synthetic-root-{index:02}", f"synthetic-root-{index + 1:02}"
+            db.insert_audit_log(predecessor, "founder", "escalation_resolved",
+                                {"decision": "supersede", "resolution_path": "manual_break_glass"})
+            db.insert_audit_log(predecessor, "founder", "escalation_superseded",
+                                {"actor": "founder", "prior_block_kind": "escalated", "successor_root": successor})
+        db.insert_task(TaskRecord(id="synthetic-failed", team="engineering", assigned_agent="synthetic-worker",
+                                  brief="isolated fixture", status="failed", parent_task_id="synthetic-root-00", task_type="subtask"))
+        changes = db._conn.total_changes
+        with db.coherent_read_view():
+            valid = db.verify_retry_link("synthetic-root-19", "synthetic-worker", "synthetic-failed")
+            assert isinstance(valid, VerifiedRetry) and len(valid.path) == 20
+            assert db.verify_retry_link("synthetic-root-20", "synthetic-worker", "synthetic-failed") == InvalidLineage("lineage_record_limit_20")
+            assert db.verify_retry_link("synthetic-root-19", "wrong-agent", "synthetic-failed") == InvalidLineage("retry_agent_mismatch")
+        assert db._conn.total_changes == changes
+        db.insert_task(TaskRecord(id="synthetic-local-failed", team="engineering", assigned_agent="synthetic-worker",
+                                  brief="isolated fixture", status="failed", parent_task_id="synthetic-root-19", task_type="subtask"))
+        changes = db._conn.total_changes
+        with db.coherent_read_view():
+            assert db.verify_retry_link("synthetic-root-19", "synthetic-worker", "synthetic-failed") == InvalidLineage("retry_link_required")
+            assert db.verify_retry_link("synthetic-root-19", "synthetic-worker", "synthetic-local-failed") == VerifiedRetry(("synthetic-root-19",))
+        assert db._conn.total_changes == changes
+    finally:
+        db.close()
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body)
     path.chmod(0o755)
