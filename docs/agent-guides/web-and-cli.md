@@ -1615,7 +1615,11 @@ Founder invitation. Source parity is not behavioral verification.
 Use the [closed server contract](orchestrator-contracts.md#exact-failed-continuation-reconciliation-thr299).
 There is no browser write workflow. TypeScript `verifyRetryLink` mirrors the
 three read modes; the POST is classified agent-only, with matching command and
-receipt types. Shared transport/auth and native reachability are unchanged.
+receipt types. SurfaceAllowList mirrors the POST exclusion using the existing
+task suffix deny convention after shipping path normalization, on prefixed and
+unprefixed forms, before credential lookup/injection or daemon forwarding.
+The advisory GET and adjacent browser task routes remain allowed. Shared
+transport/auth and the path normalizer are unchanged.
 
 ```bash
 happyranch verify-retry-link TASK-10565 --org happyranch --mode retry --target-agent dev_agent --failed-child-id TASK-10450 --json

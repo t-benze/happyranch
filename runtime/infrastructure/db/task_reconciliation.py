@@ -238,25 +238,31 @@ class TaskReconciliation:
                 and row["dispatched_from_thread_id"] == thread and row["revisit_of_task_id"] is None)
         return row
 
-    def original_session(self, sid: str) -> dict:
-        # Decode every relevant owner row before selecting a SID: malformed
-        # history or wrong-agent evidence must not vanish behind json_extract.
-        rows = self.rows("SELECT * FROM audit_log WHERE task_id=? AND action='session_start' ORDER BY id",
-                         (SCOPE["owner"],))
-        matches = []
-        for row in rows:
-            payload = strict_json(row["payload"], "original_session_evidence", allow_floats=True)
-            if payload.get("session_id") == sid:
-                matches.append((row, payload))
-        require(len(matches) == 1, "original_session_evidence")
-        row, payload = matches[0]
+    def _session_payload(self, row: dict) -> dict:
+        payload = strict_json(row["payload"], "original_session_evidence", allow_floats=True)
         require(type(row["id"]) is int and row["id"] > 0
+                and row["task_id"] == SCOPE["owner"] and row["action"] == "session_start"
                 and row["agent"] == SCOPE["manager"], "original_session_evidence")
         try:
             aware_timestamp(row["timestamp"])
             identifier(payload.get("session_id"))
+            identifier(payload.get("invocation_purpose"))
         except ReconciliationError as exc:
             raise ReconciliationError("original_session_evidence") from exc
+        return payload
+
+    def original_session(self, sid: str) -> dict:
+        # Validate every relevant owner row before selecting a SID: malformed
+        # history or wrong-agent evidence must not vanish behind SID filtering.
+        rows = self.rows("SELECT * FROM audit_log WHERE task_id=? AND action='session_start' ORDER BY id",
+                         (SCOPE["owner"],))
+        matches = []
+        for row in rows:
+            payload = self._session_payload(row)
+            if payload.get("session_id") == sid:
+                matches.append((row, payload))
+        require(len(matches) == 1, "original_session_evidence")
+        row, payload = matches[0]
         require(payload.get("invocation_purpose") == "manager_decision", "ordinary_purpose_required", 403)
         return {"task_id": SCOPE["owner"], "agent": SCOPE["manager"],
                 "session_start_audit_id": row["id"], "session_start_row_digest": digest(row),
@@ -271,9 +277,7 @@ class TaskReconciliation:
         row = self.conn.execute("SELECT * FROM audit_log WHERE id=?",
                                 (binding["session_start_audit_id"],)).fetchone()
         require(row is not None, "original_session_evidence")
-        payload = strict_json(row["payload"], "original_session_evidence", allow_floats=True)
-        require(row["action"] == "session_start" and row["task_id"] == SCOPE["owner"],
-                "original_session_evidence")
+        payload = self._session_payload(dict(row))
         try:
             require(canonical(self.original_session(payload.get("session_id"))) == canonical(binding), "original_session_evidence")
         except ReconciliationError as exc:

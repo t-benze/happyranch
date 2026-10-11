@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -134,6 +135,112 @@ def test_thr299_isolated_old_validator_bound_and_local_failure(tmp_path: Path) -
         assert db._conn.total_changes == changes
     finally:
         db.close()
+
+
+@pytest.fixture
+def isolated_session_history() -> Iterator[tuple]:
+    """Audit-row validator fixture only: no task, live SID or producer receipt.
+
+    The literal owner is required by the selector, but these rows are invented
+    in-memory evidence for malformed-history checks, never an authority grant.
+    No generic Database initializer, public writer or retired unit is invoked.
+    """
+    from types import SimpleNamespace
+    from runtime.infrastructure.db.task_reconciliation import SCOPE, TaskReconciliation
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, timestamp TEXT, task_id TEXT, "
+                 "agent TEXT, action TEXT, payload TEXT)")
+    selected = {"id": 1, "timestamp": "2026-10-01T00:00:00+00:00", "task_id": SCOPE["owner"],
+                "agent": SCOPE["manager"], "action": "session_start",
+                "payload": '{"session_id":"isolated-selected","invocation_purpose":"manager_decision",'
+                           '"reasoning_effort":"high","optional":{"temperature":0.25}}'}
+    conn.execute("INSERT INTO audit_log VALUES (:id, :timestamp, :task_id, :agent, :action, :payload)", selected)
+    validator = TaskReconciliation(SimpleNamespace(_conn=conn))
+    binding = validator.original_session("isolated-selected")
+    try:
+        yield conn, validator, selected, binding
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param({"payload": '{"invocation_purpose":"manager_decision"}'}, id="review-missing-sid"),
+    pytest.param({"payload": '{"session_id":null,"invocation_purpose":"manager_decision"}'}, id="null-sid"),
+    pytest.param({"payload": '{"session_id":12,"invocation_purpose":"manager_decision"}'}, id="integer-sid"),
+    pytest.param({"payload": '{"session_id":"","invocation_purpose":"manager_decision"}'}, id="empty-sid"),
+    pytest.param({"payload": json.dumps({"session_id": "x" * 257, "invocation_purpose": "manager_decision"})}, id="long-sid"),
+    pytest.param({"payload": '{"session_id":"isolated-other"}'}, id="missing-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":null}'}, id="null-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":true}'}, id="boolean-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":""}'}, id="empty-purpose"),
+    pytest.param({"payload": json.dumps({"session_id": "isolated-other", "invocation_purpose": "x" * 257})}, id="long-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-selected","invocation_purpose":"manager_decision"}'}, id="duplicate-selected-sid"),
+    pytest.param({"agent": "isolated-wrong-agent"}, id="wrong-agent"),
+    pytest.param({"id": 0}, id="nonpositive-id"),
+    pytest.param({"timestamp": "invalid"}, id="malformed-timestamp"),
+    pytest.param({"timestamp": "2026-10-01T00:00:00"}, id="naive-timestamp"),
+    pytest.param({"timestamp": None}, id="missing-timestamp"),
+    pytest.param({"payload": "{"}, id="malformed-json"),
+    pytest.param({"payload": "[]"}, id="nonobject-json"),
+    pytest.param({"payload": '{"session_id":"isolated-other","session_id":"duplicate","invocation_purpose":"unattributed"}'}, id="duplicate-json-key"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":"unattributed","optional":NaN}'}, id="nonfinite-metadata"),
+])
+def test_thr299_isolated_session_history_refuses_before_sid_filter(isolated_session_history: tuple, extra: dict) -> None:
+    """C03/C07/C08 corrective R2: malformed relevant history refuses without writes."""
+    from runtime.infrastructure.db.task_reconciliation import ReconciliationError
+
+    conn, validator, selected, binding = isolated_session_history
+    other = {**selected, "id": 2,
+             "payload": '{"session_id":"isolated-other","invocation_purpose":"unattributed"}', **extra}
+    conn.execute("INSERT INTO audit_log VALUES (:id, :timestamp, :task_id, :agent, :action, :payload)", other)
+    before = [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")]
+    changes = conn.total_changes
+    for operation in (lambda: validator.original_session("isolated-selected"),
+                      lambda: validator.historical_session(binding)):
+        with pytest.raises(ReconciliationError) as refused:
+            operation()
+        assert refused.value.code == "original_session_evidence" and refused.value.status == 409
+        assert conn.total_changes == changes
+        assert [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")] == before
+
+
+@pytest.mark.parametrize("purpose", ["unattributed", "worker_execution", "workflow_document"])
+def test_thr299_isolated_nonselected_purpose_and_metadata_compatible(isolated_session_history: tuple, purpose: str) -> None:
+    """Valid history stays open to optional metadata and nonselected purposes."""
+    from runtime.infrastructure.db.task_reconciliation import digest, text_digest
+
+    conn, validator, selected, binding = isolated_session_history
+    other = {**selected, "id": 2, "payload": json.dumps({"session_id": "isolated-other", "invocation_purpose": purpose,
+              "executor": "isolated-provider", "model": None, "optional": {"numeric": 0.125, "text": "原始"}})}
+    conn.execute("INSERT INTO audit_log VALUES (:id, :timestamp, :task_id, :agent, :action, :payload)", other)
+    before = [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")]
+    changes = conn.total_changes
+    assert validator.original_session("isolated-selected") == binding
+    assert binding["session_start_row_digest"] == digest(selected)
+    assert binding["session_id_sha256"] == text_digest("isolated-selected")
+    assert validator.historical_session(binding) is None
+    assert conn.total_changes == changes
+    assert [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")] == before
+
+
+def test_thr299_isolated_selected_purpose_retains_specific_refusal(isolated_session_history: tuple) -> None:
+    from runtime.infrastructure.db.task_reconciliation import ReconciliationError
+
+    conn, validator, selected, binding = isolated_session_history
+    payload = json.loads(selected["payload"])
+    payload["invocation_purpose"] = "unattributed"
+    conn.execute("UPDATE audit_log SET payload=? WHERE id=1", (json.dumps(payload),))
+    before = [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")]
+    changes = conn.total_changes
+    for operation, code, status in ((lambda: validator.original_session("isolated-selected"), "ordinary_purpose_required", 403),
+                                   (lambda: validator.historical_session(binding), "original_session_evidence", 409)):
+        with pytest.raises(ReconciliationError) as refused:
+            operation()
+        assert (refused.value.code, refused.value.status) == (code, status)
+    assert conn.total_changes == changes
+    assert [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")] == before
 
 
 def _write_executable(path: Path, body: str) -> None:

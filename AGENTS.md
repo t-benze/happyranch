@@ -47,6 +47,10 @@ adds this fully validated producer without changing old edges, failed-child
 ownership,20-root/19-edge bounds, local failure or final-spawn/Committed enqueue
 fences. One closed GET provides nonmutating advisory retry/preflight/historical
 receipt modes; historical original-session evidence does not require live owner.
+All relevant owner session_start rows are structurally validated before SID
+selection; valid nonselected purposes/optional metadata retain original bytes.
+The native connector denies the agent-only reconciliation POST before daemon
+credentials/forwarding, while advisory GET and adjacent browser routes remain.
 No task allocation, schema/auth/permission/queue change or startup reconciliation
 occurs. Compatible-reader rollback is required. See
 [the closed contract](docs/agent-guides/orchestrator-contracts.md#exact-failed-continuation-reconciliation-thr299)

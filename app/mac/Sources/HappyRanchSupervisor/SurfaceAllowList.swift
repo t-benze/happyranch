@@ -114,6 +114,8 @@ public struct SurfaceAllowList: Sendable {
             // Task agent callbacks
             ("POST", "/tasks/", "/completion"),
             ("POST", "/tasks/", "/progress"),
+            // Agent-only failed-continuation writer; advisory GET stays available.
+            ("POST", "/tasks/", "/reconcile-failed-continuation"),
             // Agent self-service & management
             ("POST", "/agents/", "/repos"),
             ("PUT", "/agents/", "/executor"),

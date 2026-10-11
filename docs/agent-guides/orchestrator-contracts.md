@@ -2373,6 +2373,15 @@ metadata is published. receipt_sha256 hashes that canonical projection. Hashes
 are attribution, not cryptographic tamper protection. Historical validation
 does not demand original owner liveness or compare its original SID with today's
 tracker. Missing/conflicting original evidence refuses, with no read repair.
+Before SID selection, every relevant owner session_start row must have a
+positive INTEGER identity, exact task/action/manager, timezone-aware timestamp,
+strict JSON object and nonempty UTF8 SID/purpose (each ≤256 bytes). Missing or
+malformed required fields, wrong-agent history and duplicate selected SIDs
+refuse409 original_session_evidence for fresh selection and historical reads.
+Valid nonselected historical purposes and finite optional metadata remain
+compatible; only the selected operating session requires manager_decision,
+with the existing403 ordinary_purpose_required refusal. Historical readers
+validate retained original bytes/digests without substituting current liveness.
 
 ONE GET `/api/v1/orgs/{slug}/tasks/{task_id}/retry-verification` has mandatory
 mode and closed selectors:
