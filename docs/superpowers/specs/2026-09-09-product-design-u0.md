@@ -1,23 +1,25 @@
 # Product-design workflow U0 feasibility evidence
 
-**U3b(a/b) internal checkpoint, THR139 D5/G395/generic410/H445/457/465.**
-The actual F5 reviewer/session can internally stage immutable findings/outcome
-in the sequenced event chain; only an exact successful INTEGER/full callback,
-committed host quiescence, current authority/assignment and contributor
-independence can populate its agent receipt/provenance bridge. Producer and
-closed graph readers ship together, with existing terminal/reaper consumers.
-Internal human receipt admission now uses the existing authenticated Founder
-principal and in-writer revalidation, with closed immutable bearer provenance
-and matched historical graph validation. No synthetic human task/result,
-assignment, agent evidence/stage or host-quiescence assertion exists. Exact
-admitted replay returns the original proof; changed payload/key reuse conflicts.
-Only the selected request changes; pending peers/findings remain intact.
-Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
-parity with exact public/deny dispositions, collect-all
-closure/needs_revision/automatic template join and root-owned two-template public smoke465 are
-still dependencies. No joined event or fourth signature exists in this slice;
-keep it draft/unaccepted/unmerged. Exact bounds and pure-data event grammar:
-[Features And Invariants](../../agent-guides/features-and-invariants.md).
+**U3b(a/b/c) internal checkpoint, THR139 D5/G395/generic410/H445/457/465.**
+F5 findings plus actual successful callback/quiescence produce genuine agent
+receipts; the existing server-derived bearer lane produces human receipts with
+no fake task/result/assignment. Both writers now collect all configured current
+slots using pinned role kind/outcome/approval data. Partial responses retain
+peers/findings. An all-response objection closes the round, leaves the instance
+reviewing and derives needs_revision/owner action without a joined event or r2.
+All approvals under current approve-planning-input authority produce one atomic
+service-owned joined event/replay and completed round/instance. Full grant,
+binding/context/subject/revision/raw digest and exact receipt/result/assignment
+identities bind the immutable proof. Existing cold discovery repairs missed
+collection; historical joins remain separate from current source/authority holds
+and fresh approved use. No fourth signature, product-name/count branch, or
+unimplemented active direct-submit producer is introduced. The H handoff graph
+still uses its original completed-source fulfillment; that limitation is not
+proof of the deferred active-submit path. Public human write/reviewer-stage/
+signed-request server/OpenAPI/CLI/TS/native parity with exact public/deny
+and root-owned two-template public smoke465 remain dependencies; keep DRAFT,
+unaccepted/unmerged. Behavior/proof execution remains UNEXECUTED/FOUNDER-WAIVED.
+Exact grammar: [Features And Invariants](../../agent-guides/features-and-invariants.md).
 
 **H handoff storage — U3a(a), THR139 seq445/465.** Proven-fresh org creation
 initializes H (complete G plus the exact `workflow_author_handoffs` table: 17

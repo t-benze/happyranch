@@ -129,6 +129,48 @@ def _source_result(conn: sqlite3.Connection, intent: dict) -> dict | None:
     return result
 
 
+def _reviewed_source_result(conn: sqlite3.Connection, row: dict, intent: dict) -> dict:
+    """Authenticate the retained successful source; never reinterpret it as current validity."""
+    from runtime.workflows.review_dispatch import _same_value
+    code = 'workflow_author_handoff_storage_corrupt'
+    links = _records(conn, 'SELECT * FROM workflow_submission_result_links WHERE submission_id=?', (row['submission_id'],))
+    if len(links) != 1 or type(links[0]['task_result_id']) is not int or links[0]['task_result_id'] <= 0:
+        raise ValueError(code)
+    link = links[0]
+    result = _record(conn, 'task_results', link['task_result_id'])
+    callbacks = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind='callback_recorded'",
+                         (intent['id'],))
+    terminals = _records(conn, "SELECT * FROM workflow_draft_dispatch_events WHERE intent_id=? AND event_kind IN ('completed','host_reconciled')",
+                         (intent['id'],))
+    if (len(callbacks) != 1 or result['status'] != 'completed'
+            or result['task_id'] != row['source_task_id'] or result['agent'] != row['principal']
+            or result['session_id'] != row['source_session_id'] or intent['final_result_id'] != result['id']
+            or link['source_task_id'] != result['task_id'] or link['source_session_id'] != result['session_id']
+            or not _same_value(_stored_json(link['result_bytes'], link['result_digest'], code=code), result)):
+        raise ValueError(code)
+    callback = _stored_json(callbacks[0]['event_bytes'], callbacks[0]['event_digest'], code=code)
+    accepted = callback['result']
+    if (type(accepted) is not dict or set(accepted) != {'id', 'digest', 'record', 'accepted', 'disposition'}
+            or type(accepted['accepted']) is not int or accepted['accepted'] != 1
+            or accepted['disposition'] not in ('accepted', 'pending_host_acknowledgment')
+            or not _same_value(accepted['id'], result['id'])
+            or not _same_value(accepted['record'], result)
+            or accepted['digest'] != digest(canonical_bytes(result))
+            or type(callbacks[0]['callback_accepted']) is not int or callbacks[0]['callback_accepted'] != 1
+            or not _same_value(callbacks[0]['result_id'], result['id'])):
+        raise ValueError(code)
+    witnessed = False
+    for terminal in terminals:
+        body = _stored_json(terminal['event_bytes'], terminal['event_digest'], code=code)
+        if (body['after']['state'] == 'completed' and _same_value(body['after']['final_result_id'], result['id'])
+                and _same_value(body['terminal_evidence'], {'host_quiescent': True})
+                and _same_value(body['result'], accepted)):
+            witnessed = True
+    if not witnessed:
+        raise ValueError(code)
+    return result
+
+
 def review_scope(*, row: dict, proof: dict, context: dict, contract: dict, role: str,
                  request_id: str, round_id: str, binding: dict) -> dict:
     """Only the selected recipient's input bytes and pins enter its scope."""
@@ -164,10 +206,11 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
     if len(operations) != 1 or len(rounds) != 1:
         raise ValueError(code)
     intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
-    if _source_result(conn, intent) is None:
-        raise ValueError(code)
+    # A saved review graph uses immutable linked source evidence. Current
+    # source validity belongs to mutation/approved-use admission, not history.
+    _reviewed_source_result(conn, row, intent)
     round_ = rounds[0]
-    if (round_['submission_id'] != row['submission_id'] or round_['state'] != 'reviewing'
+    if (round_['submission_id'] != row['submission_id'] or round_['state'] not in ('reviewing', 'closed')
             or round_['id'] != _id('workflow-round', row['instance_id'], 1, row['submission_id'])):
         raise ValueError(code)
     context = json.loads(_record(conn, 'workflow_contexts', intent['context_id'])['context_bytes'])
@@ -251,6 +294,8 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
                            (identity, 'author'))
         if records != [{key: identity, **contributor}]:
             raise ValueError(code)
+    from runtime.workflows.review_join import validate_collection
+    validate_collection(conn, row, proof, graph)
     return graph
 
 
@@ -433,6 +478,11 @@ class WorkflowSubmissionStore:
         graph = validate_handoff_graph(conn, row, proof)
         # Reconciliation describes actual proof uncertainty independently of
         # whichever higher-precedence hold currently hides the graph.
+        source_task = _record(conn, 'tasks', row['source_task_id'])
+        source_changed = (source_task['cancelled_at'] is not None
+            or source_task['current_session_id'] != row['source_session_id']
+            or source_task['assigned_agent'] != row['principal']
+            or (graph is not None and source_task['status'] != 'completed'))
         reconcile = (intent['state'] == 'uncertain'
                      or (intent['state'] == 'completed' and _source_result(conn, intent) is None))
         state, reason = 'pending', 'awaiting_callback'
@@ -443,7 +493,7 @@ class WorkflowSubmissionStore:
                 (intent['id'], intent['state'])).fetchone())
         elif conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled':
             state, reason = 'held', 'new_runs_disabled'
-        elif (not intent['is_current'] or intent['cancellation_requested']
+        elif (source_changed or not intent['is_current'] or intent['cancellation_requested']
               or not self._current_activation(conn, intent)):
             state, reason = 'held', 'source_not_current'
         elif capture.ready.generation != intent['authority_generation'] or capture.ready.snapshot_digest != intent['authority_digest']:
@@ -812,3 +862,4 @@ class WorkflowSubmissionStore:
         # Reuse lifespan/reaper discovery for result-before-consumption recovery.
         # No new scheduler and no replay of an uncertain host launch.
         await self.org.workflow_review_receipts.discover_completed()
+        await self.org.workflow_review_receipts.discover_collections()

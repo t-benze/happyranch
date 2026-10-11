@@ -2229,9 +2229,22 @@ bind the saved closed bearer proof. No human task/session/result, assignment,
 agent evidence bridge/stage or host-quiescence witness is invented. Historical
 proof validation is separate from current admission. Exact actor/key/full-command
 replay returns the original immutable receipt; changed body/key reuse conflicts.
-Only that request status changes; other pending requests/findings remain intact.
+The selected response preserves other requests/findings. U3b(c) then collects
+ALL current template slots in the same writer: objections close the round with
+instance reviewing and derived needs_revision/owner action; all approvals under
+current approve-planning-input authority atomically close round/instance and
+append ONE service:workflow_review_join event plus exact replay. All receipt,
+actual result/assignment, grant/binding/context/artifact/revision/raw digest,
+recipient/generation and contributor witnesses revalidate after waits. No fixed
+product/role/count branch, fourth signature, fake human evidence or r2 exists.
+The historical join reader follows complete receipt validation without recursive
+schema calls; full immutable service proof grants no current write/use. Internal
+validity reports later source/authority holds separately, preserving joined
+history. Closed objection rounds keep an owner revision drain blocker. Existing
+reaper discovery consumes missed-last-response collection and proceeds past
+ordinary held items while exposing corruption; no parallel scheduler. The H
+completed-source fulfillment remains; deferred active direct-submit is unproven.
 Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
-parity with exact public/deny disposition, collect-all closure/needs_revision and
-automatic template join are later units; this checkpoint must
-remain draft/unaccepted/unmerged until those dependencies are assessed. See the
+parity with exact public/deny disposition and root-owned public smoke465 remain
+later dependencies; keep the draft unaccepted/unmerged. See the
 exact internal grammar in [Features And Invariants](features-and-invariants.md).

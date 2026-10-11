@@ -313,6 +313,8 @@ class WorkflowReviewReceiptStore:
                                              code='workflow_review_receipt_storage_corrupt')
                         if not _same_value(saved['command'], command) or not _same_value(keys, existing):
                             raise WorkflowActivationError('workflow_human_review_operation_conflict')
+                        from runtime.workflows.review_join import collect_in_writer
+                        collect_in_writer(store, conn, row['id'], capture)
                         self._human_principal(principal)
                         return existing[0]
                     if keys or request['status'] != 'pending':
@@ -328,11 +330,13 @@ class WorkflowReviewReceiptStore:
                     conn.execute('UPDATE workflow_review_requests SET status=? WHERE id=? AND status=?',
                                  (command['outcome'], request['id'], 'pending'))
                     validate_handoff_graph(conn, row, handoff)
+                    from runtime.workflows.review_join import collect_in_writer
+                    collect_in_writer(store, conn, row['id'], capture)
                     self._human_principal(principal)
                     return receipt
 
     async def admit_completed(self, task_id: str) -> str | None:
-        """Join committed terminal proof under the existing authority writer; never launch or join."""
+        """Consume authentic terminal proof and all-current collection in the existing writer."""
         store = self.org.workflow_submissions
         # Native ownership selection precedes authority/schema/proof admission.
         with self.db._lock:
@@ -377,11 +381,46 @@ class WorkflowReviewReceiptStore:
                                      (receipt['outcome'], request['id'], 'pending'))
                     validate_agent_receipt(conn, dict(request, status=receipt['outcome']), scope)
                     self.org.workflow_reviews._intent(conn, task_id)
+                    handoffs = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE submission_id=?',
+                                        (scope['submission_id'],))
+                    if len(handoffs) != 1:
+                        raise ValueError('workflow_review_receipt_storage_corrupt')
+                    from runtime.workflows.review_join import collect_in_writer
+                    collect_in_writer(store, conn, handoffs[0]['id'], capture)
                     return receipt['id']
 
     async def discover_completed(self) -> None:
         with self.db._lock:
             tasks = [r[0] for r in self.db._conn.execute("SELECT b.task_id FROM workflow_request_task_bridges b "
                 "JOIN workflow_review_requests q ON q.id=b.request_id WHERE b.state='completed' AND q.status='pending'")]
+        from runtime.workflows.review_join import HOLDS
         for task_id in tasks:
-            await self.admit_completed(task_id)
+            try:
+                await self.admit_completed(task_id)
+            except WorkflowActivationError as exc:
+                if exc.code not in HOLDS:
+                    raise  # Corruption and unexpected failures remain visible.
+
+    async def collection_current(self, handoff_id: str) -> dict | None:
+        """Internal service view; public signed/owner projection is a following unit."""
+        from runtime.workflows.review_join import collect_in_writer
+        store = self.org.workflow_submissions
+        capture = self.org.workflow_authority.capture_admission()
+        async with store._lock:
+            async with self.org.db_lock:
+                with self.org.workflow_authority.admission_writer(capture) as conn:
+                    return collect_in_writer(store, conn, handoff_id, capture)
+
+    async def discover_collections(self) -> None:
+        """Existing reaper recovers a committed last receipt with no service effect."""
+        from runtime.workflows.review_join import HOLDS
+        with self.db._lock:
+            handoffs = [r[0] for r in self.db._conn.execute(
+                'SELECT h.id FROM workflow_author_handoffs h JOIN workflow_rounds r '
+                "ON r.submission_id=h.submission_id WHERE r.state='reviewing' ORDER BY h.id")]
+        for handoff_id in handoffs:
+            try:
+                await self.collection_current(handoff_id)
+            except WorkflowActivationError as exc:
+                if exc.code not in HOLDS:
+                    raise

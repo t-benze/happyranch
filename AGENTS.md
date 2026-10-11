@@ -1,19 +1,21 @@
 # Project: HappyRanch - Multi-Agent Org Runtime
 
-**U3b(a/b) dependency-incomplete backend checkpoint (THR139 395/410/445/457/465).**
-Internal F5 findings staging and genuine successful/quiescent agent receipts
-retain their matched closed readers and terminal/reaper consumers. Internal
-`WorkflowReviewReceiptStore.admit_human` now uses the existing server-derived
-Founder principal with in-writer revalidation and immutable closed bearer
-provenance in receipt proof_bytes. It creates no human task/session/result,
-assignment, agent evidence bridge, stage or host-quiescence fiction. Only the
-selected request outcome changes; peers stay pending. Historical proof never
-grants a fresh write. No public human write/stage surface is mounted; the
-pending-only public GET excludes signed human and agent requests. Public
-server/OpenAPI/CLI/TS/native signed-request and write/stage parity with exact
-public/deny disposition, collect-all closure/needs_revision/automatic join and
-root-owned two-template public smoke465 remain dependencies. Retain the draft
-unaccepted/unmerged. Exact grammar and proof boundaries:
+**U3b(a/b/c) dependency-incomplete backend checkpoint (THR139 395/410/445/457/465).**
+Internal F5 staging, genuine successful/quiescent agent receipts and authenticated
+human receipts retain matched closed readers and terminal/reaper consumers.
+Both receipt writers now collect ALL configured current template slots. Partial
+responses preserve peers/findings. All responses with a declared objection close
+the round while the instance remains reviewing and derive needs_revision/owner
+revision action; no joined event or automatic r2. All approvals with current
+approve-planning-input authority atomically close the round/instance and append
+one immutable service:workflow_review_join event/replay, with full grant/pins and
+actual receipt/result/assignment identities. Cold discovery reuses the existing
+service; ordinary holds do not starve later work, corruption remains visible.
+Historical joins grant no fresh approved use; current source/authority holds are
+reported separately. No extra author signature or deferred direct-submit path
+is introduced. Public human write/stage/signed-request server/OpenAPI/CLI/TS/native
+parity with exact public/deny disposition and root-owned two-template public
+smoke465 remain dependencies. Retain OPEN/DRAFT/unaccepted/unmerged. Exact grammar:
 [Features And Invariants](docs/agent-guides/features-and-invariants.md).
 
 **G submission-schema migration (THR139 seq395; retained F/E→G path).**

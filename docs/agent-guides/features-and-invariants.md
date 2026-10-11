@@ -24,19 +24,17 @@ exact actual INTEGER/full callback and committed successful/quiescent F5 termina
 current native task/session assignment, source/activation/grant/authority and
 instance-wide contributor independence revalidate. It atomically appends the
 real completed instance-task/result/current-assignment/receipt/evidence bridge
-and updates only that request's outcome. All proof bytes are reconstructed by
+and updates that request's outcome, then consumes all-current collection in the same writer. All proof bytes are reconstructed by
 matched closed graph readers. Callback verdict alone cannot sign; absent stages,
 failed/blocked/cancelled/uncertain evidence or manager effects remain unsigned.
 The native terminal hook and existing lifespan/reaper discovery consume committed
 results without another scheduler, host launch or PID/TTL inference. Roles and
 outcomes come from pinned template data, including agent-looking human labels.
 
-This dependency-incomplete checkpoint stays unaccepted/unmerged: public human
-write and stage transport and signed-request projections with CLI/TS/native parity,
-collect-all closure/automatic template join, and root-owned two-template public
-scratch smoke465 remain later units. Existing public request GET accepts pending
-requests only; a signed human or agent request is no longer selectable there. No joined
-event, fourth signature, schema/migration, auth, permission or host API change.
+Public human write/stage transport and signed-request CLI/TS/native parity and
+root-owned two-template public scratch smoke465 remain dependencies. Existing
+public GET selects pending requests only. Collection below is internal backend
+work; keep the draft unaccepted/unmerged.
 
 **U3b(b) internal human receipt checkpoint — same THR139 authority.**
 `WorkflowReviewReceiptStore.admit_human` takes an existing server-derived
@@ -78,19 +76,65 @@ no bearer callback and supplies no current mutation authority.
 One org/actual human/operation-key identifies the immutable full payload. After
 CURRENT admission, exact replay returns the original receipt bytes/ID/timestamp;
 changed body/key or cross-request key reuse conflicts with zero partial effects.
-The existing guarded transaction inserts only the human receipt and updates only
-its selected request outcome. No human task/session/result/current assignment,
-agent receipt_evidence bridge, F5 stage or human host-terminal proof is created.
-Unsigned humans and authentic existing agent rows remain readable; peers and
-findings remain untouched and round/instance stay reviewing. Objection is a
-receipt only; collect-all closure/needs_revision/service join remain a later
-backend unit. No joined event, fourth signature, r2 or reassignment is added.
+The guarded transaction inserts the human receipt, updates its selected outcome
+and consumes all-current collection below. No human task/session/result/current
+assignment, agent receipt_evidence bridge, F5 stage or host-terminal proof exists.
+Peers/findings remain immutable. Matched readers accept pending and signed rows.
+
 Public human write/reviewer-stage/signed-request server/OpenAPI/CLI/TS/native
 parity with exact public/deny dispositions is the following unit. This internal
 producer has no public caller yet; existing pending-only GET is unchanged.
 All human behavior/proof execution remains UNEXECUTED; retained agent source
 is not accepted proof. Root-owned real two-template public scratch smoke465 is
 required before Founder invitation and remains separate from daily Product E2E.
+
+**U3b(c) collect-all/service join — same authority.** Both receipt writers invoke
+`review_join.collect_in_writer` within the existing authority writer. Only ALL
+configured current slots responding closes collection. An objection closes the
+round while the instance stays reviewing and derives needs_revision/owner action;
+no joined event, new status enum, automatic r2 or timeout approval. Cutover keeps
+closed objection rounds blocked for U4 owner revision. All approvals revalidate
+current collect-review/approve-planning-input grant, activation, full captured
+ready/pointer/profile/mirror closure, enabled cutover, artifact, recipient/
+generation, contributor independence and every genuine receipt after waits.
+The instance and round complete atomically with one service event/replay.
+Pinned template roles/kinds/count/outcomes/all-current approval select behavior;
+product-design and differently named one-human proposal share the mechanism.
+Author contributes no signature. Existing H fulfillment still requires the
+original successful callback/quiescent terminal; this adds no author-completion
+gate and does not implement/prove the deferred direct-active-submit producer.
+
+Closed canonical `workflow-review-join@1` keys are exactly
+`format,event_kind,org_slug,instance_id,round_id,submission_id,revision,
+submission_digest,operation,pins,admission_authority,receipts,assignments,created_at`.
+Event kind is joined; revision is strict integer1; submission_digest hashes raw
+immutable UTF8. Operation is exactly `{principal:service:workflow_review_join,
+operation_key:<actual round ID>,action:approve-planning-input}`. Pins are the full
+seven H pins (including immutable grant/binding/context bytes); admission_authority
+is the full saved H ready/pointer/profiles/mirror/enabled-cutover closure with
+actions `[collect-review,approve-planning-input]`, freshly compared in the writer.
+Receipts in declared role order contain entire immutable rows, with bytes encoded
+as lowercase hex; assignments in declared agent-role order contain whole actual
+current assignment rows. Receipt readers bind exact INTEGER/full successful
+callbacks, genuine task/session/result/generation and Boolean host quiescence;
+human proof binds real bearer provenance without synthetic task/result.
+Created_at is UTC `YYYY-MM-DDTHH:MM:SS.ffffffZ`. Event ID is deterministic per
+instance/revision/joined and event_digest is raw canonical SHA256. The existing
+operation replay contains exact org/service/round-key, raw event request_digest,
+instance and effect ID. Full reconstruction authenticates the complete event and
+replay; extra/malformed/type-substituted fields refuse. Historical validation
+runs after receipt validation, never recursively through schema/graph/current
+admission, and preserves earlier event interpretations.
+
+Exact retry and human/agent/concurrent last response use the same writer and IDs.
+Existing lifespan/reaper discovery handles a committed-last-receipt gap without
+another scheduler; whitelisted ordinary authority holds continue to later work,
+while corruption propagates. Internal collection current validity/approved-use
+reports source/authority holds and owner reconciliation independently of retained
+joined history. A historical join cannot authorize fresh use; explicit durable
+owner resolution/revision/reassignment remains U4. All lifecycle/proof cases are
+source-inspected only, UNEXECUTED/FOUNDER-WAIVED139429/430. Public parity and root
+smoke465 are still required before Founder invitation.
 
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.

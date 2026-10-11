@@ -359,6 +359,22 @@ class WorkflowCutoverStore:
                 for row in conn.execute(f"SELECT id FROM {table} WHERE {predicate}"):
                     blockers.append(self._blocker("cutover_review_pending", record_id=row[0],
                                                   owner="workflow_recovery", required_action="resolve_pending_review"))
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == 'H':
+            from runtime.workflows.submissions import validate_handoff_graph
+            from runtime.workflows.review_join import validate_collection
+            from runtime.infrastructure.workflow_schema import _handoff_record
+            for row in conn.execute('SELECT h.* FROM workflow_author_handoffs h JOIN workflow_rounds r '
+                    "ON r.submission_id=h.submission_id WHERE r.state='closed' ORDER BY h.id"):
+                handoff = dict(row)
+                proof = _handoff_record(conn, handoff, expected_org_slug=self._org_slug)
+                graph = validate_handoff_graph(conn, handoff, proof)
+                if graph is None:
+                    raise ValueError('workflow_author_handoff_storage_corrupt')
+                if validate_collection(conn, handoff, proof, graph) == 'needs_revision':
+                    owner = conn.execute('SELECT owner_principal FROM workflow_instances WHERE id=?',
+                                         (handoff['instance_id'],)).fetchone()[0]
+                    blockers.append(self._blocker('cutover_review_needs_revision', record_id=graph['round_id'],
+                        state='closed', owner=owner, required_action='revise_document', deferred_to='U4'))
         return blockers
 
     def downgrade_preflight(self) -> dict:
