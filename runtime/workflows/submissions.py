@@ -21,9 +21,10 @@ from runtime.workflows.activation import (
 )
 from runtime.workflows.artifacts import (
     document_from_handoff, document_from_submission, document_review_brief, document_review_scope,
+    artifact_review_scope, artifact_review_brief, context_contract, review_family,
 )
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
-from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, _document_contract
+from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, _review_contract
 
 
 class AuthorHandoffCommand(ClosedRecord):
@@ -33,6 +34,34 @@ class AuthorHandoffCommand(ClosedRecord):
     expected_revision: StrictInt = Field(ge=1, le=1)
     submission_bytes_base64: str = Field(min_length=4, max_length=1398104)
     submission_digest: SHA256
+
+
+class ArtifactHandoffCommand(AuthorHandoffCommand):
+    format: Literal['workflow-author-handoff-command@2']
+    artifact_kind: Literal['document', 'code-change']
+
+
+def parse_handoff(command: object) -> dict:
+    try:
+        model = (ArtifactHandoffCommand if isinstance(command, dict) and
+                 command.get('format') == 'workflow-author-handoff-command@2' else AuthorHandoffCommand)
+        return model.model_validate(command).model_dump()
+    except ValidationError as exc:
+        raise WorkflowActivationError('workflow_author_handoff_invalid_request') from exc
+
+
+def handoff_version(command: dict) -> int:
+    version = {'workflow-author-handoff-command@1': 1, 'workflow-author-handoff-command@2': 2}.get(command.get('format'))
+    if version is None:
+        raise WorkflowActivationError('workflow_author_handoff_invalid_request')
+    return version
+
+
+def source_actions(intent: dict) -> set[str]:
+    request = json.loads(intent['request_bytes'])
+    if request.get('format') == 'workflow-activation-request@4':
+        return {'stage-immutable-artifact', 'submit-immutable-artifact'}
+    return {'stage-immutable-document', 'submit-immutable-document'}
 
 
 class AuthorHandoffCore(ClosedRecord):
@@ -69,6 +98,15 @@ class AuthorHandoffReceipt(ClosedRecord):
     current: AuthorHandoffCurrent
 
 
+class ArtifactHandoffCore(AuthorHandoffCore):
+    artifact_kind: Literal['document']
+
+
+class ArtifactHandoffReceipt(AuthorHandoffReceipt):
+    format: Literal['workflow-author-handoff-receipt@2']
+    core: ArtifactHandoffCore
+
+
 def _record(conn: sqlite3.Connection, table: str, identity: str) -> dict:
     rows = _records(conn, f'SELECT * FROM {table} WHERE id=?', (identity,))
     if len(rows) != 1:
@@ -93,9 +131,10 @@ def _source(conn: sqlite3.Connection, intent: dict) -> tuple[dict, dict, dict, A
     grant = json.loads(authorization['authority_bytes'])
     template = WorkflowTemplateStore._read_version(conn, identity_id=activation['template_identity_id'],
         version=grant['template']['version'], expected_version_id=activation['template_version_id'])
-    contract = _document_contract(template)
-    if contract is None or contract['format'] != 'workflow-document-contract@3':
+    contract = _review_contract(template)
+    if contract is None or contract['format'] not in ('workflow-document-contract@3', 'workflow-artifact-contract@4'):
         raise WorkflowActivationError('workflow_author_handoff_action_not_authorized')
+    context_contract(json.loads(context['context_bytes']))
     return activation, context, binding, template, authorization
 
 
@@ -177,7 +216,8 @@ def _reviewed_source_result(conn: sqlite3.Connection, row: dict, intent: dict) -
 def review_scope(*, row: dict, proof: dict, context: dict, contract: dict, role: str,
                  request_id: str, round_id: str, binding: dict) -> dict:
     """Keep the historical entry point and document-specific serializer."""
-    return document_review_scope(row=row, proof=proof, context=context, contract=contract,
+    serializer = artifact_review_scope if contract['format'] == 'workflow-artifact-contract@4' else document_review_scope
+    return serializer(row=row, proof=proof, context=context, contract=contract,
                                  role=role, request_id=request_id, round_id=round_id, binding=binding)
 
 
@@ -217,7 +257,7 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
             or round_['id'] != _id('workflow-round', row['instance_id'], 1, row['submission_id'])):
         raise ValueError(code)
     context = json.loads(_record(conn, 'workflow_contexts', intent['context_id'])['context_bytes'])
-    contract = context['document_contract']
+    contract = context_contract(context)
     bindings = context['binding']['bindings']
     requests = _records(conn, 'SELECT * FROM workflow_review_requests WHERE round_id=?', (round_['id'],))
     expected = []
@@ -303,7 +343,7 @@ def _validate_handoff_graph(conn: sqlite3.Connection, row: dict, proof: dict) ->
 
 
 def review_brief(scope: dict, candidate: bytes) -> str:
-    return document_review_brief(scope, candidate)
+    return artifact_review_brief(scope, candidate) if review_family(scope) == 2 else document_review_brief(scope, candidate)
 
 
 class WorkflowSubmissionStore:
@@ -353,7 +393,7 @@ class WorkflowSubmissionStore:
         self.org.workflow_activations._roles(parse_request(grant['original_request']), json.loads(capture.ready.snapshot_bytes), template)
         self.org.workflow_activations._closure(conn, activation['id'], actor=intent['admission_principal'])
         context = json.loads(context_row['context_bytes'])
-        principals = {context['binding']['bindings'][role]['principal'] for role in context['document_contract']['reviewer_roles']}
+        principals = {context['binding']['bindings'][role]['principal'] for role in context_contract(context)['reviewer_roles']}
         contributors = {r[0] for r in conn.execute('SELECT principal FROM workflow_instance_contributors WHERE instance_id=?', (intent['instance_id'],))}
         contributors |= {r[0] for r in conn.execute('SELECT principal FROM workflow_submission_operations WHERE instance_id=?', (intent['instance_id'],))}
         if principals & (contributors | {intent['assigned_principal']}):
@@ -371,11 +411,18 @@ class WorkflowSubmissionStore:
             raise WorkflowActivationError('workflow_author_handoff_source_not_current')
 
     async def stage_author_handoff(self, *, session_id: str, command: dict) -> dict:
-        try:
-            parsed = AuthorHandoffCommand.model_validate(command)
-        except ValidationError as exc:
-            raise WorkflowActivationError('workflow_author_handoff_invalid_request') from exc
-        command = parsed.model_dump()
+        command = parse_handoff(command)
+        task, agent = self._session(session_id)
+        capture = self.org.workflow_authority.capture_admission()
+        with self.org.sessions.binding_lease(task, agent):
+            with self.db._lock:
+                self._session(session_id)
+                selected = self.org.workflow_drafts._intent(self.db._conn, task)
+                self._fresh(self.db._conn, selected, task, agent, session_id)
+                if command['activation_id'] != selected['activation_id']:
+                    raise WorkflowActivationError('workflow_author_handoff_source_not_current')
+                context, _, _ = self._authority(self.db._conn, selected, capture, source_actions(selected))
+                self._matched_handoff(command, context)
         try:
             candidate = base64.b64decode(command['submission_bytes_base64'], validate=True)
             candidate.decode('utf8')
@@ -384,8 +431,6 @@ class WorkflowSubmissionStore:
                 raise ValueError('candidate')
         except (ValueError, UnicodeError) as exc:
             raise WorkflowActivationError('workflow_author_handoff_invalid_request') from exc
-        task, agent = self._session(session_id)
-        capture = self.org.workflow_authority.capture_admission()
         async with self._lock:
             async with self.org.db_lock:
                 with self.org.sessions.binding_lease(task, agent):
@@ -395,7 +440,8 @@ class WorkflowSubmissionStore:
                         self._fresh(conn, intent, task, agent, session_id)
                         if command['activation_id'] != intent['activation_id']:
                             raise WorkflowActivationError('workflow_author_handoff_source_not_current')
-                        self._authority(conn, intent, capture, {'stage-immutable-document', 'submit-immutable-document'})
+                        context, _, _ = self._authority(conn, intent, capture, source_actions(intent))
+                        self._matched_handoff(command, context)
                         if (capture.ready.generation != intent['authority_generation']
                                 or capture.ready.snapshot_digest != intent['authority_digest']):
                             raise WorkflowActivationError('workflow_activation_authority_stale')
@@ -424,12 +470,19 @@ class WorkflowSubmissionStore:
                             receipt = self._projection(conn, row, capture, replayed=False)
         return receipt
 
+    @staticmethod
+    def _matched_handoff(command: dict, context: dict) -> None:
+        contract = context_contract(context)
+        expected = 2 if contract['format'] == 'workflow-artifact-contract@4' else 1
+        if handoff_version(command) != expected or (expected == 2 and command['artifact_kind'] != 'document'):
+            raise WorkflowActivationError('workflow_author_handoff_invalid_request')
+
     def _reservation(self, conn: sqlite3.Connection, intent: dict, command: dict, candidate: bytes, capture: Any) -> dict:
         timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
         handoff_id = _id('workflow-author-handoff', self.org.slug, intent['assigned_principal'], command['operation_key'])
         submission_id = _id('workflow-submission', intent['instance_id'], 1, self.org.slug,
-                            intent['assigned_principal'], command['operation_key'], 'workflow-author-handoff@1')
-        request = canonical_bytes({**command, 'format': 'workflow-author-handoff-request@1',
+                            intent['assigned_principal'], command['operation_key'], f'workflow-author-handoff@{handoff_version(command)}')
+        request = canonical_bytes({**command, 'format': f'workflow-author-handoff-request@{handoff_version(command)}',
             'handoff_id': handoff_id, 'submission_id': submission_id, 'instance_id': intent['instance_id'], 'revision': 1})
         row = dict(id=handoff_id, intent_id=intent['id'], instance_id=intent['instance_id'], org_slug=self.org.slug,
                    principal=intent['assigned_principal'], source_task_id=intent['task_id'], source_session_id=intent['session_id'],
@@ -437,7 +490,7 @@ class WorkflowSubmissionStore:
                    candidate_bytes=candidate, candidate_digest=digest(candidate), request_bytes=request,
                    request_digest=digest(request), created_at=timestamp)
         activation, context, binding, template, authorization = _source(conn, intent)
-        contract = canonical_bytes(_document_contract(template))
+        contract = canonical_bytes(_review_contract(template))
         pins = dict(template=dict(identity_id=template.identity_id, version_id=template.version_id, version=template.version,
                                   definition_digest=template.definition_digest, compiler_pin=template.compiler_pin,
                                   validator_pin=template.validator_pin, source_pin=template.source_pin),
@@ -457,14 +510,15 @@ class WorkflowSubmissionStore:
                           **{k: intent[k] for k in ('session_id', 'activation_revision', 'assignment_generation',
                               'attempt_sequence', 'claim_token', 'claim_owner', 'host_execution_key', 'host_execution_id',
                               'state', 'is_current', 'host_launch_started', 'cancellation_requested', 'final_result_id')})
-        proof = dict(format='workflow-author-handoff@1', handoff=_hex(row), client_request=command,
+        proof = dict(**({'repository_resolution': None} if handoff_version(command) == 2 else {}),
+                     format=f'workflow-author-handoff@{handoff_version(command)}', handoff=_hex(row), client_request=command,
                      source_intent=_hex({k: v for k, v in intent.items() if k not in _DRAFT_MUTABLE}),
                      source_generation=generation, pins=pins,
                      admission_authority=dict(ready=dict(namespace=capture.ready.namespace, generation=capture.ready.generation,
                          snapshot_bytes_hex=capture.ready.snapshot_bytes.hex(), snapshot_digest=capture.ready.snapshot_digest),
                          pointer=dict(zip(('current_generation', 'journal_id', 'snapshot_digest', 'state', 'profile_fence'), capture.pointer, strict=True)),
                          profiles=[dict(name=name, digest=dg) for name, dg in capture.profile_digests], mirror=mirror,
-                         cutover='enabled', actions=['stage-immutable-document', 'submit-immutable-document']))
+                         cutover='enabled', actions=sorted(source_actions(intent))))
         raw = canonical_bytes(proof)
         if len(request) > 2097152 or len(raw) > 16777216:
             raise WorkflowActivationError('workflow_author_handoff_invalid_request')
@@ -504,7 +558,9 @@ class WorkflowSubmissionStore:
             reason = 'awaiting_terminal_proof'
         core = dict(handoff_id=row['id'], reserved_submission_id=row['submission_id'], instance_id=row['instance_id'],
                     revision=1, candidate_digest=row['candidate_digest'], request_digest=row['request_digest'], created_at=row['created_at'])
-        return dict(format='workflow-author-handoff-receipt@1', core=core, replayed=replayed,
+        if proof['format'] == 'workflow-author-handoff@2':
+            core['artifact_kind'] = 'document'
+        return dict(format='workflow-author-handoff-receipt@2' if proof['format'] == 'workflow-author-handoff@2' else 'workflow-author-handoff-receipt@1', core=core, replayed=replayed,
                     current=dict(state=state, pending=state in ('pending', 'held'), reconciliation_required=reconcile,
                                  reason=reason, graph=graph if state == 'consumed' else None))
 
@@ -520,7 +576,7 @@ class WorkflowSubmissionStore:
                     intent = _record(conn, 'workflow_draft_dispatch_intents', row['intent_id'])
                     try:
                         context, binding, grant = self._authority(conn, intent, capture,
-                            {'stage-immutable-document', 'submit-immutable-document', 'collect-review'})
+                            source_actions(intent) | {'collect-review'})
                     except WorkflowActivationError as exc:
                         # A normal hold belongs to THIS reservation. Full H
                         # validation above has already rejected corruption.
@@ -575,7 +631,7 @@ class WorkflowSubmissionStore:
         _insert(conn, 'workflow_instance_contributors', dict(instance_id=row['instance_id'], **contribution))
         round_id = _id('workflow-round', row['instance_id'], 1, row['submission_id'])
         _insert(conn, 'workflow_rounds', dict(id=round_id, instance_id=row['instance_id'], submission_id=row['submission_id'], current_revision=1, state='reviewing'))
-        contract = context['document_contract']
+        contract = context_contract(context)
         request_ids, task_ids = [], []
         for role in contract['reviewer_roles']:
             selected = binding['bindings'][role]
@@ -583,6 +639,8 @@ class WorkflowSubmissionStore:
             scope = review_scope(row=row, proof=proof, context=context, contract=contract, role=role,
                                  request_id=qid, round_id=round_id, binding=selected)
             raw = canonical_bytes(scope)
+            if len(raw) > 1048576:
+                raise WorkflowActivationError('workflow_activation_context_too_large')
             _insert(conn, 'workflow_review_requests', dict(id=qid, round_id=round_id, principal=selected['principal'],
                 assignment_generation=1, request_scope_bytes=raw, request_scope_digest=digest(raw), status='pending', supersedes_request_id=None))
             request_ids.append(qid)
@@ -639,15 +697,17 @@ class WorkflowSubmissionStore:
                 return ''
             intent = rows[0]
             context = json.loads(_record(self.db._conn, 'workflow_contexts', intent['context_id'])['context_bytes'])
-            if context.get('format') != 'workflow-initial-draft-context@3':
+            if context.get('format') not in ('workflow-initial-draft-context@3', 'workflow-initial-draft-context@4'):
                 return ''
             actions = context['authorization']['original_request']['allowed_actions']
-            if not {'stage-immutable-document', 'submit-immutable-document'} <= set(actions):
+            if not source_actions(intent) <= set(actions):
                 return ''
             activation_id = intent['activation_id']
+            family = 2 if context['format'] == 'workflow-initial-draft-context@4' else 1
         return (f'\nWorkflow original-author handoff: before your completion callback, stage the exact UTF8 document with '
                 f'happyranch workflows submissions stage --org {self.org.slug} --session-id {session_id} '
-                '--from-file <absolute-command.json>. The closed command has format workflow-author-handoff-command@1, '
+                f'--from-file <absolute-command.json>. The closed command has format workflow-author-handoff-command@{family}, '
+                + ('artifact_kind document, ' if family == 2 else '') +
                 f'operation_key (one stable original key), activation_id {activation_id}, expected_revision 1, '
                 'submission_bytes_base64 and submission_digest (SHA256 of exact bytes). Preserve the same key/body '
                 'after a lost response. Staging reserves immutable bytes only; it creates no submitted graph or signature. '
@@ -717,7 +777,7 @@ class WorkflowSubmissionStore:
                     or intent['assigned_principal'] != row['principal'] or not intent['is_current']
                     or intent['activation_revision'] != 1 or intent['assignment_generation'] != 1 or intent['attempt_sequence'] != 1):
                 raise WorkflowActivationError('workflow_author_handoff_not_found')
-            actions = {'stage-immutable-document', 'submit-immutable-document'}
+            actions = source_actions(intent)
         elif lane == 'request-agent':
             if not intent['is_current'] or not self._current_activation(conn, intent):
                 raise WorkflowActivationError('workflow_author_handoff_not_found')
@@ -869,7 +929,7 @@ class WorkflowSubmissionStore:
                             if len(receipts) != 1:
                                 raise ValueError('workflow_author_handoff_storage_corrupt')
                             receipt = recipient_receipt(receipts[0])
-                        return dict(format='workflow-review-request-receipt@1', request_id=request_id,
+                        return dict(format=f'workflow-review-request-receipt@{review_family(scope)}', request_id=request_id,
                             scope=scope, request_scope_digest=request['request_scope_digest'], status=request['status'],
                             signed=signed, pending=not signed, receipt=receipt,
                             reconciliation_required=current['reconciliation_required'],

@@ -12,6 +12,7 @@ from pydantic import Field, StrictInt, ValidationError
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, author_capacity_blocked
 from runtime.workflows.draft_dispatch import DraftOwnershipError, WorkflowDraftDispatcher, canonical_bytes, digest
+from runtime.workflows.artifacts import review_family
 from runtime.workflows.submissions import _insert, _record, validate_handoff_graph
 
 
@@ -32,9 +33,14 @@ class ReviewStageCommand(ClosedRecord):
     findings_digest: SHA256
 
 
+class ArtifactReviewStageCommand(ReviewStageCommand):
+    format: Literal['workflow-review-stage-command@2']
+
+
 def parse_stage(command: dict) -> dict:
     try:
-        parsed = ReviewStageCommand.model_validate(command).model_dump()
+        model = (ArtifactReviewStageCommand if isinstance(command, dict) and command.get('format') == 'workflow-review-stage-command@2' else ReviewStageCommand)
+        parsed = model.model_validate(command).model_dump()
         raw = base64.b64decode(parsed['findings_bytes_base64'], validate=True)
         raw.decode('utf8')
         if (not 1 <= len(raw) <= 1048576 or digest(raw) != parsed['findings_digest']
@@ -55,7 +61,8 @@ def validate_stage(conn: sqlite3.Connection, body: dict, *, outbox: dict, bridge
     request = _record(conn, 'workflow_review_requests', bridge['request_id'])
     scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'], code=code)
     before = body['before']
-    if (not _same_value(stage['scope'], scope) or scope['kind'] != 'agent'
+    if (command['format'] != f'workflow-review-stage-command@{review_family(scope)}'
+            or not _same_value(stage['scope'], scope) or scope['kind'] != 'agent'
             or command['outcome'] not in scope['outcomes']
             or command['request_id'] != request['id'] or command['expected_revision'] != scope['revision']
             or command['request_scope_digest'] != request['request_scope_digest']
@@ -319,7 +326,8 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
                         store._authority(conn, source, capture, {'collect-review'})
                         intent = self._intent(conn, task)
                         store._fresh(conn, intent, task, agent, session_id)
-                        if (command['expected_revision'] != intent['scope']['revision']
+                        if (command['format'] != f"workflow-review-stage-command@{review_family(intent['scope'])}"
+                                or command['expected_revision'] != intent['scope']['revision']
                                 or command['request_scope_digest'] != request['request_scope_digest']
                                 or command['outcome'] not in intent['scope']['outcomes']):
                             raise WorkflowActivationError('workflow_review_stage_invalid_request')
@@ -346,7 +354,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
                             event_id = conn.execute('SELECT id FROM workflow_dispatch_events WHERE operation_id=? ORDER BY event_seq DESC LIMIT 1',
                                                     (intent['operation_id'],)).fetchone()[0]
                         validate_review_dispatch_storage(conn, request_id=request['id'])
-                        return dict(format='workflow-review-stage-ack@1', stage_event_id=event_id,
+                        return dict(format=f"workflow-review-stage-ack@{review_family(intent['scope'])}", stage_event_id=event_id,
                                     request_digest=digest(canonical_bytes(command)), replayed=bool(stages), signed=False)
 
     def _intent(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:

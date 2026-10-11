@@ -1,6 +1,77 @@
 # Features And Invariants
 
-**Artifact boundary A — THR139 seq480/477, ROOT TASK10693.**
+**Matched artifact admission B1 — THR139seq480/477, ROOT TASK10693.**
+A closed `artifact-review` definition with strict schema_version 4 compiles to
+`workflow-artifact-contract@4`; exact pins are workflow-compiler@4,
+workflow-validator@4 and operator-input@4. The template selects exactly one
+accepted kind in output `{primitive:"immutable-artifact-revision",description,
+accepted_kinds:["document"]}` or `["code-change"]`. Role names/kinds/counts,
+outcomes, approval, return rules and submission timing remain finite template
+data, independently bound to actual current principals. No name/content sniffing
+or new product-design branch selects policy. Submission delivery retains the
+literal current-author-handoff@1 declaration; B1 implements original-author r1.
+
+Matched activation-request/receipt/authorization/binding/initial-draft-context@4
+uses draft-artifact, stage-immutable-artifact, submit-immutable-artifact and the
+existing collect-review/approve-planning-input/return-to-author semantics.
+These grant preparation/review-input only. Context stores artifact_contract;
+request requires repository_access; for documents it is null. Authorization,
+binding and context require repository_binding null. A code definition may be
+stored, but valid code activation returns409 workflow_repository_reader_unavailable
+before instance/task/intent allocation. No code submission, repository reading,
+access grant/capsule, execution, merge or delivered-code claim is implemented.
+
+The document r1 chain uses author-handoff-command/request/proof/receipt@2.
+Command adds artifact_kind document; proof adds repository_resolution null;
+public core adds artifact_kind document. The source supplement gives the actual
+@2 command and stable original key, staged before the genuine final callback.
+The new submission ID preimage uses workflow-author-handoff@2. The review scope
+is workflow-review-request@2 with the explicit artifact identity (org namespace,
+instance and output slot), submission ID, strict revision1, document kind, exact
+bytes digest and content_digest subject. It adds repository_resolution null.
+Human-review-command/proof/receipt, review-stage-command, agent-review-proof,
+review-receipt, review-request-receipt and review-join use matched @2 families.
+No agent-review-stage endpoint is added. Current selected-principal/grant checks
+precede private decode and repeat after waits/in the writer. Both authentic
+receipt lanes, INTEGER/full callback and successful Boolean-quiescent terminal,
+contributor independence, retained objections and collect-all rules remain.
+No object I/O occurs in the writer or historical/cold readers.
+
+Existing @1/@2/@3 historical definitions/contexts and @1 document handoff,
+scope/brief/proof/receipt/join interpretations remain byte-exact. Unknown/mixed
+families refuse; no relabel, backfill or automatic repin occurs. F/E/G/H DDL,
+digests, H17 columns/constraints/revision1/unique intent and marker meanings are
+unchanged. Publication requires pre-existing H. Any durable @4 template,
+context or authorization already requires a compatible reader before the first
+H row; no old-reader downgrade or migration claim follows. Compatible-reader
+rollback must retain the new history; deleting/converting it is not authorized.
+
+Prospective frozen reservations (non-null use remains held B2): repository_access
+is `{action:"read-repository-artifact",repository_id,recipients}` with ordered
+roles author then all reviewers. Binding is `{format:"workflow-repository-binding@1",
+action:"read-repository-artifact",org_slug,repository_id,repo_key,origin_digest,
+store_owner,authority:{namespace,generation,snapshot_digest},
+recipients:[{role,kind,principal,team}],reader:"local-git-objects@1"}`.
+Resolution is `{binding,binding_digest,presentation_bytes_base64,presentation_digest}`;
+presentation is `{format:"workflow-repository-presentation@1",repository_id,
+object_format,head,base,entries:[{path,before,after}]}` with each side null or
+`{mode,blob_oid,bytes_base64}`. B1 accepts/stores only null binding/resolution;
+these declarations are grammar reservations, never access or object-resolution
+proof. Incompatible future shapes need a fresh version.
+
+Existing routes/CLI/TS/OpenAPI carry matched unions, without a new route,
+audience, native permission or shared transport change. B2 repository access
+and bounded immutable-object reader, C r2/fresh signoffs/direct submission/owner
+validity/reassignment/recovery/mounted UI remain held or separate. Founder465
+public two-template/revision journeys and actual Founder UI Request changes
+and Sign off remain root-owned UNOBSERVED; Phase2 ordered coding/QA/CI/merge is
+separate. Behavioral/assertion/red-green/mutation/repetition/proof is UNEXECUTED /
+FOUNDER-WAIVED139429/430, never PASS; integration SKIPPED24342 and Python units
+RETIRED. Automated checks are lint/static only; no ad hoc E2E/live operation.
+Fresh full independent review/scoped QA binds the final actual pushed head.
+
+
+**Retained artifact foundation A — THR139 seq480/477, ROOT TASK10693.**
 `runtime/workflows/artifacts.py` supplies a pure frozen `ArtifactRevision`:
 org namespace + workflow instance + stable output slot (`output` for the current
 single-output document family), stored submission ID, positive strict-integer
@@ -34,8 +105,8 @@ absent object can parse; no repository reader is mounted in A.
 
 Product-design and the differently named one-human proposal use the same document
 projection with template-defined roles/outcomes; code-change shares the identity
-model as representation only. B still owns matched versioned template/context/
-request/proof admission and actual authorized immutable repository resolution.
+model as representation only. B1 adds the matched document admission described
+above; B2 still owns actual authorized immutable repository resolution.
 C still owns r2 producers/fresh requests/sign-offs, reassignment/recovery and
 mounted UI/CLI. H revision1/unique-intent constraints and old @1/@2/@3 pins/history
 remain intact. Seq475 reviewer-stage public/native decision is PENDING; no dependent

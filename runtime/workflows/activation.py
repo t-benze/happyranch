@@ -16,13 +16,15 @@ from runtime.infrastructure.workflow_schema import validate_workflow_schema
 from runtime.models import TaskRecord
 from runtime.orchestrator._paths import OrgPaths
 from runtime.workflows.draft_dispatch import append_event_uncommitted, canonical_bytes, digest
-from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, WorkflowTemplateVersion, _document_contract
+from runtime.workflows.templates import WorkflowTemplatePrincipal, WorkflowTemplateStore, WorkflowTemplateVersion, _review_contract
 
 
 CONTEXT_LIMIT = 1024 * 1024
 Role = Literal["product-lead", "founder", "implementer", "tester"]
 Action = Literal["draft-document", "submit-immutable-document", "collect-review",
                  "approve-planning-input", "return-to-author"]
+ArtifactAction = Literal["draft-artifact", "stage-immutable-artifact", "submit-immutable-artifact",
+                         "collect-review", "approve-planning-input", "return-to-author"]
 HandoffAction = Literal["draft-document", "stage-immutable-document", "submit-immutable-document",
                         "collect-review", "approve-planning-input", "return-to-author"]
 Token = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")]
@@ -127,6 +129,19 @@ class DocumentActivationRequest3(DocumentActivationRequest):
     allowed_actions: list[HandoffAction] = Field(min_length=1, max_length=6)
 
 
+class RepositoryAccess(ClosedRecord):
+    """Prospective selector grammar only. B1 never grants this capability."""
+    action: Literal["read-repository-artifact"]
+    repository_id: Token
+    recipients: list[AbstractRole] = Field(min_length=2, max_length=4)
+
+
+class ArtifactActivationRequest(DocumentActivationRequest):
+    format: Literal["workflow-activation-request@4"]
+    allowed_actions: list[ArtifactAction] = Field(min_length=1, max_length=6)
+    repository_access: RepositoryAccess | None
+
+
 class ActivatedBy(ClosedRecord):
     principal_kind: Literal["human"]
     principal_id: Literal["founder"]
@@ -189,15 +204,32 @@ class DocumentActivationReceipt3(DocumentActivationReceipt):
     allowed_actions: list[HandoffAction]
 
 
+class ArtifactActivationReceipt(DocumentActivationReceipt):
+    format: Literal["workflow-activation-receipt@4"]
+    allowed_actions: list[ArtifactAction]
+
+
+def _contract_format(contract: dict | None, record: str) -> str:
+    if contract is None:
+        return f"workflow-{record}@1"
+    family = contract["format"]
+    version = {"workflow-document-contract@2": 2, "workflow-document-contract@3": 3,
+               "workflow-artifact-contract@4": 4}.get(family)
+    if version is None:
+        raise WorkflowActivationError("workflow_activation_invalid_request")
+    return f"workflow-{record}@{version}"
+
+
 def parse_request(value: object) -> ActivationRequest | DocumentActivationRequest:
     try:
-        model = (DocumentActivationRequest3 if isinstance(value, dict) and value.get("format") == "workflow-activation-request@3"
+        model = (ArtifactActivationRequest if isinstance(value, dict) and value.get("format") == "workflow-activation-request@4"
+                 else DocumentActivationRequest3 if isinstance(value, dict) and value.get("format") == "workflow-activation-request@3"
                  else DocumentActivationRequest if isinstance(value, dict) and "format" in value else ActivationRequest)
         request = model.model_validate(value)
     except ValidationError as exc:
         raise WorkflowActivationError("workflow_activation_invalid_request") from exc
     if (not request.scope.brief.strip() or len(set(request.allowed_actions)) != len(request.allowed_actions)
-            or "draft-document" not in request.allowed_actions):
+            or ("draft-artifact" if isinstance(request, ArtifactActivationRequest) else "draft-document") not in request.allowed_actions):
         raise WorkflowActivationError("workflow_activation_invalid_request")
     if isinstance(request, DocumentActivationRequest) and any(
             len(set(item.recipients)) != len(item.recipients) for item in request.inputs):
@@ -206,10 +238,18 @@ def parse_request(value: object) -> ActivationRequest | DocumentActivationReques
 
 
 def _contract_for_request(request: dict, template: WorkflowTemplateVersion) -> dict | None:
-    contract = _document_contract(template)
-    expected = None if contract is None else contract["format"].replace("document-contract", "activation-request")
+    contract = _review_contract(template)
+    expected = None if contract is None else _contract_format(contract, "activation-request")
     if request.get("format") != expected:
         raise WorkflowActivationError("workflow_activation_invalid_request")
+    if request.get("format") == "workflow-activation-request@4":
+        access = request["repository_access"]
+        kind = contract["output"]["accepted_kinds"][0]
+        if kind == "document" and access is not None:
+            raise WorkflowActivationError("workflow_activation_invalid_request")
+        if kind == "code-change" and (access is None or access["recipients"] !=
+                [contract["author_role"], *contract["reviewer_roles"]]):
+            raise WorkflowActivationError("workflow_activation_invalid_request")
     return contract
 
 
@@ -233,7 +273,8 @@ def _authorization(*, org_slug: str, instance_id: str, activation_id: str, task_
                    request: dict, request_digest: str, template: WorkflowTemplateVersion,
                    timestamp: str) -> dict:
     contract = _contract_for_request(request, template)
-    return dict(format=contract["format"].replace("document-contract", "authorization") if contract is not None else "workflow-authorization@1",
+    return dict(**({"repository_binding": None} if request.get("format") == "workflow-activation-request@4" else {}),
+                format=_contract_format(contract, "authorization"),
                 namespace=f"org/{org_slug}/workflow-instance/{instance_id}",
                 instance_id=instance_id, activation_id=activation_id, activation_revision=1,
                 root_task_id=task_id, original_request=request, request_digest=request_digest,
@@ -244,7 +285,8 @@ def _authorization(*, org_slug: str, instance_id: str, activation_id: str, task_
 def _binding(*, instance_id: str, activation_id: str, authorization_id: str,
              template: WorkflowTemplateVersion, request: dict) -> dict:
     contract = _contract_for_request(request, template)
-    return dict(format=contract["format"].replace("document-contract", "binding") if contract is not None else "workflow-binding@1", instance_id=instance_id,
+    return dict(**({"repository_binding": None} if request.get("format") == "workflow-activation-request@4" else {}),
+                format=_contract_format(contract, "binding"), instance_id=instance_id,
                 activation_id=activation_id, activation_revision=1,
                 template_version_id=template.version_id, authorization_revision_id=authorization_id,
                 bindings=request["bindings"], eligible_replacements=request["eligible_replacements"],
@@ -255,14 +297,18 @@ def _context(*, org_slug: str, request: dict, snapshot: dict, template: Workflow
              inputs: list[dict], authorization: dict, authorization_id: str,
              binding: dict, binding_id: str, intent_id: str) -> dict:
     contract = _contract_for_request(request, template)
-    result = dict(format=contract["format"].replace("document-contract", "initial-draft-context") if contract is not None else "workflow-initial-draft-context@1", org_slug=org_slug,
+    if request.get("format") == "workflow-activation-request@4" and contract["output"]["accepted_kinds"] != ["document"]:
+        raise WorkflowActivationError("workflow_repository_reader_unavailable")
+    result = dict(format=_contract_format(contract, "initial-draft-context"), org_slug=org_slug,
                 request=request, authority_snapshot=snapshot,
                 template=json.loads(template.definition_bytes), inputs=inputs,
                 authorization=authorization, authorization_revision_id=authorization_id,
                 binding=binding, binding_snapshot_id=binding_id, intent_id=intent_id,
                 attempt_sequence=1, assignment_generation=1)
     if contract is not None:
-        result["document_contract"] = contract
+        result["artifact_contract" if request.get("format") == "workflow-activation-request@4" else "document_contract"] = contract
+    if request.get("format") == "workflow-activation-request@4":
+        result["repository_binding"] = None
     return result
 
 
@@ -277,14 +323,22 @@ def _task_brief(request: dict, inputs: list[dict], template: WorkflowTemplateVer
                  "With explicit stage+submit authority, preserve immutable output before your final completion callback. "
                  "The owned service submits that same operation only after successful callback and committed quiescent terminal proof.\n\n"
                  + request["scope"]["brief"])
+    if request.get("format") == "workflow-activation-request@4":
+        brief = ("Workflow initial artifact preparation. Produce only the template-selected immutable document. "
+                 "Do not delegate, implement code, merge, deploy, or approve planning input. "
+                 "With explicit stage+submit authority, stage the matched @2 handoff before the final callback. "
+                 "The owned service fulfills the same operation only after genuine successful/quiescent proof.\n\n"
+                 + request["scope"]["brief"])
     role = "product-lead"
-    if request.get("format") in ("workflow-activation-request@2", "workflow-activation-request@3"):
+    if request.get("format") in ("workflow-activation-request@2", "workflow-activation-request@3", "workflow-activation-request@4"):
         if template is None:
             raise WorkflowActivationError("workflow_activation_invalid_request")
         contract = _contract_for_request(request, template)
         role = contract["author_role"]
         title = ("\n\nImmutable document contract:\n" if request.get("format") == "workflow-activation-request@3"
                  else "\n\nImmutable document contract (submission capability is for later units):\n")
+        if request.get("format") == "workflow-activation-request@4":
+            title = "\n\nImmutable artifact contract:\n"
         brief += title + canonical_bytes(contract).decode()
     visible = [item for item in inputs if role in item["pin"]["recipients"]]
     if visible:
@@ -355,6 +409,9 @@ class WorkflowActivationStore:
             capabilities = {"draft-document", "submit-immutable-document", "collect-review", "approve-planning-input"}
             if isinstance(request, DocumentActivationRequest3):
                 capabilities.add("stage-immutable-document")
+            if isinstance(request, ArtifactActivationRequest):
+                capabilities = {"draft-artifact", "stage-immutable-artifact", "submit-immutable-artifact",
+                                "collect-review", "approve-planning-input"}
             if contract["request_changes"] is not None:
                 capabilities.add("return-to-author")
             if not set(request.allowed_actions) <= capabilities:
@@ -479,6 +536,9 @@ class WorkflowActivationStore:
                 generation=capture.ready.generation, snapshot_digest=capture.ready.snapshot_digest):
             raise WorkflowActivationError("workflow_activation_authority_stale")
         bindings = self._roles(request, json.loads(capture.ready.snapshot_bytes), template)
+        if isinstance(request, ArtifactActivationRequest) and _review_contract(template)["output"]["accepted_kinds"] == ["code-change"]:
+            raise WorkflowActivationError("workflow_repository_reader_unavailable", owner="founder",
+                required_action="Use a document template; repository artifact reading is not available")
         author_role = _author_role(request.model_dump(by_alias=True), template)
         inputs = self._inputs(request, bindings)
         # Tracker binding leases precede Database ownership in callback
@@ -488,7 +548,7 @@ class WorkflowActivationStore:
             async with self.org.db_lock:
                 with self.org.workflow_authority.admission_writer(capture) as conn:
                     principal.revalidate()
-                    if isinstance(request, DocumentActivationRequest3):
+                    if isinstance(request, (DocumentActivationRequest3, ArtifactActivationRequest)):
                         from runtime.infrastructure.workflow_schema import require_author_handoff_schema
                         require_author_handoff_schema(conn, expected_org_slug=self.org.slug)
                     replay = self._replay(conn, actor=actor, request=request, request_digest=request_digest)

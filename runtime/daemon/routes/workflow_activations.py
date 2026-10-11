@@ -9,7 +9,7 @@ from runtime.daemon.auth import _require_human
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.workflows.activation import (
     ActivationReceipt, ActivationRequest, DocumentActivationReceipt, DocumentActivationRequest,
-    DocumentActivationReceipt3, DocumentActivationRequest3,
+    DocumentActivationReceipt3, DocumentActivationRequest3, ArtifactActivationReceipt, ArtifactActivationRequest,
     WorkflowActivationError,
 )
 from runtime.workflows.authority import WorkflowAuthorityError
@@ -18,12 +18,12 @@ from runtime.workflows.templates import WorkflowTemplateError, WorkflowTemplateP
 
 
 router = APIRouter(dependencies=[Depends(_require_human)])
-Receipt = ActivationReceipt | DocumentActivationReceipt | DocumentActivationReceipt3
+Receipt = ActivationReceipt | DocumentActivationReceipt | DocumentActivationReceipt3 | ArtifactActivationReceipt
 
 
 def _request_schema() -> dict[str, Any]:
     return {"anyOf": [_expand_request_schema(model, index)
-                      for index, model in enumerate((ActivationRequest, DocumentActivationRequest, DocumentActivationRequest3))]}
+                      for index, model in enumerate((ActivationRequest, DocumentActivationRequest, DocumentActivationRequest3, ArtifactActivationRequest))]}
 
 
 def _expand_request_schema(model: type[ActivationRequest], branch: int) -> dict[str, Any]:
@@ -74,7 +74,7 @@ def _raise(exc: WorkflowActivationError | WorkflowAuthorityError | WorkflowTempl
                   "workflow_activation_operation_conflict", "workflow_activation_cas_stale",
                   "workflow_activation_authority_stale", "workflow_new_runs_disabled",
                   "workflow_activation_author_pending", "authority_pointer_not_ready",
-                  "workflow_author_handoff_schema_required",
+                  "workflow_author_handoff_schema_required", "workflow_repository_reader_unavailable",
               } or code.startswith(("profile_", "publication_", "authority_")) else 422)
     detail = {"code": code}
     if isinstance(exc, WorkflowActivationError) and exc.owner:
@@ -91,6 +91,12 @@ def _raise(exc: WorkflowActivationError | WorkflowAuthorityError | WorkflowTempl
              openapi_extra={"requestBody": {"required": True, "content": {
                  "application/json": {"schema": _request_schema()}}}})
 async def activate_workflow(org: OrgDep, response: Response, http_request: Request, body_raw: object = Body(...)) -> dict:
+    if isinstance(body_raw, dict) and body_raw.get('format') == 'workflow-activation-request@4':
+        from runtime.workflows.artifacts import decode_artifact_json
+        try:
+            body_raw = decode_artifact_json(await http_request.body())
+        except (ValueError, UnicodeError) as exc:
+            raise HTTPException(status_code=422, detail={'code': 'workflow_activation_invalid_request'}) from exc
     if isinstance(body_raw, dict) and set(body_raw) & {
         "actor", "principal", "principal_id", "provenance", "task", "task_id", "session_id", "result_id", "org_slug",
     }:

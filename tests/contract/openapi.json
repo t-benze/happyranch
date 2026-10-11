@@ -4009,6 +4009,13 @@
               "thread-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/2/properties/inputs/items/oneOf/1"
             },
             "propertyName": "kind"
+          },
+          {
+            "mapping": {
+              "task-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/3/properties/inputs/items/oneOf/0",
+              "thread-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/3/properties/inputs/items/oneOf/1"
+            },
+            "propertyName": "kind"
           }
         ],
         "params": [

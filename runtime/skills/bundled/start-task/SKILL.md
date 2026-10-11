@@ -41,6 +41,15 @@ original key on transport loss, and stage before the final callback. If the
 compatible adapter is unavailable, report that dependency; never fabricate a
 result or substitute an unapproved direct-submit/reviewer-stage operation.
 
+For a newly pinned @4 artifact original author, the template singleton selects
+kind. B1 admits documents only; code activation refuses before allocation.
+Follow the actual bound supplement and use workflow-author-handoff-command@2
+with artifact_kind document, never the historical @1 command for @4. The
+repository_binding/resolution slots are null and grant no repository capability.
+An @2 review scope requires matched @2 findings/proof formats; if its stage
+adapter is unavailable report that dependency before the genuine final callback.
+No public reviewer-stage route or execution/merge authority follows.
+
 Configured review tasks independently assess their pinned document and filtered
 inputs, then report through their actual task/session callback. Requests and
 callbacks remain unsigned; do not claim a receipt, joined approval or another

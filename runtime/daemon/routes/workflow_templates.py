@@ -118,9 +118,9 @@ def _publication_schema() -> dict:
         approval={"const": {"mode": "all", "revision": "current", "required_roles": ["founder", "implementer", "tester"]}},
         request_changes={"const": {"action": "return-to-author"}}))
     definitions.append(legacy)
-    for version in (2, 3):
+    for version in (2, 3, 4):
         submission = dict(timing={"enum": ["on-completion", "while-active-or-completed"]})
-        if version == 3:
+        if version in (3, 4):
             submission["delivery"] = {"const": "current-author-handoff@1"}
         definition = closed(dict(kind={"const": "document-review"}, schema_version={"const": version},
             description=description, author=closed(dict(role=role, kind={"const": "agent"})),
@@ -128,6 +128,11 @@ def _publication_schema() -> dict:
             reviewers=dict(type="array", items=member, minItems=1, maxItems=3), approval=approval,
             submission=closed(submission),
             outcomes={"type": "array"}, request_changes={"anyOf": [return_rule, {"type": "null"}]}))
+        if version == 4:
+            definition['properties']['kind'] = {'const': 'artifact-review'}
+            definition['properties']['output'] = closed(dict(
+                primitive={'const': 'immutable-artifact-revision'}, description=description,
+                accepted_kinds=dict(type='array', items={'enum': ['document', 'code-change']}, minItems=1, maxItems=1)))
         definition["oneOf"] = [
             {"properties": {"outcomes": {"const": ["approved"]}, "request_changes": {"type": "null"}}},
             {"properties": {"outcomes": {"enum": [["approved", "changes_requested"], ["changes_requested", "approved"]]},
@@ -151,6 +156,13 @@ async def publish_template(
     session_id: str | None = Query(default=None),
     has_bearer: bool = optional_bearer(),
 ) -> dict:
+    if (isinstance(body_raw, dict) and isinstance(body_raw.get('definition'), dict)
+            and body_raw['definition'].get('schema_version') == 4):
+        from runtime.workflows.artifacts import decode_artifact_json
+        try:
+            body_raw = decode_artifact_json(await request.body())
+        except (ValueError, UnicodeError):
+            _error('invalid_request', 422)
     body = _parse_body(body_raw)
     _check_extra_identity(body)
     store = WorkflowTemplateStore(org.db)

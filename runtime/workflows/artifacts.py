@@ -183,6 +183,13 @@ def require_document_subject(artifact: ArtifactRevision, scope: dict) -> None:
     if (not isinstance(artifact.subject, DocumentSubject) or artifact.review_key != expected.review_key
             or artifact.subject.content_digest != scope['submission_digest']):
         raise ValueError('artifact_subject_mismatch')
+    if review_family(scope) == 2:
+        expected_projection = dict(identity=artifact.identity.model_dump(), submission_id=artifact.submission_id,
+            revision=artifact.revision, kind='document', bytes_digest=artifact.subject.content_digest,
+            subject=dict(content_digest=artifact.subject.content_digest))
+        if (_canonical_bytes(scope['artifact']) != _canonical_bytes(expected_projection)
+                or scope['repository_resolution'] is not None):
+            raise ValueError('artifact_subject_mismatch')
 
 
 def document_from_handoff(row: dict, proof: dict, *, source_result_id: int | None = None,
@@ -238,3 +245,70 @@ def document_review_brief(scope: dict, candidate: bytes) -> str:
             "This request and its callback remain unsigned; genuine review receipts and joins are later units.\n\n"
             + _canonical_bytes(dict(scope=scope,
                 submission_bytes_base64=base64.b64encode(candidate).decode('ascii'))).decode())
+
+
+def context_contract(context: dict) -> dict:
+    """Only matched explicit original-author context families are supported."""
+    if context.get('format') == 'workflow-initial-draft-context@4':
+        contract = context['artifact_contract']
+        if (contract['format'] != 'workflow-artifact-contract@4'
+                or contract['output']['accepted_kinds'] != ['document']
+                or context['repository_binding'] is not None):
+            raise ValueError('artifact_context_mismatch')
+        return contract
+    if context.get('format') == 'workflow-initial-draft-context@3':
+        contract = context['document_contract']
+        if contract['format'] == 'workflow-document-contract@3':
+            return contract
+    raise ValueError('artifact_context_mismatch')
+
+
+def review_family(scope: dict) -> int:
+    """No unknown scope can inherit a historical proof interpretation."""
+    version = {'workflow-review-request@1': 1, 'workflow-review-request@2': 2}.get(scope.get('format'))
+    if version is None:
+        raise ValueError('artifact_scope_family_unknown')
+    return version
+
+
+def artifact_review_scope(**values: object) -> dict:
+    row, proof, contract = values['row'], values['proof'], values['contract']
+    if (contract['format'] != 'workflow-artifact-contract@4'
+            or contract['output']['accepted_kinds'] != ['document']
+            or proof['format'] != 'workflow-author-handoff@2'
+            or proof['repository_resolution'] is not None):
+        raise ValueError('artifact_scope_mismatch')
+    artifact = document_from_handoff(row, proof)
+    # Explicit new presentation; retain the entire legacy serializer unchanged.
+    scope = document_review_scope(**values)
+    result = dict(scope, format='workflow-review-request@2',
+        purpose='Independently review the pinned immutable artifact; requests remain unsigned.',
+        repository_resolution=None, artifact=dict(identity=artifact.identity.model_dump(),
+            submission_id=artifact.submission_id, revision=artifact.revision, kind='document',
+            bytes_digest=artifact.subject.content_digest,
+            subject=dict(content_digest=artifact.subject.content_digest)))
+    if len(_canonical_bytes(result)) > CONTENT_LIMIT:
+        raise ValueError('artifact_scope_bounds')
+    return result
+
+
+def artifact_review_brief(scope: dict, candidate: bytes) -> str:
+    if review_family(scope) != 2:
+        raise ValueError('artifact_scope_mismatch')
+    return ("Workflow artifact review. Independently assess the pinned artifact and only your authorized inputs. "
+            "Do not delegate, implement code, merge, deploy, or sign for another principal. "
+            "Use the matched workflow-review-stage-command@2 only when an authorized stage adapter is available. "
+            "Stage findings under one stable operation key before the actual final task/session callback; "
+            "stage and callback remain unsigned until genuine successful/quiescent receipt closure. "
+            "Report an unavailable stage adapter honestly.\n\n"
+            + _canonical_bytes(dict(scope=scope,
+                submission_bytes_base64=base64.b64encode(candidate).decode('ascii'))).decode())
+
+
+def decode_artifact_json(raw: bytes) -> object:
+    """Closed new-family transport JSON; canonicalization belongs to the writer."""
+    if type(raw) is not bytes or not raw or raw.startswith(b'\xef\xbb\xbf'):
+        raise ValueError('artifact_json_invalid')
+    def constant(value: str) -> None:
+        raise ValueError('artifact_json_invalid')
+    return json.loads(raw.decode('utf8'), object_pairs_hook=_closed_object, parse_constant=constant)

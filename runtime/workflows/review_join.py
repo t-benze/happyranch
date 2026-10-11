@@ -56,7 +56,7 @@ def _event(conn: sqlite3.Connection, row: dict, proof: dict, graph: dict, create
             if len(selected) != 1:
                 raise ValueError('workflow_review_join_storage_corrupt')
             assignments.append(selected[0])
-    return dict(format='workflow-review-join@1', event_kind='joined', org_slug=row['org_slug'],
+    return dict(format='workflow-review-join@2' if proof['format'] == 'workflow-author-handoff@2' else 'workflow-review-join@1', event_kind='joined', org_slug=row['org_slug'],
         instance_id=row['instance_id'], round_id=graph['round_id'], submission_id=row['submission_id'],
         revision=row['revision'], submission_digest=row['candidate_digest'],
         operation=dict(principal=SERVICE, operation_key=graph['round_id'], action='approve-planning-input'),

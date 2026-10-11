@@ -9,7 +9,7 @@ from pydantic import Field, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import _records, _stored_json
 from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, _id
-from runtime.workflows.artifacts import document_from_submission, require_document_subject
+from runtime.workflows.artifacts import document_from_submission, require_document_subject, review_family
 from runtime.workflows.draft_dispatch import canonical_bytes, digest
 from runtime.workflows.submissions import _insert, _record
 from runtime.workflows.templates import WorkflowTemplatePrincipal
@@ -27,6 +27,10 @@ class HumanReviewCommand(ClosedRecord):
     findings_digest: SHA256
 
 
+class ArtifactHumanReviewCommand(HumanReviewCommand):
+    format: Literal['workflow-human-review-command@2']
+
+
 class ReviewReceiptProjection(ClosedRecord):
     format: Literal['workflow-review-receipt@1']
     receipt_id: Token
@@ -41,18 +45,27 @@ class ReviewReceiptProjection(ClosedRecord):
     created_at: str = Field(min_length=1, max_length=64)
 
 
+class ArtifactReviewReceiptProjection(ReviewReceiptProjection):
+    format: Literal['workflow-review-receipt@2']
+
+
 def recipient_receipt(receipt: dict) -> dict:
     """Project only a receipt already authenticated by its writer or complete graph."""
     proof = _stored_json(receipt['proof_bytes'], receipt['proof_digest'],
                          code='workflow_review_receipt_storage_corrupt')
-    if proof['format'] == 'workflow-human-review-proof@1':
+    if proof['format'] in ('workflow-human-review-proof@1', 'workflow-human-review-proof@2'):
         command = proof['command']
-    elif proof['format'] == 'workflow-agent-review-proof@1':
+    elif proof['format'] in ('workflow-agent-review-proof@1', 'workflow-agent-review-proof@2'):
         command = proof['stage_event']['body']['stage']['command']
     else:
         raise ValueError('workflow_review_receipt_storage_corrupt')
-    return ReviewReceiptProjection.model_validate(dict(
-        format='workflow-review-receipt@1', receipt_id=receipt['id'],
+    family = review_family(proof['scope'])
+    expected = f'workflow-human-review-proof@{family}' if 'command' in proof else f'workflow-agent-review-proof@{family}'
+    if proof['format'] != expected:
+        raise ValueError('workflow_review_receipt_storage_corrupt')
+    model = ArtifactReviewReceiptProjection if family == 2 else ReviewReceiptProjection
+    return model.model_validate(dict(
+        format=f'workflow-review-receipt@{family}', receipt_id=receipt['id'],
         **{key: receipt[key] for key in ('request_id', 'submission_id', 'submission_digest',
             'assignment_generation', 'request_scope_digest', 'outcome', 'created_at')},
         findings_bytes_base64=command['findings_bytes_base64'],
@@ -63,8 +76,10 @@ def parse_human_review(command: object) -> dict:
     # Reuse the existing raw UTF8/base64 bounds, without entering the agent stage lane.
     from runtime.workflows.review_dispatch import parse_stage
     try:
-        parsed = HumanReviewCommand.model_validate(command).model_dump()
-        parse_stage(dict(parsed, format='workflow-review-stage-command@1', action='stage-review'))
+        family = 2 if isinstance(command, dict) and command.get('format') == 'workflow-human-review-command@2' else 1
+        model = ArtifactHumanReviewCommand if family == 2 else HumanReviewCommand
+        parsed = model.model_validate(command).model_dump()
+        parse_stage(dict(parsed, format=f'workflow-review-stage-command@{family}', action='stage-review'))
         if len(canonical_bytes(parsed)) > 2097152:
             raise ValueError('command bounds')
         return parsed
@@ -73,7 +88,7 @@ def parse_human_review(command: object) -> dict:
 
 
 def _human_proof(request: dict, scope: dict, handoff: dict, command: dict, created_at: str) -> dict:
-    return dict(format='workflow-human-review-proof@1',
+    return dict(format=f'workflow-human-review-proof@{review_family(scope)}',
         actor=dict(principal_kind='human', principal_id='founder', proof_kind='founder_bearer'),
         operation_principal='human:founder', command=command, request_digest=digest(canonical_bytes(command)),
         scope=scope, request_scope_digest=request['request_scope_digest'], pins=handoff['pins'],
@@ -106,7 +121,7 @@ def _human_receipts_for_key(conn: sqlite3.Connection, *, org_slug: str, operatio
             continue  # Kind is pinned data; an agent name cannot select the human lane.
         proof = _stored_json(receipt['proof_bytes'], receipt['proof_digest'],
                              code='workflow_review_receipt_storage_corrupt')
-        if proof['format'] != 'workflow-human-review-proof@1' or proof['operation_principal'] != 'human:founder':
+        if proof['format'] != f'workflow-human-review-proof@{review_family(scope)}' or proof['operation_principal'] != 'human:founder':
             raise ValueError('workflow_review_receipt_storage_corrupt')
         if proof['command']['operation_key'] == operation_key:
             matches.append(receipt)
@@ -169,7 +184,8 @@ def validate_human_receipt(conn: sqlite3.Connection, request: dict, scope: dict,
                                               (scope['instance_id'],))}
     contributors |= {r[0] for r in conn.execute('SELECT principal FROM workflow_submission_operations WHERE instance_id=?',
                                                (scope['instance_id'],))}
-    if (created_at != stamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    if (command['format'] != f'workflow-human-review-command@{review_family(scope)}'
+            or created_at != stamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
             or command['request_id'] != request['id'] or command['expected_revision'] != scope['revision']
             or command['request_scope_digest'] != request['request_scope_digest']
             or command['outcome'] not in scope['outcomes'] or request['status'] != command['outcome']
@@ -222,7 +238,7 @@ def _completed_proof(conn: sqlite3.Connection, request: dict, scope: dict) -> tu
                                                (scope['instance_id'],))}
     if request['principal'] in contributors:
         raise ValueError(code)
-    proof = dict(format='workflow-agent-review-proof@1', scope=scope,
+    proof = dict(format=f'workflow-agent-review-proof@{review_family(scope)}', scope=scope,
         request_scope_digest=request['request_scope_digest'],
         stage_event=dict(id=stages[0]['id'], digest=stages[0]['event_digest'], body=stage),
         terminal_event=dict(id=terminal['id'], digest=terminal['event_digest']),
@@ -366,7 +382,8 @@ class WorkflowReviewReceiptStore:
                         return existing[0]
                     if keys or request['status'] != 'pending':
                         raise WorkflowActivationError('workflow_human_review_operation_conflict')
-                    if (command['expected_revision'] != scope['revision']
+                    if (command['format'] != f'workflow-human-review-command@{review_family(scope)}'
+                                or command['expected_revision'] != scope['revision']
                             or command['request_scope_digest'] != request['request_scope_digest']
                             or command['outcome'] not in scope['outcomes']):
                         raise WorkflowActivationError('workflow_human_review_invalid_request')

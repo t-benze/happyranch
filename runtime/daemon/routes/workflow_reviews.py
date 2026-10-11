@@ -15,7 +15,7 @@ from runtime.workflows.activation import (AbstractRole, ActivatedTemplate, Close
 from runtime.daemon.auth import _require_human, optional_bearer
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.routes.workflow_submissions import ERRORS, IDENTITY_KEYS, READ_RESPONSES, TOKEN_SCHEMA, agent_transport, fail, proof_schema, query_values, raise_error, raise_read_error, sqlite_error_types
-from runtime.workflows.review_receipts import HumanReviewCommand, ReviewReceiptProjection, parse_human_review, recipient_receipt
+from runtime.workflows.review_receipts import HumanReviewCommand, ReviewReceiptProjection, ArtifactHumanReviewCommand, ArtifactReviewReceiptProjection, parse_human_review, recipient_receipt
 from runtime.workflows.templates import WorkflowTemplatePrincipal
 
 router = APIRouter()
@@ -64,6 +64,39 @@ class ReviewRequestScope(ClosedRecord):
     inputs: list[ReviewInput] = Field(max_length=32)
 
 
+class ArtifactReviewOutput(ClosedRecord):
+    primitive: Literal['immutable-artifact-revision']
+    description: str = Field(min_length=1, max_length=2000)
+    accepted_kinds: list[Literal['document']] = Field(min_length=1, max_length=1)
+
+
+class ReviewArtifactIdentity(ClosedRecord):
+    org_namespace: Token
+    instance_id: Token
+    output_slot: Literal['output']
+
+
+class ReviewDocumentSubject(ClosedRecord):
+    content_digest: SHA256
+
+
+class ReviewArtifact(ClosedRecord):
+    identity: ReviewArtifactIdentity
+    submission_id: Token
+    revision: StrictInt = Field(ge=1, le=1)
+    kind: Literal['document']
+    bytes_digest: SHA256
+    subject: ReviewDocumentSubject
+
+
+class ArtifactReviewRequestScope(ReviewRequestScope):
+    format: Literal['workflow-review-request@2']
+    output: ArtifactReviewOutput
+    purpose: Literal['Independently review the pinned immutable artifact; requests remain unsigned.']
+    artifact: ReviewArtifact
+    repository_resolution: None
+
+
 class ReviewRequestBase(ClosedRecord):
     format: Literal['workflow-review-request-receipt@1']
     request_id: Token
@@ -87,12 +120,38 @@ class SignedReviewRequest(ReviewRequestBase):
     receipt: ReviewReceiptProjection
 
 
-ReviewRequestReceipt = Annotated[PendingReviewRequest | SignedReviewRequest, Field(discriminator='status')]
+class PendingArtifactReviewRequest(PendingReviewRequest):
+    format: Literal['workflow-review-request-receipt@2']
+    scope: ArtifactReviewRequestScope
+
+
+class SignedArtifactReviewRequest(SignedReviewRequest):
+    format: Literal['workflow-review-request-receipt@2']
+    scope: ArtifactReviewRequestScope
+    receipt: ArtifactReviewReceiptProjection
+
+
+ReviewRequestReceipt = (
+    Annotated[PendingReviewRequest | SignedReviewRequest, Field(discriminator='status')]
+    | Annotated[PendingArtifactReviewRequest | SignedArtifactReviewRequest, Field(discriminator='status')]
+)
 
 
 class HumanReviewReceipt(ClosedRecord):
     format: Literal['workflow-human-review-receipt@1']
     receipt: ReviewReceiptProjection
+
+
+class ArtifactHumanReviewReceipt(ClosedRecord):
+    format: Literal['workflow-human-review-receipt@2']
+    receipt: ArtifactReviewReceiptProjection
+
+
+HumanReceipt = HumanReviewReceipt | ArtifactHumanReviewReceipt
+
+
+def human_command_schema() -> dict:
+    return {'anyOf': [HumanReviewCommand.model_json_schema(), ArtifactHumanReviewCommand.model_json_schema()]}
 
 
 class ReviewErrorDetail(ClosedRecord):
@@ -134,10 +193,10 @@ def decode_human_command(raw: bytes) -> dict:
         raise HTTPException(status_code=422, detail={'code': 'workflow_human_review_invalid_request'}) from exc
 
 
-@router.post('/workflows/reviews/human-receipts', response_model=HumanReviewReceipt,
+@router.post('/workflows/reviews/human-receipts', response_model=HumanReceipt,
              responses=REVIEW_RESPONSES,
              openapi_extra={'requestBody': {'required': True, 'content': {'application/json': {
-                 'schema': HumanReviewCommand.model_json_schema()}}}})
+                 'schema': human_command_schema()}}}})
 async def sign_human_review(org: OrgDep, request: Request,
                             has_bearer: bool = optional_bearer()) -> dict:
     principal = human_principal(org, has_bearer)
@@ -151,7 +210,8 @@ async def sign_human_review(org: OrgDep, request: Request,
     command = decode_human_command(bytes(raw))
     try:
         receipt = await org.workflow_review_receipts.admit_human(principal=principal, command=command)
-        return dict(format='workflow-human-review-receipt@1', receipt=recipient_receipt(receipt))
+        projection = recipient_receipt(receipt)
+        return dict(format='workflow-human-review-receipt@2' if projection['format'] == 'workflow-review-receipt@2' else 'workflow-human-review-receipt@1', receipt=projection)
     except ERRORS as exc:
         if exc.code == 'workflow_human_review_operation_conflict':
             fail(exc.code, 409)

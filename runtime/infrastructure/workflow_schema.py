@@ -566,7 +566,7 @@ def _validate_installed(
         raise ValueError("unsupported_workflow_adapter_version")
     if versions != [(1,)]:
         raise ValueError("workflow_schema_marker_mismatch")
-    if layout != 'H' and any(conn.execute(f"SELECT 1 FROM {table} WHERE compiler_pin='workflow-compiler@3' LIMIT 1").fetchone()
+    if layout != 'H' and any(conn.execute(f"SELECT 1 FROM {table} WHERE compiler_pin IN ('workflow-compiler@3','workflow-compiler@4') LIMIT 1").fetchone()
                              for table in ('workflow_template_drafts', 'workflow_template_versions')):
         raise ValueError('workflow_author_handoff_schema_required')
 
@@ -1210,25 +1210,33 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         row['candidate_bytes'].decode('utf8')
         check(re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z', row['created_at']) is not None)
         datetime.strptime(row['created_at'], '%Y-%m-%dT%H:%M:%S.%fZ')
-        proof = closed(_handoff_json(row['admission_bytes'], row['admission_digest']),
-                       'format handoff client_request source_intent source_generation pins admission_authority')
-        check(proof['format'] == 'workflow-author-handoff@1')
+        proof = _handoff_json(row['admission_bytes'], row['admission_digest'])
+        family = {'workflow-author-handoff@1': 1, 'workflow-author-handoff@2': 2}.get(proof.get('format'))
+        check(family is not None)
+        closed(proof, 'format handoff client_request source_intent source_generation pins admission_authority'
+               + (' repository_resolution' if family == 2 else ''))
+        if family == 2:
+            check(proof['repository_resolution'] is None)
+        template_family = 4 if family == 2 else 3
         expected_row = {k: v.hex() if isinstance(v, bytes) else v for k, v in row.items()
                         if k not in ('admission_bytes', 'admission_digest')}
         check(same(proof['handoff'], expected_row))
-        command = closed(proof['client_request'], 'format operation_key activation_id expected_revision submission_bytes_base64 submission_digest')
-        check(command['format'] == 'workflow-author-handoff-command@1' and type(command['expected_revision']) is int
+        command = closed(proof['client_request'], 'format operation_key activation_id expected_revision submission_bytes_base64 submission_digest'
+                         + (' artifact_kind' if family == 2 else ''))
+        if family == 2:
+            check(command['artifact_kind'] == 'document')
+        check(command['format'] == f'workflow-author-handoff-command@{family}' and type(command['expected_revision']) is int
               and command['expected_revision'] == 1 and command['operation_key'] == row['operation_key'])
         candidate = base64.b64decode(command['submission_bytes_base64'], validate=True)
         check(candidate == row['candidate_bytes'] and command['submission_digest'] == row['candidate_digest']
               and base64.b64encode(candidate).decode('ascii') == command['submission_bytes_base64'])
-        request = {**command, 'format': 'workflow-author-handoff-request@1', 'handoff_id': row['id'],
+        request = {**command, 'format': f'workflow-author-handoff-request@{family}', 'handoff_id': row['id'],
                    'submission_id': row['submission_id'], 'instance_id': row['instance_id'], 'revision': 1}
         check(_canonical_bytes(request) == row['request_bytes'])
         check(row['id'] == 'workflow-author-handoff:' + hashlib.sha256(_canonical_bytes(
             [row['org_slug'], row['principal'], row['operation_key']])).hexdigest())
         check(row['submission_id'] == 'workflow-submission:' + hashlib.sha256(_canonical_bytes(
-            [row['instance_id'], 1, row['org_slug'], row['principal'], row['operation_key'], 'workflow-author-handoff@1'])).hexdigest())
+            [row['instance_id'], 1, row['org_slug'], row['principal'], row['operation_key'], f'workflow-author-handoff@{family}'])).hexdigest())
         intent = one('workflow_draft_dispatch_intents', row['intent_id'])
         check(same(proof['source_intent'], {k: v.hex() if isinstance(v, bytes) else v
                                           for k, v in intent.items() if k not in _DRAFT_MUTABLE}))
@@ -1267,17 +1275,17 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         activation = one('workflow_activations', intent['activation_id'])
         instance = one('workflow_instances', row['instance_id'])
         check(same(pins['activation'], dict(id=intent['activation_id'], revision=1, request_digest=activation['request_digest'])))
-        from runtime.workflows.templates import WorkflowTemplateStore, _document_contract
+        from runtime.workflows.templates import WorkflowTemplateStore, _review_contract
         mapping = _records(conn, 'SELECT * FROM workflow_template_identity_versions WHERE template_version_id=?', (activation['template_version_id'],))
         check(len(mapping) == 1)
         template = WorkflowTemplateStore._read_version(conn, identity_id=activation['template_identity_id'],
             version=mapping[0]['version'], expected_version_id=activation['template_version_id'])
         check(same(pins['template'], dict(identity_id=template.identity_id, version_id=template.version_id, version=template.version,
-              definition_digest=template.definition_digest, compiler_pin='workflow-compiler@3',
-              validator_pin='workflow-validator@3', source_pin='operator-input@3'))
+              definition_digest=template.definition_digest, compiler_pin=f'workflow-compiler@{template_family}',
+              validator_pin=f'workflow-validator@{template_family}', source_pin=f'operator-input@{template_family}'))
               and (template.compiler_pin, template.validator_pin, template.source_pin) ==
-              ('workflow-compiler@3', 'workflow-validator@3', 'operator-input@3'))
-        contract = _document_contract(template)
+              (f'workflow-compiler@{template_family}', f'workflow-validator@{template_family}', f'operator-input@{template_family}'))
+        contract = _review_contract(template)
         context = one('workflow_contexts', intent['context_id'])
         binding = one('workflow_binding_snapshots', intent['binding_snapshot_id'])
         authorization = one('workflow_authorization_revisions', binding['authorization_revision_id'])
@@ -1294,13 +1302,35 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         grant = _handoff_json(authorization['authority_bytes'], authorization['authority_digest'])
         bound = _handoff_json(binding['binding_bytes'], binding['binding_digest'])
         ctx = _handoff_json(context['context_bytes'], context['context_digest'])
-        check(grant['format'] == 'workflow-authorization@3' and bound['format'] == 'workflow-binding@3'
-              and ctx['format'] == 'workflow-initial-draft-context@3' and contract['format'] == 'workflow-document-contract@3'
-              and same(ctx['document_contract'], contract) and same(ctx['authorization'], grant) and same(ctx['binding'], bound)
+        check(grant['format'] == f'workflow-authorization@{template_family}' and bound['format'] == f'workflow-binding@{template_family}'
+              and ctx['format'] == f'workflow-initial-draft-context@{template_family}' and contract['format'] ==
+                  ('workflow-artifact-contract@4' if family == 2 else 'workflow-document-contract@3')
+              and same(ctx['artifact_contract' if family == 2 else 'document_contract'], contract) and same(ctx['authorization'], grant) and same(ctx['binding'], bound)
               and ctx['binding_snapshot_id'] == binding['id'] and ctx['authorization_revision_id'] == authorization['id']
               and ctx['intent_id'] == intent['id'] and ctx['org_slug'] == expected_org_slug
               and instance['root_task_id'] == intent['task_id'] and instance['context_id'] == context['id']
               and instance['binding_snapshot_id'] == binding['id'] and instance['owner_principal'] == intent['admission_principal'])
+        if family == 2:
+            closed(grant, 'format namespace instance_id activation_id activation_revision root_task_id original_request request_digest actor created_at template authority repository_binding')
+            closed(bound, 'format instance_id activation_id activation_revision template_version_id authorization_revision_id bindings eligible_replacements scope authority repository_binding')
+            closed(ctx, 'format org_slug request authority_snapshot template inputs authorization authorization_revision_id binding binding_snapshot_id intent_id attempt_sequence assignment_generation artifact_contract repository_binding')
+            from runtime.workflows.activation import parse_request, _authorization, _binding, _context
+            frozen = parse_request(ctx['request']).model_dump(by_alias=True)
+            check(same(frozen, ctx['request']) and same(frozen, grant['original_request']))
+            expected_grant = _authorization(org_slug=row['org_slug'], instance_id=row['instance_id'],
+                activation_id=intent['activation_id'], task_id=intent['task_id'], request=frozen,
+                request_digest=intent['request_digest'], template=template, timestamp=activation['created_at'])
+            expected_bound = _binding(instance_id=row['instance_id'], activation_id=intent['activation_id'],
+                authorization_id=authorization['id'], template=template, request=frozen)
+            expected_context = _context(org_slug=row['org_slug'], request=frozen, snapshot=ctx['authority_snapshot'],
+                template=template, inputs=ctx['inputs'], authorization=expected_grant,
+                authorization_id=authorization['id'], binding=expected_bound, binding_id=binding['id'], intent_id=intent['id'])
+            check(same(grant, expected_grant) and same(bound, expected_bound) and same(ctx, expected_context))
+            check(contract['output']['accepted_kinds'] == ['document']
+                  and grant['repository_binding'] is None and bound['repository_binding'] is None
+                  and ctx['repository_binding'] is None and grant['original_request']['repository_access'] is None)
+        handoff_actions = (['stage-immutable-artifact', 'submit-immutable-artifact'] if family == 2
+                           else ['stage-immutable-document', 'submit-immutable-document'])
         captured = closed(proof['admission_authority'], 'ready pointer profiles mirror cutover actions')
         ready = closed(captured['ready'], 'namespace generation snapshot_bytes_hex snapshot_digest')
         snapshot = _handoff_json(hex_bytes(ready['snapshot_bytes_hex'], 1048576), ready['snapshot_digest'])
@@ -1312,7 +1342,7 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
               and ready['generation'] == intent['authority_generation'] and ready['snapshot_digest'] == intent['authority_digest'])
         check(same(captured['pointer'], dict(current_generation=ready['generation'], journal_id=journal[0]['id'],
               snapshot_digest=ready['snapshot_digest'], state='ready', profile_fence=journal[0]['profile_fence'])))
-        check(captured['cutover'] == 'enabled' and same(captured['actions'], ['stage-immutable-document', 'submit-immutable-document'])
+        check(captured['cutover'] == 'enabled' and same(captured['actions'], handoff_actions)
               and set(captured['actions']) <= set(grant['original_request']['allowed_actions']))
         def namespace(value: object) -> None:
             check(type(value) is str and bool(value.strip()) and '\x00' not in value

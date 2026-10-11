@@ -63,13 +63,21 @@ def _founder_client() -> OpcClient:
 def cmd_workflow_templates_publish(args: argparse.Namespace) -> None:
     body = _read_payload(args.from_file)
     definition = body.get("definition")
-    if isinstance(definition, dict) and (definition.get("kind") == "document-review"
-            or definition.get("schema_version") in (2, 3)):
-        from runtime.workflows.templates import WorkflowTemplateError, _compile_document_definition
+    if isinstance(definition, dict) and definition.get("schema_version") == 4:
+        from runtime.workflows.artifacts import decode_artifact_json
         try:
-            _compile_document_definition(definition)
+            body = decode_artifact_json(Path(args.from_file).read_bytes())
+        except (ValueError, UnicodeError) as exc:
+            print("error: invalid artifact-review JSON", file=sys.stderr)
+            raise SystemExit(2) from exc
+        definition = body.get("definition")
+    if isinstance(definition, dict) and (definition.get("kind") in ("document-review", "artifact-review")
+            or definition.get("schema_version") in (2, 3, 4)):
+        from runtime.workflows.templates import WorkflowTemplateError, _validate_definition
+        try:
+            _validate_definition(definition)
         except WorkflowTemplateError as exc:
-            print("error: invalid document-review template", file=sys.stderr)
+            print("error: invalid review template", file=sys.stderr)
             raise SystemExit(2) from exc
     if args.session_id:
         slug = resolve_org_slug(args_org=args.org, available=[])
@@ -198,6 +206,9 @@ def _activation_payload(path: str) -> dict:
         if len(raw) > 1024 * 1024:
             raise ValueError("payload too large")
         body = json.loads(raw.decode("utf-8"))
+        if isinstance(body, dict) and body.get('format') == 'workflow-activation-request@4':
+            from runtime.workflows.artifacts import decode_artifact_json
+            body = decode_artifact_json(raw)
         parse_request(body)
     except (OSError, UnicodeError, ValueError, WorkflowActivationError) as exc:
         print("error: activation requires an absolute --from-file path containing a valid closed JSON request", file=sys.stderr)

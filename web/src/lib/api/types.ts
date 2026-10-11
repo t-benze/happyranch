@@ -1267,12 +1267,38 @@ export type WorkflowDocumentReviewDefinition3 = Omit<WorkflowDocumentReviewDefin
   outcomes: ['approved', 'changes_requested'] | ['changes_requested', 'approved'];
   request_changes: WorkflowDocumentReturnRule;
 });
-export type WorkflowActivationRequest = LegacyWorkflowActivationRequest | DocumentWorkflowActivationRequest | DocumentWorkflowActivationRequest3;
-export type WorkflowActivationReceipt = LegacyWorkflowActivationReceipt | DocumentWorkflowActivationReceipt | DocumentWorkflowActivationReceipt3;
+export type WorkflowArtifactKind = 'document' | 'code-change';
+export type WorkflowArtifactOutput = {
+  primitive: 'immutable-artifact-revision'; description: string;
+  accepted_kinds: ['document'] | ['code-change'];
+};
+export type WorkflowArtifactReviewDefinition = Omit<WorkflowDocumentReviewDefinition3, 'kind' | 'schema_version' | 'output' | 'outcomes' | 'request_changes'> & {
+  kind: 'artifact-review'; schema_version: 4; output: WorkflowArtifactOutput;
+} & ({ outcomes: ['approved']; request_changes: null } | {
+  outcomes: ['approved', 'changes_requested'] | ['changes_requested', 'approved'];
+  request_changes: WorkflowDocumentReturnRule;
+});
+export type ArtifactWorkflowActivationAction = 'draft-artifact' | 'stage-immutable-artifact' |
+  'submit-immutable-artifact' | 'collect-review' | 'approve-planning-input' | 'return-to-author';
+/** Prospective selector only; code activation refuses 409 before allocation. */
+export interface WorkflowRepositoryAccess {
+  action: 'read-repository-artifact'; repository_id: string; recipients: string[];
+}
+export interface ArtifactWorkflowActivationRequest extends Omit<DocumentWorkflowActivationRequest, 'format' | 'allowed_actions'> {
+  format: 'workflow-activation-request@4';
+  allowed_actions: ArtifactWorkflowActivationAction[];
+  repository_access: WorkflowRepositoryAccess | null;
+}
+export interface ArtifactWorkflowActivationReceipt extends Omit<DocumentWorkflowActivationReceipt, 'format' | 'allowed_actions'> {
+  format: 'workflow-activation-receipt@4';
+  allowed_actions: ArtifactWorkflowActivationAction[];
+}
+export type WorkflowActivationRequest = LegacyWorkflowActivationRequest | DocumentWorkflowActivationRequest | DocumentWorkflowActivationRequest3 | ArtifactWorkflowActivationRequest;
+export type WorkflowActivationReceipt = LegacyWorkflowActivationReceipt | DocumentWorkflowActivationReceipt | DocumentWorkflowActivationReceipt3 | ArtifactWorkflowActivationReceipt;
 
 
 /** H receipts contain only immutable public core and current projection. */
-export interface AuthorHandoffCommand {
+export interface LegacyAuthorHandoffCommand {
   format: 'workflow-author-handoff-command@1';
   operation_key: string;
   activation_id: string;
@@ -1304,7 +1330,7 @@ export interface AuthorHandoffCurrent {
     'source_not_current' | 'new_runs_disabled' | 'source_uncertain' | 'source_failed' | 'source_cancelled' | 'consumed';
   graph: AuthorHandoffGraph | null;
 }
-export interface AuthorHandoffReceipt {
+export interface LegacyAuthorHandoffReceipt {
   format: 'workflow-author-handoff-receipt@1';
   core: AuthorHandoffCore;
   replayed: boolean;
@@ -1316,7 +1342,7 @@ export type AuthorHandoffProof =
   { proof_kind: 'owner-human'; session_id?: never; activation_id?: never; request_id?: never };
 export type WorkflowReviewRequestProof =
   { session_id: string; proof_kind?: never } | { proof_kind: 'human'; session_id?: never };
-export interface WorkflowReviewRequestScope {
+export interface LegacyWorkflowReviewRequestScope {
   format: 'workflow-review-request@1';
   org_slug: string;
   instance_id: string;
@@ -1342,7 +1368,7 @@ export interface WorkflowReviewRequestScope {
   allowed_actions: ['collect-review'];
   inputs: { pin: DocumentWorkflowActivationInput; bytes_base64: string }[];
 }
-export interface HumanReviewCommand {
+export interface LegacyHumanReviewCommand {
   format: 'workflow-human-review-command@1';
   action: 'sign-review';
   /** 1..128 characters, [A-Za-z0-9._:-]; retain the original key/body on retry. */
@@ -1356,7 +1382,7 @@ export interface HumanReviewCommand {
   /** Lowercase SHA256 of the exact decoded bytes. */
   findings_digest: string;
 }
-export interface ReviewReceiptProjection {
+export interface LegacyReviewReceiptProjection {
   format: 'workflow-review-receipt@1';
   receipt_id: string;
   request_id: string;
@@ -1370,22 +1396,68 @@ export interface ReviewReceiptProjection {
   /** Retained original timestamp, 1..64 characters. */
   created_at: string;
 }
-export interface HumanReviewReceipt {
+export interface LegacyHumanReviewReceipt {
   format: 'workflow-human-review-receipt@1';
-  receipt: ReviewReceiptProjection;
+  receipt: LegacyReviewReceiptProjection;
 }
 export interface WorkflowReviewError {
   detail: { code: string; detail?: string | null; owner?: string | null; required_action?: string | null };
 }
-export interface WorkflowReviewRequestBase {
+export interface LegacyWorkflowReviewRequestBase {
   format: 'workflow-review-request-receipt@1';
   request_id: string;
-  scope: WorkflowReviewRequestScope;
+  scope: LegacyWorkflowReviewRequestScope;
   request_scope_digest: string;
   reconciliation_required: boolean;
   submission_bytes_base64: string;
 }
-export type WorkflowReviewRequestReceipt = WorkflowReviewRequestBase & (
+export type LegacyWorkflowReviewRequestReceipt = LegacyWorkflowReviewRequestBase & (
   { status: 'pending'; signed: false; pending: true; receipt: null } |
-  { status: 'approved' | 'changes_requested'; signed: true; pending: false; receipt: ReviewReceiptProjection }
+  { status: 'approved' | 'changes_requested'; signed: true; pending: false; receipt: LegacyReviewReceiptProjection }
 );
+
+
+export interface ArtifactAuthorHandoffCommand extends Omit<LegacyAuthorHandoffCommand, 'format'> {
+  format: 'workflow-author-handoff-command@2'; artifact_kind: WorkflowArtifactKind;
+}
+export type AuthorHandoffCommand = LegacyAuthorHandoffCommand | ArtifactAuthorHandoffCommand;
+export interface ArtifactAuthorHandoffReceipt extends Omit<LegacyAuthorHandoffReceipt, 'format' | 'core'> {
+  format: 'workflow-author-handoff-receipt@2'; core: AuthorHandoffCore & { artifact_kind: 'document' };
+}
+export type AuthorHandoffReceipt = LegacyAuthorHandoffReceipt | ArtifactAuthorHandoffReceipt;
+export interface WorkflowDocumentArtifact {
+  identity: { org_namespace: string; instance_id: string; output_slot: 'output' };
+  submission_id: string; revision: 1; kind: 'document'; bytes_digest: string;
+  subject: { content_digest: string };
+}
+export interface ArtifactWorkflowReviewRequestScope extends Omit<LegacyWorkflowReviewRequestScope, 'format' | 'output' | 'purpose'> {
+  format: 'workflow-review-request@2';
+  output: { primitive: 'immutable-artifact-revision'; description: string; accepted_kinds: ['document'] };
+  purpose: 'Independently review the pinned immutable artifact; requests remain unsigned.';
+  artifact: WorkflowDocumentArtifact;
+  /** B1 has no repository reader or capability. */
+  repository_resolution: null;
+}
+export type WorkflowReviewRequestScope = LegacyWorkflowReviewRequestScope | ArtifactWorkflowReviewRequestScope;
+export interface ArtifactHumanReviewCommand extends Omit<LegacyHumanReviewCommand, 'format'> {
+  format: 'workflow-human-review-command@2';
+}
+export type HumanReviewCommand = LegacyHumanReviewCommand | ArtifactHumanReviewCommand;
+export interface ArtifactReviewReceiptProjection extends Omit<LegacyReviewReceiptProjection, 'format'> {
+  format: 'workflow-review-receipt@2';
+}
+export type ReviewReceiptProjection = LegacyReviewReceiptProjection | ArtifactReviewReceiptProjection;
+export interface ArtifactHumanReviewReceipt {
+  format: 'workflow-human-review-receipt@2'; receipt: ArtifactReviewReceiptProjection;
+}
+export type HumanReviewReceipt = LegacyHumanReviewReceipt | ArtifactHumanReviewReceipt;
+export interface ArtifactWorkflowReviewRequestBase extends Omit<LegacyWorkflowReviewRequestBase, 'format' | 'scope'> {
+  format: 'workflow-review-request-receipt@2'; scope: ArtifactWorkflowReviewRequestScope;
+}
+export type ArtifactWorkflowReviewRequestReceipt = ArtifactWorkflowReviewRequestBase & (
+  { status: 'pending'; signed: false; pending: true; receipt: null } |
+  { status: 'approved' | 'changes_requested'; signed: true; pending: false; receipt: ArtifactReviewReceiptProjection }
+);
+export type WorkflowReviewRequestReceipt = LegacyWorkflowReviewRequestReceipt | ArtifactWorkflowReviewRequestReceipt;
+
+export type WorkflowReviewRequestBase = LegacyWorkflowReviewRequestBase | ArtifactWorkflowReviewRequestBase;
