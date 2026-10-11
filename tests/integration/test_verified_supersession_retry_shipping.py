@@ -184,6 +184,7 @@ def isolated_session_history() -> Iterator[tuple]:
     pytest.param({"timestamp": None}, id="missing-timestamp"),
     pytest.param({"payload": "{"}, id="malformed-json"),
     pytest.param({"payload": "[]"}, id="nonobject-json"),
+    pytest.param({"payload": b'{"session_id":"isolated-other","invocation_purpose":"unattributed"}'}, id="blob-in-text-column"),
     pytest.param({"payload": '{"session_id":"isolated-other","session_id":"duplicate","invocation_purpose":"unattributed"}'}, id="duplicate-json-key"),
     pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":"unattributed","optional":NaN}'}, id="nonfinite-metadata"),
 ])

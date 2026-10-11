@@ -2375,7 +2375,7 @@ does not demand original owner liveness or compare its original SID with today's
 tracker. Missing/conflicting original evidence refuses, with no read repair.
 Before SID selection, every relevant owner session_start row must have a
 positive INTEGER identity, exact task/action/manager, timezone-aware timestamp,
-strict JSON object and nonempty UTF8 SID/purpose (each ≤256 bytes). Missing or
+stored-text strict JSON object and nonempty UTF8 SID/purpose (each ≤256 bytes). Missing or
 malformed required fields, wrong-agent history and duplicate selected SIDs
 refuse409 original_session_evidence for fresh selection and historical reads.
 Valid nonselected historical purposes and finite optional metadata remain

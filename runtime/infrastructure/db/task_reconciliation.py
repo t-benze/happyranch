@@ -239,6 +239,7 @@ class TaskReconciliation:
         return row
 
     def _session_payload(self, row: dict) -> dict:
+        require(type(row["payload"]) is str, "original_session_evidence")
         payload = strict_json(row["payload"], "original_session_evidence", allow_floats=True)
         require(type(row["id"]) is int and row["id"] > 0
                 and row["task_id"] == SCOPE["owner"] and row["action"] == "session_start"
