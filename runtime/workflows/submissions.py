@@ -618,6 +618,9 @@ class WorkflowSubmissionStore:
                 raise WorkflowActivationError('workflow_author_handoff_not_found')
             if not actions <= set(grant['original_request']['allowed_actions']):
                 raise WorkflowActivationError('workflow_author_handoff_read_not_authorized')
+        except WorkflowActivationError:
+            # Domain refusals inherit ValueError; preserve their 403/404 mapping.
+            raise
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError('workflow_author_handoff_storage_corrupt') from exc
 
