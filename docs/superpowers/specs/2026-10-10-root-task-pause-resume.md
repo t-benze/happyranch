@@ -124,7 +124,21 @@ and v2 schema remains observed-only. Rollback requires a pause-compatible
 reader, even with empty controls. No live migration, restart or deployment is
 performed by delivering source.
 
-Backend transport is PR1; browser controls are a separate PR2. Source/static
+Backend transport is PR1. PR2 consumes it through provider-aware Web hooks:
+compact root-only list/detail controls and an org-scoped read-only Task pause overview.
+Pending roots have no Pause; descendants show inherited hold and actual root
+links. Separate control/evidence presentation preserves real lifecycle, waiting,
+attention and lineage; terminal drain diagnostics remain visible. Missing or
+unsafe generation/projection is unavailable. Pending controls disable repeated
+submissions across mounted views. Actions submit the displayed generation and
+refresh all task list families/detail/overview for the original org, without
+provider-level replay or an opposite action on conflict/refusal. Existing shared
+HTTP authentication recovery is unchanged (a401 may bootstrap/retry once).
+Overview pagination displays independent timestamped observations, never summed
+counts or a complete-zero assertion; null counts/evidence limits stay explicit.
+Both locales and responsive layouts preserve original filters, dialogs, focus,
+drafts and actions. Prototype and browser-interception evidence is UI/transport
+only; full fresh backend Pause E2E remains a subsequent root-owned unit. Source/static
 inspection is not behavioral acceptance. Python unit source and gates are RETIRED under THR291seq40; prior suspended
 unit/full/focused/RED-GREEN/keeper/mutation/repetition/duration receipts remain
 SKIPPED NONBLOCKING under THR291/THR228seq355, never PASS. Fresh product E2E

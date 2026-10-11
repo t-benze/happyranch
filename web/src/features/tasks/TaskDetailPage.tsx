@@ -48,6 +48,7 @@ import {
   type FanoutPlannedChild,
   type JoinedFanout,
 } from './fanout';
+import { TaskPauseControls } from './TaskPauseControls';
 import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
@@ -1121,7 +1122,8 @@ export function TaskDetailPage(): JSX.Element {
                 )}
               </div>
             )}
-            <div className="mt-3 flex gap-2">
+            {task.data && <div className="mt-3"><TaskPauseControls task={task.data} routes={routes} /></div>}
+            <div className="mt-3 flex flex-wrap gap-2">
               {isEscalated ? (
                 <>
                   {/* THR-080: Continue via resolve-escalation; Cancel via
