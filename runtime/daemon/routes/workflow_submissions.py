@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from runtime.daemon.auth import _require_human, optional_bearer
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.routes.workflow_activations import _raise as activation_error
+from runtime.infrastructure.workflow_schema import require_author_handoff_schema
 from runtime.workflows.activation import WorkflowActivationError
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
@@ -40,6 +41,25 @@ def raise_error(exc: Any) -> None:
             detail.update(owner=exc.owner, required_action=exc.required_action)
         raise HTTPException(status_code=409, detail=detail) from exc
     activation_error(exc)
+
+
+
+def require_read_schema(org: Any, session_id: str | None) -> None:
+    # Authenticate session independently before missing-layout guidance. The
+    # selected service still rechecks binding/object/grants at its writer.
+    if session_id is not None:
+        org.workflow_submissions._session(session_id)
+    with org.db._lock:
+        try:
+            require_author_handoff_schema(org.db._conn, expected_org_slug=org.slug)
+        except ValueError as exc:
+            raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_corrupt'}) from exc
+
+
+def raise_read_error(exc: Any) -> None:
+    if exc.code == 'role_binding_not_authorized':
+        fail('workflow_author_handoff_read_not_authorized', 403)
+    raise_error(exc)
 
 
 def query_values(request: Request, allowed: set[str]) -> dict[str, str]:
@@ -150,9 +170,10 @@ async def get_handoff(org: OrgDep, handoff_id: str, request: Request,
     else:
         fail('workflow_author_handoff_invalid_request', 422)
     try:
+        require_read_schema(org, session_id)
         return await org.workflow_submissions.get_handoff(handoff_id=handoff_id, lane=lane,
                                                           session_id=session_id, selector=selector)
     except ERRORS as exc:
-        raise_error(exc)
+        raise_read_error(exc)
     except sqlite_error_types() as exc:
         raise HTTPException(status_code=500, detail={'code': 'workflow_author_handoff_storage_unavailable'}) from exc

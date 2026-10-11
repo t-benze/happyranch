@@ -140,7 +140,7 @@ def _publication_schema() -> dict:
 
 @router.post("/workflows/templates/publish", status_code=201,
              openapi_extra={"requestBody": {"required": True, "content": {
-                 "application/json": {"schema": _publication_schema()}}}}})
+                 "application/json": {"schema": _publication_schema()}}}})
 async def publish_template(
     request: Request,
     org: OrgDep,
