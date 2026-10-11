@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import base64
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import Field, StrictInt, ValidationError
 
 from runtime.infrastructure.workflow_schema import _records, _stored_json
-from runtime.workflows.activation import author_capacity_blocked
+from runtime.workflows.activation import ClosedRecord, SHA256, Token, WorkflowActivationError, author_capacity_blocked
 from runtime.workflows.draft_dispatch import DraftOwnershipError, WorkflowDraftDispatcher, canonical_bytes, digest
 from runtime.workflows.submissions import _insert, _record, validate_handoff_graph
 
@@ -15,6 +18,58 @@ from runtime.workflows.submissions import _insert, _record, validate_handoff_gra
 _OUTBOX_MUTABLE = {'state', 'claim_token', 'claim_owner', 'host_launch_started',
                    'host_execution_id', 'last_error', 'updated_at'}
 _BRIDGE_MUTABLE = {'state', 'session_id', 'result_id'}
+
+
+class ReviewStageCommand(ClosedRecord):
+    format: Literal['workflow-review-stage-command@1']
+    action: Literal['stage-review']
+    operation_key: Token
+    request_id: Token
+    expected_revision: StrictInt = Field(ge=1, le=1)
+    request_scope_digest: SHA256
+    outcome: Literal['approved', 'changes_requested']
+    findings_bytes_base64: str = Field(min_length=4, max_length=1398104)
+    findings_digest: SHA256
+
+
+def parse_stage(command: dict) -> dict:
+    try:
+        parsed = ReviewStageCommand.model_validate(command).model_dump()
+        raw = base64.b64decode(parsed['findings_bytes_base64'], validate=True)
+        raw.decode('utf8')
+        if (not 1 <= len(raw) <= 1048576 or digest(raw) != parsed['findings_digest']
+                or base64.b64encode(raw).decode('ascii') != parsed['findings_bytes_base64']):
+            raise ValueError('findings')
+        return parsed
+    except (ValidationError, ValueError, UnicodeError) as exc:
+        raise WorkflowActivationError('workflow_review_stage_invalid_request') from exc
+
+
+def validate_stage(conn: sqlite3.Connection, body: dict, *, outbox: dict, bridge: dict) -> dict:
+    """Closed pure-data stage; the exact retained request selects the reviewer kind."""
+    code = 'workflow_review_storage_corrupt'
+    stage = body['stage']
+    if type(stage) is not dict or set(stage) != {'command', 'request_digest', 'scope', 'outbox_id', 'session_id'}:
+        raise ValueError(code)
+    command = parse_stage(stage['command'])
+    request = _record(conn, 'workflow_review_requests', bridge['request_id'])
+    scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'], code=code)
+    before = body['before']
+    if (not _same_value(stage['scope'], scope) or scope['kind'] != 'agent'
+            or command['outcome'] not in scope['outcomes']
+            or command['request_id'] != request['id'] or command['expected_revision'] != scope['revision']
+            or command['request_scope_digest'] != request['request_scope_digest']
+            or stage['request_digest'] != digest(canonical_bytes(command))
+            or stage['outbox_id'] != outbox['id'] or stage['session_id'] != before['bridge']['session_id']
+            or scope['principal'] != bridge['assigned_principal']
+            or not _same_value(scope['assignment_generation'], bridge['assignment_generation'])
+            or not stage['session_id'] or before['bridge']['result_id'] is not None
+            or before['outbox']['host_launch_started'] != 1
+            or before['outbox']['state'] not in ('claimed', 'running')
+            or not _same_value(before, body['after'])
+            or body['result'] is not None or body['terminal_evidence'] is not None):
+        raise ValueError(code)
+    return stage
 
 
 def _same_value(left: Any, right: Any) -> bool:
@@ -143,13 +198,17 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
     previous = None
     accepted = None
     cancelled = False
+    staged = False
     for seq, event in enumerate(events, start=1):
         body = _stored_json(event['event_bytes'], event['event_digest'], code=code)
         _validate_projection(body['before'], outbox=outbox, bridge=bridge)
         _validate_projection(body['after'], outbox=outbox, bridge=bridge)
-        if (set(body) != {'format', 'org_slug', 'operation_id', 'request_id', 'task_id', 'event_seq', 'event_kind',
-                         'previous_digest', 'before', 'after', 'terminal_evidence', 'result'}
-                or body['format'] != 'workflow-review-dispatch-event@1' or body['org_slug'] != operation['org_slug']
+        is_stage = body['event_kind'] == 'review_staged'
+        keys = {'format', 'org_slug', 'operation_id', 'request_id', 'task_id', 'event_seq', 'event_kind',
+                'previous_digest', 'before', 'after', 'terminal_evidence', 'result'}
+        if (set(body) != keys | ({'stage'} if is_stage else set())
+                or body['format'] != ('workflow-review-stage@1' if is_stage else 'workflow-review-dispatch-event@1')
+                or body['org_slug'] != operation['org_slug']
                 or body['operation_id'] != operation['id'] or body['request_id'] != request_id
                 or body['task_id'] != bridge['task_id'] or body['event_kind'] != event['event_kind']
                 or body['event_seq'] != seq or type(body['event_seq']) is not int or event['event_seq'] != seq
@@ -159,7 +218,13 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
                 or body['previous_digest'] != (None if previous is None else previous[0]['event_digest'])
                 or not _same_value(body['before'], initial if previous is None else previous[1]['after'])):
             raise ValueError(code)
-        _validate_transition(body, cancelled=cancelled)
+        if is_stage:
+            if cancelled or staged:
+                raise ValueError(code)
+            validate_stage(conn, body, outbox=outbox, bridge=bridge)
+            staged = True
+        else:
+            _validate_transition(body, cancelled=cancelled)
         cancelled = cancelled or body['event_kind'] == 'cancel_requested'
         if body['event_kind'] == 'callback_recorded':
             if (accepted is not None or not isinstance(body['result'], dict)
@@ -219,6 +284,55 @@ def _validate_review_dispatch_storage(conn: sqlite3.Connection, *, request_id: s
 class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
     """The F5 adapter projects real rows; it creates no draft intent or alternate host API."""
 
+    async def stage_review(self, *, session_id: str, command: dict) -> dict:
+        command = parse_stage(command)
+        store = self.org.workflow_submissions
+        task, agent = store._session(session_id)
+        selection = dict(request_id=command['request_id'], task_agent=(task, agent), session_id=session_id, human=False)
+        # Preserve selected identity/grant refusal before authority/schema decoding.
+        with self.org.sessions.binding_lease(task, agent):
+            with self.db._lock:
+                store._session(session_id)
+                store._select_request(self.db._conn, **selection)
+        capture = self.org.workflow_authority.capture_admission()
+        async with store._lock:
+            async with self.org.db_lock:
+                with self.org.sessions.binding_lease(task, agent):
+                    with self.db._lock:
+                        store._session(session_id)
+                        store._select_request(self.db._conn, **selection)
+                    with self.org.workflow_authority.admission_writer(capture) as conn:
+                        store._session(session_id)
+                        request, _, source = store._select_request(conn, **selection)
+                        store._authority(conn, source, capture, {'collect-review'})
+                        intent = self._intent(conn, task)
+                        store._fresh(conn, intent, task, agent, session_id)
+                        if (command['expected_revision'] != intent['scope']['revision']
+                                or command['request_scope_digest'] != request['request_scope_digest']
+                                or command['outcome'] not in intent['scope']['outcomes']):
+                            raise WorkflowActivationError('workflow_review_stage_invalid_request')
+                        if (capture.ready.generation != intent['authority_generation']
+                                or capture.ready.snapshot_digest != intent['authority_digest']):
+                            raise WorkflowActivationError('workflow_activation_authority_stale')
+                        if conn.execute('SELECT state FROM workflow_cutover_state WHERE singleton=1').fetchone()[0] != 'enabled':
+                            raise WorkflowActivationError('workflow_new_runs_disabled')
+                        stages = _records(conn, "SELECT * FROM workflow_dispatch_events WHERE operation_id=? AND event_kind='review_staged'",
+                                          (intent['operation_id'],))
+                        if stages:
+                            body = _stored_json(stages[0]['event_bytes'], stages[0]['event_digest'], code='workflow_review_storage_corrupt')
+                            if not _same_value(body['stage']['command'], command) or body['stage']['session_id'] != session_id:
+                                raise WorkflowActivationError('workflow_review_stage_operation_conflict')
+                            event_id = stages[0]['id']
+                        else:
+                            self._event(conn, intent, 'review_staged', stage=dict(command=command,
+                                request_digest=digest(canonical_bytes(command)), scope=intent['scope'],
+                                outbox_id=intent['id'], session_id=session_id))
+                            event_id = conn.execute('SELECT id FROM workflow_dispatch_events WHERE operation_id=? ORDER BY event_seq DESC LIMIT 1',
+                                                    (intent['operation_id'],)).fetchone()[0]
+                        validate_review_dispatch_storage(conn, request_id=request['id'])
+                        return dict(format='workflow-review-stage-ack@1', stage_event_id=event_id,
+                                    request_digest=digest(canonical_bytes(command)), replayed=bool(stages), signed=False)
+
     def _intent(self, conn: sqlite3.Connection, task_id: str) -> dict[str, Any]:
         bridges = _records(conn, 'SELECT * FROM workflow_request_task_bridges WHERE task_id=?', (task_id,))
         if len(bridges) != 1 or conn.execute('SELECT 1 FROM workflow_draft_dispatch_intents WHERE task_id=?', (task_id,)).fetchone():
@@ -261,7 +375,7 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
             raise DraftOwnershipError('workflow_activation_author_pending')
 
     def _event(self, conn: sqlite3.Connection, intent: dict, kind: str, *, changes: dict | None = None,
-               terminal_evidence: dict | None = None, result: dict | None = None) -> None:
+               terminal_evidence: dict | None = None, result: dict | None = None, stage: dict | None = None) -> None:
         changes = dict(changes or {})
         now = datetime.now(timezone.utc).isoformat()
         if changes.get('state') == 'failed':
@@ -290,11 +404,14 @@ class WorkflowReviewDispatcher(WorkflowDraftDispatcher):
         seq = 1 if previous is None else previous['event_seq'] + 1
         after_outbox = _record(conn, 'workflow_dispatch_outbox', intent['id'])
         after_bridge = dict(conn.execute('SELECT * FROM workflow_request_task_bridges WHERE request_id=?', (intent['request_id'],)).fetchone())
-        raw = canonical_bytes(dict(format='workflow-review-dispatch-event@1', org_slug=self.org.slug,
+        payload = dict(format='workflow-review-stage@1' if stage is not None else 'workflow-review-dispatch-event@1', org_slug=self.org.slug,
             operation_id=intent['operation_id'], request_id=intent['request_id'], task_id=intent['task_id'],
             event_seq=seq, event_kind=kind, previous_digest=None if previous is None else previous['event_digest'],
             before=dict(outbox={k: v for k, v in intent.items() if k in after_outbox}, bridge=intent['bridge']),
-            after=dict(outbox=after_outbox, bridge=after_bridge), terminal_evidence=terminal_evidence, result=result))
+            after=dict(outbox=after_outbox, bridge=after_bridge), terminal_evidence=terminal_evidence, result=result)
+        if stage is not None:
+            payload['stage'] = stage
+        raw = canonical_bytes(payload)
         _insert(conn, 'workflow_dispatch_events', dict(id=f"{intent['operation_id']}:{seq}", operation_id=intent['operation_id'],
             event_seq=seq, event_kind=kind, state_before=intent['state'], state_after=after_outbox['state'],
             event_bytes=raw, event_digest=digest(raw), created_at=now))
