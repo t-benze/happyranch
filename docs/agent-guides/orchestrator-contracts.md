@@ -495,6 +495,26 @@ and skips; root is outside the scan; positive non-exempt use blocks. This is a
 snapshot with disclosed later-opener/data-loss residual, not proof of OS-wide
 absence.
 
+Preparation and outer-batch evidence use the packaged `prepare_cleanup.py` and
+`observe_cleanup_batch.py` (THR-259 seq506). Compare explicit aware terminal
+instants, preserving original strings, exact inclusive604800/86400-second floors
+and both action-time rechecks; naive/missing/malformed/changed times refuse.
+Freeze cap40 with historical overlap exclusions and no refill. Useful preparation,
+honest complete empty/no-repo evidence and incomplete enumeration are distinct;
+empty leaves retain native inventory/peer/history receipts and emit no request.
+Render one supported task/session-bound request with omitted or relative cwd,
+actual remaining budget and preserved TMPDIR; submission rejection/uncertainty
+ends that attempt without an alternate or retry. The outer host observer requires
+readable self context, host-init/unstacked proc and protected/mount metadata,
+including workspace .codex/.aws without credential-content reads. Root PID1
+namespace denial is diagnostic, without a new equality veto. An incomplete
+baseline admits no batch; native batch failure and postcheck failure/drift both
+remain nonzero/incomplete with their original causes. Only the default packaged
+batch/candidate runner executes; scanner/action gates are unchanged. Local report
+or persisted result is distinct from canonical lifecycle/output publication;
+failed/unpublished evidence overrides local success. A genuine bound completion
+callback is the final session action. This repair grants no cleanup allocation.
+
 The scan runs only as a task-bound host-visible HappyRanch job. The procedure
 authenticates a closed-schema, non-truncated receipt binding the current
 task/session to the actual job, agent, stored command, interpreter, resolved

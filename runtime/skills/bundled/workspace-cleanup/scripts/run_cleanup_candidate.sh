@@ -810,7 +810,7 @@ raise SystemExit(0 if ok else 1)' "$CANDIDATE" "$CONTAINING" "$PRIMARY" "$WORKSP
   # gate protected-task
   python3 -c 'import json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); text=" ".join(str(d.get(k) or "") for k in ("output_summary","note")); sys.exit(1 if "worktree-deferred:" in text else 0)' || { WC_GATE_REASON="${reason_prefix}:protected-task"; export WC_GATE_REASON; return 1; }
   # gate retention-age
-  python3 -c 'import datetime,json,os,sys; d=json.load(open(os.environ["TASK_JSON"])); ca=d.get("completed_at"); term=("completed","failed","cancelled","superseded"); sys.exit(1) if d.get("status") not in term or not ca else None; t=datetime.datetime.fromisoformat(str(ca).replace("Z","+00:00")); t=(t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)); age=(datetime.datetime.now(datetime.timezone.utc)-t).total_seconds(); sys.exit(0 if age>=float(sys.argv[1]) else 1)' "$AGE_SECONDS" || { WC_GATE_REASON="${reason_prefix}:retention-age"; export WC_GATE_REASON; return 1; }
+  python3 "$_WC_RUNNER_SKILL_DIR/scripts/prepare_cleanup.py" retention --task-json "$TASK_JSON" --floor-seconds "$AGE_SECONDS" || { WC_GATE_REASON="${reason_prefix}:retention-age"; export WC_GATE_REASON; return 1; }
   # gate not-symlink
   python3 -c 'import os,pathlib,sys; p=pathlib.Path(os.path.abspath(sys.argv[1])); w=os.path.abspath(sys.argv[2]).rstrip("/"); anc=[str(p)]+[str(p.parents[i]) for i in range(len(p.parents))]; ins=[a for a in anc if a==w or a.startswith(w+"/")]; sys.exit(0 if all(not os.path.islink(a) for a in ins) else 1)' "$CANDIDATE" "$WORKSPACE" || { WC_GATE_REASON="${reason_prefix}:not-symlink"; export WC_GATE_REASON; return 1; }
   # gate same-filesystem

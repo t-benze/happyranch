@@ -258,6 +258,100 @@ worktree, or any incomplete listing makes the scan `unknown` -> skip; a positive
 non-exempt use makes it `blocked` -> skip; only `clear_observation` with every
 gate exit 0 permits the non-force action.
 
+## Preparation and observed handoff (THR-259 seq506)
+
+Begin with the packaged `scripts/prepare_cleanup.py`; preparation never grants
+Git, scanner or deletion clearance. Use absolute paths and a new empty evidence
+directory, retaining the native inventory, complete assigned-task and filtered
+trigger-history receipts, measurements, and exact historical exclusions:
+
+```bash
+python3 "$SKILL/scripts/prepare_cleanup.py" prepare --inventory "$INVENTORY" \
+  --history-exclusions "$HISTORY_EXCLUSIONS" --output-dir "$PREPARED" \
+  --max-candidates 40
+```
+
+The captured inventory object has `complete: true`, `binding` (the literal
+WORKSPACE, PRIMARY, AGENT, ORG, ACTING_TASK, SESSION_ID, CLEANUP_MARKER values),
+`repositories_state` (`present` or positively `absent`), `repository_receipts`,
+`assigned_task_receipts`, `trigger_history_receipts`, and `candidates`.
+Each native receipt retains argv, absolute cwd, integer exit_code, stdout,
+stderr and error (null for a successful complete receipt). Collect every page
+before claiming completeness; a failed enumeration is never an empty census.
+Each candidate retains candidate, containing, kind, allocated_bytes, its native
+`listing` task record and `measurement_receipts`. The listing has task_id,
+assigned_agent, status and completed_at. This is captured source evidence, not
+an authenticated clearance or permission to omit an action-time join.
+
+The history object contains only `complete`, `sources` (absolute path and
+sha256 for each exact original history/exclusion artifact) and `excluded_paths`.
+Retain the actual prior attempts/outcomes and exclusions in those artifacts;
+never replace them with counts. Unknown scope/history prevents an actionable
+manifest. Historical containing-tree/cache overlap stays excluded. Do not
+revive TASK9513, parked551/43, TASK10711/10918 or TASK10929 attempts.
+
+Only explicit aware timestamp strings are accepted. Z, +00:00 and nonzero
+offsets compare as UTC instants; original strings remain in the receipts.
+Missing/malformed/naive/changed times and changed task/owner/status refuse.
+Inclusive age floors are exactly 604800 seconds for a worktree and 86400 for a
+cache, without directory mtime, guessed UTC or rounding. Both existing
+candidate passes call the packaged retention helper and retain their gate
+reason order. Preparation freezes at most40 by worktree/cache, terminal instant
+and literal path before fresh recalls and measurements; refusal never refills.
+
+`prepared_nonempty` supplies a useful exact four-key manifest; known unrelated
+eligible rows may survive isolated candidate uncertainty with its reasons.
+`no_candidates_complete` is exit0 with retained native evidence and no request.
+An exhausted uncertain selection or incomplete inventory/history is nonzero
+`incomplete`, with no actionable request. No-repo agents retain native
+repository-directory/configuration, assigned-task and filtered-history receipts;
+PRIMARY may be empty only for this no-action preparation. They need no invented
+host baseline or empty action job.
+
+For a separately allocated marked cleanup, render one supported request with
+`scripts/observe_cleanup_batch.py job-request --preparation ABS --output ABS
+--evidence-dir ABS --deadline-seconds 1200 --candidate-timeout-seconds 180
+--max-runtime-seconds 2100`. The evidence directory is new and beneath
+workspace `output/ACTING_TASK`. Set CLEANUP_SESSION_DEADLINE to the explicit aware
+owner deadline established from authentic session/launch evidence; an unavailable
+remaining budget refuses. This helper does not discover or extend a session
+budget, and a caller-supplied label alone is not authoritative launch evidence.
+The wall budget exceeds deadline plus a whole candidate timeout and finite
+observation/reaping margin while fitting the fresh remaining owner budget.
+Retain the effective TMPDIR. There is no public clock or runner override.
+
+The renderer emits only supported jobs fields, Bash, the current task/session,
+one shell-quoted packaged observer command, and optionally an existing relative
+cwd_hint. Workspace-root cwd omits the hint. Absolute/traversal/unknown fields,
+unsupported values, stale artifacts/bindings and insufficient budgets refuse.
+Validate against current supported SubmitBody/_validate_cwd_hint when verifying
+source parity. Submit exactly once using `happyranch jobs submit --org ORG
+--from-file ABS`, preserving the original request hash and native command,
+stdout/stderr/exit. Rejection or unknown transport ends that attempt; do not
+change cwd, retry, submit an alternative or refill. The renderer never submits.
+
+The outer job runs `observe_cleanup_batch.py run` with the frozen manifest and
+history. It writes before.json, then admits only the default packaged batch
+and candidate runner, then attempts after.json even after a batch failure.
+Readable self UID/GID/PID/namespaces/mountinfo, host-init and one unstacked proc
+mount are mandatory. Root PID1 namespace read errors are diagnostic, without
+an added equality veto. This observation does not replace the unchanged nested
+host scanner. Required findmnt/Git commands preserve raw stdout/stderr/exits.
+Protected metadata includes workspace .codex/.aws, home .codex/.aws, primary
+Git metadata, outputs/memory/artifacts/logs/configuration and skill roots,
+symlink/resolved-target identity and longest covering mount. Credential contents
+are never read. Positive absence requires a readable inspected ancestor;
+unreadable, dangling, capped or ambiguous evidence is an error.
+
+Baseline failure invokes no batch. sequence.json preserves batch_started,
+native batch exit and both batch/postcheck causes. Batch failure, incomplete
+batch, missing/malformed post evidence or protected/context drift stays nonzero
+and incomplete even after another phase succeeds. Stop on evidence/report
+failure. Concurrent output metadata changes are disclosed; unique reclaimed
+physical bytes remain unknown. Retain the exact native journal and authenticate
+actual jobs show/output identity, binding, stored command/cwd, timestamps,
+terminal status and exit, complete output totals/truncation independently.
+
 ## Delivered procedure (executable control flow)
 
 Execute the bundled Bash program directly; do not copy, source, extract, or
@@ -288,13 +382,14 @@ filesystem accounting. An unavailable residual measurement is explicit (`null`
 plus `measurement_error`), never a false zero. An anomaly is never reported as
 `refused`, and further batch mutations must halt.
 
-For an inventory manifest, use the bundled resumable batch driver rather than
-an ad-hoc loop:
+The observed wrapper invokes this existing resumable driver with its default
+packaged runner; the following is its command shape, not an alternate unobserved
+submission procedure:
 
 ```bash
 python3 "$SKILL/scripts/run_cleanup_batch.py" \
   --manifest "$MANIFEST" --journal "$JOURNAL" \
-  --max-candidates 40 --deadline-seconds 2400
+  --max-candidates 40 --deadline-seconds 1200 --candidate-timeout-seconds 180
 ```
 
 Here too `$SKILL` is only the caller's path used to locate the installed batch
@@ -323,7 +418,7 @@ terminates that candidate's whole process group, journals the unsafe halt, and
 stops the batch with a nonzero exit; such a row remains deliberately
 unresumable.
 
-Run each batch driver as a durable `happyranch` job bound to the cleanup task's
+Run each observed wrapper as a durable `happyranch` job bound to the cleanup task's
 current ACTIVE task/session, choose a batch/deadline comfortably inside one
 session (target at most about 40 minutes), ensure the job wall budget exceeds
 the batch deadline plus one full per-candidate timeout, and wait in-session with
@@ -403,6 +498,18 @@ turn unavailable measurement or an unverified outcome into zero or success.
 The durable batch journal is the ordered source for `final-ledger.jsonl`;
 preserve each literal argv, timestamps, exit status, native parsed receipt or
 malformed raw output, and stop reason/stop facts.
+
+Use `observe_cleanup_batch.py report` with absolute inventory, sequence,
+task-projection, result-projection, audit-projection and output-dir paths to
+retain publication.json and a current completion-intent.json. These are local
+artifacts. A failed executor/lifecycle or absent canonical output publication
+overrides a local success payload or persisted result ID. While the genuine
+session is still alive, an admitted result can honestly be terminal-pending;
+that is not proof of callback failure. Original callback command/HTTP/CLI exit
+or full executor error remains missing until native evidence exists. Never
+replay a callback or rewrite historical results. The report helper never sends
+one. Final callback stdout/exit belongs to the native session receipt and
+later supported parent reads; no action follows the final callback to inspect it.
 
 Use the normal task-owner or subtask summary protocol and submit
 `happyranch report-completion --org <slug> --from-file <ABSOLUTE_PAYLOAD_PATH>`

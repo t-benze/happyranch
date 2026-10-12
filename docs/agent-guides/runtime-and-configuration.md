@@ -688,6 +688,26 @@ ssh-agent, gpg-agent, gcr-ssh-agent) qualifies only by exact readable process
 name AND exact bounded cgroup role and is deliberately uninspected; any other
 unreadable same-user process is `unknown` and skips.
 
+Preparation and outer-batch evidence use the packaged `prepare_cleanup.py` and
+`observe_cleanup_batch.py` (THR-259 seq506). Compare explicit aware terminal
+instants, preserving original strings, exact inclusive604800/86400-second floors
+and both action-time rechecks; naive/missing/malformed/changed times refuse.
+Freeze cap40 with historical overlap exclusions and no refill. Useful preparation,
+honest complete empty/no-repo evidence and incomplete enumeration are distinct;
+empty leaves retain native inventory/peer/history receipts and emit no request.
+Render one supported task/session-bound request with omitted or relative cwd,
+actual remaining budget and preserved TMPDIR; submission rejection/uncertainty
+ends that attempt without an alternate or retry. The outer host observer requires
+readable self context, host-init/unstacked proc and protected/mount metadata,
+including workspace .codex/.aws without credential-content reads. Root PID1
+namespace denial is diagnostic, without a new equality veto. An incomplete
+baseline admits no batch; native batch failure and postcheck failure/drift both
+remain nonzero/incomplete with their original causes. Only the default packaged
+batch/candidate runner executes; scanner/action gates are unchanged. Local report
+or persisted result is distinct from canonical lifecycle/output publication;
+failed/unpublished evidence overrides local success. A genuine bound completion
+callback is the final session action. This repair grants no cleanup allocation.
+
 The shared procedure executes that scanner only through a task-bound,
 host-visible HappyRanch job and validates a closed-schema, non-truncated receipt
 binding task/session, actual job, stored execution identity, terminal result,
