@@ -782,9 +782,12 @@ class WorkflowActivationStore:
             (activation_id, self.org.slug, actor, actor, actor))
         if not rows:
             raise WorkflowActivationError('workflow_activation_not_found')
+        # Draft intents inherit org scope from the selected activation/instance;
+        # their schema has no org_slug column. Keep the owner relation above
+        # ahead of this selection and the grant check ahead of private decoding.
         intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents '
-            'WHERE activation_id=? AND instance_id=? AND org_slug=? AND attempt_sequence=1 AND admission_principal=?',
-            (activation_id, rows[0]['id'], self.org.slug, actor))
+            'WHERE activation_id=? AND instance_id=? AND attempt_sequence=1 AND admission_principal=?',
+            (activation_id, rows[0]['id'], actor))
         if len(rows) != 1 or len(intents) != 1:
             raise ValueError('workflow_activation_storage_corrupt')
         self.org.workflow_submissions._read_grant(conn, intents[0], {'collect-review'}, principal)

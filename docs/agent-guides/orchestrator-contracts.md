@@ -2811,7 +2811,10 @@ IDs navigate independently authenticated readers and grant no access or approval
 
 Relational same-org/current activation/current owner and active read grants precede
 private proof decoding, repeat after each awaited lock and at the coherent read
-boundary. Complete H/I, pinned contract and template-selected human request closure
+boundary. Org scope comes from the selected activation operation and its current
+instance/owner relation; draft intents have no `org_slug` column and are selected
+by that admitted activation/instance, original attempt and admission principal.
+Complete H/I, pinned contract and template-selected human request closure
 validate before disclosure. No peer IDs/findings/inputs, bytes, sessions or proofs
 are returned. The GET reuses READ-ONLY `current_collection`; no domain DB, authority
 lease, event, queue or join writes. It never collects, discovers or fulfills work.
