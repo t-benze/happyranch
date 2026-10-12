@@ -10,10 +10,29 @@ with declared normal generated refresh and native reset/publication/profile
 owners. Names, workspace/provider paths, memory, history, retained policies and
 thread delivery/breaker state stay in place. No SQLite schema is added.
 
+THR296 seq87 authorizes only the TASK10953 follow-up source corrections below.
+Source acceptance uses independent review, scoped source QA and lint/static
+checks. No new tests/cases/fixtures, migration utility invocation or behavioral
+proof is authorized by this correction. General integration, including C6/C8/C9,
+is SKIPPED under THR243 seq42; Python units are RETIRED. Historical proof debt and
+seq73/78 maintenance reservations remain. Installed/loaded corrected source,
+actual host readiness and an admitted live move are separate facts.
+
+The literal roster editor accepts the existing single-line inline workers
+sequence and the admitted one-worker multiline block sequence. In the block
+form it inserts `consultant_head` before the unchanged `consultant_codex` item,
+preserving indentation, comments and unrelated bytes. With an existing empty
+human Default, the obsolete Consultant block is removed with its comments
+retained, and Default's empty workers sequence is filled. The exact semantic
+after-image comparison and checked before/after images still govern both
+branches. Aliases/anchors and ambiguous or unsupported layouts refuse; never
+hand-normalize live YAML to obtain admission.
+
 Use an actual authorized disposable M venue before maintenance readiness:
 
-1. Stop and persistently inhibit every registered supervisor/alternate launch
-   path. A workflow fence or PID file alone is insufficient. Record actual unit
+1. Stop and persistently inhibit every actual runtime supervisor/alternate launch
+   path. Unrelated launchers may remain running only under the exact declarations
+   below. A workflow fence or PID file alone is insufficient. Record actual unit
    inventories, persistent masks, normal-start refusal and reboot persistence.
    Retain inhibition through failure; release is a separate authorized action.
 2. Complete quiescence and inventory without capped scans. Close/checkpoint the
@@ -102,6 +121,7 @@ observations and exact native outputs, **not an executable manifest or receipt**
     "daemon_home": "/effective/original/daemon-home",
     "systemd_user_units": ["ACTUAL_REGISTERED_SUPERVISOR.service"],
     "systemd_system_units": [],
+    "unrelated_launchers": [],
     "registry_paths": ["/effective/original/daemon-home/runtimes.yaml"]
   },
   "generated_after_images": {"EXACT_NATIVE_WORKSPACE_PATH": "REPLACE_WITH_CLOSED_IMAGE"},
@@ -109,6 +129,64 @@ observations and exact native outputs, **not an executable manifest or receipt**
   "materialization_event_shapes": ["REPLACE_WITH_EXACT_NATIVE_EVENT_FIELDS_EXCEPT_ID_AND_CREATED_AT"]
 }
 ```
+
+`containment.unrelated_launchers` is optional (default empty). Each ordinary
+command-bearing service outside the inhibited unit lists and every desktop
+autostart entry must have exactly one declaration with these closed fields:
+
+```json
+{
+  "kind": "systemd",
+  "scope": "system",
+  "unit": "EXACT_OBSERVED_UNIT.service",
+  "identity": {"properties": "REPLACE_WITH_EXACT_OBSERVED_PROPERTY_MAP", "files": "REPLACE_WITH_EXACT_OBSERVED_FILE_MAP"},
+  "operator_declaration": "unrelated-to-happyranch-and-runtime-writers"
+}
+```
+
+For a desktop entry the closed fields are `kind: "desktop"`, `path` (exact
+absolute entry path), `identity` and `operator_declaration`. Its identity is
+`{image: CLOSED_FILE_IMAGE, commands: SECTION_TO_EXEC_AND_OPTIONAL_TRYEXEC_MAP}`.
+These examples are placeholders, not real declarations or a checked manifest.
+The operator must explicitly supply the literal `operator_declaration` value
+`unrelated-to-happyranch-and-runtime-writers` for each exact identity. It declares
+that launcher and its configured/transitive launches unrelated to HappyRanch
+and runtime writers. Missing or different values refuse; there is no default
+allowlist, wildcard or bypass flag. This is an operator
+assertion about unrelated configured/transitive launches, not independently
+proved launch closure or an executable-hash guarantee.
+
+The service property map is the exact output of `systemctl [--user] show UNIT
+--property=Id,Names,FragmentPath,DropInPaths,LoadState,ActiveState,SubState,UnitFileState,ExecCondition,ExecStart,ExecStartPre,ExecStartPost,ExecReload,ExecStop,ExecStopPost
+--no-pager`, parsed at the first `=` on each line. Files map each nonempty
+FragmentPath and each whitespace-separated DropInPaths member to its resolved
+absolute path and closed file image. `/dev/null` is represented as
+`{resolved: "/dev/null", kind: "mask"}`; the actual runtime-unit persistent mask
+and inactive/dead checks still apply separately. Raw Exec observations include
+systemd's process/time fields: a changed state, command or restart refuses on
+revalidation. Uninspectable commands/files/path escaping refuse.
+
+Desktop inventory covers every direct entry in `~/.config/autostart` and
+`/etc/xdg/autostart`, including both directory identities. Only regular UTF8
+`.desktop` Application entries with inspectable Exec/optional TryExec commands
+in Desktop Entry and Desktop Action sections are supported. Symlinks, unknown
+entries/sections, duplicate keys, defaults and D-Bus-activated entries refuse.
+Observed commands, names, paths and decoded unit/desktop file contents bearing
+HappyRanch, the runtime/source path, daemon or executor writer identities cannot
+be declared unrelated. This direct refusal does not inspect arbitrary wrappers'
+transitive behavior; the operator must never declare an actual launcher/writer
+unrelated even when that relationship is absent from its visible identity.
+
+Check records each declaration and exact observation in the private manifest.
+Apply and either recovery direction consume that same manifest and recollect
+the complete installed/loaded service and desktop inventories before native
+writes. Missing/unknown/changed/uninspectable inventory, duplicate or unused
+declarations, and conflicts with inhibited units refuse. Commandless services
+need no assertion but their exact identities are still recorded/revalidated.
+An inaccessible user bus remains an operator prerequisite. Executable rc.local
+remains unsupported. The utility does not mask/disable/stop services, edit cron,
+create backups or release maintenance. Registry binding, same-user writer census,
+all-runtime-launch inhibition and every backup/native/recovery gate remain.
 
 Check is read-only with respect to runtime state. Do not redirect its stdout to
 a production manifest until a real authorized check returns exit0 and its full
@@ -170,14 +248,10 @@ the canonical snapshot already landed. Forward recovery rebuilds its missing
 canonical snapshot through the native owner. The utility never writes a
 journal/pointer to manufacture readiness, and unknown staging refuses.
 
-The systemd inventory includes pre/start/post/reload commands. This bounded
-adapter refuses every undeclared command-bearing unit: executable bytes/hashes
-and a plan assertion cannot prove its configured/internal launches exclude
-the runtime. A venue with ordinary unmasked system services therefore has an
-explicit missing containment capability, not a successful check. Resolve the
-exact venue/unit closure with the manager before maintenance authorization;
-the utility does not mask or stop services. Desktop autostart or executable
-rc.local is outside this adapter and refuses. The same-user census also includes
+The historical adapter refused all undeclared command-bearing units and nonempty
+desktop autostart directories. THR296 seq87 supersedes only those two refusals
+with the exact unrelated-launcher assertion contract above; no successful check
+or host capability is inferred. The same-user census also includes
 daemon scripts, direct daemon-module paths and executor binaries. This remains
 a cooperative, explicitly inhibited disposable-VM operation: no host exactly
 once or hostile same-user exclusion claim follows. Actual M capability, reboot
@@ -332,13 +406,12 @@ uv run python tests/helpers/integration_parent.py -- pytest tests/integration/te
 uv run python tests/helpers/integration_parent.py -- pytest tests/integration/test_human_team_roster_e2e.py::test_c9_crash_recovery_and_replay -m integration
 ```
 
-There is a precise positive-venue conflict. `containment()` refuses EVERY
-undeclared command-bearing system/user service. A usable M would require an
-external operator to provide a boot-persistent, independently evidenced closed
-launcher inventory in which every command-bearing service is declared and
-persistently masked/inactive, with system/user control still genuinely usable.
-This source cannot construct that state, mask host units, or accept executable/
-unit-name allowlists as exclusion proof. Normal systemd/D-Bus operation can also
+The historical positive-venue conflict from all command-bearing services is
+addressed only by THR296 seq87's exact unrelated declarations. A usable M still
+requires complete operator-owned inventory and boot-persistent inhibition of
+every actual runtime launcher, with system/user control genuinely inspectable.
+No actual declarations or maintenance capability are supplied by this source.
+Executable/unit-name allowlists are not exclusion proof. Normal systemd/D-Bus operation can also
 encounter descriptor-transfer syscalls rejected by the current observer; no
 capability PASS is asserted. Four adversarial conditions (unknown launcher,
 foreign owner, actual byte/inode scarcity) require actual external operator
