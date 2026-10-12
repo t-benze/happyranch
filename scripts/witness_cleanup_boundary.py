@@ -260,6 +260,9 @@ def t3(w: Witness) -> None:
     w.check(len(mixed['manifest']) == 1 and mixed['manifest'][0]['candidate'] == rows[4]['candidate'], 'mixed_useful_with_young_unknown_history_exclusions')
     _, empty = w.prepare(w.inventory([]), 'empty')
     w.check(empty['state'] == 'no_candidates_complete', 'honest_complete_empty')
+    empty_preparation = w.root / 'empty/preparation.json'
+    receipt = w.run([sys.executable, str(w.scripts / 'observe_cleanup_batch.py'), 'job-request', '--preparation', str(empty_preparation), '--output', str(w.root / 'empty-request.json'), '--evidence-dir', str(w.workspace / 'output/TASK-actor/empty-request')])
+    w.check(receipt['exit_code'] == 0 and not (w.root / 'empty-request.json').exists(), 'honest_empty_no_request')
     data = json.loads((w.root / 'inventory.json').read_text()); data['repository_receipts'][0]['exit_code'] = 17
     path = w.write(w.root / 'bad-inventory.json', data)
     receipt, bad = w.prepare(path, 'bad-inventory')
@@ -272,9 +275,6 @@ def t3(w: Witness) -> None:
     cache_row = dict(rows[1], candidate=str(cache), kind='cache')
     _, overlap = w.prepare(w.inventory([cache_row, rows[4]]), 'cache-overlap')
     w.check(len(overlap['manifest']) == 1 and overlap['rows'][0]['reason'] == 'historical_overlap', 'historical_containing_cache_overlap')
-    empty_preparation = w.root / 'empty/preparation.json'
-    receipt = w.run([sys.executable, str(w.scripts / 'observe_cleanup_batch.py'), 'job-request', '--preparation', str(empty_preparation), '--output', str(w.root / 'empty-request.json'), '--evidence-dir', str(w.workspace / 'output/TASK-actor/empty-request')])
-    w.check(receipt['exit_code'] == 0 and not (w.root / 'empty-request.json').exists(), 'honest_empty_no_request')
     receipt = w.run([sys.executable, str(w.scripts / 'observe_cleanup_batch.py'), 'job-request', '--preparation', str(w.root / 'bad-inventory/preparation.json'), '--output', str(w.root / 'bad-request.json'), '--evidence-dir', str(w.workspace / 'output/TASK-actor/bad-request')])
     w.check(receipt['exit_code'] != 0 and not (w.root / 'bad-request.json').exists(), 'incomplete_inventory_no_request')
     scratch_empty = w.copy_scripts('empty-fallthrough-regression')
