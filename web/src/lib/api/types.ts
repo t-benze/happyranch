@@ -1254,8 +1254,112 @@ export interface DocumentWorkflowActivationReceipt extends Omit<LegacyWorkflowAc
   bindings: Record<string, WorkflowActivationRoleBinding>;
   eligible_replacements: Record<string, WorkflowActivationRoleBinding[]>;
 }
-export type WorkflowActivationRequest = LegacyWorkflowActivationRequest | DocumentWorkflowActivationRequest;
-export type WorkflowActivationReceipt = LegacyWorkflowActivationReceipt | DocumentWorkflowActivationReceipt;
+export type HandoffWorkflowActivationAction = WorkflowActivationAction | 'stage-immutable-document';
+export interface DocumentWorkflowActivationRequest3 extends Omit<DocumentWorkflowActivationRequest, 'format' | 'allowed_actions'> {
+  format: 'workflow-activation-request@3';
+  allowed_actions: HandoffWorkflowActivationAction[];
+}
+export interface DocumentWorkflowActivationReceipt3 extends Omit<DocumentWorkflowActivationReceipt, 'format' | 'allowed_actions'> {
+  format: 'workflow-activation-receipt@3';
+  allowed_actions: HandoffWorkflowActivationAction[];
+}
+export type WorkflowDocumentReviewDefinition3 = Omit<WorkflowDocumentReviewDefinition, 'schema_version' | 'submission' | 'outcomes' | 'request_changes'> & {
+  schema_version: 3;
+  submission: {
+    timing: 'on-completion' | 'while-active-or-completed';
+    delivery: 'current-author-handoff@1';
+  };
+} & ({ outcomes: ['approved']; request_changes: null } | {
+  outcomes: ['approved', 'changes_requested'] | ['changes_requested', 'approved'];
+  request_changes: WorkflowDocumentReturnRule;
+});
+export type WorkflowActivationRequest = LegacyWorkflowActivationRequest | DocumentWorkflowActivationRequest | DocumentWorkflowActivationRequest3;
+export type WorkflowActivationReceipt = LegacyWorkflowActivationReceipt | DocumentWorkflowActivationReceipt | DocumentWorkflowActivationReceipt3;
+
+
+/** H receipts contain only immutable public core and current projection. */
+export interface AuthorHandoffCommand {
+  format: 'workflow-author-handoff-command@1';
+  operation_key: string;
+  activation_id: string;
+  expected_revision: 1;
+  submission_bytes_base64: string;
+  submission_digest: string;
+}
+export interface AuthorHandoffCore {
+  handoff_id: string;
+  reserved_submission_id: string;
+  instance_id: string;
+  revision: 1;
+  candidate_digest: string;
+  request_digest: string;
+  created_at: string;
+}
+export interface AuthorHandoffGraph {
+  submission_id: string;
+  round_id: string;
+  request_ids: [string] | [string, string] | [string, string, string];
+  /** Every actual configured agent slot in declared order; 0..3. */
+  reviewer_task_ids: [] | [string] | [string, string] | [string, string, string];
+}
+export interface AuthorHandoffCurrent {
+  state: 'pending' | 'held' | 'consumed' | 'failed' | 'cancelled';
+  pending: boolean;
+  reconciliation_required: boolean;
+  reason: 'awaiting_callback' | 'awaiting_terminal_proof' | 'authority_not_current' |
+    'source_not_current' | 'new_runs_disabled' | 'source_uncertain' | 'source_failed' | 'source_cancelled' | 'consumed';
+  graph: AuthorHandoffGraph | null;
+}
+export interface AuthorHandoffReceipt {
+  format: 'workflow-author-handoff-receipt@1';
+  core: AuthorHandoffCore;
+  replayed: boolean;
+  current: AuthorHandoffCurrent;
+}
+export type AuthorHandoffProof =
+  { session_id: string; activation_id: string; request_id?: never; proof_kind?: never } |
+  { session_id: string; request_id: string; activation_id?: never; proof_kind?: never } |
+  { proof_kind: 'owner-human'; session_id?: never; activation_id?: never; request_id?: never };
+export type WorkflowReviewRequestProof =
+  { session_id: string; proof_kind?: never } | { proof_kind: 'human'; session_id?: never };
+export interface WorkflowReviewRequestScope {
+  format: 'workflow-review-request@1';
+  org_slug: string;
+  instance_id: string;
+  handoff_id: string;
+  submission_id: string;
+  submission_digest: string;
+  revision: 1;
+  round_id: string;
+  request_id: string;
+  role: string;
+  kind: 'agent' | 'human';
+  principal: string;
+  team: string | null;
+  assignment_generation: 1;
+  template: LegacyWorkflowActivationReceipt['template'];
+  activation: { id: string; revision: 1; request_digest: string };
+  authorization: string;
+  binding_snapshot_id: string;
+  context_id: string;
+  output: { primitive: 'immutable-document-revision'; description: string };
+  outcomes: ('approved' | 'changes_requested')[];
+  purpose: 'Independently review the pinned immutable document; requests remain unsigned.';
+  allowed_actions: ['collect-review'];
+  inputs: { pin: DocumentWorkflowActivationInput; bytes_base64: string }[];
+}
+export interface WorkflowReviewRequestReceipt {
+  format: 'workflow-review-request-receipt@1';
+  request_id: string;
+  scope: WorkflowReviewRequestScope;
+  request_scope_digest: string;
+  status: 'pending';
+  signed: false;
+  pending: true;
+  reconciliation_required: boolean;
+  submission_bytes_base64: string;
+}
+
 
 // Naming v1 — separate metadata; AgentSummary.name remains canonical ID.
 export interface IdentityView {

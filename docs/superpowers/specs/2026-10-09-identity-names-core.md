@@ -27,7 +27,7 @@ index metadata to independently pinned literal references and validates bounded
 rows and their cross-row ownership. Partial/newer/foreign/extra/corrupt naming
 refuses without repair. Generic Database/runtime-audit never acquire names.
 
-Complete legacy references cover fresh/v0/v2/v2-organic × F/E/G × naming absent/v1,
+Release-reference construction supports fresh/v0/v2/v2-organic × F/E/G/H × naming absent/v1,
 including all three current generic cleanup indexes. Every non-null schema SQL
 object participates; no object filter/whitelist or candidate-derived baseline.
 Unknown whole-database objects keep the existing strict reference refusal.
@@ -574,3 +574,25 @@ remain required. This correction is unverified by the hosted naming boundary
 until a new attributed run passes; no prior failure is relabeled. Historical
 attempt3 remains 16/17 with its timeout. Unit source and gates are RETIRED, general
 integration is SKIPPED, and PR1025 is not an established replacement gate.
+
+
+### Main composition with H and lint-only CI (TASK-10565 step17)
+
+The candidate now incorporates main `8f81c432a64bded9b93ceb6ab2c0aafdd376c02b`,
+including its existing H layout, Pause UI, public workflow routes and daily E2E
+cadence. The combined legacy release-reference selector retains the naming and
+Pause dimensions while admitting main's H selector. Draft/submission ready
+replays retain naming validation; cutover retains both naming and H compatible
+reader refusals. This integration does not change either release's DDL or
+authorize a live migration, authority change or deployment.
+
+The earlier positive naming run `38105380007` and accepted synthetic causal
+receipts belong to candidate `c9b1a49e5`; they are historical source-bound evidence,
+not behavioral acceptance of this integrated tree. H plus naming composition,
+whole-candidate independent APPROVE, separate behavioral QA PASS and the remaining
+real-maker causal controls are still unverified. Existing tests and assertions
+from both parents are retained, including naming and H route classifications.
+
+Automated PR/merge checks follow main's reviewed lint/static-only configuration.
+The daily Product E2E schedule is independent and must not be dispatched ad hoc.
+Python units stay retired; general integration stays SKIPPED under THR243seq42.

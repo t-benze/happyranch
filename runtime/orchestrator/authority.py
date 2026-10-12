@@ -825,7 +825,7 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
     unavailable construction fails closed.
     """
     global _release_schema_digest_cache
-    if (layout not in ("F", "E", "G") or history not in _RELEASE_REFERENCE_HISTORIES
+    if (layout not in ("F", "E", "G", "H") or history not in _RELEASE_REFERENCE_HISTORIES
             or type(naming_version) is not int or naming_version not in (0, 1)):
         return "unavailable"
     if _release_schema_digest_cache is None:
@@ -862,7 +862,7 @@ def _release_schema_digest(layout: str = "F", history: str = "fresh", naming_ver
                         _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
                         conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
                 else:
-                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference")
+                    initialize_complete_org_schema(fresh, expected_org_slug="release-reference", layout=layout)
                 if pause_layout:
                     from runtime.infrastructure.task_pause_controls import install_pause_schema
                     install_pause_schema(fresh, org_slug="release-reference")

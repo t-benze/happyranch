@@ -64,7 +64,7 @@ def cmd_workflow_templates_publish(args: argparse.Namespace) -> None:
     body = _read_payload(args.from_file)
     definition = body.get("definition")
     if isinstance(definition, dict) and (definition.get("kind") == "document-review"
-            or definition.get("schema_version") == 2):
+            or definition.get("schema_version") in (2, 3)):
         from runtime.workflows.templates import WorkflowTemplateError, _compile_document_definition
         try:
             _compile_document_definition(definition)
@@ -237,9 +237,109 @@ def cmd_workflow_activation(args: argparse.Namespace) -> None:
             print(f"{blocker}: responsible owner {receipt['responsible_owner']}")
 
 
+
+def _handoff_payload(path: str) -> dict:
+    from runtime.daemon.routes.workflow_submissions import decode_command
+    from fastapi import HTTPException
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            raise ValueError("absolute path required")
+        with absolute.open("rb") as source:
+            raw = source.read(2097153)
+        return decode_command(raw)
+    except (OSError, ValueError, HTTPException) as exc:
+        print("error: handoff requires an absolute --from-file path containing a closed JSON command", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _workflow_token(value: str) -> str:
+    import re
+    if re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value) is None:
+        raise argparse.ArgumentTypeError("expected a workflow token of 1..128 characters")
+    return value
+
+
+def cmd_workflow_handoff(args: argparse.Namespace) -> None:
+    from urllib.parse import quote
+    stage = args.handoff_command == "stage"
+    body = _handoff_payload(args.from_file) if stage else None
+    session_id = args.session_id
+    if stage:
+        params = {"session_id": session_id}
+    elif args.handoff_command == "request-show":
+        params = {"session_id": session_id} if session_id else {"proof_kind": "human"}
+    elif session_id:
+        if bool(args.activation_id) == bool(args.request_id):
+            print("error: session proof requires exactly one --activation-id or --request-id", file=sys.stderr)
+            raise SystemExit(2)
+        params = {"session_id": session_id}
+        params.update({"activation_id": args.activation_id} if args.activation_id else {"request_id": args.request_id})
+    else:
+        if args.activation_id or args.request_id:
+            print("error: owner proof cannot include activation/request selectors", file=sys.stderr)
+            raise SystemExit(2)
+        params = {"proof_kind": "owner-human"}
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    try:
+        if session_id:
+            # Reuse the existing header-free CLI session lane; no bearer custody.
+            port_path = port_file()
+            if not port_path.exists():
+                raise DaemonNotRunning("daemon not running")
+            client = httpx.Client(base_url=f"http://127.0.0.1:{port_path.read_text().strip()}",
+                                  headers={"X-HappyRanch-Surface": "cli"}, timeout=30.0)
+        else:
+            client = _founder_client()
+        base = f"/api/v1/orgs/{slug}/workflows"
+        if stage:
+            response = client.post(base + "/submissions/handoffs", params=params, json=body)
+        else:
+            target = ("/reviews/requests/" + quote(args.request_id, safe="")
+                      if args.handoff_command == "request-show" else "/submissions/handoffs/" + quote(args.handoff_id, safe=""))
+            response = client.get(base + target, params=params)
+    except (httpx.HTTPError, OSError, DaemonNotRunning) as exc:
+        print("error: workflow transport unavailable; retain the original operation key", file=sys.stderr)
+        raise SystemExit(1) from exc
+    finally:
+        if session_id and 'client' in locals():
+            client.close()
+    if response.status_code not in ({200, 201} if stage else {200}):
+        _print_error(response)
+    result = response.json()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    elif args.handoff_command == "request-show":
+        print(f"{result['request_id']}: unsigned pending={str(result['pending']).lower()}")
+    else:
+        current = result['current']
+        print(f"{result['core']['handoff_id']}: {current['state']} {current['reason']} "
+              f"pending={str(current['pending']).lower()} reconciliation_required={str(current['reconciliation_required']).lower()}")
+
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    submissions = workflow_sub.add_parser("submissions", help="Stage original-current output and read safe handoff receipts")
+    handoff_sub = submissions.add_subparsers(dest="handoff_command", required=True)
+    for form in ("stage", "show", "request-show"):
+        command = handoff_sub.add_parser(form)
+        command.add_argument("--org", required=True)
+        command.add_argument("--json", action="store_true")
+        if form == "stage":
+            command.add_argument("--from-file", required=True)
+            command.add_argument("--session-id", required=True, type=_workflow_token)
+        else:
+            command.add_argument("handoff_id" if form == "show" else "request_id", type=_workflow_token)
+            lane = command.add_mutually_exclusive_group(required=True)
+            lane.add_argument("--session-id", type=_workflow_token)
+            lane.add_argument("--proof-kind", choices=["owner-human" if form == "show" else "human"])
+            if form == "show":
+                selector = command.add_mutually_exclusive_group()
+                selector.add_argument("--activation-id", type=_workflow_token)
+                selector.add_argument("--request-id", type=_workflow_token)
+        command.set_defaults(func=cmd_workflow_handoff)
+
     activation = workflow_sub.add_parser("activate", help="Founder activation of an exact template version")
     activation.add_argument("--org", required=True)
     activation.add_argument("--from-file", required=True)

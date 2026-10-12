@@ -28,6 +28,7 @@ from runtime.infrastructure.database import Database
 from runtime.infrastructure.thread_store import ThreadStore
 from runtime.infrastructure.workflow_schema import (
     draft_migration_guidance, install_or_recover, validate_workflow_schema, submission_migration_guidance,
+    author_handoff_migration_guidance,
 )
 from runtime.workflows.cutover import WorkflowCutoverStore
 from runtime.models import BlockKind, TaskStatus
@@ -39,6 +40,8 @@ from runtime.orchestrator.teams import TeamsRegistry
 from runtime.workflows.authority import WorkflowAuthorityCoordinator
 from runtime.workflows.activation import WorkflowActivationStore
 from runtime.workflows.draft_dispatch import WorkflowDraftDispatcher
+from runtime.workflows.submissions import WorkflowSubmissionStore
+from runtime.workflows.review_dispatch import WorkflowReviewDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,8 @@ class OrgState:
     workflow_authority: WorkflowAuthorityCoordinator = field(init=False)
     workflow_activations: WorkflowActivationStore = field(init=False)
     workflow_drafts: WorkflowDraftDispatcher = field(init=False)
+    workflow_submissions: WorkflowSubmissionStore = field(init=False)
+    workflow_reviews: WorkflowReviewDispatcher = field(init=False)
     memory_collection: CollectionObserver | None = field(init=False, default=None)
     memory_collection_unavailable: str | None = field(init=False, default=None)
     naming_readiness: str = field(init=False, default="unavailable")
@@ -126,9 +131,14 @@ class OrgState:
         )
         self.workflow_activations = WorkflowActivationStore(self)
         self.workflow_drafts = WorkflowDraftDispatcher(self)
+        self.workflow_submissions = WorkflowSubmissionStore(self)
+        self.workflow_reviews = WorkflowReviewDispatcher(self)
         if self.orchestrator is not None:
             self.orchestrator._workflow_drafts = self.workflow_drafts
+            self.orchestrator._workflow_submissions = self.workflow_submissions
+            self.orchestrator._workflow_reviews = self.workflow_reviews
         self.db._workflow_drafts = self.workflow_drafts
+        self.db._workflow_reviews = self.workflow_reviews
         self.dashboard_projection = DashboardProjectionManager(
             org_slug=self.slug, org_root=self.root,
         )
@@ -263,6 +273,8 @@ class OrgState:
                 logger.warning("org %r: %s", slug, submission_migration_guidance(
                     org_slug=slug, runtime_root=str(root.parent.parent),
                 ))
+            if layout == "G":
+                logger.warning("org %r: %s", slug, author_handoff_migration_guidance())
             WorkflowCutoverStore(db, org_slug=slug).recover_authorized()
             from runtime.infrastructure.task_pause_controls import install_pause_schema, TaskPauseStore
             install_pause_schema(db, org_slug=slug)

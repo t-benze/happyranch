@@ -13,7 +13,7 @@ import { IdentityName } from '@/shared/identities/IdentityName';
  * Uses ds.css .card styling (bg-surface, rounded-lg, shadow-pasture-sm).
  * Title in serif font-display.
  */
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/design-system/primitives/Button';
@@ -49,6 +49,7 @@ import {
   type FanoutPlannedChild,
   type JoinedFanout,
 } from './fanout';
+import { TaskPauseControls } from './TaskPauseControls';
 import { CancelTaskDialog } from './CancelTaskDialog';
 import { RevisitTaskDialog } from './RevisitTaskDialog';
 import { ResolveEscalationDialog } from './ResolveEscalationDialog';
@@ -918,6 +919,20 @@ export function TaskDetailPage(): JSX.Element {
   const [dialog, setDialog] = useState<
     null | 'cancel' | 'revisit' | 'resolve-continue'
   >(null);
+  const dialogOrigin = useRef<HTMLButtonElement | null>(null);
+  const openDialog = (next: Exclude<typeof dialog, null>, origin: HTMLButtonElement) => {
+    dialogOrigin.current = origin;
+    setDialog(next);
+  };
+  useEffect(() => {
+    // These page-owned dialogs have no Radix DialogTrigger. Return to the
+    // actual action node; locale changes keep that node and the open draft.
+    if (dialog === null) {
+      const origin = dialogOrigin.current;
+      dialogOrigin.current = null;
+      if (origin?.isConnected && !origin.disabled) origin.focus();
+    }
+  }, [dialog]);
 
   // THR-037 Change B dual-read: Path B top-level `escalated` status OR
   // legacy `blocked` + `escalated` block_kind (transition window).
@@ -1122,31 +1137,32 @@ export function TaskDetailPage(): JSX.Element {
                 )}
               </div>
             )}
-            <div className="mt-3 flex gap-2">
+            {task.data && <div className="mt-3"><TaskPauseControls task={task.data} routes={routes} /></div>}
+            <div className="mt-3 flex flex-wrap gap-2">
               {isEscalated ? (
                 <>
                   {/* THR-080: Continue via resolve-escalation; Cancel via
                       generic /cancel route (removed from resolve vocabulary). */}
-                  <Button size="sm" onClick={() => setDialog('resolve-continue')}>
+                  <Button size="sm" onClick={(event) => openDialog('resolve-continue', event.currentTarget)}>
                     {t('tasks.detail.continue')}
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => setDialog('cancel')}
+                    onClick={(event) => openDialog('cancel', event.currentTarget)}
                   >
                     {t('tasks.detail.cancel')}
                   </Button>
                 </>
               ) : (
                 <>
-                  <Button size="sm" variant="ghost" onClick={() => setDialog('revisit')}>
+                  <Button size="sm" variant="ghost" onClick={(event) => openDialog('revisit', event.currentTarget)}>
                     {t('tasks.detail.revisit')}
                   </Button>
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={() => setDialog('cancel')}
+                    onClick={(event) => openDialog('cancel', event.currentTarget)}
                     disabled={isTerminal}
                     title={
                       isTerminal

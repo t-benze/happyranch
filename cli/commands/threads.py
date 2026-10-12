@@ -272,7 +272,7 @@ def cmd_threads_decline(args: argparse.Namespace) -> None:
     if not _ok(r):
         return
     resp = r.json()
-    print(f"ok: decline seq={resp['seq']} on {resp['thread_id']}")
+    print(f"ok: declined on {resp['thread_id']}")
 
 
 

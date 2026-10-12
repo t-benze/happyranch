@@ -14,6 +14,7 @@ from runtime.workflows.templates import (
     WorkflowTemplateStore,
     WorkflowTemplateVersion,
 )
+from runtime.workflows.activation import WorkflowActivationError
 
 
 router = APIRouter()
@@ -49,7 +50,10 @@ def _error(code: str, status_code: int) -> None:
     raise HTTPException(status_code=status_code, detail={"code": code})
 
 
-def _raise_store_error(exc: WorkflowTemplateError) -> None:
+def _raise_store_error(exc: WorkflowTemplateError | WorkflowActivationError) -> None:
+    if isinstance(exc, WorkflowActivationError):
+        from runtime.daemon.routes.workflow_activations import _raise
+        _raise(exc)
     if exc.code == "template_version_not_found":
         _error(exc.code, 404)
     if exc.code in _CONFLICT_CODES:
@@ -95,7 +99,51 @@ def _check_extra_identity(body: PublishBody) -> None:
         _error("invalid_request", 422)
 
 
-@router.post("/workflows/templates/publish", status_code=201)
+
+def _publication_schema() -> dict:
+    """Closed public definition families; compiler owns cross-role semantics."""
+    def closed(properties: dict) -> dict:
+        return dict(type="object", properties=properties, required=list(properties), additionalProperties=False)
+    role = dict(type="string", minLength=1, maxLength=63, pattern=r"^[a-z][a-z0-9-]*$")
+    description = dict(type="string", minLength=1, maxLength=2000)
+    member = closed(dict(role=role, kind={"enum": ["agent", "human"]}))
+    approval = closed(dict(mode={"const": "all"}, revision={"const": "current"},
+                           required_roles=dict(type="array", items=role, minItems=1, maxItems=3, uniqueItems=True)))
+    return_rule = closed(dict(action={"const": "return-to-author"}, revision={"const": "new"},
+                              invalidate={"const": "all-prior-receipts"}))
+    definitions = []
+    legacy = closed(dict(kind={"const": "product-design"}, schema_version={"const": 1}, description=description,
+        author={"const": {"role": "product-lead", "kind": "agent", "artifact": "immutable-prd-revision"}},
+        reviewers={"const": [{"role": "founder", "kind": "human"}, {"role": "implementer", "kind": "agent"}, {"role": "tester", "kind": "agent"}]},
+        approval={"const": {"mode": "all", "revision": "current", "required_roles": ["founder", "implementer", "tester"]}},
+        request_changes={"const": {"action": "return-to-author"}}))
+    definitions.append(legacy)
+    for version in (2, 3):
+        submission = dict(timing={"enum": ["on-completion", "while-active-or-completed"]})
+        if version == 3:
+            submission["delivery"] = {"const": "current-author-handoff@1"}
+        definition = closed(dict(kind={"const": "document-review"}, schema_version={"const": version},
+            description=description, author=closed(dict(role=role, kind={"const": "agent"})),
+            output=closed(dict(primitive={"const": "immutable-document-revision"}, description=description)),
+            reviewers=dict(type="array", items=member, minItems=1, maxItems=3), approval=approval,
+            submission=closed(submission),
+            outcomes={"type": "array"}, request_changes={"anyOf": [return_rule, {"type": "null"}]}))
+        definition["oneOf"] = [
+            {"properties": {"outcomes": {"const": ["approved"]}, "request_changes": {"type": "null"}}},
+            {"properties": {"outcomes": {"enum": [["approved", "changes_requested"], ["changes_requested", "approved"]]},
+                            "request_changes": return_rule}},
+        ]
+        definitions.append(definition)
+    schema = closed(dict(operation_key=dict(type="string"), template_name=dict(type="string"),
+                         expected_current_version=dict(type="integer"), definition={"anyOf": definitions},
+                         team_slug={"anyOf": [{"type": "string"}, {"type": "null"}]}))
+    schema["required"].remove("team_slug")
+    return schema
+
+
+@router.post("/workflows/templates/publish", status_code=201,
+             openapi_extra={"requestBody": {"required": True, "content": {
+                 "application/json": {"schema": _publication_schema()}}}})
 async def publish_template(
     request: Request,
     org: OrgDep,
@@ -134,7 +182,7 @@ async def publish_template(
                     definition=body.definition,
                     expected_current_version=body.expected_current_version,
                 )
-            except WorkflowTemplateError as exc:
+            except (WorkflowTemplateError, WorkflowActivationError) as exc:
                 _raise_store_error(exc)
         return _serialize(result)
 
@@ -191,7 +239,7 @@ async def publish_template(
                     definition=body.definition,
                     expected_current_version=body.expected_current_version,
                 )
-            except WorkflowTemplateError as exc:
+            except (WorkflowTemplateError, WorkflowActivationError) as exc:
                 _raise_store_error(exc)
     return _serialize(result)
 
@@ -203,7 +251,7 @@ def list_templates(org: OrgDep, team_slug: str = Query(...)) -> dict:
             org_slug=org.slug,
             namespace=f"org/{org.slug}/team/{team_slug}",
         )
-    except WorkflowTemplateError as exc:
+    except (WorkflowTemplateError, WorkflowActivationError) as exc:
         _raise_store_error(exc)
     return {"templates": [_serialize(item) for item in items]}
 
@@ -222,6 +270,6 @@ def get_template(
             template_name=template_name,
             version=version,
         )
-    except WorkflowTemplateError as exc:
+    except (WorkflowTemplateError, WorkflowActivationError) as exc:
         _raise_store_error(exc)
     return _serialize(item)

@@ -9,6 +9,7 @@ from runtime.daemon.auth import _require_human
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.workflows.activation import (
     ActivationReceipt, ActivationRequest, DocumentActivationReceipt, DocumentActivationRequest,
+    DocumentActivationReceipt3, DocumentActivationRequest3,
     WorkflowActivationError,
 )
 from runtime.workflows.authority import WorkflowAuthorityError
@@ -17,12 +18,12 @@ from runtime.workflows.templates import WorkflowTemplateError, WorkflowTemplateP
 
 
 router = APIRouter(dependencies=[Depends(_require_human)])
-Receipt = ActivationReceipt | DocumentActivationReceipt
+Receipt = ActivationReceipt | DocumentActivationReceipt | DocumentActivationReceipt3
 
 
 def _request_schema() -> dict[str, Any]:
     return {"anyOf": [_expand_request_schema(model, index)
-                      for index, model in enumerate((ActivationRequest, DocumentActivationRequest))]}
+                      for index, model in enumerate((ActivationRequest, DocumentActivationRequest, DocumentActivationRequest3))]}
 
 
 def _expand_request_schema(model: type[ActivationRequest], branch: int) -> dict[str, Any]:
@@ -39,7 +40,7 @@ def _expand_request_schema(model: type[ActivationRequest], branch: int) -> dict[
         return value
 
     expanded = expand(schema)
-    if model is DocumentActivationRequest:
+    if issubclass(model, DocumentActivationRequest):
         # Pydantic emits key regexes as patternProperties, which alone allows
         # unmatched keys. Keep the key bounds and explicitly constrain every
         # key, with the same closed value schemas as runtime validation.
@@ -73,6 +74,7 @@ def _raise(exc: WorkflowActivationError | WorkflowAuthorityError | WorkflowTempl
                   "workflow_activation_operation_conflict", "workflow_activation_cas_stale",
                   "workflow_activation_authority_stale", "workflow_new_runs_disabled",
                   "workflow_activation_author_pending", "authority_pointer_not_ready",
+                  "workflow_author_handoff_schema_required",
               } or code.startswith(("profile_", "publication_", "authority_")) else 422)
     detail = {"code": code}
     if isinstance(exc, WorkflowActivationError) and exc.owner:
