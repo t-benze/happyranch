@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import hashlib
 import json
 import os
@@ -20,6 +21,227 @@ from tests.integration.conftest import seed_workspace
 
 
 pytestmark = pytest.mark.integration
+
+
+def test_thr299_public_read_and_scope_refusal(live_daemon: str, runtime: Path, tmp_path: Path) -> None:
+    """C03/C09 only: real HTTP/CLI negative/read; no new-producer acceptance.
+
+    Uses the retained isolated parent and unmodified real daemon fixture, never
+    this file's old queue/claim-patched launcher. A naturally allocated root
+    cannot qualify as the exact THR299 operator. Terminal startup/launch effects
+    are settled before independent read-only residue snapshots.
+    """
+    from runtime.orchestrator._paths import OrgPaths
+    from runtime.runtime import read_token
+
+    base = f"http://127.0.0.1:{live_daemon}/api/v1"
+    headers = {"Authorization": f"Bearer {read_token()}"}
+    task_id = _submit(base, headers, "bounded THR299 public read/refusal")
+    _wait_task(base, headers, task_id, "failed")
+    db_path = OrgPaths(root=runtime).db_path
+
+    def snapshot() -> dict:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as db:
+            db.execute("BEGIN")
+            return {name: db.execute(f'SELECT * FROM "{name}" ORDER BY rowid').fetchall()
+                    for name in ("tasks", "task_results", "audit_log", "manager_supersessions", "task_pause_controls")}
+
+    before = snapshot()
+    route = f"{base}/orgs/test/tasks/{task_id}/retry-verification"
+    response = httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent"}, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"version": 1, "mode": "retry", "org": "test", "parent_id": task_id,
+                               "target_agent": "dev_agent", "failed_child_id": None, "valid": True,
+                               "path": [task_id], "reason": None, "advisory": True}
+    missing = httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent", "failed_child_id": "missing"}, headers=headers)
+    assert missing.status_code == 200 and missing.json()["reason"] == "retry_not_found"
+    forbidden = httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent"},
+                         headers={**headers, "X-HappyRanch-Task-Session": "not-an-authority"})
+    assert forbidden.status_code == 422 and forbidden.json() == {"detail": {"code": "invalid_request"}}
+    duplicate = httpx.get(route + "?mode=retry&mode=receipt&target_agent=dev_agent", headers=headers)
+    assert duplicate.status_code == 422
+    assert httpx.get(route, params={"mode": "retry", "target_agent": "dev_agent"}).status_code == 401
+    body = {"version": 1, "operation_key": "synthetic-negative", "existing_successor_id": task_id,
+            "current_descendant_id": task_id, "thread_id": "synthetic", "operator_task_id": task_id,
+            "session_id": "not-an-authority", "expected_state_digest": "0" * 64}
+    write = httpx.post(route.replace("retry-verification", "reconcile-failed-continuation"), headers=headers, json=body)
+    assert write.status_code == 403 and write.json() == {"detail": {"code": "operation_scope"}}
+    malformed = httpx.post(route.replace("retry-verification", "reconcile-failed-continuation"), headers=headers,
+                          content=json.dumps(body)[:-1] + ',"version":1}', timeout=3)
+    assert malformed.status_code == 422
+    preflight = httpx.get(route, headers={**headers, "X-HappyRanch-Task-Session": "not-an-authority"},
+                         params={"mode": "preflight", **{k: str(v) for k, v in body.items()
+                                 if k not in ("session_id", "expected_state_digest")}})
+    assert preflight.status_code == 403 and preflight.json() == {"detail": {"code": "operation_scope"}}
+    history = httpx.get(route, params={"mode": "receipt", "operation_key": "synthetic-negative"}, headers=headers)
+    assert history.status_code == 403 and history.json() == {"detail": {"code": "operation_scope"}}
+    cli = Path(os.environ["HAPPYRANCH_TEST_PARENT_MANIFEST"]).parent / "bin/happyranch"
+    for child, expected in ((None, 0), ("missing", 1)):
+        args = [str(cli), "verify-retry-link", task_id, "--org", "test", "--mode", "retry",
+                "--target-agent", "dev_agent", "--json"]
+        if child:
+            args += ["--failed-child-id", child]
+        process = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        assert process.returncode == expected, process.stderr
+        assert json.loads(process.stdout)["valid"] is (child is None)
+    bad_cli = subprocess.run([str(cli), "verify-retry-link", task_id, "--org", "test", "--mode", "receipt"],
+                             capture_output=True, text=True, timeout=10)
+    assert bad_cli.returncode == 2 and json.loads(bad_cli.stdout) == {"detail": {"code": "invalid_request"}}
+    command_file = tmp_path / "negative-command.json"
+    command_file.write_text(json.dumps(body))
+    refusal = subprocess.run([str(cli), "reconcile-failed-continuation", task_id, "--org", "test",
+                              "--from-file", str(command_file)], capture_output=True, text=True, timeout=10)
+    assert refusal.returncode == 1 and json.loads(refusal.stdout) == {"detail": {"code": "operation_scope"}}
+    assert snapshot() == before
+
+
+def test_thr299_isolated_old_validator_bound_and_local_failure(tmp_path: Path) -> None:
+    """C05/C06: isolated row fixtures, not authenticated producer evidence.
+
+    Arbitrary synthetic root names deliberately cannot enter the new writer.
+    Retains the existing founder/manual old-producer contract and checks the
+    inclusive twenty-root boundary and failed-child/local-failure priority.
+    """
+    from runtime.infrastructure.database import Database
+    from runtime.infrastructure.db.tasks import InvalidLineage, VerifiedRetry
+    from runtime.models import TaskRecord
+
+    db = Database(tmp_path / "isolated-validator.db")
+    try:
+        for index in range(21):
+            db.insert_task(TaskRecord(id=f"synthetic-root-{index:02}", team="engineering", assigned_agent="synthetic-manager",
+                                      brief="isolated fixture", status="superseded" if index < 20 else "in_progress"))
+        for index in range(20):
+            predecessor, successor = f"synthetic-root-{index:02}", f"synthetic-root-{index + 1:02}"
+            db.insert_audit_log(predecessor, "founder", "escalation_resolved",
+                                {"decision": "supersede", "resolution_path": "manual_break_glass"})
+            db.insert_audit_log(predecessor, "founder", "escalation_superseded",
+                                {"actor": "founder", "prior_block_kind": "escalated", "successor_root": successor})
+        db.insert_task(TaskRecord(id="synthetic-failed", team="engineering", assigned_agent="synthetic-worker",
+                                  brief="isolated fixture", status="failed", parent_task_id="synthetic-root-00", task_type="subtask"))
+        changes = db._conn.total_changes
+        with db.coherent_read_view():
+            valid = db.verify_retry_link("synthetic-root-19", "synthetic-worker", "synthetic-failed")
+            assert isinstance(valid, VerifiedRetry) and len(valid.path) == 20
+            assert db.verify_retry_link("synthetic-root-20", "synthetic-worker", "synthetic-failed") == InvalidLineage("lineage_record_limit_20")
+            assert db.verify_retry_link("synthetic-root-19", "wrong-agent", "synthetic-failed") == InvalidLineage("retry_agent_mismatch")
+        assert db._conn.total_changes == changes
+        db.insert_task(TaskRecord(id="synthetic-local-failed", team="engineering", assigned_agent="synthetic-worker",
+                                  brief="isolated fixture", status="failed", parent_task_id="synthetic-root-19", task_type="subtask"))
+        changes = db._conn.total_changes
+        with db.coherent_read_view():
+            assert db.verify_retry_link("synthetic-root-19", "synthetic-worker", "synthetic-failed") == InvalidLineage("retry_link_required")
+            assert db.verify_retry_link("synthetic-root-19", "synthetic-worker", "synthetic-local-failed") == VerifiedRetry(("synthetic-root-19",))
+        assert db._conn.total_changes == changes
+    finally:
+        db.close()
+
+
+@pytest.fixture
+def isolated_session_history() -> Iterator[tuple]:
+    """Audit-row validator fixture only: no task, live SID or producer receipt.
+
+    The literal owner is required by the selector, but these rows are invented
+    in-memory evidence for malformed-history checks, never an authority grant.
+    No generic Database initializer, public writer or retired unit is invoked.
+    """
+    from types import SimpleNamespace
+    from runtime.infrastructure.db.task_reconciliation import SCOPE, TaskReconciliation
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE audit_log (id INTEGER PRIMARY KEY, timestamp TEXT, task_id TEXT, "
+                 "agent TEXT, action TEXT, payload TEXT)")
+    selected = {"id": 1, "timestamp": "2026-10-01T00:00:00+00:00", "task_id": SCOPE["owner"],
+                "agent": SCOPE["manager"], "action": "session_start",
+                "payload": '{"session_id":"isolated-selected","invocation_purpose":"manager_decision",'
+                           '"reasoning_effort":"high","optional":{"temperature":0.25}}'}
+    conn.execute("INSERT INTO audit_log VALUES (:id, :timestamp, :task_id, :agent, :action, :payload)", selected)
+    validator = TaskReconciliation(SimpleNamespace(_conn=conn))
+    binding = validator.original_session("isolated-selected")
+    try:
+        yield conn, validator, selected, binding
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("extra", [
+    pytest.param({"payload": '{"invocation_purpose":"manager_decision"}'}, id="review-missing-sid"),
+    pytest.param({"payload": '{"session_id":null,"invocation_purpose":"manager_decision"}'}, id="null-sid"),
+    pytest.param({"payload": '{"session_id":12,"invocation_purpose":"manager_decision"}'}, id="integer-sid"),
+    pytest.param({"payload": '{"session_id":"","invocation_purpose":"manager_decision"}'}, id="empty-sid"),
+    pytest.param({"payload": json.dumps({"session_id": "x" * 257, "invocation_purpose": "manager_decision"})}, id="long-sid"),
+    pytest.param({"payload": '{"session_id":"isolated-other"}'}, id="missing-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":null}'}, id="null-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":true}'}, id="boolean-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":""}'}, id="empty-purpose"),
+    pytest.param({"payload": json.dumps({"session_id": "isolated-other", "invocation_purpose": "x" * 257})}, id="long-purpose"),
+    pytest.param({"payload": '{"session_id":"isolated-selected","invocation_purpose":"manager_decision"}'}, id="duplicate-selected-sid"),
+    pytest.param({"agent": "isolated-wrong-agent"}, id="wrong-agent"),
+    pytest.param({"id": 0}, id="nonpositive-id"),
+    pytest.param({"timestamp": "invalid"}, id="malformed-timestamp"),
+    pytest.param({"timestamp": "2026-10-01T00:00:00"}, id="naive-timestamp"),
+    pytest.param({"timestamp": None}, id="missing-timestamp"),
+    pytest.param({"payload": "{"}, id="malformed-json"),
+    pytest.param({"payload": "[]"}, id="nonobject-json"),
+    pytest.param({"payload": b'{"session_id":"isolated-other","invocation_purpose":"unattributed"}'}, id="blob-in-text-column"),
+    pytest.param({"payload": '{"session_id":"isolated-other","session_id":"duplicate","invocation_purpose":"unattributed"}'}, id="duplicate-json-key"),
+    pytest.param({"payload": '{"session_id":"isolated-other","invocation_purpose":"unattributed","optional":NaN}'}, id="nonfinite-metadata"),
+])
+def test_thr299_isolated_session_history_refuses_before_sid_filter(isolated_session_history: tuple, extra: dict) -> None:
+    """C03/C07/C08 corrective R2: malformed relevant history refuses without writes."""
+    from runtime.infrastructure.db.task_reconciliation import ReconciliationError
+
+    conn, validator, selected, binding = isolated_session_history
+    other = {**selected, "id": 2,
+             "payload": '{"session_id":"isolated-other","invocation_purpose":"unattributed"}', **extra}
+    conn.execute("INSERT INTO audit_log VALUES (:id, :timestamp, :task_id, :agent, :action, :payload)", other)
+    before = [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")]
+    changes = conn.total_changes
+    for operation in (lambda: validator.original_session("isolated-selected"),
+                      lambda: validator.historical_session(binding)):
+        with pytest.raises(ReconciliationError) as refused:
+            operation()
+        assert refused.value.code == "original_session_evidence" and refused.value.status == 409
+        assert conn.total_changes == changes
+        assert [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")] == before
+
+
+@pytest.mark.parametrize("purpose", ["unattributed", "worker_execution", "workflow_document"])
+def test_thr299_isolated_nonselected_purpose_and_metadata_compatible(isolated_session_history: tuple, purpose: str) -> None:
+    """Valid history stays open to optional metadata and nonselected purposes."""
+    from runtime.infrastructure.db.task_reconciliation import digest, text_digest
+
+    conn, validator, selected, binding = isolated_session_history
+    other = {**selected, "id": 2, "payload": json.dumps({"session_id": "isolated-other", "invocation_purpose": purpose,
+              "executor": "isolated-provider", "model": None, "optional": {"numeric": 0.125, "text": "原始"}})}
+    conn.execute("INSERT INTO audit_log VALUES (:id, :timestamp, :task_id, :agent, :action, :payload)", other)
+    before = [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")]
+    changes = conn.total_changes
+    assert validator.original_session("isolated-selected") == binding
+    assert binding["session_start_row_digest"] == digest(selected)
+    assert binding["session_id_sha256"] == text_digest("isolated-selected")
+    assert validator.historical_session(binding) is None
+    assert conn.total_changes == changes
+    assert [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")] == before
+
+
+def test_thr299_isolated_selected_purpose_retains_specific_refusal(isolated_session_history: tuple) -> None:
+    from runtime.infrastructure.db.task_reconciliation import ReconciliationError
+
+    conn, validator, selected, binding = isolated_session_history
+    payload = json.loads(selected["payload"])
+    payload["invocation_purpose"] = "unattributed"
+    conn.execute("UPDATE audit_log SET payload=? WHERE id=1", (json.dumps(payload),))
+    before = [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")]
+    changes = conn.total_changes
+    for operation, code, status in ((lambda: validator.original_session("isolated-selected"), "ordinary_purpose_required", 403),
+                                   (lambda: validator.historical_session(binding), "original_session_evidence", 409)):
+        with pytest.raises(ReconciliationError) as refused:
+            operation()
+        assert (refused.value.code, refused.value.status) == (code, status)
+    assert conn.total_changes == changes
+    assert [tuple(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")] == before
 
 
 def _write_executable(path: Path, body: str) -> None:

@@ -2,12 +2,91 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
+from urllib.parse import quote
+
+import httpx
 
 from cli import _shared
 from cli._shared import _fmt_ts, _ok, resolve_org_slug
 from cli.client.client import DaemonNotRunning, DaemonStateInconsistent, OpcClient
+from runtime.infrastructure.db.task_reconciliation import ReconciliationError, identifier, request_body, require
+
+
+def _lineage_response(response: httpx.Response) -> None:
+    try:
+        body = response.json()
+    except ValueError:
+        body = {"detail": {"code": "invalid_response"}}
+    print(json.dumps(body, ensure_ascii=False))
+    if not response.is_success or (isinstance(body, dict) and body.get("valid") is False):
+        raise SystemExit(1)
+
+
+def _lineage_local_error() -> None:
+    print(json.dumps({"detail": {"code": "invalid_request"}}))
+    raise SystemExit(2)
+
+
+def cmd_reconcile_failed_continuation(args: argparse.Namespace) -> None:
+    try:
+        path = Path(args.from_file)
+        require(path.is_absolute() and path.is_file(), "invalid_request", 422)
+        raw = path.read_bytes()
+        require(len(raw) <= 16384, "invalid_request", 422)
+        body = request_body(raw)
+        identifier(args.task_id)
+    except (OSError, ReconciliationError):
+        _lineage_local_error()
+    try:
+        client = OpcClient.from_env()
+        slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+        _lineage_response(client.post(
+            f"/api/v1/orgs/{quote(slug, safe='')}/tasks/{quote(args.task_id, safe='')}/reconcile-failed-continuation",
+            json=body,
+        ))
+    except (DaemonNotRunning, DaemonStateInconsistent, httpx.HTTPError):
+        print(json.dumps({"detail": {"code": "transport_unavailable"}}))
+        raise SystemExit(1) from None
+
+
+def cmd_verify_retry_link(args: argparse.Namespace) -> None:
+    import re
+
+    query = {"mode": args.mode}
+    selectors = ("target_agent", "failed_child_id", "operation_key", "existing_successor_id",
+                 "current_descendant_id", "thread_id", "operator_task_id", "version")
+    query.update({name: getattr(args, name) for name in selectors if getattr(args, name) is not None})
+    required = {"retry": {"mode", "target_agent"}, "receipt": {"mode", "operation_key"},
+                "preflight": {"mode", "version", "operation_key", "existing_successor_id",
+                              "current_descendant_id", "thread_id", "operator_task_id"}}[args.mode]
+    optional = {"failed_child_id"} if args.mode == "retry" else set()
+    try:
+        identifier(args.task_id)
+        require(required <= set(query) <= required | optional, "invalid_request", 422)
+        for value in query.values():
+            identifier(value)
+        require((args.session_id is not None) == (args.mode == "preflight"), "invalid_request", 422)
+        if args.mode != "retry":
+            require(re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", args.operation_key) is not None, "invalid_request", 422)
+        if args.mode == "preflight":
+            identifier(args.session_id)
+            require(args.version == "1", "invalid_request", 422)
+    except ReconciliationError:
+        _lineage_local_error()
+    try:
+        client = OpcClient.from_env()
+        slug = resolve_org_slug(args_org=args.org, available=_shared._fetch_available_orgs(client))
+        headers = {"X-HappyRanch-Task-Session": args.session_id} if args.mode == "preflight" else {}
+        _lineage_response(client.get(
+            f"/api/v1/orgs/{quote(slug, safe='')}/tasks/{quote(args.task_id, safe='')}/retry-verification",
+            params=query, headers=headers,
+        ))
+    except (DaemonNotRunning, DaemonStateInconsistent, httpx.HTTPError):
+        print(json.dumps({"detail": {"code": "transport_unavailable"}}))
+        raise SystemExit(1) from None
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -1159,6 +1238,21 @@ def cmd_revisit(args: argparse.Namespace) -> None:
 
 
 def register(sub) -> None:
+    reconcile = sub.add_parser("reconcile-failed-continuation", help="Exact THR299 ordinary-owner receipt; no task allocation")
+    reconcile.add_argument("task_id")
+    reconcile.add_argument("--org", default=None)
+    reconcile.add_argument("--from-file", required=True)
+    reconcile.set_defaults(func=cmd_reconcile_failed_continuation)
+
+    verify = sub.add_parser("verify-retry-link", help="Nonmutating advisory retry, preflight, or historical receipt")
+    verify.add_argument("task_id")
+    verify.add_argument("--org", default=None)
+    verify.add_argument("--mode", choices=("retry", "preflight", "receipt"), required=True)
+    verify.add_argument("--json", action="store_true", help="Responses are always JSON")
+    for name in ("target-agent", "failed-child-id", "operation-key", "existing-successor-id",
+                 "current-descendant-id", "thread-id", "operator-task-id", "version", "session-id"):
+        verify.add_argument("--" + name, default=None)
+    verify.set_defaults(func=cmd_verify_retry_link)
     for action in ("pause", "resume"):
         parser = sub.add_parser(action, help=f"{action.title()} a root task's future admissions")
         parser.add_argument("task_id")
