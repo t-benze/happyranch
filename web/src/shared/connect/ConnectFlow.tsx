@@ -220,7 +220,7 @@ export function AdapterConnect({
   skipSlot?: ReactNode;
   waitingSkipSlot?: ReactNode;
 }): JSX.Element {
-  const { t, render } = useTranslation();
+  const { t, render, locale } = useTranslation();
   const [nameInput, setNameInput] = useState('');
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
 
@@ -240,7 +240,7 @@ export function AdapterConnect({
     return (
       <AdapterWaitingBody
         name={s.name}
-        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination)}
+        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination, locale)}
         expired={s.expired}
         regenerating={flow.mint.isPending}
         onRegenerate={flow.regenerate}
@@ -279,7 +279,7 @@ export function AdapterConnect({
     return (
       <AdapterRetryableBody
         name={s.name}
-        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination)}
+        prompt={buildDirectConnectPrompt(s.name, s.token, origin, s.wrapperDestination, locale)}
         reason={s.reason}
         onRerun={flow.rerunExistingPrompt}
         onBack={flow.back}

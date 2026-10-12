@@ -18,12 +18,13 @@
  *  5. No pending-approval / recovery-bind UI exists anywhere in the flow
  *     (that surface was deleted in this slice).
  */
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConnectFlow, FailedConnectionClearedBody } from './ConnectFlow';
-import { I18nTestBoundary } from '@/test/render';
+import { I18nTestBoundary, LocaleTestSwitch, savedLocaleAdapter } from '@/test/render';
+import { I18nProvider } from '@/hooks/i18n';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -95,6 +96,57 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
   beforeEach(() => { vi.restoreAllMocks(); });
   afterEach(() => { vi.restoreAllMocks(); });
 
+  test('both locale directions preserve the custom draft, prompt node, token and actions without extra requests', async () => {
+    const user = userEvent.setup();
+    const mint = await mockMint();
+    await mockStatus(() => status({ wrapper_destination: '/daemon/direct/my-cli-adapter', state: null }));
+    const { directConnect: api } = await import('@/lib/api');
+    render(
+      <QueryClientProvider client={makeClient()}>
+        <I18nProvider adapter={savedLocaleAdapter('en')}>
+          <ConnectFlow connectedSubtitle={() => ''} />
+          <LocaleTestSwitch to="zh-CN" />
+          <LocaleTestSwitch to="en" />
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+    await goCustomAdapter(user);
+    expect(screen.getByText(/this screen does not activate it/)).toBeInTheDocument();
+    const input = screen.getByLabelText(/name this cli/i) as HTMLInputElement;
+    await user.type(input, 'my-cli');
+    input.focus();
+    input.setSelectionRange(1, 4);
+    for (const locale of ['zh-CN', 'en']) {
+      act(() => screen.getByTestId(`test-set-locale-${locale}`).click());
+      expect(input).toHaveValue('my-cli');
+      expect(input).toHaveFocus();
+      expect(input.selectionStart).toBe(1);
+      expect(input.selectionEnd).toBe(4);
+      expect(mint).not.toHaveBeenCalled();
+      expect(api.getStatus).not.toHaveBeenCalled();
+    }
+    await user.click(screen.getByRole('button', { name: /generate connect prompt/i }));
+    await screen.findByLabelText(/waiting for adapter submission/i);
+    const pre = document.querySelector('pre')!;
+    const commands = () => pre.textContent!.split('\n').filter((line) => !line.startsWith('#')).join('\n');
+    const originalCommands = commands();
+    const reads = vi.mocked(api.getStatus).mock.calls.length;
+    for (const locale of ['zh-CN', 'en']) {
+      act(() => screen.getByTestId(`test-set-locale-${locale}`).click());
+      expect(document.querySelector('pre')).toBe(pre);
+      expect(commands()).toBe(originalCommands);
+      expect(pre.textContent).toContain(locale === 'en' ? 'installed CLI help/documentation' : '检查已安装 CLI 的帮助和文档');
+      expect(screen.getByText(locale === 'en' ? /Preparing input2 does not activate/ : /准备 input2 不会启用/)).toBeInTheDocument();
+      expect(mint).toHaveBeenCalledTimes(1);
+      expect(api.getStatus).toHaveBeenCalledTimes(reads);
+    }
+    const clipboard = vi.spyOn(navigator.clipboard, 'writeText');
+    await user.click(screen.getByRole('button', { name: 'Copy prompt' }));
+    expect(clipboard).toHaveBeenCalledWith(pre.textContent);
+    await user.click(screen.getByRole('button', { name: 'Back to the prompt' }));
+    expect(screen.getByLabelText(/name this cli/i)).toHaveValue('my-cli');
+  });
+
   test('custom CLI switch uses the primary action treatment without changing its wiring', async () => {
     const user = userEvent.setup();
     renderConnect();
@@ -132,7 +184,7 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
     expect(screen.getByText(/isn.*t a built-in/i)).toBeInTheDocument();
   });
 
-  test('waiting state shows the daemon-issued wrapper path, no PENDING wording, and provider-neutral direct-conformance guidance', async () => {
+  test('waiting state shows the daemon-issued path and distinguishes direct connection from the ordinary update handoff', async () => {
     const user = userEvent.setup();
     const mintSpy = await mockMint();
     await mockStatus(() => status({
@@ -157,7 +209,8 @@ describe('ConnectFlow — direct connect (THR-107 slice 3)', () => {
 
     const promptText = document.querySelector('pre')?.textContent ?? '';
     expect(promptText).toContain('/tmp/happyranch-daemon/adapters/my-cli-adapter');
-    expect(promptText).not.toContain('PENDING');
+    expect(promptText).toContain('registration is PENDING, not automatically approved');
+    expect(promptText).toContain('Do not execute an update or approval in this run');
     expect(screen.queryByText(/awaiting approval/i)).not.toBeInTheDocument();
     // The prompt guides the wrapper author to pick their own convention and
     // send it in the POST body -- not something the founder chose upstream.
