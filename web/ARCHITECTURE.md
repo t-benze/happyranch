@@ -21,6 +21,15 @@ five seconds; focus/visibility/manual refresh reacquires current reads. Refusal
 and errors gate content/effects; abort and exact sensitive eviction occur on
 selection exit. New response/return commands require explicit confirmation and
 journal-before-send; ambiguous commands allow explicit identical replay only.
+Frozen original owner-return replay uses current access, identity and authority
+admission separately from new-effect readiness. A pending genuine successor's
+held/noncurrent collection permits only explicit identical acknowledgement
+recovery; it never permits a new command. Current graph/status comes from the
+selected successor independently of retained r1. Pending author completion does
+not mean r2 reviews closed; unsupported further revision appears only for a
+current objected r2 graph. Selected-read start/refusal or snapshot change
+invalidates the admission token synchronously; the writer rechecks that token
+and selected identity immediately after asynchronous command validation.
 History has no effects, and fresh r2 never inherits an r1 response. Return uses
 server advisory readiness plus an independent atomic POST recheck. The en/zh-CN
 catalog and source-qualified coverage own all page/dialog/navigation copy;

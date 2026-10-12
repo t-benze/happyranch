@@ -1,9 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { workflowActivations, workflowSubmissions, workflowReviews, workflowRevisions } from '@/lib/api';
 import { clearSelectionCommands, ReviewIntegrityError, validateDetail, type ReviewDetail } from '@/lib/workflowReviewSelection';
-import type { WorkflowsApi, WorkflowQuery } from './DataContext';
+import type { WorkflowsApi } from './DataContext';
 
 /** No locale input, no persistent cache, no stale cached admission on remount. */
 function useActivations() {
@@ -16,9 +16,10 @@ function useActivations() {
   return { ...query, data: query.isFetchedAfterMount && !query.isError ? query.data : undefined };
 }
 function status(error: unknown): number | undefined { return (error as { status?: number } | null)?.status; }
-function useReviewDetail(activationId: string, history: boolean): WorkflowQuery<ReviewDetail> {
+function useReviewDetail(activationId: string, history: boolean): ReturnType<WorkflowsApi['useReviewDetail']> {
   const { slug = '' } = useParams();
   const qc = useQueryClient();
+  const readEpoch = useRef(0);
   const key = ['workflow-detail', slug, activationId, history ? 'history' : 'current'] as const;
   const query = useQuery<ReviewDetail>({
     queryKey: key, enabled: !!slug && !!activationId,
@@ -31,6 +32,7 @@ function useReviewDetail(activationId: string, history: boolean): WorkflowQuery<
       return col?.state === 'approved' && col.validity === 'current' && col.approved_use ? false : 5000;
     },
     queryFn: async ({ signal }) => {
+      ++readEpoch.current; // Synchronous read-start fence, independent of React notifications.
       // Child keys retain the full selected lane/object. Bundle abort applies to every actual request.
       async function read<T>(kind: string, object: string, lane: string, fn: () => Promise<T>): Promise<T> {
         return qc.fetchQuery({ queryKey: [kind, slug, activationId, object, lane], queryFn: fn, staleTime: 0, gcTime: 0, retry: false });
@@ -63,17 +65,27 @@ function useReviewDetail(activationId: string, history: boolean): WorkflowQuery<
     },
   });
   useEffect(() => {
+    const ownedEpoch = readEpoch;
     const ownedKey = ['workflow-detail', slug, activationId, history ? 'history' : 'current'];
     const fresh = () => { if (document.visibilityState === 'visible') void qc.invalidateQueries({ queryKey: ownedKey, exact: true }); };
     document.addEventListener('visibilitychange', fresh);
     return () => {
+      ++ownedEpoch.current;
       document.removeEventListener('visibilitychange', fresh);
       void qc.cancelQueries({ queryKey: ownedKey, exact: true });
       qc.removeQueries({ queryKey: ownedKey, exact: true });
       qc.removeQueries({ predicate: q => q.queryKey[1] === slug && q.queryKey[2] === activationId && String(q.queryKey[0]).startsWith('workflow-') && q.queryKey[0] !== 'workflow-detail' });
     };
   }, [qc, slug, activationId, history]);
-  return { ...query, data: query.isFetchedAfterMount && !query.isError ? query.data : undefined };
+  const captureAdmission = (detail: ReviewDetail) => {
+    const epoch = readEpoch.current, snapshot = JSON.stringify(detail);
+    return () => {
+      const state = qc.getQueryState<ReviewDetail>(key);
+      return epoch === readEpoch.current && state?.fetchStatus === 'idle' && state.status === 'success' &&
+        !state.error && !state.isInvalidated && JSON.stringify(state.data) === snapshot;
+    };
+  };
+  return { ...query, captureAdmission, data: query.isFetchedAfterMount && !query.isError ? query.data : undefined };
 }
 function useMutationRefusal() {
   const qc = useQueryClient();

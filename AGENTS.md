@@ -23,6 +23,15 @@ Return to author is a separate confirmation following full server readiness;
 POST independently rechecks the original r1 CAS and authority. Genuine successor
 and new author task IDs/status come from the server, with no optimistic r2 bytes
 or receipt. Fresh r2 responses are required; further revision is unsupported.
+Frozen original owner-return replay uses current access, identity and authority
+admission separately from new-effect readiness. A pending genuine successor's
+held/noncurrent collection permits only explicit identical acknowledgement
+recovery; it never permits a new command. Current graph/status comes from the
+selected successor independently of retained r1. Pending author completion does
+not mean r2 reviews closed; unsupported further revision appears only for a
+current objected r2 graph. Selected-read start/refusal or snapshot change
+invalidates the admission token synchronously; the writer rechecks that token
+and selected identity immediately after asynchronous command validation.
 No raw proof editor, peer cancellation, author staging, direct submission,
 r3/reassignment, execution/merge or digest-derived access controls are mounted.
 This frontend source requires the compatible discovery/revision readers; old

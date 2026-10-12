@@ -55,6 +55,7 @@ export const en = {
   "workflows.ready_to_join": "All responses received; approval pending",
   "workflows.needs_revision": "All responses received; changes requested",
   "workflows.joined": "Review joined — approved input",
+  "workflows.waitingRevisionAuthor": "Waiting for revision 2 author completion; fresh reviews have not started.",
   "workflows.held": "Review held",
   "workflows.return": "Return to author",
   "workflows.returnTitle": "Return revision 1 to the author?",

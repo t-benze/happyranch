@@ -16,8 +16,8 @@ import { ReviewResponseDialog } from './ReviewResponseDialog';
 import { OwnerReturnDialog } from './OwnerReturnDialog';
 import { reviewDiagnostic } from './strings';
 
-export function WorkflowReviewPanel({ detail: d, fresh, refresh }: {
-  detail: ReviewDetail; fresh: boolean; refresh: () => Promise<ReviewDetail | undefined>;
+export function WorkflowReviewPanel({ detail: d, fresh, refresh, captureAdmission }: {
+  detail: ReviewDetail; fresh: boolean; captureAdmission: (detail: ReviewDetail) => () => boolean; refresh: () => Promise<ReviewDetail | undefined>;
 }): JSX.Element {
   const { t } = useTranslation();
   const human = useHumanReviewResponse(), owner = useOwnerReviewReturn();
@@ -54,10 +54,18 @@ export function WorkflowReviewPanel({ detail: d, fresh, refresh }: {
     return () => { active = false; };
   }, [responseId, ownerId, d]);
   const q = d.request;
-  const collection = d.history || !d.selection.successor ? d.selection.original?.collection : d.revision?.current.collection;
+  const original = d.history || !d.selection.successor;
+  const graph = original ? d.handoff?.current.graph : d.revision?.current.graph;
+  const collection = original ? d.selection.original?.collection : d.revision?.current.collection;
+  const waitingAuthor = !original && !graph && collection?.required_action === 'await_revision_author';
   const authorityHeld = d.activation.reconciliation_required || !!d.handoff?.current.reconciliation_required || !!d.revision?.current.reconciliation_required;
   const readable = !refused;
-  const available = fresh && readable && !busy && journalReady && !conflict && !authorityHeld && !q?.reconciliation_required && collection?.validity !== 'held' && collection?.state !== 'held';
+  const admitted = fresh && readable && !busy && journalReady && !conflict && !authorityHeld && !q?.reconciliation_required &&
+    d.activation.current_eligibility.eligible && (!d.revision || d.revision.current.eligible);
+  const available = admitted && collection?.validity !== 'held' && collection?.state !== 'held';
+  // A frozen original return may recover its acknowledgement while its genuine successor waits.
+  const canReplayReturn = admitted && (collection?.validity !== 'held' && collection?.state !== 'held' ||
+    collection?.validity === 'held' && collection.reason === 'noncurrent_successor' && collection.required_action === 'await_revision_author');
   const locked = !!responseEnvelope || !!returnEnvelope;
   const canRespond = available && !locked && !d.history && !!q?.pending && !q.signed;
   const canReturn = available && !locked && !d.history && !d.selection.successor && d.selection.return.eligible && collection?.state === 'needs_revision' && collection.validity === 'current';
@@ -84,10 +92,16 @@ export function WorkflowReviewPanel({ detail: d, fresh, refresh }: {
   }
   async function sendEnvelope(envelope: CommandEnvelope, selected: ReviewDetail) {
     const latest = await refresh();
-    if (!alive.current || !latest) return;
+    if (!alive.current || !latest || latest.history || latest.slug !== selected.slug || latest.activation.activation_id !== selected.activation.activation_id ||
+        !latest.activation.current_eligibility.eligible || latest.revision && !latest.revision.current.eligible) return;
     if (latest.activation.reconciliation_required || latest.request?.reconciliation_required || latest.revision?.current.reconciliation_required || latest.handoff?.current.reconciliation_required) return;
+    const stillCurrent = captureAdmission(latest);
     const body = await admittedCommand(envelope, latest);
-    if (!alive.current) return;
+    const col = latest.selection.successor ? latest.revision?.current.collection : latest.selection.original?.collection;
+    const pendingReturnReplay = !('request_id' in body) && !!latest.selection.successor &&
+      col?.validity === 'held' && col.reason === 'noncurrent_successor' && col.required_action === 'await_revision_author';
+    // No await between this renewed selected-read admission and the writer. Keep the journal on drift.
+    if (!alive.current || !stillCurrent() || (col?.validity === 'held' || col?.state === 'held') && !pendingReturnReplay) return;
     if ('request_id' in body) {
       const result = await human.mutateAsync({ slug: selected.slug, activationId: selected.activation.activation_id, body });
       await validateHumanResponse(selected, body, result);
@@ -139,13 +153,13 @@ export function WorkflowReviewPanel({ detail: d, fresh, refresh }: {
     finally { latch.current = false; if (alive.current) setBusy(false); }
   }
   async function retry(envelope: CommandEnvelope, lane: 'response' | 'return') {
-    if (latch.current || !available || d.history) return;
+    if (latch.current || !(lane === 'return' ? canReplayReturn : available) || d.history) return;
     latch.current = true; setBusy(true);
     try { await sendEnvelope(envelope, d); } catch (error) { mutationFailure(error, lane); }
     finally { latch.current = false; if (alive.current) setBusy(false); }
   }
   const base = `/orgs/${d.slug}/reviews/${encodeURIComponent(d.activation.activation_id)}`;
-  const stateKey: MessageKey = collection?.state === 'approved' && collection.validity === 'current' && collection.approved_use ? 'workflows.joined' :
+  const stateKey: MessageKey = waitingAuthor ? 'workflows.waitingRevisionAuthor' : collection?.validity === 'held' ? 'workflows.held' : collection?.state === 'approved' && collection.validity === 'current' && collection.approved_use ? 'workflows.joined' :
     collection?.state === 'collecting' ? 'workflows.collecting' : collection?.state === 'ready_to_join' ? 'workflows.ready_to_join' :
     collection?.state === 'needs_revision' ? 'workflows.needs_revision' : 'workflows.held';
   if (!readable) return <div role="alert"><h2>{t('workflows.error')}</h2><p>{t('workflows.errorBody')}</p><pre className="whitespace-pre-wrap wrap-anywhere">{diagnostic}</pre></div>;
@@ -170,10 +184,10 @@ export function WorkflowReviewPanel({ detail: d, fresh, refresh }: {
         {d.revision.current.reason && <pre className="whitespace-pre-wrap wrap-anywhere">{d.revision.current.reason}</pre>}</div>}
       {errorKey && <div role="alert"><p>{t(errorKey)}</p><pre className="mt-2 whitespace-pre-wrap wrap-anywhere">{diagnostic}</pre></div>}
       {responseEnvelope && <div className="space-y-2"><p>{t('workflows.uncertain')}</p>{!d.history && <Button variant="outline" disabled={!available} onClick={() => void retry(responseEnvelope, 'response')}>{t('workflows.retryResponse')}</Button>}</div>}
-      {returnEnvelope && <div className="space-y-2"><p>{t('workflows.uncertainReturn')}</p>{!d.history && <Button variant="outline" disabled={!available} onClick={() => void retry(returnEnvelope, 'return')}>{t('workflows.retryReturn')}</Button>}</div>}
+      {returnEnvelope && <div className="space-y-2"><p>{t('workflows.uncertainReturn')}</p>{!d.history && <Button variant="outline" disabled={!canReplayReturn} onClick={() => void retry(returnEnvelope, 'return')}>{t('workflows.retryReturn')}</Button>}</div>}
     </div>
     {d.document !== null ? <pre aria-label={t('workflows.detail')} className="border-border bg-bg-raised min-w-0 rounded-lg border p-4 text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere md:p-5">{d.document}</pre> :
-      <div className="border-border rounded-lg border p-5"><p>{t(d.history ? 'workflows.noHistory' : d.handoff?.current.graph || d.revision?.current.graph ? 'workflows.noRequest' : 'workflows.authorPending')}</p></div>}
+      <div className="border-border rounded-lg border p-5"><p>{t(d.history ? 'workflows.noHistory' : graph ? 'workflows.noRequest' : 'workflows.authorPending')}</p></div>}
     {q?.signed && <section className="space-y-2"><p className="text-fg-muted text-xs wrap-anywhere">{t('workflows.receipt', { id: q.receipt.receipt_id })}</p><pre className="whitespace-pre-wrap wrap-anywhere">{d.findings}</pre></section>}
     {q && !d.history && !q.signed && <section className="space-y-3">
       <Label htmlFor="workflow-findings">{t('workflows.findings')}</Label>
@@ -186,7 +200,7 @@ export function WorkflowReviewPanel({ detail: d, fresh, refresh }: {
     </section>}
     {!d.history && d.selection.return.eligible && !d.selection.successor && <Button variant="outline" ref={ownerTrigger} disabled={!canReturn} onClick={() => void openReturn()}>{t('workflows.return')}</Button>}
     {!d.history && !d.selection.return.eligible && !d.selection.successor && collection?.state === 'needs_revision' && <pre className="text-fg-muted text-sm whitespace-pre-wrap wrap-anywhere">{d.selection.return.reason}{d.selection.return.required_action ? '\n' + d.selection.return.required_action : ''}</pre>}
-    {!d.history && d.selection.successor && collection?.state === 'needs_revision' && <p>{t('workflows.unsupported')}</p>}
+    {!d.history && d.selection.successor && graph && collection?.validity === 'current' && collection.state === 'needs_revision' && <p>{t('workflows.unsupported')}</p>}
     <ReviewResponseDialog open={outcome !== null} outcome={outcome ?? 'approved'} revision={q?.scope.revision ?? 1} findings={draft} busy={busy} disabled={!canRespond} onClose={() => setOutcome(null)} onConfirm={() => void respond()} onReturnFocus={() => restoreFocus(responseTrigger.current)} />
     <OwnerReturnDialog open={returnOpen} busy={busy} disabled={!canReturn} onClose={() => setReturnOpen(false)} onConfirm={() => void confirmReturn()} onReturnFocus={() => restoreFocus(ownerTrigger.current)} />
   </div>;

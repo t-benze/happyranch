@@ -54,6 +54,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   "workflows.ready_to_join": "所有回复已收到；等待汇总审批",
   "workflows.needs_revision": "所有回复已收到；需要修改",
   "workflows.joined": "评审已汇总——可用作已批准的输入",
+  "workflows.waitingRevisionAuthor": "正在等待修订 2 作者完成；新的评审尚未开始。",
   "workflows.held": "评审暂缓",
   "workflows.return": "退回作者",
   "workflows.returnTitle": "将修订 1 退回作者？",

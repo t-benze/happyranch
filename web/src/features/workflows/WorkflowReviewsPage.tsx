@@ -36,7 +36,7 @@ function SelectedReview({ slug, activationId, history }: { slug: string; activat
     {q.isError ? <div role="alert"><h2 className="text-xl">{t('workflows.error')}</h2><p className="mt-3">{t(reviewErrorKey(q.error))}</p><pre className="mt-3 whitespace-pre-wrap wrap-anywhere">{reviewDiagnostic(q.error)}</pre></div> :
       !detail ? <p role="status">{t('workflows.loading')}</p> :
         <WorkflowReviewPanel key={JSON.stringify([slug, activationId, history, detail.request?.request_id, detail.request?.request_scope_digest, detail.request?.scope.revision, detail.selection.successor?.revision_operation_id])}
-          detail={detail} fresh={!q.isFetching && !q.isError} refresh={async () => {
+          captureAdmission={q.captureAdmission} detail={detail} fresh={!q.isFetching && !q.isError} refresh={async () => {
             const result = await q.refetch() as { data?: typeof detail; isError?: boolean };
             return result.isError ? undefined : result.data;
           }} />}

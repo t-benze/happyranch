@@ -628,7 +628,7 @@ export interface WorkflowQuery<T> extends QueryLike<T> {
 }
 export interface WorkflowsApi {
   useActivations: () => WorkflowQuery<WorkflowActivationReceipt[]>;
-  useReviewDetail: (activationId: string, history: boolean) => WorkflowQuery<ReviewDetail>;
+  useReviewDetail: (activationId: string, history: boolean) => WorkflowQuery<ReviewDetail> & { captureAdmission: (detail: ReviewDetail) => () => boolean };
   useHumanResponse: () => MutationLike<{ slug: string; activationId: string; body: HumanReviewCommand }, HumanReviewReceipt>;
   useOwnerReturn: () => MutationLike<{ slug: string; activationId: string; body: DocumentRevisionCommand }, DocumentRevisionReceipt>;
 }
