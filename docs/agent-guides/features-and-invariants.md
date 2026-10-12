@@ -1420,3 +1420,42 @@ local-failure priority and writer-time final-spawn fences. Reads are nonmutating
 and advisory. Synthetic exact-positive/dependent proof remains UNPROVEN under
 Founder299seq11; reviewed source is distinct from installation/reconciliation
 and TASK10565's naming acceptance.
+
+
+### Current owner review discovery (THR139 seq506)
+
+GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human`
+returns closed `workflow-owner-review-selection@1`: activation/instance IDs, nullable
+original `{handoff_id,human_request_id,collection}`, nullable successor
+`{revision_operation_id,human_request_id}`, and `return` `{eligible,reason,required_action}`.
+The collection has the existing closed RevisionCollection fields, including current
+validity and approved-use status. No H yet gives null original; no authenticated graph
+gives null request/collection; a template with no human slot has null human ID.
+A genuine successor is discoverable immediately at admission, before r2 staging.
+IDs navigate independently authenticated readers and grant no access or approval.
+
+Relational same-org/current activation/current owner and active read grants precede
+private proof decoding, repeat after each awaited lock and at the coherent read
+boundary. Complete H/I, pinned contract and template-selected human request closure
+validate before disclosure. No peer IDs/findings/inputs, bytes, sessions or proofs
+are returned. The GET reuses READ-ONLY `current_collection`; no domain DB, authority
+lease, event, queue or join writes. It never collects, discovers or fulfills work.
+
+Return readiness reuses the full read-only predicate consumed inside POST's atomic
+writer: supported @3/@4 document contract/actions and I, full current authority,
+a genuine successful Boolean-quiescent r1 source, all peers closed with an objection
+and no join, no successor, same author and available capacity. A needs_revision
+label alone is insufficient. GET advises only; POST retains replay/CAS/current
+revalidation and allocation ordering. Access loss refuses the whole read; visible
+effect holds return eligible:false with existing reason/action. Missing proof403,
+invisible/wrong-owner404, malformed/duplicate/unknown/blank selectors, IDs or any
+nonempty GET body422, missing compatible H/I409 with operator remedy, storage500
+category-only. No migration is performed.
+
+The typed `getOwnerReviewSelection` client sends only owner-human. Older daemons
+report discovery unavailable; dependent actions stay disabled without fallback
+access or guessed IDs. Native route classification/assertion parity preserves the
+existing SurfaceAllowList and credential/transport policy; source inspection is
+not native execution evidence. Mounted UI is a separate serial unit. Python units
+remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
+FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.

@@ -4,6 +4,7 @@ from __future__ import annotations
 from runtime.workflows.authority import snapshot_team_agents, validate_authority_snapshot
 
 import base64
+from contextlib import ExitStack
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -765,6 +766,119 @@ class WorkflowActivationStore:
                 "reconciliation_required": state == "uncertain", "cancellation_requested": bool(intent["cancellation_requested"]),
                 "current_eligibility": {"eligible": not blockers and not intent["cancellation_requested"], "blockers": blockers},
                 "responsible_owner": "workflow_recovery" if state == "uncertain" else intent["assigned_principal"]}
+
+    def _review_owner(self, conn: sqlite3.Connection, principal: WorkflowTemplatePrincipal,
+                      activation_id: str) -> tuple[dict, dict]:
+        """Relational current owner and grants before private closure decoding."""
+        from runtime.workflows.submissions import _records
+        actor = self._principal(principal)
+        rows = _records(conn, 'SELECT i.* FROM workflow_activation_operations o '
+            'JOIN workflow_activations a ON a.id=o.activation_id '
+            'JOIN workflow_instances i ON i.id=a.instance_id '
+            'JOIN workflow_active_activations c ON c.instance_id=i.id AND c.activation_id=a.id '
+            'AND c.activation_revision=a.activation_revision '
+            'WHERE o.activation_id=? AND o.org_slug=? AND o.principal=? '
+            'AND a.activated_by=? AND i.owner_principal=?',
+            (activation_id, self.org.slug, actor, actor, actor))
+        if not rows:
+            raise WorkflowActivationError('workflow_activation_not_found')
+        intents = _records(conn, 'SELECT * FROM workflow_draft_dispatch_intents '
+            'WHERE activation_id=? AND instance_id=? AND org_slug=? AND attempt_sequence=1 AND admission_principal=?',
+            (activation_id, rows[0]['id'], self.org.slug, actor))
+        if len(rows) != 1 or len(intents) != 1:
+            raise ValueError('workflow_activation_storage_corrupt')
+        self.org.workflow_submissions._read_grant(conn, intents[0], {'collect-review'}, principal)
+        return rows[0], intents[0]
+
+    def _review_selection(self, conn: sqlite3.Connection, principal: WorkflowTemplatePrincipal,
+                          activation_id: str, capture: Any) -> dict:
+        from runtime.infrastructure.workflow_schema import _handoff_record, _records, require_document_revision_schema
+        from runtime.workflows.submissions import validate_handoff_graph
+        from runtime.workflows.revisions import successor_for_history, review_row, validate_revision_record
+        from runtime.workflows.review_join import current_collection
+        store = self.org.workflow_submissions
+        revisions = self.org.workflow_revisions
+        instance, first = self._review_owner(conn, principal, activation_id)
+        # Even empty I needs a compatible reader; absence has the existing
+        # operator remedy. This validator and every downstream helper only read.
+        require_document_revision_schema(conn, expected_org_slug=self.org.slug)
+        context, _, _ = store._selected_authority(conn, first, capture, {'collect-review'})
+        handoffs = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE intent_id=? AND org_slug=?',
+                            (first['id'], self.org.slug))
+        if len(handoffs) > 1:
+            raise ValueError('workflow_author_handoff_storage_corrupt')
+        original = None
+        if handoffs:
+            row, _, _ = store._select_handoff(conn, handoff_id=handoffs[0]['id'], lane='owner-human',
+                task_agent=None, session_id=None, selector=None, owner=principal)
+            proof = _handoff_record(conn, row, expected_org_slug=self.org.slug)
+            graph = validate_handoff_graph(conn, row, proof)
+            original = dict(handoff_id=row['id'],
+                human_request_id=store.selected_human_request(conn, row, graph, context, principal),
+                collection=None if graph is None else current_collection(store, conn, row, proof, graph, capture))
+        successor = None
+        operation = successor_for_history(conn, instance['id'])
+        if operation is not None:
+            operation, intent = revisions._select(conn, operation['id'], principal=principal, session_id=None)
+            validate_revision_record(conn, operation, expected_org_slug=self.org.slug)
+            projected = revisions._projection(conn, operation, capture, replayed=True)
+            graph = projected['current']['graph']
+            subject = review_row(conn, operation) if graph is not None else None
+            new_context, _, _ = store._selected_authority(conn, intent, capture, {'collect-review'})
+            successor = dict(revision_operation_id=operation['id'], human_request_id=None if subject is None else
+                store.selected_human_request(conn, subject, graph, new_context, principal))
+        readiness = dict(eligible=False, reason=None, required_action=None)
+        try:
+            # Uses the same complete source/authority/closed-round/capacity
+            # predicate as POST, without reserving a task or changing a round.
+            current_context = revisions._authority(conn, first, capture)
+            revisions._return_source(conn, instance, first, current_context, capture)
+            readiness['eligible'] = True
+        except WorkflowActivationError as exc:
+            if exc.code not in {'workflow_document_revision_source_not_current',
+                    'workflow_document_revision_predecessor_not_closed', 'workflow_activation_authority_stale',
+                    'workflow_author_handoff_source_not_current', 'workflow_activation_author_pending',
+                    'workflow_author_handoff_action_not_authorized'}:
+                raise
+            readiness.update(reason=exc.code, required_action=exc.required_action)
+        self._review_owner(conn, principal, activation_id)
+        return dict(format='workflow-owner-review-selection@1', activation_id=activation_id,
+                    instance_id=instance['id'], original=original, successor=successor, **{'return': readiness})
+
+    async def review_selection(self, *, principal: WorkflowTemplatePrincipal, activation_id: str) -> dict:
+        store = self.org.workflow_submissions
+        authority = self.org.workflow_authority
+        with self.db._lock:
+            self._review_owner(self.db._conn, principal, activation_id)
+        capture = authority.capture_admission()
+        async with store._lock:
+            # Check the native owner/grant again after EACH awaited lock.
+            with self.db._lock:
+                self._review_owner(self.db._conn, principal, activation_id)
+            async with self.org.db_lock:
+                with self.db._lock:
+                    self._review_owner(self.db._conn, principal, activation_id)
+                coordinator = authority._profile_coordinator
+                with ExitStack() as fences:
+                    for name in capture.profile_names:
+                        fences.enter_context(coordinator.profile_read(name))
+                        coordinator._assert_no_active_operation(name)
+                    fences.enter_context(authority._publisher_lock)
+                    with self.db._lock:
+                        conn = self.db._conn
+                        # A deferred read transaction provides one database
+                        # snapshot. No admission_writer: its durable lease
+                        # acquisition/release would violate this GET's contract.
+                        conn.execute('BEGIN')
+                        try:
+                            self._review_owner(conn, principal, activation_id)
+                            authority._validate_admission_uncommitted(conn, capture)
+                            result = self._review_selection(conn, principal, activation_id, capture)
+                            self._review_owner(conn, principal, activation_id)
+                            authority._validate_admission_uncommitted(conn, capture)
+                            return result
+                        finally:
+                            conn.rollback()
 
     def get(self, *, principal: WorkflowTemplatePrincipal, activation_id: str) -> dict:
         actor = self._principal(principal)

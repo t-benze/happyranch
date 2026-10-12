@@ -75,6 +75,32 @@ class RevisionCollection(ClosedRecord):
     required_action: str | None
 
 
+class OwnerReviewOriginal(ClosedRecord):
+    handoff_id: Token
+    human_request_id: Token | None
+    collection: RevisionCollection | None
+
+
+class OwnerReviewSuccessor(ClosedRecord):
+    revision_operation_id: Token
+    human_request_id: Token | None
+
+
+class OwnerReviewReturn(ClosedRecord):
+    eligible: StrictBool
+    reason: str | None
+    required_action: str | None
+
+
+class OwnerReviewSelection(ClosedRecord):
+    format: Literal['workflow-owner-review-selection@1']
+    activation_id: Token
+    instance_id: Token
+    original: OwnerReviewOriginal | None
+    successor: OwnerReviewSuccessor | None
+    return_: OwnerReviewReturn = Field(alias='return')
+
+
 class DocumentRevisionCurrent(ClosedRecord):
     state: Literal['revision_author_queued', 'revision_author_running', 'revision_staged',
         'revision_reviewing', 'revision_complete', 'revision_failed', 'revision_cancelled', 'revision_held']
@@ -482,6 +508,40 @@ class WorkflowRevisionStore:
             raise WorkflowActivationError('workflow_author_handoff_source_not_current')
         return context
 
+    def _return_source(self, conn: sqlite3.Connection, instance: dict, first: dict, context: dict, capture: Any,
+                       command: dict | None = None) -> tuple[dict, dict, dict, dict, list[dict], dict]:
+        """Complete read-only readiness; start consumes it inside its atomic writer."""
+        contract = context_contract(context)
+        if (instance['status'] != 'reviewing' or not first['is_current'] or first['state'] != 'completed'
+                or _source_result(conn, first) is None or 'changes_requested' not in contract['outcomes']
+                or not contract.get('request_changes') or successor_for_history(conn, instance['id']) is not None):
+            raise WorkflowActivationError('workflow_document_revision_source_not_current')
+        if command is None:
+            old = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE instance_id=? AND intent_id=?',
+                           (instance['id'], first['id']))
+        else:
+            old = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE instance_id=? AND submission_id=?',
+                           (instance['id'], command['predecessor_submission_id']))
+        if len(old) != 1:
+            raise WorkflowActivationError('workflow_document_revision_source_not_current')
+        old = old[0]
+        oldproof = _handoff_record(conn, old, expected_org_slug=self.org.slug)
+        graph = validate_handoff_graph(conn, old, oldproof)
+        if graph is None:
+            raise WorkflowActivationError('workflow_document_revision_source_not_current')
+        predecessor, feedback = _predecessor(conn, old, oldproof, graph)
+        if command is not None and (command['activation_id'] != first['activation_id'] or command['predecessor_round_id'] != graph['round_id']
+                or command['predecessor_submission_digest'] != old['candidate_digest']
+                or command['authority'] != dict(namespace='org/' + self.org.slug, generation=first['authority_generation'], snapshot_digest=first['authority_digest'])):
+            raise WorkflowActivationError('workflow_document_revision_source_not_current')
+        from runtime.workflows.review_join import captured_authority
+        authority = captured_authority(capture, revision_actions(context))
+        if canonical_bytes(authority) != canonical_bytes(dict(oldproof['admission_authority'], actions=revision_actions(context))):
+            raise WorkflowActivationError('workflow_activation_authority_stale')
+        if author_capacity_blocked(conn, author=first['assigned_principal'], task_id=first['task_id'], active_sessions=tuple(self.org.sessions.iter_active())):
+            raise WorkflowActivationError('workflow_activation_author_pending')
+        return old, oldproof, graph, predecessor, feedback, authority
+
     async def start(self, *, principal: WorkflowTemplatePrincipal, command: object) -> dict:
         command = parse_revision(command)
         store = self.org.workflow_submissions
@@ -511,31 +571,8 @@ class WorkflowRevisionStore:
                         if len(existing) != 1 or existing[0]['request_bytes'] != raw:
                             raise WorkflowActivationError('workflow_document_revision_operation_conflict')
                         return self._projection(conn, existing[0], capture, replayed=True)
-                    contract = context_contract(context)
-                    if (instance['status'] != 'reviewing' or not first['is_current'] or first['state'] != 'completed'
-                            or _source_result(conn, first) is None or 'changes_requested' not in contract['outcomes']
-                            or not contract.get('request_changes') or successor_for_history(conn, instance['id']) is not None):
-                        raise WorkflowActivationError('workflow_document_revision_source_not_current')
-                    old = _records(conn, 'SELECT * FROM workflow_author_handoffs WHERE instance_id=? AND submission_id=?',
-                                   (instance['id'], command['predecessor_submission_id']))
-                    if len(old) != 1:
-                        raise WorkflowActivationError('workflow_document_revision_source_not_current')
-                    old = old[0]
-                    oldproof = _handoff_record(conn, old, expected_org_slug=self.org.slug)
-                    graph = validate_handoff_graph(conn, old, oldproof)
-                    if graph is None:
-                        raise WorkflowActivationError('workflow_document_revision_source_not_current')
-                    predecessor, feedback = _predecessor(conn, old, oldproof, graph)
-                    if (command['activation_id'] != first['activation_id'] or command['predecessor_round_id'] != graph['round_id']
-                            or command['predecessor_submission_digest'] != old['candidate_digest']
-                            or command['authority'] != dict(namespace='org/' + self.org.slug, generation=first['authority_generation'], snapshot_digest=first['authority_digest'])):
-                        raise WorkflowActivationError('workflow_document_revision_source_not_current')
-                    from runtime.workflows.review_join import captured_authority
-                    authority = captured_authority(capture, revision_actions(context))
-                    if canonical_bytes(authority) != canonical_bytes(dict(oldproof['admission_authority'], actions=revision_actions(context))):
-                        raise WorkflowActivationError('workflow_activation_authority_stale')
-                    if author_capacity_blocked(conn, author=first['assigned_principal'], task_id=first['task_id'], active_sessions=tuple(self.org.sessions.iter_active())):
-                        raise WorkflowActivationError('workflow_activation_author_pending')
+                    old, oldproof, graph, predecessor, feedback, authority = self._return_source(
+                        conn, instance, first, context, capture, command)
                     opid = _id('workflow-document-revision', self.org.slug, principal.operation_principal, command['operation_key'])
                     now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
                     source = _record(conn, 'workflow_contexts', first['context_id'])

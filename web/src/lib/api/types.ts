@@ -1580,3 +1580,18 @@ export type RetryVerificationResponse =
 export interface ReconciliationRefusal {
   detail: { code: string };
 }
+
+
+/** Current owner discovery; IDs navigate separately authenticated selected readers. */
+export interface OwnerReviewSelection {
+  format: 'workflow-owner-review-selection@1';
+  activation_id: string;
+  instance_id: string;
+  original: {
+    handoff_id: string;
+    human_request_id: string | null;
+    collection: DocumentRevisionReceipt['current']['collection'];
+  } | null;
+  successor: { revision_operation_id: string; human_request_id: string | null } | null;
+  return: { eligible: boolean; reason: string | null; required_action: string | null };
+}

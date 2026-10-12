@@ -51,6 +51,12 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  test('owner review discovery is a browser-included GET with independent selected access', () => {
+    const route = 'GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection';
+    expect(INCLUDED_PATHS.has(route)).toBe(true);
+    expect(EXCLUDED_PATHS.has(route)).toBe(false);
+  });
+
   test('THR299 writer is agent-only and advisory retry reader is browser-included', () => {
     const writer = 'POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation';
     const reader = 'GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification';

@@ -1,11 +1,13 @@
 """Founder-only initial activation and authenticated immutable receipt reads."""
 from __future__ import annotations
 
-from typing import Any
+import re
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from typing import Any, Literal
 
-from runtime.daemon.auth import _require_human
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+
+from runtime.daemon.auth import _require_human, optional_bearer
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.workflows.activation import (
     ActivationReceipt, ActivationRequest, DocumentActivationReceipt, DocumentActivationRequest,
@@ -15,6 +17,9 @@ from runtime.workflows.activation import (
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.templates import WorkflowTemplateError, WorkflowTemplatePrincipal
+
+
+from runtime.workflows.revisions import OwnerReviewSelection
 
 
 router = APIRouter(dependencies=[Depends(_require_human)])
@@ -137,3 +142,44 @@ async def get_workflow_activation(org: OrgDep, activation_id: str) -> dict:
         return org.workflow_activations.get(principal=_principal(org), activation_id=activation_id)
     except WorkflowActivationError as exc:
         _raise(exc)
+
+
+@router.get('/workflows/activations/{activation_id}/review-selection',
+            response_model=OwnerReviewSelection,
+            responses={403: {'description': 'Owner proof or current read grant refused'},
+                       404: {'description': 'No visible same-org current owner activation'},
+                       409: {'description': 'Compatible H/I or current authority unavailable; operator remedy'},
+                       422: {'description': 'Malformed ID, selectors or nonempty body'},
+                       500: {'description': 'Category-only storage failure'}},
+            openapi_extra={'x-query-proof-schema': {
+                'type': 'object', 'additionalProperties': False, 'required': ['proof_kind'],
+                'properties': {'proof_kind': {'type': 'string', 'const': 'owner-human'}}}})
+async def get_owner_review_selection(org: OrgDep, activation_id: str, request: Request,
+                                     proof_kind: Literal['owner-human'] | None = Query(default=None),
+                                     has_bearer: bool = optional_bearer()) -> dict:
+    from runtime.daemon.routes.workflow_reviews import human_principal
+    from runtime.daemon.routes.workflow_submissions import fail, query_values, sqlite_error_types
+    from runtime.daemon.routes.workflow_revisions import revision_error
+    values = query_values(request, {'proof_kind'})
+    if (re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', activation_id) is None
+            or (values and proof_kind != 'owner-human')):
+        fail('workflow_owner_review_selection_invalid_request', 422)
+    if not values:
+        fail('workflow_owner_review_selection_read_not_authorized', 403)
+    # A GET body is not a second selector, including JSON null or empty objects.
+    async for chunk in request.stream():
+        if chunk:
+            fail('workflow_owner_review_selection_invalid_request', 422)
+    principal = human_principal(org, has_bearer)
+    try:
+        return await org.workflow_activations.review_selection(principal=principal, activation_id=activation_id)
+    except (WorkflowActivationError, WorkflowAuthorityError, WorkflowTemplateError, ProfileCoordinatorError) as exc:
+        if exc.code == 'workflow_activation_not_found':
+            fail(exc.code, 404)
+        if exc.code == 'role_binding_not_authorized':
+            fail('workflow_author_handoff_read_not_authorized', 403)
+        revision_error(exc)
+    except sqlite_error_types() as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_owner_review_selection_storage_unavailable'}) from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_owner_review_selection_storage_corrupt'}) from exc

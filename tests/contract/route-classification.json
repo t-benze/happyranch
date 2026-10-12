@@ -158,7 +158,8 @@
     "POST /api/v1/orgs/{slug}/workflows/reviews/human-receipts",
     "POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions",
     "GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}",
-    "GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification"
+    "GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification",
+    "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection"
   ],
   "excluded": {
     "POST /api/v1/runtime/custom-cli/connect": "registration-token-only direct custom-CLI ingress; secret token route, never browser-consumed",

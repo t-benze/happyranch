@@ -4157,6 +4157,36 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection": {
+      "GET": {
+        "params": [
+          [
+            "activation_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "proof_kind",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/cutover": {
       "GET": {
         "params": [

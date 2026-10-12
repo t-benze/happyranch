@@ -902,6 +902,31 @@ class WorkflowSubmissionStore:
         self._read_grant(conn, intent, {'collect-review'}, owner)
         return request, row, intent
 
+    def selected_human_request(self, conn: sqlite3.Connection, row: dict, graph: dict | None,
+                               context: dict, owner: WorkflowTemplatePrincipal) -> str | None:
+        """Navigation only, after complete graph validation and current owner admission."""
+        if graph is None:
+            return None
+        contract = context_contract(context)
+        roles = [role for role in contract['reviewer_roles'] if contract['role_kinds'][role] == 'human']
+        if not roles:
+            return None
+        matches = []
+        for qid in graph['request_ids']:
+            request = _record(conn, 'workflow_review_requests', qid)
+            scope = _stored_json(request['request_scope_bytes'], request['request_scope_digest'],
+                                 code='workflow_author_handoff_storage_corrupt')
+            if scope['role'] == roles[0]:
+                selected, subject, _ = self._select_request(conn, request_id=qid, task_agent=None,
+                    session_id=None, human=True, owner=owner, include_signed=True)
+                if (len(roles) != 1 or scope['kind'] != 'human' or scope['principal'] != 'founder'
+                        or subject['id'] != row['id'] or selected['round_id'] != graph['round_id']):
+                    raise ValueError('workflow_author_handoff_storage_corrupt')
+                matches.append(qid)
+        if len(matches) != 1:
+            raise ValueError('workflow_author_handoff_storage_corrupt')
+        return matches[0]
+
     async def get_handoff(self, *, handoff_id: str, lane: str, session_id: str | None,
                           selector: str | None, owner: WorkflowTemplatePrincipal | None = None) -> dict:
         task_agent = self._session(session_id) if session_id is not None else None

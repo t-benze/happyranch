@@ -1130,3 +1130,6 @@ without replacing existing events, and actual job-submit refusals are retained
 before assertions. All 224 C4 cases and their behavioral assertions remain.
 These are source corrections only: no new behavioral execution, GREEN,
 causal/restoration/repetition or held migration/restore/reboot proof is claimed.
+
+
+- **Owner review discovery (THR139 seq506).** Current owner GET `/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human` returns closed `workflow-owner-review-selection@1` navigation IDs, read-only r1 collection and complete advisory return readiness. Relational owner/grants precede decoding and renew at the coherent read boundary; no domain/lease/event/queue/join writes. I and separately admitted selected readers remain required. POST independently retains atomic replay/CAS/current checks. Old daemon discovery is unavailable with dependent actions disabled. Native policy unchanged; mounted UI and behavioral acceptance remain separate. See the four maintained guides and product-design-u0 specification.
