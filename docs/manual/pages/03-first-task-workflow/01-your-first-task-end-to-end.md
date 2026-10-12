@@ -163,9 +163,10 @@ more subtasks, more thread coordination, and more artifacts.
 Use `happyranch tasks --org ORG --pause-overview` for the read-only Task pause overview. It includes runnable Pending roots, Pausing blockers, Paused roots and separate terminal-drain diagnostics. --all-pages reads more bounded snapshots; incomplete evidence makes counts unavailable. `happyranch details TASK --org ORG --json` includes lifecycle and a separate pause projection. The overview never establishes that restarting is safe: other roots/background sessions may start. Controls use generation preconditions; on a stale conflict inspect again rather than automatically toggling. Persistence requires a pause-compatible runtime for rollback, even when controls are empty. Restart/deployment remains a separate operator action.
 
 
-The browser Tasks page shows Pause/Resume, Pausing/Paused state and drain blockers
-on each root's own row and detail page; it has no separate pause overview panel.
-Use the CLI overview above for an organization-wide observation. Pending roots show
+In the browser, Pause/Resume, Pausing/Paused state and drain blockers appear only
+on each task's own detail page. The Tasks list shows ordinary lifecycle status and
+navigation without pause controls or labels, and there is no separate pause
+overview panel. Use the CLI overview above for an organization-wide observation. Pending roots show
 no Pause action. Task/session, job, launch, result-processing and unknown blockers
 retain their actual identifiers and diagnostics. An eligible running manager can
 settle a separate unheld successor root even while the predecessor drains. Pause

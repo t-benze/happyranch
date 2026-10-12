@@ -21,11 +21,11 @@ const STATE_KEYS: Record<TaskPauseProjection['control_state'], MessageKey> = {
 };
 
 /** Shared production presentation for record pause evidence. Raw owner/reason/IDs stay verbatim. */
-export function TaskPauseEvidence({ pause, compact = false }: { pause: TaskPauseProjection; compact?: boolean }): JSX.Element {
+export function TaskPauseEvidence({ pause }: { pause: TaskPauseProjection }): JSX.Element {
   const { t, locale } = useTranslation();
   return <div className="text-text-secondary min-w-0 space-y-1 text-xs">
     <p>{t(pause.evidence_complete ? 'tasks.pause.evidenceComplete' : 'tasks.pause.evidenceIncomplete')}</p>
-    {!compact && <p>{t('tasks.pause.observed', { stamp: formatDateShapeFor(locale, new Date(pause.observed_at), 'dateTime') })}</p>}
+    <p>{t('tasks.pause.observed', { stamp: formatDateShapeFor(locale, new Date(pause.observed_at), 'dateTime') })}</p>
     {pause.blockers.length > 0 && <details>
       <summary className="text-text-primary cursor-pointer">{t('tasks.pause.blockers', { count: pause.blockers.length })}</summary>
       <ul className="mt-1 space-y-1">
@@ -69,10 +69,9 @@ function PauseActions({ taskId, generation, held }: { taskId: string; generation
   </div>;
 }
 
-export function TaskPauseControls({ task, routes, compact = false }: {
+export function TaskPauseControls({ task, routes }: {
   task: Pick<TaskRecord, 'task_id' | 'parent_task_id' | 'status' | 'pause'>;
   routes: TaskListRoutes;
-  compact?: boolean;
 }): JSX.Element {
   const { t, render } = useTranslation();
   const org = useOrgSlugOptional();
@@ -93,6 +92,6 @@ export function TaskPauseControls({ task, routes, compact = false }: {
       {mayAct && <PauseActions key={`${pause.org_slug}/${task.task_id}`} taskId={task.task_id} generation={pause.generation} held={pause.held} />}
     </div>
     {terminal && (pause.blockers.length > 0 || !pause.evidence_complete) && <p className="text-text-secondary text-xs">{t('tasks.pause.terminalDrain')}</p>}
-    <TaskPauseEvidence pause={pause} compact={compact} />
+    <TaskPauseEvidence pause={pause} />
   </div>;
 }

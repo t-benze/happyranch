@@ -125,12 +125,16 @@ reader, even with empty controls. No live migration, restart or deployment is
 performed by delivering source.
 
 Backend transport is PR1. PR2 consumes it through provider-aware Web hooks:
-compact root-only list/detail controls. Founder THR-292 seq41 (TASK-10917) removed
-the standalone browser Task pause overview panel from the ordinary Tasks page; the
-read-only overview remains available through GET /tasks/pause-overview, its TS client
-and `happyranch tasks --pause-overview`, independently of any panel.
-Pending roots have no Pause; descendants show inherited hold and actual root
-links. Separate control/evidence presentation preserves real lifecycle, waiting,
+root-only Task detail controls. Founder THR-292 seq41 (TASK-10917) removed
+the standalone browser Task pause overview panel from the ordinary Tasks page, and
+seq45 (TASK-10920) places ALL rendered pause UI on Task detail only: list rows show
+no pause control, state label, drain evidence, blocker, unavailable message or
+inherited-root explanation, only ordinary lifecycle, navigation and lineage. The
+JSON/API list projection still carries `pause`, and the read-only overview remains
+available through GET /tasks/pause-overview, its TS client and
+`happyranch tasks --pause-overview`, independently of any rendered list or panel.
+Pending roots have no Pause; descendant detail shows inherited hold and the actual
+root link. Separate control/evidence presentation preserves real lifecycle, waiting,
 attention and lineage; terminal drain diagnostics remain visible. Missing or
 unsafe generation/projection is unavailable. Pending controls disable repeated
 submissions across mounted views. Actions submit the displayed generation and
@@ -146,7 +150,8 @@ the finite P01a/P05 chain drain, P11/P14/P17 identity/idempotence/stale control,
 P14b/c same-org unheld progress, P12 drained same-files disposable product-daemon
 restart and explicit Resume, separate P01b Resume-during-drain, and P16/P18 live
 English/Chinese list/detail/child/reload readback (the browser case now asserts
-no overview panel or overview read; the CLI overview-readonly case is unchanged). Its 19 named Pause
+no overview panel or overview read and no list-row pause UI, reading root state
+from detail; the CLI overview-readonly case is unchanged). Its 19 named Pause
 variants follow the unchanged 9-launch/23-variant baseline; exact host anchors
 are 12 before restart, 0 on restart readiness and 6 at final closure, with 18
 combined launches. These are full source expectations. Scheduled run38181136948

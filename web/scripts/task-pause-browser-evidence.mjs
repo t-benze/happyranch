@@ -3,6 +3,8 @@
  * TASK-10560 P18/G10: ordinary-build UI/transport evidence only.
  * TASK-10919 (founder THR-292 seq41): the standalone Task pause overview panel is removed
  * from the Tasks page; this harness asserts its absence and zero overview reads.
+ * TASK-10935 (founder THR-292 seq45): ALL pause UI lives on Task detail only. List rows render
+ * no pause controls/labels/evidence/blockers; actions, refusals and generation run on detail.
  * Synthetic HTTP transcripts do not prove backend Pause enforcement, persistence,
  * provider containment or safe restart. No live daemon, dependency or shipping seam.
  * Composes the existing mode-A static/API server; drives owned Chrome over CDP.
@@ -103,11 +105,14 @@ async function main(){
     }
     const close=page=>cdp.send('Target.closeTarget',{targetId:page.targetId});
     async function shot(page,name,metadata){await cdp.send('Page.bringToFront',{},page.sessionId);await sleep(100);const {data}=await cdp.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false},page.sessionId);const bytes=Buffer.from(data,'base64');const file=join(out,`${name}.png`);writeFileSync(file,bytes);screenshots.push({file,sha256:digest(bytes),...metadata});}
-    const rootButton=(id,label)=>`[...document.querySelectorAll('[data-tasks-responsive-list] [data-task-pause="${id}"] button')].find(b=>b.textContent.trim()===${quote(label)})`;
+    const rootButton=(id,label)=>`[...document.querySelectorAll('main [data-task-pause="${id}"] button')].find(b=>b.textContent.trim()===${quote(label)})`;
     const button=label=>`[...document.querySelectorAll('button')].find(b=>b.textContent.trim()===${quote(label)})`;
     // Panel absence in BOTH locales (removed presentation must not reappear under either catalog).
     const panelAbsent=`![...document.querySelectorAll('section[aria-label],h2')].some(e=>['Task pause overview','任务暂停概览'].some(t=>(e.getAttribute('aria-label')||e.textContent).trim()===t))`;
     const overviewReads=()=>ledger.filter(x=>x.path.endsWith('/pause-overview')).length;
+    // seq45: the rendered list carries NO pause UI in either catalog; ordinary lifecycle badges remain.
+    const PAUSE_COPY=['tasks.pause.unheld','tasks.pause.pausing','tasks.pause.paused','tasks.pause.unavailable','tasks.pause.inherited','tasks.pause.evidenceComplete','tasks.pause.evidenceIncomplete','tasks.pause.observed','tasks.pause.terminalDrain','tasks.pause.blocker.task','tasks.pause.blocker.unknown'].flatMap(k=>['en','zh-CN'].map(l=>String(tr(l,k)).split('{')[0].trim())).filter(Boolean);
+    const listPauseFree=`(()=>{const t=document.body.textContent;return document.querySelector('[data-task-pause]')===null&&![...document.querySelectorAll('button')].some(b=>['Pause','Resume','暂停','恢复'].includes(b.textContent.trim()))&&!${quote(PAUSE_COPY)}.some(c=>t.includes(c))&&!t.includes('RAW-')&&document.querySelector('main details')===null;})()`;
     async function enter(page,source){await cdp.send('Page.bringToFront',{},page.sessionId);await evaluate(page,`(()=>{const button=${source};if(!button)throw new Error('button missing');button.scrollIntoView({block:'center'});button.focus();return true;})()`);await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'},page.sessionId);await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13},page.sessionId);}
     async function switchLocale(page,locale){
       const {targetId}=await cdp.send('Target.createTarget',{url:server.url+'/pause-locale-switch.html'});const {sessionId}=await cdp.send('Target.attachToTarget',{targetId,flatten:true});await cdp.send('Runtime.enable',{},sessionId);await wait({sessionId},`location.href===${quote(server.url+'/pause-locale-switch.html')} && document.readyState==='complete'`);
@@ -115,21 +120,22 @@ async function main(){
     }
     for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark']){
       scenario='populated';toggled={held:false,generation:4};const name=`${locale}-${width}-${theme}`;
-      const page=await open('/orgs/pause-org/tasks',locale,width,height,theme);await wait(page,"!!document.querySelector('[data-tasks-responsive-list] [data-task-pause=\"ROOT-RUN\"]') && !!document.querySelector('[data-tasks-responsive-list] [data-task-pause=\"ROOT-FAILED\"]')");await sleep(200);
+      const page=await open('/orgs/pause-org/tasks',locale,width,height,theme);await wait(page,"!!document.querySelector('[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/ROOT-RUN\"]') && !!document.querySelector('[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/ROOT-FAILED\"]')");await sleep(200);
       check(`${name} no pause overview panel`,await evaluate(page,panelAbsent));
       check(`${name} html locale`,await evaluate(page,'document.documentElement.lang'),locale);
       check(`${name} theme`,await evaluate(page,'document.documentElement.dataset.theme'),theme);
       check(`${name} page fits`,await evaluate(page,'document.documentElement.scrollWidth <= innerWidth + 1'));
-      check(`${name} pending has no Pause`,await evaluate(page,"document.querySelector('[data-tasks-responsive-list] [data-task-pause=\"ROOT-PENDING\"] button')===null"));
-      check(`${name} terminal has no control`,await evaluate(page,"document.querySelector('[data-tasks-responsive-list] [data-task-pause=\"ROOT-FAILED\"] button')===null"));
-      check(`${name} typed unknown shown`,await evaluate(page,`document.body.textContent.includes(${quote(tr(locale,'tasks.pause.blocker.unknown'))})`));
-      // Open blocker details and verify control bounds through actual browser geometry.
-      await evaluate(page,"document.querySelectorAll('[data-task-pause] details').forEach(d=>d.open=true)");
-      check(`${name} control widths`,await evaluate(page,"[...document.querySelectorAll('[data-task-pause] button,[data-task-pause] summary')].every(b=>{const r=b.getBoundingClientRect();return r.left>=-1&&r.right<=innerWidth+1;})"));
-      await shot(page,`${name}-list`,{locale,theme,width,height,state:'populated/partial/terminal/unknown'});
+      check(`${name} list has no pause UI`,await evaluate(page,listPauseFree));
+      check(`${name} ordinary lifecycle badges`,await evaluate(page,"['in_progress','pending','escalated','failed'].every(s=>[...document.querySelectorAll('[data-tasks-responsive-list] *')].some(e=>e.children.length===0&&e.textContent.trim()===s))"));
+      check(`${name} row navigation`,await evaluate(page,"['ROOT-RUN','ROOT-PARKED','ROOT-PENDING','ROOT-PAUSING','ROOT-PAUSED','ROOT-FAILED','ROOT-MISSING'].every(id=>!!document.querySelector(`[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/${id}\"]`))"));
+      await shot(page,`${name}-list`,{locale,theme,width,height,state:'populated list: lifecycle only, pause UI absent'});
       await close(page);
       const detail=await open('/orgs/pause-org/tasks/ROOT-PAUSING',locale,width,height,theme);await wait(detail,"!!document.querySelector('[data-task-pause] button')");
       check(`${name} detail Resume during drain`,await evaluate(detail,`document.querySelector('[data-task-pause] button').textContent.trim()`),tr(locale,'tasks.pause.resume'));
+      check(`${name} detail pausing state label`,await evaluate(detail,`document.querySelector('[data-task-pause]').textContent.includes(${quote(tr(locale,'tasks.pause.pausing'))})`));
+      await evaluate(detail,"document.querySelectorAll('[data-task-pause] details').forEach(d=>d.open=true)");
+      check(`${name} detail typed blockers shown`,await evaluate(detail,`document.querySelector('[data-task-pause]').textContent.includes(${quote(tr(locale,'tasks.pause.blocker.unknown'))})&&document.querySelector('[data-task-pause]').textContent.includes('RAW-')`));
+      check(`${name} detail control widths`,await evaluate(detail,"[...document.querySelectorAll('[data-task-pause] button,[data-task-pause] summary')].every(b=>{const r=b.getBoundingClientRect();return r.left>=-1&&r.right<=innerWidth+1;})"));
       check(`${name} detail fits`,await evaluate(detail,'document.documentElement.scrollWidth <= innerWidth + 1'));
       await shot(detail,`${name}-detail`,{locale,theme,width,height,state:'pausing detail'});
       // Original Cancel dialog draft/focus/selection/node preservation both directions.
@@ -146,19 +152,28 @@ async function main(){
       check(`${name} Cancel focus return`,await evaluate(detail,`document.activeElement.textContent.trim()`),tr(locale,'tasks.detail.cancel'));
       await close(detail);
     }
-    // Actual UI actions, intercepted shipping client requests and refresh receipts.
-    scenario='populated';toggled={held:false,generation:4};const page=await open('/orgs/pause-org/tasks');await wait(page,`!!${rootButton('ROOT-RUN','Pause')}`);
+    // Actual UI actions on Task detail (seq45), intercepted shipping client requests and refresh receipts.
+    scenario='populated';toggled={held:false,generation:4};const page=await open('/orgs/pause-org/tasks/ROOT-RUN');await wait(page,`!!${rootButton('ROOT-RUN','Pause')}`);
     let from=ledger.length;await enter(page,rootButton('ROOT-RUN','Pause'));
     await wait(page,`(${rootButton('ROOT-RUN','Pause')})?.disabled===true`);
     check('Pause disables repeats',await evaluate(page,`(${rootButton('ROOT-RUN','Pause')})?.disabled`));
     await wait(page,`!!${rootButton('ROOT-RUN','Resume')} && !(${rootButton('ROOT-RUN','Resume')}).disabled`);
     check('Pause one shipping POST',ledger.slice(from).filter(x=>x.method==='POST').map(x=>[x.path,x.body]),[['/api/v1/orgs/pause-org/tasks/ROOT-RUN/pause',{expected_generation:4}]]);
-    check('Pause refreshed list without overview read',[ledger.slice(from).some(x=>x.path.endsWith('/tasks/roots')),ledger.slice(from).some(x=>x.path.endsWith('/pause-overview'))],[true,false]);
+    check('Pause refreshed detail without overview read',[ledger.slice(from).some(x=>x.method==='GET'&&x.path.endsWith('/tasks/ROOT-RUN')),ledger.slice(from).some(x=>x.path.endsWith('/pause-overview'))],[true,false]);
     from=ledger.length;await enter(page,rootButton('ROOT-RUN','Resume'));await wait(page,`!!${rootButton('ROOT-RUN','Pause')} && !(${rootButton('ROOT-RUN','Pause')}).disabled`);
     check('Resume one shipping POST',ledger.slice(from).filter(x=>x.method==='POST').map(x=>x.body),[{expected_generation:5}]);
-    control='conflict';from=ledger.length;await enter(page,rootButton('ROOT-RUN','Pause'));await wait(page,"!!document.querySelector('[data-tasks-responsive-list] [role=\"alert\"]')");await sleep(100);
+    control='conflict';from=ledger.length;await enter(page,rootButton('ROOT-RUN','Pause'));await wait(page,"!!document.querySelector('[data-task-pause=\"ROOT-RUN\"] [role=\"alert\"]')");await sleep(100);
     check('Conflict no opposing/retry POST',ledger.slice(from).filter(x=>x.method==='POST').map(x=>[x.path,x.body,x.status]),[['/api/v1/orgs/pause-org/tasks/ROOT-RUN/pause',{expected_generation:6},409]]);
-    check('Conflict accessible translated copy',await evaluate(page,`document.querySelector('[data-tasks-responsive-list] [role="alert"]').textContent.includes(${quote(tr('en','tasks.pause.error.conflict'))})`));
+    check('Conflict accessible translated copy',await evaluate(page,`document.querySelector('[data-task-pause="ROOT-RUN"] [role="alert"]').textContent.includes(${quote(tr('en','tasks.pause.error.conflict'))})`));
+    // Locale switch on mounted detail: same focused Pause node, translated name, zero requests.
+    control='success';await evaluate(page,`(()=>{const b=${rootButton('ROOT-RUN','Resume')}||${rootButton('ROOT-RUN','Pause')};window.pauseNode=b;b.focus();return true;})()`);
+    for(const next of ['zh-CN','en']){from=ledger.length;await switchLocale(page,next);
+      check(`detail ${next} focused pause node kept`,await evaluate(page,`[document.activeElement===window.pauseNode,window.pauseNode.isConnected,[${quote(tr(next,'tasks.pause.pause'))},${quote(tr(next,'tasks.pause.resume'))}].includes(window.pauseNode.textContent.trim())]`),[true,true,true]);
+      check(`detail ${next} zero locale HTTP`,ledger.slice(from),[]);}
+    // Back to the list after the control refresh: still pause-free.
+    from=ledger.length;await evaluate(page,`(()=>{const a=[...document.querySelectorAll('a')].find(a=>a.textContent.trim()===${quote(tr('en','tasks.detail.back'))});a.click();return true;})()`);
+    await wait(page,"!!document.querySelector('[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/ROOT-RUN\"]')");await sleep(150);
+    check('list after detail action is pause-free',await evaluate(page,listPauseFree));
     await close(page);
     // Ordinary Tasks list finite states (loading/empty/error -> Retry) with the overview panel absent.
     for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark'])for(const mode of ['loading','empty','error']){
@@ -166,14 +181,14 @@ async function main(){
       scenario=mode;const page=await open('/orgs/pause-org/tasks',locale,width,height,theme);
       const key=mode==='loading'?'tasks.list.loading':mode==='empty'?'tasks.list.emptyTitle':'tasks.list.errorTitle';
       await wait(page,`document.body.textContent.includes(${quote(tr(locale,key))})`);
-      check(`${name} localized list state`,true);check(`${name} no pause overview panel`,await evaluate(page,panelAbsent));check(`${name} page fits`,await evaluate(page,'document.documentElement.scrollWidth <= innerWidth + 1'));
+      check(`${name} localized list state`,true);check(`${name} no pause overview panel`,await evaluate(page,panelAbsent));check(`${name} list has no pause UI`,await evaluate(page,listPauseFree));check(`${name} page fits`,await evaluate(page,'document.documentElement.scrollWidth <= innerWidth + 1'));
       await shot(page,`${name}`,{locale,width,height,theme,state:`tasks list ${mode}`});
-      if(mode==='error'){scenario='populated';await enter(page,button(tr(locale,'common.retry')));await wait(page,"!!document.querySelector('[data-tasks-responsive-list] [data-task-pause=\"ROOT-RUN\"]')");check(`${name} Retry recovers list`,true);}
+      if(mode==='error'){scenario='populated';await enter(page,button(tr(locale,'common.retry')));await wait(page,"!!document.querySelector('[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/ROOT-RUN\"]')");check(`${name} Retry recovers list`,true);check(`${name} recovered list pause-free`,await evaluate(page,listPauseFree));}
       await close(page);
     }
     for(const locale of ['en','zh-CN'])for(const [width,height]of [[390,844],[1440,900]])for(const theme of ['light','dark']){
       const name=`${locale}-${width}-${theme}`;
-      scenario='populated';const child=await open('/orgs/pause-org/tasks/CHILD-1',locale,width,height,theme);await wait(child,"!!document.querySelector('[data-task-pause=\"CHILD-1\"]')");check(`${name} child has inherited root link`,await evaluate(child,"document.querySelector('[data-task-pause] a').getAttribute('href')"),'/orgs/pause-org/tasks/ROOT-PAUSING');check(`${name} child has no controls`,await evaluate(child,"document.querySelector('[data-task-pause] button')===null"));check(`${name} child fits`,await evaluate(child,'document.documentElement.scrollWidth <= innerWidth + 1'));await shot(child,`${name}-child`,{locale,width,height,theme,state:'child inherited'});await close(child);
+      scenario='populated';const child=await open('/orgs/pause-org/tasks/CHILD-1',locale,width,height,theme);await wait(child,"!!document.querySelector('[data-task-pause=\"CHILD-1\"]')");check(`${name} child has inherited root link`,await evaluate(child,"document.querySelector('[data-task-pause] a').getAttribute('href')"),'/orgs/pause-org/tasks/ROOT-PAUSING');check(`${name} child inherited explanation`,await evaluate(child,`document.querySelector('[data-task-pause]').textContent.includes(${quote(String(tr(locale,'tasks.pause.inherited')).split('{')[0].trim())})`));check(`${name} child has no controls`,await evaluate(child,"document.querySelector('[data-task-pause] button')===null"));check(`${name} child fits`,await evaluate(child,'document.documentElement.scrollWidth <= innerWidth + 1'));await shot(child,`${name}-child`,{locale,width,height,theme,state:'child inherited'});await close(child);
     }
     check('zero GET /tasks/pause-overview across the whole run',overviewReads(),0);
     const assets=readdirSync(join(dist,'assets')).filter(file=>/\.(js|css)$/.test(file)).map(file=>({file,sha256:digest(readFileSync(join(dist,'assets',file)))}));

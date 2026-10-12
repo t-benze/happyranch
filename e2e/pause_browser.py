@@ -34,7 +34,9 @@ class PauseBrowser:
         """Real list/detail/child + reload; no projected-state mocks.
 
         The Tasks page no longer mounts the standalone pause overview panel
-        (founder THR-292 seq41); the CLI/API overview stays in ``pause.overview``.
+        (founder THR-292 seq41) and its rows render no pause UI (seq45): all
+        pause controls/state/blockers live on Task detail. The JSON list
+        projection and CLI/API overview stay in ``pause.overview``.
         """
         page = self.b.page
         self.locale(locale)
@@ -43,6 +45,10 @@ class PauseBrowser:
                  else {"pausing": "暂停中", "paused": "已暂停"})[state]
         resume, pause = ("Resume", "Pause") if locale == "en" else ("恢复", "暂停")
         overview_title = "Task pause overview" if locale == "en" else "任务暂停概览"
+        # Exact state labels (authored briefs such as PAUSE_*_ROOT must not collide) plus pause-only phrases.
+        pause_labels = ["Not held", "Pausing", "Paused"] if locale == "en" else ["未暂停", "暂停中", "已暂停"]
+        pause_phrases = (["Drain evidence", "Hold inherited from root", "drain blocker"]
+                         if locale == "en" else ["排空证据", "继承根任务", "排空阻塞项"])
         roots_path = "/api/v1/orgs/alpha/tasks/roots"
         overview_path = "/api/v1/orgs/alpha/tasks/pause-overview"
         overview_reads: list[str] = []
@@ -57,11 +63,17 @@ class PauseBrowser:
                 page.goto(f"{self.b.base}/orgs/alpha/tasks", timeout=self.c.remaining(self.b.page_timeout)*1000)
                 self.c.remaining()
             main = page.get_by_role("main")
-            root_control = main.locator(f'[data-task-pause="{root}"]')
-            expect(root_control.get_by_text(label, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
+            # Ordinary lifecycle row navigation stays; no pause UI renders in the list (seq45).
+            expect(main.locator(f'a[href="/orgs/alpha/tasks/{root}"]').first).to_be_visible(timeout=self.c.remaining(5)*1000)
             self.c.remaining()
-            expect(root_control.get_by_role("button", name=resume, exact=True)).to_be_visible(timeout=self.c.remaining(5)*1000)
+            expect(page.locator("[data-task-pause]")).to_have_count(0, timeout=self.c.remaining(5)*1000)
             self.c.remaining()
+            for name in (pause, resume):
+                expect(page.get_by_role("button", name=name, exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)
+                self.c.remaining()
+            for text, exact in [*((t, True) for t in pause_labels), *((t, False) for t in pause_phrases)]:
+                expect(main.get_by_text(text, exact=exact)).to_have_count(0, timeout=self.c.remaining(5)*1000)
+                self.c.remaining()
             expect(main.get_by_role("region", name=overview_title, exact=True)).to_have_count(0, timeout=self.c.remaining(5)*1000)
             self.c.remaining()
         finally:
