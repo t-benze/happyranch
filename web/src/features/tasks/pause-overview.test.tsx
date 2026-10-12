@@ -64,13 +64,15 @@ test('THR-292 seq41 locale switch keeps focused root Pause control with zero req
   const list = await screen.findByTestId('tasks-responsive-list');
   const pause = await within(list).findByRole('button', { name: 'Pause' });
   pause.focus();
+  expect(document.activeElement).toBe(pause);
   const before = requests.length;
+  // Focus is set once only; each switch must keep it on the same root Pause node without repair.
   fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
+  expect(document.activeElement).toBe(pause);
   expect(within(list).getByRole('button', { name: '暂停' })).toBe(pause);
   fireEvent.click(screen.getByTestId('test-set-locale-en'));
-  expect(within(list).getByRole('button', { name: 'Pause' })).toBe(pause);
-  pause.focus();
   expect(document.activeElement).toBe(pause);
+  expect(within(list).getByRole('button', { name: 'Pause' })).toBe(pause);
   expect(requests.length).toBe(before);
   expect(requests).not.toContain('pause-overview');
 });
