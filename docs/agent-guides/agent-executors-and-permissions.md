@@ -1,5 +1,39 @@
 # Agent Executors And Permissions
 
+## Founder-managed Default (THR296)
+
+
+The generated task-completion section refers to the canonical start-task skill
+for task-owner decision scope. Ordinary worker roots may use only their
+server-authorized `done`, self-only `delegate` or `escalate` decisions;
+delegated leaves return plain completions. An attempted non-root founder
+escalation fails the child and wakes its parent.
+Manager-only operations remain restricted. This wording does not grant powers
+or change callback identity, ordering, schemas or materialization algorithms.
+
+Maintenance rejects unexpected generated permission/skill grants before
+mutation; it does not change the native permission/materializer algorithms.
+Generated/global fault cuts name only checked finite paths. The paired observer
+refuses unsupported descriptor transfers or lost receipts; it is not an executor
+enforcement mechanism or a positive M inhibition certificate.
+
+Moving consultant_head and consultant_codex changes their current roster
+membership and demotes the former manager. Canonical names, providers,
+workspaces, runtime/provider memory, Git registrations and history remain in
+place. An attached pending bootstrap manager has no executable active definition
+or current manager-policy eligibility; approval/init use the existing lifecycle.
+The hosted Codex smoke stages that exact pending definition before attachment,
+then retains real authenticated approval and the genuine callback/launch witness.
+Founder is not an executor. Ordinary workers keep self-only delegation
+and acquire no manager/admin/policy/template powers. Existing supported
+materializers refresh declared generated instructions/skill links; their
+permission and authentication algorithms are unchanged. The bounded operator
+uses the existing task/thread/wake/dream/schedule/bootstrap union materializer
+for both workers and its normal package/both-root integrity validator, then
+flushes the verified output before readiness. Operator migration
+clears both agents' provider resume IDs/watermarks using the native atomic
+reset/audit helper, while preserving thread delivery and breaker continuity.
+
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > THR-291 seq69: merge CI/default/all/pre-push are lint/static only; normal hooks
@@ -205,7 +239,7 @@ When `model` is **unset** (the default for all existing agents), the executor la
 ``agent.yaml`` is no longer read or written for model resolution. The
 ``happyranch set-model`` command writes exclusively to the ``.md`` frontmatter.
 
-Custom/self-registered profiles do not currently support `model_arg` (separate founder-gated track).
+Custom profiles preserve legacy input-v1 `model:null` by default. An ordinary adapter update can explicitly declare input-v2 model/effort forwarding; this declaration participates in existing exact-artifact approval. See the optional-input contract below.
 
 Missing values default to `claude`. All executors share `runtime/skills/bundled/`.
 
@@ -298,28 +332,26 @@ double-read, then independently confirms merged/default-branch state and
 candidate-to-PR-head containment; another task's unmerged PR never counts. It
 never uses `--force` and never deletes a branch.
 
-Independently, the runtime has a forward-only terminal hook for exact
-`completed`, `failed`, and `cancelled` transitions. It resolves only the
-registered assigned agent's canonical `repos/happyranch` task worktree and
-fails closed across ownership, realpath/device, Git registration/branch,
-cleanliness, remote durability, PR, liveness, recorded-deferral, and deadline
-gates. Each shipping hook makes one attempt after terminal durability and
-applicable teardown; errors and uncertainty preserve. Its process gate loads
-the bundled `workspace-cleanup` scanner by explicit path and applies the same
-exact name-plus-expected-cgroup helper exemptions: root-owned processes are out
-of scope, any other unreadable same-user process is uncertain, and a positive
-reference preserves. The call runs in the existing task worker thread under
-the unchanged five-second total hook deadline. It does not scan other
-worktrees or schedule cleanup, and it deliberately excludes `superseded`,
-`blocked_on_job`, accepted/restart completion-recovery settlement, and
-historical residue.
+Independently, newly committed structural roots in all four terminal states
+(`completed`, `failed`, `cancelled`, `superseded`) receive one bounded
+post-teardown parent-tree reconciliation, including NULL-parent workflow tasks.
+An old child deferral is advisory only in that root pass. The child hook retains
+its one-task/five-second deferral policy. Shared exact-HEAD Git preservation,
+recursive snapshots/protected identities and the unchanged packaged same-user
+scanner retain dirty, active, successor-used, protected and unknown paths.
+Only the original winning owner admits a committed audit start; repeated or
+interrupted notices never retry. No agent permission or execution enforcement
+changes. Root batches share10s work/1s report/1s owned-group reap and explicit
+node/event/candidate/output caps with truthful frontier/remainder. Async owners
+await off-loop outside locks; no historical scan or schedule follows.
+See [the complete owner contract](orchestrator-contracts.md#forward-only-terminal-task-worktrees).
 
 **Custom-adapter profiles** (D7B, ``command_adapter_id: custom-adapter:<id>``)
 route through ``CustomAdapterExecutor`` instead — see
 [Custom adapter profiles](#custom-adapter-profiles-thr-107-d7b) below.
 
 **Custom-adapter result contract (THR-107).** Every registered custom adapter
-receives one v1 ``AdapterInput`` JSON object on stdin and MUST return one valid
+receives one ``AdapterInput`` JSON object (v1 by default, v2 only with explicit `input_options`) on stdin and MUST return one valid
 v1 ``AdapterOutput`` JSON object on stdout. This contract is mandatory; there
 is no optional sentinel envelope or legacy profile fallback. Before launch the
 daemon requires founder approval and an exact profile bind, verifies the
@@ -356,12 +388,16 @@ earned receipt remains dormant: no runner reads it in PR 2, built-ins and
 registered kimi/codebuddy ordinary behavior are unchanged, and custom profiles
 still receive fresh/full SQLite-canonical thread prompts.
 
+**Optional reasoning effort (THR298).** The static catalog is shared by the factory, adapters, compatibility fallback argv and UI metadata. Claude uses `--effort`, Codex a literal `-c model_reasoning_effort="<level>"`, Pi `--thinking`, and OpenCode `-m provider/model#variant`. Unset adds no override, including when the saved model already contains a suffix. Equal explicit/embedded variants work; conflicts refuse; OpenCode explicit effort without `provider/model` refuses. The independent OpenCode 2.0.12 `--dir`/transport mismatch remains outside this change. Exact stub argv proves transport, not native provider behavior.
+
+Custom `input_options` declares strict `version:2`, optional literal `model_arg_template`, and paired `effort_arg_template` / finite `reasoning_effort_values`. Normal registration/conformance/store/profile resolution/runtime all use that exact declaration. Templates are argv elements with one matching `{model}` or `{effort}` placeholder, never shell expressions. Input-v2 sends the actual selected model (or null) and effort object (or null); v1 still sends `model:null` and no effort member, even with a configured model. Input-v2 must acknowledge integer `adapter_metadata.input_contract_version:2`; output stays v1 with the existing identity/version/session/hash/retry checks. Legacy adapters need no reapproval. Opt-in is a normal reviewed adapter update, not a capability inspector. The [current spec](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) gives the exact declaration and wire shape.
+
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
 ``GET /api/v1/runtime/adapters/contract-reference`` — accessible during
 registration through the existing scoped registration-token posture on loopback
 (adapter-purpose ``hrreg_`` token, read-only, token is not consumed). The
-endpoint returns JSON Schemas generated from the shipping Pydantic models
+endpoint returns legacy input/output schemas plus `input_v2_schema` and `input_options_schema` generated from the shipping Pydantic models
 (``runtime/orchestrator/adapter_contract.py``) — the **server-derived schema is
 canonical**. Candidates implementing adapter wrappers must fetch this reference
 first and follow the returned schemas exactly.

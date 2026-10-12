@@ -152,7 +152,10 @@ def _scan(root, teams, deadline):
     members = {}
     for team in disk.teams():
         manager = disk.manager_for_team(team)
-        for name, role in ((manager.name, 'manager'), *((w, 'worker') for w in manager.workers)):
+        # The human Founder manager has no executable agent definition. Its
+        # separate naming owner must never enter the agent membership set.
+        agent_manager = ((manager.name, 'manager'),) if manager.kind == 'agent' else ()
+        for name, role in (*agent_manager, *((w, 'worker') for w in manager.workers)):
             if name in members or subjects.get(name) not in ('active', 'pending'):
                 raise NamingError('naming_team_membership_mismatch')
             definition = definitions[name]

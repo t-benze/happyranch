@@ -136,7 +136,12 @@ You fill in a JSON payload with these fields:
 **Required:** auth binding + `title` + `script` + `interpreter`.
 **Auth binding (exactly one):**
 - **Task path** — `task_id` + `session_id` from your active task session (the shape above).
-- **Optional:** `cwd_hint`, `rationale`, `max_runtime_seconds`, `max_output_bytes`.
+- **Optional:** `cwd_hint`, `rationale`, `max_runtime_seconds`.
+
+**Current output-cap limitation:** public submission uses a fixed default of
+50 MiB (52428800 bytes) per stream (stdout and stderr separately).
+`max_output_bytes` is an internal record/runner field, not a supported public
+input. A configurable submission override remains unimplemented design intent.
 
 ### The two policy flags
 

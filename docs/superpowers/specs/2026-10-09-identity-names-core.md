@@ -27,7 +27,7 @@ index metadata to independently pinned literal references and validates bounded
 rows and their cross-row ownership. Partial/newer/foreign/extra/corrupt naming
 refuses without repair. Generic Database/runtime-audit never acquire names.
 
-Release-reference construction supports fresh/v0/v2/v2-organic × F/E/G/H × naming absent/v1,
+Release-reference construction supports fresh/v0/v2/v2-organic × F/E/G/H/I × naming absent/v1,
 including all three current generic cleanup indexes. Every non-null schema SQL
 object participates; no object filter/whitelist or candidate-derived baseline.
 Unknown whole-database objects keep the existing strict reference refusal.
@@ -596,3 +596,32 @@ from both parents are retained, including naming and H route classifications.
 Automated PR/merge checks follow main's reviewed lint/static-only configuration.
 The daily Product E2E schedule is independent and must not be dispatched ad hoc.
 Python units stay retired; general integration stays SKIPPED under THR243seq42.
+
+### Main composition with I, roster and reasoning effort (TASK-10565 step20)
+
+The next combined source incorporates main `31f489c725bc2ed14d14d061f5d22c8e08f730cf`.
+The existing naming/Pause dimensions compose with main's I workflow layout.
+Fresh construction selects the release's original draft DDL for G/H and its
+revision draft DDL for I without recursively invoking the whole-database
+reference validator. Existing migration validation retains naming rows and
+checks; no new DDL or live migration is introduced by this composition.
+
+Namespace capture validates executable agent managers and workers. A typed human
+Founder manager has no agent definition and is excluded from that agent member
+set; Founder retains its existing separate human naming owner. Team roster
+source and lifecycle validation remain authoritative.
+
+CLI model updates resolve the current address to its permanent ID and preserve
+the reasoning-effort payload. Task assignment help retains the human-managed
+team requirement. Browser providers expose both naming and workflow-review
+APIs; agent view handling retains unavailable-list and terminated-view guards.
+Both manual diagnostic workflow selections remain separate, with mutually
+exclusive job conditions; this creates no run allowance or daily E2E trigger.
+
+This composition is behaviorally UNVERIFIED. Earlier naming/browser/causal
+receipts remain attributed to their original sources. Whole-candidate independent
+review, separate behavioral QA, remaining real-owner proof dispositions and
+exact-head lint/static checks remain required before guarded merge. THR299's
+reconciliation source is inherited from main; its installed operation belongs
+to TASK10725 and this integration does not validate either historical retry.
+General integration remains SKIPPED and Python units remain RETIRED.

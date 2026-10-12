@@ -17,6 +17,11 @@ escalated}.
 """
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import Future
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 import importlib.util
 import json
 import logging
@@ -29,7 +34,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Callable, NamedTuple
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from runtime.infrastructure.database import (
     Committed, InvalidLineage, LostClaim, PendingRetry, RetryClaim, SpawnOutcome,
@@ -170,8 +175,712 @@ def _terminal_worktree_process_reference(
     return "process-probe-uncertain"
 
 
+_ROOT_WORKTREE_OWNER_EVENTS: ContextVar = ContextVar('root_worktree_owner_events', default=None)
+
+
+class _RootWorktreeTransitions(list):
+    """Bounded owner manifest; overflow is an explicit audit-window frontier."""
+    def __init__(self):
+        super().__init__()
+        self.capture_seconds = 0.0
+        self.unexamined = []
+        self.overflow_count = 0
+        self.audit_low = None
+        self.audit_high = None
+
+    def __bool__(self):
+        return len(self) > 0 or bool(self.unexamined) or self.overflow_count > 0
+
+    def append(self, event):
+        if len(self) < 256:
+            super().append(event)
+        else:
+            self.overflow_count += 1
+
+    def extend(self, events):
+        self.capture_seconds += getattr(events, 'capture_seconds', 0.0)
+        for event in events:
+            self.append(event)
+        missing = getattr(events, 'unexamined', [])
+        room = max(0, 256-len(self.unexamined))
+        self.unexamined.extend(missing[:room])
+        self.overflow_count += max(0, len(missing)-room)
+        self.overflow_count += getattr(events, 'overflow_count', 0)
+        low, high = getattr(events, 'audit_low', None), getattr(events, 'audit_high', None)
+        if low is not None:
+            self.audit_low = low if self.audit_low is None else min(low, self.audit_low)
+        if high is not None:
+            self.audit_high = high if self.audit_high is None else max(high, self.audit_high)
+
+
+@contextmanager
+def _defer_root_worktree_batches(orch, transitions):
+    delivery = dict(orch=orch, events=transitions, active=True, teardown_incomplete=False)
+    token = _ROOT_WORKTREE_OWNER_EVENTS.set(delivery)
+    try:
+        yield delivery
+    finally:
+        delivery['active'] = False
+        _ROOT_WORKTREE_OWNER_EVENTS.reset(token)
+
+
+@dataclass
+class _RootWorktreeTransition:
+    before: dict
+    after: dict
+    writer: str
+    attempted: bool = False
+
+    def provenance(self) -> dict:
+        return dict(before=self.before, after=self.after, writer=self.writer)
+
+
+@contextmanager
+def _capture_root_worktree_transition(orch, task_id, writer, transitions):
+    """Capture only the ORIGINAL committed owner, never a later notice.
+
+    The terminal writer still runs if capture admission fails. Capturing adds
+    no lifecycle semantics. Callers place their root tail outside all writer
+    locks, after their existing terminal/history/teardown effects.
+    """
+    if orch is None:
+        yield
+        return
+    db = orch._db
+    allowance = max(0.0, min(0.05, 0.5-getattr(transitions, 'capture_seconds', 0.0)))
+    capture_started = time.monotonic()
+    acquired = allowance > 0 and db._lock.acquire(timeout=allowance)
+    before = None
+    capture_unavailable = not acquired
+    before_seconds = 0.0
+    try:
+        if acquired:
+            try:
+                before = db.terminal_worktree_task_projection(task_id)
+                capture_unavailable |= before is None
+                if isinstance(transitions, _RootWorktreeTransitions):
+                    anchor = db.terminal_worktree_audit_high_watermark()
+                    if type(anchor) is not int:
+                        raise ValueError('capture_audit_anchor_unavailable')
+                    if transitions.audit_low is None:
+                        transitions.audit_low = anchor
+                    transitions.audit_high = anchor
+            except Exception:
+                capture_unavailable = True
+                if isinstance(transitions, _RootWorktreeTransitions):
+                    transitions.audit_high = None
+                logger.exception('root worktree %s before projection unavailable', task_id)
+        before_seconds = time.monotonic()-capture_started
+        yield
+    finally:
+        after_started = time.monotonic()
+        try:
+            if acquired and before is not None and before['parent_task_id'] is None:
+                after = db.terminal_worktree_task_projection(task_id)
+                capture_unavailable |= after is None
+                if (after is not None and before['status'] not in {s.value for s in TERMINAL_STATES}
+                        and after['status'] in {s.value for s in TERMINAL_STATES}):
+                    transitions.append(_RootWorktreeTransition(before, after, writer))
+                if isinstance(transitions, _RootWorktreeTransitions):
+                    anchor = db.terminal_worktree_audit_high_watermark()
+                    if type(anchor) is not int:
+                        raise ValueError('capture_audit_anchor_unavailable')
+                    transitions.audit_high = anchor
+        except Exception:
+            capture_unavailable = True
+            if isinstance(transitions, _RootWorktreeTransitions):
+                transitions.audit_high = None
+            logger.exception('root worktree %s transition capture unavailable', task_id)
+        finally:
+            if isinstance(transitions, _RootWorktreeTransitions):
+                transitions.capture_seconds += before_seconds+time.monotonic()-after_started
+                if capture_unavailable:
+                    if len(transitions.unexamined) < 256:
+                        transitions.unexamined.append(dict(task_id=task_id, writer=writer, reason='transition_capture_unavailable',
+                            audit_low=transitions.audit_low, audit_high=transitions.audit_high))
+                    else:
+                        transitions.overflow_count += 1
+            if acquired:
+                db._lock.release()
+            else:
+                logger.warning('root worktree %s transition capture lock unavailable; no new admission', task_id)
+
+
+@dataclass
+class _RootWorktreeBudget:
+    started: float = field(default_factory=time.monotonic)
+    db_seconds: float = 0.0
+    report_seconds: float = 0.0
+    reap_seconds: float = 0.0
+    nodes: int = 0
+    attempts: int = 0
+    admissions: int = 0
+    halted: bool = False
+    processes: list = field(default_factory=list)
+
+    @property
+    def deadline(self):
+        return self.started + 10.0
+
+    def remaining(self):
+        if self.halted:
+            raise RuntimeError('owned_probe_or_action_unsettled')
+        return _terminal_worktree_remaining(self.deadline)
+
+    def database(self, db, operation, *, report=False):
+        allowance = (1.0-self.report_seconds if report else
+                     min(0.5-self.db_seconds, self.remaining()))
+        if allowance <= 0:
+            raise TimeoutError('report_budget' if report else 'db_budget')
+        started = time.monotonic()
+        acquired = db._lock.acquire(timeout=min(0.05, allowance))
+        try:
+            if not acquired:
+                raise TimeoutError('db_lock_admission')
+            result = operation()
+        finally:
+            if acquired:
+                db._lock.release()
+            elapsed = time.monotonic()-started
+            if report:
+                self.report_seconds += elapsed
+            else:
+                self.db_seconds += elapsed
+        # Synchronous SQLite/fsync is nonpreemptible. A late return admits no
+        # further work. A report commit may exist despite a reported overrun.
+        if elapsed > allowance:
+            self.halted = True
+            raise TimeoutError('budget_overrun')
+        return result
+
+    def command(self, args, cwd, deadline):
+        """Owned group, capped streaming capture, cumulative one-second reap."""
+        import selectors
+        import signal
+        self.remaining()
+        if self.reap_seconds >= 1.0:
+            self.halted = True
+            raise TimeoutError('reap_reserve_exhausted')
+        process = subprocess.Popen(args, cwd=cwd, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, start_new_session=True)
+        facts = dict(pid=process.pid, argv=args, action_started=(args[:3] == ['git', 'worktree', 'remove']), reaped=False)
+        self.processes.append(facts)
+        selector = selectors.DefaultSelector()
+        output = [bytearray(), bytearray()]
+        for index, stream in enumerate((process.stdout, process.stderr)):
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, index)
+        try:
+            while selector.get_map():
+                _terminal_worktree_remaining(min(deadline, self.deadline))
+                for key, _ in selector.select(min(0.05, max(0, min(deadline, self.deadline)-time.monotonic()))):
+                    chunk = os.read(key.fd, 65536)
+                    if chunk:
+                        output[key.data].extend(chunk)
+                        if sum(map(len, output)) > 1048576:
+                            raise ValueError('subprocess_output_cap')
+                    else:
+                        selector.unregister(key.fileobj)
+            code = process.wait(timeout=max(0.001, min(deadline, self.deadline)-time.monotonic()))
+            facts['returncode'] = code
+            return subprocess.CompletedProcess(args, code, output[0].decode(), output[1].decode())
+        finally:
+            selector.close()
+            started = time.monotonic()
+            # Kill the owned group even when its leader exited but descendants
+            # retained a pipe. No next mutation until group exit is observed.
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                group_live = False
+            else:
+                group_live = True
+            if group_live:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    if process.poll() is None:
+                        process.wait(timeout=min(0.25, max(0.001, 1.0-self.reap_seconds)))
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    pass
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=min(0.5, max(0.001, 1.0-self.reap_seconds-(time.monotonic()-started))))
+                facts['reaped'] = True
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    facts['group_exited'] = True
+                else:
+                    facts['group_exited'] = False
+                    self.halted = True
+            except subprocess.TimeoutExpired:
+                self.halted = True
+            self.reap_seconds += time.monotonic()-started
+            if self.reap_seconds > 1.0:
+                self.halted = True
+            process.stdout.close()
+            process.stderr.close()
+            # Retain action/uncertainty facts; settled probes do not grow the
+            # aggregate report without bound. Group exit was observed above.
+            if not facts['action_started'] and facts['reaped'] and facts.get('group_exited'):
+                self.processes.remove(facts)
+
+
+def _root_worktree_membership(orch, root, budget):
+    """FIFO parent-only closure; retain the last accepted cursor on refusal."""
+    members = {root['id']: root}
+    if budget.nodes >= 256:
+        return {}, [dict(parent=root['id'], cursor=None, depth=0)], 1, False, 'membership_node_cap'
+    budget.nodes += 1
+    frontier = [dict(parent=root['id'], cursor=None, depth=0)]
+    lower = 1
+    try:
+        while frontier:
+            budget.remaining()
+            edge = frontier[0]
+            rows = budget.database(orch._db, lambda: orch._db.terminal_worktree_children_page(
+                edge['parent'], None if edge['cursor'] is None else tuple(edge['cursor'])))
+            page = rows[:64]
+            # Validate the entire admitted page before advancing the cursor.
+            seen = set(members)
+            for row in page:
+                if (row['parent_task_id'] != edge['parent'] or row['id'] in seen
+                        or not isinstance(row['created_at'], str)):
+                    raise ValueError('membership_parent_or_cycle')
+                seen.add(row['id'])
+            if page and edge['depth'] >= 64:
+                edge['overflow_child_id'] = page[0]['id']; lower = len(members)+1
+                raise ValueError('membership_depth_cap')
+            if budget.nodes+len(page) > 256:
+                room = max(0, 256-budget.nodes)
+                lower = len(members)+len(page)
+                edge['overflow_child_id'] = page[room]['id']
+                edge['partially_admitted_page_ids'] = [row['id'] for row in page[:room]]
+                for row in page[:room]:
+                    members[row['id']] = row
+                    frontier.append(dict(parent=row['id'], cursor=None, depth=edge['depth']+1))
+                budget.nodes += room
+                raise ValueError('membership_node_cap')
+            for row in page:
+                members[row['id']] = row
+                frontier.append(dict(parent=row['id'], cursor=None, depth=edge['depth']+1))
+            budget.nodes += len(page)
+            lower = len(members)
+            if len(rows) == 65:
+                edge['cursor'] = [page[-1]['created_at'], page[-1]['id']]
+            else:
+                frontier.pop(0)
+        # Rewalk with the same paged SELECT owner, without increasing the
+        # admission count. A new edge or changed owner invalidates closure.
+        observed = {}
+        for parent in members:
+            cursor = None
+            while True:
+                rows = budget.database(orch._db, lambda: orch._db.terminal_worktree_children_page(parent, cursor))
+                for row in rows[:64]:
+                    if row['id'] not in members or row != members[row['id']] or row['id'] in observed:
+                        raise ValueError('membership_changed')
+                    observed[row['id']] = row
+                if len(rows) < 65:
+                    break
+                cursor = (rows[63]['created_at'], rows[63]['id'])
+        if set(observed) != set(members)-{root['id']}:
+            raise ValueError('membership_changed')
+        return members, [], lower, True, None
+    except Exception as exc:
+        return members, frontier, lower, False, str(exc)[:160]
+
+
+def _root_worktree_revalidate_membership(orch, members, budget):
+    observed = set()
+    for parent in members:
+        cursor = None
+        while True:
+            rows = budget.database(orch._db, lambda: orch._db.terminal_worktree_children_page(parent, cursor))
+            for row in rows[:64]:
+                if row['id'] not in members or row != members[row['id']] or row['id'] in observed:
+                    raise ValueError('action_membership_changed')
+                observed.add(row['id'])
+            if len(rows) < 65:
+                break
+            cursor = (rows[63]['created_at'], rows[63]['id'])
+    if observed != set(members)-{next(iter(members))}:
+        raise ValueError('action_membership_changed')
+
+
+def _root_worktree_protection(orch, members, budget):
+    projections = {}
+    reasons = {}
+    sessions = getattr(orch, '_sessions', None)
+    if sessions is None:
+        raise ValueError('session_tracker_unavailable')
+    for tid, task in members.items():
+        current, projection = budget.database(orch._db, lambda: (
+            orch._db.terminal_worktree_task_projection(tid), orch._db.terminal_worktree_protection(tid)))
+        if current != task:
+            raise ValueError('task_projection_changed')
+        projections[tid] = projection
+        if task['status'] not in {s.value for s in TERMINAL_STATES}:
+            reasons[tid] = 'owner_nonterminal'
+        if (any(t == tid for t, _a, _s in sessions.iter_active())
+                or sessions.iter_task_cancel_controls(tid) or sessions.iter_task_pids(tid)):
+            reasons[tid] = 'live_session_control_or_pid'
+        for job in projection['jobs']:
+            if job['status'] in ('pending', 'running'):
+                reasons[tid] = 'pending_or_running_job'
+            elif job['status'] not in ('completed', 'failed', 'cancelled', 'rejected'):
+                raise ValueError('job_state_unknown')
+            elif job['status'] != 'rejected' and job['finished_at'] is None:
+                raise ValueError('job_terminal_evidence_missing')
+        for recovery in projection['recoveries']:
+            if recovery['state'] in ('claimed', 'callback_accepted') or recovery['settled_at'] is None:
+                raise ValueError('original_recovery_unsettled')
+        for intent in projection['intents']:
+            if intent['state'] not in ('completed', 'failed', 'cancelled'):
+                raise ValueError('workflow_host_ownership_unsettled')
+            if intent['host_launch_started']:
+                # A status label cannot replace authenticated native closure.
+                # The bounded projection has no complete historical host proof.
+                raise ValueError('workflow_native_closure_unavailable')
+        # Unknown predecessor-path reuse conservatively protects its entire
+        # parent tree. Related rows are never added to candidate membership.
+        if projection['successors']:
+            for identity in members:
+                reasons[identity] = 'successor_use_unresolved'
+    store = getattr(orch._db, '_task_pause_store', None)
+    if store is not None:
+        root_id = next(iter(members))
+        row = budget.database(orch._db, lambda: store.row_uncommitted(root_id))
+        if row:
+            if row['held']:
+                reasons.update({tid: 'stored_hold' for tid in members})
+            for entry in row['journal']['entries']:
+                if entry['task_id'] not in members or entry['context'].get('execution_unknown') or entry['phase'] == 'unknown':
+                    raise ValueError('host_tree_ownership_unavailable')
+                if entry['phase'] not in ('prepared', 'pending_job', 'retry_deferred', 'recovery_deferred'):
+                    reasons[entry['task_id']] = 'host_or_result_owner_unsettled'
+        # Session/control records and the durable journal together retain
+        # native ownership; clearing a tracker alone never closes the journal.
+    return projections, reasons
+
+
+def _root_worktree_registration(run, primary, candidate, task_id):
+    listed = run(['git', 'worktree', 'list', '--porcelain'], primary)
+    if listed.returncode:
+        raise ValueError('registration_unavailable')
+    records = []
+    for raw in listed.stdout.strip().split('\n\n'):
+        fields = {}
+        for line in raw.splitlines():
+            key, _, value = line.partition(' ')
+            if key in fields:
+                raise ValueError('registration_ambiguous')
+            fields[key] = value
+        if fields.get('worktree') == str(candidate):
+            records.append(fields)
+    if not records:
+        return None
+    if len(records) != 1 or records[0].get('branch') != 'refs/heads/task/'+task_id or 'locked' in records[0] or 'prunable' in records[0]:
+        raise ValueError('registration_identity')
+    return records[0]
+
+
+def _root_worktree_reconcile(orch, transition, event_id, budget, *, teardown_incomplete=False, receipt_allowance=262144):
+    root = transition.after
+    receipt = dict(event_id=event_id, root_created_at=root['created_at'],
+                   membership_complete=False, protection_complete=False, complete=False,
+                   task_ids=[], candidate_ids=[], outcomes=[], frontier=[],
+                   admitted_unexamined_ids=[], remaining_candidate_ids=[], unknown_total=None)
+    members, frontier, lower, complete, error = _root_worktree_membership(orch, root, budget)
+    receipt.update(task_ids=list(members), frontier=frontier, known_lower_bound=lower,
+                   membership_complete=complete, reason=error)
+    candidates = []
+    noops = []
+    # Discover every registered candidate before action, or refuse closure.
+    # Filesystem shape and Git registration are also repeated at action time.
+    run = lambda args, cwd: budget.command(args, cwd, budget.deadline)
+    try:
+        if not complete:
+            raise ValueError(error or 'membership_incomplete')
+        protections, retained = _root_worktree_protection(orch, members, budget)
+        receipt['protection_complete'] = True
+        if teardown_incomplete:
+            raise ValueError('terminal_teardown_incomplete')
+        for tid, task in members.items():
+            budget.remaining()
+            agent = task['assigned_agent']
+            if not agent or agent not in orch.teams.all_agents():
+                raise ValueError('assigned_owner_unregistered')
+            workspace = orch._paths.workspaces_dir / agent
+            primary = workspace / 'repos/happyranch'
+            candidate = primary / '.claude/worktrees' / tid
+            if (not primary.is_absolute() or primary.resolve() != primary or candidate.resolve() != candidate
+                    or candidate.parent != primary / '.claude/worktrees' or candidate.name != tid):
+                raise ValueError('path_noncanonical')
+            if not primary.exists():
+                noops.append(dict(task_id=tid, kind='noop', reason='primary_absent')); continue
+            registration = _root_worktree_registration(run, primary, candidate, tid)
+            if registration is None:
+                noops.append(dict(task_id=tid, kind='noop', reason='unregistered' if candidate.exists() else 'absent')); continue
+            candidates.append(dict(task_id=tid, path=str(candidate), primary=str(primary), workspace=str(workspace)))
+        receipt['candidate_ids'] = [item['task_id'] for item in candidates]
+        receipt['candidates'] = candidates
+        receipt['noops'] = noops
+        receipt['remaining_candidate_ids'] = list(receipt['candidate_ids'])
+        # Capacity is checked with all candidate and outcome space reserved.
+        worst = dict(receipt, outcomes=[dict(item, kind='action_anomaly', reason='x'*200, action_started=True,
+                     measurement_error='x'*200, apparent_bytes_after=None, allocated_bytes_after=None) for item in candidates],
+                     processes=budget.processes + [dict(pid=999999999999999999,
+                         argv=['git', 'worktree', 'remove', item['path']],
+                         action_started=True, reaped=True, group_exited=True, returncode=-999)
+                         for item in candidates[:max(0, 16-budget.attempts)]])
+        if len(json.dumps(worst).encode()) + 8192 > receipt_allowance:
+            raise ValueError('receipt_capacity')
+        if receipt['protection_complete'] is not True:
+            raise ValueError('protection_incomplete')
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='root-worktree-') as scratch:
+            for item in candidates:
+                if budget.attempts >= 16 or budget.halted or time.monotonic() >= budget.deadline:
+                    break
+                budget.attempts += 1
+                tid = item['task_id']; candidate = Path(item['path']); primary = Path(item['primary'])
+                candidate_deadline = min(budget.deadline, time.monotonic()+5.0)
+                run = lambda args, cwd: budget.command(args, cwd, candidate_deadline)
+                action_started = False
+                snapshot = str(Path(scratch) / (tid+'.json'))
+                outcome = dict(task_id=tid, path=str(candidate), kind='retained', action_started=False)
+                try:
+                    if tid in retained:
+                        outcome['reason'] = retained[tid]
+                        continue
+                    _root_worktree_revalidate_membership(orch, members, budget)
+                    before_protection, before_retained = _root_worktree_protection(orch, members, budget)
+                    if before_protection != protections or before_retained != retained:
+                        raise ValueError('protection_changed')
+                    head = None
+                    for boundary in range(2):
+                        budget.remaining()
+                        if _terminal_worktree_path_has_symlink(candidate) or _terminal_worktree_path_has_symlink(primary):
+                            raise ValueError('symlink_component')
+                        if primary.stat().st_uid != os.getuid() or candidate.stat().st_uid != os.getuid() or primary.stat().st_dev != candidate.stat().st_dev:
+                            raise ValueError('ownership_or_device')
+                        top = run(['git', 'rev-parse', '--show-toplevel'], primary)
+                        if top.returncode or top.stdout.strip() != str(primary):
+                            raise ValueError('primary_identity')
+                        registration = _root_worktree_registration(run, primary, candidate, tid)
+                        if registration is None:
+                            raise ValueError('registration_changed')
+                        common = run(['git', 'rev-parse', '--git-common-dir'], candidate)
+                        common_primary = run(['git', 'rev-parse', '--git-common-dir'], primary)
+                        if common.returncode or common_primary.returncode:
+                            raise ValueError('common_dir_unavailable')
+                        def resolved(value, base):
+                            return (base / value.strip()).resolve()
+                        if resolved(common.stdout, candidate) != resolved(common_primary.stdout, primary):
+                            raise ValueError('common_dir_mismatch')
+                        clean = run(['git', 'status', '--porcelain=v1', '--untracked-files=all'], candidate)
+                        if clean.returncode or clean.stdout:
+                            raise ValueError('dirty_or_status_unknown')
+                        preserved = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH.with_name('worktree_safety.py')),
+                                         '--timeout', str(max(0.001, candidate_deadline-time.monotonic())),
+                                         'preserved', str(candidate), str(primary), tid], primary)
+                        if preserved.returncode:
+                            raise ValueError('preservation_refused:'+preserved.stdout[:160])
+                        value = json.loads(preserved.stdout)
+                        if head is not None and value['head'] != head:
+                            raise ValueError('head_changed')
+                        head = value['head']; outcome['head'] = head
+                        scanned = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH), '--target', str(candidate),
+                                       '--containing-worktree', str(candidate), '--json', '--deadline-seconds',
+                                       str(max(0.001, candidate_deadline-time.monotonic()))], primary)
+                        if scanned.returncode or json.loads(scanned.stdout).get('state') != 'clear_observation':
+                            raise ValueError('process_use_blocked_or_unknown')
+                        safe = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH.with_name('worktree_safety.py')),
+                                    '--timeout', str(max(0.001, candidate_deadline-time.monotonic())), 'snapshot',
+                                    str(candidate), str(candidate), str(primary), item['workspace'], snapshot], primary)
+                        if safe.returncode:
+                            raise ValueError('recursive_boundary_refused')
+                        if boundary == 0:
+                            _root_worktree_revalidate_membership(orch, members, budget)
+                    latest, latest_retained = _root_worktree_protection(orch, members, budget)
+                    if latest != protections or latest_retained != retained:
+                        raise ValueError('action_protection_changed')
+                    # Action starts only after all reservations and evidence.
+                    budget.remaining(); _terminal_worktree_remaining(candidate_deadline)
+                    action_started = True; outcome['action_started'] = True
+                    removed = run(['git', 'worktree', 'remove', str(candidate)], primary)
+                    if removed.returncode:
+                        raise ValueError('remove_nonzero')
+                    post = run([sys.executable, str(_TERMINAL_WORKTREE_SCANNER_PATH.with_name('worktree_safety.py')),
+                                'post-action', str(candidate), snapshot, '', ''], primary)
+                    branch = run(['git', 'rev-parse', '--verify', 'refs/heads/task/'+tid], primary)
+                    if (post.returncode or _root_worktree_registration(run, primary, candidate, tid) is not None
+                            or branch.returncode or branch.stdout.strip() != head):
+                        raise ValueError('post_action_identity_registration_or_branch')
+                    outcome.update(kind='removed', reason='verified_absent_unregistered',
+                                   apparent_bytes_after=0, allocated_bytes_after=0)
+                except Exception as exc:
+                    outcome.update(kind='action_anomaly' if action_started else 'retained', reason=str(exc)[:200])
+                    if action_started or budget.halted:
+                        budget.halted = True
+                        try:
+                            absent = not os.path.lexists(candidate)
+                            outcome.update(apparent_bytes_after=0 if absent else None,
+                                allocated_bytes_after=0 if absent else None,
+                                measurement_error=None if absent else 'recursive_residual_measurement_unavailable')
+                        except OSError as measurement_error:
+                            outcome.update(apparent_bytes_after=None, allocated_bytes_after=None,
+                                measurement_error=type(measurement_error).__name__)
+                finally:
+                    receipt['outcomes'].append(outcome)
+                    receipt['remaining_candidate_ids'].remove(tid)
+                if budget.halted:
+                    break
+    except Exception as exc:
+        receipt['reason'] = str(exc)[:200]
+        receipt['protection_complete'] = False
+        receipt['admitted_unexamined_ids'] = list(members)
+    receipt['noops'] = noops
+    receipt['candidate_ids'] = [item['task_id'] for item in candidates]
+    accounted = {outcome['task_id'] for outcome in receipt['outcomes']}
+    receipt['remaining_candidate_ids'] = [item['task_id'] for item in candidates if item['task_id'] not in accounted]
+    receipt['candidate_total'] = len(candidates) if receipt['membership_complete'] and receipt['protection_complete'] else None
+    receipt['remaining_total'] = len(receipt['remaining_candidate_ids']) if receipt['candidate_total'] is not None else None
+    receipt['counts'] = {kind: sum(row['kind'] == kind for row in receipt['outcomes']) for kind in ('removed', 'retained', 'action_anomaly')}
+    receipt['counts']['unexamined'] = len(receipt['remaining_candidate_ids'])
+    receipt['complete'] = (receipt['membership_complete'] and receipt['protection_complete'] and not receipt['frontier']
+                           and not receipt['remaining_candidate_ids'] and not receipt['admitted_unexamined_ids']
+                           and not receipt['counts']['action_anomaly'] and not budget.halted)
+    receipt['unknown_total'] = len(members) if receipt['membership_complete'] else None
+    return receipt
+
+
+def _root_worktree_batch_impl(orch, transitions, *, teardown_incomplete=False):
+    """One finite, synchronous owner batch; no continuation or replay retry."""
+    delivery = _ROOT_WORKTREE_OWNER_EVENTS.get()
+    if delivery is not None and delivery['orch'] is orch and delivery['active']:
+        delivery['events'].extend(transitions)
+        delivery['teardown_incomplete'] |= teardown_incomplete
+        return []
+    if orch is None:
+        return []
+    capture_missing = getattr(transitions, 'unexamined', [])
+    if capture_missing:
+        logger.warning('root worktree capture scope unexamined=%s raw_audit_window=(%s,%s] cursor=%s; zero actions; complete=false',
+            capture_missing, getattr(transitions, 'audit_low', None),
+            getattr(transitions, 'audit_high', None), getattr(transitions, 'audit_low', None))
+    if getattr(transitions, 'overflow_count', 0):
+        # Close the raw interval after the last original writer's terminal
+        # audit tail. An unavailable upper bound remains explicitly unknown.
+        try:
+            capture_budget = _RootWorktreeBudget(db_seconds=transitions.capture_seconds)
+            transitions.audit_high = capture_budget.database(orch._db,
+                orch._db.terminal_worktree_audit_high_watermark, report=True)
+        except Exception:
+            transitions.audit_high = None
+        logger.warning('root worktree capture overflow=%s known_roots=%s raw_audit_window=(%s,%s] cursor=%s; zero actions; complete=false',
+            transitions.overflow_count, [event.after['id'] for event in transitions],
+            transitions.audit_low, transitions.audit_high, transitions.audit_low)
+        return []
+    if not transitions:
+        return []
+    capture_seconds = getattr(transitions, 'capture_seconds', 0.0)
+    budget = _RootWorktreeBudget(started=time.monotonic()-capture_seconds, db_seconds=capture_seconds)
+    # Missing protection/capture closure forbids the whole owner batch.
+    teardown_incomplete |= bool(capture_missing) or budget.db_seconds > 0.5
+    teardown_incomplete |= orch._db._lock._is_owned()
+    receipts = []
+    unexamined = [event.after['id'] for event in transitions if not event.attempted]
+    size = len(json.dumps([event.provenance() for event in transitions]).encode())
+    if size > 262144:
+        logger.error('root worktree owner transition manifest exceeds receipt cap; all unexamined; '
+                     'roots=%s raw_audit_window=(%s,%s] cursor=%s; complete=false; no retry',
+                     len(transitions), getattr(transitions, 'audit_low', None),
+                     getattr(transitions, 'audit_high', None), getattr(transitions, 'audit_low', None))
+        return []
+    for event in transitions:
+        if event.attempted:
+            continue
+        # Mark before DB admission, including failure/uncertain commit.
+        event.attempted = True
+        if budget.admissions >= 16 or budget.halted or time.monotonic() >= budget.deadline:
+            continue
+        budget.admissions += 1
+        root = event.after
+        event_id = None
+        receipt = None
+        try:
+            disposition, event_id = budget.database(orch._db, lambda: orch._db.admit_terminal_worktree_root(event.provenance()))
+            if disposition != 'admitted':
+                receipts.append(dict(root_id=root['id'], event_id=event_id, disposition=disposition, complete=False))
+                unexamined.remove(root['id'])
+                continue
+            receipt = _root_worktree_reconcile(orch, event, event_id, budget,
+                teardown_incomplete=teardown_incomplete, receipt_allowance=262144-size)
+            receipt['root_id'] = root['id']
+            receipt['budget'] = dict(work_seconds=time.monotonic()-budget.started, db_seconds=budget.db_seconds,
+                                     reap_seconds=budget.reap_seconds, attempts=budget.attempts, nodes=budget.nodes)
+            size += len(json.dumps(receipt).encode())
+            if size > 262144:
+                raise ValueError('batch_receipt_capacity')
+            def finish():
+                if orch._db._conn.in_transaction:
+                    raise ValueError('finish_transaction_owned')
+                return orch._db.append_terminal_worktree_audit(root['id'], root['assigned_agent'] or 'orchestrator',
+                    'root_worktree_reconciliation_finished', receipt)
+            budget.database(orch._db, finish, report=True)
+            receipts.append(receipt)
+            unexamined.remove(root['id'])
+        except Exception:
+            budget.halted = True
+            logger.exception('root worktree %s cleanup missing/uncertain; event=%s; no retry; halt', root['id'], event_id)
+            logger.error('root worktree missing finish facts=%s owned_processes=%s', receipt, budget.processes)
+            break
+    logger.info('root worktree batch receipts=%s unexamined_root_ids=%s elapsed=%s report=%s reap=%s',
+                receipts, unexamined, time.monotonic()-budget.started, budget.report_seconds, budget.reap_seconds)
+    return receipts
+
+
+def _root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
+    try:
+        return _root_worktree_batch_impl(orch, transitions, teardown_incomplete=teardown_incomplete)
+    except Exception:
+        logger.exception('root worktree owner tail unavailable; terminal state/report preserved; no retry')
+        return []
+
+
+async def _await_root_worktree_batch(orch, transitions, *, teardown_incomplete=False):
+    """Cancellation retains ownership of a started finite off-loop action."""
+    return await _await_worktree_cleanup(_root_worktree_batch, orch, transitions,
+                                        teardown_incomplete=teardown_incomplete)
+
+
+async def _await_terminal_task_worktree(orch: "Orchestrator", task_id: str) -> TerminalWorktreeReclaimOutcome:
+    """Await the existing child hook outside the event loop and owner locks."""
+    return await _await_worktree_cleanup(_reclaim_terminal_task_worktree, orch, task_id)
+
+
+async def _await_worktree_cleanup(operation: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    worker = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(worker)
+            break
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 def _reclaim_terminal_task_worktree(
-    orch: "Orchestrator", task_id: str,
+    orch: "Orchestrator", task_id: str, *, transition: _RootWorktreeTransition | None = None,
+    original_task: TaskRecord | None = None,
 ) -> TerminalWorktreeReclaimOutcome:
     """Remove one exact clean, durable, quiescent task worktree fail-closed.
 
@@ -179,6 +888,37 @@ def _reclaim_terminal_task_worktree(
     worktrees, retries, deletes a branch, changes task state, signals a process,
     or raises into the terminal transition that called it.
     """
+    # Original owners already captured this root (including unavailable
+    # capture). Its one shared batch owns all cleanup observations; a notice
+    # lookup here would reset the DB/work allowance before that batch runs.
+    if original_task is not None and original_task.id == task_id and original_task.parent_task_id is None:
+        return TerminalWorktreeReclaimOutcome('preserved', 'original_root_owner_batch')
+    try:
+        task = orch._db.get_task(task_id)
+    except Exception:
+        logger.warning('terminal worktree %s task unavailable', task_id, exc_info=True)
+        return TerminalWorktreeReclaimOutcome('preserved', 'task_probe_unavailable')
+    if task is not None and task.parent_task_id is None:
+        if transition is not None:
+            _root_worktree_batch(orch, [transition])
+            return TerminalWorktreeReclaimOutcome("root_receipt", "owner_batch")
+        # Terminal notices/read paths have no original winner. They cannot
+        # manufacture a new start, even when the prior finish is missing.
+        budget = _RootWorktreeBudget()
+        try:
+            rows = budget.database(orch._db, lambda: orch._db.terminal_worktree_raw_audit(task_id))
+            starts = [row for row in rows if row['action'] == 'root_worktree_reconciliation_started']
+            if len(starts) == 1:
+                start = starts[0]
+                payload = json.loads(start['payload'])
+                if payload['root_created_at'] == task.created_at.isoformat():
+                    finishes = [row for row in rows if row['action'] == 'root_worktree_reconciliation_finished'
+                                and json.loads(row['payload']).get('event_id') == start['id']]
+                    return TerminalWorktreeReclaimOutcome('preserved',
+                        ('replayed_finished:' if len(finishes) == 1 else 'interrupted_unknown:')+str(start['id']))
+        except Exception:
+            logger.warning('root worktree %s prior receipt lookup unavailable', task_id, exc_info=True)
+        return TerminalWorktreeReclaimOutcome("preserved", "original_root_transition_unavailable")
     deadline = time.monotonic() + _TERMINAL_WORKTREE_TIMEOUT_SECONDS
 
     def preserve(reason: str) -> TerminalWorktreeReclaimOutcome:
@@ -446,6 +1186,23 @@ def _request_pending_v2_publication(orch: "Orchestrator", task_id: str) -> None:
 
 
 def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
+    # Workflow dispatch returns before the ordinary invocation owner exists.
+    # This worker scope also carries its terminal event past tracker teardown,
+    # workflow invocation close/release and the dispatcher's live-claim tail.
+    transitions = _RootWorktreeTransitions()
+    tail_failed = False
+    try:
+        with _defer_root_worktree_batches(orch, transitions) as delivery:
+            _run_step_owned(orch, task_id, metadata)
+    except BaseException:
+        tail_failed = True
+        raise
+    finally:
+        _root_worktree_batch(orch, transitions,
+            teardown_incomplete=tail_failed or delivery['teardown_incomplete'])
+
+
+def _run_step_owned(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
     from runtime.orchestrator.task_pause import (
         TaskInvocation, DeferredRootPause, _invocation, eligible, deferred_invocation,
     )
@@ -477,6 +1234,8 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
             return
         raise
     token = _invocation.set(invocation)
+    root_delivery = dict(orch=orch, events=_RootWorktreeTransitions(), active=True, teardown_incomplete=False)
+    root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
     try:
         consumer_only = getattr(invocation, "consumer_only", False)
         landed = (orch._db.get_latest_task_result(task_id, invocation.agent,
@@ -516,6 +1275,7 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
         else:
             invocation.close()
     except BaseException:
+        root_delivery['teardown_incomplete'] = True
         if invocation.admitted:
             invocation.phase("unknown")
         else:
@@ -524,9 +1284,19 @@ def run_step_impl(orch: "Orchestrator", task_id: str, metadata: dict | None = No
     else:
         invocation.close()
     finally:
+        root_delivery['teardown_incomplete'] |= sys.exc_info()[0] is not None
         from runtime.orchestrator.task_pause import release_live
-        release_live(invocation)
-        _invocation.reset(token)
+        try:
+            release_live(invocation)
+        except BaseException:
+            root_delivery['teardown_incomplete'] = True
+            raise
+        finally:
+            _invocation.reset(token)
+            root_delivery['active'] = False
+            _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+            _root_worktree_batch(orch, root_delivery['events'],
+                teardown_incomplete=root_delivery['teardown_incomplete'])
 
 
 def _run_step_body(orch: "Orchestrator", task_id: str, metadata: dict | None = None) -> None:
@@ -1034,10 +1804,268 @@ def _finish_step_return(orch: "Orchestrator", task: TaskRecord, agent: str, resu
         _consume_completion_report(orch, task_id, report, result_row_id=result_row_id)
 
 
+@dataclass
+class _HumanFailedRecoveryOperation:
+    task_id: str
+    agent: str
+    session_id: str
+    result_id: int
+    phase: str = "evidence"
+    key: tuple | None = None
+    accepted_payload: tuple[dict, dict, dict] | None = None
+    relation: tuple[str, str] | None = None
+    completion: Future = field(default_factory=Future)
+    disposition: str = "continuation_pending"
+    timer: object | None = None
+    drain: object | None = None
+    job_ids: tuple[str, ...] = ()
+    bookkeeping: list[Callable[[], None]] = field(default_factory=list)
+    parent_effect: Callable[[], None] | None = None
+
+    def matches_context(self, context: dict) -> bool:
+        task, episode = context["task"], context["episode"]
+        return bool(self.accepted_payload is not None
+            and self.key == (task.id, self.agent, episode["origin_session_id"], self.session_id, self.result_id)
+            and self.relation == (task.parent_task_id, task.team)
+            and self.accepted_payload[1] == context["report"].model_dump()
+            and self.accepted_payload[2] == context["selected_row"]
+            and all(self.accepted_payload[0][name] == episode[name]
+                    for name in ("origin_session_id", "provider_session_id", "claimed_at",
+                                 "expires_at", "accepted_result_session_id")))
+
+    def finish(self, disposition: str) -> None:
+        self.disposition = disposition
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        if not self.completion.done():
+            self.completion.set_result(disposition)
+
+
+def _is_human_failed_recovery(orch: "Orchestrator", task, report) -> bool:
+    if (task is None or task.task_type != "subtask" or task.parent_task_id is None
+            or report.status != "blocked" or report.waiting_on_job_ids):
+        return False
+    try:
+        return orch.teams.manager_for_team(task.team).kind == "human"
+    except KeyError:
+        return False
+
+
+def _drive_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
+    """One synchronous gate attempt on the writer loop, or before serving."""
+    if operation.completion.done():
+        return
+    org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+    queue = getattr(orch, "_queue", None)
+    supervisor = getattr(orch, "_host_supervisor", None)
+    if (org is None or (queue is not None and getattr(queue, "_stopping", False))
+            or (supervisor is not None and supervisor._admission.is_shutdown())):
+        operation.finish("recovery_required")
+        return
+    authority, db = org.workflow_authority, orch._db
+    operation.disposition = "writer_busy"
+    if authority._async_writer_lock.locked() or not authority._publisher_lock.acquire(blocking=False):
+        _retry_human_failed_recovery(orch, operation)
+        return
+    acquired_db = False
+    try:
+        if authority._async_writer_lock.locked() or not db._lock.acquire(blocking=False):
+            return
+        acquired_db = True
+        with authority.writer_interval(publisher="human-failed-leaf-recovery"):
+            params = dict(task_id=operation.task_id, agent=operation.agent,
+                          session_id=operation.session_id, result_row_id=operation.result_id)
+            while operation.phase != "drain_jobs":
+                disposition, context = db.human_failed_recovery_context(
+                    **params, allow_unbound_live=operation.phase == "evidence")
+                if disposition != "eligible":
+                    operation.finish("lost_owner" if disposition == "not_applicable" else disposition)
+                    return
+                task, episode = context["task"], context["episode"]
+                key = (operation.task_id, operation.agent, episode["origin_session_id"], operation.session_id, operation.result_id)
+                if operation.key is None:
+                    operation.key = key
+                    operation.accepted_payload = episode, context["report"].model_dump(), context["selected_row"]
+                    operation.relation = (task.parent_task_id, task.team)
+                    if operation.parent_effect is None:
+                        operation.parent_effect = lambda: _enqueue_parent_if_waiting(
+                            orch, operation.task_id, root_auto_revisit_spawned=False)
+                    full = getattr(orch, "_human_failed_recovery_by_fingerprint", None)
+                    if full is None:
+                        full = orch._human_failed_recovery_by_fingerprint = {}
+                    full[key] = operation
+                elif not operation.matches_context(context):
+                    operation.finish("lost_owner")
+                    return
+                if episode["state"] == "callback_consumed" and operation.phase in ("evidence", "chain", "fanout", "fail", "review", "history", "marker"):
+                    operation.phase = "settle_jobs"
+                if operation.phase in ("evidence", "chain", "fanout", "fail", "review", "marker"):
+                    disposition = db.apply_human_failed_recovery_effect(**params, effect=operation.phase)
+                    if disposition != "progressed":
+                        operation.finish(disposition)
+                        return
+                    order = ("evidence", "chain", "fanout", "fail", "review", "history", "marker", "settle_jobs")
+                    operation.phase = order[order.index(operation.phase) + 1]
+                elif operation.phase == "history":
+                    # Preserve the native file boundary outside DB/SQL while
+                    # retaining the publisher; fresh reads precede the marker.
+                    db._lock.release()
+                    acquired_db = False
+                    orch._update_task_history(operation.task_id)
+                    if not db._lock.acquire(blocking=False):
+                        return
+                    acquired_db = True
+                    operation.phase = "marker"
+                elif operation.phase == "settle_jobs":
+                    ids = db.settle_consumed_task_completion_recovery_jobs(
+                        task_id=operation.task_id, agent=operation.agent,
+                        recovery_session_id=operation.session_id, result_row_id=operation.result_id,
+                        terminal_status=TaskStatus.FAILED.value,
+                        finished_at=datetime.now(timezone.utc).isoformat())
+                    if ids is None:
+                        operation.finish("lost_owner")
+                        return
+                    operation.job_ids = ids
+                    operation.phase = "drain_jobs" if ids else "parent_handoff"
+                elif operation.phase == "parent_handoff":
+                    if not db.handoff_consumed_task_completion_recovery_parent_effect(
+                            task_id=operation.task_id, agent=operation.agent,
+                            recovery_session_id=operation.session_id, result_row_id=operation.result_id,
+                            terminal_status=TaskStatus.FAILED.value, effect=operation.parent_effect):
+                        operation.finish("lost_owner")
+                        return
+                    operation.phase = "caller_bookkeeping"
+                elif operation.phase == "caller_bookkeeping":
+                    for effect in operation.bookkeeping:
+                        effect()
+                    operation.bookkeeping.clear()
+                    operation.finish("done")
+                    return
+    except Exception:
+        logger.exception("human failed recovery requires next-start reconciliation task=%s phase=%s", operation.task_id, operation.phase)
+        operation.finish("recovery_required")
+    finally:
+        if acquired_db:
+            db._lock.release()
+        authority._publisher_lock.release()
+        if not operation.completion.done():
+            if operation.phase == "drain_jobs":
+                _drain_human_failed_recovery_jobs(orch, operation)
+            else:
+                _retry_human_failed_recovery(orch, operation)
+
+
+def _retry_human_failed_recovery(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
+    if operation.completion.done() or operation.timer is not None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Genuine pre-serving startup only; no inherited live controls.
+        org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+        if getattr(orch, "_main_loop", None) is not None or org is None or org.workflow_authority._async_writer_lock.locked():
+            operation.finish("recovery_required")
+        return
+    if loop is not getattr(orch, "_main_loop", loop) and getattr(orch, "_main_loop", None) is not None:
+        operation.finish("recovery_required")
+        return
+    def retry() -> None:
+        operation.timer = None
+        _drive_human_failed_recovery(orch, operation)
+    try:
+        operation.timer = loop.call_later(0.05, retry)
+    except RuntimeError:
+        operation.finish("recovery_required")
+
+
+def _drain_human_failed_recovery_jobs(orch: "Orchestrator", operation: _HumanFailedRecoveryOperation) -> None:
+    if operation.drain is not None:
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # Cold startup has no inherited opaque controls; DB settlement is the
+        # authentic boundary and persisted PIDs are never signalled.
+        operation.phase = "parent_handoff"
+        return
+    operation.disposition = "continuation_pending"
+    try:
+        operation.drain = _kill_jobs_for_terminating_task(
+            orch, operation.task_id,
+            recovery_owner=(operation.agent, operation.session_id, operation.result_id, TaskStatus.FAILED.value),
+            recovery_job_ids=operation.job_ids,
+            human_recovery_operation=operation,
+        )
+    except RuntimeError:
+        operation.finish("recovery_required")
+
+
+def _submit_human_failed_recovery(orch: "Orchestrator", task_id: str, agent: str,
+                                 session_id: str, result_id: int, *,
+                                 bookkeeping: Callable[[], None] | None = None,
+                                 parent_effect: Callable[[], None] | None = None) -> _HumanFailedRecoveryOperation:
+    """Retain selected identity before transferring a worker's finite tail."""
+    operation = _HumanFailedRecoveryOperation(task_id, agent, session_id, result_id,
+        parent_effect=parent_effect)
+    def install() -> None:
+        operations = getattr(orch, "_human_failed_recovery_operations", None)
+        if operations is None:
+            operations = orch._human_failed_recovery_operations = {}
+        transport_key = (task_id, agent, session_id, result_id)
+        existing = operations.get(transport_key)
+        if existing is not None and existing.disposition == "recovery_required":
+            # Settlement may already have marked the captured jobs FAILED
+            # before their native drain failed or was cancelled. Retain that
+            # exceptional owner/phase/controls for next-start discovery;
+            # replaying settlement could mistake those rows for a zero-job
+            # success. Refused callers must not add success-only bookkeeping.
+            operation.finish("recovery_required")
+            return
+        if existing is not None and not existing.completion.done():
+            if bookkeeping is not None:
+                existing.bookkeeping.append(bookkeeping)
+            # Preserve the original phase/callback rather than redraining.
+            def joined(done: Future) -> None:
+                operation.finish(done.result())
+            existing.completion.add_done_callback(joined)
+            return
+        if existing is not None and existing.disposition == "done":
+            operation.phase = "caller_bookkeeping" if bookkeeping is not None else "settle_jobs"
+        if bookkeeping is not None:
+            operation.bookkeeping.append(bookkeeping)
+        operations[transport_key] = operation
+        _drive_human_failed_recovery(orch, operation)
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    loop = getattr(orch, "_main_loop", None)
+    if running is not None:
+        if loop is not None and running is not loop:
+            operation.finish("recovery_required")
+        else:
+            install()
+    elif loop is not None:
+        if loop.is_closed() or not loop.is_running():
+            operation.finish("recovery_required")
+        else:
+            try:
+                loop.call_soon_threadsafe(install)
+            except RuntimeError:
+                operation.finish("recovery_required")
+    else:
+        install()
+        while not operation.completion.done():
+            time.sleep(0.05)
+            _drive_human_failed_recovery(orch, operation)
+    return operation
+
+
 def _consume_accepted_completion_recovery(
     orch: "Orchestrator", task_id: str, report, *, agent: str, session_id: str,
     result_row_id: int,
-) -> None:
+) -> _HumanFailedRecoveryOperation | None:
     """Reconcile one ledger-selected recovery callback at the effect boundary.
 
     Terminal effects retain their established reconciliation.  The blocked
@@ -1091,6 +2119,8 @@ def _consume_accepted_completion_recovery(
             reclaim_terminal_worktree=False,
         )
         return
+    if _is_human_failed_recovery(orch, current, report):
+        return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id)
     effects_applied = (
         current.status in TERMINAL_STATES
     )
@@ -1125,27 +2155,33 @@ def _consume_accepted_completion_recovery(
     if report.status == "completed" and current.task_type == "subtask":
         reviewer = None
         if current.parent_task_id is not None and not orch.teams.is_team_manager(agent):
-            parent = db.get_task(current.parent_task_id)
-            try:
-                reviewer = orch.teams.manager_for_team(
-                    parent.team if parent is not None else current.team,
-                ).name
-            except KeyError:
-                reviewer = "unknown_manager"
-        transitioned = db.consume_accepted_completed_task_completion_recovery(
-            task_id=task_id, agent=agent, session_id=session_id,
-            result_row_id=result_row_id, note=report.output_summary,
-            output_dir=report.output_dir, completion_payload=report.model_dump(),
-            settled_at=datetime.now(timezone.utc).isoformat(),
-            reviewer=reviewer,
-            verdict=report.verdict if report.verdict is not None else "approved",
-        )
+            reviewer = _delegated_reviewer(orch, current)
+        completion_payload = report.model_dump()
+        try:
+            human_team = orch.teams.manager_for_team(current.team).kind == "human"
+        except KeyError:
+            human_team = False
+        if human_team:
+            completion_payload.update(
+                _recovery_session_id=session_id, _result_row_id=result_row_id,
+            )
+        root_transitions = _RootWorktreeTransitions()
+        with _capture_root_worktree_transition(orch, task_id, 'consume_accepted_completed_task_completion_recovery', root_transitions):
+            transitioned = db.consume_accepted_completed_task_completion_recovery(
+                task_id=task_id, agent=agent, session_id=session_id,
+                result_row_id=result_row_id, note=report.output_summary,
+                output_dir=report.output_dir, completion_payload=completion_payload,
+                settled_at=datetime.now(timezone.utc).isoformat(),
+                reviewer=reviewer,
+                verdict=report.verdict if report.verdict is not None else "approved",
+            )
         if transitioned:
             orch._update_task_history(task_id)
             _handoff_consumed_recovery_terminal_effects(
                 orch, task_id, agent, session_id, result_row_id,
                 TaskStatus.COMPLETED.value,
                 after_recovery_cleanup=lambda: _enqueue_parent_if_waiting(orch, task_id),
+                root_transitions=root_transitions,
             )
         return
     _recovery_decision = getattr(report, "decision", None)
@@ -1578,7 +2614,8 @@ def _consume_completion_report(
     recovery_owner: tuple[str, str] | None = None,
     recovery_result_id: int | None = None,
     reclaim_terminal_worktree: bool = True,
-) -> None:
+    after_human_recovery: Callable[[], None] | None = None,
+) -> _HumanFailedRecoveryOperation | str | None:
     """Guard the common consumer with the v2 decision-dispatch receipt.
 
     This is the single common entry every ordinary completion, accepted
@@ -1609,6 +2646,14 @@ def _consume_completion_report(
     if outcome.kind == _V2_DECISION_DISPATCH_SKIP:
         return
     if outcome.kind == _V2_DECISION_DISPATCH_ORDINARY:
+        if _is_human_failed_recovery(orch, task, report):
+            accepted = db.selected_human_leaf_recovery_result(task_id=task_id, agent=agent,
+                session_id=task.current_session_id or "")
+            if accepted is not None:
+                if accepted["id"] != resolved_row_id:
+                    return "lost_owner"
+                return _submit_human_failed_recovery(orch, task_id, agent, task.current_session_id or "", resolved_row_id,
+                    bookkeeping=after_human_recovery)
         _consume_completion_report_body(
             orch, task_id, report, result_row_id=resolved_row_id,
             recovery_reentry=recovery_reentry, recovery_owner=recovery_owner,
@@ -2133,15 +3178,17 @@ def _consume_completion_report_body(
             # CAS. In either case, never reinterpret that race as permission
             # to create a successor.
             return
-        successor_id = db.try_manager_supersede(
-            task_id,
-            actor_agent=agent,
-            actor_session_id=task.current_session_id,
-            expected_team=task.team,
-            successor_brief=decision.successor_brief or "",
-            rationale=decision.rationale or "",
-            attestation=decision.attestation.model_dump() if decision.attestation else {},
-        )
+        root_transitions = _RootWorktreeTransitions()
+        with _capture_root_worktree_transition(orch, task_id, 'try_manager_supersede', root_transitions):
+            successor_id = db.try_manager_supersede(
+                task_id,
+                actor_agent=agent,
+                actor_session_id=task.current_session_id,
+                expected_team=task.team,
+                successor_brief=decision.successor_brief or "",
+                rationale=decision.rationale or "",
+                attestation=decision.attestation.model_dump() if decision.attestation else {},
+            )
         # Root-only policy is unchanged: a generic None is a silent refusal;
         # the writer's stale-claim RuntimeError rolls back and propagates.  It
         # is never reclassified as the non-root fail-and-wake case above.
@@ -2155,6 +3202,8 @@ def _consume_completion_report_body(
             # The committed successor remains pending. Startup recovery
             # idempotently re-enqueues pending tasks; never reopen predecessor.
             logger.exception("manager supersession %s enqueue failed", successor_id)
+        finally:
+            _root_worktree_batch(orch, root_transitions)
         return
 
     if decision.action == "fanout":
@@ -2886,7 +3935,10 @@ def _legs_out_of_scope(orch: "Orchestrator", owner: str, decision) -> list[tuple
 
 def _default_agent_for_root(orch: "Orchestrator", task) -> str:
     """Root tasks default to the manager for their team."""
-    return orch.teams.manager_for_team(task.team).name
+    owner = orch.teams.executable_manager_for_team(task.team)
+    if owner is None:
+        raise ValueError("owner_required_for_human_team")
+    return owner
 
 
 def _workspace_cleanup_remainder(after) -> dict | None:
@@ -3235,46 +4287,63 @@ def _complete(orch: "Orchestrator", task_id: str, *, note: str, output_dir: str 
               after_recovery_cleanup: Callable[[], None] | None = None,
               after_recovery_parent_effect: Callable[[], None] | None = None,
               reclaim_terminal_worktree: bool = True) -> bool:
-    from datetime import datetime, timezone
-    # Idempotence guard: /cancel may have already taken this task to FAILED
-    # between Popen return and here. Don't resurrect a cancelled task back to
-    # COMPLETED just because the subprocess happened to finish cleanly before
-    # SIGTERM arrived.
-    if _is_already_terminal(orch, task_id):
-        return False
-    if recovery_owner is not None:
-        if not orch._db.complete_task_if_current_recovery_owner(
-            task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
-            note=note, output_dir=output_dir, completed_at=datetime.now(timezone.utc).isoformat(),
-            result_row_id=recovery_owner[2],
-        ):
+    root_transitions = _RootWorktreeTransitions()
+    root_handed_off = False
+    tail_failed = False
+    try:
+        from datetime import datetime, timezone
+        # Idempotence guard: /cancel may have already taken this task to FAILED
+        # between Popen return and here. Don't resurrect a cancelled task back to
+        # COMPLETED just because the subprocess happened to finish cleanly before
+        # SIGTERM arrived.
+        if _is_already_terminal(orch, task_id):
             return False
-    else:
-        orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
-                             note=note, final_output_dir=output_dir,
-                             completed_at=datetime.now(timezone.utc).isoformat())
-    _log_verdict_if_delegated(orch, task_id, success=True)
-    orch._update_task_history(task_id)
-    if recovery_owner is None:
-        _kill_jobs_for_terminating_task(orch, task_id)
-        if reclaim_terminal_worktree:
-            _reclaim_terminal_task_worktree(orch, task_id)
-    elif orch._db.mark_task_completion_recovery_callback_consumed(
-        task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
-        result_row_id=recovery_owner[2], settled_at=datetime.now(timezone.utc).isoformat(),
-    ):
-        _handoff_consumed_recovery_terminal_effects(
-            orch, task_id, recovery_owner[0], recovery_owner[1], recovery_owner[2],
-            TaskStatus.COMPLETED.value, after_recovery_cleanup=after_recovery_cleanup,
-            after_recovery_parent_effect=after_recovery_parent_effect,
-        )
-    return True
+        if recovery_owner is not None:
+            with _capture_root_worktree_transition(orch, task_id, '_complete.recovery', root_transitions):
+                committed = orch._db.complete_task_if_current_recovery_owner(
+                    task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
+                    note=note, output_dir=output_dir, completed_at=datetime.now(timezone.utc).isoformat(),
+                    result_row_id=recovery_owner[2],
+                )
+            if not committed:
+                return False
+        else:
+            with _capture_root_worktree_transition(orch, task_id, '_complete', root_transitions):
+                orch._db.update_task(task_id, status=TaskStatus.COMPLETED, block_kind=None,
+                                     note=note, final_output_dir=output_dir,
+                                     completed_at=datetime.now(timezone.utc).isoformat())
+        _log_verdict_if_delegated(orch, task_id, success=True)
+        orch._update_task_history(task_id)
+        if recovery_owner is None:
+            _kill_jobs_for_terminating_task(orch, task_id)
+            if reclaim_terminal_worktree and not root_transitions:
+                _reclaim_terminal_task_worktree(orch, task_id)
+        elif orch._db.mark_task_completion_recovery_callback_consumed(
+            task_id=task_id, agent=recovery_owner[0], session_id=recovery_owner[1],
+            result_row_id=recovery_owner[2], settled_at=datetime.now(timezone.utc).isoformat(),
+        ):
+            _handoff_consumed_recovery_terminal_effects(
+                orch, task_id, recovery_owner[0], recovery_owner[1], recovery_owner[2],
+                TaskStatus.COMPLETED.value, after_recovery_cleanup=after_recovery_cleanup,
+                after_recovery_parent_effect=after_recovery_parent_effect,
+                root_transitions=root_transitions,
+            )
+            root_handed_off = True
+        return True
+    except BaseException:
+        tail_failed = True
+        raise
+    finally:
+        if root_transitions and not root_handed_off:
+            _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or recovery_owner is not None)
+
 
 
 def _fail(
     orch: "Orchestrator", task_id: str, *, note: str,
     reclaim_terminal_worktree: bool = True,
 ) -> None:
+    root_transitions = _RootWorktreeTransitions()
     from datetime import datetime, timezone
     # Idempotence guard — same rationale as _complete. When /cancel SIGTERMs
     # the subprocess, run_step re-enters via the post-execution classifier and
@@ -3296,24 +4365,41 @@ def _fail(
         )
     except Exception:  # pragma: no cover - fail-closed defensive
         pass
-    # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
-    # on a FAILED task. The chain can't re-activate (the task is terminal),
-    # but the dangling state is cosmetically misleading. Always-clear is
-    # cheap and works for cascade-fail, self-blocked, invalid-delegate, and
-    # session-failure failure modes.
-    orch._db.update_task_active_chain(task_id, None)
-    orch._db.update_task_active_fanout(task_id, None)
-    orch._db.update_task(
-        task_id,
-        status=TaskStatus.FAILED,
-        block_kind=None,
-        note=note,
-        completed_at=datetime.now(timezone.utc).isoformat(),
-    )
+    with orch._db._lock:
+        current = orch._db.get_task(task_id)
+        if current is not None:
+            try:
+                human = orch.teams.manager_for_team(current.team).kind == "human"
+            except KeyError:
+                human = False
+            if human and current.task_type == "subtask" and current.assigned_agent:
+                accepted = orch._db.get_accepted_task_completion_recovery_result(task_id=task_id, agent=current.assigned_agent)
+                if accepted is not None:
+                    # Only a caller presenting actual R may consume it. A late
+                    # provider failure cannot clear or overwrite its winner.
+                    return
+        if _is_already_terminal(orch, task_id):
+            return
+        # Clear any in-flight chain so the CLI/Web UI doesn't show a chain strip
+        # on a FAILED task. The chain can't re-activate (the task is terminal),
+        # but the dangling state is cosmetically misleading. Always-clear is
+        # cheap and works for cascade-fail, self-blocked, invalid-delegate, and
+        # session-failure failure modes.
+        orch._db.update_task_active_chain(task_id, None)
+        orch._db.update_task_active_fanout(task_id, None)
+        with _capture_root_worktree_transition(orch, task_id, '_fail', root_transitions):
+            orch._db.update_task(
+                task_id,
+                status=TaskStatus.FAILED,
+                block_kind=None,
+                note=note,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
     _fail_terminal_tail(
         orch,
         task_id,
         reclaim_terminal_worktree=reclaim_terminal_worktree,
+        root_transitions=root_transitions,
     )
 
 
@@ -3336,9 +4422,19 @@ def _fail_terminal_tail(
     *,
     reclaim_terminal_worktree: bool = True,
     expected_note: str | None = None,
+    root_transitions: list | None = None,
 ) -> None:
     """Run `_fail`'s post-transition effects, optionally owner-fenced."""
     def current() -> bool:
+        task = orch._db.get_task(task_id)
+        if task is not None and task.task_type == "subtask" and task.assigned_agent:
+            try:
+                human = orch.teams.manager_for_team(task.team).kind == "human"
+            except KeyError:
+                human = False
+            if human and orch._db.selected_human_leaf_recovery_result(task_id=task_id, agent=task.assigned_agent,
+                    session_id=task.current_session_id or "") is not None:
+                return False
         return (
             expected_note is None
             or _task_matches_authority_v2_refusal_failure(
@@ -3346,20 +4442,35 @@ def _fail_terminal_tail(
             )
         )
 
-    if current():
-        _log_verdict_if_delegated(orch, task_id, success=False)
-    if current():
-        orch._update_task_history(task_id)
-    if current():
-        _kill_jobs_for_terminating_task(orch, task_id)
-    if reclaim_terminal_worktree and current():
-        _reclaim_terminal_task_worktree(orch, task_id)
+    tail_failed = False
+    try:
+        if current():
+            _log_verdict_if_delegated(orch, task_id, success=False)
+        if current():
+            orch._update_task_history(task_id)
+        if current():
+            _kill_jobs_for_terminating_task(orch, task_id)
+        if reclaim_terminal_worktree and not root_transitions and current():
+            _reclaim_terminal_task_worktree(orch, task_id)
+    except BaseException:
+        tail_failed = True
+        raise
+    finally:
+        if root_transitions:
+            try:
+                owner_current = current()
+            except Exception:
+                owner_current = False
+                logger.exception('root worktree failure-tail owner unavailable')
+            _root_worktree_batch(orch, root_transitions, teardown_incomplete=tail_failed or not owner_current)
+
 
 
 def _handoff_consumed_recovery_terminal_effects(
     orch: "Orchestrator", task_id: str, agent: str, session_id: str,
     result_row_id: int, terminal_status: str, *,
     after_recovery_cleanup: Callable[[], None] | None = None,
+    root_transitions: list | None = None,
     after_recovery_parent_effect: Callable[[], None] | None = None,
 ) -> None:
     """Capture a consumed recovery's exact jobs before asynchronous effects.
@@ -3369,12 +4480,24 @@ def _handoff_consumed_recovery_terminal_effects(
     the async cleanup receives only the captured IDs and fences parent delivery
     with the same consumed owner predicate.
     """
+    task = orch._db.get_task(task_id)
+    if terminal_status == TaskStatus.FAILED.value and task is not None and task.task_type == "subtask":
+        try:
+            human = orch.teams.manager_for_team(task.team).kind == "human"
+        except KeyError:
+            human = False
+        if human:
+            return _submit_human_failed_recovery(orch, task_id, agent, session_id, result_row_id,
+                parent_effect=after_recovery_cleanup,
+                bookkeeping=after_recovery_parent_effect)
     recovery_job_ids = orch._db.settle_consumed_task_completion_recovery_jobs(
         task_id=task_id, agent=agent, recovery_session_id=session_id,
         result_row_id=result_row_id, terminal_status=terminal_status,
         finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
     if recovery_job_ids is None:
+        if root_transitions:
+            _root_worktree_batch(orch, root_transitions, teardown_incomplete=True)
         return
     # A valid zero-job receipt has no asynchronous termination boundary.  Its
     # parent handoff must not be lost merely because there is nothing for the
@@ -3389,11 +4512,17 @@ def _handoff_consumed_recovery_terminal_effects(
             )
         if handed_off and after_recovery_parent_effect is not None:
             after_recovery_parent_effect()
+        if root_transitions:
+            current_owner = orch._db.consumed_task_completion_recovery_owner_is_current(
+                task_id=task_id, agent=agent, recovery_session_id=session_id,
+                result_row_id=result_row_id, terminal_status=terminal_status)
+            _root_worktree_batch(orch, root_transitions, teardown_incomplete=not current_owner)
         return
     _kill_jobs_for_terminating_task(
         orch, task_id,
         recovery_owner=(agent, session_id, result_row_id, terminal_status),
         recovery_job_ids=recovery_job_ids,
+        root_transitions=root_transitions,
         after_recovery_cleanup=after_recovery_cleanup,
         after_recovery_parent_effect=after_recovery_parent_effect,
     )
@@ -3404,8 +4533,10 @@ def _kill_jobs_for_terminating_task(
     recovery_owner: tuple[str, str, int, str] | None = None,
     recovery_job_ids: tuple[str, ...] | None = None,
     after_recovery_cleanup: Callable[[], None] | None = None,
+    root_transitions: list | None = None,
     after_recovery_parent_effect: Callable[[], None] | None = None,
-) -> None:
+    human_recovery_operation: _HumanFailedRecoveryOperation | None = None,
+) -> asyncio.Task | None:
     """Fire-and-forget: kill all in-flight persistent jobs owned by ``task_id``.
 
     Called from ``_complete`` and ``_fail`` whenever a task transitions to a
@@ -3437,26 +4568,95 @@ def _kill_jobs_for_terminating_task(
     from runtime.daemon.jobs_runner import terminate_jobs_for_task
 
     async def _kill_and_backstop() -> None:
-        await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
-        # Backstop DB update — guarded by status='running' so we don't trample
-        # the runner's own terminal write if it got there first.  The database
-        # helper owns only this short transaction; never hold its lock across
-        # termination, signals, or the runner's grace-period wait above.
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        if recovery_owner is None:
-            db.backstop_terminated_task_jobs(task_id, finished_at=now)
-        else:
-            agent, session_id, result_row_id, terminal_status = recovery_owner
-            handed_off = False
-            if after_recovery_cleanup is not None:
-                handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
-                    task_id=task_id, agent=agent,
-                    recovery_session_id=session_id, result_row_id=result_row_id,
-                    terminal_status=terminal_status,
-                    effect=after_recovery_cleanup,
+        if human_recovery_operation is not None:
+            operation = human_recovery_operation
+            org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+            queue = getattr(orch, "_queue", None)
+            supervisor = getattr(orch, "_host_supervisor", None)
+            if (org is None or (queue is not None and getattr(queue, "_stopping", False))
+                    or (supervisor is not None and supervisor._admission.is_shutdown())):
+                operation.finish("recovery_required")
+                return
+            authority = org.workflow_authority
+            # This task may start after a writer/cancellation won. Admit the
+            # actual opaque-control action on its owning loop immediately
+            # before entering the native drain, without awaiting under locks.
+            if authority._async_writer_lock.locked() or not authority._publisher_lock.acquire(blocking=False):
+                operation.drain = None
+                _retry_human_failed_recovery(orch, operation)
+                return
+            acquired_db = False
+            try:
+                if authority._async_writer_lock.locked() or not db._lock.acquire(blocking=False):
+                    operation.drain = None
+                    _retry_human_failed_recovery(orch, operation)
+                    return
+                acquired_db = True
+                disposition, context = db.human_failed_recovery_context(
+                    task_id=task_id, agent=operation.agent, session_id=operation.session_id,
+                    result_row_id=operation.result_id,
                 )
-            if handed_off and after_recovery_parent_effect is not None:
-                after_recovery_parent_effect()
+                if (disposition != "eligible" or context["episode"]["state"] != "callback_consumed"
+                        or not operation.matches_context(context)):
+                    operation.finish(disposition if disposition != "eligible" else "lost_owner")
+                    return
+            except Exception:
+                logger.exception("human failed recovery native drain admission failed")
+                operation.finish("recovery_required")
+                return
+            finally:
+                if acquired_db:
+                    db._lock.release()
+                authority._publisher_lock.release()
+            try:
+                await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
+            except asyncio.CancelledError:
+                operation.finish("recovery_required")
+                return
+            except Exception:
+                logger.exception("human failed recovery job drain failed")
+                operation.finish("recovery_required")
+                return
+            # Keep the original K and callback. Busy here retries only this
+            # handoff; it never settles/drains the already finished jobs again.
+            operation.phase = "parent_handoff"
+            _drive_human_failed_recovery(orch, operation)
+            return
+        drain_failed = False
+        try:
+            await terminate_jobs_for_task(task_id, inflight_to_task=inflight_map)
+            # Backstop DB update — guarded by status='running' so we don't trample
+            # the runner's own terminal write if it got there first.  The database
+            # helper owns only this short transaction; never hold its lock across
+            # termination, signals, or the runner's grace-period wait above.
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            if recovery_owner is None:
+                db.backstop_terminated_task_jobs(task_id, finished_at=now)
+            else:
+                agent, session_id, result_row_id, terminal_status = recovery_owner
+                handed_off = False
+                if after_recovery_cleanup is not None:
+                    handed_off = db.handoff_consumed_task_completion_recovery_parent_effect(
+                        task_id=task_id, agent=agent,
+                        recovery_session_id=session_id, result_row_id=result_row_id,
+                        terminal_status=terminal_status,
+                        effect=after_recovery_cleanup,
+                    )
+                if handed_off and after_recovery_parent_effect is not None:
+                    after_recovery_parent_effect()
+        except BaseException:
+            drain_failed = True
+            raise
+        finally:
+            if root_transitions:
+                current_owner = False
+                if recovery_owner is not None:
+                    agent, session_id, result_row_id, terminal_status = recovery_owner
+                    current_owner = db.consumed_task_completion_recovery_owner_is_current(
+                        task_id=task_id, agent=agent, recovery_session_id=session_id,
+                        result_row_id=result_row_id, terminal_status=terminal_status)
+                await _await_root_worktree_batch(orch, root_transitions,
+                    teardown_incomplete=drain_failed or not current_owner)
 
     try:
         loop = asyncio.get_running_loop()
@@ -3468,9 +4668,48 @@ def _kill_jobs_for_terminating_task(
             daemon=True,
         ).start()
     else:
-        loop.create_task(_kill_and_backstop())
+        return loop.create_task(_kill_and_backstop())
 
 
+
+
+def _delegated_reviewer(orch: "Orchestrator", task) -> str:
+    """Human teams attribute agent outcomes to the executable parent owner."""
+    db = orch._db
+    parent = db.get_task(task.parent_task_id) if task.parent_task_id else None
+    try:
+        child_team = orch.teams.manager_for_team(task.team)
+        if child_team.kind != "human":
+            return orch.teams.manager_for_team(parent.team if parent else task.team).name or "unknown_manager"
+        from runtime.orchestrator import prompt_loader
+        from runtime.orchestrator._paths import OrgPaths
+        owner = None if parent is None else parent.assigned_agent
+        org = getattr(getattr(orch, "_workflow_drafts", None), "org", None)
+        if (org is None or not owner or parent.team != task.team or parent.id == task.id
+                or parent.parent_task_id == task.id or parent.task_type not in ("task", "subtask")):
+            return "unknown_manager"
+        seen = {task.id}
+        ancestor = parent
+        while ancestor is not None:
+            if ancestor.id in seen:
+                return "unknown_manager"
+            seen.add(ancestor.id)
+            if ancestor.parent_task_id is None:
+                break
+            ancestor = db.get_task(ancestor.parent_task_id)
+            if ancestor is None:
+                return "unknown_manager"
+        active = {definition.name: definition for definition in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        definition = active.get(owner)
+        child = active.get(task.assigned_agent)
+        if (definition is None or child is None or definition.team != task.team
+                or child.team != task.team or child.role != "worker"
+                or definition.role != "worker" or owner not in child_team.workers
+                or task.assigned_agent not in child_team.workers):
+            return "unknown_manager"
+        return owner
+    except (KeyError, ValueError):
+        return "unknown_manager"
 
 
 def _log_verdict_if_delegated(
@@ -3495,12 +4734,26 @@ def _log_verdict_if_delegated(
     agent = task.assigned_agent
     if not agent or orch.teams.is_team_manager(agent) or agent in ("orchestrator", "unknown"):
         return
-    parent = orch._db.get_task(task.parent_task_id)
-    reviewer_team = parent.team if parent else task.team
-    try:
-        reviewer = orch.teams.manager_for_team(reviewer_team).name
-    except KeyError:
-        reviewer = "unknown_manager"
+    if not success:
+        with orch._db._lock:
+            current = orch._db.get_task(task_id)
+            try:
+                human = current is not None and orch.teams.manager_for_team(current.team).kind == "human"
+            except KeyError:
+                human = False
+            if human:
+                if current.assigned_agent != agent or (current.task_type == "subtask" and orch._db.selected_human_leaf_recovery_result(
+                        task_id=task_id, agent=agent, session_id=current.current_session_id or "") is not None):
+                    # The selected effect owner alone inserts or reuses this
+                    # row; an ordinary late tail cannot append a verdict.
+                    return
+                orch._audit.log_review_verdict(
+                    task_id=task_id, reviewer=_delegated_reviewer(orch, current),
+                    verdict=_verdict_for_delegated(orch, task_id, success=success),
+                    feedback=current.note, reviewed_agent=agent,
+                )
+                return
+    reviewer = _delegated_reviewer(orch, task)
     orch._audit.log_review_verdict(
         task_id=task_id,
         reviewer=reviewer,

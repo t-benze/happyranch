@@ -104,7 +104,14 @@ class WorkflowDraftDispatcher:
         if len(rows) != 1:
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
         intent = dict(rows[0])
-        self.org.workflow_activations._closure(conn, intent["activation_id"], actor=intent["admission_principal"])
+        if intent['admission_kind'] == 'revision':
+            from runtime.workflows.revisions import validate_revision_record
+            row = conn.execute('SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=?', (intent['id'],)).fetchone()
+            if row is None:
+                raise DraftOwnershipError('workflow_document_revision_storage_corrupt')
+            validate_revision_record(conn, dict(row), expected_org_slug=self.org.slug)
+        else:
+            self.org.workflow_activations._closure(conn, intent["activation_id"], actor=intent["admission_principal"])
         if conn.execute("SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchone():
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
         return intent
@@ -134,6 +141,9 @@ class WorkflowDraftDispatcher:
         if author_capacity_blocked(conn, author=intent["assigned_principal"], task_id=intent["task_id"],
                                    active_sessions=active_sessions):
             raise DraftOwnershipError("workflow_activation_author_pending")
+        if intent['admission_kind'] == 'revision':
+            self.org.workflow_revisions._authority(conn, intent, capture)
+            return
         request = parse_request(json.loads(intent["request_bytes"]))
         template = self.org.workflow_activations._template(request)
         self.org.workflow_activations._roles(request, json.loads(capture.ready.snapshot_bytes), template)
@@ -468,64 +478,92 @@ class WorkflowDraftDispatcher:
                         and completion_result_payload_matches(rows[0], **payload))
 
     def terminal(self, task_id: str, agent: str, session_id: str, outcome: Any, *, expected_request: Any = None) -> None:
-        with self._live_lock:
-            live = self._live.get(task_id)
-            with self._writer() as conn:
-                intent = self._intent(conn, task_id)
-                if (live is None or live[:2] != (intent["claim_token"], session_id)
-                        or intent["assigned_principal"] != agent
-                        or intent["state"] in {"cancelled", "failed", "completed"}):
-                    return
-                receipt = None if outcome is None else outcome.receipt
-                running = live[2]
-                quiescent = (outcome is not None and expected_request is not None
-                             and outcome.request is expected_request and outcome.attempt == 0
-                             and expected_request.retry_attempt == 0
-                             and running is not None and receipt is not None
-                             and outcome.request.org == self.org.slug and outcome.request.logical_id == intent["host_execution_key"]
-                             and running.request_id == intent["host_execution_key"]
-                             and receipt.backend == running.backend and receipt.quiescent is True
-                             and receipt.cleanup_status.value != "incomplete" and not receipt.survivors)
-                no_launch = not intent["host_launch_started"]
-                if not quiescent and not no_launch:
-                    if intent["state"] != "uncertain":
-                        self._event(conn, intent, "uncertain", changes={"state": "uncertain", "last_error": "workflow_host_quiescence_unavailable"})
-                    return
-                result = self._accepted_result(conn, intent)
-                state = ("cancelled" if intent["cancellation_requested"] else "completed" if quiescent
-                         and result is not None and result["record"]["status"] == "completed" else "failed"
-                         if no_launch or (quiescent and result is not None and result["record"]["status"] == "failed") else "uncertain")
-                if state == "uncertain":
-                    if intent["state"] != "uncertain":
-                        self._event(conn, intent, "uncertain", changes={"state": state, "last_error": "workflow_callback_incomplete"})
-                    return
-                now = datetime.now(timezone.utc).isoformat()
-                conn.execute("UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?", (state, now, now, task_id))
-                self._event(conn, intent, state, changes={"state": state},
-                            terminal_evidence={"host_quiescent": True} if quiescent else None,
-                            result=result if state == "completed" else None)
+        from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
+        root_transitions = _RootWorktreeTransitions()
+        staged_transitions = _RootWorktreeTransitions()
+        root_tail_failed = False
+        try:
+            with self._live_lock:
+                live = self._live.get(task_id)
+                with self._writer() as conn:
+                    with _capture_root_worktree_transition(self.org.orchestrator, task_id, 'draft_dispatch.terminal', staged_transitions):
+                        intent = self._intent(conn, task_id)
+                        if (live is None or live[:2] != (intent["claim_token"], session_id)
+                                or intent["assigned_principal"] != agent
+                                or intent["state"] in {"cancelled", "failed", "completed"}):
+                            return
+                        receipt = None if outcome is None else outcome.receipt
+                        running = live[2]
+                        quiescent = (outcome is not None and expected_request is not None
+                                     and outcome.request is expected_request and outcome.attempt == 0
+                                     and expected_request.retry_attempt == 0
+                                     and running is not None and receipt is not None
+                                     and outcome.request.org == self.org.slug and outcome.request.logical_id == intent["host_execution_key"]
+                                     and running.request_id == intent["host_execution_key"]
+                                     and receipt.backend == running.backend and receipt.quiescent is True
+                                     and receipt.cleanup_status.value != "incomplete" and not receipt.survivors)
+                        no_launch = not intent["host_launch_started"]
+                        if not quiescent and not no_launch:
+                            if intent["state"] != "uncertain":
+                                self._event(conn, intent, "uncertain", changes={"state": "uncertain", "last_error": "workflow_host_quiescence_unavailable"})
+                            return
+                        result = self._accepted_result(conn, intent)
+                        state = ("cancelled" if intent["cancellation_requested"] else "completed" if quiescent
+                                 and result is not None and result["record"]["status"] == "completed" else "failed"
+                                 if no_launch or (quiescent and result is not None and result["record"]["status"] == "failed") else "uncertain")
+                        if state == "uncertain":
+                            if intent["state"] != "uncertain":
+                                self._event(conn, intent, "uncertain", changes={"state": state, "last_error": "workflow_callback_incomplete"})
+                            return
+                        now = datetime.now(timezone.utc).isoformat()
+                        conn.execute("UPDATE tasks SET status=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?", (state, now, now, task_id))
+                        self._event(conn, intent, state, changes={"state": state},
+                                    terminal_evidence={"host_quiescent": True} if quiescent else None,
+                                    result=result if state == "completed" else None)
+            # The existing writer committed and released its locks.
+            root_transitions.extend(staged_transitions)
+        except BaseException:
+            root_tail_failed = True
+            raise
+        finally:
+            if root_transitions:
+                _root_worktree_batch(self.org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)
 
     def cancel(self, task_id: str) -> dict:
         # Durable cancellation wins before any opaque containment operation.
-        with self._writer() as conn:
-            intent = self._intent(conn, task_id)
-            if intent["state"] in {"cancelled", "failed", "completed"}:
-                return self.projection(intent)
-            if not intent["cancellation_requested"]:
-                self._event(conn, intent, "cancel_requested", changes={"cancellation_requested": 1})
-                intent = dict(conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent["id"],)).fetchone())
-            # A committed prelaunch state0, not PID absence, proves this
-            # intent cannot have crossed the reserved launch boundary.
-            if not intent["host_launch_started"]:
-                now = datetime.now(timezone.utc).isoformat()
-                conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?",
-                             (now, now, now, task_id))
-                self._event(conn, intent, "cancelled", changes={"state": "cancelled"})
-        for _agent, control in self.org.sessions.iter_task_cancel_controls(task_id):
-            control()
-        with self.db._lock:
-            current = self._intent(self.db._conn, task_id)
-            return self.projection(current)
+        from runtime.orchestrator.run_step import _capture_root_worktree_transition, _RootWorktreeTransitions, _root_worktree_batch
+        root_transitions = _RootWorktreeTransitions()
+        staged_transitions = _RootWorktreeTransitions()
+        root_tail_failed = False
+        try:
+            with self._writer() as conn:
+                with _capture_root_worktree_transition(self.org.orchestrator, task_id, 'draft_dispatch.cancel', staged_transitions):
+                    intent = self._intent(conn, task_id)
+                    if intent["state"] in {"cancelled", "failed", "completed"}:
+                        return self.projection(intent)
+                    if not intent["cancellation_requested"]:
+                        self._event(conn, intent, "cancel_requested", changes={"cancellation_requested": 1})
+                        intent = dict(conn.execute("SELECT * FROM workflow_draft_dispatch_intents WHERE id=?", (intent["id"],)).fetchone())
+                    # A committed prelaunch state0, not PID absence, proves this
+                    # intent cannot have crossed the reserved launch boundary.
+                    if not intent["host_launch_started"]:
+                        now = datetime.now(timezone.utc).isoformat()
+                        conn.execute("UPDATE tasks SET status='cancelled',cancelled_at=?,completed_at=?,updated_at=?,block_kind=NULL WHERE id=?",
+                                     (now, now, now, task_id))
+                        self._event(conn, intent, "cancelled", changes={"state": "cancelled"})
+            # Publish only the original successfully committed transition.
+            root_transitions.extend(staged_transitions)
+            for _agent, control in self.org.sessions.iter_task_cancel_controls(task_id):
+                control()
+            with self.db._lock:
+                current = self._intent(self.db._conn, task_id)
+                return self.projection(current)
+        except BaseException:
+            root_tail_failed = True
+            raise
+        finally:
+            if root_transitions:
+                _root_worktree_batch(self.org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)
 
     @staticmethod
     def projection(intent: dict[str, Any]) -> dict[str, Any]:

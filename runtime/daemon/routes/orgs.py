@@ -54,6 +54,18 @@ def _seed_skeleton(org_root: Path, *, from_example: Path | None) -> None:
         (org_root / "org" / "agents").mkdir()
         (org_root / "org" / "agents" / "_pending").mkdir()
         (org_root / "org" / "teams.yaml").write_text("teams: {}\n")
+    # Fresh creation only; existing org attachment never seeds or moves rosters.
+    from runtime.orchestrator.teams import TeamsRegistry
+    registry = TeamsRegistry.load(org_root)
+    if "default" in registry.teams():
+        manager = registry.manager_for_team("default")
+        if manager.kind != "human" or manager.principal != "founder":
+            raise ValueError("example Default conflicts with founder-managed Default")
+    else:
+        from runtime.orchestrator.teams import TeamManager
+        registry._teams["default"] = TeamManager(name=None, team="default", workers=(), kind="human", principal="founder")
+    registry._metadata.update(default_team="default", task_default_team="default")
+    registry.save()
     (org_root / "workspaces").mkdir(exist_ok=True)
     (org_root / "kb").mkdir(exist_ok=True)
     OrgPaths(org_root).artifacts_dir.mkdir(exist_ok=True)
@@ -191,7 +203,7 @@ async def init_org(body: InitOrgBody, request: Request) -> dict:
             raise ValueError("fresh_org_database_already_exists")
         database = Database(db_path)
         try:
-            initialize_complete_org_schema(database, expected_org_slug=body.slug, layout="H")
+            initialize_complete_org_schema(database, expected_org_slug=body.slug, layout="I")
             from runtime.infrastructure.task_pause_controls import install_pause_schema
             install_pause_schema(database, org_slug=body.slug)
         finally:

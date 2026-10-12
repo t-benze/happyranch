@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
+from runtime.infrastructure.db.task_reconciliation import (
+    ReconciliationError, TaskReconciliation, strict_json,
+)
 from runtime.models import (
     BlockKind,
     ScheduleStatus,
@@ -88,6 +91,178 @@ class _RetryEvidenceRefusal(Exception):
 
 
 class TasksMixin:
+    def terminal_worktree_audit_high_watermark(self) -> int:
+        row = self._conn.execute('SELECT COALESCE(MAX(id),0) FROM audit_log').fetchone()
+        return row[0]
+
+    def terminal_worktree_task_projection(self, task_id: str) -> dict | None:
+        """Caller holds the bounded RLock; small immutable owner projection."""
+        row = self._conn.execute(
+            "SELECT id,parent_task_id,assigned_agent,status,created_at,updated_at,"
+            "completed_at,current_session_id,orchestration_step_count,executor_pid "
+            "FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def terminal_worktree_children_page(self, parent: str, cursor: tuple[str, str] | None) -> list[dict]:
+        """Raw keyset page plus sentinel; no supersession/revisit membership."""
+        if cursor is None:
+            rows = self._conn.execute(
+                "SELECT id,parent_task_id,assigned_agent,status,created_at,updated_at,"
+                "completed_at,current_session_id,orchestration_step_count,executor_pid "
+                "FROM tasks WHERE parent_task_id=? ORDER BY created_at,id LIMIT 65", (parent,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id,parent_task_id,assigned_agent,status,created_at,updated_at,"
+                "completed_at,current_session_id,orchestration_step_count,executor_pid "
+                "FROM tasks WHERE parent_task_id=? AND (created_at,id)>(?,?) "
+                "ORDER BY created_at,id LIMIT 65", (parent, *cursor),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def terminal_worktree_raw_audit(self, task_id: str) -> list[dict]:
+        """Bound BEFORE action filtering/JSON decoding; caller owns RLock.
+
+        Inspect raw lengths first so oversized stored payloads are never copied
+        into Python. Both pages use the same task index and integer cursor.
+        """
+        lengths = self._conn.execute(
+            "SELECT id,COALESCE(length(CAST(payload AS BLOB)),0) AS payload_bytes "
+            "FROM audit_log WHERE task_id=? ORDER BY id DESC LIMIT 65", (task_id,),
+        ).fetchall()
+        if len(lengths) > 64 or sum(row['payload_bytes'] for row in lengths) > 262144:
+            raise ValueError("prior_audit_closure_incomplete")
+        rows = self._conn.execute(
+            "SELECT id,task_id,agent,action,payload,timestamp FROM audit_log "
+            "WHERE task_id=? ORDER BY id DESC LIMIT 65", (task_id,),
+        ).fetchall()
+        if [row['id'] for row in rows] != [row['id'] for row in lengths]:
+            raise ValueError('prior_audit_changed')
+        return [dict(row) for row in rows]
+
+    def append_terminal_worktree_audit(self, task_id: str, agent: str, action: str, payload: dict) -> int:
+        """Caller owns RLock; isolate only this cleanup append's transaction.
+
+        Refuse pre-existing ownership. On a failed insert/commit, roll back
+        only our still-uncommitted append so it cannot strand the shared
+        connection or be committed by an unrelated terminal/report writer.
+        A possibly committed row remains untouched and never permits retry.
+        """
+        if self._conn.in_transaction:
+            raise ValueError('cleanup_audit_transaction_owned')
+        try:
+            return self.insert_audit_log(task_id, agent, action, payload)
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+
+    def admit_terminal_worktree_root(self, transition: dict) -> tuple[str, int | None]:
+        """Atomic raw history lookup + existing append-only committed start.
+
+        No independent locking: the root owner first acquires the existing
+        RLock with its shared allowance. Mutable task timestamps are provenance,
+        never the event key. A prior interrupted start never authorizes retry.
+        """
+        if self._conn.in_transaction:
+            return 'transaction_owned', None
+        root = transition['after']
+        current = self.terminal_worktree_task_projection(root['id'])
+        if (current is None or current['created_at'] != root['created_at']
+                or current['parent_task_id'] is not None or current['status'] != root['status']):
+            return 'owner_changed', None
+        rows = self.terminal_worktree_raw_audit(root['id'])
+        starts, finishes = [], []
+        for row in rows:
+            if row['action'] not in ('root_worktree_reconciliation_started', 'root_worktree_reconciliation_finished'):
+                continue
+            payload = json.loads(row['payload'])
+            if not isinstance(payload, dict) or payload.get('root_created_at') != root['created_at']:
+                raise ValueError('root_receipt_identity_ambiguous')
+            if row['action'] == 'root_worktree_reconciliation_started':
+                if payload.get('transition', {}).get('after', {}).get('status') != root['status']:
+                    raise ValueError('root_episode_conflict')
+                starts.append(row)
+            else:
+                finishes.append((row, payload))
+        if starts:
+            if len(starts) != 1 or len(finishes) > 1:
+                raise ValueError('root_receipts_ambiguous')
+            event = starts[0]['id']
+            if finishes and (finishes[0][1].get('event_id') != event or finishes[0][0]['id'] <= event):
+                raise ValueError('root_receipt_identity_ambiguous')
+            return ('replayed_finished' if finishes else 'interrupted_unknown'), event
+        if finishes:
+            raise ValueError('root_start_missing')
+        if (transition['before']['status'] in ('completed', 'failed', 'cancelled', 'superseded')
+                or any(current[key] != root[key] for key in
+                       ('id', 'created_at', 'parent_task_id', 'assigned_agent', 'current_session_id', 'orchestration_step_count', 'status'))):
+            return 'original_owner_unavailable', None
+        event = self.append_terminal_worktree_audit(root['id'], root['assigned_agent'] or 'orchestrator',
+            'root_worktree_reconciliation_started',
+            {'root_created_at': root['created_at'], 'transition': transition})
+        return 'admitted', event
+
+    def terminal_worktree_protection(self, task_id: str) -> dict:
+        """Bounded SELECT-only forward edges/jobs/recovery/intent projection.
+
+        Edges protect only. They cannot contribute candidates to parent trees.
+        Raw legacy audit successor evidence remains bounded and conservative.
+        """
+        audit = self.terminal_worktree_raw_audit(task_id)
+        successors = set()
+        for row in audit:
+            if row['action'] == 'escalation_superseded':
+                payload = json.loads(row['payload'])
+                value = payload.get('successor_root') if isinstance(payload, dict) else None
+                if not isinstance(value, str) or not value:
+                    raise ValueError('successor_audit_ambiguous')
+                successors.add(value)
+        manager = self._conn.execute(
+            'SELECT successor_task_id FROM manager_supersessions WHERE predecessor_task_id=? LIMIT 65',
+            (task_id,),
+        ).fetchall()
+        revisit = self._conn.execute('SELECT id FROM tasks WHERE revisit_of_task_id=? ORDER BY id LIMIT 65',
+                                     (task_id,)).fetchall()
+        if len(manager) > 64 or len(revisit) > 64:
+            raise ValueError('successor_projection_incomplete')
+        successors.update(row[0] for row in manager)
+        successors.update(row[0] for row in revisit)
+        # Existing edges have different authenticated meanings. Any forward
+        # reuse relationship conservatively holds the predecessor tree; no
+        # note/title heuristic or optimistic ancestry reinterpretation.
+        related = []
+        for identity in sorted(successors):
+            current = self.terminal_worktree_task_projection(identity)
+            if current is None:
+                raise ValueError('successor_owner_missing')
+            related.append(current)
+        jobs = self._conn.execute('SELECT id,status,cwd_resolved,finished_at FROM jobs WHERE task_id=? ORDER BY id LIMIT 65',
+                                  (task_id,)).fetchall()
+        recoveries = self._conn.execute('SELECT state,settled_at FROM task_completion_recoveries WHERE task_id=? LIMIT 65',
+                                        (task_id,)).fetchall()
+        if len(jobs) > 64 or len(recoveries) > 64:
+            raise ValueError('work_projection_incomplete')
+        intents = []
+        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_draft_dispatch_intents'").fetchone():
+            rows = self._conn.execute('SELECT state,host_launch_started FROM workflow_draft_dispatch_intents WHERE task_id=? LIMIT 65',
+                                       (task_id,)).fetchall()
+            if len(rows) > 64:
+                raise ValueError('workflow_projection_incomplete')
+            intents = [dict(row) for row in rows]
+        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_request_task_bridges'").fetchone():
+            reviews = self._conn.execute(
+                'SELECT o.state,o.host_launch_started FROM workflow_request_task_bridges b '
+                'JOIN workflow_dispatch_outbox o ON o.operation_id=b.operation_id WHERE b.task_id=? LIMIT 65',
+                (task_id,),
+            ).fetchall()
+            if len(reviews) > 64:
+                raise ValueError('review_projection_incomplete')
+            intents.extend(dict(row) for row in reviews)
+        return dict(successors=related, jobs=[dict(row) for row in jobs],
+                    recoveries=[dict(row) for row in recoveries], intents=intents)
+
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
         self._insert_task_uncommitted(task)
@@ -1065,6 +1240,28 @@ class TasksMixin:
             raise _RetryEvidenceRefusal("malformed_evidence")
 
     @_synchronized
+    def reconcile_failed_continuation(self, org: object, predecessor_id: str, body: dict) -> dict:
+        """Caller holds ordinary owner lease and both sorted root gates."""
+        return TaskReconciliation(self).reconcile(org, predecessor_id, body)
+
+    def _retry_reconciliation_rows(self, *, incoming: str | None = None, outgoing: str | None = None) -> list[dict]:
+        validator = TaskReconciliation(self)
+        result = []
+        try:
+            for row, payload in validator.operations():
+                semantic = strict_json(payload["canonical_command"])
+                if (incoming == semantic.get("existing_successor_id")
+                        or outgoing == semantic.get("predecessor_id")):
+                    validator.receipt(payload["operation_key"])
+                    result.append({"task_id": row["task_id"], "successor_root": semantic["existing_successor_id"],
+                                   "audit_id": row["id"]})
+        except ReconciliationError as exc:
+            raise _RetryEvidenceRefusal(exc.code) from exc
+        except (ValueError, TypeError, KeyError, IndexError, RecursionError) as exc:
+            raise _RetryEvidenceRefusal("malformed_evidence") from exc
+        return result
+
+    @_synchronized
     def verify_retry_link(self, parent_id: str, target_agent: str, failed_id: str | None) -> VerifiedRetry | InvalidLineage:
         """Verify an explicit retry through recorded supersessions in this org DB.
 
@@ -1126,7 +1323,10 @@ class TasksMixin:
                     "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.successor_root') END=?",
                     (current["id"],),
                 ).fetchall()
-                predecessors = {r["predecessor_task_id"] for r in manager_rows} | {r["task_id"] for r in escalation_rows}
+                reconciliation_rows = self._retry_reconciliation_rows(incoming=current["id"])
+                predecessors = ({r["predecessor_task_id"] for r in manager_rows}
+                                | {r["task_id"] for r in escalation_rows}
+                                | {r["task_id"] for r in reconciliation_rows})
                 if not predecessors:
                     raise _RetryEvidenceRefusal("no_verified_supersession")
                 if len(predecessors) != 1:
@@ -1135,7 +1335,8 @@ class TasksMixin:
                 if predecessor_id in path:
                     raise _RetryEvidenceRefusal("lineage_cycle")
                 predecessor = self._conn.execute("SELECT * FROM tasks WHERE id=?", (predecessor_id,)).fetchone()
-                if predecessor is None or predecessor["status"] != "superseded":
+                if (predecessor is None or predecessor["status"] !=
+                        ("failed" if reconciliation_rows else "superseded")):
                     raise _RetryEvidenceRefusal("predecessor_not_superseded")
                 outgoing = {r[0] for r in self._conn.execute(
                     "SELECT successor_task_id FROM manager_supersessions WHERE predecessor_task_id=?", (predecessor_id,),
@@ -1146,11 +1347,16 @@ class TasksMixin:
                     if audit_actor != "founder" or not isinstance(successor_id, str) or not successor_id:
                         raise _RetryEvidenceRefusal("malformed_evidence")
                     outgoing.add(successor_id)
+                outgoing_reconciliations = self._retry_reconciliation_rows(outgoing=predecessor_id)
+                outgoing.update(row["successor_root"] for row in outgoing_reconciliations)
                 if len(outgoing) > 1:
                     raise _RetryEvidenceRefusal("competing_successors")
-                if manager_rows and escalation_rows:
+                if sum(bool(rows) for rows in (manager_rows, escalation_rows, reconciliation_rows)) > 1:
                     raise _RetryEvidenceRefusal("ambiguous_predecessor")
-                if manager_rows:
+                if reconciliation_rows:
+                    if len(reconciliation_rows) != 1 or outgoing_reconciliations != reconciliation_rows:
+                        raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                elif manager_rows:
                     self._retry_manager_edge(predecessor, current, manager_rows)
                 else:
                     normalized = {json.dumps(payload, sort_keys=True) for _, payload in outgoing_audits}
@@ -2187,6 +2393,213 @@ class TasksMixin:
         return not any(row["state"] == "claimed" for row in rows)
 
     @_synchronized
+    def selected_human_leaf_recovery_result(self, *, task_id: str, agent: str,
+                                           session_id: str, result_row_id: int | None = None) -> dict | None:
+        rows = self._conn.execute("""SELECT tr.* FROM task_completion_recoveries r
+            JOIN task_results tr ON tr.id=r.accepted_result_id
+            JOIN tasks t ON t.id=r.task_id
+            WHERE r.task_id=? AND r.agent=? AND r.recovery_session_id=?
+            AND r.state IN ('callback_accepted','callback_consumed')
+            AND tr.task_id=r.task_id AND tr.agent=r.agent AND tr.session_id=r.recovery_session_id
+            AND t.assigned_agent=r.agent AND t.current_session_id=r.recovery_session_id
+            AND t.cancelled_at IS NULL""", (task_id, agent, session_id)).fetchall()
+        if len(rows) != 1 or (result_row_id is not None and rows[0]["id"] != result_row_id):
+            return None
+        return dict(rows[0])
+
+    @_synchronized
+    def human_failed_recovery_context(self, *, task_id: str, agent: str,
+                                     session_id: str, result_row_id: int,
+                                     allow_unbound_live: bool = False) -> tuple[str, dict | None]:
+        """Read uncapped selected-only causal history for a human failed leaf.
+
+        The owning run_step driver holds publisher before this connection lock.
+        No terminal note alone establishes cause; foreign history refuses.
+        """
+        from runtime.orchestrator.orchestrator import completion_report_from_result_row
+        from runtime.orchestrator.run_step import _delegated_reviewer
+        from runtime.orchestrator import prompt_loader
+        from runtime.orchestrator._paths import OrgPaths
+        from runtime.orchestrator.org_validation import validate_team_membership
+        from runtime.workflows.recovery import classify_task
+
+        org = getattr(getattr(self, "_workflow_drafts", None), "org", None)
+        task = self.get_task(task_id)
+        if org is None or task is None:
+            return "lost_owner", None
+        try:
+            team = org.teams.manager_for_team(task.team)
+        except KeyError:
+            return "lost_owner", None
+        if team.kind != "human" or task.task_type != "subtask" or task.parent_task_id is None:
+            return "not_applicable", None
+        if (type(result_row_id) is not int or result_row_id <= 0
+                or task.assigned_agent != agent or task.current_session_id != session_id
+                or task.cancelled_at is not None):
+            return "lost_owner", None
+        episodes = self._conn.execute("SELECT * FROM task_completion_recoveries WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
+        results = self._conn.execute("SELECT * FROM task_results WHERE task_id=? ORDER BY id", (task_id,)).fetchall()
+        if len(episodes) != 1 or len(results) != 1:
+            return "ambiguous_history", None
+        episode, row = dict(episodes[0]), dict(results[0])
+        if (episode["agent"] != agent or episode["recovery_session_id"] != session_id
+                or episode["accepted_result_id"] != result_row_id
+                or episode["accepted_result_session_id"] != session_id
+                or episode["state"] not in ("callback_accepted", "callback_consumed")
+                or not episode["origin_session_id"] or not episode["provider_session_id"]
+                or not episode["claimed_at"] or not episode["expires_at"]
+                or episode["origin_session_id"] == session_id
+                or row["id"] != result_row_id or row["agent"] != agent or row["session_id"] != session_id):
+            return "lost_owner", None
+        if row["status"] != "blocked":
+            return "not_applicable", None
+        for field in ("waiting_on_job_ids", "risks_flagged", "decision_json", "local_ci"):
+            raw = row.get(field)
+            if raw:
+                decoded = json.loads(raw) if isinstance(raw, str) else raw
+                if field == "waiting_on_job_ids" and decoded:
+                    return "not_applicable", None
+        report = completion_report_from_result_row(task_id, row, fallback_agent=agent)
+        if report.waiting_on_job_ids or report.decision is not None:
+            return "not_applicable", None
+        if (task.active_chain is not None or task.active_fanout is not None
+                or self._conn.execute("SELECT 1 FROM tasks WHERE parent_task_id=?", (task_id,)).fetchone()
+                or classify_task(self, task_id, org_slug=org.slug).kind != "legacy"
+                or self.authority_policy_v2_completion_dispatch_context(root_task_id=task_id, result_row_id=result_row_id).kind != "no_v2"):
+            return "ambiguous_history", None
+        validate_team_membership(OrgPaths(root=org.root), org.teams)
+        active = {a.name: a for a in prompt_loader.list_agents(OrgPaths(root=org.root))}
+        child = active.get(agent)
+        if child is None or child.team != task.team or child.role != "worker" or agent not in team.workers:
+            return "lost_owner", None
+        reviewer = _delegated_reviewer(org.orchestrator, task)
+        note = "self-blocked: " + report.output_summary
+        verdict = report.verdict if report.verdict is not None else "rejected"
+        logs = self.get_audit_logs(task_id)
+        starts, bound, unbound, reviews = [], [], [], []
+        informational = {"session_end", "progress", "zombie_flagged", "zombie_cleared",
+                         "task_attachment_materialized", "executor_throttle", "task_scratch_report",
+                         "task_scratch_reclaimed", "portability_reconciled",
+                         # AuditLogger's native task-scoped memory observations.
+                         # Other memory CRUD/read rows use AGENT- scope, outside
+                         # get_audit_logs(task_id); collection controls are not
+                         # informational observations of this failed episode.
+                         "memory_added", "memory_digest_impression", "memory_search",
+                         # CollectionObserver._record's six supported PHASES
+                         # and its observational, task-scoped _seal checkpoint.
+                         "memory_runtime_intent", "memory_runtime_identity",
+                         "memory_runtime_expectation", "memory_runtime_binding",
+                         "memory_runtime_launched", "memory_runtime_terminal",
+                         "memory_collection_seal"}
+        for log in logs:
+            payload = log.get("payload")
+            if not isinstance(payload, dict):
+                return "ambiguous_history", None
+            action = log["action"]
+            if action == "session_start":
+                if (log["agent"] != agent or set(payload) != {"workspace", "session_id", "invocation_purpose", "executor", "model"}
+                        or payload["session_id"] not in (episode["origin_session_id"], session_id)
+                        or payload["invocation_purpose"] != ("unattributed" if payload["session_id"] == session_id else "worker_execution")
+                        or not isinstance(payload["workspace"], str) or not payload["workspace"]):
+                    return "ambiguous_history", None
+                starts.append(payload["session_id"])
+            elif action == "completion_report":
+                expected = report.model_dump()
+                if log["agent"] != agent:
+                    return "ambiguous_history", None
+                if payload == expected:
+                    unbound.append(log)
+                elif payload == {**expected, "_recovery_session_id": session_id, "_result_row_id": result_row_id}:
+                    bound.append(log)
+                else:
+                    return "ambiguous_history", None
+            elif action == "review_verdict":
+                reviews.append(log)
+            elif action not in informational:
+                return "ambiguous_history", None
+        if (sorted(starts) != sorted([episode["origin_session_id"], session_id])
+                or len(unbound) > 1 or len(bound) > 1 or len(reviews) > 1):
+            return "ambiguous_history", None
+        live = task.status == TaskStatus.IN_PROGRESS and task.block_kind is None
+        failed = (task.status == TaskStatus.FAILED and task.block_kind is None
+                  and task.completed_at is not None and task.note == note)
+        if not live and not failed:
+            return "lost_owner", None
+        if not bound and not (allow_unbound_live and live and not reviews and episode["state"] == "callback_accepted"):
+            return "ambiguous_history", None
+        if reviews and (not bound or not failed or reviews[0]["id"] <= bound[0]["id"]
+                        or reviews[0]["agent"] != reviewer
+                        or reviews[0]["payload"] != {"verdict": verdict, "feedback": note, "reviewed_agent": agent}):
+            return "ambiguous_history", None
+        if episode["state"] == "callback_consumed" and (not failed or len(reviews) != 1):
+            return "ambiguous_history", None
+        return "eligible", dict(task=task, episode=episode, report=report,
+                                reviewer=reviewer, note=note, verdict=verdict,
+                                bound=bound, reviews=reviews, selected_row=row)
+
+    @_synchronized
+    def apply_human_failed_recovery_effect(self, *, task_id: str, agent: str,
+                                          session_id: str, result_row_id: int,
+                                          effect: str) -> str:
+        """Each CAS commits separately; the selected driver owns ordering."""
+        disposition, context = self.human_failed_recovery_context(
+            task_id=task_id, agent=agent, session_id=session_id,
+            result_row_id=result_row_id, allow_unbound_live=effect == "evidence")
+        if disposition != "eligible":
+            return disposition
+        task, episode = context["task"], context["episode"]
+        now = _now()
+        params = dict(T=task_id, A=agent, S0=episode["origin_session_id"], S1=session_id,
+                      R=result_row_id, parent=task.parent_task_id, team=task.team, now=now)
+        guard = """id=:T AND assigned_agent=:A AND current_session_id=:S1
+            AND cancelled_at IS NULL AND status='in_progress' AND block_kind IS NULL
+            AND task_type='subtask' AND parent_task_id=:parent AND team=:team
+            AND active_chain IS NULL AND active_fanout IS NULL
+            AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task_id=:T)
+            AND EXISTS (SELECT 1 FROM task_completion_recoveries r JOIN task_results tr ON tr.id=r.accepted_result_id
+                WHERE r.task_id=:T AND r.agent=:A AND r.origin_session_id=:S0 AND r.recovery_session_id=:S1
+                AND r.accepted_result_id=:R AND r.accepted_result_session_id=:S1 AND r.state='callback_accepted'
+                AND tr.task_id=:T AND tr.agent=:A AND tr.session_id=:S1 AND tr.status='blocked')"""
+        if effect == "evidence":
+            if context["bound"]:
+                return "progressed"
+            payload = {**context["report"].model_dump(), "_recovery_session_id": session_id, "_result_row_id": result_row_id}
+            params.update(payload=json.dumps(payload))
+            cur = self._conn.execute("INSERT INTO audit_log(task_id,agent,action,payload,timestamp) SELECT :T,:A,'completion_report',:payload,:now WHERE EXISTS (SELECT 1 FROM tasks WHERE " + guard + ")", params)
+        elif effect in ("chain", "fanout", "fail"):
+            if task.status == TaskStatus.FAILED:
+                return "progressed"
+            setters = {"chain": "active_chain=NULL,updated_at=:now", "fanout": "active_fanout=NULL,updated_at=:now", "fail": "status='failed',block_kind=NULL,note=:note,completed_at=:now,updated_at=:now"}
+            params["note"] = context["note"]
+            cur = self._conn.execute("UPDATE tasks SET " + setters[effect] + " WHERE " + guard, params)
+        elif effect == "review":
+            if context["reviews"]:
+                return "progressed"
+            if task.status != TaskStatus.FAILED:
+                return "lost_owner"
+            params.update(reviewer=context["reviewer"], payload=json.dumps({"verdict": context["verdict"], "feedback": context["note"], "reviewed_agent": agent}), note=context["note"])
+            cur = self._conn.execute("""INSERT INTO audit_log(task_id,agent,action,payload,timestamp)
+                SELECT :T,:reviewer,'review_verdict',:payload,:now
+                WHERE EXISTS (SELECT 1 FROM tasks WHERE id=:T AND assigned_agent=:A AND current_session_id=:S1
+                AND cancelled_at IS NULL AND status='failed' AND note=:note AND parent_task_id=:parent AND team=:team)
+                AND NOT EXISTS (SELECT 1 FROM audit_log WHERE task_id=:T AND action='review_verdict')""", params)
+        elif effect == "marker":
+            if episode["state"] == "callback_consumed":
+                return "progressed"
+            if task.status != TaskStatus.FAILED or not context["reviews"]:
+                return "lost_owner"
+            params["note"] = context["note"]
+            cur = self._conn.execute("""UPDATE task_completion_recoveries SET state='callback_consumed',settled_at=:now
+                WHERE task_id=:T AND agent=:A AND origin_session_id=:S0 AND recovery_session_id=:S1
+                AND accepted_result_id=:R AND accepted_result_session_id=:S1 AND state='callback_accepted'
+                AND EXISTS (SELECT 1 FROM tasks WHERE id=:T AND assigned_agent=:A AND current_session_id=:S1
+                    AND status='failed' AND cancelled_at IS NULL AND note=:note AND team=:team AND parent_task_id=:parent)""", params)
+        else:
+            raise ValueError("unknown human failed-leaf effect")
+        self._conn.commit()
+        return "progressed" if cur.rowcount == 1 else "lost_owner"
+
+    @_synchronized
     def mark_task_completion_recovery_callback_consumed(
         self, *, task_id: str, agent: str, session_id: str, result_row_id: int,
         settled_at: str,
@@ -2535,7 +2948,7 @@ class TasksMixin:
                WHERE r.state='callback_consumed'
                  AND t.cancelled_at IS NULL
                  AND ((t.status=? AND t.task_type IN ('subtask', 'task'))
-                      OR (t.status=? AND t.task_type='task'
+                      OR (t.status=? AND t.task_type IN ('task','subtask')
                           AND t.parent_task_id IS NOT NULL))
                  AND tr.task_id=r.task_id AND tr.agent=r.agent
                  AND tr.session_id=r.recovery_session_id
@@ -2544,7 +2957,17 @@ class TasksMixin:
                ORDER BY r.id""",
             (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value),
         ).fetchall()
-        return [dict(row) for row in rows]
+        owners = []
+        for row in rows:
+            task = self.get_task(row["task_id"])
+            if row["status"] == TaskStatus.FAILED.value and task is not None and task.task_type == "subtask":
+                disposition, context = self.human_failed_recovery_context(
+                    task_id=row["task_id"], agent=row["agent"], session_id=row["recovery_session_id"],
+                    result_row_id=row["accepted_result_id"])
+                if disposition != "eligible" or context["episode"]["state"] != "callback_consumed":
+                    continue
+            owners.append(dict(row))
+        return owners
 
     @_synchronized
     def consumed_task_completion_recovery_owner_is_current(
@@ -2574,6 +2997,19 @@ class TasksMixin:
             (task_id, agent, recovery_session_id, result_row_id,
              terminal_status),
         ).fetchone()
+        if row is not None and terminal_status == TaskStatus.FAILED.value:
+            task = self.get_task(task_id)
+            org = getattr(getattr(self, "_workflow_drafts", None), "org", None)
+            human = False
+            if task is not None and org is not None:
+                try:
+                    human = org.teams.manager_for_team(task.team).kind == "human"
+                except KeyError:
+                    pass
+            if task is not None and task.task_type == "subtask" and human:
+                disposition, context = self.human_failed_recovery_context(
+                    task_id=task_id, agent=agent, session_id=recovery_session_id, result_row_id=result_row_id)
+                return disposition == "eligible" and context["episode"]["state"] == "callback_consumed"
         return row is not None
 
     @_synchronized

@@ -45,7 +45,10 @@ struct SurfaceAllowListDriftGuardTests {
         ("{candidate_id}", "cand-1"),
         ("{attachment_id}", "att-1"),
         ("{adapter_id}", "adapter-1"),
+        ("{activation_id}", "activation-1"),
         ("{handoff_id}", "handoff-1"),
+        ("{instance_id}", "instance-1"),
+        ("{revision_operation_id}", "revision-1"),
         ("{request_id}", "request-1"),
     ]
 
@@ -98,6 +101,34 @@ struct SurfaceAllowListDriftGuardTests {
     ]
 
     // MARK: - Tests
+
+    @Test("owner review discovery GET retains existing remote classification")
+    func ownerReviewSelectionClassification() throws {
+        let (included, excluded) = try Self.loadClassification()
+        let route = "GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection"
+        #expect(included.contains(route))
+        #expect(!excluded.contains(route))
+        let raw = "/api/v1/orgs/alpha/workflows/activations/activation-1/review-selection"
+        #expect(SurfaceAllowList.default.isAllowed(method: "GET",
+            path: DaemonPathNormalizer.stripApiPrefix(raw), rawPath: raw))
+    }
+
+    @Test("THR299 agent-only writer and advisory reader mirror classification in both forms")
+    func failedContinuationClassification() throws {
+        let (included, excluded) = try Self.loadClassification()
+        let post = "/api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation"
+        let get = "/api/v1/orgs/{slug}/tasks/{task_id}/retry-verification"
+        #expect(excluded.contains("POST \(post)"))
+        #expect(included.contains("GET \(get)"))
+        let policy = SurfaceAllowList.default
+        for (method, template, expected) in [("POST", post, false), ("GET", get, true)] {
+            let concrete = Self.concretize(template)
+            let normalized = DaemonPathNormalizer.stripApiPrefix(concrete)
+            for raw in [concrete, normalized] {
+                #expect(policy.isAllowed(method: method, path: normalized, rawPath: raw) == expected)
+            }
+        }
+    }
 
     @Test("auth bootstrap is locally intercepted (included but denied)")
     func authBootstrapIsLocallyIntercepted() throws {

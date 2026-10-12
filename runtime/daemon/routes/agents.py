@@ -284,6 +284,7 @@ class ManageAgentBody(BaseModel):
     repos: dict[str, str] | None = None
     executor: str | None = None
     model: str | None = None
+    reasoning_effort: StrictStr | None = None
     allow_rules: list[str] | None = None
     target_team: str | None = None
     expected_revision: str | None = None
@@ -311,6 +312,7 @@ class FounderCreateAgentBody(BaseModel):
     new_team: str | None = None
     executor: str = "claude"
     model: str | None = None
+    reasoning_effort: StrictStr | None = None
     description: str
     system_prompt: str
     allow_rules: list[str] | None = None
@@ -484,6 +486,7 @@ def list_agents(slug: str, org: OrgDep) -> dict:
             "role": agent_def.role,
             "executor": agent_def.executor,
             "model": agent_def.model,
+            "reasoning_effort": agent_def.reasoning_effort,
             "description": agent_def.description,
             # Phase 2: additive read-only fields (D6 spec)
             "repos": repos,
@@ -648,6 +651,7 @@ async def manage_repo(
                 system_prompt=agent_def.system_prompt,
                 description=agent_def.description,
                 model=agent_def.model,
+                reasoning_effort=agent_def.reasoning_effort,
             )
             with authority_change.canonical_change():
                 active_path = paths.agents_dir / f"{agent_name}.md"
@@ -742,6 +746,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                         "requested_team": target_team,
                     },
                 )
+            _validate_reasoning_selection(body.executor or "claude", body.model, body.reasoning_effort)
             agent = AgentDef(
                 name=body.name,
                 team=target_team,
@@ -755,6 +760,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                 system_prompt=body.system_prompt,
                 description=body.description,
                 model=body.model if body.model else None,
+                reasoning_effort=body.reasoning_effort,
             )
             with authority_change.canonical_change():
                 prompt_loader.write_pending_agent(paths, agent)
@@ -809,6 +815,9 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                     resolved_model = None
                 else:
                     resolved_model = existing.model
+                resolved_effort = (body.reasoning_effort if "reasoning_effort" in body.model_fields_set
+                                   else None if executor_changed else existing.reasoning_effort)
+                _validate_reasoning_selection(body.executor or existing.executor, resolved_model, resolved_effort)
                 updated = AgentDef(
                     name=existing.name,
                     team=existing.team,
@@ -822,6 +831,7 @@ async def manage_agent(slug: str, body: ManageAgentBody, org: OrgDep) -> dict:
                     system_prompt=body.system_prompt if body.system_prompt is not None else existing.system_prompt,
                     description=body.description if body.description is not None else existing.description,
                     model=resolved_model,
+                    reasoning_effort=resolved_effort,
                 )
                 with authority_change.canonical_change():
                     active_path = paths.agents_dir / f"{body.name}.md"
@@ -1245,6 +1255,7 @@ async def founder_create_agent(
             detail={"code": "missing_required_field"},
         )
     _validate_executor(body.executor)
+    _validate_reasoning_selection(body.executor, body.model, body.reasoning_effort)
     if body.role == "worker":
         if not body.team or body.new_team:
             raise HTTPException(
@@ -1317,6 +1328,7 @@ async def founder_create_agent(
                     system_prompt=body.system_prompt,
                     description=body.description,
                     model=body.model if body.model else None,
+                    reasoning_effort=body.reasoning_effort,
                 )
 
                 # Atomic write directly into active agents/ (skip _pending/).
@@ -2430,7 +2442,7 @@ async def set_agent_executor(
             fresh = prompt_loader.load_agent(paths, agent_name)
             if fresh is None:
                 raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
-            if fresh.executor != existing.executor or fresh.model != existing.model:
+            if fresh.executor != existing.executor or fresh.model != existing.model or fresh.reasoning_effort != existing.reasoning_effort:
                 raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
             existing = fresh
 
@@ -2525,7 +2537,7 @@ async def set_agent_executor(
                 latest = prompt_loader.load_agent(paths, agent_name)
                 if latest is None:
                     raise HTTPException(status_code=404, detail={"code": "agent_not_found", "agent": agent_name})
-                if latest.executor != existing.executor or latest.model != existing.model:
+                if latest.executor != existing.executor or latest.model != existing.model or latest.reasoning_effort != existing.reasoning_effort:
                     raise HTTPException(status_code=409, detail={"code": "executor_switch_conflict", "agent": agent_name})
                 updated = AgentDef(
                     name=latest.name, team=latest.team, role=latest.role,
@@ -2534,6 +2546,7 @@ async def set_agent_executor(
                     enrolled_at_task=latest.enrolled_at_task, enrolled_at=latest.enrolled_at,
                     system_prompt=latest.system_prompt, description=latest.description,
                     model=None if body.executor != latest.executor else latest.model,
+                    reasoning_effort=None if body.executor != latest.executor else latest.reasoning_effort,
                 )
                 from runtime.orchestrator.agent_def import render_agent_text
                 active_path = paths.agents_dir / f"{agent_name}.md"
@@ -2618,7 +2631,9 @@ async def set_agent_executor(
 
 
 class SetModelBody(BaseModel):
-    model: str | None = None
+    model: StrictStr | None = None
+    reasoning_effort: StrictStr | None = None
+    expected_executor: StrictStr | None = None
 
 
 @router.put("/agents/{agent_name}/model")
@@ -2647,7 +2662,12 @@ async def set_agent_model(
             workspace = paths.workspaces_dir / agent_name
             has_workspace = workspace.exists()
 
-            before_model = _resolve_agent_model(paths, agent_name)
+            if body.expected_executor is not None and body.expected_executor != existing.executor:
+                raise HTTPException(status_code=409, detail={"code": "reasoning_executor_changed"})
+            selected_model = (body.model or None) if "model" in body.model_fields_set else existing.model
+            selected_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else existing.reasoning_effort
+            _validate_reasoning_selection(existing.executor, selected_model, selected_effort)
+            before_model = existing.model
 
             # 1. org .md frontmatter — atomic overwrite via tempfile + os.replace.
             updated = AgentDef(
@@ -2662,7 +2682,8 @@ async def set_agent_model(
                 enrolled_at=existing.enrolled_at,
                 system_prompt=existing.system_prompt,
                 description=existing.description,
-                model=body.model if body.model else None,
+                model=selected_model,
+                reasoning_effort=selected_effort,
             )
             with authority_change.canonical_change():
                 from runtime.orchestrator.agent_def import render_agent_text
@@ -2695,6 +2716,7 @@ async def set_agent_model(
             "agent": agent_name,
             "before": before_model,
             "after": after_model,
+            "reasoning_effort": updated.reasoning_effort,
         }
 
 @router.get("/agents/enrollments")
@@ -3500,3 +3522,11 @@ async def compact_memory(
             "skipped": result.skipped,
             "errors": result.errors,
         }
+
+
+def _validate_reasoning_selection(executor: str, model: str | None, effort: str | None) -> None:
+    from runtime.orchestrator.executor_registry import validate_reasoning_selection
+    try:
+        validate_reasoning_selection(executor, model, effort)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": "invalid_reasoning_effort", "error": str(exc)}) from exc

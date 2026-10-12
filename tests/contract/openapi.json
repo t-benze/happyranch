@@ -3147,6 +3147,33 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "task_id",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/tasks/{task_id}/resolve-escalation": {
       "POST": {
         "params": [
@@ -3189,6 +3216,73 @@
         "responses": [
           "200",
           "422"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/tasks/{task_id}/retry-verification": {
+      "GET": {
+        "params": [
+          [
+            "X-HappyRanch-Task-Session",
+            "header"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "current_descendant_id",
+            "query"
+          ],
+          [
+            "existing_successor_id",
+            "query"
+          ],
+          [
+            "failed_child_id",
+            "query"
+          ],
+          [
+            "mode",
+            "query"
+          ],
+          [
+            "operation_key",
+            "query"
+          ],
+          [
+            "operator_task_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ],
+          [
+            "target_agent",
+            "query"
+          ],
+          [
+            "task_id",
+            "path"
+          ],
+          [
+            "thread_id",
+            "query"
+          ],
+          [
+            "version",
+            "query"
+          ]
+        ],
+        "responses": [
+          "200",
+          "401",
+          "403",
+          "404",
+          "409",
+          "422",
+          "503"
         ]
       }
     },
@@ -4085,6 +4179,13 @@
               "thread-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/2/properties/inputs/items/oneOf/1"
             },
             "propertyName": "kind"
+          },
+          {
+            "mapping": {
+              "task-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/3/properties/inputs/items/oneOf/0",
+              "thread-attachment": "#/paths/~1api~1v1~1orgs~1{slug}~1workflows~1activations/post/requestBody/content/application~1json/schema/anyOf/3/properties/inputs/items/oneOf/1"
+            },
+            "propertyName": "kind"
           }
         ],
         "params": [
@@ -4127,6 +4228,36 @@
           "200",
           "403",
           "404",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection": {
+      "GET": {
+        "params": [
+          [
+            "activation_id",
+            "path"
+          ],
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "proof_kind",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
           "422",
           "500"
         ]
@@ -4196,6 +4327,55 @@
         ]
       }
     },
+    "/api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "instance_id",
+            "path"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/reviews/human-receipts": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
     "/api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}": {
       "GET": {
         "params": [
@@ -4222,6 +4402,97 @@
         ],
         "responses": [
           "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/reviews/stages": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}": {
+      "GET": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "proof_kind",
+            "query"
+          ],
+          [
+            "revision_operation_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "403",
+          "404",
+          "409",
+          "422",
+          "500"
+        ]
+      }
+    },
+    "/api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions": {
+      "POST": {
+        "params": [
+          [
+            "authorization",
+            "header"
+          ],
+          [
+            "revision_operation_id",
+            "path"
+          ],
+          [
+            "session_id",
+            "query"
+          ],
+          [
+            "slug",
+            "path"
+          ]
+        ],
+        "responses": [
+          "200",
+          "201",
           "403",
           "404",
           "409",

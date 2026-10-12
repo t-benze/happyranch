@@ -88,8 +88,8 @@ start+900, retains a bounded incomplete FAIL receipt and grants no extra teardow
 or action time. Hosted upload shares the remaining900s/15-minute envelope;
 local timers do not guarantee upload success. Timing evidence is required by
 both daily consumers. These source bounds and480−375=105 nominal planning slack
-are not measured fit or observed signal/cleanup/export behavior;42 variants,
-cadence and the600 target remain unchanged. See [the timing contract](../e2e/README.md).
+are not measured fit or observed signal/cleanup/export behavior. The42 baseline/Pause variants remain at their original boundaries;
+the E04 prefix below adds six. Cadence and the600 target remain unchanged. See [the timing contract](../e2e/README.md).
 Engineering_manager owns daily failure/missing-evidence triage through existing
 tasks/threads; no new notifications or guaranteed response SLA is implied.
 
@@ -161,3 +161,80 @@ local-CI/test-authoring KB entries, engineering charters and delivered skill
 refresh. Only release-owned bundled skill sources change in this PR. The
 `integration-agentic-cli-stub-only` KB remains binding. Historical implementation
 reports retain their original failures, counts and allocations.
+
+### E04 daily source prefix
+
+The daily harness appends six accepted E04 jobs variants after the unchanged
+23 baseline and19 Pause variants (48 authored). Real provider-owned submit/
+block/read/final CLI callbacks, browser approval/rejection, completed0/7,
+failed-timeout/-9 and both two-job terminal orders retain literal durable and
+owned process oracles. BootA12 is archived across the existing Pause restart;
+bootB closes18, cumulative30 providers, alpha19tasks29results/beta1/1, eight
+jobs/seven script starts. Actual-content aggregate validation reads observation
+and browser artifacts and rechecks serial receipt windows and outcome joins.
+Each jobs read is joined to its shipping method, job URL/query, HTTP200 and
+actual response/CLI content against the durable row. A source-timed live-S2
+snapshot must retain exactly the blocked S1 result before reads/final callback;
+human show must match the exact first ID/status/timestamp line. CLI subprocess
+expiry precedes the original bounded caller deadline by one second to deliver
+partial timeout evidence through the existing sanitized exporter. These source
+corrections have no behavioral, persistence, sanitation or fit proof yet.
+
+The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
+carry all four authoring answers and consumer mapping. Source/static checks do
+not establish execution, assertion sensitivity, fit, sanitation or cleanup.
+All new behavior/proof remains MISSING/UNEXECUTED; first daily PENDING per owner.
+E05 and later cancellation/restart remain future work; no entire-program PASS.
+The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
+bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
+lane, protected proof, collector action, Jenkins or deployment is authorized.
+
+### E05 authored threads/replay increment
+
+The accepted four-case/five-variant E05 source adds a real browser compose race,
+genuine finite reply closure, one provider-owned self-dispatch/task/followup,
+same-live-provider consumed-token409 replay, and genuine task-session403 send
+to a worker-only denial venue. The53-variant union preserves all48 earlier
+variants. Expected cumulative providers37 comprise archived bootA12 plus current
+bootB25; final global21tasks31results and six thread invocations are distinct.
+Actual-content consumers check coherent negative frames, literal timelines,
+source/CLI/provider identity, ordered receipt tails and proxy/browser closure.
+The full authoring map and source-only limits are in `e2e/README.md`.
+
+No behavioral or complete test-authoring PASS follows. E05 assertions, proxy
+compatibility, same-tick guard sensitivity, sanitation, persistence/delivery,
+closure and fit remain MISSING/UNEXECUTED. Protected12 deliberate defects and
+RED/restoration/GREEN/repetition proofs remain unauthorized/unexecuted. Python
+units remain RETIRED; general integration remains SKIPPED. Daily-only schedule,
+bounds, matrix, artifacts and TASK10555 collector ownership are unchanged.
+Cancellation/late-callback/restart increments and daily acceptance remain open.
+
+E05 PR1040 R1–R3 source correction binds every named CLI receipt to its
+canonical command/instruction and actual public outcome, derives hold/navigation
+from the complete browser ledger with literal per-message rendering joins, and
+redacts full captured streams with retained credentials before byte clipping.
+Original48/total53 and A12+B25=37 source expectations remain unchanged. Dedicated
+contradictory-artifact and sanitation controls are UNAUTHORED; all behavior,
+sensitivity, proxy/guard, sanitation, delivery/persistence, closure, fit and
+protected proof remain MISSING/UNEXECUTED. This is static source correction only;
+the existing daily-only policy and all execution holds remain in effect.
+
+### E07 C authored cancellation increment
+
+The C-only source appends three variants to the preserved53:56 authored
+variants,39 starts=A12+B27,23 tasks/32 results (alpha22/31,beta1/1),21 completed
+and two cancelled. Real browser cascade and terminal CLI refusals precede
+forwarding W's original captured provider CLI request; independent serialized
+content, process/socket provenance and a full1s unchanged window are required.
+The E05 witness prefix is bound to its actual byte/record offset, with every
+E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
+retain all missing proof. R/full remains HELD, with no new restart/rotation code.
+C50 uses fixed16/12/8/6/8 partitions within unchanged480/original720;425 is
+unmeasured arithmetic. Daily-only19UTC and the five artifacts are unchanged.
+Source-only authoring is not independent review, merge, execution or acceptance.
+All behavior/sensitivity/provenance/fit/closure/sanitation proof is UNEXECUTED;
+dedicated controls UNAUTHORED; protected12 and repetitions unauthorized.
+General/actual callback integration SKIPPED THR243seq42; retired units untouched.
+The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
+unresolved. Root TASK10680 owns delivery/daily acceptance, TASK10555 owns
+first-daily/Pause (PENDING per owner). No entire-reset or test-authoring PASS.

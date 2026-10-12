@@ -103,6 +103,9 @@ public struct SurfaceAllowList: Sendable {
             ("POST", "/reconcile-portability"),
             // Original-current author staging is a native-sensitive mutation.
             ("POST", "/workflows/submissions/handoffs"),
+            // Current agent reviewer staging is not a remote human surface.
+            ("POST", "/workflows/reviews/stages"),
+            ("POST", "/workflows/revisions/*/submissions"),
         ]
         for (method, path) in exactDenies {
             denied.append("\(method) \(path)")
@@ -114,6 +117,8 @@ public struct SurfaceAllowList: Sendable {
             // Task agent callbacks
             ("POST", "/tasks/", "/completion"),
             ("POST", "/tasks/", "/progress"),
+            // Agent-only failed-continuation writer; advisory GET stays available.
+            ("POST", "/tasks/", "/reconcile-failed-continuation"),
             // Agent self-service & management
             ("POST", "/agents/", "/repos"),
             ("PUT", "/agents/", "/executor"),
@@ -202,6 +207,36 @@ public struct SurfaceAllowList: Sendable {
         self.deniedSegmentEndsWithSuffixes = deniedSegmentEndsWithSuffixes
     }
 
+    // Only this denial comparison decodes a path. The forwarded target and
+    // shared normalizer are unchanged. Invalid escaped UTF8 uses replacement.
+    private static func stageDenialCandidate(_ target: String) -> String {
+        let path = target.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)[0]
+        let bytes = Array(path.utf8)
+        var decoded: [UInt8] = []
+        var index = 0
+        func hex(_ byte: UInt8) -> UInt8? {
+            switch byte {
+            case 48...57: return byte - 48
+            case 65...70: return byte - 65 + 10
+            case 97...102: return byte - 97 + 10
+            default: return nil
+            }
+        }
+        while index < bytes.count {
+            if bytes[index] == 37, index + 2 < bytes.count,
+               let high = hex(bytes[index + 1]), let low = hex(bytes[index + 2]) {
+                decoded.append(high * 16 + low)
+                index += 3
+            } else {
+                decoded.append(bytes[index]) // Malformed triplets and '+' stay literal.
+                index += 1
+            }
+        }
+        var candidate = String(decoding: decoded, as: UTF8.self)
+        if candidate.hasSuffix("/") { candidate.removeLast() }
+        return DaemonPathNormalizer.stripApiPrefix(candidate)
+    }
+
     // MARK: - Gate
 
     /// Check whether a request (method, path) is **allowed** for remote access.
@@ -212,6 +247,18 @@ public struct SurfaceAllowList: Sendable {
     ///   - rawPath: The original raw path from the request.
     /// - Returns: `true` if the request is allowed, `false` if it is denied.
     public func isAllowed(method: String, path: String, rawPath: String) -> Bool {
+        if method == "POST", deniedMethods.contains("POST /workflows/reviews/stages"),
+           [rawPath, path].contains(where: { Self.stageDenialCandidate($0) == "/workflows/reviews/stages" }) {
+            return false
+        }
+        if method == "POST", deniedMethods.contains("POST /workflows/revisions/*/submissions"),
+           [rawPath, path].contains(where: {
+               let parts = Self.stageDenialCandidate($0).split(separator: "/", omittingEmptySubsequences: false)
+               return parts.count == 5 && parts[0].isEmpty && parts[1] == "workflows"
+                   && parts[2] == "revisions" && !parts[3].isEmpty && parts[4] == "submissions"
+           }) {
+            return false
+        }
         // This exact newly admitted family also checks the original prefixed
         // form; it does not grant reachability to any GET or adjacent route.
         if method == "POST",

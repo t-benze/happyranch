@@ -19,6 +19,8 @@
  * See `web/DESIGN_SYSTEM.md` §8.
  */
 import { createContext, useContext } from 'react';
+import type { ReviewDetail } from '@/lib/workflowReviewSelection';
+import type { HumanReviewCommand, HumanReviewReceipt, DocumentRevisionCommand, DocumentRevisionReceipt, WorkflowActivationReceipt } from '@/lib/api/types';
 import type {
   HealthResponse,
   OrgsListResponse,
@@ -339,7 +341,9 @@ export interface AgentsApi {
   useReadAgentSystemPrompt: () => MutationLike<
     { slug: string; agentName: string }, import('@/lib/api/types').AgentSummary | undefined
   >;
-  useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }>;
+  useAgentsList: () => QueryLike<{ agents: import('@/lib/api/agents').AgentSummary[] }> & {
+    refetch: () => Promise<unknown>;
+  };
   /** Pending enrollments — `status` filter narrows the file scan. */
   useEnrollmentsList: (
     params?: { status?: 'pending' | 'approved' },
@@ -425,7 +429,9 @@ export interface AgentsRoutes {
 // ---------------------------------------------------------------------------
 
 export interface TeamsApi {
-  useTeamsList: () => QueryLike<{ teams: import('@/lib/api/teams').TeamSummary[] }>;
+  useTeamsList: () => QueryLike<{ teams: import('@/lib/api/teams').TeamSummary[] }> & {
+    refetch: () => Promise<unknown>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -626,7 +632,19 @@ export interface IdentitiesApi {
   usePreflightAddresses: () => MutationLike<import('@/lib/api/identities').AddressPreflight, { recipients: string[] }>;
 }
 
+export interface WorkflowQuery<T> extends QueryLike<T> {
+  isFetching: boolean;
+  refetch: () => Promise<unknown>;
+}
+export interface WorkflowsApi {
+  useActivations: () => WorkflowQuery<WorkflowActivationReceipt[]>;
+  useReviewDetail: (activationId: string, history: boolean) => WorkflowQuery<ReviewDetail> & { captureAdmission: (detail: ReviewDetail) => () => boolean };
+  useHumanResponse: () => MutationLike<{ slug: string; activationId: string; body: HumanReviewCommand }, HumanReviewReceipt>;
+  useOwnerReturn: () => MutationLike<{ slug: string; activationId: string; body: DocumentRevisionCommand }, DocumentRevisionReceipt>;
+}
+
 export interface DataContextValue {
+  workflows: WorkflowsApi;
   orgs: OrgsApi;
   agents: AgentsApi;
   identities: IdentitiesApi;

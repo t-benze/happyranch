@@ -83,6 +83,16 @@ export interface NamespaceCoverage {
 
 export const COVERAGE_MANIFEST: readonly NamespaceCoverage[] = [
   {
+    namespace: 'workflows', routeTokens: ['reviews', 'reviews/:activationId'], status: 'translated',
+    qualifiedRouteTokens: ['src/routes.tsx#/orgs/:slug:reviews', 'src/routes.tsx#/orgs/:slug:reviews/:activationId'],
+    qualifiedSurfaces: [
+      'src/features/workflows/WorkflowReviewPanel.tsx#WorkflowReviewPanel->src/features/workflows/ReviewResponseDialog.tsx#ReviewResponseDialog:component',
+      'src/features/workflows/WorkflowReviewPanel.tsx#WorkflowReviewPanel->src/features/workflows/OwnerReturnDialog.tsx#OwnerReturnDialog:component',
+    ],
+    surfaces: ['WorkflowReviewsPage', 'ReviewResponseDialog', 'OwnerReturnDialog'],
+    surfaceOwners: { WorkflowReviewsPage: 'src/features/workflows/WorkflowReviewsPage.tsx', ReviewResponseDialog: 'src/features/workflows/ReviewResponseDialog.tsx', OwnerReturnDialog: 'src/features/workflows/OwnerReturnDialog.tsx' },
+  },
+  {
     namespace: 'root-shell',
     routeTokens: ['index'],
     status: 'translated',

@@ -109,7 +109,7 @@ export const mockAgentsApi: AgentsApi = {
       }) => ({
         agent: '',
         before: null,
-        after: body.model,
+        after: body.model ?? null,
       }),
     }),
 

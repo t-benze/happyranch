@@ -139,7 +139,7 @@ def _pid_is_live(pid: int) -> bool:
 
 
 def _agent_projection(agent, *, status: str) -> dict[str, object]:
-    return {
+    projection = {
         "allow_rules": list(agent.allow_rules),
         "description_digest": _digest((agent.description or "").encode("utf-8")),
         "executor": agent.executor,
@@ -151,6 +151,59 @@ def _agent_projection(agent, *, status: str) -> dict[str, object]:
         "system_prompt_digest": _digest(agent.system_prompt.encode("utf-8")),
         "team": agent.team,
     }
+    if agent.reasoning_effort is not None:
+        projection["reasoning_effort"] = agent.reasoning_effort
+    return projection
+
+
+def snapshot_team_agents(snapshot: dict, team: dict) -> list[str]:
+    """Interpret retained v1 and typed v2 authority without rewriting history."""
+    if not isinstance(snapshot, dict) or not isinstance(team, dict):
+        raise WorkflowAuthorityError("authority_snapshot_invalid")
+    version = snapshot.get("schema_version")
+    manager = team.get("manager")
+    if type(version) is not int or version not in (1, 2):
+        raise WorkflowAuthorityError("authority_snapshot_version_unsupported")
+    if version == 1:
+        if not isinstance(manager, str) or not manager.strip():
+            raise WorkflowAuthorityError("authority_manager_incoherent")
+        lead = manager
+    else:
+        if (not isinstance(manager, dict) or set(manager) != {"kind", "principal"}
+                or manager["kind"] not in ("agent", "human")
+                or not isinstance(manager["principal"], str) or not manager["principal"].strip()
+                or (manager["kind"] == "human" and manager["principal"] != "founder")):
+            raise WorkflowAuthorityError("authority_manager_incoherent")
+        lead = manager["principal"] if manager["kind"] == "agent" else None
+    workers = team.get("workers")
+    if (not isinstance(workers, list)
+            or any(not isinstance(item, str) or not item.strip() for item in workers)
+            or (version == 2 and (len(set(workers)) != len(workers) or lead in workers))):
+        raise WorkflowAuthorityError("authority_worker_incoherent")
+    return ([lead] if lead is not None else []) + workers
+
+
+def validate_authority_snapshot(snapshot: dict) -> None:
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("teams"), list):
+        raise WorkflowAuthorityError("authority_snapshot_invalid")
+    if type(snapshot.get("schema_version")) is not int or snapshot["schema_version"] not in (1, 2):
+        raise WorkflowAuthorityError("authority_snapshot_version_unsupported")
+    names = set()
+    members = set()
+    for team in snapshot["teams"]:
+        if (not isinstance(team, dict) or not isinstance(team.get("name"), str)
+                or not team["name"].strip()
+                or (snapshot["schema_version"] == 2 and team["name"] in names)):
+            raise WorkflowAuthorityError("authority_snapshot_invalid")
+        names.add(team["name"])
+        identities = snapshot_team_agents(snapshot, team)
+        if snapshot["schema_version"] == 2 and members.intersection(identities):
+            raise WorkflowAuthorityError("authority_agent_identity_conflict")
+        members.update(identities)
+    if snapshot["schema_version"] == 2:
+        if any(not isinstance(snapshot.get(key), str) or snapshot[key] not in names
+               for key in ("default_team", "task_default_team")):
+            raise WorkflowAuthorityError("authority_routing_incoherent")
 
 
 class WorkflowAuthorityCoordinator:
@@ -194,7 +247,7 @@ class WorkflowAuthorityCoordinator:
 
         teams = [
             {
-                "manager": fresh_teams.manager_for_team(name).name,
+                "manager": fresh_teams.manager_for_team(name).manager_value(typed=True),
                 "name": name,
                 "workers": sorted(fresh_teams.manager_for_team(name).workers),
             }
@@ -202,13 +255,14 @@ class WorkflowAuthorityCoordinator:
         ]
         in_memory_teams = [
             {
-                "manager": self._teams.manager_for_team(name).name,
+                "manager": self._teams.manager_for_team(name).manager_value(typed=True),
                 "name": name,
                 "workers": sorted(self._teams.manager_for_team(name).workers),
             }
             for name in self._teams.teams()
         ]
-        if in_memory_teams != teams:
+        if (in_memory_teams != teams or self._teams.default_team != fresh_teams.default_team
+                or self._teams.task_default_team != fresh_teams.task_default_team):
             raise WorkflowAuthorityError("authority_team_cache_incoherent")
 
         active = list(prompt_loader.list_agents(paths))
@@ -227,8 +281,8 @@ class WorkflowAuthorityCoordinator:
         # a matching canonical definition and every active worker must appear
         # in its declared team's worker set.
         for team in teams:
-            manager = projected.get(str(team["manager"]))
-            if not (
+            manager = projected.get(team["manager"]["principal"])
+            if team["manager"]["kind"] == "agent" and not (
                 manager is not None
                 and manager["status"] == "active"
                 and manager["role"] == "manager"
@@ -274,7 +328,9 @@ class WorkflowAuthorityCoordinator:
             "machine_global_profiles": [],
             "org_slug": self._org_slug,
             "reviewer_agents": list(reviewer_agents),
-            "schema_version": 1,
+            "schema_version": 2,
+            "default_team": fresh_teams.default_team,
+            "task_default_team": fresh_teams.task_default_team,
             "teams": teams,
         })
 
@@ -352,7 +408,12 @@ class WorkflowAuthorityCoordinator:
                 conn.rollback()
                 raise
             else:
-                conn.commit()
+                try:
+                    conn.commit()
+                except BaseException:
+                    # This context owns the transaction; do not leak a failed commit.
+                    conn.rollback()
+                    raise
 
     @staticmethod
     def _pointer(conn: sqlite3.Connection, namespace: str) -> tuple[int, str | None, str | None, str, int]:
@@ -906,8 +967,16 @@ class WorkflowAuthorityCoordinator:
                 staging = path.with_name(
                     f"{path.name}.{fence_journal_id}.staging",
                 )
-                staging.write_bytes(snapshot)
+                with staging.open("wb") as staged:
+                    staged.write(snapshot)
+                    staged.flush()
+                    os.fsync(staged.fileno())
                 os.replace(staging, path)
+                directory_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
                 with self._transaction() as conn:
                     changed = conn.execute(
                         "UPDATE workflow_publication_journals "
@@ -1024,6 +1093,11 @@ class WorkflowAuthorityCoordinator:
             raise WorkflowAuthorityError("authority_pointer_not_ready")
         if self._cache.get(self.namespace) != (generation, digest):
             raise WorkflowAuthorityError("authority_pointer_not_ready")
+        try:
+            document = json.loads(snapshot)
+        except (ValueError, UnicodeError) as exc:
+            raise WorkflowAuthorityError("authority_snapshot_invalid") from exc
+        validate_authority_snapshot(document)
         return AuthorityReadiness(self.namespace, generation, digest, snapshot)
 
     def verify_admission_ready(self) -> AuthorityReadiness:
@@ -1206,7 +1280,16 @@ class WorkflowAuthorityCoordinator:
                     if staging.is_file():
                         if staging.read_bytes() != snapshot:
                             raise WorkflowAuthorityError("authority_staging_snapshot_mismatch")
+                        # Process loss may precede the original staging flush.
+                        # Re-establish file durability before installing it.
+                        with staging.open("rb") as staged:
+                            os.fsync(staged.fileno())
                         os.replace(staging, path)
+                        directory_fd = os.open(path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                         state = "canonical_published"
                         with self._transaction() as conn:
                             conn.execute(
@@ -1215,6 +1298,16 @@ class WorkflowAuthorityCoordinator:
                                 (journal_id, self.namespace),
                             )
                     elif path.is_file() and path.read_bytes() == snapshot:
+                        # The previous process may have died after rename but
+                        # before its directory flush. Bytes alone do not close
+                        # that boundary.
+                        with path.open("rb") as installed:
+                            os.fsync(installed.fileno())
+                        directory_fd = os.open(path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                         state = "canonical_published"
                         with self._transaction() as conn:
                             conn.execute(
@@ -1236,7 +1329,16 @@ class WorkflowAuthorityCoordinator:
                         raise WorkflowAuthorityError("authority_canonical_snapshot_mismatch")
                     if not path.exists():
                         path.parent.mkdir(parents=True, exist_ok=True)
-                        path.write_bytes(snapshot)
+                        with staging.open("wb") as staged:
+                            staged.write(snapshot)
+                            staged.flush()
+                            os.fsync(staged.fileno())
+                        os.replace(staging, path)
+                        directory_fd = os.open(path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                     with self._transaction() as conn:
                         current, _jid, _old_digest, _pointer_state, profile_fence = self._pointer(
                             conn, self.namespace,

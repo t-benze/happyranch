@@ -92,6 +92,145 @@ even through a job. The Linux canonical callback remains the explicit
 `tests/integration/test_end_to_end.py::test_register_and_run_completes_via_codex_callback`
 selection through `tests/helpers/integration_parent.py`.
 
+## PR1047 opt-in disposable THR299 scoped QA
+
+`nightly-integration.yml` also supplies a separately selected manual QA venue for
+SAME TASK10725 / PR1047, under Founder THR299seq4/11. Ordinary manual dispatch
+still runs lint/static `all`, including the legacy `all_only` input. Only
+`thr299_scoped_qa=true` skips that manual lint job and selects the new
+`THR299 disposable scoped QA (Python 3.14)` job. It admits only
+`t-benze/happyranch`, literal `refs/heads/task/TASK-10816`, and
+`workflow_dispatch` on disposable GitHub-hosted Ubuntu24.04. Scheduled integration
+and its reporting retain their original predicates. The lane has no PR/push/tag,
+main, automatic retry, extra schedule, notification or merge-check path.
+
+After independent FULL review of the support at the actual pushed head, parent
+TASK10725 separately assigns the qualified QA retry of TASK10836. QA first
+statically inspects the selected imports/conftests at that exact source; no
+retired unit import or collection is permitted. Dispatch the existing registered
+workflow with both explicit inputs (replace the placeholder with the reviewed
+immutable commit SHA; this example is guidance, not an execution receipt):
+
+```bash
+gh workflow run nightly-integration.yml --repo t-benze/happyranch \
+  --ref task/TASK-10816 -f thr299_scoped_qa=true \
+  -f expected_source_sha=REVIEWED_40_HEX_SHA
+```
+
+The SHA is an assertion, never an alternate checkout target. Checkout pins
+`github.sha` with persisted credentials disabled. Before dependency/product setup,
+a missing/malformed expected SHA, event/checkout mismatch or non-hosted runner
+fails nonzero. Inputs reach the gate through environment variables, never shell
+commands. Setup uses pinned actions, frozen dependencies and verified Python3.14;
+no production runtime, DB, token or provider credentials are supplied. The
+unmodified `tests/helpers/integration_parent.py` runs before pytest/runtime
+imports, with its closed HOME/config/data/PATH, exact source/interpreter/CLI and
+registered deterministic-stub fences. Natural synthetic IDs and the unmodified
+real public fixture retain their existing assertions. No patched queue/claim
+launcher or exact synthetic producer grant is selected.
+
+Runner-dependent paths and identity values are bound in each consuming step's
+`env`, where GitHub permits the `runner` context; job-level `env` holds only the
+expected input SHA. The always-run evidence/cleanup step binds its own evidence
+and scratch paths, and upload resolves the same evidence path in step `with`.
+These bindings remain available after an early checkout, admission or setup
+failure without depending on a successful initializer step. Missing command or
+case results still report incomplete evidence.
+
+Only these five nodes in
+`tests/integration/test_verified_supersession_retry_shipping.py` run, with
+`-m integration`, verbose case output and JUnit:
+
+- `test_thr299_isolated_session_history_refuses_before_sid_filter`
+- `test_thr299_isolated_nonselected_purpose_and_metadata_compatible`
+- `test_thr299_isolated_selected_purpose_retains_specific_refusal`
+- `test_thr299_public_read_and_scope_refusal`
+- `test_thr299_isolated_old_validator_bound_and_local_failure`
+
+They are the existing 27 parameterized cases: 25 isolated session-validator cases
+and two public read/refusal/old-validator cases. There is no caller-selected node,
+command or URL. The whole job is capped at 20 minutes, dependency sync at 4 minutes,
+and the selected command at 300 seconds with INT then 20 seconds to KILL. The
+existing output limiter retains at most 1 MiB of merged output; its truncation
+marker is incomplete evidence, never a complete case log. The original command
+status is preserved in `command-exit.txt`, including 124/137 timeout outcomes.
+JUnit is bounded to 1 MiB with oversize/malformed/missing evidence reported; verbose
+logs and `cases.json` retain expanded names and outcomes. Failure/error/skipped
+cases are not PASS. Evidence completeness requires all 27 outcomes and no log
+truncation, alongside the actual command result.
+
+`source.json` records event/ref/run/attempt, runner image/name, exact commit/tree,
+source path and selected import/fence hashes; `interpreter.json` and the parent log
+record actual interpreter identity. `cleanup.json` reports remaining scratch,
+actual process identities, stage/error-class/errno diagnostics, truncation and
+command result. The parent owns its child group and temporary-directory cleanup.
+Its closed TMPDIR is below this invocation's outer scratch; the daemon fixture
+preserves that binding. Directory ownership in `/proc` alone is insufficient to
+identify a process's credentials. The admitted hosted lane uses its
+[existing passwordless sudo capability](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
+only for `scripts/observe_thr299_processes.py`, a stdlib read-only process reader.
+It reads actual UID tuples and start-time identity before and after bounded
+complete environments, and binds a pidfd before classification. It emits no
+process environment values or command lines, changes no permissions or privilege
+configuration, signals no process and writes/removes no scratch. The source gate
+and matching event/HEAD are rechecked before invoking it. Unavailable sudo or a
+reader failure remains unknown; no visibility fallback drops inaccessible PIDs.
+
+An unrelated process requires complete credentials and, for the runner UID,
+a complete environment with no exact TMPDIR scratch/descendant binding. A read
+failure may count as disappearance only after observed identity/pidfd binding,
+terminal pidfd readiness and absence of the numeric process path. Permission
+failure alone, missing paths without bound identity, live unreadable processes,
+PID reuse/identity changes, incomplete reads and capped observation remain unknown.
+The reader caps each read at1MiB, scans at4096 process entries/10 seconds, retains
+at most128 diagnostic rows per category and has an outer15-second timeout;
+truncation fails completion. These are bounded snapshots, not a general
+quiescence, adoption, cancellation/restart or crash guarantee.
+
+The ordinary runner user validates the canonical fixed runner.temp scratch path,
+private mode/UID and dev/inode identity, and removes only that empty directory
+after complete no-bound-process evidence. Residue, changed/wrong scratch, removal
+failure or unknown observations fail completion and remain in the uploaded
+receipt. A missing scratch before command start is explicitly not_started, never
+successful cleanup. Early checkout/admission/setup failures preserve missing
+results and independent always-run evidence/upload paths; no root observer is
+run on an unadmitted source. Uncatchable termination can prevent receipts/upload;
+runner disposal, empty lists and27 passing cases never substitute for removal.
+
+Historical QA10851 run38184484716 at621044c4 passed27 selected cases but its evidence
+step failed with UNKNOWN cleanup and unreadable PIDs980/1069. Their errno, stage
+and identity were not retained; no specific cause or cleanup success is inferred.
+This source correction requires renewed independent FULL review and separately
+authorized corrected-source hosted QA; its hosted success remains pending.
+
+Find the actual run and bind its event/head/attempt before interpreting artifacts:
+
+```bash
+gh run list --repo t-benze/happyranch --workflow nightly-integration.yml \
+  --branch task/TASK-10816 --event workflow_dispatch --limit 5
+gh run view RUN_ID --repo t-benze/happyranch \
+  --json headSha,event,attempt,status,conclusion,jobs,url
+gh run download RUN_ID --repo t-benze/happyranch \
+  --name thr299-scoped-qa-RUN_ID-ATTEMPT --dir /absolute/owned/evidence
+```
+
+Never attribute the newest run by position alone: match reviewed SHA, explicit
+selector, run ID and attempt. Upload is `always()` on success/failure with 7-day
+retention, but whole-job/runner termination may prevent it. For an external run
+still in flight, record its URL/status immediately and use the existing durable
+job/task handoff for a bounded wait (at most20 minutes plus a small artifact
+settlement allowance); no cross-run polling service, automatic retry or maker
+launch. Missing artifacts, results or cleanup remain missing evidence.
+
+This finite QA venue is separate from lint/static merge CI, general integration
+(**SKIPPED THR243seq42**) and schedule-only daily Product E2E. The earlier maker
+27-case exit0 is historical evidence without adequate venue qualification; it is
+not independent hosted proof. Exact synthetic producer-positive and dependent
+race/replay/crash/causal/repetition proof remain **UNPROVEN THR299seq11**. Native
+Swift execution remains **UNEXECUTED** without an authorized compatible venue.
+Parent10725 owns later qualified QA, guarded merge/install/serving verification,
+real reconciliation/replay and both original retry reads before naming use.
+
 ## Source Boundary Lint
 
 ```bash
@@ -127,6 +266,174 @@ Docs Manual and tenant-isolation workflows are explicit manual-only; neither
 is a required path check. macOS packaging remains manual/tag release activity.
 
 ## Integration environment and retained observations
+
+## Historical PR1022 finite roster L/W observations
+
+Engineering_manager TASK10553's continuation, citing Founder THR296seq24/37,
+retains the accepted finite selections and their authentic historical receipts.
+The former `pr1022-roster-selected` PR entry is superseded by merged
+PR1025/THR291seq69; it is absent from current CI. Normal publication now starts
+lint/static checks only. The retained feature/platform/original callback sources
+are not automatic merge gates; missing behavioral proof remains missing.
+Product E2E runs only on its daily default-branch schedule. Python units and
+their gate remain RETIRED; broad integration remains SKIPPED THR243seq42.
+The live daemon host cannot execute integration, even through jobs.
+
+The seven historical disposable Ubuntu shards used actual PR-head checkout, frozen Python
+3.14 dependencies and Node24. L1 includes all accepted C1/C2/C3 parameters;
+L4 includes all accepted C4 parameters; L5 includes exactly six non-restore
+parameters; L7 includes all ten contexts; L8/L9 include only their three/four
+early CLI argument refusals; W10 includes all four locale/viewport parameters.
+Only W10 selects the standard GitHub-hosted Ubuntu 22.04 image; the L shards
+retain `ubuntu-latest`. The actual runner image appears in the hosted setup
+log, alongside the existing Python/Node and selected browser/tool receipts.
+Verbose pytest output and JUnit record expanded IDs and actual outcomes. These
+early refusals are not successful maintenance or physical no-write proof.
+
+The existing parent accepts optional `--roster-output`, `--roster-old-reader`
+and `--roster-browser-tools` before `-- pytest -m integration <explicit nodes>`.
+That mode refuses whole-file/directory, unit, M and unknown selections before
+pytest imports. The output must be an empty private `evidence` directory under
+an explicitly selected, private `happyranch-roster-*` invocation directory.
+The old reader must be its independent clean `old-reader` checkout at exact
+b3179b123fddbb0f0f604ed9e0d148f1b23455f3. Parent and real C5 child record and
+compare git, imported module and interpreter origins. Ambient old-reader env
+alone is never propagated. Default parent invocations are unchanged.
+
+W10 installs @playwright/cli **0.1.18**, playwright and playwright-core
+**1.63.0-alpha-2026-08-05** (Apache-2.0) only into invocation-owned `tools`;
+the actual supported Playwright install command places Chromium in its owned
+`browsers`. Registry integrities, the actual transient dependency lock, package
+versions, browser revision, executable paths/hashes/versions and explicit
+browser config are retained. `tool-file-origins.json` records a byte-identical
+private Node copy and before/after modes for the invocation-owned unpacked
+CLI and Chromium executable, prepared with mode0700 without changing bytes.
+The parent retains its non-group/world-writable file checks. Its closed
+`browser-binding.json` is validated
+before launch; malformed/mismatched descriptors must refuse before pytest.
+Private `node`/`playwright-cli` shims preserve the parent's original closed PATH,
+provider stubs and callback. The selected browser uses the isolated built SPA
+and fixture API with explicit `chromiumSandbox: true`; the real owned CLI
+launch must succeed before scenarios. Its command, exit and stdout/stderr are
+retained even on refusal, without a sandbox-disable fallback. Update
+notification is disabled. No project dependencies,
+global tooling or execution policy changes follow.
+
+W10 exposes invocation-owned `NotoSansCJK-Regular.ttc` and its OFL-1.1 copyright
+through a closed, hash-checked data-only font descriptor. It prefers the existing
+runner's `fonts-noto-cjk`; otherwise normal authenticated configured Ubuntu APT
+download verifies exact version/archive SHA256/size before `dpkg-deb -x` extracts
+data without package scripts or a global install. The runner's configured
+`mirror+file:/etc/apt/apt-mirrors.txt` transport
+requires that exact root-owned regular file without group/other write access;
+its complete bytes/hash and validated Ubuntu archive URIs are retained. APT
+authentication and Ubuntu release-origin checks still apply. No source is replaced.
+Package origin, integrity,
+license and font hashes are retained in `tool-file-origins.json`. The feature-only
+parent creates a private fontconfig mapping and cache (Chinese selects the SC
+family) while retaining isolated HOME/XDG/PATH, original guards, browser pins and
+sandbox. Malformed, mismatched or unowned font bindings refuse before pytest.
+Actual child fontconfig selection, painted-text platform fonts and PNGs remain
+separate evidence; glyph counts alone are not visual readability proof.
+
+The real C10 recipient boundary records both options' DOM, hidden ancestry,
+accessibility roles/names, exact accessible locator count and hit-test geometry
+before the original unforced click. Diagnostic JSON, CLI output and screenshots
+survive failure. Locator/component correction awaits that actual admitted
+observation; no hidden-role, force-click or synthetic submission fallback exists.
+
+The retained integration-only `tests/helpers/human_team_history_fixture.py`
+owns feature-authored C5 schema1 history DATA and unchanged seeding. Historical
+IDs, bytes and digests are fixed independently of current writers; they are not
+new callback or migration receipts. C3 uses its independently literal valid
+product-design definition and still requires the actual worker request to return
+403 `manager_required`. C5's explicit-profile case registers an owned inert
+executable through the existing adapter/profile stores and registry validation,
+records bytes/hash/mode and cleanup, and binds the profile through the real API.
+No retired unit module is imported or read by any released L/W selection.
+Two deleted fixture dependencies remain solely in HELD M paths: authority
+`_seed_org` and remote-runner row helpers. They must be resolved before any M
+release; this entry provides no M source-completeness or maintenance proof.
+
+C5 positive graph admission binds the actual existing fixture runtime
+container to its selected-source API state. Capture and unchanged-domain/file
+readbacks precede that separate graph setup; negative authority admission never
+enters it. TASK10394 corrects the two same-root current-graph preflight assertions:
+the exact eight generated `workspaces/<agent>/CLAUDE.md -> AGENTS.md` links are
+independently checked and must classify as `reject/nonregular`, with top-level
+`eligible=false`, quiescent nested liveness, exact empty blockers and no zombies
+or additional rejection. File/link metadata and non-database contents plus
+logical database rows must remain unchanged across each read-only request;
+SQLite physical pages/sidecars and transient writes are not proved by readback.
+Every existing history/graph/profile/replay assertion still executes after
+closing all owners, including each test-owned read-only SQLite connection,
+and reopening the same registered runtime. Connection transaction contexts
+alone do not close their handles; the unchanged no-WAL assertion precedes
+reopen. This is
+`current-graph-reopen`, never export/restore/migration eligibility or readiness.
+The HELD cross-root `restore=True` branch retains its own positive prerequisite.
+Old empty-rejections assertion failures remain failures at their actual heads.
+
+The selected mode retains passing and failing temporary scenario evidence
+before parent teardown, including real screenshots, C5/C7/refusal receipts,
+native C4 witnesses, feature-owned daemon logs and independent final
+task/result/audit/recovery/job readbacks for selected C2/C4/C7. The feature
+provisions the actual Engineering manager workspace for its legacy C2 controls;
+C7 verifies the shipping workspace-owned XDG cache while retaining exact
+parent HOME/config/PATH and original stub/identity gates.
+The C7 complete prompt expectation includes the canonical AgentDef final newline.
+Localized browser CSS selectors preserve literal label text before JavaScript
+quoting so Chinese labels reach the existing exact focus/model/geometry oracles.
+It exports an artifact inventory with original paths, hashes and byte sizes, actual child
+exit, source and tool bindings. Fixture credentials/config/DB files themselves
+are excluded. Each shard uploads adverse and successful logs/receipts with
+run/attempt identity. Missing/incompatible tooling is an environment failure;
+submission, metadata, a prior-head receipt or binding refusal is not scenario
+PASS or a causal RED.
+
+The feature parent checkpoints owned scenario files every ten seconds and
+retains `.happyranch/daemon.log` before fixture teardown. Each selected feature
+case appends and fsyncs start/setup/call/teardown outcomes, durations and actual
+tracebacks to `pytest-phases.jsonl`. A start without a terminal phase is
+incomplete evidence. `parent-checkpoint.json` binds in-progress file snapshots,
+including partial logs, and has no exit/outcome claim. The final parent receipt
+remains separate; retention errors fail visibly and are recorded in the receipt.
+SIGKILL can leave only the last checkpoint and phase prefix, never a final PASS.
+
+Feature-only deadlines are 70 minutes for pytest inside the parent and 75
+minutes for the workflow command; the existing hosted cap remains 90 minutes.
+The parent first interrupts pytest for fixture cleanup, then closes its exact
+owned group. Deadline exit124 and catchable signal exits remain failures even
+if subsequent cleanup exits0. Native reentry completions/release waits are
+bounded at 60 seconds, writer/cancellation release waits at 180 seconds; missing
+barriers fail without advancing the original scenario oracle. All 224 C4
+parameters remain selected. These diagnostics address missing failure evidence;
+they do not establish the cause or repair of run38039978998's C4 failures.
+
+W10's exact accessible option name is `consultant_headdefault` (and equivalently
+`consultant_codexdefault`): adjacent text spans have no separating text-space.
+Actual fe94 DOM/AX/hit-test receipts establish this locator correction. Visible
+unforced role-option selection and every original request/readback/focus oracle
+remain required for all four locale/viewport cases. New-head screenshots and
+behavioral success remain pending; the locator premise failure is not product RED.
+
+Run 38099858029 at `6472d886` reaches the actual worker click/send/navigation in all four
+W10 cases, then fails finite HTTP settlement. The owned proxy buffered the
+shipping persistent thread SSE bodies. It now forwards real upstream SSE headers
+and frames, distinguishing header-ready streams from finite requests. An idle
+stream stays open until actual browser disconnect, fixture cleanup or its owned
+30-minute deadline; deadline/forwarding errors fail visibly. Every original
+request/readback/locale/focus oracle remains. `C10-http-prefix.json` retains
+requests, stream lifecycle and completed screenshot/action prefixes even on
+failure; it does not substitute for `C10-browser-receipt.json` and all 29 rows.
+Source proxy controls are diagnostic evidence only; new hosted C10 proof is owed.
+
+This entry first collects genuine finite baseline/failure. Accepted causal
+controls, byte-restoration/GREEN, five isolated and five affected-sibling
+repetitions, screenshot inspection and independent exact-head review/QA remain
+separate required evidence, never inferred from a baseline. No M selection,
+compatible restore, systemd service/mask operation, reboot, live migration,
+new-package-positive closure or after-M browser proof is released here.
 
 The ordinary nightly selection remains `tests/ -m integration`; the launcher
 `uv run python tests/helpers/integration_parent.py -- pytest ...` establishes a
@@ -532,3 +839,167 @@ or run general integration. Scheduled/default behavior and retained PR/main
 checks are unchanged. Historical attempts remain evidence and do not renew
 allocations. A corrected candidate needs attributed behavioral results and
 independent review/QA; merely publishing or dispatching it is not a pass.
+
+### Historical PR1022 recovery and browser evidence
+
+
+The original PR1022 L4 run at `6472d886` retained an internal timeout exit 124,
+not complete recovery proof. Its incremental traces identify a missing bound
+completion audit for successful human-team leaf recovery, two failed-recovery
+reads of a nonexistent supervisor method, and fixture startup fingerprint
+refusals. Human-team completed recovery now atomically records the actual
+INTEGER result and recovery session in its completion audit; historical
+agent-team payloads retain their prior shape. Failed recovery reads shutdown
+from the existing admission controller without changing host enforcement.
+Test-side compiled-code fingerprints use marshal format 2, retaining full
+code comparison while excluding object-sharing reference flags. All 224 C4
+parameters and their original behavioral assertions remain. These corrections
+are source readiness; final-head hosted execution and the existing held proof
+inventory remain required, and no partial result is a feature-readiness claim.
+
+
+At `18e01cfa`, all four W10 cases reach enrollment and fail because the
+non-LF input is compared directly with its canonical AgentDef readback.
+The existing writer adds one final LF. C10 now requires that exact canonical
+value while preserving the original draft, locale/focus/selection and exact
+POST body assertions; no trimming or product writer change is introduced.
+All 89 assertions, four parameters and 29 required scenario rows remain.
+The four viewed draft screenshots are readable in English and Simplified Chinese
+at both viewports, but are partial evidence. Full C10 completion remains missing.
+
+Merged PR1025 (`d88ba446`) supersedes the historical PR1022 feature-shard and
+behavioral merge-check configuration under THR-291 seq69. PR/main checks are now
+lint/static only; retained C1–C10/platform/callback sources are not automatic
+merge requirements. Product E2E runs daily from default-branch source at 19:00 UTC;
+its first observed scheduled execution remains PENDING. No PR/manual/ad hoc
+execution, causal/repetition allocation or held M proof follows. Historical
+feature failures, in-flight run38104839795 and all held proof remain authentic;
+source inspection, scoped QA and independent review cannot claim behavioral PASS.
+
+
+The original PR1022 L4 archive at `18e01cfa` retains parent/command exit124,
+45 failed calls, 24 passed calls, two setup errors and one interrupted setup-only
+case; it is not complete 224-case proof. Its task teardown emitted the existing
+informational `task_scratch_report`, which the human failed-recovery reader had
+incorrectly treated as foreign causal history. That exact report action is now
+informational; unknown causal history still refuses and selected result/session,
+review ordering and replay fences remain unchanged. Fixture jobs are submitted
+by the original ordinary child before clean omission, never by the purpose-bound
+completion-recovery session. The restart-only no-job observer excludes the initial
+marker-interruption launch. Native diagnostic events link fully flushed JSON
+without replacing existing events, and actual job-submit refusals are retained
+before assertions. All 224 C4 cases and their behavioral assertions remain.
+These are source corrections only: no new behavioral execution, GREEN,
+causal/restoration/repetition or held migration/restore/reboot proof is claimed.
+
+### E04 daily source prefix
+
+The daily harness appends six accepted E04 jobs variants after the unchanged
+23 baseline and19 Pause variants (48 authored). Real provider-owned submit/
+block/read/final CLI callbacks, browser approval/rejection, completed0/7,
+failed-timeout/-9 and both two-job terminal orders retain literal durable and
+owned process oracles. BootA12 is archived across the existing Pause restart;
+bootB closes18, cumulative30 providers, alpha19tasks29results/beta1/1, eight
+jobs/seven script starts. Actual-content aggregate validation reads observation
+and browser artifacts and rechecks serial receipt windows and outcome joins.
+Each jobs read is joined to its shipping method, job URL/query, HTTP200 and
+actual response/CLI content against the durable row. A source-timed live-S2
+snapshot must retain exactly the blocked S1 result before reads/final callback;
+human show must match the exact first ID/status/timestamp line. CLI subprocess
+expiry precedes the original bounded caller deadline by one second to deliver
+partial timeout evidence through the existing sanitized exporter. These source
+corrections have no behavioral, persistence, sanitation or fit proof yet.
+
+The [E04 case/control records](../e2e/README.md#e04-jobs-prefix-task-10686--thr-291)
+carry all four authoring answers and consumer mapping. Source/static checks do
+not establish execution, assertion sensitivity, fit, sanitation or cleanup.
+All new behavior/proof remains MISSING/UNEXECUTED; first daily PENDING per owner.
+E05 and later cancellation/restart remain future work; no entire-program PASS.
+The480 baseline/240 other commands/720 cutoff/60 cleanup/120 export/900 hard
+bounds and19UTC daily-only cadence remain; no extra trigger/build/test merge
+lane, protected proof, collector action, Jenkins or deployment is authorized.
+
+### E05 source coverage milestone
+
+The daily harness appends the accepted E05 C/N/D threads/replay source to the
+unchanged23 baseline,19 Pause and6 E04 variants:53 authored variants/37 expected
+providers, with bootA12 archived separately from bootB25. It uses genuine
+provider-owned thread/task CLI authority, a separate real-response browser
+proxy and content-reading aggregate validation. See `e2e/README.md` for the four
+case/five variant authoring map, literal counts and consumer contracts.
+
+This source milestone is not execution or behavioral acceptance. E05 proxy,
+guard sensitivity, denial immutability, delivery, sanitation, closure and measured
+fit remain MISSING/UNEXECUTED; protected12/RED-restoration-GREEN/repetitions remain
+unauthorized/unexecuted. General integration SKIPPED; Python units RETIRED.
+Lint-only PR/main checks, daily-only19UTC cadence,480 common scenarios clipped by
+original720, cleanup60/export120, target600/hard900 and existing five artifacts
+are unchanged. TASK10555 retains first-daily collection/Pause acceptance; collected
+results must be joined to their actual source SHA. Later cancellation/late-callback/
+restart and full daily acceptance remain unfinished root-owned work.
+
+E05 PR1040 R1–R3 source correction binds every named CLI receipt to its
+canonical command/instruction and actual public outcome, derives hold/navigation
+from the complete browser ledger with literal per-message rendering joins, and
+redacts full captured streams with retained credentials before byte clipping.
+Original48/total53 and A12+B25=37 source expectations remain unchanged. Dedicated
+contradictory-artifact and sanitation controls are UNAUTHORED; all behavior,
+sensitivity, proxy/guard, sanitation, delivery/persistence, closure, fit and
+protected proof remain MISSING/UNEXECUTED. This is static source correction only;
+the existing daily-only policy and all execution holds remain in effect.
+
+### E07 C authored cancellation increment
+
+The C-only source appends three variants to the preserved53:56 authored
+variants,39 starts=A12+B27,23 tasks/32 results (alpha22/31,beta1/1),21 completed
+and two cancelled. Real browser cascade and terminal CLI refusals precede
+forwarding W's original captured provider CLI request; independent serialized
+content, process/socket provenance and a full1s unchanged window are required.
+The E05 witness prefix is bound to its actual byte/record offset, with every
+E07 suffix record accounted. [Case and four-answer records](../e2e/README.md#e07-c-source-increment--task-10773)
+retain all missing proof. R/full remains HELD, with no new restart/rotation code.
+C50 uses fixed16/12/8/6/8 partitions within unchanged480/original720;425 is
+unmeasured arithmetic. Daily-only19UTC and the five artifacts are unchanged.
+Source-only authoring is not independent review, merge, execution or acceptance.
+All behavior/sensitivity/provenance/fit/closure/sanitation proof is UNEXECUTED;
+dedicated controls UNAUTHORED; protected12 and repetitions unauthorized.
+General/actual callback integration SKIPPED THR243seq42; retired units untouched.
+The live cancel-CLI print mismatch and E04 output-cap/persistent-stop remain
+unresolved. Root TASK10680 owns delivery/daily acceptance, TASK10555 owns
+first-daily/Pause (PENDING per owner). No entire-reset or test-authoring PASS.
+
+### E07 R hold restoration — TASK-10804
+
+THR291 seq119 held R implementation and merge pending assessed source-bound
+first-daily timing. PR1043 merged as `e4ba47ce3ab528447d7cded481f721dec07d175f`
+despite that hold; its review/static QA/lint did not release it. This bounded
+correction restores the56-case active daily baseline and39 expected starts
+(A12+B27;23 tasks/32 results), preserving the original graceful Pause restart,
+E04/E05, C and TASK10801's valid C observation/evidence corrections.
+
+R's active abrupt crash/recovery path, provider command, subreaper handshake,
+publication-gap exception and required R artifacts/aggregate expectations are
+removed. Accepted original E07/addendum and PR1043 source remain held history;
+R is unimplemented in the active daily path, unproven, and not skipped-as-PASS.
+See the [restoration and retained C assertion mapping](../e2e/README.md#e07-restart-hold-restoration--task-10804).
+
+D remains min(scenarios entry+480,original run+720), C50 with original
+partitions; no D−150 prefix admission, R75 or final25 allocation survives.
+Normal close uses the original order and caps inside D. Existing shared
+nested deadline clipping retains E04 inner_text10, E05 release5 and inherited
+browser response4/10; cleanup60/export120/hard900/target600/hosted15min and
+other command/interruption240 bounds remain unchanged. No new budget or
+measured-fit claim. Complete raw C evidence survives; only validated Pause
+observation stamps differ in nonmutating cross-observation copies. Aggregate
+independently reopens serialized content and exact same-observation joins.
+
+Daily19UTC/default immutable source/Ubuntu/Python3.12,3.13,3.14 plus TERM3.12/
+INT3.14/five7day artifacts and TASK10555/JOB4257/Pause ownership are unchanged.
+Root10680 alone assesses owner timing and the hold; no new collector or run.
+Required checks remain lint/static-only, normal hooks, independent full review,
+scoped static QA and manager guarded merge. All behavior/sensitivity/provenance/
+transport/persistence/delivery/sanitation/closure/fit proof MISSING/UNEXECUTED;
+controls UNAUTHORED; protected12/RED-restoration-GREEN/repetitions unauthorized.
+General AND actual CLI callback integration SKIPPED243seq42; units RETIRED.
+Root remains INCOMPLETE for held R, wider E04, cancel-CLI mismatch and daily
+acceptance. No deployment/serving restart/Jenkins/schema/auth/permission work.

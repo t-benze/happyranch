@@ -5,5 +5,5 @@ import type { AuthorHandoffCommand, AuthorHandoffProof, AuthorHandoffReceipt } f
 export const stageAuthorHandoff = (slug: string, sessionId: string, body: AuthorHandoffCommand): Promise<AuthorHandoffReceipt> =>
   request(`/orgs/${slug}/workflows/submissions/handoffs`, { method: 'POST', params: { session_id: sessionId }, body });
 
-export const getAuthorHandoff = (slug: string, handoffId: string, proof: AuthorHandoffProof): Promise<AuthorHandoffReceipt> =>
-  request(`/orgs/${slug}/workflows/submissions/handoffs/${encodeURIComponent(handoffId)}`, { params: proof });
+export const getAuthorHandoff = (slug: string, handoffId: string, proof: AuthorHandoffProof, signal?: AbortSignal): Promise<AuthorHandoffReceipt> =>
+  request(`/orgs/${slug}/workflows/submissions/handoffs/${encodeURIComponent(handoffId)}`, { params: proof, signal });

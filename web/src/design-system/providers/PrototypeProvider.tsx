@@ -17,6 +17,8 @@ import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
 import { mockIdentitiesApi } from './_mock-identities';
+
+import { mockWorkflowsApi } from './_mock-workflows';
 import { mockAgentsApi } from './_mock-agents';
 import { mockAuthorityPolicyApi } from './_mock-authority-policy';
 import { mockAuditApi } from './_mock-audit';
@@ -53,6 +55,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
     <QueryClientProvider client={client}>
       <DataContext.Provider
         value={{
+          workflows: mockWorkflowsApi,
           orgs: mockOrgsApi,
           agents: mockAgentsApi,
           identities: mockIdentitiesApi,

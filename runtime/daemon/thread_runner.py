@@ -991,11 +991,13 @@ async def run_invocation(
         agent_def = None
     executor_name: str | None = None
     model_name: str | None = None
+    reasoning_effort: str | None = None
     if agent_def is not None:
         executor_name = agent_def.executor.lower()
         if not _is_registered_executor(executor_name):
             executor_name = "claude"
         model_name = agent_def.model
+        reasoning_effort = agent_def.reasoning_effort
 
     # GitHub #688 Slice B: a conversational REPLY must pass the durable
     # queued→running CAS before any prompt/subprocess work. A stale/duplicate
@@ -1286,6 +1288,8 @@ async def run_invocation(
             executor=executor_name,
             model=model_name,
         )
+        if reasoning_effort is not None:
+            org_state.db.insert_audit_log(inv.thread_id, inv.agent_name, "thread_reasoning_selection", {"invocation_token": invocation_token, "session_id": session_id, "executor": executor_name, "model": model_name, "reasoning_effort": reasoning_effort})
         await _publish_invocation_event(
             org_state, thread_id=inv.thread_id, agent_name=inv.agent_name,
             seq=inv.triggering_seq, kind="invocation_started", status="working",
@@ -1366,7 +1370,7 @@ async def run_invocation(
                     pre_launch_validator=_pre_launch_validator,
                     on_started=_on_started,
                     org_slug=org_state.slug,
-                    model=model_name,
+                    model=model_name, reasoning_effort=reasoning_effort,
                 )
                 if resume:
                     run_kwargs["resume_session_id"] = resume
@@ -1397,7 +1401,7 @@ async def run_invocation(
             try:
                 launch_spec = spec_builder(
                     workspace=Path(workspace), prompt=run_prompt,
-                    session_id=session_id, model=model_name,
+                    session_id=session_id, model=model_name, reasoning_effort=reasoning_effort,
                     resume_session_id=resume, org_slug=org_state.slug,
                     timeout_seconds=timeout,
                 )
@@ -1422,7 +1426,7 @@ async def run_invocation(
                     pre_launch_validator=_pre_launch_validator if not contained else None,
                     on_started=_on_started if not contained else None,
                     org_slug=org_state.slug,
-                    model=model_name,
+                    model=model_name, reasoning_effort=reasoning_effort,
                     running=running if contained else None,
                     throttle_backoff_seconds=() if not contained else None,
                 )

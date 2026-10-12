@@ -21,6 +21,7 @@ class CodexAdapter:
         cli_path: str,
         sandbox_mode: str,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         model_arg: list[str] | None = None,
         resume_session_id: str | None = None,
     ) -> list[str]:
@@ -44,9 +45,8 @@ class CodexAdapter:
         """
         if resume_session_id:
             cmd: list[str] = [cli_path, "exec", "resume", resume_session_id]
-            if model and model_arg:
-                for elem in model_arg:
-                    cmd.append(elem.replace("{model}", model))
+            from runtime.adapters import model_effort_args
+            cmd += model_effort_args("codex", model, model_arg, reasoning_effort)
             cmd += [
                 "-c",
                 f'sandbox_mode="{sandbox_mode}"',
@@ -58,9 +58,8 @@ class CodexAdapter:
             ]
             return cmd
         cmd = [cli_path, "exec"]
-        if model and model_arg:
-            for elem in model_arg:
-                cmd.append(elem.replace("{model}", model))
+        from runtime.adapters import model_effort_args
+        cmd += model_effort_args("codex", model, model_arg, reasoning_effort)
         cmd += [
             "--sandbox",
             sandbox_mode,

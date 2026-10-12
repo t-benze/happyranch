@@ -151,3 +151,17 @@ nonzero, leave the worktree and branch intact and add
 `worktree-deferred: <specific reason>` to the completion report's
 `risks_flagged`. Make one bounded attempt only; do not schedule or perform a
 retry, force removal, historical scan, prune, or cache sweep.
+
+## Later root-terminal reconsideration
+
+A maker deferral preserves this task-owned worktree and must remain in the
+completion risks. After a future structural root reaches completed, failed,
+cancelled or superseded, its runtime owner can reconsider canonical registered
+worktrees in that parent tree. At that separate pass the old deferral is
+advisory; fresh exact-HEAD preservation, clean/ownership/recursive safety,
+current task/successor/job/host and unchanged same-user scanner evidence still
+govern. Dirty, local-only, open, active, held, protected or unknown paths retain.
+This grants the maker no extra deletion authority or historical sweep. The root
+owner records stable committed audit identity, bounded frontier/remainder and
+possible post-action anomalies; replay/missing finish never retries. Branches
+remain. Manual/daily age/ordinal/peer/history/cache gates stay separate.

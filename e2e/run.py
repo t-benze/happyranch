@@ -22,7 +22,8 @@ from owned import Owned, identity
 # Existing baseline artifact presence contract; no content/projection oracle.
 BASELINE_ARTIFACTS = ["observations.json", "browser-events.json", "daemon.txt",
                       "lifecycle.png", "response-loss.png", "org-switch-0.png", "org-switch-1.png",
-                      "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png"]
+                      "org-switch-2.png", "org-switch-return-revalidated.png", "browser-final.png", "e07.json", "e07-prefix.json", "launch-witnesses.jsonl",
+                      "e07-parent.png", "e07-child.png", "e07-list.png"]
 
 
 def arm_deadline(deadline: float) -> None:
@@ -247,14 +248,17 @@ def main() -> int:
             signal.signal(sig, signal.SIG_IGN)
         staged: dict[str, bytes] = {}
         token = ""
+        redaction_context: list[str] = []
 
         def redact(text: str) -> str:
             if not token:
                 raise ValueError("redaction context unavailable")
-            return text.replace(token, "[REDACTED]")
+            for secret in [token, *redaction_context]:
+                text = text.replace(secret, "[REDACTED]")
+            return text
 
         def collect_evidence() -> None:
-            nonlocal token
+            nonlocal token, redaction_context
             if not root or not root.exists():
                 return
             # Capture once: partial removal must never erase trusted context.
@@ -267,9 +271,15 @@ def main() -> int:
                     return
             if not token:
                 return  # No raw text/receipt is safe without established context.
+            context_path = root / "coord/redaction-context.json"
+            if context_path.exists():
+                context = json.loads(context_path.read_text())
+                if not isinstance(context, list) or not context or not all(isinstance(s, str) and s for s in context) or token not in context:
+                    raise ValueError("invalid retained redaction context")
+                redaction_context = context
             if (root / "scenario.json").exists():
                 result = json.loads((root / "scenario.json").read_text())
-                receipt.update({k: result[k] for k in ("variants", "scenario_phases") if k in result})
+                receipt.update({k: result[k] for k in ("variants", "scenario_phases", "e07") if k in result})
             for path in (root / "raw").glob("*"):
                 if path.suffix in {".txt", ".json", ".jsonl"}:
                     staged[path.name] = redact(path.read_text(errors="replace")).encode()

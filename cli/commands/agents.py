@@ -291,10 +291,17 @@ def cmd_set_model(args: argparse.Namespace) -> None:
     )
     target = identities.agent_target(client, slug, args.agent, lifecycles={"active"})
     model = args.model if args.model else None
+    payload = {}
+    effort = getattr(args, "reasoning_effort", None)
+    clear_effort = getattr(args, "clear_reasoning_effort", False)
+    if args.model is not None or (effort is None and not clear_effort):
+        payload["model"] = model
+    if effort is not None or clear_effort:
+        payload["reasoning_effort"] = None if clear_effort else effort
     r = client.request(
         "PUT",
         f"/api/v1/orgs/{slug}/agents/{target}/model",
-        json={"model": model},
+        json=payload,
     )
     if not _ok(r):
         return
@@ -551,4 +558,7 @@ def register(sub) -> None:
         "--model", required=False, default=None, metavar="MODEL",
         help="Model id (omit to clear — revert to CLI default)",
     )
+    effort_options = p_setmodel.add_mutually_exclusive_group()
+    effort_options.add_argument("--reasoning-effort", help="Static CLI effort value (preserve model when --model omitted)")
+    effort_options.add_argument("--clear-reasoning-effort", action="store_true", help="Clear the effort override, preserving model")
     p_setmodel.set_defaults(func=cmd_set_model)

@@ -114,8 +114,9 @@ def _load_task_history(workspace: Path) -> str:
 def _executor_name(paths: OrgPaths, agent_name: str) -> str:
     """THR-095: resolve executor from org/agents/<name>.md (single source).
 
-    Kept for schedule_runner / wake_runner compatibility. Dreams use
-    ``_active_agent_def`` for fail-closed admission.
+    Legacy standalone lookup; invocation owners select executor/model/effort
+    from their already-loaded definition. Dreams use ``_active_agent_def``
+    for fail-closed admission.
     """
     try:
         agent_def = load_agent(paths, agent_name)
@@ -205,11 +206,12 @@ async def run_dream(
     if not get_registry().is_registered(_prov):
         _prov = "claude"
     model_name: str | None = agent_def.model
+    reasoning_effort = agent_def.reasoning_effort
     AuditLogger(org_state.db).log_dream_started(
         dream_id,
         dream.agent_name,
         executor=_prov,
-        model=model_name,
+        model=model_name, reasoning_effort=reasoning_effort,
     )
 
     # Spec "Input Window": include the agent's audit rows since window_start,
@@ -339,7 +341,7 @@ async def run_dream(
             timeout_seconds=settings.session_timeout_seconds,
             pre_launch_validator=_pre_launch_validator,
             org_slug=org_state.slug,
-            model=model_name,
+            model=model_name, reasoning_effort=reasoning_effort,
         ))
     else:
         # ── THR-207 supervised wiring: the dream session runs through the
@@ -370,7 +372,7 @@ async def run_dream(
                 workspace=workspace,
                 prompt=prompt,
                 session_id=session_id,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 org_slug=org_state.slug,
                 timeout_seconds=settings.session_timeout_seconds,
             )
@@ -401,7 +403,7 @@ async def run_dream(
                 timeout_seconds=settings.session_timeout_seconds,
                 pre_launch_validator=_pre_launch_validator if not contained else None,
                 org_slug=org_state.slug,
-                model=model_name,
+                model=model_name, reasoning_effort=reasoning_effort,
                 running=running if contained else None,
                 throttle_backoff_seconds=() if not contained else None,
             )

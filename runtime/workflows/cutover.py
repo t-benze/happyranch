@@ -98,7 +98,7 @@ class WorkflowCutoverStore:
                 layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
                 original = next((e for e in events if e["event_seq"] in (2, 5)
                                  and e["operation_key"] == operation_key), None)
-                if layout in ("E", "G", "H") and self._draft_readiness_blockers(conn):
+                if layout in ("E", "G", "H", "I") and self._draft_readiness_blockers(conn):
                     raise WorkflowCutoverError("cutover_storage_corrupt")
                 replayed = original is not None
                 if original is not None:
@@ -208,13 +208,16 @@ class WorkflowCutoverStore:
         return []
 
     def _draft_readiness_blockers(self, conn: sqlite3.Connection) -> list[dict]:
-        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H"):
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H", "I"):
             try:
                 _validate_draft_data(conn, expected_org_slug=self._org_slug)
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("G", "H"):
+                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("G", "H", "I"):
                     _validate_submission_data(conn, expected_org_slug=self._org_slug)
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == "H":
+                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("H", "I"):
                     _validate_author_handoff_data(conn, expected_org_slug=self._org_slug)
+                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == 'I':
+                    from runtime.workflows.revisions import validate_revision_storage
+                    validate_revision_storage(conn, expected_org_slug=self._org_slug)
             except (ValueError, sqlite3.DatabaseError):
                 return [self._blocker("cutover_draft_closure", owner="workflow_recovery",
                                      required_action="reconcile_draft_closure", deferred_to="U2D/U5")]
@@ -320,7 +323,7 @@ class WorkflowCutoverStore:
                     "cutover_recovery_owned_work", record_id=row[0], state=row[2], owner=row[1],
                     required_action="reconcile_owned_work", deferred_to="U5",
                 ))
-        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H"):
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H", "I"):
             for row in conn.execute("SELECT * FROM workflow_draft_dispatch_intents ORDER BY id"):
                 intent = dict(row)
                 if intent["state"] in ("cancelled", "failed", "completed"):
@@ -334,7 +337,7 @@ class WorkflowCutoverStore:
                 blockers.append(self._blocker(code, record_id=intent["id"], state=intent["state"],
                                               owner=intent["claim_owner"] or intent["recovery_owner"],
                                               required_action=action, deferred_to="U2D/U4/U5"))
-        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == 'H':
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ('H', 'I'):
             for handoff in conn.execute('SELECT h.id,d.state,d.host_launch_started,d.id AS intent_id FROM workflow_author_handoffs h '
                     'JOIN workflow_draft_dispatch_intents d ON d.id=h.intent_id WHERE NOT EXISTS '
                     '(SELECT 1 FROM workflow_submission_operations o WHERE o.submission_id=h.submission_id)'):
@@ -345,7 +348,7 @@ class WorkflowCutoverStore:
                 if not settled:
                     blockers.append(self._blocker('cutover_handoff_pending', record_id=handoff['id'], state=handoff['state'],
                         owner='workflow_recovery', required_action='reconcile_original_handoff_source', deferred_to='U4'))
-        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("G", "H"):
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("G", "H", "I"):
             for row in conn.execute("SELECT o.submission_id FROM workflow_submission_operations o "
                                     "LEFT JOIN workflow_submission_result_links l ON l.submission_id=o.submission_id "
                                     "LEFT JOIN task_results r ON r.id=l.task_result_id "
@@ -359,6 +362,74 @@ class WorkflowCutoverStore:
                 for row in conn.execute(f"SELECT id FROM {table} WHERE {predicate}"):
                     blockers.append(self._blocker("cutover_review_pending", record_id=row[0],
                                                   owner="workflow_recovery", required_action="resolve_pending_review"))
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ('H', 'I'):
+            from runtime.workflows.submissions import validate_handoff_graph
+            from runtime.workflows.review_join import validate_collection
+            from runtime.infrastructure.workflow_schema import _handoff_record
+            for row in conn.execute('SELECT h.* FROM workflow_author_handoffs h JOIN workflow_rounds r '
+                    "ON r.submission_id=h.submission_id WHERE r.state='closed' ORDER BY h.id"):
+                handoff = dict(row)
+                proof = _handoff_record(conn, handoff, expected_org_slug=self._org_slug)
+                graph = validate_handoff_graph(conn, handoff, proof)
+                if graph is None:
+                    raise ValueError('workflow_author_handoff_storage_corrupt')
+                owner = conn.execute('SELECT owner_principal FROM workflow_instances WHERE id=?',
+                                     (handoff['instance_id'],)).fetchone()[0]
+                disposition = validate_collection(conn, handoff, proof, graph)
+                from runtime.workflows.submissions import history_successor
+                if history_successor(conn, handoff['instance_id'], fulfilled=True):
+                    continue  # Retained objected r1; current r2 is scanned separately.
+                if disposition == 'needs_revision':
+                    blockers.append(self._blocker('cutover_review_needs_revision', record_id=graph['round_id'],
+                        state='closed', owner=owner, required_action='revise_document', deferred_to='U4'))
+                else:
+                    # Closed joins are retained history, not a discharge of a
+                    # later source/current-owner validity hold.
+                    intent = dict(conn.execute('SELECT * FROM workflow_draft_dispatch_intents WHERE id=?',
+                                               (handoff['intent_id'],)).fetchone())
+                    task = dict(conn.execute('SELECT * FROM tasks WHERE id=?', (handoff['source_task_id'],)).fetchone())
+                    active = conn.execute('SELECT activation_id,activation_revision FROM workflow_active_activations WHERE instance_id=?',
+                                          (handoff['instance_id'],)).fetchone()
+                    authorization = conn.execute('SELECT authorization_revision_id FROM workflow_active_authorizations WHERE namespace=?',
+                        (f"org/{self._org_slug}/workflow-instance/{handoff['instance_id']}",)).fetchone()
+                    pointer = conn.execute('SELECT current_generation,snapshot_digest,state FROM workflow_authority_pointers WHERE namespace=?',
+                                           (proof['admission_authority']['ready']['namespace'],)).fetchone()
+                    held = (intent['state'] != 'completed' or not intent['is_current'] or intent['cancellation_requested']
+                        or task['status'] != 'completed' or task['cancelled_at'] is not None
+                        or task['current_session_id'] != handoff['source_session_id']
+                        or task['assigned_agent'] != handoff['principal']
+                        or active is None or tuple(active) != (intent['activation_id'], intent['activation_revision'])
+                        or authorization is None or authorization[0] != proof['pins']['authorization']['id']
+                        or pointer is None or tuple(pointer) != (intent['authority_generation'], intent['authority_digest'], 'ready'))
+                    if held:
+                        blockers.append(self._blocker('cutover_review_validity_held', record_id=graph['round_id'],
+                            state='closed', owner=owner, required_action='reconcile_source_or_authority', deferred_to='U4'))
+        if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) == 'I':
+            from runtime.workflows.revisions import validate_revision_record, review_row
+            from runtime.workflows.review_join import validate_collection
+            from runtime.workflows.submissions import validate_handoff_graph
+            for operation in conn.execute('SELECT * FROM workflow_document_revision_operations'):
+                operation = dict(operation)
+                intent = dict(conn.execute('SELECT * FROM workflow_draft_dispatch_intents WHERE id=?', (operation['draft_intent_id'],)).fetchone())
+                proof = validate_revision_record(conn, operation, expected_org_slug=self._org_slug)
+                subject = review_row(conn, operation)
+                graph = validate_handoff_graph(conn, subject, proof) if subject else None
+                owner = conn.execute('SELECT owner_principal FROM workflow_instances WHERE id=?', (operation['instance_id'],)).fetchone()[0]
+                if graph is None:
+                    blockers.append(self._blocker('cutover_revision_unfulfilled', record_id=operation['id'], owner=owner,
+                        required_action='reconcile_revision_source', deferred_to='U4'))
+                    continue
+                disposition = validate_collection(conn, subject, proof, graph)
+                pointer = conn.execute('SELECT current_generation,snapshot_digest,state FROM workflow_authority_pointers WHERE namespace=?',
+                    (proof['admission_authority']['ready']['namespace'],)).fetchone()
+                authorization = conn.execute('SELECT authorization_revision_id FROM workflow_active_authorizations WHERE namespace=?',
+                    (f"org/{self._org_slug}/workflow-instance/{operation['instance_id']}",)).fetchone()
+                if (disposition != 'approved' or intent['state'] != 'completed' or not intent['is_current'] or intent['cancellation_requested']
+                        or owner != operation['principal'] or pointer is None or pointer['state'] != 'ready'
+                        or pointer['current_generation'] != intent['authority_generation'] or pointer['snapshot_digest'] != intent['authority_digest']
+                        or authorization is None or authorization[0] != operation['authorization_revision_id']):
+                    blockers.append(self._blocker('cutover_revision_current_hold', record_id=operation['id'], owner=owner,
+                        required_action='reconcile_revision_source_or_authority', deferred_to='U4'))
         return blockers
 
     def downgrade_preflight(self) -> dict:
@@ -377,9 +448,9 @@ class WorkflowCutoverStore:
                 if validate_names(conn, org_slug=self._org_slug):
                     blockers.append(self._blocker("naming_schema_requires_compatible_reader", owner="operator",
                                                   required_action="retain_compatible_runtime"))
-                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H"):
+                if _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False) in ("E", "G", "H", "I"):
                     layout = _validate_installed(conn, expected_org_slug=self._org_slug, validate_data=False)
-                    blockers.append(self._blocker("author_handoff_schema_requires_compatible_reader" if layout == "H" else "submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",
+                    blockers.append(self._blocker("document_revision_schema_requires_compatible_reader" if layout == "I" else "author_handoff_schema_requires_compatible_reader" if layout == "H" else "submission_schema_requires_compatible_reader" if layout == "G" else "draft_schema_requires_compatible_reader", owner="operator",
                                                   required_action="retain_compatible_runtime"))
                 if marker["generation"] != 1:
                     blockers.append(self._blocker(

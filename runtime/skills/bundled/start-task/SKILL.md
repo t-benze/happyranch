@@ -52,6 +52,37 @@ original key on transport loss, and stage before the final callback. If the
 compatible adapter is unavailable, report that dependency; never fabricate a
 result or substitute an unapproved direct-submit/reviewer-stage operation.
 
+For a newly pinned @4 artifact original author, the template singleton selects
+kind. B1 admits documents only; code activation refuses before allocation.
+Follow the actual bound supplement and use workflow-author-handoff-command@2
+with artifact_kind document, never the historical @1 command for @4. The
+repository_binding/resolution slots are null and grant no repository capability.
+A current configured agent reviewer follows its bound launch supplement: read
+only the selected pinned request/inputs, then stage exact UTF8 findings with
+`happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json --json` before the genuine final callback.
+Use workflow-review-stage-command@1 for an @1 request scope and @2 for an @2
+scope or @3 for a revision2 @3 scope, the selected request/digest/revision/declared outcome and one stable key.
+Staging returns an unsigned five-field acknowledgement; it is not a receipt.
+Keep the same key/body after transport loss, without automatic retry. Only the
+actual INTEGER/full callback plus successful Boolean-quiescent terminal and
+current authority can admit a receipt. Report unavailable dependencies and
+failure/BLOCK evidence honestly. No execution/merge authority follows.
+
+A genuine new revision author follows the bound return brief and all collected
+r1 feedback, with only originally author-addressed inputs. Stage literal r2 using
+`happyranch workflows revisions stage REVISION_OPERATION --org ORG
+--session-id CURRENT --from-file /absolute/command.json --json`. Supply exactly
+workflow-author-revision-command@1, operation_key, revision_operation_id,
+expected_revision=2, artifact_kind=document, submission_bytes_base64 and
+submission_digest. Keep the same key/body after transport loss and stage before
+the actual final callback. Admission, staged bytes and transport success supply
+no result, signature or review graph. Only this new task's own full INTEGER
+callback and successful Boolean-quiescent terminal can fulfill under current
+authority. Never revive the old task or reuse old findings/receipts as r2 approval.
+A new reviewer selected by its current @3 request can read only its own bounded
+r1 prior_review, not another reviewer's private inputs or proof material.
+
 Configured review tasks independently assess their pinned document and filtered
 inputs, then report through their actual task/session callback. Requests and
 callbacks remain unsigned; do not claim a receipt, joined approval or another
@@ -193,6 +224,16 @@ retain this skill's FINAL report-completion action and current session binding.
    add `worktree-deferred: <specific reason>` to `risks_flagged` in the
    completion payload. Never force removal or delete the branch.
 
+   A later newly committed structural root in completed/failed/cancelled/
+   superseded may reconsider this parent tree through its runtime owner,
+   including NULL-parent workflow tasks. Recorded maker deferral is advisory
+   only in that separate pass; it is not erased. Fresh preservation, process,
+   ownership/protected-path and host/successor gates retain uncertain work.
+   Root receipts carry stable start INTEGER identity and exact partial scope;
+   missing/interrupted finish never retries. This adds no maker cleanup,
+   historical, scheduling or callback authority. Always keep the final callback
+   ordering below.
+
 9. **Report completion.** When you finish (success or blocker), write a JSON
    payload to a file and invoke `happyranch report-completion --org {ORG_SLUG} --from-file <path>` as
    a single-line command as the final action of the session; nothing follows
@@ -227,12 +268,23 @@ retain this skill's FINAL report-completion action and current session binding.
    reason in `summary`. Optional keys (`risks`, `dependencies`,
    `reviewer_focus`, `confidence`, `output_dir`) may be omitted.
 
+   Ordinary worker-owned root tasks also return a decision: task_type=task
+   defines the decision owner. A worker root may finish, self-delegate or escalate
+   within its server-authorized contract. It may delegate only to itself; it gains
+   no peer/fanout, manager administration, policy or template rights. Human
+   Founder manages the team but never executes as an agent. Worker-owned
+   delegated leaves return plain completions. Their review_verdict records an
+   agent outcome attributed to the executable parent owner, not human approval.
+
    - If your role is to issue a verdict (code review, QA, design review, etc.), include `"verdict": "<value>"` in your payload. Free string; your team's workflow KB entry documents the vocabulary. Optional — workers without verdicts simply omit the field.
 
-   **Team-manager only — add a `decision` field.** Alongside the prose
-   `summary`, a team-manager session must include a top-level `decision`
-   object that the orchestrator will execute. Workers omit it. Omitting it
-   from a manager session escalates the task. See the response-format
+   **Decision-owning roots — add a `decision` field.** Alongside the prose
+   `summary`, a root task owner includes the supported top-level `decision`.
+   An ordinary worker root may use `done`, self-only `delegate` or `escalate`
+   within its server-authorized contract, with no peer, fanout or manager
+   administration. Delegated worker leaves omit decisions.
+   Team-manager roots retain their existing decision and escalation contract.
+   See the response-format
    section of your role_guidance for the exact shapes. The runtime request models and transition handlers enforce the
    contract; this skill explains
    the valid actions:
@@ -274,13 +326,14 @@ retain this skill's FINAL report-completion action and current session binding.
      failure cannot be bypassed with a remote historical link. A repeated
      failed slice wakes its owning manager for a revised-work or escalation
      decision; no runtime retry-ceiling successor is created.
-   - `supersede` — root-only replanning; requires `successor_brief`, `rationale`,
+   - `supersede` — manager-only root replanning; requires `successor_brief`, `rationale`,
      and the validated recovery attestation. This replanning disposition is
      root-scoped: if a non-root task owner returns it, the runtime fails that
      child through the ordinary terminal tail and wakes its parent to decide;
      no successor is created.
    - `done` — the task is complete; requires `summary` of the outcome.
-   - `escalate` — the task needs founder intervention; requires `reason`.
+   - `escalate` — a decision-owning root's request for founder intervention;
+     requires `reason`. Ordinary worker roots retain this server-authorized action.
      This founder-facing disposition is root-scoped: if a non-root task owner
      returns it, the runtime fails that child and wakes its parent to decide.
 
@@ -430,7 +483,10 @@ the fields your injected role contract requires:
   live job wait exists);
 - a **reviewer/QA** role additionally sends `"verdict": "<value>"` (its role
   contract defines the vocabulary);
-- a **team-manager** session additionally sends a top-level `"decision"` object.
+- a **decision-owning root**, including an ordinary worker root, additionally
+  sends a top-level `"decision"` object within its server-authorized contract.
+  A delegated worker leaf omits `decision`. Team-manager roots retain their
+  existing manager decision and policy contract.
   Its injected role guidance conditionally requires `manager_self_evaluation`
   for a versioned policy-bound escalation. When required, the active policy
   block is authoritative: it shows the exact required object and a filled
@@ -443,7 +499,11 @@ the fields your injected role contract requires:
   Do not invent policy wording, clause identifiers, a canonical phrase, or a
   second evaluation. For decisions where the injected guidance
   does not require that assessment, omit the field.
-  A worker must **never** manufacture a manager decision.
+  A worker must **never** manufacture a manager decision or manager policy
+  assessment. Its own root decision is limited to the server-authorized `done`,
+  self-only `delegate` or `escalate` contract; a delegated worker leaf omits
+  `decision`. An attempted non-root founder escalation fails the child and wakes
+  its parent under the existing runtime contract.
 
 **Real waits only.** `waiting_on_job_ids` requires `status="blocked"` and must
 list only real, currently non-terminal jobs owned by this task. An explicitly

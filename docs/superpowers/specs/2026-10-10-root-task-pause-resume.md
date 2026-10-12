@@ -145,7 +145,23 @@ restart and explicit Resume, separate P01b Resume-during-drain, and P16/P18 live
 English/Chinese list/detail/child/overview/reload readback. Its 19 named Pause
 variants follow the unchanged 9-launch/23-variant baseline; exact host anchors
 are 12 before restart, 0 on restart readiness and 6 at final closure, with 18
-combined launches. This is authored source, UNEXECUTED; first daily PENDING.
+combined launches. These are full source expectations. Scheduled run38181136948
+at2026-10-11T22:37UTC, source bfeb109fe0e7801f17508abe96a39d376f2886fb,
+FAILED on Python3.12/3.13/3.14 with14 partial Pause PASS observations per cell.
+`Pause.restart-final` aborted on a harness completion-audit `session_id` lookup;
+terminal-denied, resume-during-drain, drain-final and exact-closure were unreached.
+TASK10870's authenticated19-case ledger preserves each observation and gap.
+This establishes a consumer field-contract defect, not an attributable product
+regression RED, complete closure proof or full runtime-fit evidence.
+The TASK10874 bounded correction joins genuine task/agent/SID result rows and
+INTEGER identities to snapshot contents and `session_start`, then checks actual
+completion-audit semantic fields and strict owner/count/order/chain assertions.
+CompletionReport has no SID. A sanitized pre-assertion snapshot is explicitly
+partial/unvalidated; successful closure records and PASS markers remain gated
+by every assertion. The old failed final SQL snapshot remains missing.
+Corrected restart/drain behavior and wrong/missing/duplicate identity or wrong
+audit owner/payload/order rejection remain UNEXECUTED; source/static acceptance
+is distinct from behavior. Existing accepted case groups4/5/6 are reused.
 Only the existing 19:00 UTC default-branch 3.12/3.13/3.14 schedule may execute
 it, within unchanged 600/720/900-second limits. Protected assertion mutation,
 RED/restoration/GREEN and repetitions remain UNEXECUTED/unauthorized. All eight
@@ -153,8 +169,9 @@ restart windows, authentic held-queued workflow history and P07/G4 interleavings
 remain uncovered; launcher interruption cleanup is separate. Source/static
 inspection is not behavioral acceptance. Python unit source and gates are RETIRED under THR291seq40; prior suspended
 unit/full/focused/RED-GREEN/keeper/mutation/repetition/duration receipts remain
-SKIPPED NONBLOCKING under THR291/THR228seq355, never PASS. Fresh product E2E
-remains PENDING; general integration is SKIPPED THR243seq42/THR211seq270–271.
+SKIPPED NONBLOCKING under THR291/THR228seq355, never PASS. The first scheduled
+Product E2E is FAILED with the partial observations above; general integration
+is SKIPPED THR243seq42/THR211seq270–271.
 Current automatic PR and push-main checks are only Source Boundary Lint and
 Web Lint (Node 24), both unconditional under THR291seq69; local_ci.sh all is
 source-boundary/colour/ESLint/TypeScript static analysis only. Retained native,

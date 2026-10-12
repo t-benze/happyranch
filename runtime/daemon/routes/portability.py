@@ -38,6 +38,12 @@ from runtime.portability.eligibility import (
 )
 from runtime.portability.roots import classify_root_entries
 
+from runtime.orchestrator.run_step import (
+    _await_worktree_cleanup,
+    _await_terminal_task_worktree,
+    _capture_root_worktree_transition, _defer_root_worktree_batches, _RootWorktreeTransitions, _root_worktree_batch, _await_root_worktree_batch,
+)
+
 router = APIRouter(dependencies=[require_token()])
 
 _ACTIVE_JOB_STATUSES = {"pending", "running"}
@@ -260,107 +266,142 @@ async def reconcile_portability(
     request: Request,
     _: None = Depends(_require_human),
 ) -> dict:
-    if body.disposition not in ("cancel", "consume_result"):
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "bad_disposition", "disposition": body.disposition},
-        )
-
-    request_hash = hashlib.sha256(
-        json.dumps(body.model_dump(), sort_keys=True).encode("utf-8")
-    ).hexdigest()
-
-    task_id = body.candidate_task_id
-    now = datetime.now(timezone.utc)
-
-    from runtime.workflows.recovery import classify_task
-    ownership = classify_task(org.db, task_id, org_slug=org.slug)
-    if ownership.kind != "legacy":
-        if ownership.kind not in ('draft', 'f5'):
-            raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
-        owner = org.workflow_reviews if ownership.kind == 'f5' else org.workflow_drafts
-        if body.disposition == "cancel":
-            return owner.cancel(task_id)
-        # A transport result/PID cannot establish finalized containment.
-        owner.reconcile(task_id)
-        raise HTTPException(status_code=409, detail={"code": "workflow_host_quiescence_unavailable"})
-
-    async with org.db_lock:
-        task = org.db.get_task(task_id)
-        if task is None:
+    root_transitions = _RootWorktreeTransitions()
+    root_tail_failed = False
+    child_cleanup_task_id = None
+    try:
+        if body.disposition not in ("cancel", "consume_result"):
             raise HTTPException(
-                status_code=404,
-                detail={"code": "unknown_task", "task_id": task_id},
-            )
-        before = _task_state_summary(task)
-
-        is_zombie, reason = is_true_zombie(
-            status=task.status.value,
-            block_kind=task.block_kind.value if task.block_kind else None,
-            last_heartbeat=task.last_heartbeat,
-            executor_pid=task.executor_pid,
-            now=now,
-            pid_is_dead=_pid_is_dead,
-        )
-        if not is_zombie:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "not_a_zombie",
-                    "task_id": task_id,
-                    "reason": reason,
-                },
+                status_code=422,
+                detail={"code": "bad_disposition", "disposition": body.disposition},
             )
 
-        if body.disposition == "consume_result":
-            fingerprint = None
-            if task.current_session_id is not None and task.assigned_agent is not None:
-                fingerprint = org.db.get_latest_task_result(
-                    task_id, task.assigned_agent, task.current_session_id,
+        request_hash = hashlib.sha256(
+            json.dumps(body.model_dump(), sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        task_id = body.candidate_task_id
+        now = datetime.now(timezone.utc)
+
+        from runtime.workflows.recovery import classify_task
+        ownership = classify_task(org.db, task_id, org_slug=org.slug)
+        if ownership.kind != "legacy":
+            if ownership.kind not in ('draft', 'f5'):
+                raise HTTPException(status_code=409, detail={"code": "workflow_reconciliation_required"})
+            owner = org.workflow_reviews if ownership.kind == 'f5' else org.workflow_drafts
+            if body.disposition == "cancel":
+                with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
+                    try:
+                        return await _await_worktree_cleanup(owner.cancel, task_id)
+                    finally:
+                        root_tail_failed |= delivery['teardown_incomplete']
+            # A transport result/PID cannot establish finalized containment.
+            owner.reconcile(task_id)
+            raise HTTPException(status_code=409, detail={"code": "workflow_host_quiescence_unavailable"})
+
+        consumption = None
+        async with org.db_lock:
+            task = org.db.get_task(task_id)
+            if task is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail={"code": "unknown_task", "task_id": task_id},
                 )
-            if fingerprint is None:
+            before = _task_state_summary(task)
+
+            is_zombie, reason = is_true_zombie(
+                status=task.status.value,
+                block_kind=task.block_kind.value if task.block_kind else None,
+                last_heartbeat=task.last_heartbeat,
+                executor_pid=task.executor_pid,
+                now=now,
+                pid_is_dead=_pid_is_dead,
+            )
+            if not is_zombie:
                 raise HTTPException(
                     status_code=409,
-                    detail={"code": "no_result_to_consume", "task_id": task_id},
+                    detail={
+                        "code": "not_a_zombie",
+                        "task_id": task_id,
+                        "reason": reason,
+                    },
                 )
-            # Shared result seam: the same orphaned-result consumption the
-            # ongoing zombie reaper uses.
-            _consume_zombie_fingerprint(org.db, task_id, fingerprint, task, org.orchestrator)
-        else:  # cancel — the reaper's terminalization sequence
-            now_iso = now.isoformat()
-            org.db.update_task(
-                task_id,
-                status=TaskStatus.CANCELLED,
-                cancelled_at=now_iso,
-                completed_at=now_iso,
-                block_kind=None,
-                note="portability reconcile: founder cancelled confirmed zombie",
-            )
-            AuditLogger(org.db).log_zombie_cancelled(
-                task_id, task.assigned_agent or "unknown",
-            )
-            _enqueue_parent_if_waiting(org.orchestrator, task_id)
-            if org.orchestrator is not None:
-                from runtime.orchestrator.run_step import (
-                    _reclaim_terminal_task_worktree,
+
+            if body.disposition == "consume_result":
+                fingerprint = None
+                if task.current_session_id is not None and task.assigned_agent is not None:
+                    fingerprint = org.db.get_latest_task_result(
+                        task_id, task.assigned_agent, task.current_session_id,
+                    )
+                if fingerprint is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={"code": "no_result_to_consume", "task_id": task_id},
+                    )
+                # Shared result seam: the same orphaned-result consumption the
+                # ongoing zombie reaper uses.
+                with _defer_root_worktree_batches(org.orchestrator, root_transitions):
+                    consumption = _consume_zombie_fingerprint(org.db, task_id, fingerprint, task, org.orchestrator)
+            else:  # cancel — the reaper's terminalization sequence
+                now_iso = now.isoformat()
+                with _capture_root_worktree_transition(org.orchestrator, task_id, 'reconcile_portability.cancel', root_transitions):
+                    org.db.update_task(
+                        task_id,
+                        status=TaskStatus.CANCELLED,
+                        cancelled_at=now_iso,
+                        completed_at=now_iso,
+                        block_kind=None,
+                        note="portability reconcile: founder cancelled confirmed zombie",
+                    )
+                AuditLogger(org.db).log_zombie_cancelled(
+                    task_id, task.assigned_agent or "unknown",
                 )
-                _reclaim_terminal_task_worktree(org.orchestrator, task_id)
+                _enqueue_parent_if_waiting(org.orchestrator, task_id)
 
-        after = _task_state_summary(org.db.get_task(task_id))
-        AuditLogger(org.db).log_portability_reconciled(
-            task_id=task_id,
-            actor="founder",
-            request_hash=request_hash,
-            evidence=body.evidence,
-            disposition=body.disposition,
-            before=before,
-            after=after,
-        )
+        from runtime.orchestrator.run_step import _HumanFailedRecoveryOperation
+        if isinstance(consumption, _HumanFailedRecoveryOperation):
+            import asyncio
+            disposition = await asyncio.shield(asyncio.wrap_future(consumption.completion))
+            if disposition != "done":
+                raise HTTPException(status_code=409, detail={"code": "recovery_not_consumed", "reason": disposition})
+        elif consumption == "lost_owner":
+            raise HTTPException(status_code=409, detail={"code": "recovery_not_consumed", "reason": consumption})
+        async with org.db_lock:
+            if isinstance(consumption, _HumanFailedRecoveryOperation) and not org.db.consumed_task_completion_recovery_owner_is_current(
+                    task_id=task_id, agent=consumption.agent, recovery_session_id=consumption.session_id,
+                    result_row_id=consumption.result_id, terminal_status=TaskStatus.FAILED.value):
+                raise HTTPException(status_code=409, detail={"code": "recovery_not_consumed", "reason": "lost_owner"})
+            after = _task_state_summary(org.db.get_task(task_id))
+            AuditLogger(org.db).log_portability_reconciled(
+                task_id=task_id,
+                actor="founder",
+                request_hash=request_hash,
+                evidence=body.evidence,
+                disposition=body.disposition,
+                before=before,
+                after=after,
+            )
 
-    return {
-        "task_id": task_id,
-        "disposition": body.disposition,
-        "request_hash": request_hash,
-        "before": before,
-        "after": after,
-    }
+        # _consume_zombie_fingerprint deliberately disables the child hook.
+        # Restore this route's one-task tail only after its original audit and
+        # current-recovery-owner checks succeeded, outside org.db_lock.
+        if task.parent_task_id is not None:
+            child_cleanup_task_id = task_id
+
+        return {
+            "task_id": task_id,
+            "disposition": body.disposition,
+            "request_hash": request_hash,
+            "before": before,
+            "after": after,
+        }
+    except BaseException:
+        root_tail_failed = True
+        raise
+    finally:
+        try:
+            if child_cleanup_task_id is not None:
+                await _await_terminal_task_worktree(org.orchestrator, child_cleanup_task_id)
+        finally:
+            if root_transitions:
+                await _await_root_worktree_batch(org.orchestrator, root_transitions, teardown_incomplete=root_tail_failed)

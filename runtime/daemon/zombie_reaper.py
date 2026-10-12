@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from runtime.daemon.queue import TaskQueue
     from runtime.infrastructure.database import Database
     from runtime.orchestrator.orchestrator import Orchestrator
+    from runtime.models import TaskRecord
 
 logger = logging.getLogger("happyranch.daemon.zombie_reaper")
 
@@ -113,182 +114,211 @@ def _sweep_org_zombies(
     warm_up_seconds: float,
     orchestrator: Orchestrator | None = None,
     queue: TaskQueue | None = None,
+    deferred_child_worktrees: list[TaskRecord] | None = None,
 ) -> None:
     """Sweep one org for zombie tasks.
 
-    This is the pure logic entry point — callable from the periodic loop
-    (with orchestrator) or unit tests (without).
+    The periodic caller keeps lifecycle and queue publication on its event
+    loop, deferring only the existing child hooks and captured root cleanup.
+    Synchronous callers retain the original inline hook behavior.
     """
     # Warm-up grace: don't trust staleness until daemon has been up >= 1
     # heartbeat interval. Prevents false-reaping freshly-spawned sessions
     # whose heartbeat hasn't been stamped yet after a boot.
-    if uptime < warm_up_seconds:
-        return
+    from runtime.orchestrator.run_step import _capture_root_worktree_transition, _root_worktree_batch, _RootWorktreeTransitions, _ROOT_WORKTREE_OWNER_EVENTS
+    root_transitions = _RootWorktreeTransitions()
+    root_tail_failed = False
+    root_delivery = dict(orch=orchestrator, events=root_transitions, active=True, teardown_incomplete=False)
+    root_token = _ROOT_WORKTREE_OWNER_EVENTS.set(root_delivery)
+    try:
+        if uptime < warm_up_seconds:
+            return
 
-    audit = AuditLogger(db)
+        audit = AuditLogger(db)
 
-    for task_id in db.get_nonterminal_task_ids():
-        t = db.get_task(task_id)
-        if t is None:
-            continue
-
-        from runtime.orchestrator.task_pause import pause_deferred_owner
-        if pause_deferred_owner(db, task_id):
-            continue
-        from runtime.workflows.recovery import classify_task
-        ownership = classify_task(db, task_id, org_slug=getattr(orchestrator, "_slug", None))
-        if ownership.kind != "legacy":
-            # TTL/dead PID are never proof of workflow host quiescence.
-            drafts = getattr(orchestrator, "_workflow_drafts", None)
-            if ownership.kind == "f5":
-                drafts = getattr(orchestrator, "_workflow_reviews", None)
-            if ownership.kind in ("draft", "f5") and drafts is not None:
-                drafts.reconcile(task_id)
-                if queue is not None:
-                    drafts.notify_queued(task_id, queue)
-            continue
-
-        # ── STATE ALLOWLIST (requirement 3) ──
-        # Explicit allowlist: in_progress + block_kind NULL. Never touch a
-        # healthy in_progress (fresh heartbeat), nor any blocked/terminal task.
-        if t.status != TaskStatus.IN_PROGRESS or t.block_kind is not None:
-            continue
-
-        # ── PREDICATE (AND-gate) ──
-        # All must hold to even consider a task as zombie.
-
-        # 1. Stale heartbeat — must be older than STALE_HEARTBEAT_SECONDS.
-        if t.last_heartbeat is None:
-            continue  # err toward miss — can't determine staleness
-        hb_age = (now - t.last_heartbeat).total_seconds()
-        if hb_age < STALE_HEARTBEAT_SECONDS:
-            # Heartbeat is fresh → healthy. If previously flagged, clear.
-            if t.zombie_flagged_at is not None:
-                db.update_task(task_id, zombie_flagged_at=None)
-                audit.log_zombie_cleared(
-                    task_id, t.assigned_agent or "unknown",
-                )
-            continue
-
-        # 2. Dead executor pid — must be definitively not alive.
-        if t.executor_pid is None:
-            continue  # err toward miss — can't probe
-        if not _pid_is_dead(t.executor_pid):
-            # Pid is alive (or indeterminate). If previously flagged, clear.
-            if t.zombie_flagged_at is not None:
-                db.update_task(task_id, zombie_flagged_at=None)
-                audit.log_zombie_cleared(
-                    task_id, t.assigned_agent or "unknown",
-                )
-            continue
-
-        # ── PREDICATE MATCHED — task is a zombie candidate ──
-
-        # Determine fingerprint tier: is there an unconsumed task_result
-        # from the current session?
-        fingerprint = None
-        if t.current_session_id is not None and t.assigned_agent is not None:
-            fingerprint = db.get_latest_task_result(
-                task_id, t.assigned_agent, t.current_session_id,
-            )
-
-        # Tier-based TTL selection (requirement 2: fingerprint-tiered confidence)
-        if fingerprint is not None:
-            ttl = FLAG_TTL_FINGERPRINT_SECONDS  # shorter — high confidence
-        else:
-            ttl = FLAG_TTL_NO_FINGERPRINT_SECONDS  # longer — conservative
-
-        agent = t.assigned_agent or "unknown"
-        policy_family = _session_policy_family(db, t)
-
-        if t.zombie_flagged_at is None:
-            # ── FIRST DETECTION: FLAG only, do NOT cancel ──
-            db.update_task(task_id, zombie_flagged_at=now.isoformat())
-            audit.log_zombie_flagged(task_id, agent)
-        else:
-            # ── ALREADY FLAGGED ──
-            # If a task_result fingerprint appears on an already-flagged zombie,
-            # treat it as recovery IMMEDIATELY (recovery contract).
-            # A real result is never a false-reap — honoring it immediately is
-            # the safe direction (founder-approved loss function, THR-090 seq12).
-            # Design note: merely clearing zombie_flagged_at without consuming
-            # would re-flag next tick (task still in_progress + stale-hb +
-            # dead-pid), so clear MUST be paired with consumption.
-            if fingerprint is not None:
-                if orchestrator is not None:
-                    _consume_zombie_fingerprint(
-                        db, task_id, fingerprint, t, orchestrator,
-                    )
-                    if policy_family == "v2":
-                        # The real common consumer committed first.  The
-                        # Database-owned CAS now re-reads the exact immutable
-                        # result/session binding, v2 consumption receipt,
-                        # owner/session and original marker under
-                        # BEGIN IMMEDIATE.  A race preserves the winner.
-                        db.consume_v2_fingerprint_and_clear_zombie(
-                            task_id=task_id,
-                            expected_agent=agent,
-                            expected_session_id=t.current_session_id or "",
-                            result_id=fingerprint.get("id"),
-                            expected_zombie_flagged_at=t.zombie_flagged_at,
-                        )
-                    elif policy_family == "legacy_or_none":
-                        # Unchanged v1/no-policy behavior.
-                        db.update_task(task_id, zombie_flagged_at=None)
-                        audit.log_zombie_cleared(task_id, agent)
-                    # Malformed/mixed binding: the real consumer already
-                    # failed closed; never clear through a legacy fallback.
-                # No orchestrator (unit-test context): leave flagged, retry
-                # next sweep when orchestrator is present.
+        for task_id in db.get_nonterminal_task_ids():
+            t = db.get_task(task_id)
+            if t is None:
                 continue
-            # No fingerprint — check TTL for cancel.
-            # zombie_flagged_at is parsed from TEXT column by Pydantic.
-            # It may be a datetime object or a string.
-            flag_time: datetime
-            if isinstance(t.zombie_flagged_at, datetime):
-                flag_time = t.zombie_flagged_at
-            else:
-                flag_time = datetime.fromisoformat(t.zombie_flagged_at)
-            if (now - flag_time).total_seconds() >= ttl:
-                if policy_family == "malformed":
-                    continue
-                if policy_family == "v2":
-                    committed = db.cancel_zombie_without_fingerprint(
-                        task_id=task_id,
-                        expected_agent=agent,
-                        expected_session_id=t.current_session_id or "",
-                        expected_zombie_flagged_at=t.zombie_flagged_at,
-                        cancelled_at=now.isoformat(),
+
+            from runtime.orchestrator.task_pause import pause_deferred_owner
+            if pause_deferred_owner(db, task_id):
+                continue
+            from runtime.workflows.recovery import classify_task
+            ownership = classify_task(db, task_id, org_slug=getattr(orchestrator, "_slug", None))
+            if ownership.kind != "legacy":
+                # TTL/dead PID are never proof of workflow host quiescence.
+                drafts = getattr(orchestrator, "_workflow_drafts", None)
+                if ownership.kind == "f5":
+                    drafts = getattr(orchestrator, "_workflow_reviews", None)
+                if ownership.kind in ("draft", "f5") and drafts is not None:
+                    drafts.reconcile(task_id)
+                    if queue is not None:
+                        drafts.notify_queued(task_id, queue)
+                continue
+
+            # ── STATE ALLOWLIST (requirement 3) ──
+            # Explicit allowlist: in_progress + block_kind NULL. Never touch a
+            # healthy in_progress (fresh heartbeat), nor any blocked/terminal task.
+            if t.status != TaskStatus.IN_PROGRESS or t.block_kind is not None:
+                continue
+
+            # ── PREDICATE (AND-gate) ──
+            # All must hold to even consider a task as zombie.
+
+            # 1. Stale heartbeat — must be older than STALE_HEARTBEAT_SECONDS.
+            if t.last_heartbeat is None:
+                continue  # err toward miss — can't determine staleness
+            hb_age = (now - t.last_heartbeat).total_seconds()
+            if hb_age < STALE_HEARTBEAT_SECONDS:
+                # Heartbeat is fresh → healthy. If previously flagged, clear.
+                if t.zombie_flagged_at is not None:
+                    db.update_task(task_id, zombie_flagged_at=None)
+                    audit.log_zombie_cleared(
+                        task_id, t.assigned_agent or "unknown",
                     )
-                    if committed and orchestrator is not None:
+                continue
+
+            # 2. Dead executor pid — must be definitively not alive.
+            if t.executor_pid is None:
+                continue  # err toward miss — can't probe
+            if not _pid_is_dead(t.executor_pid):
+                # Pid is alive (or indeterminate). If previously flagged, clear.
+                if t.zombie_flagged_at is not None:
+                    db.update_task(task_id, zombie_flagged_at=None)
+                    audit.log_zombie_cleared(
+                        task_id, t.assigned_agent or "unknown",
+                    )
+                continue
+
+            # ── PREDICATE MATCHED — task is a zombie candidate ──
+
+            # Determine fingerprint tier: is there an unconsumed task_result
+            # from the current session?
+            fingerprint = None
+            if t.current_session_id is not None and t.assigned_agent is not None:
+                fingerprint = db.get_latest_task_result(
+                    task_id, t.assigned_agent, t.current_session_id,
+                )
+
+            # Tier-based TTL selection (requirement 2: fingerprint-tiered confidence)
+            if fingerprint is not None:
+                ttl = FLAG_TTL_FINGERPRINT_SECONDS  # shorter — high confidence
+            else:
+                ttl = FLAG_TTL_NO_FINGERPRINT_SECONDS  # longer — conservative
+
+            agent = t.assigned_agent or "unknown"
+            policy_family = _session_policy_family(db, t)
+
+            if t.zombie_flagged_at is None:
+                # ── FIRST DETECTION: FLAG only, do NOT cancel ──
+                db.update_task(task_id, zombie_flagged_at=now.isoformat())
+                audit.log_zombie_flagged(task_id, agent)
+            else:
+                # ── ALREADY FLAGGED ──
+                # If a task_result fingerprint appears on an already-flagged zombie,
+                # treat it as recovery IMMEDIATELY (recovery contract).
+                # A real result is never a false-reap — honoring it immediately is
+                # the safe direction (founder-approved loss function, THR-090 seq12).
+                # Design note: merely clearing zombie_flagged_at without consuming
+                # would re-flag next tick (task still in_progress + stale-hb +
+                # dead-pid), so clear MUST be paired with consumption.
+                if fingerprint is not None:
+                    if orchestrator is not None:
+                        consumption = _consume_zombie_fingerprint(
+                            db, task_id, fingerprint, t, orchestrator,
+                        )
+                        from runtime.orchestrator.run_step import _HumanFailedRecoveryOperation
+                        if isinstance(consumption, _HumanFailedRecoveryOperation) or consumption == "lost_owner":
+                            # The exact selected operation owns legacy bookkeeping;
+                            # pending/loss must never clear through this fallback.
+                            continue
+                        if policy_family == "v2":
+                            # The real common consumer committed first.  The
+                            # Database-owned CAS now re-reads the exact immutable
+                            # result/session binding, v2 consumption receipt,
+                            # owner/session and original marker under
+                            # BEGIN IMMEDIATE.  A race preserves the winner.
+                            db.consume_v2_fingerprint_and_clear_zombie(
+                                task_id=task_id,
+                                expected_agent=agent,
+                                expected_session_id=t.current_session_id or "",
+                                result_id=fingerprint.get("id"),
+                                expected_zombie_flagged_at=t.zombie_flagged_at,
+                            )
+                        elif policy_family == "legacy_or_none":
+                            # Unchanged v1/no-policy behavior.
+                            db.update_task(task_id, zombie_flagged_at=None)
+                            audit.log_zombie_cleared(task_id, agent)
+                        # Malformed/mixed binding: the real consumer already
+                        # failed closed; never clear through a legacy fallback.
+                    # No orchestrator (unit-test context): leave flagged, retry
+                    # next sweep when orchestrator is present.
+                    continue
+                # No fingerprint — check TTL for cancel.
+                # zombie_flagged_at is parsed from TEXT column by Pydantic.
+                # It may be a datetime object or a string.
+                flag_time: datetime
+                if isinstance(t.zombie_flagged_at, datetime):
+                    flag_time = t.zombie_flagged_at
+                else:
+                    flag_time = datetime.fromisoformat(t.zombie_flagged_at)
+                if (now - flag_time).total_seconds() >= ttl:
+                    if policy_family == "malformed":
+                        continue
+                    if policy_family == "v2":
+                        with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_org_zombies.v2', root_transitions):
+                            committed = db.cancel_zombie_without_fingerprint(
+                                task_id=task_id,
+                                expected_agent=agent,
+                                expected_session_id=t.current_session_id or "",
+                                expected_zombie_flagged_at=t.zombie_flagged_at,
+                                cancelled_at=now.isoformat(),
+                            )
+                        if committed and orchestrator is not None:
+                            from runtime.orchestrator.run_step import (
+                                _enqueue_parent_if_waiting,
+                                _reclaim_terminal_task_worktree,
+                            )
+                            _enqueue_parent_if_waiting(orchestrator, task_id)
+                            if t.parent_task_id is not None and deferred_child_worktrees is not None:
+                                deferred_child_worktrees.append(t)
+                            else:
+                                _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
+                        continue
+                    # TTL expired — cancel.
+                    # THR-079 ruling: no auto-revisit. Cancel via the existing
+                    # cancelled status transition, routed through shared
+                    # terminal side-effects so a delegated parent parked on
+                    # this child is woken (code_reviewer FIX 2).
+                    with _capture_root_worktree_transition(orchestrator, task_id, '_sweep_org_zombies.legacy', root_transitions):
+                        db.update_task(
+                            task_id,
+                            status=TaskStatus.CANCELLED,
+                            cancelled_at=now.isoformat(),
+                            completed_at=now.isoformat(),
+                            block_kind=None,
+                            note="zombie reaped: session died without completing",
+                        )
+                    audit.log_zombie_cancelled(task_id, agent)
+                    if orchestrator is not None:
                         from runtime.orchestrator.run_step import (
                             _enqueue_parent_if_waiting,
                             _reclaim_terminal_task_worktree,
                         )
                         _enqueue_parent_if_waiting(orchestrator, task_id)
-                        _reclaim_terminal_task_worktree(orchestrator, task_id)
-                    continue
-                # TTL expired — cancel.
-                # THR-079 ruling: no auto-revisit. Cancel via the existing
-                # cancelled status transition, routed through shared
-                # terminal side-effects so a delegated parent parked on
-                # this child is woken (code_reviewer FIX 2).
-                db.update_task(
-                    task_id,
-                    status=TaskStatus.CANCELLED,
-                    cancelled_at=now.isoformat(),
-                    completed_at=now.isoformat(),
-                    block_kind=None,
-                    note="zombie reaped: session died without completing",
-                )
-                audit.log_zombie_cancelled(task_id, agent)
-                if orchestrator is not None:
-                    from runtime.orchestrator.run_step import (
-                        _enqueue_parent_if_waiting,
-                        _reclaim_terminal_task_worktree,
-                    )
-                    _enqueue_parent_if_waiting(orchestrator, task_id)
-                    _reclaim_terminal_task_worktree(orchestrator, task_id)
+                        if t.parent_task_id is not None and deferred_child_worktrees is not None:
+                            deferred_child_worktrees.append(t)
+                        else:
+                            _reclaim_terminal_task_worktree(orchestrator, task_id, original_task=t)
+    except BaseException:
+        root_tail_failed = True
+        raise
+    finally:
+        root_delivery['active'] = False
+        _ROOT_WORKTREE_OWNER_EVENTS.reset(root_token)
+        _root_worktree_batch(orchestrator, root_transitions,
+            teardown_incomplete=root_tail_failed or root_delivery['teardown_incomplete'])
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +331,7 @@ def _consume_zombie_fingerprint(
     fingerprint: dict,
     task,
     orchestrator: Orchestrator,
-) -> None:
+) -> object:
     """Consume an orphaned task_result discovered by the ongoing zombie reaper.
 
     Mirrors the Track A _sweep_on_startup orphaned-result consumption path:
@@ -316,11 +346,20 @@ def _consume_zombie_fingerprint(
         fallback_agent=task.assigned_agent or "unknown",
     )
     from runtime.orchestrator.run_step import _consume_completion_report
-    _consume_completion_report(
+    def bookkeeping() -> None:
+        current = db.get_task(task_id)
+        if (current is not None and current.assigned_agent == task.assigned_agent
+                and current.current_session_id == task.current_session_id
+                and current.zombie_flagged_at == task.zombie_flagged_at
+                and current.zombie_flagged_at is not None):
+            db.update_task(task_id, zombie_flagged_at=None)
+            AuditLogger(db).log_zombie_cleared(task_id, task.assigned_agent or "unknown")
+    return _consume_completion_report(
         orchestrator, task_id, orphaned_report,
         result_row_id=fingerprint.get("id"),
         recovery_reentry=True,
         reclaim_terminal_worktree=False,
+        after_human_recovery=bookkeeping,
     )
 
 
@@ -353,14 +392,30 @@ async def zombie_reaper_loop(
                 await org.workflow_submissions.discover_completed_handoffs(state.queue)
                 from runtime.orchestrator.task_pause import discover_pause_work
                 await discover_pause_work(org, state.queue)
-                _sweep_org_zombies(
-                    org.db,
-                    now=now,
-                    uptime=uptime,
-                    warm_up_seconds=warm_up_seconds,
-                    orchestrator=org.orchestrator,
-                    queue=state.queue,
+                from runtime.orchestrator.run_step import (
+                    _defer_root_worktree_batches, _RootWorktreeTransitions,
+                    _await_root_worktree_batch, _await_terminal_task_worktree,
                 )
+                root_transitions = _RootWorktreeTransitions()
+                child_worktrees = []
+                root_tail_failed = False
+                try:
+                    with _defer_root_worktree_batches(org.orchestrator, root_transitions) as delivery:
+                        _sweep_org_zombies(
+                            org.db, now=now, uptime=uptime,
+                            warm_up_seconds=warm_up_seconds,
+                            orchestrator=org.orchestrator, queue=state.queue,
+                            deferred_child_worktrees=child_worktrees,
+                        )
+                    for task in child_worktrees:
+                        await _await_terminal_task_worktree(org.orchestrator, task.id)
+                except BaseException:
+                    root_tail_failed = True
+                    raise
+                finally:
+                    if root_transitions:
+                        await _await_root_worktree_batch(org.orchestrator, root_transitions,
+                            teardown_incomplete=root_tail_failed or delivery['teardown_incomplete'])
             except Exception:
                 logger.exception(
                     "zombie reaper sweep failed for org %s", org.slug,
