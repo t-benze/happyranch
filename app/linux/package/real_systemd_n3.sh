@@ -576,7 +576,10 @@ capture_connector_instance() {
   local safe_file status=0 restore_errexit=0 loss=launch_failure
   connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{"daemon_loopback":{"ok":null,"loss":"unavailable_internal"},"credential_permissions":{"ok":null,"loss":"unavailable_internal"},"current_policy":{"ok":null,"loss":"unavailable_internal"},"bind_identity":{"ok":null,"loss":"unavailable_internal"},"trust_state":{"ok":null,"loss":"unavailable_internal"}}}'
   case "$-" in *e*) restore_errexit=1 ;; esac
-  safe_file="$(mktemp "$diagnostics/.n3-connector-safe.XXXXXX")" || return 0
+  safe_file="$(mktemp "$diagnostics/.n3-connector-safe.XXXXXX")" || {
+    connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"launch_failure\"}"
+    return 0
+  }
   set +e
   # 11s internal section plus startup/parser margin and 1s outer kill grace.
   timeout --kill-after=1 13 sudo -n "$(command -v python)" "$failure_capture_driver" --mode connector >"$safe_file" 2>/dev/null
