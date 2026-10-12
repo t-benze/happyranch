@@ -17,10 +17,12 @@
  *
  * THR-118 W2b translates all product-owned presentation reachable from this
  * route into en/zh-CN. User-entered slugs, registered tool names/paths, the
- * slug regex, broken-org raw errors and the generated copy-paste CLI payloads
- * (rendered by the shared ConnectFlow) stay byte-for-byte verbatim; mapped
- * daemon error categories keep their identity and re-translate on a locale
- * switch without resubmission.
+ * slug regex and broken-org raw errors stay verbatim. In generated CLI prompts
+ * rendered by the shared ConnectFlow, machine/executable fields, raw identifiers,
+ * routes, tokens, commands and authored values stay verbatim; app-owned custom
+ * capability/update guidance translates under THR298 seq34, superseding W2b's
+ * whole-custom-prompt byte guarantee. Mapped daemon error categories keep their
+ * identity and re-translate on a locale switch without resubmission.
  *
  * Honesty fence (THR-061 §D; THR-088): no invented metric/badge/role/$/version;
  * Pasture tokens only, zero raw hex; no Baloo 2. Gated/deferred surfaces are
