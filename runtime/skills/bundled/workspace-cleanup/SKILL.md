@@ -343,8 +343,16 @@ symlink/resolved-target identity and longest covering mount. Credential contents
 are never read. Positive absence requires a readable inspected ancestor;
 unreadable, dangling, capped or ambiguous evidence is an error.
 
-Baseline failure invokes no batch. sequence.json preserves batch_started,
-native batch exit and both batch/postcheck causes. Batch failure, incomplete
+Baseline or before.json write failure invokes no batch. The observer retains
+batch.json with native argv, cwd, exit and captured raw streams immediately after
+the default batch returns, before fallible post-observation or after.json writes.
+sequence.json preserves batch_started, source hashes, binding, write errors,
+native batch exit and both batch/postcheck causes. An after.json or final sequence
+write failure remains nonzero with unknown postcondition. If sequence.json cannot
+be persisted, the single cleanup_sequence_fallback JSON on captured stdout retains
+the sequence and both causes; persisted:false means no sequence file is claimed.
+Each native stream is capped at1MiB. Preserve that captured fallback alongside the
+native job receipt. Never substitute the candidate journal for a batch receipt. Batch failure, incomplete
 batch, missing/malformed post evidence or protected/context drift stays nonzero
 and incomplete even after another phase succeeds. Stop on evidence/report
 failure. Concurrent output metadata changes are disclosed; unique reclaimed
@@ -500,9 +508,22 @@ preserve each literal argv, timestamps, exit status, native parsed receipt or
 malformed raw output, and stop reason/stop facts.
 
 Use `observe_cleanup_batch.py report` with absolute inventory, sequence,
-task-projection, result-projection, audit-projection and output-dir paths to
+task-projection, result-projection, audit-projection and output-dir paths, plus
+--preparation ABS for a prepared no-action manifest with known excluded rows, to
 retain publication.json and a current completion-intent.json. These are local
-artifacts. A failed executor/lifecycle or absent canonical output publication
+artifacts. Reporting verifies current inventory binding and native receipts.
+For nonempty inventory with only known exclusions, it checks the same-bound
+preparation against original and copied inventory hashes, manifest/history hashes,
+original history sources, owner receipt and independently reconstructed excluded
+rows at the retained observation time. A state string alone supplies no proof.
+A verified empty manifest retains the nonempty inventory and all exclusion/peer/
+history receipts, emits no request and needs no invented batch baseline. Changed,
+mismatched, uncertain or missing preparation evidence stays incomplete.
+Result admission/terminal-pending is a separate retained fact: missing/incomplete
+inventory, failed baseline, missing/failed postcheck or sequence/write failure
+still produces blocked intent and nonzero exit despite an admitted result.
+Complete-evidence pending remains useful local evidence, never a sent callback.
+A failed executor/lifecycle or absent canonical output publication
 overrides a local success payload or persisted result ID. While the genuine
 session is still alive, an admitted result can honestly be terminal-pending;
 that is not proof of callback failure. Original callback command/HTTP/CLI exit

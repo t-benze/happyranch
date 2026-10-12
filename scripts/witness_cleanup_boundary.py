@@ -19,7 +19,7 @@ import sys
 import tempfile
 from typing import Any
 
-CASES = ('T1', 'T2', 'T3', 'O1', 'O2', 'O3', 'J1', 'P1')
+CASES = ('T1', 'T2', 'T3', 'O1', 'O2', 'O3', 'J1', 'P1', 'R1', 'R2', 'R3')
 MARKER = 'HAPPYRANCH SYSTEM WORKSPACE CLEANUP RUN (manual-dispatch)'
 
 
@@ -98,6 +98,7 @@ if name=='findmnt':
  if item.get('chmod'): os.chmod(item['chmod'],0o700)
  if item.get('drift'): os.chmod(item['drift'],0o711)
  if item.get('deny'): os.chmod(item['deny'],0o000)
+ if item.get('block_file'): pathlib.Path(item['block_file']).mkdir()
  print(item['stdout'],end=''); print(item.get('stderr',''),end='',file=sys.stderr); sys.exit(item['exit_code'])
 sys.exit(92)
 '''.format(python=sys.executable)
@@ -170,7 +171,9 @@ sys.exit(92)
                             '--history-exclusions', str(self.history), '--evidence-dir', str(output),
                             '--max-candidates', '40', '--deadline-seconds', '1', '--candidate-timeout-seconds', '5'])
         sequence_path = output / 'sequence.json'
-        sequence = json.loads(sequence_path.read_text()) if sequence_path.exists() else {}
+        fallback = json.loads(receipt['stdout']) if receipt['stdout'].strip() else None
+        sequence = (fallback['sequence'] if fallback and fallback.get('kind') == 'cleanup_sequence_fallback'
+                    else json.loads(sequence_path.read_text()) if sequence_path.is_file() else {})
         return receipt, sequence
 
 
@@ -331,7 +334,7 @@ def o2(w: Witness) -> None:
         blocked.chmod(0o700)
     (w.workspace / '.aws').unlink(); (w.workspace / '.aws').mkdir()
     scratch = w.copy_scripts('baseline-admission-regression')
-    w.mutate(scratch, 'observe_cleanup_batch.py', "    if before['complete']:", '    if True:')
+    w.mutate(scratch, 'observe_cleanup_batch.py', "    if sequence['baseline']['complete']:", '    if True:')
     w.replies['findmnt'] = {'default': {'exit_code': 17, 'stdout': '', 'stderr': 'controlled baseline failure'}}
     receipt, seq = w.observed(manifest, 'red-baseline-admission', scratch)
     w.check(seq['batch_started'] is True and (w.root / 'red-baseline-admission/journal.jsonl').is_file(), 'baseline_admission_regression_detected_by_forbidden_native_journal')
@@ -376,8 +379,9 @@ def o3(w: Witness) -> None:
         receipt, seq = w.observed(manifest, 'missing-post')
     finally:
         missing_output.chmod(0o700)
-    w.check(receipt['exit_code'] != 0 and not (missing_output / 'after.json').exists() and not seq
-            and (missing_output / 'journal.jsonl').is_file(), 'native_post_receipt_write_failure_nonzero_and_missing_retained')
+    w.check(receipt['exit_code'] != 0 and not (missing_output / 'after.json').exists() and seq.get('unknown_postcondition') is True and seq.get('batch', {}).get('exit_code') == 0
+            and seq.get('write_errors') and (missing_output / 'journal.jsonl').is_file(),
+            'native_post_receipt_write_failure_retains_batch_and_sequence')
     w.missing.append('O3 proves sequencing with native refusals, never deletion or scanner authority.')
 
 
@@ -469,6 +473,151 @@ def p1(w: Witness) -> None:
     receipt = w.run(args)
     w.check(receipt['exit_code'] != 0 and json.loads((w.root / 'missing-native/publication.json').read_text())['state'] == 'incomplete_unpublished', 'missing_native_provenance_not_empty_success')
     w.missing.append('Synthetic task/result/audit projections never prove original callback/runtime behavior; Product18963 original callback command/HTTP/exit/error remain missing.')
+
+
+def report_case(w: Witness, inventory: Path, sequence: dict[str, Any], name: str,
+                *, preparation: Path | None = None, scripts: Path | None = None,
+                task: dict[str, Any] | None = None, result_id: int | None = 71) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    argv = [sys.executable, str((scripts or w.scripts) / 'observe_cleanup_batch.py'), 'report', '--inventory', str(inventory)]
+    for key, value in (('sequence', sequence), ('task-projection', task or {'status': 'in_progress', 'output_dir': None}),
+                       ('result-projection', {'result_id': result_id}), ('audit-projection', {'completion_report': False})):
+        argv += ['--' + key, str(w.write(w.root / (name + '-' + key + '.json'), value))]
+    if preparation is not None:
+        argv += ['--preparation', str(preparation)]
+    output = w.root / name
+    argv += ['--output-dir', str(output)]
+    receipt = w.run(argv)
+    return (receipt, json.loads((output / 'publication.json').read_text()),
+            json.loads((output / 'completion-intent.json').read_text()))
+
+
+def r1(w: Witness) -> None:
+    # P1/R1: admitted result with incomplete inventory, baseline or postcheck.
+    row = w.candidate('TASK-evidence')
+    inventory_path = w.inventory([row])
+    inventory = json.loads(inventory_path.read_text())
+    native = inventory['repository_receipts'][0]
+    complete = {'complete': True, 'batch_started': True, 'baseline': {'complete': True},
+                'batch': native, 'postcheck': {'complete': True}}
+    cases = [('missing-inventory', dict(inventory, repository_receipts=[]), {}),
+             ('failed-baseline', inventory, {'complete': False, 'batch_started': False, 'baseline': {'complete': False}}),
+             ('missing-postcheck', inventory, dict(complete, postcheck={})),
+             ('failed-postcheck', inventory, dict(complete, complete=False, postcheck={'complete': False})),
+             ('incomplete-inventory', dict(inventory, complete=False), complete)]
+    for name, census, sequence in cases:
+        w.write(inventory_path, census)
+        receipt, value, intent = report_case(w, inventory_path, sequence, name)
+        w.check(receipt['exit_code'] != 0 and value['state'] == 'incomplete_unpublished'
+                and intent['status'] == 'blocked', 'R1_incomplete_evidence_blocks:' + name)
+        w.check(value['local_result_id'] == 71 and value['result_admitted_terminal_pending'] is True,
+                'R1_pending_fact_retained:' + name)
+    w.write(inventory_path, inventory)
+    receipt, value, intent = report_case(w, inventory_path, complete, 'complete-pending')
+    w.check(receipt['exit_code'] == 0 and value['state'] == 'result_admitted_terminal_pending'
+            and intent['status'] == 'completed', 'R1_complete_pending_keeper')
+    receipt, value, intent = report_case(w, inventory_path, complete, 'failed-lifecycle',
+                                        task={'status': 'failed', 'executor_exit_code': 1, 'output_dir': None})
+    w.check(receipt['exit_code'] != 0 and value['state'] == 'failed_unpublished'
+            and intent['status'] == 'blocked', 'R1_failed_lifecycle_keeper')
+    w.missing.append('P1/R1 projections do not prove sent callback, terminal execution or canonical publication.')
+
+
+def r2(w: Witness) -> None:
+    # T3/P1/R2: native nonempty inventory, verified known exclusions, zero action.
+    rows = []
+    young = w.candidate('TASK-young', dt.datetime.now(dt.timezone.utc).isoformat()); rows.append(young)
+    active = w.candidate('TASK-active'); active['listing']['status'] = 'in_progress'; rows.append(active)
+    foreign = w.candidate('TASK-foreign'); foreign['listing']['assigned_agent'] = 'another'; rows.append(foreign)
+    historical = w.candidate('TASK-historical'); rows.append(historical)
+    history = json.loads(w.history.read_text()); history['excluded_paths'] = [historical['candidate']]; w.write(w.history, history)
+    inventory = w.inventory(rows)
+    receipt, prep = w.prepare(inventory, 'excluded-preparation')
+    w.check(receipt['exit_code'] == 0 and prep['state'] == 'no_candidates_complete' and prep['manifest'] == [], 'R2_known_excluded_prepared')
+    preparation = w.root / 'excluded-preparation/preparation.json'
+    request = w.root / 'excluded-request.json'
+    receipt = w.run([sys.executable, str(w.scripts / 'observe_cleanup_batch.py'), 'job-request',
+                     '--preparation', str(preparation), '--output', str(request),
+                     '--evidence-dir', str(w.workspace / 'output/TASK-actor/no-action')])
+    w.check(receipt['exit_code'] == 0 and json.loads(receipt['stdout'])['request_emitted'] is False
+            and not request.exists(), 'R2_verified_exclusions_zero_request')
+    receipt, value, intent = report_case(w, inventory, {}, 'excluded-report', preparation=preparation, result_id=None)
+    w.check(receipt['exit_code'] == 0 and value['state'] == 'local_complete_unpublished'
+            and value['no_action_complete'] is True and intent['status'] == 'completed', 'R2_verified_exclusions_complete')
+    w.check(value['inventory']['candidates'] == rows and value['preparation']['rows'] == prep['rows']
+            and value['sequence'] == {} and not w.sink.exists(), 'R2_original_receipts_zero_batch_request')
+    for name, change in (('binding', {'binding': dict(prep['binding'], SESSION_ID='wrong')}),
+                         ('state-only', {'rows': []}), ('errors', {'errors': ['unknown']}),
+                         ('manifest', {'manifest': [{'unknown': True}]}), ('frozen', {'frozen_selection': ['unknown']}),
+                         ('missing-owner', {'receipts': []}), ('time', {'observed_at': '2027-01-01T00:00:00Z'})):
+        bad = w.write(w.root / (name + '-preparation.json'), dict(prep, **change))
+        # The verified inventory snapshot resides beside the original receipt.
+        bad = w.write(preparation, json.loads(bad.read_text()))
+        receipt, value, intent = report_case(w, inventory, {}, 'bad-' + name, preparation=bad)
+        w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_invalid_preparation_refused:' + name)
+        w.write(preparation, prep)
+    changed = json.loads(inventory.read_text()); changed['candidates'][0]['listing']['status'] = 'failed'; w.write(inventory, changed)
+    receipt, value, intent = report_case(w, inventory, {}, 'changed-inventory', preparation=preparation)
+    w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_changed_inventory_refused')
+    w.write(inventory, json.loads((preparation.parent / 'inventory.json').read_text()))
+    manifest = Path(prep['manifest_path']); w.write(manifest, [{'bad': True}])
+    receipt, value, intent = report_case(w, inventory, {}, 'changed-manifest', preparation=preparation)
+    w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_changed_manifest_refused')
+    w.write(manifest, [])
+    history['excluded_paths'] = []; w.write(w.history, history)
+    receipt, value, intent = report_case(w, inventory, {}, 'changed-history', preparation=preparation)
+    w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_changed_history_refused')
+    # Unknown/exhausted receipt never becomes known empty.
+    unknown = w.candidate('TASK-unknown', 'naive-or-unknown')
+    inventory = w.inventory([unknown]); receipt, prep = w.prepare(inventory, 'unknown-preparation')
+    receipt, value, intent = report_case(w, inventory, {}, 'unknown-report', preparation=w.root / 'unknown-preparation/preparation.json')
+    w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_unknown_exhausted_refused')
+    inventory = w.inventory([])
+    receipt, value, intent = report_case(w, inventory, {}, 'literal-empty')
+    w.check(receipt['exit_code'] == 0 and value['native_empty_inventory'], 'R2_literal_empty_keeper')
+    useful = w.candidate('TASK-useful'); inventory = w.inventory([useful])
+    receipt, prep = w.prepare(inventory, 'useful-preparation')
+    w.check(receipt['exit_code'] == 0 and prep['state'] == 'prepared_nonempty' and len(prep['manifest']) == 1, 'R2_useful_preparation_keeper')
+
+
+def r3(w: Witness) -> None:
+    # O3/R3 actual default native batch, postwrite and final-sequence faults.
+    row = w.candidate('TASK-write-refusal', dt.datetime.now(dt.timezone.utc).isoformat())
+    manifest = w.write(w.root / 'manifest.json', [{key: row[key] for key in ('candidate', 'containing', 'kind', 'allocated_bytes')}])
+    invalid = w.write(w.root / 'invalid-manifest.json', [{'bad': 'schema'}])
+    for name, path, fault in (('postwrite-refusal', manifest, 'deny'), ('postwrite-batch-failure', invalid, 'deny'),
+                              ('after-file-failure', manifest, 'after.json'), ('sequence-file-failure', manifest, 'sequence.json')):
+        output = w.root / name
+        change = {'deny': str(output)} if fault == 'deny' else {'block_file': str(output / fault)}
+        w.replies['findmnt'] = {'default': w.native_mount, '2': dict(w.native_mount, **change)}
+        try:
+            receipt, sequence = w.observed(path, name)
+        finally:
+            if output.exists(): output.chmod(0o700)
+        before = json.loads((output / 'before.json').read_text())
+        if before.get('complete') is not True:
+            w.missing.append('O3/R3 supported host baseline unavailable: ' + json.dumps(before.get('errors'))); return
+        w.check(receipt['exit_code'] != 0 and sequence.get('complete') is False
+                and sequence.get('unknown_postcondition') is True and sequence.get('write_errors'), 'R3_postwrite_nonzero_unknown:' + name)
+        batch = sequence['batch']
+        w.check(isinstance(batch['argv'], list) and batch['argv'][1].endswith('/run_cleanup_batch.py')
+                and batch['cwd'] == str(w.workspace) and isinstance(batch['stdout'], str)
+                and isinstance(batch['stderr'], str) and type(batch['exit_code']) is int, 'R3_native_batch_receipt_retained:' + name)
+        w.check(sequence['binding']['SESSION_ID'] == w.env['SESSION_ID']
+                and sequence['source_sha256']['observe_cleanup_batch.py']
+                and sequence['manifest_sha256'] and sequence['history_sha256'], 'R3_source_binding_retained:' + name)
+        if path == manifest:
+            journal = [json.loads(line) for line in (output / 'journal.jsonl').read_text().splitlines()]
+            w.check(batch['exit_code'] == 0 and len(journal) == 1 and journal[0]['receipt']['reason'] == 'gate:retention-age', 'R3_actual_native_refusal:' + name)
+        else:
+            w.check(batch['exit_code'] != 0 and not sequence['postcheck']['complete'], 'R3_batch_and_postwrite_causes_retained')
+        if fault in ('deny', 'sequence.json'):
+            fallback = json.loads(receipt['stdout'])
+            w.check(fallback['kind'] == 'cleanup_sequence_fallback' and fallback['persisted'] is False
+                    and fallback['sequence'] == sequence, 'R3_explicit_captured_fallback:' + name)
+        else:
+            w.check((output / 'sequence.json').is_file(), 'R3_durable_sequence_keeper')
+        w.check(json.loads((output / 'batch.json').read_text()) == batch, 'R3_batch_persisted_before_postwrite:' + name)
+    w.missing.append('O3/R3 refusal journals prove sequence only, never removals or scanner clearance.')
 
 
 def main(argv: list[str] | None = None) -> int:

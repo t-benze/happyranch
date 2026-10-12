@@ -21,7 +21,7 @@ from typing import Any
 sys.dont_write_bytecode = True
 
 from prepare_cleanup import (CAP, aware_instant, beneath, binding, current_owner,
-                             digest, history_input, read_json, successful_receipts,
+                             digest, history_input, read_json, retention_eligible, successful_receipts,
                              validate_inventory, write_json)
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -348,11 +348,27 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
     if not 1 <= max_candidates <= CAP or not 1 <= deadline_seconds <= 1200 or not 1 <= candidate_timeout_seconds <= 180:
         raise ValueError('unsupported_batch_bounds')
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    sequence: dict[str, Any] = {'batch_started': False, 'batch': None, 'postcheck': None, 'complete': False}
+    sequence: dict[str, Any] = {'batch_started': False, 'batch': None, 'postcheck': None,
+                                'complete': False, 'write_errors': [], 'persisted_artifacts': []}
+
+    def retain(name: str, value: Any) -> bool:
+        try:
+            write_json(evidence_dir / name, value)
+        except (OSError, ValueError, TypeError) as exc:
+            sequence['write_errors'].append({'artifact': name, 'error': str(exc)})
+            return False
+        sequence['persisted_artifacts'].append(name)
+        return True
+
     before = _observe(manifest, history, 'before')
-    write_json(evidence_dir / 'before.json', before)
-    sequence['baseline'] = {'complete': before['complete'], 'errors': before['errors']}
-    if before['complete']:
+    sequence['binding'] = before.get('binding')
+    sequence['source_sha256'] = {'observe_cleanup_batch.py': digest(Path(__file__).resolve())}
+    sequence['source_sha256'].update(before.get('protected', {}).get('package_sha256', {}))
+    sequence['manifest_sha256'] = digest(manifest)
+    sequence['history_sha256'] = digest(history)
+    baseline_written = retain('before.json', before)
+    sequence['baseline'] = {'complete': before['complete'] and baseline_written, 'errors': before['errors']}
+    if sequence['baseline']['complete']:
         sequence['batch_started'] = True
         command = [sys.executable, str(SCRIPTS / 'run_cleanup_batch.py'), '--manifest', str(manifest),
                    '--journal', str(journal), '--max-candidates', str(max_candidates),
@@ -360,10 +376,17 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
         sequence['environment'] = {**before['binding'], 'TMPDIR': os.environ.get('TMPDIR')}
         sequence['batch'] = capture_command(command, Path(before['binding']['WORKSPACE']),
                                              timeout=deadline_seconds + candidate_timeout_seconds + 10)
-        after = _observe(manifest, history, 'after')
-        write_json(evidence_dir / 'after.json', after)
-        post = compare_observations(before, after)
-        post['native_errors'] = after['errors']
+        # Retain native argv/cwd/exit/raw streams before post-observation can fail.
+        retain('batch.json', sequence['batch'])
+        try:
+            after = _observe(manifest, history, 'after')
+            post = compare_observations(before, after)
+            post['native_errors'] = after['errors']
+            if not retain('after.json', after):
+                post['complete'] = False
+                post['errors'].append('after_receipt_write_failed')
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            post = {'complete': False, 'errors': ['post_observation_failed'], 'native_errors': [str(exc)]}
         sequence['postcheck'] = post
         batch = sequence['batch']
         try:
@@ -374,11 +397,24 @@ def run_observed_batch(manifest: Path, journal: Path, history: Path, evidence_di
         except (ValueError, TypeError) as exc:
             sequence['batch_summary_error'] = str(exc)
         sequence['complete'] = (batch['exit_code'] == 0 and batch['error'] is None
-                                and 'batch_summary_error' not in sequence and post['complete'])
+                                and 'batch_summary_error' not in sequence and post['complete']
+                                and not sequence['write_errors'])
     sequence['halt_reason'] = ('complete' if sequence['complete'] else 'baseline_incomplete'
                                 if not sequence['batch_started'] else 'batch_or_postcheck_incomplete')
     sequence['unknown_postcondition'] = not sequence['complete']
-    write_json(evidence_dir / 'sequence.json', sequence)
+    try:
+        write_json(evidence_dir / 'sequence.json', sequence)
+        sequence_persisted = True
+    except (OSError, ValueError, TypeError) as exc:
+        sequence['write_errors'].append({'artifact': 'sequence.json', 'error': str(exc)})
+        sequence.update(complete=False, unknown_postcondition=True, halt_reason='sequence_write_failed')
+        sequence_persisted = False
+    if sequence['write_errors']:
+        # Each native stream is bounded by capture_command's COMMAND_CAP. This
+        # single structured process-output receipt is the fallback, never a
+        # claim that an unavailable file was persisted or a candidate journal.
+        print(json.dumps({'kind': 'cleanup_sequence_fallback', 'persisted': sequence_persisted,
+                          'evidence_dir': str(evidence_dir), 'sequence': sequence}, sort_keys=True))
     return 0 if sequence['complete'] else 2
 
 
@@ -403,26 +439,84 @@ def validate_job_request(request: dict[str, Any], bound: dict[str, str], workspa
         raise ValueError('invalid_cwd_hint')
 
 
+def verified_preparation(preparation_path: Path, inventory: dict[str, Any],
+                         bound: dict[str, str]) -> dict[str, Any]:
+    preparation = read_json(preparation_path)
+    if not isinstance(preparation, dict) or preparation.get('binding') != bound:
+        raise ValueError('preparation_binding_mismatch')
+    validate_inventory(inventory, bound)
+    snapshot = preparation_path.parent / 'inventory.json'
+    original = Path(preparation['inventory_path'])
+    manifest = Path(preparation['manifest_path'])
+    history = Path(preparation['history_path'])
+    if (not all(path.is_absolute() for path in (original, manifest, history))
+            or read_json(snapshot) != inventory or read_json(original) != inventory
+            or digest(snapshot) != preparation['inventory_snapshot_sha256']
+            or digest(original) != preparation['inventory_sha256']
+            or read_json(manifest) != preparation['manifest']
+            or digest(manifest) != preparation['manifest_sha256']
+            or digest(history) != preparation['history_sha256']):
+        raise ValueError('preparation_artifact_changed')
+    history_value, exclusions = history_input(history)
+    if preparation.get('history_sources') != history_value['sources']:
+        raise ValueError('preparation_history_inconsistent')
+    if preparation.get('state') == 'no_candidates_complete':
+        if (preparation.get('manifest') != [] or preparation.get('frozen_selection') != []
+                or preparation.get('errors') != [] or preparation.get('no_refill') is not True
+                or not successful_receipts(preparation.get('receipts'))):
+            raise ValueError('empty_preparation_incomplete')
+        owner = preparation['receipts'][0]
+        record = json.loads(owner['stdout'])
+        if (owner['argv'] != ['happyranch', 'recall', '--org', bound['ORG'], bound['ACTING_TASK']]
+                or owner['cwd'] != bound['WORKSPACE'] or record.get('task_id') != bound['ACTING_TASK']
+                or record.get('assigned_agent') != bound['AGENT'] or record.get('status') != 'in_progress'
+                or not isinstance(record.get('brief'), str)
+                or record['brief'].splitlines()[0] != bound['CLEANUP_MARKER']):
+            raise ValueError('empty_preparation_owner_inconsistent')
+        observed_at = aware_instant(preparation['observed_at'])
+        expected = []
+        seen: set[str] = set()
+        for row in inventory['candidates']:
+            candidate, containing = Path(row['candidate']), Path(row['containing'])
+            listed = row['listing']
+            primary = Path(bound['PRIMARY'])
+            if (not candidate.is_absolute() or candidate.resolve() != candidate
+                    or containing.resolve() != containing or not containing.name.startswith('TASK-')
+                    or containing != primary / '.claude/worktrees' / containing.name
+                    or str(candidate) in seen or row['kind'] not in ('worktree', 'cache')
+                    or (row['kind'] == 'worktree' and candidate != containing)
+                    or (row['kind'] == 'cache' and (candidate.parent != containing
+                        or candidate.name not in ('.venv', 'node_modules')))):
+                raise ValueError('empty_preparation_candidate_scope_unknown')
+            seen.add(str(candidate))
+            if any(beneath(candidate, old) or beneath(old, candidate)
+                   or beneath(containing, old) or beneath(old, containing) for old in exclusions):
+                reason = 'historical_overlap'
+            elif isinstance(listed.get('assigned_agent'), str) and listed['assigned_agent'] != bound['AGENT']:
+                reason = 'foreign_or_unknown_owner'
+            elif (listed.get('assigned_agent') == bound['AGENT'] and listed.get('task_id') == containing.name
+                  and not retention_eligible(listed, 604800 if row['kind'] == 'worktree' else 86400, observed_at)):
+                reason = 'young_or_nonterminal'
+            else:
+                raise ValueError('empty_preparation_candidate_not_known_excluded')
+            expected.append({'candidate': str(candidate), 'listing': listed, 'reason': reason})
+        if preparation.get('rows') != expected:
+            raise ValueError('empty_preparation_rows_inconsistent')
+    elif preparation.get('state') != 'prepared_nonempty' or not preparation.get('manifest'):
+        raise ValueError('preparation_incomplete')
+    return preparation
+
+
 def render_job_request(preparation_path: Path, evidence_dir: Path, deadline_seconds: int,
                        candidate_timeout_seconds: int, max_runtime_seconds: int,
                        cwd_hint: str | None = None) -> dict[str, Any] | None:
     bound = binding()
-    preparation = read_json(preparation_path)
-    if preparation.get('binding') != bound:
-        raise ValueError('preparation_binding_mismatch')
     inventory = read_json(preparation_path.parent / 'inventory.json')
-    validate_inventory(inventory, bound)
-    if preparation.get('state') == 'no_candidates_complete' and not preparation.get('manifest'):
+    preparation = verified_preparation(preparation_path, inventory, bound)
+    if preparation['state'] == 'no_candidates_complete':
         return None
-    if preparation.get('state') != 'prepared_nonempty' or not preparation.get('manifest'):
-        raise ValueError('preparation_incomplete')
     manifest = Path(preparation['manifest_path'])
     history = Path(preparation['history_path'])
-    if (not manifest.is_absolute() or read_json(manifest) != preparation['manifest']
-            or digest(manifest) != preparation['manifest_sha256']
-            or digest(history) != preparation['history_sha256']):
-        raise ValueError('preparation_artifact_changed')
-    history_input(history)
     workspace = Path(bound['WORKSPACE'])
     evidence_dir.mkdir(parents=True, exist_ok=True)
     if (evidence_dir.resolve() != evidence_dir
@@ -462,7 +556,8 @@ def render_job_request(preparation_path: Path, evidence_dir: Path, deadline_seco
 
 def summarize_publication(inventory: dict[str, Any], sequence: dict[str, Any],
                           task: dict[str, Any], result: dict[str, Any],
-                          audit: dict[str, Any]) -> dict[str, Any]:
+                          audit: dict[str, Any], preparation: dict[str, Any] | None = None,
+                          evidence_errors: list[str] | None = None) -> dict[str, Any]:
     status = task.get('status')
     native_inventory = (inventory.get('complete') is True and isinstance(inventory.get('candidates'), list)
                         and all(successful_receipts(inventory.get(key)) for key in
@@ -470,26 +565,35 @@ def summarize_publication(inventory: dict[str, Any], sequence: dict[str, Any],
     sequence_complete = (sequence.get('complete') is True and sequence.get('batch_started') is True
                          and sequence.get('baseline', {}).get('complete') is True
                          and successful_receipts([sequence.get('batch')])
-                         and sequence.get('postcheck', {}).get('complete') is True)
+                         and sequence.get('postcheck', {}).get('complete') is True
+                         and not sequence.get('write_errors') and not sequence.get('unknown_postcondition')
+                         and 'batch_summary_error' not in sequence)
     empty = (native_inventory and inventory.get('candidates') == []
              and inventory.get('repositories_state') in ('present', 'absent')
              and all(successful_receipts(inventory.get(key)) for key in
                      ('repository_receipts', 'assigned_task_receipts', 'trigger_history_receipts')))
+    no_action = not sequence and (empty or (native_inventory and preparation is not None
+                                           and preparation.get('state') == 'no_candidates_complete'))
+    evidence_complete = (native_inventory and not evidence_errors and (no_action or sequence_complete))
+    pending = status == 'in_progress' and result.get('result_id') is not None
     canonical = task.get('output_dir')
     published = (status == 'completed' and isinstance(canonical, str) and bool(canonical)
                  and audit.get('completion_report') is True)
     if status in ('failed', 'cancelled', 'superseded') or task.get('executor_exit_code') not in (None, 0):
         state = 'failed_unpublished' if not published else 'failed'
-    elif status == 'in_progress' and result.get('result_id') is not None:
+    elif pending and evidence_complete:
         state = 'result_admitted_terminal_pending'
-    elif published and native_inventory and (empty or sequence_complete):
-        state = 'published_empty' if empty else 'published'
-    elif status == 'in_progress' and native_inventory and (empty or sequence_complete):
+    elif published and evidence_complete:
+        state = 'published_empty' if no_action else 'published'
+    elif status == 'in_progress' and evidence_complete:
         state = 'local_complete_unpublished'
     else:
         state = 'incomplete_unpublished'
     return {'state': state, 'task_status': status, 'canonical_output_dir': canonical,
-            'local_result_id': result.get('result_id'), 'native_empty_inventory': empty,
+            'local_result_id': result.get('result_id'), 'result_admitted_terminal_pending': pending,
+            'native_empty_inventory': empty, 'no_action_complete': no_action and evidence_complete,
+            'evidence_complete': evidence_complete, 'evidence_errors': evidence_errors or [],
+            'preparation': preparation,
             'inventory': inventory, 'sequence': sequence, 'task_projection': task,
             'result_projection': result, 'audit_projection': audit, 'unique_reclaimed_bytes': None}
 
@@ -520,6 +624,7 @@ def main(argv: list[str] | None = None) -> int:
     report = commands.add_parser('report')
     for name in ('inventory', 'sequence', 'task-projection', 'result-projection', 'audit-projection', 'output-dir'):
         report.add_argument('--' + name, type=Path, required=True)
+    report.add_argument('--preparation', type=Path)
     args = parser.parse_args(argv)
     try:
         if any(isinstance(value, Path) and not value.is_absolute() for value in vars(args).values()):
@@ -539,8 +644,19 @@ def main(argv: list[str] | None = None) -> int:
             value = _observe(args.manifest, args.history_exclusions, args.phase)
             write_json(args.evidence_dir / (args.phase + '.json'), value)
             return 0 if value['complete'] else 2
-        value = summarize_publication(read_json(args.inventory), read_json(args.sequence), read_json(args.task_projection),
-                                      read_json(args.result_projection), read_json(args.audit_projection))
+        bound = binding()
+        inventory = read_json(args.inventory)
+        preparation = None
+        evidence_errors = []
+        try:
+            validate_inventory(inventory, bound)
+            if args.preparation is not None:
+                preparation = verified_preparation(args.preparation, inventory, bound)
+        except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+            evidence_errors.append(str(exc))
+        value = summarize_publication(inventory, read_json(args.sequence), read_json(args.task_projection),
+                                      read_json(args.result_projection), read_json(args.audit_projection),
+                                      preparation, evidence_errors)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         write_json(args.output_dir / 'publication.json', value)
         bound = binding()

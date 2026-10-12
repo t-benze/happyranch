@@ -512,8 +512,15 @@ baseline admits no batch; native batch failure and postcheck failure/drift both
 remain nonzero/incomplete with their original causes. Only the default packaged
 batch/candidate runner executes; scanner/action gates are unchanged. Local report
 or persisted result is distinct from canonical lifecycle/output publication;
-failed/unpublished evidence overrides local success. A genuine bound completion
-callback is the final session action. This repair grants no cleanup allocation.
+failed/unpublished evidence overrides local success. Known-excluded nonempty inventories finish no-action only with verified
+same-bound preparation, original/copied inventory and manifest/history hashes,
+owner/native receipts and independently consistent excluded rows; a state label
+alone is insufficient. Result admission/pending remains separate from evidence
+completeness: missing inventory/baseline/postcheck stays blocked/nonzero. Native
+batch argv/cwd/exit/raw is persisted before postwrites; after/sequence write
+failure retains source/binding and both causes as unknown/nonzero, using bounded
+captured cleanup_sequence_fallback JSON if the sequence cannot be persisted.
+A genuine bound completion callback is the final session action. This repair grants no cleanup allocation.
 
 The scan runs only as a task-bound host-visible HappyRanch job. The procedure
 authenticates a closed-schema, non-truncated receipt binding the current

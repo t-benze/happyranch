@@ -164,7 +164,8 @@ def prepare(inventory_path: Path, history_path: Path, output_dir: Path,
         write_json(output_dir / 'inventory.json', inventory)
         validate_inventory(inventory, bound)
         history, exclusions = history_input(history_path)
-        report.update(binding=bound, inventory_path=str(inventory_path),
+        report.update(binding=bound, inventory_path=str(inventory_path), inventory_sha256=digest(inventory_path),
+                      inventory_snapshot_sha256=digest(output_dir / 'inventory.json'),
                       history_path=str(history_path), history_sha256=digest(history_path),
                       history_sources=history['sources'], observed_at=dt.datetime.now(dt.timezone.utc).isoformat())
         report['receipts'].append(current_owner(bound, Path(bound['WORKSPACE'])))
