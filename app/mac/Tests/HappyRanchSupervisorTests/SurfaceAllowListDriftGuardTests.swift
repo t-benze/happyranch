@@ -101,6 +101,23 @@ struct SurfaceAllowListDriftGuardTests {
 
     // MARK: - Tests
 
+    @Test("THR299 agent-only writer and advisory reader mirror classification in both forms")
+    func failedContinuationClassification() throws {
+        let (included, excluded) = try Self.loadClassification()
+        let post = "/api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation"
+        let get = "/api/v1/orgs/{slug}/tasks/{task_id}/retry-verification"
+        #expect(excluded.contains("POST \(post)"))
+        #expect(included.contains("GET \(get)"))
+        let policy = SurfaceAllowList.default
+        for (method, template, expected) in [("POST", post, false), ("GET", get, true)] {
+            let concrete = Self.concretize(template)
+            let normalized = DaemonPathNormalizer.stripApiPrefix(concrete)
+            for raw in [concrete, normalized] {
+                #expect(policy.isAllowed(method: method, path: normalized, rawPath: raw) == expected)
+            }
+        }
+    }
+
     @Test("auth bootstrap is locally intercepted (included but denied)")
     func authBootstrapIsLocallyIntercepted() throws {
         let policy = SurfaceAllowList.default

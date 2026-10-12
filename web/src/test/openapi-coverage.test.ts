@@ -51,6 +51,15 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  test('THR299 writer is agent-only and advisory retry reader is browser-included', () => {
+    const writer = 'POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation';
+    const reader = 'GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification';
+    expect(EXCLUDED_PATHS.get(writer)).toBe('agent-only exact THR299 ordinary TASK10725 manager operation; no browser write grant');
+    expect(INCLUDED_PATHS.has(writer)).toBe(false);
+    expect(INCLUDED_PATHS.has(reader)).toBe(true);
+    expect(EXCLUDED_PATHS.has(reader)).toBe(false);
+  });
+
   test('H includes shared reads and human receipts, retaining the agent-only handoff POST', () => {
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/submissions/handoffs/{handoff_id}')).toBe(true);
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}')).toBe(true);

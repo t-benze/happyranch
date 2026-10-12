@@ -213,6 +213,16 @@ retain this skill's FINAL report-completion action and current session binding.
    add `worktree-deferred: <specific reason>` to `risks_flagged` in the
    completion payload. Never force removal or delete the branch.
 
+   A later newly committed structural root in completed/failed/cancelled/
+   superseded may reconsider this parent tree through its runtime owner,
+   including NULL-parent workflow tasks. Recorded maker deferral is advisory
+   only in that separate pass; it is not erased. Fresh preservation, process,
+   ownership/protected-path and host/successor gates retain uncertain work.
+   Root receipts carry stable start INTEGER identity and exact partial scope;
+   missing/interrupted finish never retries. This adds no maker cleanup,
+   historical, scheduling or callback authority. Always keep the final callback
+   ordering below.
+
 9. **Report completion.** When you finish (success or blocker), write a JSON
    payload to a file and invoke `happyranch report-completion --org {ORG_SLUG} --from-file <path>` as
    a single-line command as the final action of the session; nothing follows

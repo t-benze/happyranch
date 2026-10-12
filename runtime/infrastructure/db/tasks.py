@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from runtime.infrastructure.db._shared import _late_database_now as _now, _synchronized
+from runtime.infrastructure.db.task_reconciliation import (
+    ReconciliationError, TaskReconciliation, strict_json,
+)
 from runtime.models import (
     BlockKind,
     ScheduleStatus,
@@ -88,6 +91,178 @@ class _RetryEvidenceRefusal(Exception):
 
 
 class TasksMixin:
+    def terminal_worktree_audit_high_watermark(self) -> int:
+        row = self._conn.execute('SELECT COALESCE(MAX(id),0) FROM audit_log').fetchone()
+        return row[0]
+
+    def terminal_worktree_task_projection(self, task_id: str) -> dict | None:
+        """Caller holds the bounded RLock; small immutable owner projection."""
+        row = self._conn.execute(
+            "SELECT id,parent_task_id,assigned_agent,status,created_at,updated_at,"
+            "completed_at,current_session_id,orchestration_step_count,executor_pid "
+            "FROM tasks WHERE id=?", (task_id,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def terminal_worktree_children_page(self, parent: str, cursor: tuple[str, str] | None) -> list[dict]:
+        """Raw keyset page plus sentinel; no supersession/revisit membership."""
+        if cursor is None:
+            rows = self._conn.execute(
+                "SELECT id,parent_task_id,assigned_agent,status,created_at,updated_at,"
+                "completed_at,current_session_id,orchestration_step_count,executor_pid "
+                "FROM tasks WHERE parent_task_id=? ORDER BY created_at,id LIMIT 65", (parent,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id,parent_task_id,assigned_agent,status,created_at,updated_at,"
+                "completed_at,current_session_id,orchestration_step_count,executor_pid "
+                "FROM tasks WHERE parent_task_id=? AND (created_at,id)>(?,?) "
+                "ORDER BY created_at,id LIMIT 65", (parent, *cursor),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def terminal_worktree_raw_audit(self, task_id: str) -> list[dict]:
+        """Bound BEFORE action filtering/JSON decoding; caller owns RLock.
+
+        Inspect raw lengths first so oversized stored payloads are never copied
+        into Python. Both pages use the same task index and integer cursor.
+        """
+        lengths = self._conn.execute(
+            "SELECT id,COALESCE(length(CAST(payload AS BLOB)),0) AS payload_bytes "
+            "FROM audit_log WHERE task_id=? ORDER BY id DESC LIMIT 65", (task_id,),
+        ).fetchall()
+        if len(lengths) > 64 or sum(row['payload_bytes'] for row in lengths) > 262144:
+            raise ValueError("prior_audit_closure_incomplete")
+        rows = self._conn.execute(
+            "SELECT id,task_id,agent,action,payload,timestamp FROM audit_log "
+            "WHERE task_id=? ORDER BY id DESC LIMIT 65", (task_id,),
+        ).fetchall()
+        if [row['id'] for row in rows] != [row['id'] for row in lengths]:
+            raise ValueError('prior_audit_changed')
+        return [dict(row) for row in rows]
+
+    def append_terminal_worktree_audit(self, task_id: str, agent: str, action: str, payload: dict) -> int:
+        """Caller owns RLock; isolate only this cleanup append's transaction.
+
+        Refuse pre-existing ownership. On a failed insert/commit, roll back
+        only our still-uncommitted append so it cannot strand the shared
+        connection or be committed by an unrelated terminal/report writer.
+        A possibly committed row remains untouched and never permits retry.
+        """
+        if self._conn.in_transaction:
+            raise ValueError('cleanup_audit_transaction_owned')
+        try:
+            return self.insert_audit_log(task_id, agent, action, payload)
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+
+    def admit_terminal_worktree_root(self, transition: dict) -> tuple[str, int | None]:
+        """Atomic raw history lookup + existing append-only committed start.
+
+        No independent locking: the root owner first acquires the existing
+        RLock with its shared allowance. Mutable task timestamps are provenance,
+        never the event key. A prior interrupted start never authorizes retry.
+        """
+        if self._conn.in_transaction:
+            return 'transaction_owned', None
+        root = transition['after']
+        current = self.terminal_worktree_task_projection(root['id'])
+        if (current is None or current['created_at'] != root['created_at']
+                or current['parent_task_id'] is not None or current['status'] != root['status']):
+            return 'owner_changed', None
+        rows = self.terminal_worktree_raw_audit(root['id'])
+        starts, finishes = [], []
+        for row in rows:
+            if row['action'] not in ('root_worktree_reconciliation_started', 'root_worktree_reconciliation_finished'):
+                continue
+            payload = json.loads(row['payload'])
+            if not isinstance(payload, dict) or payload.get('root_created_at') != root['created_at']:
+                raise ValueError('root_receipt_identity_ambiguous')
+            if row['action'] == 'root_worktree_reconciliation_started':
+                if payload.get('transition', {}).get('after', {}).get('status') != root['status']:
+                    raise ValueError('root_episode_conflict')
+                starts.append(row)
+            else:
+                finishes.append((row, payload))
+        if starts:
+            if len(starts) != 1 or len(finishes) > 1:
+                raise ValueError('root_receipts_ambiguous')
+            event = starts[0]['id']
+            if finishes and (finishes[0][1].get('event_id') != event or finishes[0][0]['id'] <= event):
+                raise ValueError('root_receipt_identity_ambiguous')
+            return ('replayed_finished' if finishes else 'interrupted_unknown'), event
+        if finishes:
+            raise ValueError('root_start_missing')
+        if (transition['before']['status'] in ('completed', 'failed', 'cancelled', 'superseded')
+                or any(current[key] != root[key] for key in
+                       ('id', 'created_at', 'parent_task_id', 'assigned_agent', 'current_session_id', 'orchestration_step_count', 'status'))):
+            return 'original_owner_unavailable', None
+        event = self.append_terminal_worktree_audit(root['id'], root['assigned_agent'] or 'orchestrator',
+            'root_worktree_reconciliation_started',
+            {'root_created_at': root['created_at'], 'transition': transition})
+        return 'admitted', event
+
+    def terminal_worktree_protection(self, task_id: str) -> dict:
+        """Bounded SELECT-only forward edges/jobs/recovery/intent projection.
+
+        Edges protect only. They cannot contribute candidates to parent trees.
+        Raw legacy audit successor evidence remains bounded and conservative.
+        """
+        audit = self.terminal_worktree_raw_audit(task_id)
+        successors = set()
+        for row in audit:
+            if row['action'] == 'escalation_superseded':
+                payload = json.loads(row['payload'])
+                value = payload.get('successor_root') if isinstance(payload, dict) else None
+                if not isinstance(value, str) or not value:
+                    raise ValueError('successor_audit_ambiguous')
+                successors.add(value)
+        manager = self._conn.execute(
+            'SELECT successor_task_id FROM manager_supersessions WHERE predecessor_task_id=? LIMIT 65',
+            (task_id,),
+        ).fetchall()
+        revisit = self._conn.execute('SELECT id FROM tasks WHERE revisit_of_task_id=? ORDER BY id LIMIT 65',
+                                     (task_id,)).fetchall()
+        if len(manager) > 64 or len(revisit) > 64:
+            raise ValueError('successor_projection_incomplete')
+        successors.update(row[0] for row in manager)
+        successors.update(row[0] for row in revisit)
+        # Existing edges have different authenticated meanings. Any forward
+        # reuse relationship conservatively holds the predecessor tree; no
+        # note/title heuristic or optimistic ancestry reinterpretation.
+        related = []
+        for identity in sorted(successors):
+            current = self.terminal_worktree_task_projection(identity)
+            if current is None:
+                raise ValueError('successor_owner_missing')
+            related.append(current)
+        jobs = self._conn.execute('SELECT id,status,cwd_resolved,finished_at FROM jobs WHERE task_id=? ORDER BY id LIMIT 65',
+                                  (task_id,)).fetchall()
+        recoveries = self._conn.execute('SELECT state,settled_at FROM task_completion_recoveries WHERE task_id=? LIMIT 65',
+                                        (task_id,)).fetchall()
+        if len(jobs) > 64 or len(recoveries) > 64:
+            raise ValueError('work_projection_incomplete')
+        intents = []
+        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_draft_dispatch_intents'").fetchone():
+            rows = self._conn.execute('SELECT state,host_launch_started FROM workflow_draft_dispatch_intents WHERE task_id=? LIMIT 65',
+                                       (task_id,)).fetchall()
+            if len(rows) > 64:
+                raise ValueError('workflow_projection_incomplete')
+            intents = [dict(row) for row in rows]
+        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workflow_request_task_bridges'").fetchone():
+            reviews = self._conn.execute(
+                'SELECT o.state,o.host_launch_started FROM workflow_request_task_bridges b '
+                'JOIN workflow_dispatch_outbox o ON o.operation_id=b.operation_id WHERE b.task_id=? LIMIT 65',
+                (task_id,),
+            ).fetchall()
+            if len(reviews) > 64:
+                raise ValueError('review_projection_incomplete')
+            intents.extend(dict(row) for row in reviews)
+        return dict(successors=related, jobs=[dict(row) for row in jobs],
+                    recoveries=[dict(row) for row in recoveries], intents=intents)
+
     @_synchronized
     def insert_task(self, task: TaskRecord) -> None:
         self._insert_task_uncommitted(task)
@@ -1065,6 +1240,28 @@ class TasksMixin:
             raise _RetryEvidenceRefusal("malformed_evidence")
 
     @_synchronized
+    def reconcile_failed_continuation(self, org: object, predecessor_id: str, body: dict) -> dict:
+        """Caller holds ordinary owner lease and both sorted root gates."""
+        return TaskReconciliation(self).reconcile(org, predecessor_id, body)
+
+    def _retry_reconciliation_rows(self, *, incoming: str | None = None, outgoing: str | None = None) -> list[dict]:
+        validator = TaskReconciliation(self)
+        result = []
+        try:
+            for row, payload in validator.operations():
+                semantic = strict_json(payload["canonical_command"])
+                if (incoming == semantic.get("existing_successor_id")
+                        or outgoing == semantic.get("predecessor_id")):
+                    validator.receipt(payload["operation_key"])
+                    result.append({"task_id": row["task_id"], "successor_root": semantic["existing_successor_id"],
+                                   "audit_id": row["id"]})
+        except ReconciliationError as exc:
+            raise _RetryEvidenceRefusal(exc.code) from exc
+        except (ValueError, TypeError, KeyError, IndexError, RecursionError) as exc:
+            raise _RetryEvidenceRefusal("malformed_evidence") from exc
+        return result
+
+    @_synchronized
     def verify_retry_link(self, parent_id: str, target_agent: str, failed_id: str | None) -> VerifiedRetry | InvalidLineage:
         """Verify an explicit retry through recorded supersessions in this org DB.
 
@@ -1126,7 +1323,10 @@ class TasksMixin:
                     "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.successor_root') END=?",
                     (current["id"],),
                 ).fetchall()
-                predecessors = {r["predecessor_task_id"] for r in manager_rows} | {r["task_id"] for r in escalation_rows}
+                reconciliation_rows = self._retry_reconciliation_rows(incoming=current["id"])
+                predecessors = ({r["predecessor_task_id"] for r in manager_rows}
+                                | {r["task_id"] for r in escalation_rows}
+                                | {r["task_id"] for r in reconciliation_rows})
                 if not predecessors:
                     raise _RetryEvidenceRefusal("no_verified_supersession")
                 if len(predecessors) != 1:
@@ -1135,7 +1335,8 @@ class TasksMixin:
                 if predecessor_id in path:
                     raise _RetryEvidenceRefusal("lineage_cycle")
                 predecessor = self._conn.execute("SELECT * FROM tasks WHERE id=?", (predecessor_id,)).fetchone()
-                if predecessor is None or predecessor["status"] != "superseded":
+                if (predecessor is None or predecessor["status"] !=
+                        ("failed" if reconciliation_rows else "superseded")):
                     raise _RetryEvidenceRefusal("predecessor_not_superseded")
                 outgoing = {r[0] for r in self._conn.execute(
                     "SELECT successor_task_id FROM manager_supersessions WHERE predecessor_task_id=?", (predecessor_id,),
@@ -1146,11 +1347,16 @@ class TasksMixin:
                     if audit_actor != "founder" or not isinstance(successor_id, str) or not successor_id:
                         raise _RetryEvidenceRefusal("malformed_evidence")
                     outgoing.add(successor_id)
+                outgoing_reconciliations = self._retry_reconciliation_rows(outgoing=predecessor_id)
+                outgoing.update(row["successor_root"] for row in outgoing_reconciliations)
                 if len(outgoing) > 1:
                     raise _RetryEvidenceRefusal("competing_successors")
-                if manager_rows and escalation_rows:
+                if sum(bool(rows) for rows in (manager_rows, escalation_rows, reconciliation_rows)) > 1:
                     raise _RetryEvidenceRefusal("ambiguous_predecessor")
-                if manager_rows:
+                if reconciliation_rows:
+                    if len(reconciliation_rows) != 1 or outgoing_reconciliations != reconciliation_rows:
+                        raise _RetryEvidenceRefusal("ambiguous_predecessor")
+                elif manager_rows:
                     self._retry_manager_edge(predecessor, current, manager_rows)
                 else:
                     normalized = {json.dumps(payload, sort_keys=True) for _, payload in outgoing_audits}

@@ -59,6 +59,25 @@ struct SurfaceAllowListTests {
                                   rawPath: "/api/v1/orgs/alpha/workflows/submissions/handoffs"))
     }
 
+    @Test("reconciliation POST is denied through shipping path normalization")
+    func deniesFailedContinuationPost() {
+        let policy = SurfaceAllowList.default
+        let taskPath = "/tasks/TASK-123"
+        for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha", "/api/v42/orgs/alpha"] {
+            for suffix in ["", "/", "?unused=1", "/?unused=1"] {
+                let raw = prefix + taskPath + "/reconcile-failed-continuation" + suffix
+                let withoutSlash = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
+                let normalized = DaemonPathNormalizer.stripApiPrefix(withoutSlash)
+                #expect(!policy.isAllowed(method: "POST", path: normalized, rawPath: raw))
+                #expect(policy.isAllowed(method: "GET", path: normalized, rawPath: raw))
+            }
+            let retry = prefix + taskPath + "/retry-verification"
+            #expect(policy.isAllowed(method: "GET", path: DaemonPathNormalizer.stripApiPrefix(retry), rawPath: retry))
+            let cancel = prefix + taskPath + "/cancel"
+            #expect(policy.isAllowed(method: "POST", path: DaemonPathNormalizer.stripApiPrefix(cancel), rawPath: cancel))
+        }
+    }
+
     @Test("handoff POST denies normalized and raw prefixed forms only")
     func deniesAuthorHandoffPost() {
         let policy = SurfaceAllowList.default
