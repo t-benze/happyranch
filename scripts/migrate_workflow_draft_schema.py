@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             from runtime.identities.schema import validate_names
             from runtime.infrastructure.workflow_schema import _validate_release_database
             validate_names(conn, org_slug=args.org)
-            _validate_release_database(conn, layout)
+            _validate_release_database(conn, layout, expected_org_slug=args.org)
             conn.rollback()
             if layout == 'F':
                 print('migration-needed: ' + draft_migration_guidance(org_slug=args.org, runtime_root=str(args.runtime_root)))

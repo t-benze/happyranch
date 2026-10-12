@@ -967,13 +967,13 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
     from runtime.identities.schema import validate_names
     validate_names(conn, org_slug=expected_org_slug)
-    _validate_release_database(conn, layout)
+    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
     if layout in ('E', 'G', 'H', 'I'):
         return 'ready'
     _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
     conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
     validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-    _validate_release_database(conn, 'E')
+    _validate_release_database(conn, 'E', expected_org_slug=expected_org_slug)
     return 'migrated'
 
 
@@ -1518,7 +1518,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_author_handoff_migration_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-    _validate_release_database(conn, layout)
+    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
     if layout == 'H':
         return 'ready'
     if layout != 'G':
@@ -1527,7 +1527,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
     try:
         conn.execute('BEGIN IMMEDIATE')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, layout)
+        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
         if layout == 'H':
             conn.rollback()
             return 'ready'
@@ -1537,7 +1537,7 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
         retained = _retained_rows(conn)
         _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, 'H')
+        _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
         if any(after[table] != rows for table, rows in retained.items()):
             raise ValueError('workflow_author_handoff_retained_relation_mismatch')
@@ -1548,15 +1548,15 @@ def migrate_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug
         raise
 
 
-def _validate_release_database(conn: sqlite3.Connection, layout: str) -> None:
-    """Compare every whole-database SQL object to an independent release DB."""
+def _validate_release_database(conn: sqlite3.Connection, layout: str, *, expected_org_slug: str) -> None:
+    """Bind naming ownership and compare whole SQL to an independent release DB."""
     from runtime.orchestrator.authority import _release_schema_digest, _RELEASE_REFERENCE_HISTORIES
     rows = conn.execute('SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name').fetchall()
     actual = hashlib.sha256('\n'.join(str(r[0]) for r in rows).encode()).hexdigest()
     from runtime.infrastructure.task_pause_controls import validate_pause_schema
     from runtime.identities.schema import validate_names
     pause_layout = validate_pause_schema(conn, allow_absent=True)
-    names = validate_names(conn)
+    names = validate_names(conn, org_slug=expected_org_slug)
     expected = tuple(_release_schema_digest(layout, history, names, pause_layout=pause_layout)
                      for history in _RELEASE_REFERENCE_HISTORIES)
     if 'unavailable' in expected or actual not in expected:
@@ -1602,7 +1602,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
     from runtime.identities.schema import validate_names
     validate_names(conn, org_slug=expected_org_slug)
-    _validate_release_database(conn, layout)
+    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
     if layout in ('G', 'H', 'I'):
         return 'ready'
     _validate_submission_source_ownership(conn, layout)
@@ -1614,7 +1614,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
             raise ValueError('workflow_submission_fk_policy_unavailable')
         conn.execute('BEGIN IMMEDIATE')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, layout)
+        _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
         if layout in ('G', 'H', 'I'):
             conn.rollback()
             return 'ready'
@@ -1641,7 +1641,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         _execute_ddl(conn, additions)
         conn.execute('INSERT INTO workflow_submission_schema_versions VALUES (1)')
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, 'G')
+        _validate_release_database(conn, 'G', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
         for table, rows in retained.items():
             observed = after[table]
@@ -1681,7 +1681,7 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
     if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_document_revision_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-    _validate_release_database(conn, layout)
+    _validate_release_database(conn, layout, expected_org_slug=expected_org_slug)
     if layout == 'I':
         return 'ready'
     if layout != 'H':
@@ -1694,7 +1694,7 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         conn.execute('BEGIN IMMEDIATE')
         if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'H':
             raise ValueError('workflow_document_revision_source_changed')
-        _validate_release_database(conn, 'H')
+        _validate_release_database(conn, 'H', expected_org_slug=expected_org_slug)
         _validate_submission_source_ownership(conn, 'H')
         retained = _retained_rows(conn)
         conn.execute('CREATE TEMP TABLE revision_intents AS SELECT rowid AS original_rowid,* FROM workflow_draft_dispatch_intents')
@@ -1709,7 +1709,7 @@ def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_s
         conn.execute(f'INSERT INTO workflow_draft_dispatch_intents(rowid,{columns}) SELECT * FROM revision_intents')
         _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
-        _validate_release_database(conn, 'I')
+        _validate_release_database(conn, 'I', expected_org_slug=expected_org_slug)
         after = _retained_rows(conn)
         if any(after[table] != rows for table, rows in retained.items()):
             raise ValueError('workflow_document_revision_retained_relation_mismatch')

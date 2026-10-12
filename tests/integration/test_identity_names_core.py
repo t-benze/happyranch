@@ -86,7 +86,7 @@ def test_a1_install_migrate_reopen(tmp_path, monkeypatch):
                         assert observed==rows,table
                     with org.db.coherent_read_view() as conn:
                         assert workflow_schema.validate_workflow_schema(conn,expected_org_slug='alpha') == (source if outcome=='ready' else outcome)
-                        workflow_schema._validate_release_database(conn, source if outcome=='ready' else outcome)
+                        workflow_schema._validate_release_database(conn, source if outcome=='ready' else outcome, expected_org_slug='alpha')
                 else:
                     from runtime.orchestrator.authority import _release_schema_digest, _live_schema_digest
                     assert _live_schema_digest(org.db) == _release_schema_digest(layout,history,1,pause_layout=True)
@@ -426,7 +426,7 @@ def test_a2_admission_readiness(tmp_path,monkeypatch):
                 conn.execute('PRAGMA foreign_keys=ON');conn.execute('PRAGMA ignore_check_constraints=OFF')
                 damaged=snapshot(org)
                 if case=='extra-unrelated-object':
-                    with pytest.raises(ValueError,match='whole_database_mismatch'):workflow_schema._validate_release_database(conn,'F')
+                    with pytest.raises(ValueError,match='whole_database_mismatch'):workflow_schema._validate_release_database(conn,'F', expected_org_slug='alpha')
                 else:
                     assert not names.refresh_names(org)
                     assert org.naming_readiness=='unavailable'

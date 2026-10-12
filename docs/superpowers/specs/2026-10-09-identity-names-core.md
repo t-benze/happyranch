@@ -31,6 +31,10 @@ Release-reference construction supports fresh/v0/v2/v2-organic × F/E/G/H/I × n
 including all three current generic cleanup indexes. Every non-null schema SQL
 object participates; no object filter/whitelist or candidate-derived baseline.
 Unknown whole-database objects keep the existing strict reference refusal.
+Explicit workflow readiness and migration validation binds the naming singleton
+to the same expected org as the workflow marker, including source/target checks
+under the migration reservation. A valid SQL layout with a foreign naming marker
+refuses; absent naming remains supported without installation.
 Authority-v2 remains observed-only. Explicit workflow scripts preserve naming
 rows, row identities, spelling and revisions; ready replays are read-only and
 absent naming is never installed by migration. Logical preservation is separate
