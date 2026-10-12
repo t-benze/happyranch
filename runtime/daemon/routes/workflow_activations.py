@@ -12,7 +12,7 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.workflows.activation import (
     ActivationReceipt, ActivationRequest, DocumentActivationReceipt, DocumentActivationRequest,
     DocumentActivationReceipt3, DocumentActivationRequest3, ArtifactActivationReceipt, ArtifactActivationRequest,
-    WorkflowActivationError,
+    WorkflowActivationError, Token,
 )
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
@@ -154,7 +154,7 @@ async def get_workflow_activation(org: OrgDep, activation_id: str) -> dict:
             openapi_extra={'x-query-proof-schema': {
                 'type': 'object', 'additionalProperties': False, 'required': ['proof_kind'],
                 'properties': {'proof_kind': {'type': 'string', 'const': 'owner-human'}}}})
-async def get_owner_review_selection(org: OrgDep, activation_id: str, request: Request,
+async def get_owner_review_selection(org: OrgDep, activation_id: Token, request: Request,
                                      proof_kind: Literal['owner-human'] | None = Query(default=None),
                                      has_bearer: bool = optional_bearer()) -> dict:
     from runtime.daemon.routes.workflow_reviews import human_principal
