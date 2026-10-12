@@ -4,120 +4,144 @@ import { beforeEach, expect, test } from 'vitest';
 import { Link, Route, Routes } from 'react-router-dom';
 import { renderWithProviders, savedLocaleAdapter, LocaleTestSwitch } from '@/test/render';
 import { server } from '@/test/server';
-import type { TaskPauseOverview as Overview, TaskPauseProjection } from '@/lib/api/types';
-import { TaskPauseOverview } from './TaskPauseOverview';
-import { OrgProvider } from '@/lib/orgSlug';
-import { useTask, useTasksRoutes } from '@/hooks/tasks';
+import type { TaskPauseProjection, TaskRecord } from '@/lib/api/types';
+import { AppRoutes } from '@/routes';
+import { useTask } from '@/hooks/tasks';
+import { en } from '@/lib/i18n/locales/en';
+import { zhCN } from '@/lib/i18n/locales/zh-CN';
 
 function projection(id: string, status: TaskPauseProjection['lifecycle_status'] = 'pending'): TaskPauseProjection {
   return { org_slug: 'alpha', root_task_id: id, lifecycle_status: status, held: false,
     effective_hold: false, generation: 2, control_state: 'unheld', paused_at: null, resumed_at: null,
     blockers: [], evidence_complete: true, observed_at: '2026-10-11T00:00:00Z' };
 }
-function overview(changes: Partial<Overview> = {}): Overview {
-  return { org_slug: 'alpha', observed_at: '2026-10-11T00:00:00Z', evidence_complete: true,
-    counts: { unheld_runnable: 0, pausing: 0, paused: 0, terminal_drain: 0, unavailable_roots: 0 },
-    next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [], ...changes };
+function root(id: string, pause: TaskPauseProjection | undefined, changes: Partial<TaskRecord> = {}): TaskRecord {
+  return { task_id: id, team: 'engineering', brief: `Brief ${id}`, status: 'in_progress', block_kind: null,
+    parent_task_id: null, revisit_of_task_id: null, created_at: '2026-10-11T00:00:00Z', updated_at: '2026-10-11T00:00:00Z',
+    closed_at: null, cancelled_at: null, session_timeout_seconds: null, assigned_agent: 'agent-a', pause, ...changes } as TaskRecord;
 }
-function OrgOverview() {
-  const routes = useTasksRoutes();
-  return <TaskPauseOverview key={routes.inbox()} />;
+const EMPTY_OVERVIEW = { org_slug: 'alpha', observed_at: '2026-10-11T00:00:00Z', evidence_complete: true, counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [] };
+const blocker = (kind: 'task_session' | 'unknown') => ({ kind, task_id: `RAW-${kind}`, job_id: null, owner_kind: 'raw-owner', reason: 'raw_reason', observed_at: '2026-10-11T00:00:00Z' });
+// Every pause shape the list could previously render: unheld/pausing/paused roots, pending,
+// escalated held, terminal with drain blockers, missing projection and an inherited child.
+const ROOTS = [
+  root('ROOT-UNHELD', projection('ROOT-UNHELD', 'in_progress')),
+  root('ROOT-PAUSING', { ...projection('ROOT-PAUSING', 'in_progress'), held: true, effective_hold: true, control_state: 'pausing', evidence_complete: false, blockers: [blocker('task_session')] }),
+  root('ROOT-PAUSED', { ...projection('ROOT-PAUSED', 'in_progress'), held: true, effective_hold: true, control_state: 'paused' }),
+  root('ROOT-PENDING', projection('ROOT-PENDING'), { status: 'pending' }),
+  root('ROOT-ESCALATED', { ...projection('ROOT-ESCALATED', 'escalated'), held: true, effective_hold: true, control_state: 'paused' }, { status: 'escalated' }),
+  root('ROOT-FAILED', { ...projection('ROOT-FAILED', 'failed'), held: true, evidence_complete: false, blockers: [blocker('unknown')] }, { status: 'failed' }),
+  root('ROOT-MISSING', undefined),
+  root('CHILD-9', { ...projection('ROOT-PAUSED', 'in_progress'), held: true, effective_hold: true, control_state: 'paused' }, { parent_task_id: 'ROOT-PAUSED' }),
+];
+// Distinctive rendered pause copy per locale (placeholder-free prefixes), sourced from the shipped catalogs.
+const PAUSE_COPY_KEYS = ['tasks.pause.unheld', 'tasks.pause.pausing', 'tasks.pause.paused', 'tasks.pause.unavailable',
+  'tasks.pause.inherited', 'tasks.pause.evidenceComplete', 'tasks.pause.evidenceIncomplete', 'tasks.pause.observed',
+  'tasks.pause.terminalDrain', 'tasks.pause.blocker.task', 'tasks.pause.blocker.unknown'] as const;
+function pauseCopy(locale: 'en' | 'zh-CN'): string[] {
+  const catalog = (locale === 'en' ? en : zhCN) as Record<string, unknown>;
+  return PAUSE_COPY_KEYS.map(key => String(catalog[key]).split('{')[0].trim()).filter(Boolean);
 }
-function mount(locale: 'en' | 'zh-CN' = 'en') {
-  return renderWithProviders(<><Routes><Route path="/orgs/:slug/tasks" element={<OrgProvider><OrgOverview /></OrgProvider>} /></Routes>
-    <Link to="/orgs/beta/tasks">Other organization</Link><LocaleTestSwitch to="zh-CN" /><LocaleTestSwitch to="en" /></>,
-    { route: '/orgs/alpha/tasks', i18n: { adapter: savedLocaleAdapter(locale) } });
+// Ordinary Tasks route mounts no pause UI at all (founder THR-292 seq41 overview + seq45 rows).
+// The callable GET /tasks/pause-overview client contract survives separately (lib/api/tasks.test.ts).
+function mountTasks(locale: 'en' | 'zh-CN', route = '/orgs/alpha/tasks') {
+  const requests: string[] = [];
+  const writes: string[] = [];
+  server.use(
+    http.get('/api/v1/orgs', () => HttpResponse.json({ orgs: [{ slug: 'alpha', root: '/isolated-fixture' }] })),
+    http.get('/api/v1/orgs/alpha/dashboard/summary', () => HttpResponse.json({ org_age_days: 1 })),
+    http.get('/api/v1/orgs/alpha/tasks/roots', ({ request }) => {
+      const status = new URL(request.url).searchParams.get('status');
+      requests.push(`roots${new URL(request.url).search}`);
+      return HttpResponse.json({ tasks: status ? ROOTS.filter(t => t.status === status) : ROOTS, next_cursor: null });
+    }),
+    // Valid empty observation, so a regressed panel renders (and is observable) rather than crashing.
+    http.get('/api/v1/orgs/alpha/tasks/pause-overview', () => { requests.push('pause-overview'); return HttpResponse.json(EMPTY_OVERVIEW); }),
+    http.get('/api/v1/orgs/alpha/jobs/', () => { requests.push('jobs'); return HttpResponse.json({ jobs: [], next_cursor: null }); }),
+    http.get('/api/v1/orgs/alpha/tasks/:id', ({ params }) => {
+      requests.push(`detail ${params.id}`);
+      const task = ROOTS.find(t => t.task_id === params.id);
+      return HttpResponse.json({ task, pause: task?.pause, results: [], audit_log: [], revisit_chain: [], direct_revisits: [], predecessor_prior_status: null });
+    }),
+    http.get('/api/v1/orgs/alpha/tasks/:id/recall', ({ params }) => {
+      requests.push(`recall ${params.id}`);
+      return HttpResponse.json({ task_id: params.id, assigned_agent: 'agent-a', brief: `Brief ${params.id}`, status: 'in_progress', output_summary: null, children: [] });
+    }),
+    http.get('/api/v1/orgs/alpha/tasks/:id/events', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
+    http.post('/api/v1/orgs/alpha/tasks/:id/:action', ({ params }) => {
+      writes.push(`${params.action} ${params.id}`);
+      return HttpResponse.json({ changed: true, pause: { ...projection(String(params.id), 'in_progress'), held: true, effective_hold: true, control_state: 'paused', generation: 3 } });
+    }),
+  );
+  renderWithProviders(<><AppRoutes /><LocaleTestSwitch to="zh-CN" /><LocaleTestSwitch to="en" /></>,
+    { route, i18n: { adapter: savedLocaleAdapter(locale) } });
+  return { requests, writes };
+}
+async function expectListWithoutPause(locale: 'en' | 'zh-CN') {
+  const list = await screen.findByTestId('tasks-responsive-list');
+  await within(list).findByRole('link', { name: /Brief ROOT-FAILED/ });
+  const main = document.body;
+  // Ordinary lifecycle badges and row navigation stay intact.
+  for (const status of ['in_progress', 'pending', 'escalated', 'failed']) expect(within(main).getAllByText(status).length).toBeGreaterThan(0);
+  for (const task of ROOTS) expect(within(main).getAllByRole('link', { name: new RegExp(`Brief ${task.task_id}`) })[0]).toHaveAttribute('href', `/orgs/alpha/tasks/${task.task_id}`);
+  // No pause controls, state labels, evidence, blockers, unavailable or inherited explanation anywhere on the page.
+  expect(document.querySelector('[data-task-pause]')).toBeNull();
+  expect(screen.queryByRole('button', { name: /^(Pause|Resume|暂停|恢复)$/ })).toBeNull();
+  for (const copy of [...pauseCopy('en'), ...pauseCopy('zh-CN')]) expect(main.textContent).not.toContain(copy);
+  for (const raw of ['RAW-task_session', 'RAW-unknown']) expect(main.textContent).not.toContain(raw);
+  expect(main.querySelector('details')).toBeNull();
+  for (const name of ['Task pause overview', '任务暂停概览']) {
+    expect(screen.queryByRole('region', { name })).toBeNull();
+    expect(screen.queryByRole('heading', { name })).toBeNull();
+  }
+  for (const name of [/overview/i, /概览/, /observation page/i, /观测页/]) expect(screen.queryByRole('button', { name })).toBeNull();
+  expect(document.documentElement.lang).toBe(locale);
 }
 beforeEach(() => { sessionStorage.setItem('happyranch.token', 'test-token'); });
 
-test('P18b loading is distinct from empty; explicit retry recovers initial error', async () => {
-  let release!: () => void;
-  const ready = new Promise<void>(resolve => { release = resolve; });
-  let fail = true;
-  server.use(http.get('/api/v1/orgs/alpha/tasks/pause-overview', async () => {
-    await ready;
-    return fail ? HttpResponse.json({ detail: { code: 'pause_control_unavailable' } }, { status: 409 }) : HttpResponse.json(overview());
-  }));
-  mount();
-  expect(screen.getByText('Loading task pause overview…')).toBeInTheDocument();
-  expect(screen.queryByText(/No roots in/)).toBeNull();
-  release();
-  expect(await screen.findByRole('alert')).toHaveTextContent('Task pause overview could not be loaded.');
-  expect(screen.queryByText(/No roots in/)).toBeNull();
-  fail = false;
-  fireEvent.click(screen.getByRole('button', { name: 'Retry overview' }));
-  expect(await screen.findByText(/No roots in these categories/)).toBeInTheDocument();
-  expect(screen.queryByRole('alert')).toBeNull();
+test.each(['en', 'zh-CN'] as const)('THR-292 seq41+45 Tasks list renders no pause UI or overview read; lifecycle and navigation remain: %s', async locale => {
+  const { requests } = mountTasks(locale);
+  await expectListWithoutPause(locale);
+  expect(requests.some(r => r.startsWith('roots?') && r.includes('status=escalated'))).toBe(true);
+  expect(requests).not.toContain('pause-overview');
 });
 
-test.each(['en', 'zh-CN'] as const)('P18b populated/partial typed overview and pending has no Pause: %s', async locale => {
-  const unknown = { kind: 'unknown' as const, task_id: 'ROOT-DRAIN', job_id: null, owner_kind: 'host', reason: 'raw_unknown', observed_at: '2026-10-11T00:00:00Z' };
-  server.use(http.get('/api/v1/orgs/alpha/tasks/pause-overview', () => HttpResponse.json(overview({
-    counts: null, evidence_complete: false,
-    unheld_runnable: [projection('ROOT-PENDING')],
-    pausing: [{ ...projection('ROOT-DRAIN', 'in_progress'), held: true, effective_hold: true, control_state: 'pausing', blockers: [unknown], evidence_complete: false }],
-    paused: [{ ...projection('ROOT-HELD', 'in_progress'), held: true, effective_hold: true, control_state: 'paused' }],
-    terminal_drain: [{ ...projection('ROOT-FAILED', 'failed'), held: true, blockers: [unknown], evidence_complete: false }],
-    unavailable_roots: [{ ...projection('ROOT-UNKNOWN'), evidence_complete: false }],
-  }))));
-  mount(locale);
-  const pending = (await screen.findByRole('link', { name: 'ROOT-PENDING' })).closest('li')!;
-  expect(within(pending).queryByRole('button', { name: /^(Pause|暂停)$/ })).toBeNull();
-  expect(screen.queryByRole('button', { name: locale === 'en' ? 'Resume' : '恢复' })).toBeNull();
-  expect(screen.getByText(locale === 'en' ? 'Authoritative counts unavailable.' : '权威计数不可用。')).toBeInTheDocument();
-  expect(screen.getByText(locale === 'en' ? /Partial page./ : /部分页面。/)).toBeInTheDocument();
-  expect(screen.getByText(locale === 'en' ? /Task ended; unresolved/ : /任务已结束，仍有/)).toBeInTheDocument();
-  expect(screen.getAllByText(locale === 'en' ? 'Unknown execution evidence' : '未知执行证据')).toHaveLength(2);
-});
-
-test('P18b opaque pagination replaces observation, retains null counts and resets on org switch', async () => {
-  const cursors: (string | null)[] = [];
-  server.use(http.get('/api/v1/orgs/:slug/tasks/pause-overview', ({ request, params }) => {
-    const cursor = new URL(request.url).searchParams.get('before'); cursors.push(cursor);
-    if (params.slug === 'beta') return HttpResponse.json(overview({ org_slug: 'beta', unheld_runnable: [{ ...projection('BETA-PENDING'), org_slug: 'beta' }] }));
-    return HttpResponse.json(cursor ? overview({ counts: null, observed_at: '2026-10-11T01:00:00Z', unheld_runnable: [projection('SECOND')] }) : overview({ counts: null, next_cursor: 'opaque:/+cursor=', unheld_runnable: [projection('FIRST')] }));
-  }));
-  mount();
-  await screen.findByRole('link', { name: 'FIRST' });
-  fireEvent.click(screen.getByRole('button', { name: 'Next observation page' }));
-  await screen.findByRole('link', { name: 'SECOND' });
-  expect(screen.queryByRole('link', { name: 'FIRST' })).toBeNull();
-  expect(screen.getByText(/Authoritative counts unavailable/)).toBeInTheDocument();
-  expect(cursors).toEqual([null, 'opaque:/+cursor=']);
-  fireEvent.click(screen.getByRole('link', { name: 'Other organization' }));
-  await screen.findByRole('link', { name: 'BETA-PENDING' });
-  expect(screen.queryByRole('link', { name: 'SECOND' })).toBeNull();
-  expect(cursors).toEqual([null, 'opaque:/+cursor=', null]);
-});
-
-test('P18b stale refresh preserves earlier observation and explicit Retry', async () => {
-  let fail = false;
-  server.use(http.get('/api/v1/orgs/alpha/tasks/pause-overview', () => fail
-    ? HttpResponse.json({ detail: 'raw_read_error' }, { status: 503 })
-    : HttpResponse.json(overview({ unheld_runnable: [projection('RETAINED')] }))));
-  mount();
-  await screen.findByRole('link', { name: 'RETAINED' });
-  fail = true;
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh overview' }));
-  expect(await screen.findByRole('alert')).toHaveTextContent('Stale observation: refresh failed.');
-  expect(screen.getByRole('link', { name: 'RETAINED' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Retry overview' })).toBeInTheDocument();
-});
-
-test('P18d locale switch preserves focused overview button with zero requests', async () => {
-  let reads = 0;
-  server.use(http.get('/api/v1/orgs/alpha/tasks/pause-overview', () => { reads++; return HttpResponse.json(overview()); }));
-  mount();
-  await screen.findByText(/No roots in/);
-  const button = screen.getByRole('button', { name: 'Refresh overview' }); button.focus();
-  const before = reads;
+test('THR-292 seq45 list -> detail keeps root controls on detail; list stays pause-free after action, navigation and locale switches', async () => {
+  const { requests, writes } = mountTasks('en');
+  await expectListWithoutPause('en');
+  fireEvent.click(within(screen.getByTestId('tasks-responsive-list')).getByRole('link', { name: /Brief ROOT-UNHELD/ }));
+  const pause = await screen.findByRole('button', { name: 'Pause' });
+  expect(pause.closest('[data-task-pause="ROOT-UNHELD"]')).not.toBeNull();
+  fireEvent.click(pause);
+  await waitFor(() => expect(writes).toEqual(['pause ROOT-UNHELD']));
+  fireEvent.click(screen.getByRole('link', { name: en['tasks.detail.back'] }));
+  await expectListWithoutPause('en');
   fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
-  expect(screen.getByRole('button', { name: '刷新概览' })).toBe(button);
-  expect(document.activeElement).toBe(button);
-  expect(reads).toBe(before);
+  await expectListWithoutPause('zh-CN');
   fireEvent.click(screen.getByTestId('test-set-locale-en'));
-  expect(screen.getByRole('button', { name: 'Refresh overview' })).toBe(button);
-  expect(reads).toBe(before);
+  await expectListWithoutPause('en');
+  expect(writes).toEqual(['pause ROOT-UNHELD']);
+  expect(requests).not.toContain('pause-overview');
+});
+
+test('THR-292 seq45 detail locale switch keeps the focused root Pause node with zero requests and no overview', async () => {
+  const { requests, writes } = mountTasks('en', '/orgs/alpha/tasks/ROOT-UNHELD');
+  const pause = await screen.findByRole('button', { name: 'Pause' });
+  expect(pause.closest('[data-task-pause="ROOT-UNHELD"]')).not.toBeNull();
+  await waitFor(() => expect(requests).toContain('jobs'));
+  pause.focus();
+  expect(document.activeElement).toBe(pause);
+  const before = requests.length;
+  // Focus is set once only; each switch must keep it on the same root Pause node without repair.
+  fireEvent.click(screen.getByTestId('test-set-locale-zh-CN'));
+  expect(document.activeElement).toBe(pause);
+  expect(screen.getByRole('button', { name: '暂停' })).toBe(pause);
+  fireEvent.click(screen.getByTestId('test-set-locale-en'));
+  expect(document.activeElement).toBe(pause);
+  expect(screen.getByRole('button', { name: 'Pause' })).toBe(pause);
+  expect(requests.length).toBe(before);
+  expect(writes).toEqual([]);
+  expect(requests).not.toContain('pause-overview');
 });
 
 // Actual hook consumer used by the app; this test mount adds no production seam.

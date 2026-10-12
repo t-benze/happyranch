@@ -19,7 +19,6 @@
  * rather than reaching into TaskCard's private internals.
  */
 import { Link } from 'react-router-dom';
-import { TaskPauseControls } from './TaskPauseControls';
 import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { CurrentAgentChip as AgentChip } from '@/shared/identities/CurrentAgentChip';
 import { IdBadge } from '@/design-system/patterns/IdBadge';
@@ -250,10 +249,6 @@ export function TaskListRow({ task, to, taskRoutes }: TaskListRowProps): JSX.Ele
           {relativeAge(task.updated_at, t)}
         </div>
       </Link>
-
-      <div className="px-2 pb-2">
-        <TaskPauseControls task={task} routes={taskRoutes} compact />
-      </div>
 
       {/* Supersede / revisit lineage — siblings of the row Link (no nested
           anchors), preserving the navigation TaskCard previously offered. */}
