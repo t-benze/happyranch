@@ -121,10 +121,24 @@ printf 'subject=%s\n' "${PROOF_SUBJECT_SHA:-missing}" >"$diagnostics/bootstrap.t
 [[ "$(ps -p 1 -o comm= | xargs)" == systemd ]] || fail "PID 1 is not systemd"
 # This precedes the product cleanup trap. Own the query here, including a
 # shell-only cancellation, without retaining raw output or shell-normalizing it.
-preflight_pid=""; preflight_signal=0
+preflight_pid=""; preflight_signal=0; preflight_reaped=0
+preflight_finish_cancel() {
+  # TERM may reach Python before initialization, leaving no child diagnostic.
+  # Evidence is best effort; a write failure cannot replace the signal exit.
+  if [[ ! -f "$diagnostics/system-manager-preflight.txt" ]]; then
+    printf 'state=unavailable\nreason=cancelled\nquery_status=not_observed\n' >"$diagnostics/system-manager-preflight.txt" || true
+  fi
+  printf 'shell_reason=cancelled\nshell_status=%s\n' "$preflight_signal" >>"$diagnostics/system-manager-preflight.txt" || true
+  exit "$preflight_signal"
+}
 preflight_cancel() {
   trap '' HUP INT TERM
   preflight_signal="$1"
+  # Once the wait completed, exit synchronously even after the final flag
+  # decision. Earlier cancellation uses the owned cleanup/re-wait path below.
+  if (( preflight_reaped )); then
+    preflight_finish_cancel
+  fi
   [[ -z "$preflight_pid" ]] || kill -TERM "$preflight_pid" 2>/dev/null || true
 }
 trap 'preflight_cancel 129' HUP
@@ -240,17 +254,15 @@ if (( preflight_signal != 0 )); then
 fi
 preflight_status=0
 wait "$preflight_pid" || preflight_status=$?
+# If cancellation interrupted wait, its handler already ignores further
+# signals and the branch below confirms reap. Otherwise the child is reaped;
+# any signal from here until trap removal must exit synchronously.
+preflight_reaped=1
 if (( preflight_signal != 0 )); then
   # The interrupted Bash wait did not reap the child; its own kill/reap has
   # a one-second allowance beyond the 120-second observation deadline.
   wait "$preflight_pid" 2>/dev/null || true
-  # TERM also reaches a Python interpreter not yet initialized; in that
-  # case no query exists and no child diagnostic has been written.
-  if [[ ! -f "$diagnostics/system-manager-preflight.txt" ]]; then
-    printf 'state=unavailable\nreason=cancelled\nquery_status=not_observed\n' >"$diagnostics/system-manager-preflight.txt"
-  fi
-  printf 'shell_reason=cancelled\nshell_status=%s\n' "$preflight_signal" >>"$diagnostics/system-manager-preflight.txt"
-  exit "$preflight_signal"
+  preflight_finish_cancel
 fi
 trap - HUP INT TERM
 case "$preflight_status" in
