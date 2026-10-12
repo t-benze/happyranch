@@ -1,5 +1,41 @@
 # Product-design workflow U0 feasibility evidence
 
+
+**Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
+The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`
+detail use owner-selected discovery and the existing recipient-safe reads.
+Template pins supply output/role/outcome labels; there are no template-name
+branches. Exact selected identity, canonical base64, strict UTF8 and SHA256 are
+validated before rendering raw text. Current r1/r2 and read-only History remain
+separate; an individual recorded response does not establish joined approval.
+Only current collection validity with approved_use establishes approved input.
+Explicit Request changes or Sign off requires exact nonempty operator findings
+and a matching @1/@2/@3 command. A synchronous latch precedes hashing; one
+closed key/body is frozen in sessionStorage before POST. Ambiguous sends lock
+editing/opposite effects and offer only explicit same-command replay after a
+fresh selected read, including reload. No effect/poll/locale change auto-sends.
+Current read/refetch errors gate effects; access refusal hides selected bytes,
+drafts and receipts and evicts sensitive selected cache/envelopes. Query identity
+includes org/activation/lane/object; outgoing reads abort, panes detach, and late
+hash/mutation results cannot affect a new selection. Locale changes preserve
+mounted drafts/focus/selection without network work.
+Return to author is a separate confirmation following full server readiness;
+POST independently rechecks the original r1 CAS and authority. Genuine successor
+and new author task IDs/status come from the server, with no optimistic r2 bytes
+or receipt. Fresh r2 responses are required; further revision is unsupported.
+No raw proof editor, peer cancellation, author staging, direct submission,
+r3/reassignment, execution/merge or digest-derived access controls are mounted.
+This frontend source requires the compatible discovery/revision readers; old
+daemon errors remain visible dependencies. No backend/native/schema/auth/shared
+transport/dependency/hook changes follow. Bounded intercepted frontend rendering
+and assertions establish UI behavior only; independent final-head review/scoped
+QA and the assigned public synthetic two-template journey remain separate gates.
+Real Founder Request changes AND Sign off and genuine agent judgment remain
+UNOBSERVED/root-owned. Python units RETIRED; integration/callback SKIPPED24342;
+broad/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Required automated
+CI/hooks remain Source Boundary Lint + Web Lint(Node24), static only.
+
+
 **Document revision C1 — Founder THR139seq493/490, ROOT TASK10693.**
 The same current Founder owner explicitly returns a fully collected, objected
 r1 to the same author with a pinned CAS command. Pending peers survive objections.

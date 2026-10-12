@@ -4,6 +4,34 @@ Localhost React SPA bundled into the FastAPI daemon. See
 `docs/superpowers/specs/2026-05-14-web-ui-design.md` for the full web-UI
 design and `web/DESIGN_SYSTEM.md` for the design-system migration plan.
 
+## Selected workflow reviews
+
+`WorkflowReviewsPage` is mounted on the ordinary owner route/list/detail under
+`AppProvider`. Feature hooks forward through `DataContext.workflows` to
+`_real-workflows` and the existing typed clients; `_mock-workflows` is inert
+sandbox data with no live writer. The only wrapper changes are optional read
+signals and the existing revision namespace export. Shared transport is unchanged.
+
+`workflowReviewSelection` validates cross-object pins and exact document/receipt
+UTF8 bytes and owns the finite closed command journal. Per-selection panes and
+captured invocation variables isolate org/activation/request/revision changes.
+Selected queries have no placeholder/previous data, no cached mount admission,
+no automatic retry or persisted query cache. Visible unfinished state polls at
+five seconds; focus/visibility/manual refresh reacquires current reads. Refusal
+and errors gate content/effects; abort and exact sensitive eviction occur on
+selection exit. New response/return commands require explicit confirmation and
+journal-before-send; ambiguous commands allow explicit identical replay only.
+History has no effects, and fresh r2 never inherits an r1 response. Return uses
+server advisory readiness plus an independent atomic POST recheck. The en/zh-CN
+catalog and source-qualified coverage own all page/dialog/navigation copy;
+locale never keys a pane or initiates data work. Existing tokens and primitives
+supply the desktop split pane and mobile list/detail layout.
+
+Maker browser transport fixtures and focused assertions are UI-only evidence;
+QA's independently source-pinned public two-template scratch journey and root's
+actual Founder acceptance remain distinct. No new global mock/test seam, source
+execution/merge grant, or automated behavioral CI is introduced.
+
 ## Layers (strict)
 
 1. **`src/lib/api/<X>.ts`** — Daemon route mirror. One TS module per

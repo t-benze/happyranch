@@ -7,13 +7,13 @@ export const activateWorkflow = (
 ): Promise<WorkflowActivationReceipt> =>
   request(`/orgs/${slug}/workflows/activations`, { method: 'POST', body });
 
-export const listWorkflowActivations = (slug: string): Promise<WorkflowActivationReceipt[]> =>
-  request(`/orgs/${slug}/workflows/activations`);
+export const listWorkflowActivations = (slug: string, signal?: AbortSignal): Promise<WorkflowActivationReceipt[]> =>
+  request(`/orgs/${slug}/workflows/activations`, { signal });
 
 export const getWorkflowActivation = (
-  slug: string, activationId: string,
+  slug: string, activationId: string, signal?: AbortSignal,
 ): Promise<WorkflowActivationReceipt> =>
-  request(`/orgs/${slug}/workflows/activations/${encodeURIComponent(activationId)}`);
+  request(`/orgs/${slug}/workflows/activations/${encodeURIComponent(activationId)}`, { signal });
 
 
 /** Old daemons fail normally; callers must show discovery unavailable and disable dependent actions. */

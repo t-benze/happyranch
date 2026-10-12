@@ -5,5 +5,5 @@ import type { DocumentRevisionCommand, DocumentRevisionProof, DocumentRevisionRe
 export const startDocumentRevision = (slug: string, instanceId: string, body: DocumentRevisionCommand): Promise<DocumentRevisionReceipt> =>
   request(`/orgs/${slug}/workflows/instances/${encodeURIComponent(instanceId)}/revisions`, { method: 'POST', body });
 
-export const getDocumentRevision = (slug: string, revisionOperationId: string, proof: DocumentRevisionProof): Promise<DocumentRevisionReceipt> =>
-  request(`/orgs/${slug}/workflows/revisions/${encodeURIComponent(revisionOperationId)}`, { params: proof });
+export const getDocumentRevision = (slug: string, revisionOperationId: string, proof: DocumentRevisionProof, signal?: AbortSignal): Promise<DocumentRevisionReceipt> =>
+  request(`/orgs/${slug}/workflows/revisions/${encodeURIComponent(revisionOperationId)}`, { params: proof, signal });
