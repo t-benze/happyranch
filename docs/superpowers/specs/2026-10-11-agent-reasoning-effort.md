@@ -113,6 +113,64 @@ output/default contract. Default probe remains v1; opted registration probes v2
 with a deterministic model and the first declared effort value. This grants no
 new trust, callback, permission or resume authority.
 
+## Generated custom-CLI connection prompt (THR298 seq34)
+
+Onboarding and Settings share `buildDirectConnectPrompt`. Its en/zh-CN guidance
+asks the CLI author to inspect installed help/documentation for actual
+per-invocation model and effort/thinking syntax and exact finite values, recording
+supported, unsupported and unknown separately. No invented flags, name-based
+inference or silent omission of supported forwarding is permitted. Static support
+is not native model/account acceptance.
+
+The current direct connection is **input1-only**: its strict request/manifest
+have no `input_options`, and metadata is not a declaration channel. Direct
+manifest2 is distinct from input2. Direct projection probes input1 and stores no
+opt-in; its existing automatic connection authority does not approve ordinary
+updates. A dual-version wrapper can prepare for a future update, but must retain
+input1/model:null/default behavior. This text does not activate input2 on a newly
+direct-connected CLI.
+
+For a later approved ordinary update, consume both input2 object/null members,
+substitute each template into literal argv without a shell, and append no flag
+for null. Preserve prompt/workspace/timeout, callback environment, identity,
+truthful terminal success/error and session echo. Every input2 response retains
+output1 (`adapter_metadata.contract_version:1`) and strict integer
+`adapter_metadata.input_contract_version:2`, including failures.
+
+Both controls may declare their verified templates and finite effort values.
+Model-only is schema-valid with no effort template/values. Effort-only is also
+schema-valid with `model_arg_template:null`, but runtime still forwards a non-null
+configured model, and **any** opted conformance probe sends `probe-model`.
+That model needs a documented wrapper-owned mapping or a truthful refusal;
+ignoring it or inventing a native flag is incorrect. Without a mapping that
+passes conformance, activation remains unsupported. Neither/unknown retains
+input1/model:null/default and explicitly discloses both limitations.
+
+The new-connect prompt does not execute an update or approval. For an existing
+profile, an authorized local operator uses the ordinary APIs for the **same**
+name/intended_profile_name, without duplicating, deleting or recreating it:
+
+1. Mint a fresh adapter-purpose token at
+   `POST /api/v1/auth/registration-token/runtime`, omitting
+   `workspace_adapter_id`. Including that field creates direct authority.
+   The current Connect screen always uses direct authority and has no ordinary
+   update/approval mode. Its direct token is rejected by `/runtime/adapters/submit`
+   before generic validation; never reuse it for submission.
+2. Fetch `/api/v1/runtime/adapters/contract-reference` with the fresh ordinary
+   token. Use its literal `required_executable_path` and `canonical_adapter_id`,
+   not the direct status `wrapper_destination`. Implement the reviewed wrapper
+   there, refresh all executable/dependency hashes, and preserve workspace/output1
+   facts. Complete the reference conformance check-ins and submit the complete
+   same-profile artifact with `input_options` to `/api/v1/runtime/adapters/submit`.
+   Server versioned conformance must pass. Registration returns **PENDING**.
+3. Inspect fresh `/api/v1/runtime/adapters/{id}`. Founder explicitly approves
+   that exact snapshot, including input_options, version, workspace, capabilities,
+   executable/dependency hashes and applicable resume facts, at
+   `/api/v1/runtime/adapters/{id}/approve`. Then read adapter, profile and prereqs
+   back. Stale/path/profile/hash refusals require operator resolution; rerunning
+   the direct prompt never approves the update. Approval/readback does not select
+   an agent model/effort or prove native acceptance.
+
 ## Authority, recording and compatibility
 
 `_agent_projection` emits effort only when set. Absent canonical bytes and digest

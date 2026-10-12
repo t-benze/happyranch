@@ -151,11 +151,14 @@ the onboarding create step. Because ConnectFlow is shared with Settings ▸
 Executors, translating it localizes that connect body too; at W2b (historical
 state, superseded by W2c below) `settings` remained `english-only` (the
 surrounding Settings chrome/sections were not yet translated) and
-Settings/Preferences was not claimed as covered. User-entered
+Settings/Preferences was not claimed as covered. At W2b, user-entered
 slugs, registered tool names/paths, the slug regex, broken-org raw errors and
-the generated copy-paste CLI prompt (raw step ids, tokens, route targets) stay
-byte-for-byte verbatim; mapped categories re-translate on a switch with no
-resubmission. Neither phase
+the generated copy-paste CLI prompt (raw step ids, tokens, route targets) stayed
+byte-for-byte verbatim; mapped categories re-translated on a switch with no
+resubmission. THR298 seq34 supersedes the whole-custom-prompt byte guarantee:
+app-owned custom capability/update guidance translates; machine/executable
+fields, raw identifiers, routes, tokens, commands and authored values stay
+verbatim. This qualification preserves the historical W2b outcomes. Neither phase
 translates the assistant dock body (W4) or any route family (W3/W4); neither
 adds a public language selector; W3b-2 later opens the selector, and at that historical stage an unset
 preference rendered English (superseded by W5b full mode).
@@ -701,6 +704,12 @@ viewport-containment checks; PNGs and `receipt.json` are bound to the head SHA
 (exact counts bound to the pushed `receipt.json`). The unit suite retains the
 raw-`Error.message` and prompt-byte negatives deterministically.
 
+This is historical W2b evidence, not a current whole-custom-prompt byte
+guarantee. THR298 seq34 supersedes that predicate for app-owned custom
+capability/update guidance, which translates; machine/executable fields, raw
+identifiers, routes, tokens, commands and authored values remain verbatim.
+The historical receipts and built-in prompt claims are unchanged.
+
 Frontend readiness map (actual evidence):
 
 | Readiness item | W1 | W2a/W2b/W2c/W3a/W3b-1/W3b-2/W4a-1/W4b/W4c/W4d-1/W4d-2 |
@@ -735,7 +744,10 @@ semantics are preserved; locale switching issues no `PUT /settings/org` and no
 `POST /api/v1/orgs`, and the command palette's cache-only switch issues no
 `/api/` request in the measured window. Onboarding preserves user-entered
 slugs, the slug regex, registered tool names/paths, broken-org raw errors and
-the generated copy-paste CLI prompt bytes verbatim; the shared ConnectFlow is
+machine/executable fields, raw identifiers, routes, tokens, commands and authored
+values in the generated CLI prompt verbatim. App-owned custom capability/update
+guidance translates under THR298 seq34; the whole custom prompt therefore
+changes across locales. The shared ConnectFlow is
 the single implementation for onboarding and Settings ▸ Executors. The
 `settings` namespace is `translated` (W2c: ordinary Settings chrome and the
 Assistant/Organization/Executors/Capacity sections; the Work Hours-owned

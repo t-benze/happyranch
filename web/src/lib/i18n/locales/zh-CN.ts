@@ -584,9 +584,15 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'onboarding.connect.mintError.status': '无法生成提示（{status}）。',
   'onboarding.connect.mintError.unreachable': '无法生成提示。守护进程是否可达？',
 
+  "onboarding.connect.adapter.prompt.discovery": "0. 检查已安装 CLI 的帮助和文档，确认每次调用的模型及 effort/thinking 参数语法与有限的精确允许值。\n附上来源，分别记录支持、不支持和未知项。\n不得虚构参数或根据 CLI 名称推断支持，也不得默默省略 CLI 已支持的转发。",
+  "onboarding.connect.adapter.prompt.directLimit": "此直接连接仅支持 input-v1：model:null，不含 reasoning_effort 字段，沿用 CLI 默认值。\n即使为以后获批的更新准备兼容 v1/v2 的包装器，也必须保留 v1 处理。\n准备不等于启用。\n不得向 /runtime/custom-cli/connect 或其 manifest 添加 input_options，也不得在 metadata 中藏入声明。\nManifest version2 不代表 input2。",
+  "onboarding.connect.adapter.prompt.v2": "仅在以后进行普通更新时，input_options 声明整数 version:2、可选 model_arg_template，以及成对的 effort_arg_template/非空 reasoning_effort_values（最多16个不同的小写标识符）。\n模板含1..16个非空字面 argv 元素，每个最多512字符，恰好一个对应占位符且无其他花括号。\n通过普通 contract-reference 获取 input_v2_schema 和 input_options_schema。\n实际 input2 中两个字段各为对象或 null：下方结构使用参数占位符；必须替换为已验证的原生语法，不得将占位符作为 CLI 参数传递。",
+  "onboarding.connect.adapter.prompt.forwarding": "读取实际选择值，逐个模板元素替换对应占位符，以字面 argv 追加参数，不使用 shell；含 shell 特殊字符的值也必须按字面传递。\nNull 不添加参数并保留默认值。\n保留完整提示、工作区、超时、回调环境及真实终态响应/错误/会话标识。\n输出仍为 v1：adapter_metadata.contract_version:1；每个 v2 响应（包括失败）须以严格整数 adapter_metadata.input_contract_version:2 确认输入版本（不能是字符串或布尔值）。\n静态声明支持不证明原生模型或账户接受 effort。",
+  "onboarding.connect.adapter.prompt.cases": "两项均支持：声明已验证的模型与 effort 模板及精确有限的 effort 值。\n仅模型：模型模板有效，省略 effort 模板并使其值列表为空。\n仅 effort：成对的 effort 模板/值和 model_arg_template:null 在模式上有效，但运行时仍转发所有非空配置模型；任何选择启用 input2 的声明在一致性探测时都收到 probe-model。\n包装器须实现有文档依据的模型映射，或对不支持/未知的所选模型返回真实失败；不得默默忽略模型或虚构参数。\n若此映射无法通过一致性探测，应明确 input2 无法启用。\n两项均不支持/未知：保留 input1/model:null/默认值并说明限制，不得声称已应用任何一项。",
+  "onboarding.connect.adapter.prompt.update": "现有配置的独立操作员交接：本次不得执行更新或审批，不得复制、删除或重建注册。\n当前 Settings/入职 Connect 界面用于直接连接，没有 v2 更新/审批模式。\n获授权的本机操作员通过现有普通 API，在 POST /auth/registration-token/runtime 为同一 name/intended_profile_name 新签发 adapter 用途令牌，省略 workspace_adapter_id。\n不得将 $TOKEN 复用于 /runtime/adapters/submit：直接连接令牌会被拒绝。\n使用普通令牌读取 GET /runtime/adapters/contract-reference，严格采用其 required_executable_path 和 canonical_adapter_id，不得复用直接状态中的 wrapper_destination。\n重新计算包装器/子程序哈希及所有依赖事实，保留输出 contract1 与工作区约定。\n完成 reference 要求的一致性 check-in 后，将含 input_options 的完整同配置产物提交到 POST /runtime/adapters/submit。\n服务端版本化一致性探测须通过；注册进入 PENDING，不会自动获批。\nFounder 读取最新 GET /runtime/adapters/{id}，向 /runtime/adapters/{id}/approve 明确提交精确当前快照（含 input_options、依赖和哈希事实），再回读 adapter/profile/prereqs。\n重跑此直接提示不会批准更新。\n遇到拒绝应停止并交接，不得绕过过期、配置、路径或哈希检查。",
   'onboarding.connect.adapter.bannerTitle': '创建自定义适配器包装器',
   'onboarding.connect.adapter.bannerBody':
-    '你的 CLI 会创建一个小型 v1 适配器包装器，遵循 HappyRanch 标准的 AdapterInput/AdapterOutput 契约。它从 stdin 读取提示、调用你的 CLI，并返回规范化结果。一次 POST 即可连接——无需等待审批。',
+    '你的 CLI 检查模型和 effort 控制后，创建使用 input v1 与 CLI 默认值的直接连接包装器。守护进程探测通过后即完成连接，无需等待审批。模型/effort 转发需要另行普通更新及 Founder 审批；此界面不会启用它。',
   'onboarding.connect.adapter.nameLabel': '为此 CLI 命名',
   'onboarding.connect.adapter.nameHint': '一个简短的标识符——将成为其执行器名称。适配器 id 将是 {code}。',
   'onboarding.connect.adapter.namePlaceholder': '例如 my-cli',
@@ -622,7 +628,7 @@ export const zhCN: Record<MessageKey, MessageValue> = {
   'onboarding.connect.adapter.waiting.aria': '正在等待适配器提交',
   'onboarding.connect.adapter.waiting.title': '正在等待适配器提交…',
   'onboarding.connect.adapter.waiting.body':
-    '你的 CLI 应创建 v1 适配器包装器、完成一致性检查并提交。适配器出现后此界面会更新。',
+    '按提示检查能力并连接 input-v1 包装器。守护进程在连接前进行探测。准备 input2 不会启用模型/effort 转发；请采用独立交接流程进行需要审批的更新。',
 
   'onboarding.connect.retryable.title': '连接尝试失败——请修改产物后重试',
   'onboarding.connect.retryable.body':

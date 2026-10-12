@@ -19,7 +19,7 @@ import {
   settings as settingsApi,
 } from '@/lib/api';
 import type { DirectConnectStatus, ForgetWrapperStatus } from '@/lib/api/directConnect';
-import type { MessageKey } from '@/lib/i18n';
+import { translate, type Locale, type MessageKey } from '@/lib/i18n';
 
 /** The built-in executor kinds, derived from the api client's canonical list. */
 export const KINDS = executorBinaries.EXECUTOR_BINARY_KINDS;
@@ -283,11 +283,14 @@ export function buildDirectConnectPrompt(
   token: string,
   origin: string,
   wrapperDestination: string,
+  locale: Locale = 'en',
 ): string {
   const base = `${origin}/api/v1`;
   const TOKEN = shQuote(token);
   const BASE = shQuote(base);
   const WRAPPER = shQuote(wrapperDestination);
+  const guidance = (key: MessageKey): string =>
+    translate(locale, key, { id: '{id}' }).split('\n').map((line) => `# ${line}`).join('\n');
   return [
     `# Connect "${name}" to HappyRanch directly — no approval step.`,
     `# Do all of this in one run, then stop.`,
@@ -296,6 +299,9 @@ export function buildDirectConnectPrompt(
     `TOKEN=${TOKEN}`,
     `BASE=${BASE}`,
     `WRAPPER=${WRAPPER}`,
+    ``,
+    guidance('onboarding.connect.adapter.prompt.discovery'),
+    guidance('onboarding.connect.adapter.prompt.directLimit'),
     ``,
     `# 1. Create a v1 adapter wrapper executable at exactly:`,
     `#      ${wrapperDestination}`,
@@ -349,6 +355,14 @@ export function buildDirectConnectPrompt(
     `# This token is valid for about 30 minutes. This screen updates live —`,
     `# trusted daemon commit/projection then runs one bounded behavioral probe`,
     `# and finishes connecting automatically. No founder-approval step.`,
+    ``,
+    guidance('onboarding.connect.adapter.prompt.v2'),
+    `# {"model":{"model_id":"selected-model","model_arg_template":["--VERIFIED-MODEL-FLAG","{model}"]},`,
+    `#  "reasoning_effort":{"reasoning_effort":"selected-effort","effort_arg_template":["--VERIFIED-EFFORT-FLAG","{effort}"]}}`,
+    guidance('onboarding.connect.adapter.prompt.forwarding'),
+    guidance('onboarding.connect.adapter.prompt.cases'),
+    ``,
+    guidance('onboarding.connect.adapter.prompt.update'),
   ].join('\n');
 }
 

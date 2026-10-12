@@ -15,7 +15,8 @@
  *
  * THR-118 W2b: the wrapper chrome and the onboarding connected-card subtitle
  * are translated through the W1 catalog. The generated copy-paste CLI prompt
- * itself stays byte-for-byte verbatim (it is executable instruction text).
+ * retains literal executable fields; custom capability/update guidance uses
+ * the shared en/zh-CN catalog.
  */
 import type { ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
