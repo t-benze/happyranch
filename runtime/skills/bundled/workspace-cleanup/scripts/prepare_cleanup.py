@@ -59,11 +59,19 @@ def read_json(path: Path) -> Any:
 
 
 def write_json(path: Path, value: Any) -> None:
-    with path.open('x', encoding='utf-8') as handle:
+    # Only the canonical name is consumable. Keep the one-attempt staging
+    # sibling on failure (and success), so correctness never depends on unlink.
+    # Check before staging; link below also refuses a concurrently occupied name.
+    if path.exists() or path.is_symlink():
+        raise FileExistsError(str(path))
+    pending = path.with_name('.' + path.name + '.pending')
+    with pending.open('x', encoding='utf-8') as handle:
         json.dump(value, handle, indent=2, sort_keys=True)
         handle.write('\n')
         handle.flush()
         os.fsync(handle.fileno())
+    # Close must succeed before no-clobber publication. Nothing fallible follows.
+    os.link(pending, path)
 
 
 def digest(path: Path) -> str:

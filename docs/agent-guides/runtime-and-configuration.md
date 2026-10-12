@@ -713,6 +713,15 @@ completeness: missing inventory/baseline/postcheck stays blocked/nonzero. Native
 batch argv/cwd/exit/raw is persisted before postwrites; after/sequence write
 failure retains source/binding and both causes as unknown/nonzero, using bounded
 captured cleanup_sequence_fallback JSON if the sequence cannot be persisted.
+JSON writers flush, fsync and close a one-attempt .NAME.pending sibling before
+publishing the canonical name with an exclusive hard link; existing canonical or
+pending evidence is never replaced. Pending siblings remain evidence, are never
+consumed as canonical receipts, and need no unlink for failure safety. This does
+not add a directory-fsync/crash-durability guarantee. On observer write failure, report
+--sequence must select the exact captured cleanup_sequence_fallback JSON file;
+report retains its native batch/source/binding/write causes, blocks even against
+success-valued pending bytes, and separately retains admitted-result/pending facts.
+A missing canonical sequence also produces blocked intent with an evidence error.
 A genuine bound completion callback is the final session action. This repair grants no cleanup allocation.
 
 The shared procedure executes that scanner only through a task-bound,

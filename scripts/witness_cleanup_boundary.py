@@ -475,13 +475,13 @@ def p1(w: Witness) -> None:
     w.missing.append('Synthetic task/result/audit projections never prove original callback/runtime behavior; Product18963 original callback command/HTTP/exit/error remain missing.')
 
 
-def report_case(w: Witness, inventory: Path, sequence: dict[str, Any], name: str,
+def report_case(w: Witness, inventory: Path, sequence: dict[str, Any] | Path, name: str,
                 *, preparation: Path | None = None, scripts: Path | None = None,
                 task: dict[str, Any] | None = None, result_id: int | None = 71) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     argv = [sys.executable, str((scripts or w.scripts) / 'observe_cleanup_batch.py'), 'report', '--inventory', str(inventory)]
     for key, value in (('sequence', sequence), ('task-projection', task or {'status': 'in_progress', 'output_dir': None}),
                        ('result-projection', {'result_id': result_id}), ('audit-projection', {'completion_report': False})):
-        argv += ['--' + key, str(w.write(w.root / (name + '-' + key + '.json'), value))]
+        argv += ['--' + key, str(value if isinstance(value, Path) else w.write(w.root / (name + '-' + key + '.json'), value))]
     if preparation is not None:
         argv += ['--preparation', str(preparation)]
     output = w.root / name
@@ -534,6 +534,8 @@ def r2(w: Witness) -> None:
     receipt, prep = w.prepare(inventory, 'excluded-preparation')
     w.check(receipt['exit_code'] == 0 and prep['state'] == 'no_candidates_complete' and prep['manifest'] == [], 'R2_known_excluded_prepared')
     preparation = w.root / 'excluded-preparation/preparation.json'
+    originals = {path: path.read_bytes() for path in
+                 (inventory, preparation, Path(prep['manifest_path']), w.history)}
     request = w.root / 'excluded-request.json'
     receipt = w.run([sys.executable, str(w.scripts / 'observe_cleanup_batch.py'), 'job-request',
                      '--preparation', str(preparation), '--output', str(request),
@@ -555,17 +557,84 @@ def r2(w: Witness) -> None:
         receipt, value, intent = report_case(w, inventory, {}, 'bad-' + name, preparation=bad)
         w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_invalid_preparation_refused:' + name)
         w.write(preparation, prep)
-    changed = json.loads(inventory.read_text()); changed['candidates'][0]['listing']['status'] = 'failed'; w.write(inventory, changed)
-    receipt, value, intent = report_case(w, inventory, {}, 'changed-inventory', preparation=preparation)
-    w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_changed_inventory_refused')
-    w.write(inventory, json.loads((preparation.parent / 'inventory.json').read_text()))
-    manifest = Path(prep['manifest_path']); w.write(manifest, [{'bad': True}])
-    receipt, value, intent = report_case(w, inventory, {}, 'changed-manifest', preparation=preparation)
-    w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_changed_manifest_refused')
-    w.write(manifest, [])
-    history['excluded_paths'] = []; w.write(w.history, history)
-    receipt, value, intent = report_case(w, inventory, {}, 'changed-history', preparation=preparation)
-    w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked', 'R2_changed_history_refused')
+    def keeper(name: str, scripts: Path | None = None) -> None:
+        for path, original in originals.items():
+            w.check(path.read_bytes() == original, 'R2_original_bytes_valid:' + name + ':' + path.name)
+        snapshot = preparation.parent / 'inventory.json'
+        for path, key in ((inventory, 'inventory_sha256'), (snapshot, 'inventory_snapshot_sha256'),
+                          (Path(prep['manifest_path']), 'manifest_sha256'), (w.history, 'history_sha256')):
+            w.check(hashlib.sha256(path.read_bytes()).hexdigest() == prep[key],
+                    'R2_digest_valid:' + name + ':' + key)
+        receipt, value, intent = report_case(w, inventory, {}, name, preparation=preparation, scripts=scripts)
+        w.check(receipt['exit_code'] == 0 and value['no_action_complete'] is True
+                and value['evidence_errors'] == [] and intent['status'] == 'completed',
+                'R2_isolated_valid_keeper:' + name)
+
+    changed_inventory = json.loads(originals[inventory])
+    changed_inventory['candidates'][0]['listing']['status'] = 'failed'
+    faults = (('inventory', inventory, changed_inventory),
+              ('manifest', Path(prep['manifest_path']), [{'bad': True}]),
+              ('history', w.history, originals[w.history] + b' \n'))
+    for name, path, changed in faults:
+        keeper('before-' + name)
+        try:
+            if isinstance(changed, bytes):
+                path.write_bytes(changed)
+            else:
+                w.write(path, changed)
+            receipt, value, intent = report_case(w, inventory, {}, 'changed-' + name, preparation=preparation)
+            cause = 'preparation_artifact_changed'
+            w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked'
+                    and value['evidence_errors'] == [cause], 'R2_changed_' + name + '_refused')
+        finally:
+            path.write_bytes(originals[path])
+        keeper('restored-' + name)
+
+    # Preserve the substantive changed-exclusion negative as well as the byte
+    # digest fault. The causal history mutant below changes only whitespace,
+    # keeping semantic exclusions and every independent guard valid.
+    keeper('before-history-content')
+    try:
+        w.write(w.history, dict(history, excluded_paths=[]))
+        receipt, value, intent = report_case(w, inventory, {}, 'changed-history-content', preparation=preparation)
+        w.check(receipt['exit_code'] != 0 and intent['status'] == 'blocked'
+                and value['evidence_errors'] == ['preparation_artifact_changed'], 'R2_changed_history_content_refused')
+    finally:
+        w.history.write_bytes(originals[w.history])
+    keeper('restored-history-content')
+
+    # Independently remove ONLY each selected validation in a disposable copy.
+    # Every other input is valid; the SAME named refusal assertion must now fail.
+    for name, path, changed in faults[1:]:
+        scratch = w.copy_scripts('R2-' + name + '-validation-control')
+        before = (scratch / 'observe_cleanup_batch.py').read_bytes()
+        if name == 'manifest':
+            w.mutate(scratch, 'observe_cleanup_batch.py',
+                     "            or read_json(manifest) != preparation['manifest']\n            or digest(manifest) != preparation['manifest_sha256']\n", '')
+        else:
+            w.mutate(scratch, 'observe_cleanup_batch.py',
+                     "            or digest(history) != preparation['history_sha256']", '')
+        try:
+            keeper('control-before-' + name, scratch)
+            if isinstance(changed, bytes):
+                path.write_bytes(changed)
+            else:
+                w.write(path, changed)
+            receipt, value, intent = report_case(w, inventory, {}, 'control-changed-' + name,
+                                                preparation=preparation, scripts=scratch)
+            named_assertion = ('R2_changed_' + name + '_refused')
+            detected = (receipt['exit_code'] != 0 and intent['status'] == 'blocked'
+                        and value['evidence_errors'] == ['preparation_artifact_changed'])
+            w.write(w.root / ('R2-' + name + '-control-result.json'),
+                    {'named_assertion': named_assertion, 'assertion_met': detected,
+                     'receipt': receipt, 'publication': value, 'intent': intent,
+                     'verification_level': 'shipping report subprocess over disposable single-validation mutant'})
+            w.check(not detected and receipt['exit_code'] == 0 and value['no_action_complete'] is True,
+                    'R2_named_assertion_fails_without_' + name + '_validation')
+        finally:
+            path.write_bytes(originals[path])
+            (scratch / 'observe_cleanup_batch.py').write_bytes(before)
+        keeper('control-restored-' + name, scratch)
     # Unknown/exhausted receipt never becomes known empty.
     unknown = w.candidate('TASK-unknown', 'naive-or-unknown')
     inventory = w.inventory([unknown]); receipt, prep = w.prepare(inventory, 'unknown-preparation')
@@ -617,6 +686,131 @@ def r3(w: Witness) -> None:
         else:
             w.check((output / 'sequence.json').is_file(), 'R3_durable_sequence_keeper')
         w.check(json.loads((output / 'batch.json').read_text()) == batch, 'R3_batch_persisted_before_postwrite:' + name)
+    # R3.1: actual observer -> writer -> shipping report. Late faults occur
+    # AFTER full success bytes exist, in disposable source only. A useful valid
+    # preparation is retained; the fresh task then becomes too young so the
+    # default native batch refuses before scanner/removal.
+    useful = w.candidate('TASK-late-write')
+    inventory = w.inventory([useful])
+    receipt, prep = w.prepare(inventory, 'late-preparation')
+    w.check(receipt['exit_code'] == 0 and prep['state'] == 'prepared_nonempty', 'R3_late_useful_valid_preparation')
+    w.records['TASK-late-write']['completed_at'] = dt.datetime.now(dt.timezone.utc).isoformat()
+    manifest = Path(prep['manifest_path'])
+    w.replies['findmnt'] = {'default': w.native_mount}
+    receipt, clean = w.observed(manifest, 'late-clean')
+    if clean.get('baseline', {}).get('complete') is not True:
+        w.missing.append('R3.1 full-observer host baseline unavailable'); return
+    w.check(receipt['exit_code'] == 0 and clean['complete'] is True, 'R3_late_clean_observer_keeper')
+    result, value, intent = report_case(w, inventory, w.root / 'late-clean/sequence.json', 'late-clean-report')
+    w.check(result['exit_code'] == 0 and intent['status'] == 'completed', 'R3_late_clean_report_keeper')
+    for fault in ('flush', 'fsync', 'close', 'link'):
+        scratch = w.copy_scripts('late-' + fault + '-source')
+        writer = scratch / 'prepare_cleanup.py'
+        original = writer.read_bytes()
+        # Fault implementation deliberately lives only in the scratch copy.
+        injection = r"""
+# DISPOSABLE fault injection, never part of the shipping writer.
+_original_open = Path.open
+_original_fsync = os.fsync
+_original_link = os.link
+_fault = FAULT_LITERAL
+class _LateFile:
+    def __init__(self, handle): self.handle = handle
+    def __enter__(self): self.handle.__enter__(); return self
+    def __exit__(self, *args):
+        answer = self.handle.__exit__(*args)
+        if _fault == 'close': raise OSError('controlled late close failure after success bytes')
+        return answer
+    def __getattr__(self, name): return getattr(self.handle, name)
+    def flush(self):
+        self.handle.flush()
+        if _fault == 'flush': raise OSError('controlled late flush failure after success bytes')
+def _late_open(path, *args, **kwargs):
+    handle = _original_open(path, *args, **kwargs)
+    return _LateFile(handle) if path.name == '.sequence.json.pending' and args[:1] == ('x',) else handle
+def _late_fsync(fd):
+    if _fault == 'fsync' and Path(os.readlink('/proc/self/fd/' + str(fd))).name == '.sequence.json.pending':
+        raise OSError('controlled late fsync failure after success bytes')
+    return _original_fsync(fd)
+def _late_link(source, destination, *args, **kwargs):
+    if _fault == 'link' and Path(destination).name == 'sequence.json':
+        raise OSError('controlled publication link failure after success bytes')
+    return _original_link(source, destination, *args, **kwargs)
+Path.open = _late_open
+os.fsync = _late_fsync
+os.link = _late_link
+""".replace('FAULT_LITERAL', repr(fault))
+        writer.write_text(original.decode() + injection)
+        name = 'late-' + fault
+        try:
+            receipt, sequence = w.observed(manifest, name, scratch)
+            output = w.root / name
+            fallback = json.loads(receipt['stdout'])
+            w.check(receipt['exit_code'] != 0 and sequence['complete'] is False
+                    and sequence['unknown_postcondition'] is True and fallback['persisted'] is False,
+                    'R3_late_observer_blocks:' + fault)
+            pending = output / '.sequence.json.pending'
+            w.check(json.loads(pending.read_text())['complete'] is True and not (output / 'sequence.json').exists(),
+                    'R3_late_success_bytes_never_canonical:' + fault)
+            w.check(sequence['write_errors'][-1]['artifact'] == 'sequence.json'
+                    and ('controlled late ' + fault if fault != 'link' else 'controlled publication link')
+                    in sequence['write_errors'][-1]['error'], 'R3_late_native_write_failure_retained:' + fault)
+            batch = sequence['batch']
+            w.check(batch == json.loads((output / 'batch.json').read_text())
+                    and batch['argv'][1] == str(scratch / 'run_cleanup_batch.py')
+                    and batch['cwd'] == str(w.workspace) and batch['exit_code'] == 0
+                    and batch['error'] is None and isinstance(batch['stdout'], str) and isinstance(batch['stderr'], str),
+                    'R3_late_native_batch_receipt_retained:' + fault)
+            journal = [json.loads(line) for line in (output / 'journal.jsonl').read_text().splitlines()]
+            w.check(len(journal) == 1 and journal[0]['receipt']['reason'] == 'gate:retention-age',
+                    'R3_late_default_batch_refuses_before_scanner:' + fault)
+            captured = output / 'captured-fallback.json'
+            captured.write_text(receipt['stdout'])
+            result, value, intent = report_case(w, inventory, captured, name + '-report')
+            w.check(result['exit_code'] != 0 and value['state'] == 'incomplete_unpublished'
+                    and intent['status'] == 'blocked' and value['sequence'] == sequence
+                    and value['evidence_errors'] == ['observer_write_failure_fallback'],
+                    'R3_late_shipping_report_blocks_with_native_evidence:' + fault)
+            w.check(value['local_result_id'] == 71 and value['result_admitted_terminal_pending'] is True
+                    and value['sequence']['binding'] == prep['binding']
+                    and value['sequence']['source_sha256']['observe_cleanup_batch.py']
+                    and value['sequence']['batch'] == batch and value['sequence']['write_errors'],
+                    'R3_late_report_preserves_binding_source_pending_and_both_causes:' + fault)
+            result, value, intent = report_case(w, inventory, pending, name + '-pending-report')
+            w.check(result['exit_code'] != 0 and intent['status'] == 'blocked'
+                    and value['evidence_errors'] == ['sequence_unavailable:sequence_staging_not_published'],
+                    'R3_late_pending_bytes_refused_by_report:' + fault)
+            result, value, intent = report_case(w, inventory, output / 'sequence.json', name + '-missing-report')
+            w.check(result['exit_code'] != 0 and intent['status'] == 'blocked'
+                    and value['result_admitted_terminal_pending'] is True
+                    and value['evidence_errors'][0].startswith('sequence_unavailable:'),
+                    'R3_late_missing_canonical_blocks_independently:' + fault)
+        finally:
+            writer.write_bytes(original)
+        w.check(writer.read_bytes() == original, 'R3_late_scratch_source_restored:' + fault)
+    # An earlier readable success record stays byte-preserved on exclusive
+    # publication refusal. Authentic captured failure still controls reporting.
+    output = w.root / 'existing-success'
+    output.mkdir()
+    canonical = w.write(output / 'sequence.json', clean)
+    original = canonical.read_bytes()
+    receipt, sequence = w.observed(manifest, 'existing-success')
+    captured = output / 'captured-fallback.json'; captured.write_text(receipt['stdout'])
+    result, value, intent = report_case(w, inventory, captured, 'existing-success-report')
+    w.check(receipt['exit_code'] != 0 and canonical.read_bytes() == original
+            and json.loads(original)['complete'] is True and sequence['complete'] is False
+            and result['exit_code'] != 0 and intent['status'] == 'blocked'
+            and value['sequence']['batch'] == sequence['batch'] and value['sequence']['write_errors'],
+            'R3_captured_failure_overrides_preserved_success_record')
+
+    # Exclusive publication refuses pre-existing evidence and partial attempts.
+    script = "import sys; from pathlib import Path; sys.path.insert(0,sys.argv[1]); from prepare_cleanup import write_json; write_json(Path(sys.argv[2]), {'complete':True})"
+    for name, occupied in (('canonical', 'receipt.json'), ('pending', '.receipt.json.pending')):
+        output = w.root / ('no-clobber-' + name); output.mkdir()
+        existing = output / occupied; existing.write_bytes(b'original preserved bytes\n')
+        result = w.run([sys.executable, '-c', script, str(w.scripts), str(output / 'receipt.json')])
+        w.check(result['exit_code'] != 0 and existing.read_bytes() == b'original preserved bytes\n',
+                'R3_writer_no_clobber_one_attempt:' + name)
     w.missing.append('O3/R3 refusal journals prove sequence only, never removals or scanner clearance.')
 
 
@@ -648,6 +842,36 @@ def main(argv: list[str] | None = None) -> int:
                                                 'Credible lexical/coercion/cap/admission/exit/publication regression or explicitly missing control.',
                                                 'Existing scanner/batch tests cover different boundaries; retired units unused.',
                                                 'Shipping subprocesses and external declarative commands; no production test seam.']}
+    if args.case == 'R2':
+        evidence['requirements'] = [
+            {'finding': 'R2.1', 'scenario': 'Exact original inventory/preparation/manifest/history bytes, valid original/copy hashes and no-action keeper before/after each isolated fault',
+             'input': 'Changed inventory listing, manifest content, history bytes and substantive exclusions',
+             'expected': 'Only preparation_artifact_changed refusal, blocked intent/nonzero; exact restoration returns valid keeper',
+             'level': 'shipping prepare/report CLI subprocesses in disposable Git repo'},
+            {'finding': 'R2.1', 'scenario': 'Valid keeper in each single-validation disposable mutant',
+             'input': 'Remove manifest content+digest checks OR only history digest check, with every independent input valid',
+             'expected': 'Named refusal assertion false, mutant report exit0; restore artifact AND source and prove valid keeper',
+             'level': 'focused causal report CLI controls; raw R2-*-control-result.json and command receipts'}]
+        evidence['four_answers'] = [
+            'Observable no-action/blocked intent, exact bytes/hashes, specific artifact refusal and before/after valid keeper at shipping report seam.',
+            'Separate manifest and history digest mutants falsify named assertions with otherwise valid inputs; substantive history negative retained separately.',
+            'Preparation/report digest coupling caused a masked control; existing inventory rejection and retired units cannot prove the selected validator.',
+            'New disposable Git repo, exact original-byte restoration, shipping subprocesses and single-check scratch source copies; no production seam.']
+    elif args.case == 'R3':
+        evidence['requirements'] = [
+            {'finding': 'R3.1', 'scenario': 'Useful valid preparation then fresh age refusal before scanner; clean observer/report keeper',
+             'input': 'Scratch-only late flush/fsync/close/publication-link faults after complete success bytes are produced',
+             'expected': 'Success bytes remain pending only; canonical absent; observer nonzero/unknown; shipping report blocks while retaining batch argv/cwd/exit/raw, failure/source/binding and pending result',
+             'level': 'actual shipping host observer/default batch and report subprocesses, synthetic task/result projections; no callback'},
+            {'finding': 'R3.1', 'scenario': 'Existing open/after-write/native-batch failure controls plus exclusive writer keepers',
+             'input': 'Unreadable evidence directory, occupied canonical sequence path, after receipt path, invalid batch and occupied canonical/pending writer names',
+             'expected': 'Original evidence retained, unknown/nonzero, both causes retained or captured; no clobber or retry',
+             'level': 'actual observer/default native refusal batch plus exact writer subprocess'}]
+        evidence['four_answers'] = [
+            'Final shipping report after failed late persistence must produce blocked intent/nonzero with native receipt and admitted-result pending fact.',
+            'Authenticated reviewer rejected-head fsync receipt supplies red proof; full repaired observer covers flush/fsync/close/link and clean/no-clobber keepers.',
+            'Open-only faults missed complete bytes before fsync/close; existing native batch controls do not prove publication boundary; retired units unused.',
+            'Actual default shipping batch refuses before scanner/removal in owned scratch; only scratch copies inject faults, report uses shipping source and captured raw fallback.']
     witness = None
     try:
         witness = Witness(source, root, args.evidence_dir)

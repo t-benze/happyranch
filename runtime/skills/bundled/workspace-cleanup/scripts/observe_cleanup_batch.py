@@ -654,7 +654,26 @@ def main(argv: list[str] | None = None) -> int:
                 preparation = verified_preparation(args.preparation, inventory, bound)
         except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
             evidence_errors.append(str(exc))
-        value = summarize_publication(inventory, read_json(args.sequence), read_json(args.task_projection),
+        sequence = {}
+        try:
+            if args.sequence.name == '.sequence.json.pending':
+                raise ValueError('sequence_staging_not_published')
+            sequence = read_json(args.sequence)
+            if not isinstance(sequence, dict):
+                raise ValueError('sequence_not_object')
+            if sequence.get('kind') == 'cleanup_sequence_fallback':
+                fallback = sequence
+                sequence = fallback.get('sequence')
+                if (type(fallback.get('persisted')) is not bool or not isinstance(sequence, dict)
+                        or sequence.get('binding') != bound):
+                    raise ValueError('sequence_fallback_invalid')
+                # A fallback is failure evidence, even if a readable staged or
+                # historical success-valued file disagrees with captured output.
+                evidence_errors.append('observer_write_failure_fallback')
+        except (OSError, ValueError, TypeError) as exc:
+            sequence = {}
+            evidence_errors.append('sequence_unavailable:' + str(exc))
+        value = summarize_publication(inventory, sequence, read_json(args.task_projection),
                                       read_json(args.result_projection), read_json(args.audit_projection),
                                       preparation, evidence_errors)
         args.output_dir.mkdir(parents=True, exist_ok=True)

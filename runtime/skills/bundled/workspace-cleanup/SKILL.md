@@ -352,7 +352,18 @@ write failure remains nonzero with unknown postcondition. If sequence.json canno
 be persisted, the single cleanup_sequence_fallback JSON on captured stdout retains
 the sequence and both causes; persisted:false means no sequence file is claimed.
 Each native stream is capped at1MiB. Preserve that captured fallback alongside the
-native job receipt. Never substitute the candidate journal for a batch receipt. Batch failure, incomplete
+native job receipt.
+
+JSON writers flush, fsync and close a one-attempt .NAME.pending sibling before
+publishing the canonical name with an exclusive hard link; existing canonical or
+pending evidence is never replaced. Pending siblings remain evidence, are never
+consumed as canonical receipts, and need no unlink for failure safety. This does
+not add a directory-fsync/crash-durability guarantee. On observer write failure, report
+--sequence must select the exact captured cleanup_sequence_fallback JSON file;
+report retains its native batch/source/binding/write causes, blocks even against
+success-valued pending bytes, and separately retains admitted-result/pending facts.
+A missing canonical sequence also produces blocked intent with an evidence error.
+Never substitute the candidate journal for a batch receipt. Batch failure, incomplete
 batch, missing/malformed post evidence or protected/context drift stays nonzero
 and incomplete even after another phase succeeds. Stop on evidence/report
 failure. Concurrent output metadata changes are disclosed; unique reclaimed
