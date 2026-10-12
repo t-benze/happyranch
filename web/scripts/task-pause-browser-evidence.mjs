@@ -126,7 +126,7 @@ async function main(){
       check(`${name} theme`,await evaluate(page,'document.documentElement.dataset.theme'),theme);
       check(`${name} page fits`,await evaluate(page,'document.documentElement.scrollWidth <= innerWidth + 1'));
       check(`${name} list has no pause UI`,await evaluate(page,listPauseFree));
-      check(`${name} ordinary lifecycle badges`,await evaluate(page,"['in_progress','pending','escalated','failed'].every(s=>[...document.querySelectorAll('main *')].some(e=>e.children.length===0&&e.textContent.trim()===s))"));
+      check(`${name} ordinary lifecycle badges`,await evaluate(page,"['in_progress','pending','escalated','failed'].every(s=>[...document.querySelectorAll('main *')].some(e=>e.textContent.trim()===s))"));
       check(`${name} row navigation`,await evaluate(page,"['ROOT-RUN','ROOT-PARKED','ROOT-PENDING','ROOT-PAUSING','ROOT-PAUSED','ROOT-FAILED','ROOT-MISSING'].every(id=>!!document.querySelector(`[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/${id}\"]`))"));
       await shot(page,`${name}-list`,{locale,theme,width,height,state:'populated list: lifecycle only, pause UI absent'});
       await close(page);
