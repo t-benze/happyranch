@@ -987,3 +987,21 @@ def test_scenario12_interrupted_lifecycle_and_reservations(tmp_path, monkeypatch
     test_a6_pending_reuse(tmp_path / 'reuse', monkeypatch, case_ids=(
         'default-reject-release', 'chosen-reject-dormant',
         'same-id-chosen-spelling', 'stale-ABA'))
+
+
+# Accepted finite F1 shared-validator regression source; behavior/proof unexecuted.
+# Fixture mutation requires separate execution authorization.
+def test_workflow_release_refuses_foreign_naming_owner(tmp_path):
+    with owned_org(tmp_path / 'foreign-naming-release') as org:
+        conn = org.db._conn
+        assert workflow_schema.validate_workflow_schema(conn, expected_org_slug='alpha') == 'F'
+        workflow_schema._validate_release_database(conn, 'F', expected_org_slug='alpha')
+        conn.execute("UPDATE identity_name_schema SET org_slug='beta'")
+        conn.commit()
+        # Establish two separately valid owners before exercising the real seam.
+        assert workflow_schema.validate_workflow_schema(conn, expected_org_slug='alpha') == 'F'
+        assert schema.validate_names(conn, org_slug='beta') == 1
+        before = snapshot(org)
+        with pytest.raises(NamingError, match='naming_schema_marker_mismatch'):
+            workflow_schema._validate_release_database(conn, 'F', expected_org_slug='alpha')
+        assert snapshot(org) == before
