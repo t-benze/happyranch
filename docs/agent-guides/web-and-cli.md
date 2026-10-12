@@ -647,10 +647,14 @@ onboarding create step. Because `ConnectFlow` is shared with Settings ▸
 Executors, translating it also localizes that connect body, but the `settings`
 namespace stays `english-only` in the manifest (the surrounding Settings chrome
 and sections are not translated) and Settings is not claimed as translated.
-User-entered slugs, registered tool names/paths, the slug regex, broken-org raw
+At W2b, user-entered slugs, registered tool names/paths, the slug regex, broken-org raw
 errors and the generated copy-paste CLI prompt (raw step ids, tokens, routes)
-stay byte-for-byte verbatim; mapped categories re-translate on a locale switch
-with no resubmission.
+stayed byte-for-byte verbatim; mapped categories re-translated on a locale switch
+with no resubmission. THR298 seq34 supersedes the whole-custom-prompt byte
+guarantee: app-owned custom capability/update guidance translates, while
+machine/executable fields, raw identifiers, routes, tokens, commands and authored
+values stay verbatim. The whole custom prompt therefore changes across locales;
+historical W2b outcomes and built-in prompt claims are preserved.
 
 **W2c** translated the Settings surface (`/orgs/:slug/settings/*`): the page
 header, sub-nav, API loading/error copy and panel headings, plus the
@@ -772,6 +776,11 @@ values before and after. Every immediately scoped transition window asserts no
 other `/api/` request; S4-S6 retain exactly one original create and S8 retains
 exactly one original mint. The exact assertion and PNG counts are bound to the
 pushed `receipt.json`.
+These are historical W2b receipts. THR298 seq34 supersedes their
+whole-custom-prompt byte predicate for app-owned custom capability/update
+guidance, which now translates; machine/executable fields, raw identifiers,
+routes, tokens, commands and authored values remain verbatim. Historical
+outcomes and built-in prompt claims are unchanged.
 Current contract:
 `docs/superpowers/specs/2026-09-20-web-i18n-design.md`.
 

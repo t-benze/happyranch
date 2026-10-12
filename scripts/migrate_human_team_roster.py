@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import configparser
 from contextlib import contextmanager
 import hashlib
 import json
@@ -30,6 +31,7 @@ from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 
 AGENTS = ("consultant_head", "consultant_codex")
+UNRELATED_LAUNCHER_DECLARATION = "unrelated-to-happyranch-and-runtime-writers"
 CANONICAL = ("org/agents/consultant_head.md", "org/agents/consultant_codex.md", "org/teams.yaml")
 ADVICE = "Advise the founder and HappyRanch teams on product, services and business operations. You are an individual consultant reporting directly to the founder."
 SOURCE = Path(__file__).resolve().parents[1]
@@ -522,10 +524,12 @@ def closed_backup_flush(backup: Path) -> None:
 def roster_delta(text: str, expected: dict) -> bytes:
     """Replace only approved YAML nodes, preserving unrelated literal text.
 
-    Flow/alias/duplicate layouts cannot safely identify a three-file text delta
+    Flow mappings/alias/duplicate layouts cannot safely identify a three-file text delta
     and refuse instead of silently normalizing the entire canonical document.
     """
     document = yaml.compose(text)
+    if any(isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)) for token in yaml.scan(text)):
+        raise ValueError("literal_unaliased_roster_required")
     if not isinstance(document, yaml.MappingNode) or document.flow_style:
         raise ValueError("literal_block_roster_required")
     def mapping(node):
@@ -542,13 +546,33 @@ def roster_delta(text: str, expected: dict) -> bytes:
         if node.start_mark.line != node.end_mark.line:
             raise ValueError("literal_single_line_roster_value_required")
         edits.append((node.start_mark.index, node.end_mark.index, replacement))
+    def replace_workers(node: yaml.SequenceNode) -> None:
+        if not isinstance(node, yaml.SequenceNode):
+            raise ValueError("literal_workers_sequence_required")
+        if node.flow_style:
+            replace_value(node, "[consultant_head, consultant_codex]")
+            return
+        # The admitted nonempty before-image has exactly this one worker.
+        # Insert the new dash line, leaving the old item and all comments intact.
+        if (len(node.value) != 1 or not isinstance(node.value[0], yaml.ScalarNode)
+                or node.value[0].value != AGENTS[1]
+                or node.value[0].style not in (None, "'", '"')
+                or node.value[0].start_mark.line != node.value[0].end_mark.line):
+            raise ValueError("unsupported_literal_workers_block")
+        item = node.value[0]
+        start = node.start_mark.index - node.start_mark.column
+        if (text[start:node.start_mark.index] != " " * node.start_mark.column
+                or re.fullmatch(r"- +", text[node.start_mark.index:item.start_mark.index]) is None):
+            raise ValueError("ambiguous_literal_workers_block")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        edits.append((start, start, " " * node.start_mark.column + "- consultant_head" + newline))
     consultant_key, consultant_value = teams["consultant"]
     if "default" not in teams:
         # Preserve the original block and every unrelated comment/blank byte.
         edits.append((consultant_key.start_mark.index, consultant_key.end_mark.index, "default"))
         children = mapping(consultant_value)
         replace_value(children["manager"][1], "{kind: human, principal: founder}")
-        replace_value(children["workers"][1], "[consultant_head, consultant_codex]")
+        replace_workers(children["workers"][1])
     else:
         # Remove only this closed obsolete block. Comments have no ownership
         # meaning and remain literal text, including comments before next key.
@@ -565,7 +589,7 @@ def roster_delta(text: str, expected: dict) -> bytes:
                 comments.append(line)
         edits.append((start, end, "".join(comments)))
         children = mapping(teams["default"][1])
-        replace_value(children["workers"][1], "[consultant_head, consultant_codex]")
+        replace_workers(children["workers"][1])
     for name, value in (("default_team", "default"), ("task_default_team", "engineering")):
         if name in top:
             node = top[name][1]
@@ -581,11 +605,96 @@ def roster_delta(text: str, expected: dict) -> bytes:
     return text.encode()
 
 
+def runtime_launcher(values: object, runtime: Path) -> bool:
+    """Reject visible runtime/writer identities even with an unrelated assertion.
+
+    This is a direct-identity refusal, not proof of transitive launch closure.
+    Wrappers and internal/configured launches remain the operator's assertion.
+    """
+    fragments = []
+    def collect(value: object) -> None:
+        fragments.append(str(value))
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == "bytes":
+                    fragments.append(base64.b64decode(item, validate=True).decode("utf-8", errors="replace"))
+                else:
+                    collect(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                collect(item)
+    collect(values)
+    text = "\n".join(fragments).lower()
+    return (any(value in text for value in ("happyranch", "runtime.daemon", "runtime/daemon/",
+                                            str(runtime).lower(), str(SOURCE).lower()))
+            or re.search(r"(?<![a-z0-9_.-])(?:daemon\.sh|claude|codex|opencode|pi)(?![a-z0-9_.-])", text) is not None)
+
+
+def service_identity(scope: str, flags: list[str], unit: str) -> dict:
+    """Exact observed command/state and unit-file identities; no native writes."""
+    properties = ("Id", "Names", "FragmentPath", "DropInPaths", "LoadState", "ActiveState", "SubState",
+                  "UnitFileState", "ExecCondition", "ExecStart", "ExecStartPre", "ExecStartPost",
+                  "ExecReload", "ExecStop", "ExecStopPost")
+    raw = subprocess.run(["systemctl", *flags, "show", unit, "--property=" + ",".join(properties),
+                          "--no-pager"], capture_output=True, text=True, timeout=10, check=True).stdout
+    lines = raw.splitlines()
+    if any("=" not in line for line in lines):
+        raise ValueError(f"uninspectable_supervisor_identity:{scope}:{unit}")
+    values = dict(line.split("=", 1) for line in lines)
+    if (len(values) != len(lines) or set(values) != set(properties)
+            or values["LoadState"] not in ("loaded", "masked") or not values["Id"]):
+        raise ValueError(f"uninspectable_supervisor_identity:{scope}:{unit}")
+    for name, value in values.items():
+        if name.startswith("Exec") and value and not re.match(r"\{ path=[^ ;}]+ ; argv\[\]=.* ; ignore_errors=(yes|no) ;", value):
+            raise ValueError(f"uninspectable_supervisor_launch:{scope}:{unit}")
+    files = {}
+    paths = ([values["FragmentPath"]] if values["FragmentPath"] else []) + values["DropInPaths"].split()
+    if len(paths) != len(set(paths)):
+        raise ValueError("duplicate_supervisor_file_identity")
+    for value in paths:
+        path = Path(value)
+        if not path.is_absolute() or "\\" in value:
+            raise ValueError("uninspectable_supervisor_file_identity")
+        # /dev/null is the actual persistent mask, verified separately below.
+        if value == "/dev/null":
+            files[value] = {"resolved": value, "kind": "mask"}
+            continue
+        entry = image(path)
+        if entry["kind"] != "file":
+            raise ValueError("uninspectable_supervisor_file_identity")
+        files[value] = {"resolved": str(path.resolve(strict=True)), "image": entry}
+    return {"properties": values, "files": files}
+
+
+def desktop_identity(path: Path) -> dict:
+    """Closed regular desktop entry with inspectable application/action commands."""
+    entry = image(path)
+    if entry["kind"] != "file" or path.suffix != ".desktop":
+        raise ValueError("uninspectable_desktop_autostart_identity")
+    reader = configparser.ConfigParser(interpolation=None, strict=True, comment_prefixes=("#",))
+    reader.optionxform = str
+    try:
+        reader.read_string(base64.b64decode(entry["bytes"]).decode("utf-8"))
+    except (UnicodeError, configparser.Error) as exc:
+        raise ValueError("uninspectable_desktop_autostart_entry") from exc
+    if (reader.defaults() or "Desktop Entry" not in reader
+            or reader["Desktop Entry"].get("Type") != "Application"
+            or reader["Desktop Entry"].get("DBusActivatable", "false") != "false"
+            or any(section != "Desktop Entry" and not section.startswith("Desktop Action ") for section in reader.sections())):
+        raise ValueError("unsupported_desktop_autostart_launch")
+    commands = {}
+    for section in reader.sections():
+        if not reader[section].get("Exec", "").strip():
+            raise ValueError("uninspectable_desktop_autostart_launch")
+        commands[section] = {name: reader[section][name] for name in ("Exec", "TryExec") if name in reader[section]}
+    return {"image": entry, "commands": commands}
+
+
 def containment(plan: dict, runtime: Path) -> dict:
     """Observe actual persistent masks, registry detachment and no daemon.
 
-    Unsupported/custom/alternate supervisors must be resolved by the operator,
-    never accepted from a boolean or an unexecuted design-plan assertion.
+    Unrelated launchers require exact observed identities and explicit bounded
+    operator assertions. Actual runtime supervisors still require inhibition.
     """
     declaration = plan.get("containment")
     if not isinstance(declaration, dict) or not declaration.get("systemd_user_units") or not declaration.get("registry_paths"):
@@ -596,12 +705,49 @@ def containment(plan: dict, runtime: Path) -> dict:
     home = daemon_home().resolve(strict=True)
     if declaration.get("daemon_home") != str(home) or str(home / "runtimes.yaml") not in declaration["registry_paths"]:
         raise ValueError("effective_daemon_registry_inventory_required")
-    # This bounded adapter supports persistently masked systemd services.
-    # Desktop/login startup wrappers have no inhibition owner here; do not
-    # silently certify a VM which also has those launch channels installed.
+    unrelated = declaration.get("unrelated_launchers", [])
+    if not isinstance(unrelated, list):
+        raise ValueError("invalid_unrelated_launcher_declarations")
+    assertions = {}
+    for entry in unrelated:
+        if not isinstance(entry, dict) or entry.get("kind") not in ("systemd", "desktop"):
+            raise ValueError("invalid_unrelated_launcher_declaration")
+        fields = ({"kind", "scope", "unit", "identity", "operator_declaration"} if entry["kind"] == "systemd"
+                  else {"kind", "path", "identity", "operator_declaration"})
+        if (set(entry) != fields or not isinstance(entry["identity"], dict)
+                or entry["operator_declaration"] != UNRELATED_LAUNCHER_DECLARATION):
+            raise ValueError("exact_unrelated_launcher_assertion_required")
+        if entry["kind"] == "systemd":
+            if (entry["scope"] not in ("user", "system") or not isinstance(entry["unit"], str)
+                    or re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", entry["unit"]) is None):
+                raise ValueError("invalid_unrelated_service_identity")
+            key = ("systemd", entry["scope"], entry["unit"])
+        else:
+            if not isinstance(entry["path"], str) or not Path(entry["path"]).is_absolute():
+                raise ValueError("invalid_unrelated_desktop_identity")
+            key = ("desktop", entry["path"])
+        if key in assertions:
+            raise ValueError("duplicate_unrelated_launcher_declaration")
+        assertions[key] = entry
+    consumed = set()
+    def accept_unrelated(key: tuple, identity: dict) -> dict:
+        entry = assertions.get(key)
+        if runtime_launcher((key, identity), runtime):
+            raise ValueError("runtime_launcher_cannot_be_declared_unrelated")
+        if entry is None or entry["identity"] != identity:
+            raise ValueError(f"missing_or_changed_unrelated_launcher:{key}")
+        consumed.add(key)
+        return entry
+    desktops = []
     for startup in (Path.home() / ".config/autostart", Path("/etc/xdg/autostart")):
-        if startup.is_symlink() or startup.exists() and any(startup.iterdir()):
-            raise ValueError("unsupported_desktop_autostart_containment")
+        if startup.is_symlink() or startup.exists() and not startup.is_dir():
+            raise ValueError("uninspectable_desktop_autostart_inventory")
+        entries = []
+        if startup.exists():
+            for path in sorted(startup.iterdir()):
+                identity = desktop_identity(path)
+                entries.append(accept_unrelated(("desktop", str(path)), identity))
+        desktops.append({"directory": str(startup), "image": image(startup), "entries": entries})
     rc_local = Path("/etc/rc.local")
     if rc_local.exists() and os.access(rc_local, os.X_OK):
         raise ValueError("unsupported_rc_local_containment")
@@ -617,30 +763,21 @@ def containment(plan: dict, runtime: Path) -> dict:
         for selection in (["list-unit-files"], ["list-units", "--all"]):
             inventory = subprocess.run(["systemctl", *flags, *selection, "--type=service", "--plain", "--no-legend", "--no-pager"], capture_output=True, text=True, timeout=10, check=True)
             actual_units.update(line.split()[0] for line in inventory.stdout.splitlines() if line.strip())
+        if any(re.fullmatch(r"[A-Za-z0-9_.@-]+\.service", unit) is None for unit in actual_units):
+            raise ValueError("uninspectable_supervisor_inventory")
         if not set(units).issubset(actual_units):
             raise ValueError("declared_supervisor_missing_from_actual_inventory")
         excluded = []
         for unit in sorted(actual_units - set(units)):
-            # Pre/post/reload commands can start a wrapper just as ExecStart
-            # can. A shell/interpreter/remote/container trampoline does not
-            # prove exclusion from this runtime by omitting its path in argv.
-            launch = subprocess.run(["systemctl", *flags, "show", unit,
-                "--property=ExecStart,ExecStartPre,ExecStartPost,ExecReload", "--value"],
-                capture_output=True, text=True, timeout=10, check=True).stdout
-            if "happyranch" in launch or "runtime.daemon" in launch or str(runtime) in launch:
+            identity = service_identity(scope, flags, unit)
+            if runtime_launcher((unit, identity), runtime):
                 raise ValueError("undeclared_alternate_supervisor")
-            commands = re.findall(r"\{ path=([^ ;}]+) ; argv\[\]=(.*?) ; ignore_errors=(yes|no) ;", launch)
-            if launch.strip() and not commands:
-                raise ValueError(f"uninspectable_supervisor_launch:{scope}:{unit}")
-            if commands:
-                # Neither an ELF signature nor an exact executable hash
-                # proves that its internal/configured launches exclude this
-                # runtime. This adapter has no independently validated
-                # exclusion capability for unmasked command-bearing units.
-                # Do not turn a plan's assertion into that capability.
-                raise ValueError(f"unproven_supervisor_launch_closure:{scope}:{unit}")
-            excluded.append({"unit": unit, "commands": []})
+            commands = any(value for name, value in identity["properties"].items() if name.startswith("Exec"))
+            assertion = accept_unrelated(("systemd", scope, unit), identity) if commands else None
+            excluded.append({"unit": unit, "identity": identity, "unrelated_declaration": assertion})
         for unit in units:
+            if ("systemd", scope, unit) in assertions:
+                raise ValueError("conflicting_runtime_and_unrelated_supervisor")
             mask = mask_root / unit
             if not mask.is_symlink() or os.readlink(mask) != "/dev/null":
                 raise ValueError("persistent_supervisor_mask_required")
@@ -650,6 +787,8 @@ def containment(plan: dict, runtime: Path) -> dict:
                 raise ValueError("supervisor_not_inhibited_and_stopped")
             observed.append({"scope": scope, "unit": unit, "mask": str(mask), "properties": properties})
         observed.append({"scope": scope, "excluded_launches": excluded})
+    if consumed != set(assertions):
+        raise ValueError("unobserved_or_conflicting_unrelated_launcher_declaration")
     for value in declaration["registry_paths"]:
         registry = Path(value)
         if not registry.is_absolute() or registry.is_symlink():
@@ -681,7 +820,7 @@ def containment(plan: dict, runtime: Path) -> dict:
                 or b"happyranch daemon" in command
                 or cwd is not None and cwd.is_relative_to(runtime)):
             raise ValueError("runtime_or_daemon_process_present")
-    return {"supervisors": observed, "registry_paths": declaration["registry_paths"]}
+    return {"supervisors": observed, "desktop_autostart": desktops, "registry_paths": declaration["registry_paths"]}
 
 
 @contextmanager

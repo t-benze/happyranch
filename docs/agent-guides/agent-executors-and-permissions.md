@@ -390,7 +390,24 @@ still receive fresh/full SQLite-canonical thread prompts.
 
 **Optional reasoning effort (THR298).** The static catalog is shared by the factory, adapters, compatibility fallback argv and UI metadata. Claude uses `--effort`, Codex a literal `-c model_reasoning_effort="<level>"`, Pi `--thinking`, and OpenCode `-m provider/model#variant`. Unset adds no override, including when the saved model already contains a suffix. Equal explicit/embedded variants work; conflicts refuse; OpenCode explicit effort without `provider/model` refuses. The independent OpenCode 2.0.12 `--dir`/transport mismatch remains outside this change. Exact stub argv proves transport, not native provider behavior.
 
-Custom `input_options` declares strict `version:2`, optional literal `model_arg_template`, and paired `effort_arg_template` / finite `reasoning_effort_values`. Normal registration/conformance/store/profile resolution/runtime all use that exact declaration. Templates are argv elements with one matching `{model}` or `{effort}` placeholder, never shell expressions. Input-v2 sends the actual selected model (or null) and effort object (or null); v1 still sends `model:null` and no effort member, even with a configured model. Input-v2 must acknowledge integer `adapter_metadata.input_contract_version:2`; output stays v1 with the existing identity/version/session/hash/retry checks. Legacy adapters need no reapproval. Opt-in is a normal reviewed adapter update, not a capability inspector. The [current spec](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) gives the exact declaration and wire shape.
+Custom `input_options` declares strict `version:2`, optional literal `model_arg_template`, and paired `effort_arg_template` / finite `reasoning_effort_values`. Normal registration/conformance/store/profile resolution/runtime all use that exact declaration. Templates are argv elements with one matching `{model}` or `{effort}` placeholder, never shell expressions. Input-v2 sends the actual selected model (or null) and effort object (or null); v1 still sends `model:null` and no effort member, even with a configured model. Input-v2 must acknowledge integer `adapter_metadata.input_contract_version:2`; output stays v1 with the existing identity/version/session/hash/retry checks. The generated direct-connect prompt inspects installed model/effort controls,
+records supported/unsupported/unknown with sources, and retains input1 defaults.
+The strict direct request and manifest cannot carry `input_options`; metadata
+cannot hide a declaration. Preparing dual-v1/v2 handling is not activation.
+Both controls, model-only and effort-only are valid ordinary declarations;
+effort-only still receives non-null models with a null model template, including
+`probe-model` during conformance. A documented wrapper mapping or truthful
+refusal is required, never silent ignoring or invented flags. Null adds no
+argv override; literal template substitution never invokes a shell.
+Every input2 response, including failure, retains output1 and its integer input2
+acknowledgement. See the [generated prompt and same-profile ordinary update
+handoff](../superpowers/specs/2026-10-11-agent-reasoning-effort.md#generated-custom-cli-connection-prompt-thr298-seq34):
+a fresh ordinary adapter-purpose token omits `workspace_adapter_id`, uses the
+contract-reference's `required_executable_path` (distinct from direct status),
+refreshes hashes, completes check-ins/versioned conformance and submits the same
+profile for PENDING/exact-snapshot Founder approval and readback. No duplicate,
+delete/recreate, direct-token reuse or automatic update/approval is supported.
+The normal Connect UI has no v2 update mode. Legacy adapters need no reapproval. Opt-in is a normal reviewed adapter update, not a capability inspector. The [current spec](../superpowers/specs/2026-10-11-agent-reasoning-effort.md) gives the exact declaration and wire shape.
 
 **Adapter contract reference (THR-107 seq184).** The authoritative v1
 ``AdapterInput``/``AdapterOutput`` contract is served by the running daemon via
@@ -439,16 +456,15 @@ a workspace convention) → read the daemon-issued wrapper path from
 ``POST /runtime/custom-cli/connect`` declares its OWN
 ``workspace_adapter_id`` in the manifest and both proves wrapper integrity
 and creates the receipt-only connection record (it starts zero subprocesses)
-→ the browser auto-calls
-``POST /runtime/custom-cli/{operation_id}/commit`` the moment it lands →
-Connected, no PENDING wait, no founder click. Founders can check the same
+→ trusted daemon commit/projection runs the bounded probe →
+Connected, no PENDING wait, no founder click. The browser polls status and does
+not call commit automatically. Founders can check the same
 terminal outcome from the CLI with
 ``happyranch custom-cli status <profile-name> [--wait]``.
 The custom CLI routes and conformance tests define the projection and launch
-fences, including the wrapper-declared `workspace_adapter_id`. The PENDING/approve/reject/bind-profile routes below remain as
-operator-only one-time disposition tooling for legacy records — a new
-custom CLI should always use the ordinary Connect
-flow instead.
+fences, including the wrapper-declared `workspace_adapter_id`. The PENDING/approve/reject/bind-profile routes below remain operator-only
+tooling for existing records and ordinary same-profile input2 updates. A new
+custom CLI uses the normal direct Connect flow, which does not opt into input2.
 
 Before submitting the receipt, wrapper authors must locally send a fresh,
 opaque canary through the ordinary one-shot provider path in the entire
