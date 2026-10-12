@@ -5,6 +5,46 @@ SHA256 d6e8dd860fbcf7c09501d898abc3d936580170e68e5cc791f1d56df2f7094275,
 accepted by engineering_manager TASK10394. Source authoring does not establish
 behavioral readiness, migration capability, deployment or a successful apply.
 
+THR296 seq87 / TASK10953 permits exactly two follow-up utility corrections.
+`roster_delta` accepts the admitted multiline block workers list as well as
+the existing single-line inline sequence, preserving comments/unrelated literal
+bytes and comparing the exact intended semantic after-image. Existing-empty
+Default and Consultant-to-Default branches remain; aliases/anchors and unsafe
+layouts refuse. Checked before/after images remain the apply/recovery contract.
+
+Containment may accept exact operator-declared unrelated command-bearing
+system/user services and regular desktop autostart Application entries, which
+may remain running. `containment.unrelated_launchers` contains closed entries:
+systemd `{kind,scope,unit,identity,operator_declaration}` or desktop
+`{kind,path,identity,operator_declaration}`. Service identities contain the exact
+systemctl command/state property map and resolved fragment/drop-in file images;
+desktop identities contain the exact file image and section Exec/TryExec map.
+Each operator_declaration must explicitly equal the literal
+`unrelated-to-happyranch-and-runtime-writers`; missing/different values refuse.
+The runbook specifies the full property list and bounded supported desktop
+grammar. Check records declarations plus complete installed/loaded service and
+desktop inventories. Apply/recover use the same manifest and revalidate them.
+Missing/unknown/changed/uninspectable inventory, duplicate/conflicting/unused
+declarations and visible HappyRanch/daemon/executor writer identities refuse.
+An actual runtime launcher/writer may never be declared unrelated. The assertion
+is bounded operator responsibility for configured/transitive launches, not
+independently proved closure. No default service allowlist or generic bypass
+exists. Actual runtime persistent masks/stopped state, registry/source binding,
+same-user writer census, backups/native owners and recovery gates remain.
+No service/cron changes, utility execution, host repair or new migration framework
+follow. Inaccessible user bus, executable rc.local and unsupported desktop
+entries remain operator obstacles, with no host-readiness promise.
+
+This correction adds no tests/cases/fixtures. Static/lint assessment and independent
+review/scoped source QA can establish source-merge acceptance only. Behavioral,
+check/apply/recover, restoration, containment/reboot and repetition evidence
+remain missing; general integration (including C6/C8/C9) is SKIPPED24342 and
+Python units RETIRED. Seq73/78 source waivers and maintenance reservations retain
+their scope. Installed/loaded source, host readiness and the live move remain
+distinct. TASK10953's cumulative manager-owned counter starts at0 and permits
+one consolidated review correction round; a second change request or third
+behavior returns DEFER THE MOVE, without another recovery/root cycle.
+
 Default is led by `{kind: human, principal: founder}`. Both unchanged consultant
 identities are workers. Consultant leaves the active registry only; all retained
 history, policy namespaces/pins, workflows, memory, workspaces and thread state
