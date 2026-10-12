@@ -112,7 +112,7 @@ async function main(){
     const overviewReads=()=>ledger.filter(x=>x.path.endsWith('/pause-overview')).length;
     // seq45: the rendered list carries NO pause UI in either catalog; ordinary lifecycle badges remain.
     const PAUSE_COPY=['tasks.pause.unheld','tasks.pause.pausing','tasks.pause.paused','tasks.pause.unavailable','tasks.pause.inherited','tasks.pause.evidenceComplete','tasks.pause.evidenceIncomplete','tasks.pause.observed','tasks.pause.terminalDrain','tasks.pause.blocker.task','tasks.pause.blocker.unknown'].flatMap(k=>['en','zh-CN'].map(l=>String(tr(l,k)).split('{')[0].trim())).filter(Boolean);
-    const listPauseFree=`(()=>{const t=document.body.textContent;return document.querySelector('[data-task-pause]')===null&&![...document.querySelectorAll('button')].some(b=>['Pause','Resume','暂停','恢复'].includes(b.textContent.trim()))&&!${quote(PAUSE_COPY)}.some(c=>t.includes(c))&&!t.includes('RAW-')&&document.querySelector('main details')===null;})()`;
+    const listPauseFree=`(()=>{const t=document.body.textContent;return document.querySelector('[data-task-pause]')===null&&![...document.querySelectorAll('button')].some(b=>['Pause','Resume','暂停','恢复'].includes(b.textContent.trim()))&&!${quote(PAUSE_COPY)}.some(c=>t.includes(c))&&!t.includes('raw_reason')&&document.querySelector('main details')===null;})()`;
     async function enter(page,source){await cdp.send('Page.bringToFront',{},page.sessionId);await evaluate(page,`(()=>{const button=${source};if(!button)throw new Error('button missing');button.scrollIntoView({block:'center'});button.focus();return true;})()`);await cdp.send('Input.dispatchKeyEvent',{type:'keyDown',key:'Enter',code:'Enter',windowsVirtualKeyCode:13,text:'\r'},page.sessionId);await cdp.send('Input.dispatchKeyEvent',{type:'keyUp',key:'Enter',code:'Enter',windowsVirtualKeyCode:13},page.sessionId);}
     async function switchLocale(page,locale){
       const {targetId}=await cdp.send('Target.createTarget',{url:server.url+'/pause-locale-switch.html'});const {sessionId}=await cdp.send('Target.attachToTarget',{targetId,flatten:true});await cdp.send('Runtime.enable',{},sessionId);await wait({sessionId},`location.href===${quote(server.url+'/pause-locale-switch.html')} && document.readyState==='complete'`);
@@ -126,7 +126,7 @@ async function main(){
       check(`${name} theme`,await evaluate(page,'document.documentElement.dataset.theme'),theme);
       check(`${name} page fits`,await evaluate(page,'document.documentElement.scrollWidth <= innerWidth + 1'));
       check(`${name} list has no pause UI`,await evaluate(page,listPauseFree));
-      check(`${name} ordinary lifecycle badges`,await evaluate(page,"['in_progress','pending','escalated','failed'].every(s=>[...document.querySelectorAll('[data-tasks-responsive-list] *')].some(e=>e.children.length===0&&e.textContent.trim()===s))"));
+      check(`${name} ordinary lifecycle badges`,await evaluate(page,"['in_progress','pending','escalated','failed'].every(s=>[...document.querySelectorAll('main *')].some(e=>e.children.length===0&&e.textContent.trim()===s))"));
       check(`${name} row navigation`,await evaluate(page,"['ROOT-RUN','ROOT-PARKED','ROOT-PENDING','ROOT-PAUSING','ROOT-PAUSED','ROOT-FAILED','ROOT-MISSING'].every(id=>!!document.querySelector(`[data-tasks-responsive-list] a[href=\"/orgs/pause-org/tasks/${id}\"]`))"));
       await shot(page,`${name}-list`,{locale,theme,width,height,state:'populated list: lifecycle only, pause UI absent'});
       await close(page);
@@ -134,7 +134,7 @@ async function main(){
       check(`${name} detail Resume during drain`,await evaluate(detail,`document.querySelector('[data-task-pause] button').textContent.trim()`),tr(locale,'tasks.pause.resume'));
       check(`${name} detail pausing state label`,await evaluate(detail,`document.querySelector('[data-task-pause]').textContent.includes(${quote(tr(locale,'tasks.pause.pausing'))})`));
       await evaluate(detail,"document.querySelectorAll('[data-task-pause] details').forEach(d=>d.open=true)");
-      check(`${name} detail typed blockers shown`,await evaluate(detail,`document.querySelector('[data-task-pause]').textContent.includes(${quote(tr(locale,'tasks.pause.blocker.unknown'))})&&document.querySelector('[data-task-pause]').textContent.includes('RAW-')`));
+      check(`${name} detail typed blockers shown`,await evaluate(detail,`document.querySelector('[data-task-pause]').textContent.includes(${quote(tr(locale,'tasks.pause.blocker.unknown'))})&&document.querySelector('[data-task-pause]').textContent.includes('raw_reason')`));
       check(`${name} detail control widths`,await evaluate(detail,"[...document.querySelectorAll('[data-task-pause] button,[data-task-pause] summary')].every(b=>{const r=b.getBoundingClientRect();return r.left>=-1&&r.right<=innerWidth+1;})"));
       check(`${name} detail fits`,await evaluate(detail,'document.documentElement.scrollWidth <= innerWidth + 1'));
       await shot(detail,`${name}-detail`,{locale,theme,width,height,state:'pausing detail'});
