@@ -1611,3 +1611,42 @@ grant or broader permission change. Actual operator UI, genuine receipts/joins,
 revisions/reassignment/recovery and independent acceptance remain later units;
 the manager-owned same-runtime two-template public smoke is required before
 Founder invitation. Source parity is not behavioral verification.
+
+
+## THR299 reconciliation and nonmutating retry reads
+
+Use the [closed server contract](orchestrator-contracts.md#exact-failed-continuation-reconciliation-thr299).
+There is no browser write workflow. TypeScript `verifyRetryLink` mirrors the
+three read modes; the POST is classified agent-only, with matching command and
+receipt types. SurfaceAllowList mirrors the POST exclusion using the existing
+task suffix deny convention after shipping path normalization, on prefixed and
+unprefixed forms, before credential lookup/injection or daemon forwarding.
+The advisory GET and adjacent browser task routes remain allowed. Shared
+transport/auth and the path normalizer are unchanged.
+
+```bash
+happyranch verify-retry-link TASK-10565 --org happyranch --mode retry --target-agent dev_agent --failed-child-id TASK-10450 --json
+happyranch verify-retry-link TASK-10565 --org happyranch --mode retry --target-agent qa_engineer --failed-child-id TASK-10329 --json
+happyranch verify-retry-link TASK-10343 --org happyranch --mode preflight --version 1 --operation-key thr299-task10725-reconcile-v1 --existing-successor-id TASK-10554 --current-descendant-id TASK-10565 --thread-id THR-293 --operator-task-id TASK-10725 --session-id CURRENT_ORDINARY_TASK10725_SID --json
+happyranch reconcile-failed-continuation TASK-10343 --org happyranch --from-file /absolute/command.json
+happyranch verify-retry-link TASK-10343 --org happyranch --mode receipt --operation-key thr299-task10725-reconcile-v1 --json
+happyranch audit --org happyranch TASK-10343 --action failed_continuation_reconciled --all-pages --json
+```
+
+Only the actual ordinary TASK10725 operator may preflight/write after reviewed
+installation and serving-source verification. CURRENT_ORDINARY_TASK10725_SID is
+its delivered transport SID, never another worker's session. Copy the actual
+preflight expected_state_digest into the closed JSON with version1/key/existing
+successor/current descendant/thread/operator/session; placeholders are not proof.
+SID goes only in the preflight header or POST body, never the read URL. A stale
+fresh digest refuses; do not auto-retry. Preserve exact original semantic bytes
+and key on response loss and query receipt before deciding whether SAME-owner
+POST replay is appropriate. Actual terminal owner loss blocks POST, while
+historical receipt GET remains available. Genuine ordinary SAME-task resumption
+may replay with its new SID without rewriting original evidence.
+
+Both commands print JSON. Retry exits0 valid/1 invalid; write/read success0,
+semantic/refusal/transport/storage/server error1, argument or local JSON-shape
+error2. Write file paths must be absolute. Duplicate/unknown fields and mode
+mixing refuse. The minimal receipt plus receipt_sha256 matches POST; historical
+lookup never establishes current retry validity or authority to spawn a child.

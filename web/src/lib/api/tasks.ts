@@ -12,9 +12,26 @@ import type {
   TaskRecord,
   TaskPauseControlResponse,
   TaskPauseOverview,
+  RetryVerificationInput,
+  RetryVerificationResponse,
 } from './types';
 
 export type TaskListItem = TaskRecord;
+
+/** Reads are advisory. No UI or browser write grant accompanies this helper. */
+export const verifyRetryLink = (
+  slug: string,
+  taskId: string,
+  input: RetryVerificationInput,
+): Promise<RetryVerificationResponse> => {
+  if (input.mode === 'preflight') {
+    const { session_id, ...params } = input;
+    return request(`/orgs/${slug}/tasks/${taskId}/retry-verification`, {
+      params, headers: { 'X-HappyRanch-Task-Session': session_id },
+    });
+  }
+  return request(`/orgs/${slug}/tasks/${taskId}/retry-verification`, { params: input });
+};
 
 export const submitTask = (
   slug: string,

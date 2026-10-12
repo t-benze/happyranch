@@ -1979,6 +1979,9 @@ Contract (founder-approved in THR-028, refined in THR-078):
    COMPLETED or SUPERSEDED descendant retires earlier FAILED ancestors from
    causal selection (THR-183).
 
+   THR299 adds only the closed authenticated failed-continuation receipt
+   described below; original producer validation and final spawn fences remain.
+
 3. **Manager ownership after failure.** An unresolved failed child keeps its
    durable lineage and wakes its owning parent for a manager decision. The
    runtime neither commits `runtime_retry_ceiling` escalation nor fails a
@@ -2349,3 +2352,127 @@ Workflow trackers clear only through their existing terminal owner, preserving
 callback-before-terminal reads. Cancellation and portability select that same
 owner; a transport result or PID cannot prove quiescence. No callback is a
 signature and no reviewer request is automatically approved.
+
+
+## Exact failed-continuation reconciliation (THR299)
+
+Founder seq4/11/13 and SAME root TASK10725 authorize exactly org happyranch,
+team engineering, manager engineering_manager, FAILED TASK10343 → existing
+TASK10554, current TASK10565, original thread THR293. Only TASK10725's genuine
+ordinary manager session from THR299 may operate it. Its actual registry,
+tracker context, active generation, unique manager_decision session_start,
+and unique dispatch/invocation/trigger/system-message/audit joins corroborate
+that literal scope. Thread origin THR299 must be composed by engineering_manager
+from TASK10565; saved dispatch system sequences are 5 (operator), and
+15/23/54/62 for 10319/10343/10554/10565 in THR293. IDs, bearer possession,
+caller headers and brief prose alone are insufficient; no arbitrary pair or
+replacement owner is authorized. Current configured manager must be the same
+executable agent; recovery/worker/thread-purpose sessions refuse.
+
+POST `/api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation` accepts
+exactly version integer1, operation_key, existing_successor_id,
+current_descendant_id, thread_id, operator_task_id, session_id and
+expected_state_digest. IDs are exact nonempty UTF8 strings ≤256 bytes;
+operation_key matches `[A-Za-z0-9._:-]{1,128}`, digest is 64 lowercase hex.
+Duplicates, floats/NaN, coercions and extra fields refuse422 invalid_request.
+The digest comes from the one GET preflight below. It is advisory and rechecked
+inside BEGIN IMMEDIATE. The sole durable change is one current-time
+`failed_continuation_reconciled` audit on TASK10343; task status, original
+children/results/parents/timestamps, failure/retry accounting, old edges and
+queue/provider/notification state are preserved. Original FAILED dev10450
+under10343 (revisit10409) and QA10329 under10319 retain their owners. The receipt
+is not a task allocation or enqueue grant.
+
+Ordering is org.db_lock → ordinary owner binding lease → short root-resolution
+DB read/release → sorted TASK10565/TASK10725 pause gates → DB RLock → owned
+transaction. No await, provider or file operation occurs under synchronous
+gates. Fresh write/preflight revalidate roots, current owner claim/no landed
+result, authentic evidence, unique bounded topology, both unheld root controls
+and generations. Current10565 must be uncancelled in_progress (legitimately
+parked is allowed);10554 and10319 retain their authentic SUPERSEDED old edges.
+No hold is released; unavailable controls refuse. Coherent reads own and
+rollback one SQLite read view; inheriting another transaction refuses.
+
+The semantic command includes route org/task and all command fields except
+transport session_id; canonical JSON uses sorted keys, compact UTF8, no floats.
+Both canonical bytes and SHA256 must match. The stored closed payload has
+version, operation_key, canonical_command, command_sha256, state_digest,
+operator_binding, operator_claim, dispatch_bindings, old_edge_bindings and
+snapshot. Snapshot freezes exact scope/key, registry, sorted task projections,
+original session reference, result absence, origin/dispatch references, holds,
+old edges, local retry rows and operation ownership. It excludes heartbeat,
+progress, updated_at and raw secrets. Row digests preserve full original bytes,
+including optional original session metadata. Evidence queries fetch4097 and
+refuse evidence_scan_limit above4096 rather than truncate. This differs from
+the unchanged20-root/19-edge graph bound.
+
+Under writer serialization, authenticated exact replay precedes fresh
+hold/digest/lifecycle checks. Same key/different command refuses409
+operation_conflict; another key for the pair refuses409 pair_owned. Exact SAME
+owner replay returns the original audit/time/projection with replayed:true and
+zero mutation, including a genuine ordinary SAME-task session renewal. A new
+owner is forbidden. Replay still requires current owner active/session/purpose
+and no landed final callback. Timeout is not a commit proof: query receipt
+first; keep the same command/key, never automatically mint another operation.
+
+The minimal public receipt contains audit_id,timestamp,task_id,agent,action,
+version,operation_key,canonical_command,command_sha256,state_digest,
+operator_binding,payload_sha256. operator_binding contains task_id,agent,
+positive INTEGER session_start_audit_id, full original session_start_row_digest,
+session_id_sha256 and manager_decision invocation_purpose. Readers validate the
+closed snapshot/command and original retained reference/unique SID evidence,
+dispatch joins and old producer bytes. No raw SID/token/workspace/provider
+metadata is published. receipt_sha256 hashes that canonical projection. Hashes
+are attribution, not cryptographic tamper protection. Historical validation
+does not demand original owner liveness or compare its original SID with today's
+tracker. Missing/conflicting original evidence refuses, with no read repair.
+Before SID selection, every relevant owner session_start row must have a
+positive INTEGER identity, exact task/action/manager, timezone-aware timestamp,
+stored-text strict JSON object and nonempty UTF8 SID/purpose (each ≤256 bytes). Missing or
+malformed required fields, wrong-agent history and duplicate selected SIDs
+refuse409 original_session_evidence for fresh selection and historical reads.
+Valid nonselected historical purposes and finite optional metadata remain
+compatible; only the selected operating session requires manager_decision,
+with the existing403 ordinary_purpose_required refusal. Historical readers
+validate retained original bytes/digests without substituting current liveness.
+
+ONE GET `/api/v1/orgs/{slug}/tasks/{task_id}/retry-verification` has mandatory
+mode and closed selectors:
+
+- retry: target_agent required, failed_child_id optional; no session header.
+  Returns version/mode/org/parent_id/target_agent/failed_child_id/valid/path/reason/
+  advisory:true. Existing parent absent404; missing child returns200 invalid
+  retry_not_found. Invalid paths are empty. Terminal parent alone adds no blanket
+  read denial. Same-parent, FAILED/same-agent, unresolved local-failure priority,
+  old producers and bounded traversal retain their existing rules.
+- preflight: exact predecessor plus version lexical1, operation_key,
+  existing_successor_id,current_descendant_id,thread_id,operator_task_id and
+  exactly one X-HappyRanch-Task-Session header. No digest input. Returns only an
+  eligible:true target, original operator_binding, expected_state_digest and
+  advisory:true with version/mode/org/predecessor_id/operation_key. Failed
+  eligibility is a refusal without a digest or reservation.
+- receipt: exact predecessor plus operation_key only; ordinary read bearer,
+  no owner/SID/liveness requirement. Returns version/mode/org/historical:true,
+  the identical immutable receipt and receipt_sha256. Missing404
+  receipt_not_found; conflicts/malformed original evidence409. Historical
+  authority and today's retry validity are independent.
+
+Duplicate/unknown/missing query fields, wrong combinations, forbidden session
+headers or GET bodies refuse422. All reads/refusals have zero durable task,
+audit, result, counter or queue effects. New refusals are `{detail:{code}}`,
+without caller secrets. Existing bearer401 is unchanged; scope/manager/purpose
+403, unknown404, inactive/session/evidence/staleness/hold/conflict/topology409,
+shape422 and control/busy/storage503 remain distinct. Unexpected server errors
+do not commit partial producer work. Old readers cannot consume this producer;
+rollback requires compatible code and never deletes or rewrites receipts.
+
+The failed predecessor exception is confined to this fully validated producer.
+Every retry consumer uses the same verifier. Final claim and retry checks still
+run in try_delegate_one/many's writer; only Committed enqueues, LostClaim writes
+nothing. Advisory GET is never a spawn permission. C01–C10/four-answer design
+is TASK10737; Founder299seq11 accepts qualified evidence while naturally
+allocated synthetic new-producer positive, dependent replay/race/crash and
+causal/restoration/repetition/instantaneous queue proof remain UNPROVEN. Static
+or isolated fixtures are not public acceptance. General integration SKIPPED24342;
+Python units retired; no ad hoc Product E2E. Actual post-install receipt and
+both original retry validations are owned by SAME TASK10725, before naming use.

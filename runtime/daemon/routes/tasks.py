@@ -9,6 +9,7 @@ import signal
 import sqlite3
 import uuid
 from collections.abc import Callable
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,14 @@ from runtime.daemon.routes._org_dep import OrgDep
 from runtime.daemon.runner import enqueue_task
 from runtime.daemon.state import DaemonState
 from runtime.daemon.work_status import derive_work_status
+from runtime.infrastructure.db.tasks import InvalidLineage, _RetryEvidenceRefusal
+from runtime.infrastructure.db.task_reconciliation import (
+    SCOPE, HistoricalReceiptResponse, PreflightResponse, ReconcileFailedContinuationBody,
+    ReconciliationError, ReconciliationRefusal, ReconciliationResponse,
+    RetryVerificationResponse, TaskReconciliation, canonical, digest, exact_scope,
+    identifier, request_body, require,
+)
+from runtime.infrastructure.task_pause_controls import PauseControlError
 from runtime.infrastructure.task_attachment_store import (
     MAX_TASK_ATTACHMENTS_PER_TASK,
     MAX_TASK_ATTACHMENT_BYTES,
@@ -50,6 +59,144 @@ from runtime.orchestrator.run_step import (
 )
 
 router = APIRouter(dependencies=[require_token()])
+
+
+@contextmanager
+def _reconciliation_boundary(org: OrgState, *, live: bool = False):
+    """org.db_lock is held by the async caller; never await under these gates."""
+    db = org.db
+    with ExitStack() as stack:
+        if live:
+            require(org.sessions is not None, "control_unavailable", 503)
+            stack.enter_context(org.sessions.binding_lease(SCOPE["owner"], SCOPE["manager"]))
+            store = getattr(db, "_task_pause_store", None)
+            require(store is not None and store.org_slug == org.slug, "control_unavailable", 503)
+            roots = sorted((SCOPE["owner"], SCOPE["current"]))
+            # Release root-resolution RLock before acquiring either gate.
+            with db._lock:
+                require(not db._conn.in_transaction, "control_unavailable", 503)
+                require(all(store.root_uncommitted(r)["id"] == r for r in roots), "stale_state")
+            for root_id in roots:
+                stack.enter_context(store.gate(root_id))
+        stack.enter_context(db._lock)
+        require(not db._conn.in_transaction, "control_unavailable", 503)
+        yield TaskReconciliation(db)
+
+
+def _reconciliation_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ReconciliationError):
+        return HTTPException(exc.status, detail={"code": exc.code})
+    if isinstance(exc, _RetryEvidenceRefusal):
+        return HTTPException(409, detail={"code": str(exc)})
+    if isinstance(exc, PauseControlError):
+        code = "root_paused" if exc.detail["code"] == "root_paused" else "control_unavailable"
+        return HTTPException(409 if code == "root_paused" else 503, detail={"code": code})
+    if isinstance(exc, sqlite3.Error):
+        code = "database_busy" if getattr(exc, "sqlite_errorcode", None) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) else "storage_unavailable"
+        return HTTPException(503, detail={"code": code})
+    return HTTPException(409, detail={"code": "malformed_evidence"})
+
+
+_RECONCILIATION_RESPONSES = {code: {"model": ReconciliationRefusal} for code in (403, 404, 409, 422, 503)}
+_RECONCILIATION_RESPONSES[401] = {"description": "Existing bearer refusal"}
+
+
+@router.post("/tasks/{task_id}/reconcile-failed-continuation", response_model=ReconciliationResponse,
+             responses=_RECONCILIATION_RESPONSES,
+             openapi_extra={"requestBody": {"required": True, "content": {"application/json": {
+                 "schema": ReconcileFailedContinuationBody.model_json_schema()}}}})
+async def reconcile_failed_continuation(task_id: str, request: Request, org: OrgDep) -> dict:
+    """THR299 only: one current-time receipt, no task or queue mutation."""
+    try:
+        identifier(task_id)
+        raw = await request.body()
+        require(len(raw) <= 16384 and not request.query_params, "invalid_request", 422)
+        require(not request.headers.getlist("X-HappyRanch-Task-Session"), "invalid_request", 422)
+        body = request_body(raw)
+        async with org.db_lock:
+            with _reconciliation_boundary(org) as reader:
+                with org.db.coherent_read_view():
+                    reader.task(task_id)
+            exact_scope(org.slug, task_id, body)
+            with _reconciliation_boundary(org, live=True):
+                # Schema/data validation and root re-resolution belong to the
+                # same writer snapshot, before any uncommitted audit insert.
+                return org.db.reconcile_failed_continuation(org, task_id, body)
+    except (ReconciliationError, _RetryEvidenceRefusal, PauseControlError, sqlite3.Error,
+            ValueError, TypeError, KeyError, IndexError, RecursionError) as exc:
+        raise _reconciliation_error(exc) from exc
+
+
+@router.get("/tasks/{task_id}/retry-verification",
+            response_model=RetryVerificationResponse | PreflightResponse | HistoricalReceiptResponse,
+            responses=_RECONCILIATION_RESPONSES,
+            openapi_extra={"parameters": [
+                {"name": "X-HappyRanch-Task-Session", "in": "header", "required": False,
+                 "description": "Required once in preflight only; never a principal assertion",
+                 "schema": {"type": "string", "minLength": 1, "maxLength": 256}},
+                *[{"name": name, "in": "query", "required": name == "mode", "schema": schema}
+                  for name, schema in [
+                    ("mode", {"type": "string", "enum": ["retry", "preflight", "receipt"]}),
+                    ("version", {"type": "string", "enum": ["1"]}),
+                    ("operation_key", {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"}),
+                    *[(name, {"type": "string", "minLength": 1, "maxLength": 256}) for name in
+                      ("existing_successor_id", "current_descendant_id", "thread_id", "operator_task_id",
+                       "target_agent", "failed_child_id")]]]]})
+async def retry_verification(task_id: str, request: Request, org: OrgDep) -> dict:
+    """Closed nonmutating advisory retry, authenticated preflight, or history."""
+    try:
+        identifier(task_id)
+        require(not await request.body(), "invalid_request", 422)
+        pairs = request.query_params.multi_items()
+        query = dict(pairs)
+        require(len(pairs) == len(query), "invalid_request", 422)
+        mode = query.get("mode")
+        sid_headers = request.headers.getlist("X-HappyRanch-Task-Session")
+        required = {
+            "retry": {"mode", "target_agent"}, "receipt": {"mode", "operation_key"},
+            "preflight": {"mode", "version", "operation_key", "existing_successor_id",
+                          "current_descendant_id", "thread_id", "operator_task_id"},
+        }
+        require(mode in required, "invalid_request", 422)
+        optional = {"failed_child_id"} if mode == "retry" else set()
+        require(required[mode] <= set(query) <= required[mode] | optional, "invalid_request", 422)
+        for value in query.values():
+            identifier(value)
+        require(len(sid_headers) == (1 if mode == "preflight" else 0), "invalid_request", 422)
+        if mode in ("preflight", "receipt"):
+            import re
+            require(re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", query["operation_key"]) is not None, "invalid_request", 422)
+        body = None
+        if mode == "preflight":
+            require(query["version"] == "1", "invalid_request", 422)
+            body = request_body(canonical({k: v for k, v in query.items() if k not in ("mode", "version")} |
+                                         {"version": 1, "session_id": sid_headers[0], "expected_state_digest": "0" * 64}))
+        async with org.db_lock:
+            with _reconciliation_boundary(org) as reader:
+                with org.db.coherent_read_view():
+                    reader.task(task_id)
+            if mode == "preflight":
+                exact_scope(org.slug, task_id, body)
+            elif mode == "receipt":
+                require(org.slug == SCOPE["org"] and task_id == SCOPE["predecessor"], "operation_scope", 403)
+            with _reconciliation_boundary(org, live=mode == "preflight") as reader:
+                with org.db.coherent_read_view():
+                    if mode == "retry":
+                        reader.task(task_id)
+                        outcome = org.db.verify_retry_link(task_id, query["target_agent"], query.get("failed_child_id"))
+                        invalid = isinstance(outcome, InvalidLineage)
+                        return {"version": 1, "mode": "retry", "org": org.slug, "parent_id": task_id,
+                                "target_agent": query["target_agent"], "failed_child_id": query.get("failed_child_id"),
+                                "valid": not invalid, "path": [] if invalid else list(outcome.path),
+                                "reason": outcome.reason if invalid else None, "advisory": True}
+                    if mode == "preflight":
+                        return reader.preflight(org, task_id, body)
+                    receipt = reader.receipt(query["operation_key"])
+                    return {"version": 1, "mode": "receipt", "org": org.slug, "historical": True,
+                            "receipt": receipt, "receipt_sha256": digest(receipt)}
+    except (ReconciliationError, _RetryEvidenceRefusal, PauseControlError, sqlite3.Error,
+            ValueError, TypeError, KeyError, IndexError, RecursionError) as exc:
+        raise _reconciliation_error(exc) from exc
 
 # Terminal statuses for task-active gating. Referenced by both the cancel
 # route (l.~700) and the agent-callback routes (submit_completion, submit_progress)

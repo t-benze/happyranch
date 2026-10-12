@@ -561,6 +561,16 @@ struct HomeConnectorTests {
 
     // --- INVARIANT 3: Surface allow-list deny gate ---
 
+    @Test("reconciliation POST refuses before credentials or daemon forwarding", arguments: [
+        "/tasks/TASK-123/reconcile-failed-continuation",
+        "/api/v1/orgs/alpha/tasks/TASK-123/reconcile-failed-continuation",
+        "/api/v1/orgs/alpha/tasks/TASK-123/reconcile-failed-continuation/",
+        "/api/v1/orgs/alpha/tasks/TASK-123/reconcile-failed-continuation?unused=1",
+    ])
+    func deniesFailedContinuationPost(path: String) throws {
+        try assertDenied(path: path, method: "POST")
+    }
+
     @Test("denies /report-completion with 403")
     func deniesReportCompletion() throws {
         try assertDenied(path: "/report-completion")
@@ -638,6 +648,9 @@ struct HomeConnectorTests {
         )
         #expect(response.status == 403, "Expected 403 for \(path), got \(response.status)")
         #expect(response.body.contains("Forbidden"))
+        #expect(credProvider.credentialCallCount == 0, "Denied route must not look up daemon credentials")
+        #expect(fakeDaemon.receivedConnectionCount == 0, "Denied route must not connect to the daemon")
+        #expect(fakeDaemon.receivedRequests.isEmpty, "Denied route must not forward a request")
     }
 
     // --- INVARIANT 4: Paired-device check ---
