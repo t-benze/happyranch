@@ -163,17 +163,15 @@ more subtasks, more thread coordination, and more artifacts.
 Use `happyranch tasks --org ORG --pause-overview` for the read-only Task pause overview. It includes runnable Pending roots, Pausing blockers, Paused roots and separate terminal-drain diagnostics. --all-pages reads more bounded snapshots; incomplete evidence makes counts unavailable. `happyranch details TASK --org ORG --json` includes lifecycle and a separate pause projection. The overview never establishes that restarting is safe: other roots/background sessions may start. Controls use generation preconditions; on a stale conflict inspect again rather than automatically toggling. Persistence requires a pause-compatible runtime for rollback, even when controls are empty. Restart/deployment remains a separate operator action.
 
 
-The browser **Task pause overview** on the Tasks page observes roots in the selected
-organization independently of list filters and loaded rows. It includes unheld
-runnable Pending roots without a Pause action, Pausing blockers, Paused roots,
-terminal drain diagnostics and unavailable evidence. Refresh/Retry applies to the
-overview; each next page replaces the observation. Timestamps, unknown counts and
-incomplete evidence remain visible, so pages cannot be added into a complete or
-safe-zero claim. Task/session, job, launch, result-processing and unknown blockers
+In the browser, Pause/Resume, Pausing/Paused state and drain blockers appear only
+on each task's own detail page. The Tasks list shows ordinary lifecycle status and
+navigation without pause controls or labels, and there is no separate pause
+overview panel. Use the CLI overview above for an organization-wide observation. Pending roots show
+no Pause action. Task/session, job, launch, result-processing and unknown blockers
 retain their actual identifiers and diagnostics. An eligible running manager can
 settle a separate unheld successor root even while the predecessor drains. Pause
 covers the actual tree, not its historical lineage. Threads, dreams, wakes,
-schedules and other roots remain independent; the overview never certifies safe
+schedules and other roots remain independent; nothing here certifies safe
 restart. Pause/Resume labels, state, explanations and accessible errors are available
 in English and Simplified Chinese, while authored data and raw diagnostics remain
 verbatim. Locale changes preserve filters and dialog drafts without triggering

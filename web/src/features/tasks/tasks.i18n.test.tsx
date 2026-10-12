@@ -174,11 +174,6 @@ async function countRequests(fn: () => Promise<void>): Promise<string[]> {
 
 beforeEach(() => {
   server.use(
-    // Independent overview fixture; these tests retain their original list/attention contract.
-    http.get('/api/v1/orgs/:slug/tasks/pause-overview', ({ params }) => HttpResponse.json({
-      org_slug: params.slug, observed_at: '2026-10-11T00:00:00Z', evidence_complete: true,
-      counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [],
-    })),
   );
   sessionStorage.setItem('happyranch.token', 'tok');
   localStorage.clear();

@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/design-system/primitives/Button';
-import { StatusBadge } from '@/design-system/patterns/StatusBadge';
 import { usePauseTask, useResumeTask } from '@/hooks/tasks';
 import { useOrgSlugOptional } from '@/lib/orgSlug';
 import { useTranslation } from '@/hooks/i18n';
@@ -21,12 +20,12 @@ const STATE_KEYS: Record<TaskPauseProjection['control_state'], MessageKey> = {
   unheld: 'tasks.pause.unheld', pausing: 'tasks.pause.pausing', paused: 'tasks.pause.paused',
 };
 
-/** Shared production presentation for record and overview evidence. Raw owner/reason/IDs stay verbatim. */
-export function TaskPauseEvidence({ pause, compact = false }: { pause: TaskPauseProjection; compact?: boolean }): JSX.Element {
+/** Shared production presentation for record pause evidence. Raw owner/reason/IDs stay verbatim. */
+export function TaskPauseEvidence({ pause }: { pause: TaskPauseProjection }): JSX.Element {
   const { t, locale } = useTranslation();
   return <div className="text-text-secondary min-w-0 space-y-1 text-xs">
     <p>{t(pause.evidence_complete ? 'tasks.pause.evidenceComplete' : 'tasks.pause.evidenceIncomplete')}</p>
-    {!compact && <p>{t('tasks.pause.observed', { stamp: formatDateShapeFor(locale, new Date(pause.observed_at), 'dateTime') })}</p>}
+    <p>{t('tasks.pause.observed', { stamp: formatDateShapeFor(locale, new Date(pause.observed_at), 'dateTime') })}</p>
     {pause.blockers.length > 0 && <details>
       <summary className="text-text-primary cursor-pointer">{t('tasks.pause.blockers', { count: pause.blockers.length })}</summary>
       <ul className="mt-1 space-y-1">
@@ -70,10 +69,9 @@ function PauseActions({ taskId, generation, held }: { taskId: string; generation
   </div>;
 }
 
-export function TaskPauseControls({ task, routes, compact = false }: {
+export function TaskPauseControls({ task, routes }: {
   task: Pick<TaskRecord, 'task_id' | 'parent_task_id' | 'status' | 'pause'>;
   routes: TaskListRoutes;
-  compact?: boolean;
 }): JSX.Element {
   const { t, render } = useTranslation();
   const org = useOrgSlugOptional();
@@ -94,22 +92,6 @@ export function TaskPauseControls({ task, routes, compact = false }: {
       {mayAct && <PauseActions key={`${pause.org_slug}/${task.task_id}`} taskId={task.task_id} generation={pause.generation} held={pause.held} />}
     </div>
     {terminal && (pause.blockers.length > 0 || !pause.evidence_complete) && <p className="text-text-secondary text-xs">{t('tasks.pause.terminalDrain')}</p>}
-    <TaskPauseEvidence pause={pause} compact={compact} />
-  </div>;
-}
-
-/** Read-only root observation: no TaskRecord/NULL parent is reconstructed from a projection. */
-export function TaskPauseOverviewRoot({ pause, routes }: { pause: TaskPauseProjection; routes: TaskListRoutes }): JSX.Element {
-  const { t } = useTranslation();
-  const org = useOrgSlugOptional();
-  const available = pause.org_slug === org && Number.isSafeInteger(pause.generation) && pause.generation >= 0 && Object.hasOwn(STATE_KEYS, pause.control_state);
-  return <li className="border-border-default min-w-0 space-y-2 rounded-md border p-3">
-    <div className="flex flex-wrap items-center gap-2">
-      <Link to={routes.detail(pause.root_task_id)} className="text-id-task break-words font-mono text-sm hover:underline">{pause.root_task_id}</Link>
-      <StatusBadge status={pause.lifecycle_status} />
-    </div>
-    <p className="text-text-primary text-xs font-semibold">{t(available ? STATE_KEYS[pause.control_state] : 'tasks.pause.unavailable')}</p>
-    {TERMINAL.has(pause.lifecycle_status) && (pause.blockers.length > 0 || !pause.evidence_complete) && <p className="text-text-secondary text-xs">{t('tasks.pause.terminalDrain')}</p>}
     <TaskPauseEvidence pause={pause} />
-  </li>;
+  </div>;
 }

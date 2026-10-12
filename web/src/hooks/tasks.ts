@@ -72,10 +72,6 @@ export const useResolveEscalation: ReturnType<typeof useData>['tasks']['useResol
   taskId,
 ) => useData().tasks.useResolveEscalation(taskId);
 
-export const useTaskPauseOverview: ReturnType<typeof useData>['tasks']['useTaskPauseOverview'] = (
-  params,
-) => useData().tasks.useTaskPauseOverview(params);
-
 export const usePauseTask: ReturnType<typeof useData>['tasks']['usePauseTask'] = (
   taskId,
 ) => useData().tasks.usePauseTask(taskId);

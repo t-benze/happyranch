@@ -232,17 +232,6 @@ function useResolveEscalation(taskId: string): MutationLike<ResolveEscalationArg
   });
 }
 
-function useTaskPauseOverview(params?: { before?: string }) {
-  const slug = useRealOrgSlug();
-  return useQuery({
-    queryKey: ['tasks-pause-overview', slug, params],
-    queryFn: () => tasksApi.getTaskPauseOverview(slug, { limit: 20, ...params }),
-    enabled: !!slug,
-    retry: false,
-    refetchInterval: 10_000,
-  });
-}
-
 function usePauseTask(taskId: string): ReturnType<TasksApi['usePauseTask']> {
   const slug = useRealOrgSlug();
   const qc = useQueryClient();
@@ -274,7 +263,6 @@ function useResumeTask(taskId: string): ReturnType<TasksApi['useResumeTask']> {
 }
 
 export const realTasksApi: TasksApi = {
-  useTaskPauseOverview,
   usePauseTask,
   useResumeTask,
   useTasksList,
