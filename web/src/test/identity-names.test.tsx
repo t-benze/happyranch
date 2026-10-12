@@ -88,6 +88,11 @@ function fixture() {
     http.get('/api/v1/executors/runtime/profiles', () => HttpResponse.json({ profiles: [] })),
     http.get('/api/v1/orgs/:slug/settings', () => HttpResponse.json({ system: {}, org: orgSettings })),
     http.get('/api/v1/orgs/:slug/tasks', () => HttpResponse.json({ tasks: [] })),
+    // The mounted task page also reads its independent pause overview.
+    http.get('/api/v1/orgs/:slug/tasks/pause-overview', ({ params }) => HttpResponse.json({
+      org_slug: params.slug, observed_at: '2026-10-11T00:00:00Z', evidence_complete: true,
+      counts: null, next_cursor: null, unheld_runnable: [], pausing: [], paused: [], terminal_drain: [], unavailable_roots: [],
+    })),
     http.get('/api/v1/orgs/:slug/tasks/roots', ({ request }) => { filters.push(new URL(request.url).searchParams.get('assigned_agent') ?? ''); return HttpResponse.json({ tasks: [], next_cursor: null }); }),
     http.get('/api/v1/orgs/:slug/threads', () => HttpResponse.json({ threads: [] })),
     http.get('/api/v1/orgs/:slug/threads/events', () => HttpResponse.text('', { headers: { 'content-type': 'text/event-stream' } })),
