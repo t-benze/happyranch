@@ -1,7 +1,7 @@
 """Installed U1A workflow schema and compatibility boundary.
 
 F is the unchanged inert version-one foundation. Existing OrgState.load installs
-only F and validates complete F/E/G/H; explicit new-org creation initializes H.
+only F and validates complete F/E/G/H/I; explicit new-org creation initializes I.
 The explicit operator scripts alone upgrade existing F/E. Generic Database construction,
 including runtime-audit.db, has no workflow side effect.
 """
@@ -320,6 +320,40 @@ CREATE TABLE workflow_author_handoffs (
 """
 
 
+CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL = """\
+CREATE TABLE workflow_document_revision_operations (
+  id TEXT NOT NULL PRIMARY KEY CHECK(typeof(id)='text' AND length(id) BETWEEN 1 AND 128),
+  instance_id TEXT NOT NULL REFERENCES workflow_instances(id),
+  org_slug TEXT NOT NULL CHECK(typeof(org_slug)='text' AND length(org_slug) BETWEEN 1 AND 40),
+  principal TEXT NOT NULL CHECK(principal='human:founder'),
+  operation_key TEXT NOT NULL CHECK(typeof(operation_key)='text' AND length(operation_key) BETWEEN 1 AND 128),
+  predecessor_submission_id TEXT NOT NULL UNIQUE REFERENCES workflow_submissions(id),
+  predecessor_round_id TEXT NOT NULL UNIQUE REFERENCES workflow_rounds(id),
+  expected_revision INTEGER NOT NULL CHECK(typeof(expected_revision)='integer' AND expected_revision=1),
+  target_revision INTEGER NOT NULL CHECK(typeof(target_revision)='integer' AND target_revision=2),
+  draft_intent_id TEXT NOT NULL UNIQUE REFERENCES workflow_draft_dispatch_intents(id),
+  activation_id TEXT NOT NULL REFERENCES workflow_activations(id),
+  binding_snapshot_id TEXT NOT NULL REFERENCES workflow_binding_snapshots(id),
+  context_id TEXT NOT NULL UNIQUE REFERENCES workflow_contexts(id),
+  authorization_revision_id TEXT NOT NULL REFERENCES workflow_authorization_revisions(id),
+  request_bytes BLOB NOT NULL CHECK(typeof(request_bytes)='blob' AND length(request_bytes) BETWEEN 1 AND 1048576),
+  request_digest TEXT NOT NULL CHECK(typeof(request_digest)='text' AND length(request_digest)=64 AND request_digest NOT GLOB '*[^0-9a-f]*'),
+  admission_bytes BLOB NOT NULL CHECK(typeof(admission_bytes)='blob' AND length(admission_bytes) BETWEEN 1 AND 16777216),
+  admission_digest TEXT NOT NULL UNIQUE CHECK(typeof(admission_digest)='text' AND length(admission_digest)=64 AND admission_digest NOT GLOB '*[^0-9a-f]*'),
+  created_at TEXT NOT NULL CHECK(typeof(created_at)='text' AND length(created_at)=27),
+  UNIQUE(org_slug,principal,operation_key),
+  UNIQUE(instance_id,target_revision)
+);
+"""
+
+
+def _revision_draft_ddl() -> str:
+    """Independent approved I definition; never derived from inspected storage."""
+    return CANONICAL_WORKFLOW_DRAFT_DDL.replace(
+        "('initial','retry','reassignment','reactivation')",
+        "('initial','retry','reassignment','reactivation','revision')")
+
+
 _INSTALL_EVENT = {
     "event": "adapter_installed",
     "state_before": None,
@@ -397,20 +431,22 @@ def _layout(conn: sqlite3.Connection) -> tuple[object, ...]:
     return normalized_objects, tuple(table_metadata), tuple(index_metadata)
 
 
-@lru_cache(maxsize=4)
-def _canonical_layout(layout: Literal["F", "E", "G", "H"] = "F") -> tuple[object, ...]:
+@lru_cache(maxsize=5)
+def _canonical_layout(layout: Literal["F", "E", "G", "H", "I"] = "F") -> tuple[object, ...]:
     expected = sqlite3.connect(":memory:")
     try:
         expected.execute("PRAGMA foreign_keys=ON")
-        _execute_ddl(expected, _g_foundation_ddl() if layout in ("G", "H") else CANONICAL_WORKFLOW_DDL)
-        if layout in ("E", "G", "H"):
-            _execute_ddl(expected, CANONICAL_WORKFLOW_DRAFT_DDL)
+        _execute_ddl(expected, _g_foundation_ddl() if layout in ("G", "H", "I") else CANONICAL_WORKFLOW_DDL)
+        if layout in ("E", "G", "H", "I"):
+            _execute_ddl(expected, _revision_draft_ddl() if layout == "I" else CANONICAL_WORKFLOW_DRAFT_DDL)
         elif layout != "F":
             raise ValueError("unsupported_workflow_layout")
-        if layout in ("G", "H"):
+        if layout in ("G", "H", "I"):
             _execute_ddl(expected, _g_additions_ddl())
-        if layout == "H":
+        if layout in ("H", "I"):
             _execute_ddl(expected, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
+        if layout == "I":
+            _execute_ddl(expected, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
         return _layout(expected)
     finally:
         expected.close()
@@ -548,10 +584,10 @@ def _validate_cutover_data(
 def _validate_installed(
     conn: sqlite3.Connection, *, expected_org_slug: str | None = None,
     validate_data: bool = True,
-) -> Literal["F", "E", "G", "H"]:
+) -> Literal["F", "E", "G", "H", "I"]:
     actual = _layout(conn)
     names = {row[1] for row in actual[0]}
-    layout = "H" if "workflow_author_handoffs" in names else ("G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F"))
+    layout = "I" if "workflow_document_revision_operations" in names else "H" if "workflow_author_handoffs" in names else ("G" if "workflow_submission_schema_versions" in names else ("E" if "workflow_draft_adapter_versions" in names else "F"))
     expected = _canonical_layout(layout)
     if _object_keys(actual) != _object_keys(expected):
         raise ValueError("workflow_schema_object_set_mismatch")
@@ -566,24 +602,27 @@ def _validate_installed(
         raise ValueError("unsupported_workflow_adapter_version")
     if versions != [(1,)]:
         raise ValueError("workflow_schema_marker_mismatch")
-    if layout != 'H' and any(conn.execute(f"SELECT 1 FROM {table} WHERE compiler_pin='workflow-compiler@3' LIMIT 1").fetchone()
+    if layout not in ('H', 'I') and any(conn.execute(f"SELECT 1 FROM {table} WHERE compiler_pin IN ('workflow-compiler@3','workflow-compiler@4') LIMIT 1").fetchone()
                              for table in ('workflow_template_drafts', 'workflow_template_versions')):
         raise ValueError('workflow_author_handoff_schema_required')
 
     _validate_cutover_data(conn, expected_org_slug=expected_org_slug)
-    if layout in ("E", "G", "H"):
+    if layout in ("E", "G", "H", "I"):
         draft_versions = [tuple(row) for row in conn.execute("SELECT version FROM workflow_draft_adapter_versions")]
         if draft_versions != [(1,)]:
             raise ValueError("workflow_draft_schema_marker_mismatch")
         if validate_data:
             _validate_draft_data(conn, expected_org_slug=expected_org_slug)
-    if layout in ("G", "H"):
+    if layout in ("G", "H", "I"):
         if [tuple(row) for row in conn.execute("SELECT version FROM workflow_submission_schema_versions")] != [(1,)]:
             raise ValueError("workflow_submission_schema_marker_mismatch")
         if validate_data:
             _validate_submission_data(conn, expected_org_slug=expected_org_slug)
-    if layout == "H" and validate_data:
+    if layout in ("H", "I") and validate_data:
         _validate_author_handoff_data(conn, expected_org_slug=expected_org_slug)
+    if layout == "I" and validate_data:
+        from runtime.workflows.revisions import validate_revision_storage
+        validate_revision_storage(conn, expected_org_slug=expected_org_slug)
     return layout
 
 
@@ -914,7 +953,7 @@ def _validate_draft_data(conn: sqlite3.Connection, *, expected_org_slug: str | N
         refuse()
 
 
-def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E', 'G', 'H']:
+def validate_workflow_schema(conn: sqlite3.Connection, *, expected_org_slug: str | None) -> Literal['F', 'E', 'G', 'H', 'I']:
     """Complete layout/discriminator/history and stored source/data validation."""
     layout = _validate_installed(conn, expected_org_slug=expected_org_slug)
     _validate_source_data(conn)
@@ -925,7 +964,7 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
     """Explicit operator/fresh-owner primitive; never opens or commits a DB."""
     if not conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
         raise ValueError('workflow_draft_migration_requires_writer_and_foreign_keys')
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) in ('E', 'G', 'H'):
+    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) in ('E', 'G', 'H', 'I'):
         return 'ready'
     _execute_ddl(conn, CANONICAL_WORKFLOW_DRAFT_DDL)
     conn.execute('INSERT INTO workflow_draft_adapter_versions VALUES (1)')
@@ -934,23 +973,29 @@ def migrate_draft_schema(conn: sqlite3.Connection, *, expected_org_slug: str) ->
 
 
 def initialize_complete_org_schema(database: Database, *, expected_org_slug: str,
-                                   layout: Literal["G", "H"] = "G") -> None:
+                                   layout: Literal["G", "H", "I"] = "G") -> None:
     """Deliberate creation only; the POST owner proves the skeleton is fresh."""
-    if layout not in ("G", "H"):
+    if layout not in ("G", "H", "I"):
         raise ValueError("unsupported_workflow_layout")
     with database.workflow_schema_transaction() as conn:
         if _layout(conn)[0]:
             raise ValueError('workflow_fresh_creation_requires_empty_workflow_layout')
         _install_foundation(conn, expected_org_slug=expected_org_slug)
-        migrate_draft_schema(conn, expected_org_slug=expected_org_slug)
+        if layout == "I":
+            _execute_ddl(conn, _revision_draft_ddl())
+            conn.execute("INSERT INTO workflow_draft_adapter_versions VALUES (1)")
+        else:
+            migrate_draft_schema(conn, expected_org_slug=expected_org_slug)
         # Proven empty creation: no inbound work exists and FK enforcement stays on.
         conn.execute("DROP TABLE workflow_events")
         conn.execute("DROP TABLE workflow_submissions")
         _execute_ddl(conn, CANONICAL_WORKFLOW_SUBMISSION_DDL)
         conn.execute("CREATE INDEX workflow_events_instance_idx ON workflow_events(instance_id)")
         conn.execute("INSERT INTO workflow_submission_schema_versions VALUES (1)")
-        if layout == "H":
+        if layout in ("H", "I"):
             _execute_ddl(conn, CANONICAL_WORKFLOW_AUTHOR_HANDOFF_DDL)
+        if layout == "I":
+            _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
         validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
 
 
@@ -1129,7 +1174,7 @@ def author_handoff_migration_guidance() -> str:
 
 def require_author_handoff_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
     """Readiness only; existing-org owners never install the extension."""
-    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'H':
+    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) not in ('H', 'I'):
         from runtime.workflows.activation import WorkflowActivationError
         raise WorkflowActivationError('workflow_author_handoff_schema_required', owner='operator',
                                       required_action=author_handoff_migration_guidance())
@@ -1210,25 +1255,33 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         row['candidate_bytes'].decode('utf8')
         check(re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z', row['created_at']) is not None)
         datetime.strptime(row['created_at'], '%Y-%m-%dT%H:%M:%S.%fZ')
-        proof = closed(_handoff_json(row['admission_bytes'], row['admission_digest']),
-                       'format handoff client_request source_intent source_generation pins admission_authority')
-        check(proof['format'] == 'workflow-author-handoff@1')
+        proof = _handoff_json(row['admission_bytes'], row['admission_digest'])
+        family = {'workflow-author-handoff@1': 1, 'workflow-author-handoff@2': 2}.get(proof.get('format'))
+        check(family is not None)
+        closed(proof, 'format handoff client_request source_intent source_generation pins admission_authority'
+               + (' repository_resolution' if family == 2 else ''))
+        if family == 2:
+            check(proof['repository_resolution'] is None)
+        template_family = 4 if family == 2 else 3
         expected_row = {k: v.hex() if isinstance(v, bytes) else v for k, v in row.items()
                         if k not in ('admission_bytes', 'admission_digest')}
         check(same(proof['handoff'], expected_row))
-        command = closed(proof['client_request'], 'format operation_key activation_id expected_revision submission_bytes_base64 submission_digest')
-        check(command['format'] == 'workflow-author-handoff-command@1' and type(command['expected_revision']) is int
+        command = closed(proof['client_request'], 'format operation_key activation_id expected_revision submission_bytes_base64 submission_digest'
+                         + (' artifact_kind' if family == 2 else ''))
+        if family == 2:
+            check(command['artifact_kind'] == 'document')
+        check(command['format'] == f'workflow-author-handoff-command@{family}' and type(command['expected_revision']) is int
               and command['expected_revision'] == 1 and command['operation_key'] == row['operation_key'])
         candidate = base64.b64decode(command['submission_bytes_base64'], validate=True)
         check(candidate == row['candidate_bytes'] and command['submission_digest'] == row['candidate_digest']
               and base64.b64encode(candidate).decode('ascii') == command['submission_bytes_base64'])
-        request = {**command, 'format': 'workflow-author-handoff-request@1', 'handoff_id': row['id'],
+        request = {**command, 'format': f'workflow-author-handoff-request@{family}', 'handoff_id': row['id'],
                    'submission_id': row['submission_id'], 'instance_id': row['instance_id'], 'revision': 1}
         check(_canonical_bytes(request) == row['request_bytes'])
         check(row['id'] == 'workflow-author-handoff:' + hashlib.sha256(_canonical_bytes(
             [row['org_slug'], row['principal'], row['operation_key']])).hexdigest())
         check(row['submission_id'] == 'workflow-submission:' + hashlib.sha256(_canonical_bytes(
-            [row['instance_id'], 1, row['org_slug'], row['principal'], row['operation_key'], 'workflow-author-handoff@1'])).hexdigest())
+            [row['instance_id'], 1, row['org_slug'], row['principal'], row['operation_key'], f'workflow-author-handoff@{family}'])).hexdigest())
         intent = one('workflow_draft_dispatch_intents', row['intent_id'])
         check(same(proof['source_intent'], {k: v.hex() if isinstance(v, bytes) else v
                                           for k, v in intent.items() if k not in _DRAFT_MUTABLE}))
@@ -1267,17 +1320,17 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         activation = one('workflow_activations', intent['activation_id'])
         instance = one('workflow_instances', row['instance_id'])
         check(same(pins['activation'], dict(id=intent['activation_id'], revision=1, request_digest=activation['request_digest'])))
-        from runtime.workflows.templates import WorkflowTemplateStore, _document_contract
+        from runtime.workflows.templates import WorkflowTemplateStore, _review_contract
         mapping = _records(conn, 'SELECT * FROM workflow_template_identity_versions WHERE template_version_id=?', (activation['template_version_id'],))
         check(len(mapping) == 1)
         template = WorkflowTemplateStore._read_version(conn, identity_id=activation['template_identity_id'],
             version=mapping[0]['version'], expected_version_id=activation['template_version_id'])
         check(same(pins['template'], dict(identity_id=template.identity_id, version_id=template.version_id, version=template.version,
-              definition_digest=template.definition_digest, compiler_pin='workflow-compiler@3',
-              validator_pin='workflow-validator@3', source_pin='operator-input@3'))
+              definition_digest=template.definition_digest, compiler_pin=f'workflow-compiler@{template_family}',
+              validator_pin=f'workflow-validator@{template_family}', source_pin=f'operator-input@{template_family}'))
               and (template.compiler_pin, template.validator_pin, template.source_pin) ==
-              ('workflow-compiler@3', 'workflow-validator@3', 'operator-input@3'))
-        contract = _document_contract(template)
+              (f'workflow-compiler@{template_family}', f'workflow-validator@{template_family}', f'operator-input@{template_family}'))
+        contract = _review_contract(template)
         context = one('workflow_contexts', intent['context_id'])
         binding = one('workflow_binding_snapshots', intent['binding_snapshot_id'])
         authorization = one('workflow_authorization_revisions', binding['authorization_revision_id'])
@@ -1294,13 +1347,35 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
         grant = _handoff_json(authorization['authority_bytes'], authorization['authority_digest'])
         bound = _handoff_json(binding['binding_bytes'], binding['binding_digest'])
         ctx = _handoff_json(context['context_bytes'], context['context_digest'])
-        check(grant['format'] == 'workflow-authorization@3' and bound['format'] == 'workflow-binding@3'
-              and ctx['format'] == 'workflow-initial-draft-context@3' and contract['format'] == 'workflow-document-contract@3'
-              and same(ctx['document_contract'], contract) and same(ctx['authorization'], grant) and same(ctx['binding'], bound)
+        check(grant['format'] == f'workflow-authorization@{template_family}' and bound['format'] == f'workflow-binding@{template_family}'
+              and ctx['format'] == f'workflow-initial-draft-context@{template_family}' and contract['format'] ==
+                  ('workflow-artifact-contract@4' if family == 2 else 'workflow-document-contract@3')
+              and same(ctx['artifact_contract' if family == 2 else 'document_contract'], contract) and same(ctx['authorization'], grant) and same(ctx['binding'], bound)
               and ctx['binding_snapshot_id'] == binding['id'] and ctx['authorization_revision_id'] == authorization['id']
               and ctx['intent_id'] == intent['id'] and ctx['org_slug'] == expected_org_slug
               and instance['root_task_id'] == intent['task_id'] and instance['context_id'] == context['id']
               and instance['binding_snapshot_id'] == binding['id'] and instance['owner_principal'] == intent['admission_principal'])
+        if family == 2:
+            closed(grant, 'format namespace instance_id activation_id activation_revision root_task_id original_request request_digest actor created_at template authority repository_binding')
+            closed(bound, 'format instance_id activation_id activation_revision template_version_id authorization_revision_id bindings eligible_replacements scope authority repository_binding')
+            closed(ctx, 'format org_slug request authority_snapshot template inputs authorization authorization_revision_id binding binding_snapshot_id intent_id attempt_sequence assignment_generation artifact_contract repository_binding')
+            from runtime.workflows.activation import parse_request, _authorization, _binding, _context
+            frozen = parse_request(ctx['request']).model_dump(by_alias=True)
+            check(same(frozen, ctx['request']) and same(frozen, grant['original_request']))
+            expected_grant = _authorization(org_slug=row['org_slug'], instance_id=row['instance_id'],
+                activation_id=intent['activation_id'], task_id=intent['task_id'], request=frozen,
+                request_digest=intent['request_digest'], template=template, timestamp=activation['created_at'])
+            expected_bound = _binding(instance_id=row['instance_id'], activation_id=intent['activation_id'],
+                authorization_id=authorization['id'], template=template, request=frozen)
+            expected_context = _context(org_slug=row['org_slug'], request=frozen, snapshot=ctx['authority_snapshot'],
+                template=template, inputs=ctx['inputs'], authorization=expected_grant,
+                authorization_id=authorization['id'], binding=expected_bound, binding_id=binding['id'], intent_id=intent['id'])
+            check(same(grant, expected_grant) and same(bound, expected_bound) and same(ctx, expected_context))
+            check(contract['output']['accepted_kinds'] == ['document']
+                  and grant['repository_binding'] is None and bound['repository_binding'] is None
+                  and ctx['repository_binding'] is None and grant['original_request']['repository_access'] is None)
+        handoff_actions = (['stage-immutable-artifact', 'submit-immutable-artifact'] if family == 2
+                           else ['stage-immutable-document', 'submit-immutable-document'])
         captured = closed(proof['admission_authority'], 'ready pointer profiles mirror cutover actions')
         ready = closed(captured['ready'], 'namespace generation snapshot_bytes_hex snapshot_digest')
         snapshot = _handoff_json(hex_bytes(ready['snapshot_bytes_hex'], 1048576), ready['snapshot_digest'])
@@ -1312,7 +1387,7 @@ def _handoff_record(conn: sqlite3.Connection, row: dict, *, expected_org_slug: s
               and ready['generation'] == intent['authority_generation'] and ready['snapshot_digest'] == intent['authority_digest'])
         check(same(captured['pointer'], dict(current_generation=ready['generation'], journal_id=journal[0]['id'],
               snapshot_digest=ready['snapshot_digest'], state='ready', profile_fence=journal[0]['profile_fence'])))
-        check(captured['cutover'] == 'enabled' and same(captured['actions'], ['stage-immutable-document', 'submit-immutable-document'])
+        check(captured['cutover'] == 'enabled' and same(captured['actions'], handoff_actions)
               and set(captured['actions']) <= set(grant['original_request']['allowed_actions']))
         def namespace(value: object) -> None:
             check(type(value) is str and bool(value.strip()) and '\x00' not in value
@@ -1494,7 +1569,7 @@ def _validate_submission_source_ownership(conn: sqlite3.Connection, layout: str)
         ('workflow_request_task_bridges', "state IN ('claimed','running','uncertain')"),
         ('workflow_recovery_claims', "state='claimed'"),
     )
-    if layout in ('E', 'G', 'H'):
+    if layout in ('E', 'G', 'H', 'I'):
         queries += (('workflow_draft_dispatch_intents', "state IN ('claimed','running','uncertain') OR "
                      "(cancellation_requested=1 AND state NOT IN ('cancelled','failed','completed')) OR "
                      "(host_launch_started=1 AND state NOT IN ('cancelled','failed','completed'))"),)
@@ -1522,7 +1597,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         raise ValueError('workflow_submission_migration_requires_idle_foreign_keys')
     layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
     _validate_release_database(conn, layout)
-    if layout in ('G', 'H'):
+    if layout in ('G', 'H', 'I'):
         return 'ready'
     _validate_submission_source_ownership(conn, layout)
     for event in _records(conn, 'SELECT * FROM workflow_events'):
@@ -1534,7 +1609,7 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         conn.execute('BEGIN IMMEDIATE')
         layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
         _validate_release_database(conn, layout)
-        if layout in ('G', 'H'):
+        if layout in ('G', 'H', 'I'):
             conn.rollback()
             return 'ready'
         _validate_submission_source_ownership(conn, layout)
@@ -1579,3 +1654,66 @@ def migrate_submission_schema(conn: sqlite3.Connection, *, expected_org_slug: st
         conn.execute('PRAGMA foreign_keys=ON')
         if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
             raise ValueError('workflow_submission_fk_policy_restore_failed')
+
+
+def revision_migration_guidance() -> str:
+    return ('Stop the org daemon and all owned hosts; use a compatible I reader and '
+            'scripts/migrate_workflow_document_revision_schema.py --org-root <absolute-org-root> '
+            '--org-slug <org-slug> --check, then explicitly without --check. '
+            'H source required; startup/reopen/enable never upgrades; even empty I requires compatible code.')
+
+
+def require_document_revision_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> None:
+    if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'I':
+        from runtime.workflows.activation import WorkflowActivationError
+        raise WorkflowActivationError('workflow_document_revision_schema_required', owner='operator',
+                                      required_action=revision_migration_guidance())
+
+
+def migrate_document_revision_schema(conn: sqlite3.Connection, *, expected_org_slug: str) -> Literal['migrated', 'ready']:
+    """Explicit idle H-to-I, preserving every retained row and old H definition."""
+    if conn.in_transaction or conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+        raise ValueError('workflow_document_revision_requires_idle_foreign_keys')
+    layout = validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+    _validate_release_database(conn, layout)
+    if layout == 'I':
+        return 'ready'
+    if layout != 'H':
+        raise ValueError('workflow_document_revision_requires_h: ' + revision_migration_guidance())
+    _validate_submission_source_ownership(conn, layout)
+    conn.execute('PRAGMA foreign_keys=OFF')
+    try:
+        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 0:
+            raise ValueError('workflow_document_revision_fk_policy_unavailable')
+        conn.execute('BEGIN IMMEDIATE')
+        if validate_workflow_schema(conn, expected_org_slug=expected_org_slug) != 'H':
+            raise ValueError('workflow_document_revision_source_changed')
+        _validate_release_database(conn, 'H')
+        _validate_submission_source_ownership(conn, 'H')
+        retained = _retained_rows(conn)
+        conn.execute('CREATE TEMP TABLE revision_intents AS SELECT rowid AS original_rowid,* FROM workflow_draft_dispatch_intents')
+        conn.execute('DROP TABLE workflow_draft_dispatch_intents')
+        ddl = _revision_draft_ddl()
+        start = ddl.index('CREATE TABLE workflow_draft_dispatch_intents')
+        end = ddl.index('CREATE TABLE workflow_draft_dispatch_events')
+        _execute_ddl(conn, ddl[start:end])
+        conn.execute('CREATE INDEX workflow_draft_activation_idx '
+                     'ON workflow_draft_dispatch_intents(activation_id,attempt_sequence)')
+        columns = ','.join(r[1] for r in conn.execute('PRAGMA table_info(workflow_draft_dispatch_intents)'))
+        conn.execute(f'INSERT INTO workflow_draft_dispatch_intents(rowid,{columns}) SELECT * FROM revision_intents')
+        _execute_ddl(conn, CANONICAL_WORKFLOW_DOCUMENT_REVISION_DDL)
+        validate_workflow_schema(conn, expected_org_slug=expected_org_slug)
+        _validate_release_database(conn, 'I')
+        after = _retained_rows(conn)
+        if any(after[table] != rows for table, rows in retained.items()):
+            raise ValueError('workflow_document_revision_retained_relation_mismatch')
+        conn.execute('DROP TABLE temp.revision_intents')
+        conn.commit()
+        return 'migrated'
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute('PRAGMA foreign_keys=ON')
+        if conn.execute('PRAGMA foreign_keys').fetchone()[0] != 1:
+            raise ValueError('workflow_document_revision_fk_restore_failed')

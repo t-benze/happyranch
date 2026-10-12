@@ -51,6 +51,12 @@ const INCLUDED_PATHS = new Set<string>(classification.included);
 const EXCLUDED_PATHS = new Map<string, string>(Object.entries(classification.excluded));
 
 describe('openapi coverage', () => {
+  test('owner review discovery is a browser-included GET with independent selected access', () => {
+    const route = 'GET /api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection';
+    expect(INCLUDED_PATHS.has(route)).toBe(true);
+    expect(EXCLUDED_PATHS.has(route)).toBe(false);
+  });
+
   test('THR299 writer is agent-only and advisory retry reader is browser-included', () => {
     const writer = 'POST /api/v1/orgs/{slug}/tasks/{task_id}/reconcile-failed-continuation';
     const reader = 'GET /api/v1/orgs/{slug}/tasks/{task_id}/retry-verification';
@@ -60,10 +66,21 @@ describe('openapi coverage', () => {
     expect(EXCLUDED_PATHS.has(reader)).toBe(false);
   });
 
-  test('H uses one shared GET classification and one agent-only POST', () => {
+  test('H includes shared reads and human receipts, retaining the agent-only handoff POST', () => {
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/submissions/handoffs/{handoff_id}')).toBe(true);
     expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/reviews/requests/{request_id}')).toBe(true);
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/human-receipts')).toBe(true);
     expect(EXCLUDED_PATHS.get('POST /api/v1/orgs/{slug}/workflows/submissions/handoffs')).toBe('agent-only current-source mutation');
+    expect(EXCLUDED_PATHS.get('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe('agent-only current-reviewer mutation');
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/reviews/stages')).toBe(false);
+  });
+
+  test('I includes owner return and safe receipt, excluding new-author mutation', () => {
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions')).toBe(true);
+    expect(INCLUDED_PATHS.has('GET /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}')).toBe(true);
+    expect(EXCLUDED_PATHS.get('POST /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions'))
+      .toBe('agent-only current-revision-author mutation');
+    expect(INCLUDED_PATHS.has('POST /api/v1/orgs/{slug}/workflows/revisions/{revision_operation_id}/submissions')).toBe(false);
   });
 
   test('prompt-only founder PUT is browser-included', () => {

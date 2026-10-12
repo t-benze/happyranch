@@ -104,7 +104,14 @@ class WorkflowDraftDispatcher:
         if len(rows) != 1:
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
         intent = dict(rows[0])
-        self.org.workflow_activations._closure(conn, intent["activation_id"], actor=intent["admission_principal"])
+        if intent['admission_kind'] == 'revision':
+            from runtime.workflows.revisions import validate_revision_record
+            row = conn.execute('SELECT * FROM workflow_document_revision_operations WHERE draft_intent_id=?', (intent['id'],)).fetchone()
+            if row is None:
+                raise DraftOwnershipError('workflow_document_revision_storage_corrupt')
+            validate_revision_record(conn, dict(row), expected_org_slug=self.org.slug)
+        else:
+            self.org.workflow_activations._closure(conn, intent["activation_id"], actor=intent["admission_principal"])
         if conn.execute("SELECT 1 FROM workflow_request_task_bridges WHERE task_id=?", (task_id,)).fetchone():
             raise DraftOwnershipError("workflow_activation_storage_corrupt")
         return intent
@@ -134,6 +141,9 @@ class WorkflowDraftDispatcher:
         if author_capacity_blocked(conn, author=intent["assigned_principal"], task_id=intent["task_id"],
                                    active_sessions=active_sessions):
             raise DraftOwnershipError("workflow_activation_author_pending")
+        if intent['admission_kind'] == 'revision':
+            self.org.workflow_revisions._authority(conn, intent, capture)
+            return
         request = parse_request(json.loads(intent["request_bytes"]))
         template = self.org.workflow_activations._template(request)
         self.org.workflow_activations._roles(request, json.loads(capture.ready.snapshot_bytes), template)

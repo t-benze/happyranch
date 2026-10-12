@@ -218,6 +218,9 @@ export function Sidebar(): JSX.Element {
         <SidebarNavItem {...sidebarLink('tasks', true)} icon={ListChecks}>
           {t('shell.nav.tasks')}
         </SidebarNavItem>
+        <SidebarNavItem {...sidebarLink('reviews', true)} icon={ListChecks}>
+          {t('shell.nav.reviews')}
+        </SidebarNavItem>
         <SidebarNavItem {...sidebarLink('jobs', true)} icon={Terminal}>
           {t('shell.nav.jobs')}
         </SidebarNavItem>

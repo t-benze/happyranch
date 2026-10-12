@@ -63,13 +63,21 @@ def _founder_client() -> OpcClient:
 def cmd_workflow_templates_publish(args: argparse.Namespace) -> None:
     body = _read_payload(args.from_file)
     definition = body.get("definition")
-    if isinstance(definition, dict) and (definition.get("kind") == "document-review"
-            or definition.get("schema_version") in (2, 3)):
-        from runtime.workflows.templates import WorkflowTemplateError, _compile_document_definition
+    if isinstance(definition, dict) and definition.get("schema_version") == 4:
+        from runtime.workflows.artifacts import decode_artifact_json
         try:
-            _compile_document_definition(definition)
+            body = decode_artifact_json(Path(args.from_file).read_bytes())
+        except (ValueError, UnicodeError) as exc:
+            print("error: invalid artifact-review JSON", file=sys.stderr)
+            raise SystemExit(2) from exc
+        definition = body.get("definition")
+    if isinstance(definition, dict) and (definition.get("kind") in ("document-review", "artifact-review")
+            or definition.get("schema_version") in (2, 3, 4)):
+        from runtime.workflows.templates import WorkflowTemplateError, _validate_definition
+        try:
+            _validate_definition(definition)
         except WorkflowTemplateError as exc:
-            print("error: invalid document-review template", file=sys.stderr)
+            print("error: invalid review template", file=sys.stderr)
             raise SystemExit(2) from exc
     if args.session_id:
         slug = resolve_org_slug(args_org=args.org, available=[])
@@ -198,6 +206,9 @@ def _activation_payload(path: str) -> dict:
         if len(raw) > 1024 * 1024:
             raise ValueError("payload too large")
         body = json.loads(raw.decode("utf-8"))
+        if isinstance(body, dict) and body.get('format') == 'workflow-activation-request@4':
+            from runtime.workflows.artifacts import decode_artifact_json
+            body = decode_artifact_json(raw)
         parse_request(body)
     except (OSError, UnicodeError, ValueError, WorkflowActivationError) as exc:
         print("error: activation requires an absolute --from-file path containing a valid closed JSON request", file=sys.stderr)
@@ -310,16 +321,189 @@ def cmd_workflow_handoff(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps(result, sort_keys=True))
     elif args.handoff_command == "request-show":
-        print(f"{result['request_id']}: unsigned pending={str(result['pending']).lower()}")
+        print(f"{result['request_id']}: {result['status']} signed={str(result['signed']).lower()} "
+              f"pending={str(result['pending']).lower()}")
     else:
         current = result['current']
         print(f"{result['core']['handoff_id']}: {current['state']} {current['reason']} "
               f"pending={str(current['pending']).lower()} reconciliation_required={str(current['reconciliation_required']).lower()}")
 
 
+def _human_review_payload(path: str) -> dict:
+    from fastapi import HTTPException
+    from runtime.daemon.routes.workflow_reviews import decode_human_command
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            raise ValueError('absolute path required')
+        with absolute.open('rb') as source:
+            return decode_human_command(source.read(2097153))
+    except (OSError, ValueError, HTTPException) as exc:
+        print('error: human review requires an absolute --from-file path containing a closed JSON command', file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def cmd_workflow_human_review(args: argparse.Namespace) -> None:
+    body = _human_review_payload(args.from_file)
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    try:
+        client = _founder_client()
+        response = client.post(f'/api/v1/orgs/{slug}/workflows/reviews/human-receipts', json=body)
+    except httpx.HTTPError as exc:
+        print('error: workflow review transport unavailable; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code != 200:
+        _print_error(response)
+    result = response.json()
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        receipt = result['receipt']
+        print(f"{receipt['request_id']}: {receipt['outcome']} signed=true receipt={receipt['receipt_id']}")
+
+
+def _review_stage_payload(path: str) -> dict:
+    from fastapi import HTTPException
+    from runtime.daemon.routes.workflow_reviews import decode_stage_command
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            raise ValueError('absolute path required')
+        with absolute.open('rb') as source:
+            return decode_stage_command(source.read(2097153))
+    except (OSError, ValueError, HTTPException) as exc:
+        print('error: review stage requires an absolute --from-file path containing a closed JSON command', file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def cmd_workflow_review_stage(args: argparse.Namespace) -> None:
+    from pydantic import ValidationError
+    from runtime.daemon.routes.workflow_reviews import ReviewStageAck, ArtifactReviewStageAck, RevisionReviewStageAck
+    body = _review_stage_payload(args.from_file)
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    try:
+        port_path = port_file()
+        if not port_path.exists():
+            raise DaemonNotRunning('daemon not running')
+        with httpx.Client(base_url=f'http://127.0.0.1:{port_path.read_text().strip()}',
+                          headers={'X-HappyRanch-Surface': 'cli'}, timeout=30.0) as client:
+            response = client.post(f'/api/v1/orgs/{slug}/workflows/reviews/stages',
+                                   params={'session_id': args.session_id}, json=body)
+    except (httpx.HTTPError, OSError, DaemonNotRunning) as exc:
+        print('error: review stage transport unavailable; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code != 200:
+        _print_error(response)
+    try:
+        model = {'workflow-review-stage-command@1': ReviewStageAck, 'workflow-review-stage-command@2': ArtifactReviewStageAck,
+                 'workflow-review-stage-command@3': RevisionReviewStageAck}[body['format']]
+        result = model.model_validate(response.json()).model_dump()
+        # A well-formed unrelated acknowledgement is still not this command.
+        from runtime.workflows.draft_dispatch import canonical_bytes, digest
+        if result['request_digest'] != digest(canonical_bytes(body)):
+            raise ValueError('acknowledgement digest')
+    except (ValueError, ValidationError) as exc:
+        print('error: invalid unsigned stage acknowledgement; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"{body['request_id']}: staged signed=false replayed={str(result['replayed']).lower()} "
+              f"stage_event_id={result['stage_event_id']}")
+
+
+
+def cmd_workflow_revision(args: argparse.Namespace) -> None:
+    from urllib.parse import quote
+    from fastapi import HTTPException
+    from pydantic import ValidationError
+    from runtime.daemon.routes.workflow_revisions import decode_revision_command
+    from runtime.workflows.revisions import DocumentRevisionReceipt
+    slug = resolve_org_slug(args_org=args.org, available=[])
+    action = args.revision_command
+    body = None
+    if action in ('start', 'stage'):
+        try:
+            absolute = Path(args.from_file)
+            if not absolute.is_absolute():
+                raise ValueError('absolute path required')
+            with absolute.open('rb') as source:
+                body = decode_revision_command(source.read(2097153), author=action == 'stage')
+            if action == 'stage' and body['revision_operation_id'] != args.revision_operation_id:
+                raise ValueError('path/body mismatch')
+        except (OSError, ValueError, HTTPException) as exc:
+            print('error: revision requires an absolute --from-file path containing a closed pinned command', file=sys.stderr)
+            raise SystemExit(2) from exc
+    base = f'/api/v1/orgs/{slug}/workflows'
+    params = {'session_id': args.session_id} if getattr(args, 'session_id', None) else {'proof_kind': 'owner-human'}
+    try:
+        if action == 'stage' or (action == 'show' and getattr(args, 'session_id', None)):
+            path = port_file()
+            if not path.exists():
+                raise DaemonNotRunning('daemon not running')
+            client = httpx.Client(base_url=f'http://127.0.0.1:{path.read_text().strip()}',
+                headers={'X-HappyRanch-Surface': 'cli'}, timeout=30.0)
+        else:
+            client = _founder_client()
+        with client:
+            if action == 'start':
+                response = client.post(base + '/instances/' + quote(body['instance_id'], safe='') + '/revisions', json=body)
+            elif action == 'stage':
+                response = client.post(base + '/revisions/' + quote(args.revision_operation_id, safe='') + '/submissions', params=params, json=body)
+            else:
+                response = client.get(base + '/revisions/' + quote(args.revision_operation_id, safe=''), params=params)
+    except (httpx.HTTPError, OSError, DaemonNotRunning) as exc:
+        print('error: revision transport unavailable; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if response.status_code not in (200, 201):
+        _print_error(response)
+    try:
+        result = DocumentRevisionReceipt.model_validate(response.json()).model_dump()
+        if action == 'start' and result['core']['instance_id'] != body['instance_id']:
+            raise ValueError('receipt subject')
+        if action != 'start' and result['core']['revision_operation_id'] != args.revision_operation_id:
+            raise ValueError('receipt operation')
+    except (ValueError, ValidationError) as exc:
+        print('error: invalid revision receipt; retain the original operation key/body', file=sys.stderr)
+        raise SystemExit(1) from exc
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(f"{result['core']['revision_operation_id']}: {result['current']['state']} author_task={result['core']['author_task_id']} replayed={str(result['replayed']).lower()}")
+
 def register(sub: argparse._SubParsersAction) -> None:
     workflows = sub.add_parser("workflows", help="Publish templates and activate bounded workflow drafts")
     workflow_sub = workflows.add_subparsers(dest="workflows_command", required=True)
+    revisions = workflow_sub.add_parser('revisions', help='Explicit owner return, safe receipt and new-author r2 staging')
+    revision_sub = revisions.add_subparsers(dest='revision_command', required=True)
+    for action in ('start', 'show', 'stage'):
+        command = revision_sub.add_parser(action)
+        command.add_argument('--org', required=True)
+        command.add_argument('--json', action='store_true')
+        if action != 'start':
+            command.add_argument('revision_operation_id', type=_workflow_token)
+        if action in ('start', 'stage'):
+            command.add_argument('--from-file', required=True)
+        if action == 'stage':
+            command.add_argument('--session-id', required=True, type=_workflow_token)
+        elif action == 'show':
+            proof = command.add_mutually_exclusive_group(required=True)
+            proof.add_argument('--session-id', type=_workflow_token)
+            proof.add_argument('--proof-kind', choices=['owner-human'])
+        command.set_defaults(func=cmd_workflow_revision)
+    reviews = workflow_sub.add_parser('reviews', help='Stage current reviewer findings or sign a human request')
+    review_sub = reviews.add_subparsers(dest='review_command', required=True)
+    sign = review_sub.add_parser('sign', help='Submit a Founder-bearer human receipt')
+    sign.add_argument('--org', required=True)
+    sign.add_argument('--from-file', required=True)
+    sign.add_argument('--json', action='store_true')
+    sign.set_defaults(func=cmd_workflow_human_review)
+    stage_review = review_sub.add_parser('stage', help='Stage current agent findings before the genuine final callback')
+    stage_review.add_argument('--org', required=True)
+    stage_review.add_argument('--session-id', required=True, type=_workflow_token)
+    stage_review.add_argument('--from-file', required=True)
+    stage_review.add_argument('--json', action='store_true')
+    stage_review.set_defaults(func=cmd_workflow_review_stage)
     submissions = workflow_sub.add_parser("submissions", help="Stage original-current output and read safe handoff receipts")
     handoff_sub = submissions.add_subparsers(dest="handoff_command", required=True)
     for form in ("stage", "show", "request-show"):

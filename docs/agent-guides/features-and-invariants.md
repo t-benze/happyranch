@@ -1,5 +1,407 @@
 # Features And Invariants
 
+
+**Mounted generic owner review — THR139465/480/493/506, ROOT TASK10693.**
+The normal `/orgs/:slug/reviews` list and `/orgs/:slug/reviews/:activationId`
+detail use owner-selected discovery and the existing recipient-safe reads.
+Template pins supply output/role/outcome labels; there are no template-name
+branches. Exact selected identity, canonical base64, strict UTF8 and SHA256 are
+validated before rendering raw text. Current r1/r2 and read-only History remain
+separate; an individual recorded response does not establish joined approval.
+Only current collection validity with approved_use establishes approved input.
+Explicit Request changes or Sign off requires exact nonempty operator findings
+and a matching @1/@2/@3 command. A synchronous latch precedes hashing; one
+closed key/body is frozen in sessionStorage before POST. Ambiguous sends lock
+editing/opposite effects and offer only explicit same-command replay after a
+fresh selected read, including reload. No effect/poll/locale change auto-sends.
+Current read/refetch errors gate effects; access refusal hides selected bytes,
+drafts and receipts and evicts sensitive selected cache/envelopes. Query identity
+includes org/activation/lane/object; outgoing reads abort, panes detach, and late
+hash/mutation results cannot affect a new selection. Locale changes preserve
+mounted drafts/focus/selection without network work.
+Return to author is a separate confirmation following full server readiness;
+POST independently rechecks the original r1 CAS and authority. Genuine successor
+and new author task IDs/status come from the server, with no optimistic r2 bytes
+or receipt. Fresh r2 responses are required; further revision is unsupported.
+Frozen original owner-return replay uses current access, identity and authority
+admission separately from new-effect readiness. A pending genuine successor's
+held/noncurrent collection permits only explicit identical acknowledgement
+recovery; it never permits a new command. Current graph/status comes from the
+selected successor independently of retained r1. Pending author completion does
+not mean r2 reviews closed; unsupported further revision appears only for a
+current objected r2 graph. Selected-read start/refusal or snapshot change
+invalidates the admission token synchronously; the writer rechecks that token
+and selected identity immediately after asynchronous command validation.
+No raw proof editor, peer cancellation, author staging, direct submission,
+r3/reassignment, execution/merge or digest-derived access controls are mounted.
+This frontend source requires the compatible discovery/revision readers; old
+daemon errors remain visible dependencies. No backend/native/schema/auth/shared
+transport/dependency/hook changes follow. Bounded intercepted frontend rendering
+and assertions establish UI behavior only; independent final-head review/scoped
+QA and the assigned public synthetic two-template journey remain separate gates.
+Real Founder Request changes AND Sign off and genuine agent judgment remain
+UNOBSERVED/root-owned. Python units RETIRED; integration/callback SKIPPED24342;
+broad/protected proof UNEXECUTED/FOUNDER-WAIVED139429/430. Required automated
+CI/hooks remain Source Boundary Lint + Web Lint(Node24), static only.
+
+
+**Document revision C1 — Founder THR139seq493/490, ROOT TASK10693.**
+The same current Founder owner explicitly returns a fully collected, objected
+r1 to the same author with a pinned CAS command. Pending peers survive objections.
+POST `/api/v1/orgs/{slug}/workflows/instances/{instance_id}/revisions` takes
+`workflow-document-revision-command@1`: operation_key, instance_id, activation_id,
+expected_revision=1, predecessor_submission_id/digest, predecessor_round_id and
+original authority pin. It returns201 or exact replay200 without another task.
+GET `/workflows/revisions/{revision_operation_id}` selects exactly owner-human
+bearer or the new-author current session; its closed receipt separates retained
+identity/history from current eligibility and exposes no claim/host controls.
+The new genuine task owns a new context/intent with admission_kind=revision,
+attempt/generation2 and unchanged activation1, owner/binding/authorization/root.
+POST `/workflows/revisions/{revision_operation_id}/submissions?session_id=CURRENT`
+stages `workflow-author-revision-command@1` with literal2 and artifact_kind=document.
+CLI `workflows revisions start/show/stage` matches these transports; stage requires
+loopback session proof, without bearer fallback. Browser exposes owner/read only.
+Staged G bytes keep permanent NULL legacy result; only the new task's own full
+INTEGER callback and successful Boolean-quiescent terminal append the genuine
+result link and fresh configured review requests/agent tasks. Review scope,
+human/stage commands, receipts, acknowledgement and service join select explicit
+@3/r2; old @1/@2 remain literal r1 and byte-compatible. Each current reviewer gets
+only its own bounded r1 prior_review. The author gets all closed findings and
+only originally addressed inputs. Fresh all-slot approvals yield one service
+join; old receipts and tasks never approve r2. Historical r1 is needs_revision
+with reason noncurrent_successor after return; current assignment replacement
+retains all historical tasks/results/evidence/contributors and receipts.
+Layout I changes only the draft admission enum and adds ONE
+workflow_document_revision_operations table. F/E/G/H independent readers remain;
+H literal r1/unique intent and every old schema/data byte are preserved. Proven
+fresh org creation initializes I. Existing startup/reopen/enable only validates.
+Explicit owned idle H→I operator source is
+`scripts/migrate_workflow_document_revision_schema.py --org-root ABSOLUTE_ORG_ROOT
+--org-slug ORG [--check]`. No live migration was executed. Even empty I needs a
+compatible reader; no old-reader downgrade claim. Native denies the exact new
+author POST using independent raw/normalized one-pass candidates before credentials;
+shared normalizer/transport/auth/host permissions remain unchanged.
+C1 source is delivered; wider recovery/reassignment/owner transfer/r3/direct-submit,
+B2 repository resolution and mounted end-user UI remain separate. Code activation
+still refuses409 before allocation. All new behavior/assertion/red-green/mutation/
+repetition/proof/executable-QA is UNEXECUTED/FOUNDER-WAIVED139429/430; integration
+SKIPPED24342; Python units RETIRED. Retained source assertions have not executed.
+Source checks establish no behavior or migration safety. Independent full review,
+same-head scoped QA, lint/static gates, normal hooks and manager guarded merge
+remain. Founder465 public two-template/revision smoke and actual Founder UI
+Request changes AND Sign off remain root-owned UNOBSERVED. This current C1
+section supersedes historical C1-pending/fresh-H checkpoint descriptions below.
+
+
+**Current reviewer staging — Founder THR139seq493/475, ROOT TASK10693.**
+POST `/api/v1/orgs/{slug}/workflows/reviews/stages?session_id=CURRENT` and
+`happyranch workflows reviews stage --org ORG --session-id CURRENT
+--from-file /absolute/command.json [--json]` expose the existing current
+non-recovery agent reviewer writer. Selected immutable request scope chooses
+`workflow-review-stage-command@1`, `@2` or revision2 `@3`; old families remain closed and byte-compatible.
+The five-field @1/@2/@3 acknowledgement (format, stage_event_id, request_digest,
+replayed, signed=false) is unsigned. Genuine INTEGER/full callback and successful
+Boolean-quiescent terminal under current authority remain necessary for a receipt.
+The actual launch supplement carries selected request/digest/revision/outcomes
+and staging-before-final-callback instructions; forthcoming invocation identity
+is not session admission proof. CLI uses loopback session transport without
+bearer fallback or automatic retry. This POST is browser-excluded and denied
+natively before credential lookup/injection/forwarding. The private stage-only
+comparison independently checks raw and normalized paths: literal query split,
+one percent-decode with UTF8 replacement (malformed triplets and plus literal),
+one final slash removal, existing prefix strip, exact family. Shared transport,
+normalizer, H/G/r1/history and receipt validators retain their contracts.
+This supersedes the historical reviewer-stage deferrals below; direct-submit,
+B2 repository access, wider recovery/UI and Founder465
+public two-template/revision smoke plus real Request changes AND Sign off remain
+separate/root-owned. New behavior/proof is UNEXECUTED/FOUNDER-WAIVED139429/430;
+integration SKIPPED24342, Python units RETIRED; automation is lint/static only.
+
+
+**Matched artifact admission B1 — THR139seq480/477, ROOT TASK10693.**
+A closed `artifact-review` definition with strict schema_version 4 compiles to
+`workflow-artifact-contract@4`; exact pins are workflow-compiler@4,
+workflow-validator@4 and operator-input@4. The template selects exactly one
+accepted kind in output `{primitive:"immutable-artifact-revision",description,
+accepted_kinds:["document"]}` or `["code-change"]`. Role names/kinds/counts,
+outcomes, approval, return rules and submission timing remain finite template
+data, independently bound to actual current principals. No name/content sniffing
+or new product-design branch selects policy. Submission delivery retains the
+literal current-author-handoff@1 declaration; B1 implements original-author r1.
+
+Matched activation-request/receipt/authorization/binding/initial-draft-context@4
+uses draft-artifact, stage-immutable-artifact, submit-immutable-artifact and the
+existing collect-review/approve-planning-input/return-to-author semantics.
+These grant preparation/review-input only. Context stores artifact_contract;
+request requires repository_access; for documents it is null. Authorization,
+binding and context require repository_binding null. A code definition may be
+stored, but valid code activation returns409 workflow_repository_reader_unavailable
+before instance/task/intent allocation. No code submission, repository reading,
+access grant/capsule, execution, merge or delivered-code claim is implemented.
+
+The document r1 chain uses author-handoff-command/request/proof/receipt@2.
+Command adds artifact_kind document; proof adds repository_resolution null;
+public core adds artifact_kind document. The source supplement gives the actual
+@2 command and stable original key, staged before the genuine final callback.
+The new submission ID preimage uses workflow-author-handoff@2. The review scope
+is workflow-review-request@2 with the explicit artifact identity (org namespace,
+instance and output slot), submission ID, strict revision1, document kind, exact
+bytes digest and content_digest subject. It adds repository_resolution null.
+Human-review-command/proof/receipt, review-stage-command, agent-review-proof,
+review-receipt, review-request-receipt and review-join use matched @2 families.
+B1 added no stage endpoint; seq475 staging is described above. Selected-principal/grant checks
+precede private decode and repeat after waits/in the writer. Both authentic
+receipt lanes, INTEGER/full callback and successful Boolean-quiescent terminal,
+contributor independence, retained objections and collect-all rules remain.
+No object I/O occurs in the writer or historical/cold readers.
+
+Existing @1/@2/@3 historical definitions/contexts and @1 document handoff,
+scope/brief/proof/receipt/join interpretations remain byte-exact. Unknown/mixed
+families refuse; no relabel, backfill or automatic repin occurs. F/E/G/H DDL,
+digests, H17 columns/constraints/revision1/unique intent and marker meanings are
+unchanged. Publication requires pre-existing H. Any durable @4 template,
+context or authorization already requires a compatible reader before the first
+H row; no old-reader downgrade or migration claim follows. Compatible-reader
+rollback must retain the new history; deleting/converting it is not authorized.
+
+Prospective frozen reservations (non-null use remains held B2): repository_access
+is `{action:"read-repository-artifact",repository_id,recipients}` with ordered
+roles author then all reviewers. Binding is `{format:"workflow-repository-binding@1",
+action:"read-repository-artifact",org_slug,repository_id,repo_key,origin_digest,
+store_owner,authority:{namespace,generation,snapshot_digest},
+recipients:[{role,kind,principal,team}],reader:"local-git-objects@1"}`.
+Resolution is `{binding,binding_digest,presentation_bytes_base64,presentation_digest}`;
+presentation is `{format:"workflow-repository-presentation@1",repository_id,
+object_format,head,base,entries:[{path,before,after}]}` with each side null or
+`{mode,blob_oid,bytes_base64}`. B1 accepts/stores only null binding/resolution;
+these declarations are grammar reservations, never access or object-resolution
+proof. Incompatible future shapes need a fresh version.
+
+Existing routes/CLI/TS/OpenAPI carry matched unions, without a new route,
+audience, native permission or shared transport change. B2 repository access
+and bounded immutable-object reader, C r2/fresh signoffs/direct submission/owner
+validity/reassignment/recovery/mounted UI remain held or separate. Founder465
+public two-template/revision journeys and actual Founder UI Request changes
+and Sign off remain root-owned UNOBSERVED; Phase2 ordered coding/QA/CI/merge is
+separate. Behavioral/assertion/red-green/mutation/repetition/proof is UNEXECUTED /
+FOUNDER-WAIVED139429/430, never PASS; integration SKIPPED24342 and Python units
+RETIRED. Automated checks are lint/static only; no ad hoc E2E/live operation.
+Fresh full independent review/scoped QA binds the final actual pushed head.
+
+
+**Retained artifact foundation A — THR139 seq480/477, ROOT TASK10693.**
+`runtime/workflows/artifacts.py` supplies a pure frozen `ArtifactRevision`:
+org namespace + workflow instance + stable output slot (`output` for the current
+single-output document family), stored submission ID, positive strict-integer
+revision, explicit document/code-change subject, and authenticated provenance
+references/snapshots. Output descriptions and submission IDs are not stable
+artifact identity. Source task/session, genuine optional INTEGER result link,
+author/contributor records and pinned template/context/binding/authorization
+references remain caller-owned evidence; an active author gets no invented
+result and a human reviewer gets no invented task.
+
+Document projections verify exact UTF8 bytes (1..1048576) and raw SHA256.
+Submission integrity and both human/agent receipt subject checks consume this
+projection. Existing `review_scope`/`review_brief` wrappers select the document
+compatibility adapter: exact historical scope, purpose, brief (including its
+historical later-receipts sentence), bytes, IDs, digest preimages and proof formats
+stay unchanged. Selected recipient/grant checks still precede private decode;
+after-wait/current-authority writer checks, contributor independence and genuine
+callback/Boolean-quiescence proof stay in existing owners. The pure module has
+no store/schema/graph import, I/O, registry or recursive validation.
+
+Closed canonical `workflow-code-change@1` descriptors require kind code-change,
+repository `{id}` (opaque binding Token), object_format sha1/sha256, full lowercase
+40/64-character head, comparison null or `{base}` in that format, and navigation
+`{branch,pr_url}` with nullable bounded UTF8 text (1..256/1..2048 bytes). All keys
+are required; unknown/duplicate keys, symbolic/short OIDs and malformed types
+refuse. Canonical descriptor bytes use the same 1MiB limit. Repository/algorithm/
+head/base define the immutable object subject; descriptor SHA256 additionally
+pins the navigation snapshot. No path/URL resolution, content sniffing, fetch,
+checkout, execution or access grant follows from parsing. A syntactically valid
+absent object can parse; no repository reader is mounted in A.
+
+Product-design and the differently named one-human proposal use the same document
+projection with template-defined roles/outcomes; code-change shares the identity
+model as representation only. B1 adds the matched document admission described
+above; B2 still owns actual authorized immutable repository resolution.
+C still owns r2 producers/fresh requests/sign-offs, reassignment/recovery and
+mounted UI/CLI. H revision1/unique-intent constraints and old @1/@2/@3 pins/history
+remain intact. Seq493 approves the seq475 reviewer-stage source adapter and native denial
+described above. Founder465 two-template public scratch/revision acceptance
+and real Founder UI Request changes/Sign off remain UNOBSERVED. Ordered development/
+review/QA, CI and guarded merge adapters/general coding/fork-join remain Phase2.
+A is source-only delivery, not behavioral acceptance: behavior/proof campaigns
+UNEXECUTED / FOUNDER-WAIVED139429/430; integration SKIPPED24342; Python units RETIRED.
+Full independent review, scoped QA and exact-head lint renew before manager merge.
+
+
+**U3b(d) human public write and selected signed read — same THR139 authority.**
+POST `/api/v1/orgs/{slug}/workflows/reviews/human-receipts` mounts ONLY the
+existing `admit_human` guarded writer through the server-derived Founder-bearer
+principal. The retained closed HumanReviewCommand selects one request; no query
+proof, body actor, task/session/result or agent lane is accepted. HTTP200 returns
+the original immutable receipt on an exact actor/key/full-payload retry;
+changed payload conflicts409. Peers/findings and all-current collection remain
+owned by the existing writer. Generic pinned kinds/outcomes/recipients and complete
+contributor independence govern. The explicit `workflow-review-receipt@1` response
+contains only receipt/request/submission identity and digests, generation,
+outcome, original timestamp and that recipient's findings encoding/digest.
+Private proof, admission/pins, unrelated inputs, peer findings and credentials
+are excluded.
+
+Existing request GET admits pending and genuine signed rows with the SAME
+selected human or actual CURRENT reviewer-session predicates. Current grant
+selection still precedes private H storage; binding leases, authority writer,
+after-wait rechecks and full receipt/graph validation remain. Historical proof
+never keeps an expired session or grants owner access. Response status is the
+real request row: pending/signed=false/pending=true/receipt=null, or approved or
+changes_requested/signed=true/pending=false/receipt=the safe projection. Stored
+scope/brief bytes, including the historical unsigned-purpose literal, are unchanged.
+Server served models/OpenAPI, CLI and shared TS agree. Reviewer staging/native denial are described above; direct-submit
+remains deferred and client.ts is unchanged. No owner-resolution/revision/reassignment writer or new
+owner-read audience. Behavioral/proof results are UNEXECUTED/FOUNDER-WAIVED429/430;
+root-owned real two-template public smoke465 remains required before invitation.
+The draft stays dependency-incomplete/unaccepted/unmerged pending manager assessment,
+full cumulative independent review, honest same-head QA and guarded merge.
+
+**U3b(a) internal agent checkpoint — THR139 D5/G395/generic410/H445/457/465.**
+`WorkflowReviewDispatcher.stage_review` is an internal operation; no public or
+native stage surface is mounted. Its closed `workflow-review-stage-command@1`
+requires action `stage-review`, operation/request tokens using the existing
+1..128 `[A-Za-z0-9._:-]` grammar, strict integer expected_revision=1, the exact
+request-scope digest, a template-declared outcome, canonical base64 UTF8 findings
+of 1..1048576 bytes (encoded field 4..1398104 characters), and raw SHA256.
+The existing sequenced F5 event stores `workflow-review-stage@1`: the closed
+lifecycle envelope plus `stage={command,request_digest,scope,outbox_id,session_id}`.
+The digest covers the full canonical command; scope and before/after projections
+bind the actual selected reviewer/session, subject, revision, request, role kind,
+assignment generation, context, binding, template and authority pins. One stage
+per current request is immutable; org/principal/operation-key reuse across requests
+conflicts. Eligible current-session exact full-body replay
+returns its original event, and a changed body/key conflicts. Before and after
+are identical, result and terminal evidence are null, and the acknowledgment
+counts zero signatures. Cancelled, stale, nonrecipient and contributor actors,
+undeclared outcomes and Boolean/integer substitutions refuse before effects.
+
+`WorkflowReviewReceiptStore.admit_completed` consumes that stage only after the
+exact actual INTEGER/full callback and committed successful/quiescent F5 terminal,
+current native task/session assignment, source/activation/grant/authority and
+instance-wide contributor independence revalidate. It atomically appends the
+real completed instance-task/result/current-assignment/receipt/evidence bridge
+and updates that request's outcome, then consumes all-current collection in the same writer. All proof bytes are reconstructed by
+matched closed graph readers. Callback verdict alone cannot sign; absent stages,
+failed/blocked/cancelled/uncertain evidence or manager effects remain unsigned.
+The native terminal hook and existing lifespan/reaper discovery consume committed
+results without another scheduler, host launch or PID/TTL inference. Roles and
+outcomes come from pinned template data, including agent-looking human labels.
+
+U3b(d) above mounts human write and genuine selected signed GET. Reviewer staging/native denial are described above;
+direct-submit remains deferred. Root-owned
+two-template public scratch smoke465 remains a dependency. Collection below is internal backend
+work; keep the draft unaccepted/unmerged.
+
+**U3b(b) internal human receipt checkpoint — same THR139 authority.**
+`WorkflowReviewReceiptStore.admit_human` takes an existing server-derived
+`WorkflowTemplatePrincipal` separately from the body. It requires the actual
+human Founder/founder_bearer lane, no task/session, and revalidates before scope
+selection, after awaited locks, inside the existing authority writer, and before
+commit. Selected recipient and current grant admission precede full private H
+decode; source validity, enabled cutover, current activation/authority/actions,
+complete historical closure and whole-instance contributor independence must
+still hold. Pinned role **kind**, output and allowed outcomes select behavior;
+role labels, product names and reviewer counts supply no human authority.
+
+The closed `workflow-human-review-command@1` has action `sign-review`,
+operation_key/request_id Token `[A-Za-z0-9._:-]{1,128}`, strict integer
+expected_revision=1, exact request_scope_digest, outcome `approved` or
+`changes_requested` additionally declared by the template, canonical base64
+findings_bytes_base64 (4..1398104 characters, 1..1048576 decoded UTF8 bytes), and
+findings_digest (SHA256 of the exact raw bytes). Canonical command <=2097152
+bytes. No body actor, proof Boolean, credentials or synthetic task/result.
+
+`workflow-human-review-proof@1` is a closed pure-data object with exactly
+`format,actor,operation_principal,command,request_digest,scope,request_scope_digest,
+pins,admission_authority,created_at`. Actor is exactly
+`{principal_kind:human,principal_id:founder,proof_kind:founder_bearer}` and
+operation_principal is `human:founder`. Request digest covers the **full canonical
+command**, including operation key and raw findings encoding/digest. Scope binds
+actual subject/revision/raw artifact digest, request, role/principal/generation
+and all recipient inputs. Pins retain the complete H template, activation,
+authorization/grant, binding, context, source scope and generic contract bytes.
+Admission authority retains the validated full H ready/pointer/profiles/mirror/
+enabled-cutover closure with actions exactly `[collect-review]`; current admission
+also compares the complete fresh capture inside the writer. Created_at is UTC
+`YYYY-MM-DDTHH:MM:SS.ffffffZ`; canonical proof <=16777216 bytes. The reader derives
+and compares the entire canonical proof and receipt row with strict JSON types,
+command/time/byte bounds and authentic saved closure. Boolean/integer substitutions,
+extra fields, partial or mismatched proof refuse. Historical validation invokes
+no bearer callback and supplies no current mutation authority.
+
+One org/actual human/operation-key identifies the immutable full payload. After
+CURRENT admission, exact replay returns the original receipt bytes/ID/timestamp;
+changed body/key or cross-request key reuse conflicts with zero partial effects.
+The guarded transaction inserts the human receipt, updates its selected outcome
+and consumes all-current collection below. No human task/session/result/current
+assignment, agent receipt_evidence bridge, F5 stage or host-terminal proof exists.
+Peers/findings remain immutable. Matched readers accept pending and signed rows.
+
+U3b(d) above is the human public caller and selected pending/signed read adapter.
+Reviewer staging/native denial are described above; direct-submit remains deferred.
+All human behavior/proof execution remains UNEXECUTED; retained agent source
+is not accepted proof. Root-owned real two-template public scratch smoke465 is
+required before Founder invitation and remains separate from daily Product E2E.
+
+**U3b(c) collect-all/service join — same authority.** Both receipt writers invoke
+`review_join.collect_in_writer` within the existing authority writer. Only ALL
+configured current slots responding closes collection. An objection closes the
+round while the instance stays reviewing and derives needs_revision/owner action;
+no joined event, new status enum, automatic r2 or timeout approval. Cutover keeps
+closed objection rounds blocked for U4 owner revision. All approvals revalidate
+current collect-review/approve-planning-input grant, activation, full captured
+ready/pointer/profile/mirror closure, enabled cutover, artifact, recipient/
+generation, contributor independence and every genuine receipt after waits.
+The instance and round complete atomically with one service event/replay.
+Pinned template roles/kinds/count/outcomes/all-current approval select behavior;
+product-design and differently named one-human proposal share the mechanism.
+Author contributes no signature. Existing H fulfillment still requires the
+original successful callback/quiescent terminal; this adds no author-completion
+gate and does not implement/prove the deferred direct-active-submit producer.
+
+Closed canonical `workflow-review-join@1` keys are exactly
+`format,event_kind,org_slug,instance_id,round_id,submission_id,revision,
+submission_digest,operation,pins,admission_authority,receipts,assignments,created_at`.
+Event kind is joined; revision is strict integer1; submission_digest hashes raw
+immutable UTF8. Operation is exactly `{principal:service:workflow_review_join,
+operation_key:<actual round ID>,action:approve-planning-input}`. Pins are the full
+seven H pins (including immutable grant/binding/context bytes); admission_authority
+is the full saved H ready/pointer/profiles/mirror/enabled-cutover closure with
+actions `[collect-review,approve-planning-input]`, freshly compared in the writer.
+Receipts in declared role order contain entire immutable rows, with bytes encoded
+as lowercase hex; assignments in declared agent-role order contain whole actual
+current assignment rows. Receipt readers bind exact INTEGER/full successful
+callbacks, genuine task/session/result/generation and Boolean host quiescence;
+human proof binds real bearer provenance without synthetic task/result.
+Created_at is UTC `YYYY-MM-DDTHH:MM:SS.ffffffZ`. Event ID is deterministic per
+instance/revision/joined and event_digest is raw canonical SHA256. The existing
+operation replay contains exact org/service/round-key, raw event request_digest,
+instance and effect ID. Full reconstruction authenticates the complete event and
+replay; extra/malformed/type-substituted fields refuse. Historical validation
+runs after receipt validation, never recursively through schema/graph/current
+admission, and preserves earlier event interpretations.
+
+Exact retry and human/agent/concurrent last response use the same writer and IDs.
+Existing lifespan/reaper discovery handles a committed-last-receipt gap without
+another scheduler; whitelisted ordinary authority holds continue to later work,
+while corruption propagates. Closed joins with a later relational source or
+authorization/activation/authority-pointer hold also block drain for owner
+reconciliation. Internal collection current validity/approved-use
+reports source/authority holds and owner reconciliation independently of retained
+joined history. A historical join cannot authorize fresh use; explicit durable
+owner resolution/revision/reassignment remains U4. All lifecycle/proof cases are
+source-inspected only, UNEXECUTED/FOUNDER-WAIVED139429/430. Deferred public-stage disposition and root
+smoke465 remain dependencies; smoke465 is required before Founder invitation.
+
 > Test-policy update (THR-291 seq40): former Python unit tests and unit-only
 > fixtures referenced in historical implementation evidence below are retired.
 > Product contracts are unchanged; replacement E2E is PENDING. See
@@ -91,7 +493,7 @@ graph/callback states. Core stays identical; every held graph is hidden and GET
 creates no domain, queue or launch effects. Callback-before-clear original-current
 GET remains allowed; cleared sessions refuse through existing session admission.
 
-Direct-submit and reviewer-stage public/deny deferral remains in force. Genuine
+Direct-submit remains deferred; reviewer staging/native denial are described above. Genuine
 receipts/joins, revisions/reassignment/recovery, mounted operator UI and operator
 acceptance remain later units. Full independent review, honest same-head QA,
 unconditional exact-head Source Boundary Lint and Web Lint (Node 24), and
@@ -1063,3 +1465,42 @@ local-failure priority and writer-time final-spawn fences. Reads are nonmutating
 and advisory. Synthetic exact-positive/dependent proof remains UNPROVEN under
 Founder299seq11; reviewed source is distinct from installation/reconciliation
 and TASK10565's naming acceptance.
+
+
+### Current owner review discovery (THR139 seq506)
+
+GET `/api/v1/orgs/{slug}/workflows/activations/{activation_id}/review-selection?proof_kind=owner-human`
+returns closed `workflow-owner-review-selection@1`: activation/instance IDs, nullable
+original `{handoff_id,human_request_id,collection}`, nullable successor
+`{revision_operation_id,human_request_id}`, and `return` `{eligible,reason,required_action}`.
+The collection has the existing closed RevisionCollection fields, including current
+validity and approved-use status. No H yet gives null original; no authenticated graph
+gives null request/collection; a template with no human slot has null human ID.
+A genuine successor is discoverable immediately at admission, before r2 staging.
+IDs navigate independently authenticated readers and grant no access or approval.
+
+Relational same-org/current activation/current owner and active read grants precede
+private proof decoding, repeat after each awaited lock and at the coherent read
+boundary. Complete H/I, pinned contract and template-selected human request closure
+validate before disclosure. No peer IDs/findings/inputs, bytes, sessions or proofs
+are returned. The GET reuses READ-ONLY `current_collection`; no domain DB, authority
+lease, event, queue or join writes. It never collects, discovers or fulfills work.
+
+Return readiness reuses the full read-only predicate consumed inside POST's atomic
+writer: supported @3/@4 document contract/actions and I, full current authority,
+a genuine successful Boolean-quiescent r1 source, all peers closed with an objection
+and no join, no successor, same author and available capacity. A needs_revision
+label alone is insufficient. GET advises only; POST retains replay/CAS/current
+revalidation and allocation ordering. Access loss refuses the whole read; visible
+effect holds return eligible:false with existing reason/action. Missing proof403,
+invisible/wrong-owner404, malformed/duplicate/unknown/blank selectors, IDs or any
+nonempty GET body422, missing compatible H/I409 with operator remedy, storage500
+category-only. No migration is performed.
+
+The typed `getOwnerReviewSelection` client sends only owner-human. Older daemons
+report discovery unavailable; dependent actions stay disabled without fallback
+access or guessed IDs. Native route classification/assertion parity preserves the
+existing SurfaceAllowList and credential/transport policy; source inspection is
+not native execution evidence. Mounted UI is a separate serial unit. Python units
+remain retired, integration SKIPPED24342, broad behavior/proof UNEXECUTED and
+FOUNDER-WAIVED139429/430; lint/static evidence is not behavioral acceptance.

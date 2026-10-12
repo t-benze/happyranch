@@ -16,6 +16,7 @@ import { TooltipProvider } from '@/design-system/primitives/Tooltip';
 import { StaticOrgProvider } from '@/lib/orgSlug';
 import { MOCK_ORG_SLUG } from '@/mocks';
 import { DataContext } from './DataContext';
+import { mockWorkflowsApi } from './_mock-workflows';
 import { mockAgentsApi } from './_mock-agents';
 import { mockAuthorityPolicyApi } from './_mock-authority-policy';
 import { mockAuditApi } from './_mock-audit';
@@ -52,6 +53,7 @@ export function PrototypeProvider({ children }: { children: ReactNode }): JSX.El
     <QueryClientProvider client={client}>
       <DataContext.Provider
         value={{
+          workflows: mockWorkflowsApi,
           orgs: mockOrgsApi,
           agents: mockAgentsApi,
           authorityPolicy: mockAuthorityPolicyApi,

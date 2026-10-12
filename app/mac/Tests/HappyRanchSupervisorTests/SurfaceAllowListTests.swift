@@ -5,6 +5,60 @@ import Foundation
 @Suite("SurfaceAllowList deny gate")
 struct SurfaceAllowListTests {
 
+    @Test("review stage denies raw and normalized aliases independently before forwarding")
+    func deniesCurrentReviewerStageAliases() {
+        let policy = SurfaceAllowList.default
+        let family = "/workflows/reviews/stages"
+        let prefixes = ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha", "/api/v42/orgs/alpha"]
+        for prefix in prefixes {
+            for suffix in ["", "/", "?session_id=sess-1", "/?session_id=sess-1"] {
+                let target = prefix + family + suffix
+                #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target))
+                #expect(!policy.isAllowed(method: "POST", path: target, rawPath: "/tasks"))
+            }
+        }
+        let encoded = [
+            "/api/v1/orgs/alpha/workflows/reviews/%73tages",
+            "/api/v1/orgs/alpha/workflows%2Freviews%2Fstages",
+            "/api/v1/orgs/alpha/workflows%2freviews%2fstages",
+            "/%61pi/v1/%6Frgs/alpha/workflows/reviews/stages",
+            "/api/v1/orgs/%FF/workflows/reviews/%73tages",
+            "/api/v1/orgs/%ff/workflows/reviews/stages",
+        ]
+        for target in encoded {
+            for suffix in ["", "/", "%2F", "?session_id=sess-1", "/?session_id=sess-1", "%2f?session_id=sess-1"] {
+                #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target + suffix))
+                #expect(!policy.isAllowed(method: "POST", path: target + suffix, rawPath: "/tasks"))
+            }
+        }
+    }
+
+    @Test("review stage one-pass decoder preserves nonmatching policy and configured scope")
+    func preservesNonmatchingReviewStageTargets() {
+        let policy = SurfaceAllowList.default
+        for target in [
+            "/workflows/reviews/%2573tages", "/workflows/reviews/stages%3Fsession_id=sess-1",
+            "/tasks?next=/workflows/reviews/%73tages", "/workflows/reviews/+stages",
+            "/workflows/reviews/stage%", "/workflows/reviews/%7stages",
+            "/workflows/reviews/%GGstages", "/workflows/reviews/%FFstages",
+            "/workflows/reviews/stages//", "/workflows/reviews/./stages",
+            "/workflows/reviews/stages/child",
+        ] {
+            #expect(policy.isAllowed(method: "POST", path: target, rawPath: target))
+        }
+        let family = "/workflows/reviews/stages"
+        #expect(SurfaceAllowList().isAllowed(method: "POST", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "GET", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "POST", path: "/workflows/reviews/human-receipts",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/reviews/human-receipts"))
+        #expect(policy.isAllowed(method: "GET", path: "/workflows/reviews/requests/request-1",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/reviews/requests/request-1"))
+        #expect(policy.isAllowed(method: "GET", path: "/workflows/submissions/handoffs/handoff-1",
+                                 rawPath: "/api/v1/orgs/alpha/workflows/submissions/handoffs/handoff-1"))
+        #expect(!policy.isAllowed(method: "POST", path: "/workflows/submissions/handoffs",
+                                  rawPath: "/api/v1/orgs/alpha/workflows/submissions/handoffs"))
+    }
+
     @Test("reconciliation POST is denied through shipping path normalization")
     func deniesFailedContinuationPost() {
         let policy = SurfaceAllowList.default
@@ -39,6 +93,36 @@ struct SurfaceAllowListTests {
                                  rawPath: "/api/v1/orgs/alpha" + normalized + "/handoff-one"))
     }
 
+
+    @Test("revision author POST denies each one-pass raw and normalized candidate")
+    func deniesRevisionAuthorStage() {
+        let policy = SurfaceAllowList.default
+        let family = "/workflows/revisions/revision-1/submissions"
+        for prefix in ["", "/api/v1", "/orgs/alpha", "/api/v1/orgs/alpha", "/api/v42/orgs/alpha"] {
+            for suffix in ["", "/", "?session_id=sess-1", "/?session_id=sess-1"] {
+                let target = prefix + family + suffix
+                #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target))
+                #expect(!policy.isAllowed(method: "POST", path: target, rawPath: "/tasks"))
+            }
+        }
+        for target in ["/api/v1/orgs/alpha/workflows/revisions/revision-1/%73ubmissions",
+                       "/api/v1/orgs/alpha/workflows%2Frevisions%2Frevision-1%2Fsubmissions",
+                       "/%61pi/v1/%6Frgs/%FF/workflows/revisions/revision-1/submissions%2F"] {
+            #expect(!policy.isAllowed(method: "POST", path: "/tasks", rawPath: target))
+            #expect(!policy.isAllowed(method: "POST", path: target, rawPath: "/tasks"))
+        }
+        for target in ["/workflows/revisions/revision-1/%2573ubmissions",
+                       "/workflows/revisions/revision-1/submissions//",
+                       "/workflows/revisions/revision-1/submissions/child",
+                       "/workflows/revisions//submissions",
+                       "/tasks?next=/workflows/revisions/revision-1/submissions"] {
+            #expect(policy.isAllowed(method: "POST", path: target, rawPath: target))
+        }
+        #expect(SurfaceAllowList().isAllowed(method: "POST", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "GET", path: family, rawPath: family))
+        #expect(policy.isAllowed(method: "POST", path: "/workflows/instances/instance-1/revisions",
+                                rawPath: "/api/v1/orgs/alpha/workflows/instances/instance-1/revisions"))
+    }
 
     // MARK: - Default policy exists
 
@@ -398,6 +482,7 @@ struct SurfaceAllowListTests {
     /// The authoritative set of excluded routes from web/src/test/openapi-coverage.test.ts
     /// EXCLUDED_PATHS.  Tested with concrete values for template placeholders.
     private static let excludedRoutes: [(method: String, path: String)] = [
+        ("POST", "/workflows/revisions/revision-1/submissions"),
         // Task agent callbacks
         ("POST", "/tasks/TASK-123/completion"),
         ("POST", "/tasks/TASK-123/progress"),

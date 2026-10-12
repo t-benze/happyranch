@@ -14,7 +14,7 @@ from runtime.daemon.routes.workflow_activations import _raise as activation_erro
 from runtime.workflows.activation import WorkflowActivationError
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
-from runtime.workflows.submissions import AuthorHandoffCommand, AuthorHandoffCore, AuthorHandoffReceipt as StoredHandoffReceipt
+from runtime.workflows.submissions import AuthorHandoffCommand, AuthorHandoffCore, AuthorHandoffReceipt as StoredHandoffReceipt, ArtifactHandoffCommand, ArtifactHandoffCore, ArtifactHandoffReceipt as StoredArtifactHandoffReceipt, parse_handoff
 from pydantic import Field
 from runtime.workflows.templates import WorkflowTemplateError, WorkflowTemplatePrincipal
 
@@ -86,7 +86,7 @@ def decode_command(raw: bytes) -> dict:
         value = json.loads(raw.decode('utf8'), object_pairs_hook=pairs)
         if isinstance(value, dict) and set(value) & IDENTITY_KEYS:
             fail('body_identity_rejected', 403)
-        return AuthorHandoffCommand.model_validate(value).model_dump()
+        return parse_handoff(value)
     except (ValueError, UnicodeError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail={'code': 'workflow_author_handoff_invalid_request'}) from exc
 
@@ -98,6 +98,22 @@ class HandoffPublicCore(AuthorHandoffCore):
 
 class AuthorHandoffReceipt(StoredHandoffReceipt):
     core: HandoffPublicCore
+
+
+class ArtifactPublicCore(ArtifactHandoffCore):
+    created_at: str = Field(min_length=27, max_length=27,
+                            pattern=r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$')
+
+
+class ArtifactHandoffReceipt(StoredArtifactHandoffReceipt):
+    core: ArtifactPublicCore
+
+
+HandoffReceipt = AuthorHandoffReceipt | ArtifactHandoffReceipt
+
+
+def handoff_command_schema() -> dict:
+    return {'anyOf': [AuthorHandoffCommand.model_json_schema(), ArtifactHandoffCommand.model_json_schema()]}
 
 
 TOKEN_SCHEMA = {'type': 'string', 'minLength': 1, 'maxLength': 128, 'pattern': r'^[A-Za-z0-9._:-]+$'}
@@ -118,12 +134,12 @@ HANDOFF_PROOFS = proof_schema({'session_id': TOKEN_SCHEMA, 'activation_id': TOKE
                               {'proof_kind': {'type': 'string', 'const': 'owner-human'}})
 
 
-@router.post('/workflows/submissions/handoffs', status_code=201, response_model=AuthorHandoffReceipt,
-             responses={200: {'model': AuthorHandoffReceipt, 'description': 'Exact before-callback original-current replay'},
+@router.post('/workflows/submissions/handoffs', status_code=201, response_model=HandoffReceipt,
+             responses={200: {'model': HandoffReceipt, 'description': 'Exact before-callback original-current replay'},
                         403: {'description': 'Current session/grant refused'}, 409: {'description': 'Source/schema/authority/conflict refusal'},
                         422: {'description': 'Closed bounded request refused'}, 500: {'description': 'Storage unavailable or corrupt'}},
              openapi_extra={'x-query-proof-schema': proof_schema({'session_id': TOKEN_SCHEMA}), 'requestBody': {'required': True, 'content': {'application/json': {
-                 'schema': AuthorHandoffCommand.model_json_schema()}}}})
+                 'schema': handoff_command_schema()}}}})
 async def stage_handoff(org: OrgDep, request: Request, response: Response,
                         session_id: str | None = Query(default=None),
                         has_bearer: bool = optional_bearer()) -> dict:
@@ -153,7 +169,7 @@ def sqlite_error_types() -> tuple[type[Exception], ...]:
     return (sqlite3.DatabaseError,)
 
 
-@router.get('/workflows/submissions/handoffs/{handoff_id}', response_model=AuthorHandoffReceipt,
+@router.get('/workflows/submissions/handoffs/{handoff_id}', response_model=HandoffReceipt,
             responses=READ_RESPONSES, openapi_extra={'x-query-proof-schema': HANDOFF_PROOFS})
 async def get_handoff(org: OrgDep, handoff_id: str, request: Request,
                       session_id: str | None = Query(default=None), activation_id: str | None = Query(default=None),

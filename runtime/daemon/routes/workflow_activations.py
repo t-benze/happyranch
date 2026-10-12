@@ -1,29 +1,34 @@
 """Founder-only initial activation and authenticated immutable receipt reads."""
 from __future__ import annotations
 
-from typing import Any
+import re
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from typing import Any, Literal
 
-from runtime.daemon.auth import _require_human
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+
+from runtime.daemon.auth import _require_human, optional_bearer
 from runtime.daemon.routes._org_dep import OrgDep
 from runtime.workflows.activation import (
     ActivationReceipt, ActivationRequest, DocumentActivationReceipt, DocumentActivationRequest,
-    DocumentActivationReceipt3, DocumentActivationRequest3,
-    WorkflowActivationError,
+    DocumentActivationReceipt3, DocumentActivationRequest3, ArtifactActivationReceipt, ArtifactActivationRequest,
+    WorkflowActivationError, Token,
 )
 from runtime.workflows.authority import WorkflowAuthorityError
 from runtime.workflows.profile_coordinator import ProfileCoordinatorError
 from runtime.workflows.templates import WorkflowTemplateError, WorkflowTemplatePrincipal
 
 
+from runtime.workflows.revisions import OwnerReviewSelection
+
+
 router = APIRouter(dependencies=[Depends(_require_human)])
-Receipt = ActivationReceipt | DocumentActivationReceipt | DocumentActivationReceipt3
+Receipt = ActivationReceipt | DocumentActivationReceipt | DocumentActivationReceipt3 | ArtifactActivationReceipt
 
 
 def _request_schema() -> dict[str, Any]:
     return {"anyOf": [_expand_request_schema(model, index)
-                      for index, model in enumerate((ActivationRequest, DocumentActivationRequest, DocumentActivationRequest3))]}
+                      for index, model in enumerate((ActivationRequest, DocumentActivationRequest, DocumentActivationRequest3, ArtifactActivationRequest))]}
 
 
 def _expand_request_schema(model: type[ActivationRequest], branch: int) -> dict[str, Any]:
@@ -74,7 +79,7 @@ def _raise(exc: WorkflowActivationError | WorkflowAuthorityError | WorkflowTempl
                   "workflow_activation_operation_conflict", "workflow_activation_cas_stale",
                   "workflow_activation_authority_stale", "workflow_new_runs_disabled",
                   "workflow_activation_author_pending", "authority_pointer_not_ready",
-                  "workflow_author_handoff_schema_required",
+                  "workflow_author_handoff_schema_required", "workflow_repository_reader_unavailable",
               } or code.startswith(("profile_", "publication_", "authority_")) else 422)
     detail = {"code": code}
     if isinstance(exc, WorkflowActivationError) and exc.owner:
@@ -91,6 +96,12 @@ def _raise(exc: WorkflowActivationError | WorkflowAuthorityError | WorkflowTempl
              openapi_extra={"requestBody": {"required": True, "content": {
                  "application/json": {"schema": _request_schema()}}}})
 async def activate_workflow(org: OrgDep, response: Response, http_request: Request, body_raw: object = Body(...)) -> dict:
+    if isinstance(body_raw, dict) and body_raw.get('format') == 'workflow-activation-request@4':
+        from runtime.workflows.artifacts import decode_artifact_json
+        try:
+            body_raw = decode_artifact_json(await http_request.body())
+        except (ValueError, UnicodeError) as exc:
+            raise HTTPException(status_code=422, detail={'code': 'workflow_activation_invalid_request'}) from exc
     if isinstance(body_raw, dict) and set(body_raw) & {
         "actor", "principal", "principal_id", "provenance", "task", "task_id", "session_id", "result_id", "org_slug",
     }:
@@ -131,3 +142,44 @@ async def get_workflow_activation(org: OrgDep, activation_id: str) -> dict:
         return org.workflow_activations.get(principal=_principal(org), activation_id=activation_id)
     except WorkflowActivationError as exc:
         _raise(exc)
+
+
+@router.get('/workflows/activations/{activation_id}/review-selection',
+            response_model=OwnerReviewSelection,
+            responses={403: {'description': 'Owner proof or current read grant refused'},
+                       404: {'description': 'No visible same-org current owner activation'},
+                       409: {'description': 'Compatible H/I or current authority unavailable; operator remedy'},
+                       422: {'description': 'Malformed ID, selectors or nonempty body'},
+                       500: {'description': 'Category-only storage failure'}},
+            openapi_extra={'x-query-proof-schema': {
+                'type': 'object', 'additionalProperties': False, 'required': ['proof_kind'],
+                'properties': {'proof_kind': {'type': 'string', 'const': 'owner-human'}}}})
+async def get_owner_review_selection(org: OrgDep, activation_id: Token, request: Request,
+                                     proof_kind: Literal['owner-human'] | None = Query(default=None),
+                                     has_bearer: bool = optional_bearer()) -> dict:
+    from runtime.daemon.routes.workflow_reviews import human_principal
+    from runtime.daemon.routes.workflow_submissions import fail, query_values, sqlite_error_types
+    from runtime.daemon.routes.workflow_revisions import revision_error
+    values = query_values(request, {'proof_kind'})
+    if (re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', activation_id) is None
+            or (values and proof_kind != 'owner-human')):
+        fail('workflow_owner_review_selection_invalid_request', 422)
+    if not values:
+        fail('workflow_owner_review_selection_read_not_authorized', 403)
+    # A GET body is not a second selector, including JSON null or empty objects.
+    async for chunk in request.stream():
+        if chunk:
+            fail('workflow_owner_review_selection_invalid_request', 422)
+    principal = human_principal(org, has_bearer)
+    try:
+        return await org.workflow_activations.review_selection(principal=principal, activation_id=activation_id)
+    except (WorkflowActivationError, WorkflowAuthorityError, WorkflowTemplateError, ProfileCoordinatorError) as exc:
+        if exc.code == 'workflow_activation_not_found':
+            fail(exc.code, 404)
+        if exc.code == 'role_binding_not_authorized':
+            fail('workflow_author_handoff_read_not_authorized', 403)
+        revision_error(exc)
+    except sqlite_error_types() as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_owner_review_selection_storage_unavailable'}) from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=500, detail={'code': 'workflow_owner_review_selection_storage_corrupt'}) from exc
