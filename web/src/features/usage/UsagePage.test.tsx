@@ -1342,6 +1342,13 @@ describe('Usage v1 — narrow viewport and accessibility', () => {
     expect(workloadStatus).toHaveTextContent('Workload loaded for 1 agent');
     const efficiencyStatus = within(screen.getByRole('region', { name: 'Efficiency' })).getByRole('status');
     expect(efficiencyStatus).toHaveTextContent('Choose a CLI to see Efficiency');
+    // The visually hidden status is position:absolute; its section must be its
+    // containing block, or it escapes ContentWrap and makes the window scroll.
+    for (const status of [workloadStatus, efficiencyStatus]) {
+      expect(status.classList.contains('sr-only')).toBe(true);
+      expect(status.parentElement?.tagName).toBe('SECTION');
+      expect(status.parentElement?.classList.contains('relative')).toBe(true);
+    }
   });
 });
 
