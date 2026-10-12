@@ -501,9 +501,250 @@ def capture_headscale(work: Path | None, pid: str | None) -> dict[str, Any]:
                     result["nodes"] = _unknown_nodes("parse_loss")
     return result
 
+CONNECTOR_UNIT = "happyranch-connector.service"
+CONNECTOR_PROPERTIES = frozenset({"MainPID", "InvocationID", "ActiveState", "SubState", "StatusText"})
+CONNECTOR_GATES = ("daemon_loopback", "credential_permissions", "current_policy", "bind_identity", "trust_state")
+CONNECTOR_STATUS = {
+    "": "not_reported",
+    "composite healthy": "composite_healthy",
+    "connector stopping": "stopping",
+    "connector exited": "exited",
+}
+
+
+def _connector_unknown(loss: str) -> dict[str, Any]:
+    return {"unit": CONNECTOR_UNIT, "binding": None, "listening": None, "bound_port": None,
+            "status": "unavailable", "loss": loss,
+            "collection": {"observation_budget_seconds": 11, "command_budget_seconds": 13, "kill_grace_seconds": 1, "output_cap_bytes": 4096},
+            "readiness_gates": {name: {"ok": None, "loss": "unavailable_internal"} for name in CONNECTOR_GATES}}
+
+
+def _connector_properties(raw: bytes) -> dict[str, str]:
+    # Reject all unsupported framing before any value normalization. Unknown
+    # StatusText is dropped, never retained as a gate or exception message.
+    text = raw.decode("ascii")
+    if any(ord(char) < 32 and char != "\n" or ord(char) == 127 for char in text):
+        raise ValueError
+    rows = text.removesuffix("\n").split("\n")
+    result: dict[str, str] = {}
+    for row in rows:
+        key, separator, value = row.partition("=")
+        if not separator or key not in CONNECTOR_PROPERTIES or key in result:
+            raise ValueError
+        result[key] = value
+    if set(result) != CONNECTOR_PROPERTIES:
+        raise ValueError
+    if not re.fullmatch(r"0|[1-9][0-9]{0,9}", result["MainPID"]) or int(result["MainPID"]) > 2_147_483_647:
+        raise ValueError
+    if result["ActiveState"] not in {"active", "inactive", "activating", "deactivating", "failed"}:
+        raise ValueError
+    if result["SubState"] not in {"running", "dead", "failed", "exited", "start", "start-pre", "start-post", "stop", "stop-sigterm", "stop-sigkill", "stop-post", "auto-restart", "auto-restart-queued", "final-sigterm", "final-sigkill"}:
+        raise ValueError
+    if int(result["MainPID"]) and _compact_hex(result["InvocationID"], size=32) is None:
+        raise ValueError
+    return result
+
+
+def _proc_bytes(path: Path, cap: int) -> bytes:
+    with path.open("rb") as stream:
+        raw = stream.read(cap + 1)
+    if len(raw) > cap:
+        raise OverflowError
+    return raw
+
+
+def _proc_identity(pid: int) -> tuple[int, int, bytes]:
+    raw = _proc_bytes(Path(f"/proc/{pid}/stat"), 4096)
+    # comm is arbitrary parenthesized text: split at its final closing paren.
+    leader, separator, tail = raw.rpartition(b") ")
+    if not separator or not leader.startswith(f"{pid} (".encode()):
+        raise ValueError
+    fields = tail.split()
+    if len(fields) < 20 or not fields[1].isdigit() or not fields[19].isdigit() or fields[0] in {b"Z", b"X", b"x"}:
+        raise ValueError
+    cgroup = _proc_bytes(Path(f"/proc/{pid}/cgroup"), 4096)
+    rows = cgroup.splitlines()
+    if len(rows) != 1 or not rows[0].startswith(b"0::/") or not rows[0].endswith(b"/" + CONNECTOR_UNIT.encode()):
+        raise ValueError
+    return int(fields[1]), int(fields[19]), cgroup
+
+
+def _connector_process(pid: int) -> dict[str, Any]:
+    """MainPID -> bounded descendants (including onefile worker) -> sockets.
+
+    All reads/iterations are capped. Repeated complete process/child/FD sets
+    detect ordinary drift, not hostile ABA or an atomic kernel snapshot.
+    """
+    try:
+        def boot_id() -> str:
+            value = _compact_hex(_proc_bytes(Path("/proc/sys/kernel/random/boot_id"), 64).decode().removesuffix("\n"), size=32)
+            if value is None:
+                raise ValueError
+            return value
+
+        def children(owner: int) -> set[int]:
+            result: set[int] = set()
+            with os.scandir(f"/proc/{owner}/task") as tasks:
+                for index, task in enumerate(tasks):
+                    if index >= 128:
+                        raise OverflowError
+                    for child in _proc_bytes(Path(task.path) / "children", 4096).split():
+                        if not child.isdigit() or not 1 < int(child) <= 2_147_483_647:
+                            raise ValueError
+                        result.add(int(child))
+                        if len(result) > 8:
+                            raise OverflowError
+            return result
+
+        def sockets(owner: int) -> set[int]:
+            inodes: set[int] = set()
+            with os.scandir(f"/proc/{owner}/fd") as descriptors:
+                for index, descriptor in enumerate(descriptors):
+                    if index >= 512:
+                        raise OverflowError
+                    target = os.readlink(descriptor.path)
+                    match = re.fullmatch(r"socket:\[([1-9][0-9]*)\]", target)
+                    if match:
+                        inodes.add(int(match[1]))
+            return inodes
+
+        boot = boot_id()
+        identities = {pid: _proc_identity(pid)}
+        child_sets: dict[int, set[int]] = {}
+        pending = [(pid, 0)]
+        while pending:
+            owner, depth = pending.pop()
+            found = children(owner)
+            child_sets[owner] = found
+            if depth >= 4 and found:
+                raise OverflowError
+            for child in sorted(found):
+                if child in identities or len(identities) >= 9:
+                    raise OverflowError
+                identity = _proc_identity(child)
+                if identity[0] != owner or identity[2] != identities[pid][2]:
+                    return {"loss": "attribution_loss"}
+                identities[child] = identity
+                pending.append((child, depth + 1))
+        if len(identities) == 1:
+            return {"loss": "unavailable_child"}
+        socket_sets: dict[int, set[int]] = {}
+        listener_pids: list[int] = []
+        for owner in identities:
+            # Include the actual onefile Python worker, not just its launcher.
+            socket_sets[owner] = sockets(owner)
+            raw = _proc_bytes(Path(f"/proc/{owner}/net/tcp"), 262144)
+            lines = raw.splitlines()
+            if not lines or b"local_address" not in lines[0] or b"inode" not in lines[0]:
+                raise ValueError
+            for line in lines[1:]:
+                fields = line.split()
+                if len(fields) < 10 or not fields[9].isdigit() or not re.fullmatch(rb"[0-9A-F]{8}:[0-9A-F]{4}", fields[1]) or not re.fullmatch(rb"[0-9A-F]{2}", fields[3]):
+                    raise ValueError
+                # Only the harness-configured literal IPv4 loopback endpoint.
+                if fields[1] == b"0100007F:480B" and fields[3] == b"0A" and int(fields[9]) in socket_sets[owner]:
+                    listener_pids.append(owner)
+        for owner, identity in identities.items():
+            if identity != _proc_identity(owner) or children(owner) != child_sets[owner] or sockets(owner) != socket_sets[owner]:
+                return {"loss": "attribution_loss"}
+        if boot != boot_id() or len(listener_pids) > 1:
+            return {"loss": "attribution_loss"}
+        listening = bool(listener_pids)
+        return {"loss": "observed", "boot_id": boot, "main_pid": pid,
+                "processes": [{"pid": owner, "parent_pid": identity[0], "start_ticks": identity[1]} for owner, identity in sorted(identities.items())],
+                "listener_pid": listener_pids[0] if listening else None,
+                "listening": listening, "bound_port": 18443 if listening else None}
+    except OverflowError:
+        return {"loss": "truncated"}
+    except FileNotFoundError:
+        return {"loss": "unavailable_process"}
+    except OSError:
+        return {"loss": "query_error"}
+    except (UnicodeError, ValueError):
+        return {"loss": "parse_loss"}
+
+
+def capture_connector() -> dict[str, Any]:
+    # Four observations: 1s query, 2s process, 1s query, 2s process,
+    # each with at most 1s group reaping, all within the reserved 11s section;
+    # launch only when both this stage and its cleanup fit the shared deadline.
+    deadline = time.monotonic() + 11
+    worker = [sys.executable, str(Path(__file__).resolve())]
+    query = ["systemctl", "show", CONNECTOR_UNIT] + [f"--property={name}" for name in sorted(CONNECTOR_PROPERTIES)]
+
+    def observe(argv: list[str], seconds: float, cap: int) -> tuple[bytes, str]:
+        if time.monotonic() + seconds + 1 >= deadline:
+            return b"", "timeout"
+        return _bounded_observation(argv, seconds=seconds, cap=cap)
+
+    raw, loss = observe(query, 1, 4096)
+    if loss != "observed":
+        return _connector_unknown(loss)
+    try:
+        before = _connector_properties(raw)
+    except (UnicodeError, ValueError):
+        return _connector_unknown("parse_loss")
+    pid = int(before["MainPID"])
+    if pid == 0:
+        return _connector_unknown("failed" if before["ActiveState"] == "failed" else "absent")
+    raw, loss = observe(worker + ["--mode", "connector-process", "--connector-pid", str(pid)], 2, 2048)
+    if loss != "observed":
+        return _connector_unknown(loss)
+    try:
+        process = _closed_json(raw.decode("ascii"))
+        if not isinstance(process, dict):
+            raise ValueError
+        if set(process) == {"loss"} and process["loss"] in {"truncated", "unavailable_process", "unavailable_child", "attribution_loss", "parse_loss", "query_error"}:
+            return _connector_unknown(process["loss"])
+        if set(process) != {"loss", "boot_id", "main_pid", "processes", "listener_pid", "listening", "bound_port"}:
+            raise ValueError
+        if process["loss"] != "observed" or _compact_hex(process["boot_id"], size=32) != process["boot_id"] or type(process["listening"]) is not bool:
+            raise ValueError
+        rows = process["processes"]
+        if not isinstance(rows, list) or not 2 <= len(rows) <= 9:
+            raise ValueError
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"pid", "parent_pid", "start_ticks"} or any(type(value) is not int or value <= 0 for value in row.values()):
+                raise ValueError
+        pids = {row["pid"] for row in rows}
+        if len(pids) != len(rows) or pid not in pids or any(row["pid"] != pid and row["parent_pid"] not in pids for row in rows):
+            raise ValueError
+        if process["listening"] and (type(process["listener_pid"]) is not int or process["listener_pid"] not in pids) or not process["listening"] and process["listener_pid"] is not None:
+            raise ValueError
+        if type(process["main_pid"]) is not int or process["main_pid"] != pid or process["bound_port"] != (18443 if process["listening"] else None):
+            raise ValueError
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        return _connector_unknown("parse_loss")
+    raw, loss = observe(query, 1, 4096)
+    if loss != "observed":
+        return _connector_unknown(loss)
+    try:
+        after = _connector_properties(raw)
+    except (UnicodeError, ValueError):
+        return _connector_unknown("parse_loss")
+    if before != after or time.monotonic() >= deadline:
+        return _connector_unknown("attribution_loss" if before != after else "timeout")
+    repeated, loss = observe(worker + ["--mode", "connector-process", "--connector-pid", str(pid)], 2, 2048)
+    if loss != "observed":
+        return _connector_unknown(loss)
+    try:
+        if _closed_json(repeated.decode("ascii")) != process:
+            return _connector_unknown("attribution_loss")
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        return _connector_unknown("parse_loss")
+    if time.monotonic() >= deadline:
+        return _connector_unknown("timeout")
+    result = _connector_unknown("observed")
+    result.update(binding={key: process[key] for key in ("boot_id", "main_pid", "processes", "listener_pid")},
+                  listening=process["listening"], bound_port=process["bound_port"],
+                  status=CONNECTOR_STATUS.get(before["StatusText"], "unclassified"))
+    result["binding"]["invocation_id"] = _compact_hex(before["InvocationID"], size=32)
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("receipts", "jobs", "plain", "headscale", "headscale-process", "headscale-read", "headscale-log", "headscale-nodes"), default="receipts")
+    parser.add_argument("--mode", choices=("receipts", "jobs", "plain", "headscale", "headscale-process", "headscale-read", "headscale-log", "headscale-nodes", "connector", "connector-process"), default="receipts")
     parser.add_argument("--input", type=Path)
     parser.add_argument("--invocation-id")
     parser.add_argument("--boot-id")
@@ -511,8 +752,14 @@ def main() -> int:
     parser.add_argument("--until-us", type=int)
     parser.add_argument("--work")
     parser.add_argument("--headscale-pid")
+    parser.add_argument("--connector-pid", type=int)
     args = parser.parse_args()
-    if args.mode == "headscale":
+    if args.mode == "connector-process":
+        if args.connector_pid is None or not 1 < args.connector_pid <= 2_147_483_647:
+            parser.error("invalid connector PID")
+        print(json.dumps(_connector_process(args.connector_pid), separators=(",", ":")))
+        return 0
+    if args.mode in {"headscale", "connector"}:
         def interrupted(signum: int, frame: Any) -> None:
             raise KeyboardInterrupt
         signal.signal(signal.SIGTERM, interrupted)
@@ -521,9 +768,9 @@ def main() -> int:
             # Linux shipping capture owns all descendants until bounded reap.
             # Failure to establish that ownership launches no observation.
             if not sys.platform.startswith("linux") or ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
-                print(json.dumps({"process_state": "unknown", "log": {"events": [], "losses": ["launch_failure"]}, "nodes": _unknown_nodes("launch_failure")}, separators=(",", ":")))
+                print(json.dumps(_connector_unknown("launch_failure") if args.mode == "connector" else {"process_state": "unknown", "log": {"events": [], "losses": ["launch_failure"]}, "nodes": _unknown_nodes("launch_failure")}, separators=(",", ":")))
                 return 0
-            print(json.dumps(capture_headscale(Path(args.work) if args.work else None, args.headscale_pid), separators=(",", ":")))
+            print(json.dumps(capture_connector() if args.mode == "connector" else capture_headscale(Path(args.work) if args.work else None, args.headscale_pid), separators=(",", ":")))
         except KeyboardInterrupt:
             return 1
         return 0

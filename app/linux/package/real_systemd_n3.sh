@@ -569,6 +569,30 @@ capture_headscale_fixture() {
   fi
   rm -f "$safe_file"
 }
+capture_connector_instance() {
+  # Own a reserved section, independent of sidecar/Headscale caps. Read only
+  # the original unit/process tree; never run the product diagnose CLI.
+  local safe_file status=0 restore_errexit=0 loss=launch_failure
+  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{"daemon_loopback":{"ok":null,"loss":"unavailable_internal"},"credential_permissions":{"ok":null,"loss":"unavailable_internal"},"current_policy":{"ok":null,"loss":"unavailable_internal"},"bind_identity":{"ok":null,"loss":"unavailable_internal"},"trust_state":{"ok":null,"loss":"unavailable_internal"}}}'
+  case "$-" in *e*) restore_errexit=1 ;; esac
+  safe_file="$(mktemp "$diagnostics/.n3-connector-safe.XXXXXX")" || return 0
+  set +e
+  # 11s internal section plus startup/parser margin and 1s outer kill grace.
+  timeout --kill-after=1 13 sudo -n "$(command -v python)" "$failure_capture_driver" --mode connector >"$safe_file" 2>/dev/null
+  status=$?
+  (( restore_errexit )) && set -e || set +e
+  if (( status == 0 )) && [[ -s "$safe_file" ]] && (( $(wc -c <"$safe_file") <= 4096 )); then
+    connector_observation="$(<"$safe_file")"
+  else
+    if (( status == 124 || status == 137 )); then loss=timeout
+    elif (( $(wc -c <"$safe_file") > 4096 )); then loss=truncated
+    elif (( status != 0 )); then loss=query_error
+    else loss=parse_loss
+    fi
+    connector_observation="${connector_observation/\"loss\":\"unattempted\"/\"loss\":\"$loss\"}"
+  fi
+  rm -f "$safe_file"
+}
 capture_failure_snapshot() {
   # Essential failure sections have independent bounded budgets. No observation
   # changes the exit status that entered cleanup; all retained values are closed.
@@ -602,8 +626,10 @@ capture_failure_snapshot() {
   capture_completed_jobs
   begin_observation_section 8 8192
   capture_diagnostic_receipts
+  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{}}'
   headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["unattempted"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["unattempted"]}}'
   if [[ "$name" == first-positive-start-failure || "$name" == failure-before-teardown ]]; then
+    capture_connector_instance
     capture_headscale_fixture
   fi
 
@@ -650,7 +676,7 @@ capture_failure_snapshot() {
     cat "$losses_file"
     [[ "$jobs_loss" == observed ]] || { (( loss_first )) || printf ','; loss_first=0; printf '"jobs":"%s"' "$jobs_loss"; }
     (( loss_first )) || printf ','
-    printf '"diagnostic_receipts":%s,"sidecar_failure_lines":"%s"},"headscale":%s}\n' "$diagnostic_receipt_loss" "$sidecar_failure_lines_loss" "$headscale_observation"
+    printf '"diagnostic_receipts":%s,"sidecar_failure_lines":"%s"},"connector":%s,"headscale":%s}\n' "$diagnostic_receipt_loss" "$sidecar_failure_lines_loss" "$connector_observation" "$headscale_observation"
   } >"$snapshot" || true
   rm -f "$losses_file"
 }

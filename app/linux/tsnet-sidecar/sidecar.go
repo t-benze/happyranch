@@ -69,7 +69,6 @@ const (
 	connectorBudget     = 10 * time.Second
 	connectorDialBudget = time.Second
 	connectorSpacing    = 200 * time.Millisecond
-	connectorAttempts   = 9
 )
 
 type Config struct {
@@ -261,7 +260,9 @@ func startupContextError(ctx context.Context) error {
 func (s *Sidecar) probeConnector(startup context.Context) error {
 	phase, cancel := context.WithTimeout(startup, connectorBudget)
 	defer cancel()
-	for attempt := 0; attempt < connectorAttempts; attempt++ {
+	// Immediate refusals must not consume an arbitrary attempt allocation.
+	// The fixed phase/overall deadline and cancellable spacing bound retries.
+	for {
 		if startupContextError(phase) != nil {
 			return ErrConnector
 		}
@@ -295,9 +296,6 @@ func (s *Sidecar) probeConnector(startup context.Context) error {
 		if !errors.Is(err, syscall.ECONNREFUSED) && !attemptTimeout {
 			return ErrConnector
 		}
-		if attempt+1 == connectorAttempts {
-			return ErrConnector
-		}
 		timer := time.NewTimer(connectorSpacing)
 		select {
 		case <-phase.Done():
@@ -309,7 +307,6 @@ func (s *Sidecar) probeConnector(startup context.Context) error {
 			return ErrConnector
 		}
 	}
-	return ErrConnector
 }
 
 func consumeInput(c Config) ([]byte, error) {

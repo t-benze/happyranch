@@ -1068,7 +1068,7 @@ func connectorFixture(t *testing.T, dial Dialer) (*Sidecar, *fakeEngine, *[]stri
 }
 
 func TestConnectorImmediateAndDelayedSuccessAdmitExactlyOnce(t *testing.T) {
-	for _, first := range []string{"immediate", "refused", "attempt-timeout"} {
+	for _, first := range []string{"immediate", "refused", "beyond-old-cap", "attempt-timeout"} {
 		t.Run(first, func(t *testing.T) {
 			probes := []*countedProbe{}
 			calls := 0
@@ -1097,7 +1097,7 @@ func TestConnectorImmediateAndDelayedSuccessAdmitExactlyOnce(t *testing.T) {
 				}
 				probe := &countedProbe{}
 				probes = append(probes, probe)
-				if calls == 1 && first == "refused" {
+				if calls == 1 && first == "refused" || calls <= 10 && first == "beyond-old-cap" {
 					return probe, fmt.Errorf("private: %w", syscall.ECONNREFUSED)
 				}
 				if calls == 1 && first == "attempt-timeout" {
@@ -1123,6 +1123,12 @@ func TestConnectorImmediateAndDelayedSuccessAdmitExactlyOnce(t *testing.T) {
 			want := 2
 			if first == "immediate" {
 				want = 1
+			}
+			if first == "beyond-old-cap" {
+				want = 11
+				if elapsed := time.Since(entry); elapsed < 2*time.Second || elapsed >= connectorBudget {
+					t.Fatalf("delayed acceptance escaped phase: %s", elapsed)
+				}
 			}
 			if calls != want || count(*events, "start") != 1 || count(*events, "listen") != 1 {
 				t.Fatalf("calls=%d events=%v", calls, *events)
@@ -1189,7 +1195,7 @@ func TestConnectorTerminalResultsNeverRetryOrListen(t *testing.T) {
 	}
 }
 
-func TestConnectorPersistentRefusalExhaustsNineAttempts(t *testing.T) {
+func TestConnectorPersistentRefusalExhaustsPhaseDeadline(t *testing.T) {
 	calls := 0
 	probes := []*countedProbe{}
 	var last time.Time
@@ -1203,8 +1209,12 @@ func TestConnectorPersistentRefusalExhaustsNineAttempts(t *testing.T) {
 		probes = append(probes, probe)
 		return probe, fmt.Errorf("private: %w", syscall.ECONNREFUSED)
 	}))
-	if svc.Start(context.Background()) != ErrConnector || calls != 9 || contains(*events, "listen") {
+	entry := time.Now()
+	if svc.Start(context.Background()) != ErrConnector || contains(*events, "listen") {
 		t.Fatalf("calls=%d events=%v", calls, *events)
+	}
+	if elapsed := time.Since(entry); elapsed < connectorBudget || elapsed > connectorBudget+2*time.Second || calls <= 9 {
+		t.Fatalf("premature or unbounded refusal: calls=%d elapsed=%s", calls, elapsed)
 	}
 	for _, probe := range probes {
 		if probe.closes != 1 {
@@ -1217,7 +1227,7 @@ func TestConnectorPersistentRefusalExhaustsNineAttempts(t *testing.T) {
 	}
 }
 
-func TestConnectorPhaseClipsNinthAttemptAtTenSeconds(t *testing.T) {
+func TestConnectorPhaseClipsPerAttemptTimeoutAtTenSeconds(t *testing.T) {
 	calls := 0
 	var firstEntry, firstDeadline, lastDeadline time.Time
 	svc, _, events := connectorFixture(t, dialFunc(func(ctx context.Context, _, _ string) (net.Conn, error) {
