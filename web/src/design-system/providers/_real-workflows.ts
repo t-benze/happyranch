@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { workflowActivations, workflowSubmissions, workflowReviews, workflowRevisions } from '@/lib/api';
-import { clearSelectionCommands, validateDetail, type ReviewDetail } from '@/lib/workflowReviewSelection';
+import { clearSelectionCommands, ReviewIntegrityError, validateDetail, type ReviewDetail } from '@/lib/workflowReviewSelection';
 import type { WorkflowsApi, WorkflowQuery } from './DataContext';
 
 /** No locale input, no persistent cache, no stale cached admission on remount. */
@@ -37,12 +37,17 @@ function useReviewDetail(activationId: string, history: boolean): WorkflowQuery<
       }
       try {
         const activation = await read('workflow-activation', activationId, 'owner-human', () => workflowActivations.getWorkflowActivation(slug, activationId, signal));
+        if (activation.activation_id !== activationId) throw new ReviewIntegrityError('workflow_review_integrity');
         const selection = await read('workflow-review-selection', activationId, 'owner-human', () => workflowActivations.getOwnerReviewSelection(slug, activationId, signal));
+        await validateDetail({ slug, activation, selection, handoff: null, revision: null, request: null, history });
         const handoff = selection.original ? await read('workflow-handoff', selection.original.handoff_id, 'owner-human', () =>
           workflowSubmissions.getAuthorHandoff(slug, selection.original!.handoff_id, { proof_kind: 'owner-human' }, signal)) : null;
         const revision = selection.successor ? await read('workflow-revision', selection.successor.revision_operation_id, 'owner-human', () =>
           workflowRevisions.getDocumentRevision(slug, selection.successor!.revision_operation_id, { proof_kind: 'owner-human' }, signal)) : null;
+        await validateDetail({ slug, activation, selection, handoff, revision, request: null, history });
         const requestId = history || !selection.successor ? selection.original?.human_request_id : selection.successor.human_request_id;
+        const graph = history || !selection.successor ? handoff?.current.graph : revision?.current.graph;
+        if (requestId && !graph?.request_ids.includes(requestId)) throw new ReviewIntegrityError('workflow_review_integrity');
         const request = requestId ? await read('workflow-human-request', requestId, 'human', () =>
           workflowReviews.getWorkflowReviewRequest(slug, requestId, { proof_kind: 'human' }, signal)) : null;
         const detail = await validateDetail({ slug, activation, selection, handoff, revision, request, history });

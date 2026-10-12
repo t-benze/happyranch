@@ -16,13 +16,15 @@ function Controls() { const { setLocale } = useI18n(), go = useNavigate(); retur
 async function setup(n: 1 | 2 = 2) {
   const digest = await sha256(exactBytes(documentText));
   activation = { format: 'workflow-activation-receipt@3', activation_id: 'activation-a', instance_id: 'instance-a', instance_reference: 'instance-a', activation_revision: 1,
-    root_task_id: 'TASK-100', intent_id: 'intent-a', template: { identity_id: 'different-proposal', version: 1, definition_digest: 'a'.repeat(64), version_id: 'version-a', compiler_pin: 'compiler', validator_pin: 'validator', source_pin: 'source' },
-    authority: { namespace: 'org/demo', generation: 1, snapshot_digest: 'b'.repeat(64) }, bindings: { writer: { kind: 'agent', principal: 'agent:writer', team: 'eng' }, approver: { kind: 'human', principal: 'human:founder', team: null } }, eligible_replacements: {},
+    root_task_id: 'TASK-100', intent_id: 'intent-a', template: { identity_id: n === 1 ? 'product-design' : 'different-proposal', version: 1, definition_digest: 'a'.repeat(64), version_id: 'version-a', compiler_pin: 'compiler', validator_pin: 'validator', source_pin: 'source' },
+    authority: { namespace: 'org/demo', generation: 1, snapshot_digest: 'b'.repeat(64) }, bindings: { writer: { kind: 'agent', principal: 'writer', team: 'eng' }, approver: { kind: 'human', principal: 'founder', team: null } }, eligible_replacements: {},
     allowed_actions: ['collect-review','return-to-author'], scope_digest: 'c'.repeat(64), context_digest: 'd'.repeat(64), activated_by: { principal_kind: 'human', principal_id: 'founder', proof_kind: 'founder_bearer' }, created_at: 'now', original_request_digest: 'e'.repeat(64), replayed: false, state: 'completed', execution_started: true, pending: false, reconciliation_required: false, cancellation_requested: false, current_eligibility: { eligible: true, blockers: [] }, responsible_owner: 'human:founder' };
+  if (n === 1) activation.bindings = { 'product-lead': { kind: 'agent', principal: 'product_lead', team: 'eng' }, founder: { kind: 'human', principal: 'founder', team: null }, implementer: { kind: 'agent', principal: 'dev_agent', team: 'eng' }, tester: { kind: 'agent', principal: 'qa_engineer', team: 'eng' } };
   handoff = { format: 'workflow-author-handoff-receipt@1', core: { handoff_id: 'handoff-a', reserved_submission_id: 'submission-a', instance_id: 'instance-a', revision: 1, candidate_digest: digest, request_digest: 'f'.repeat(64), created_at: 'now' }, replayed: false,
     current: { state: 'consumed', pending: false, reconciliation_required: false, reason: 'consumed', graph: { submission_id: 'submission-a', round_id: 'round-a', request_ids: ['request-a'], reviewer_task_ids: [] } } };
+  if (n === 1) { handoff.current.graph!.request_ids = ['request-a','request-peer-a','request-peer-b']; handoff.current.graph!.reviewer_task_ids = ['TASK-101','TASK-102']; }
   selection = { format: 'workflow-owner-review-selection@1', activation_id: 'activation-a', instance_id: 'instance-a', original: { handoff_id: 'handoff-a', human_request_id: 'request-a', collection: { state: 'collecting', approved_use: false, validity: 'current', reason: null, owner_principal: 'human:founder', required_action: null } }, successor: null, return: { eligible: false, reason: 'pending', required_action: null } };
-  const scope = { format: `workflow-review-request@${n}`, org_slug: 'demo', instance_id: 'instance-a', handoff_id: 'handoff-a', submission_id: 'submission-a', submission_digest: digest, revision: 1, round_id: 'round-a', request_id: 'request-a', role: 'approver', kind: 'human', principal: 'human:founder', team: null, assignment_generation: 1, template: activation.template, activation: { id: 'activation-a', revision: 1, request_digest: activation.original_request_digest }, authorization: 'authorization-a', binding_snapshot_id: 'binding-a', context_id: 'context-a', output: { primitive: n === 1 ? 'immutable-document-revision' : 'immutable-artifact-revision', description: 'Feasibility assessment', ...(n === 2 ? { accepted_kinds: ['document'] } : {}) }, outcomes: ['approved','changes_requested'], purpose: 'review', allowed_actions: ['collect-review'], inputs: [], ...(n === 2 ? { artifact: { identity: { org_namespace: 'demo', instance_id: 'instance-a', output_slot: 'output' }, submission_id: 'submission-a', revision: 1, kind: 'document', bytes_digest: digest, subject: { content_digest: digest } }, repository_resolution: null } : {}) };
+  const scope = { format: `workflow-review-request@${n}`, org_slug: 'demo', instance_id: 'instance-a', handoff_id: 'handoff-a', submission_id: 'submission-a', submission_digest: digest, revision: 1, round_id: 'round-a', request_id: 'request-a', role: n === 1 ? 'founder' : 'approver', kind: 'human', principal: 'founder', team: null, assignment_generation: 1, template: activation.template, activation: { id: 'activation-a', revision: 1, request_digest: activation.original_request_digest }, authorization: 'authorization-a', binding_snapshot_id: 'binding-a', context_id: 'context-a', output: { primitive: n === 1 ? 'immutable-document-revision' : 'immutable-artifact-revision', description: 'Feasibility assessment', ...(n === 2 ? { accepted_kinds: ['document'] } : {}) }, outcomes: ['approved','changes_requested'], purpose: 'review', allowed_actions: ['collect-review'], inputs: [], ...(n === 2 ? { artifact: { identity: { org_namespace: 'demo', instance_id: 'instance-a', output_slot: 'output' }, submission_id: 'submission-a', revision: 1, kind: 'document', bytes_digest: digest, subject: { content_digest: digest } }, repository_resolution: null } : {}) };
   request = { format: `workflow-review-request-receipt@${n}`, request_id: 'request-a', scope, request_scope_digest: '1'.repeat(64), submission_bytes_base64: base64(exactBytes(documentText)), reconciliation_required: false, status: 'pending', signed: false, pending: true, receipt: null } as unknown as WorkflowReviewRequestReceipt;
   transport.request.mockImplementation(async (path: string, opts?: { body?: HumanReviewCommand }) => {
     if (path.endsWith('/human-receipts')) {
@@ -49,6 +51,7 @@ describe('U1–U7 mounted route → real provider → shipping typed clients, in
   it.each([1,2] as const)('U1/U2 uses generic labels and exact matching @%s findings command; individual receipt stays collecting', async n => {
     await setup(n); mount(); await ready();
     expect(screen.getByRole('heading', { name: 'Feasibility assessment' })).toBeInTheDocument();
+    expect(screen.getByText(n === 1 ? 'product-design · Version 1' : 'different-proposal · Version 1')).toBeInTheDocument();
     expect(document.querySelector('script:not([src])')).toBeNull();
     fireEvent.change(screen.getByLabelText('Your findings'), { target: { value: '意见\r\nCafe\u0301\n' } });
     await confirm('Request changes');
@@ -172,6 +175,12 @@ describe('U1–U7 mounted route → real provider → shipping typed clients, in
     const b = transport.request.mock.calls.find(([path]) => path.endsWith('/human-receipts'))![1].body;
     expect(b.format).toBe('workflow-human-review-command@3'); expect(b.expected_revision).toBe(2); expect(b.request_id).toBe('request-r2');
     expect(screen.getByText('Your receipt: receipt-r2')).toBeInTheDocument(); expect(screen.getByText('Waiting for remaining responses')).toBeInTheDocument();
+  });
+
+  it('U1/U4 refuses inconsistent public navigation pins before private handoff/request reads', async () => {
+    selection.instance_id = 'other-instance';
+    mount(); await screen.findByText('Review unavailable');
+    expect(transport.request.mock.calls.some(([path]) => path.includes('/handoffs/') || path.includes('/requests/'))).toBe(false);
   });
 
 });

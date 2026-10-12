@@ -2,7 +2,7 @@
 import type {
   AuthorHandoffReceipt, DocumentRevisionCommand, DocumentRevisionReceipt,
   HumanReviewCommand, HumanReviewReceipt, OwnerReviewSelection,
-  ReviewReceiptProjection, WorkflowActivationReceipt, WorkflowReviewRequestReceipt,
+  ReviewReceiptProjection, WorkflowActivationReceipt, WorkflowActivationRoleBinding, WorkflowReviewRequestReceipt,
 } from './api/types';
 
 export class ReviewIntegrityError extends Error {}
@@ -52,7 +52,9 @@ export interface ReviewDetail {
 /** All cross-object pins must agree before rendering any private bytes. */
 export async function validateDetail(detail: Omit<ReviewDetail, 'document' | 'findings'>): Promise<ReviewDetail> {
   const { slug, activation: a, selection: d, handoff: h, revision: rev, request: q, history } = detail;
-  if (d.format !== 'workflow-owner-review-selection@1' || d.activation_id !== a.activation_id || d.instance_id !== a.instance_id) fail();
+  if (d.format !== 'workflow-owner-review-selection@1' || d.activation_id !== a.activation_id || d.instance_id !== a.instance_id || typeof d.return.eligible !== 'boolean' ||
+      (d.original && (!tokenPattern.test(d.original.handoff_id) || (d.original.human_request_id !== null && !tokenPattern.test(d.original.human_request_id)))) ||
+      (d.successor && (!tokenPattern.test(d.successor.revision_operation_id) || (d.successor.human_request_id !== null && !tokenPattern.test(d.successor.human_request_id))))) fail();
   if (h && (h.core.handoff_id !== d.original?.handoff_id || h.core.instance_id !== a.instance_id || h.core.revision !== 1 ||
       (h.current.graph && h.current.graph.submission_id !== h.core.reserved_submission_id))) fail();
   if (rev && (rev.format !== 'workflow-document-revision-receipt@1' || rev.core.revision_operation_id !== d.successor?.revision_operation_id ||
@@ -61,6 +63,8 @@ export async function validateDetail(detail: Omit<ReviewDetail, 'document' | 'fi
       rev.core.predecessor_round_id !== h?.current.graph?.round_id)) fail();
   if (!q) return { ...detail, document: null, findings: null };
   const s = q.scope, n = family(q);
+  const binding = (a.bindings as Record<string, WorkflowActivationRoleBinding>)[s.role];
+  if (!binding || binding.kind !== 'human' || binding.principal !== s.principal || binding.team !== s.team) fail();
   const original = history || !d.successor;
   const id = original ? d.original?.human_request_id : d.successor?.human_request_id;
   const graph = original ? h?.current.graph : rev?.current.graph;
