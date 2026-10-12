@@ -797,7 +797,11 @@ The navigation container uses `min-h-0` to permit flex shrinking and `relative`
 to contain the collapsed rail's absolutely positioned accessible labels.
 Internal padding and scroll padding reserve room for keyboard focus rings.
 Routed page content scrolls separately in its own container (for example,
-`ContentWrap`), inside the shell's `overflow-hidden` main area.
+`ContentWrap`), inside the shell's `overflow-hidden` main area. An overflow
+container does not contain absolutely positioned descendants, so visually
+hidden (`sr-only`) text inside page content needs a positioned ancestor within
+that scroller (Usage sections are `relative`); otherwise it extends the document
+and the window scrolls the whole shell, leaving a blank band below it.
 
 `Sidebar.test.tsx` covers navigation/footer behavior and the overflow structure;
 jsdom does not verify layout. For browser verification, use the supported

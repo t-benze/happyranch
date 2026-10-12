@@ -109,7 +109,9 @@ export function UsageSection({
 }: SectionProps): JSX.Element {
   const headingId = `${id}-heading`;
   return (
-    <section aria-labelledby={headingId} className="mb-7">
+    // `relative` contains the absolutely positioned sr-only status below, so it
+    // cannot escape ContentWrap's scroller and make the whole window scroll.
+    <section aria-labelledby={headingId} className="relative mb-7">
       <h2 id={headingId} className="font-display text-display text-text-primary">
         {title}
       </h2>
