@@ -2,7 +2,7 @@
 local_daemon_bearer).
 
 The connector reads the daemon bearer only at the final hop. Missing,
-unreadable, empty, or loosely-permissioned token files fail closed. The
+unreadable, empty, or unsafe-permissioned token files fail closed. The
 bearer never appears in remote input/output, logs, diagnostics, exceptions,
 process arguments, fixtures, or any non-loopback hop.
 """
@@ -67,10 +67,13 @@ class SystemdCredentialProvider:
 
     Least-privilege posture (THR-097 phase unit 3): the connector service user
     never needs direct read access to the daemon home — systemd copies the
-    daemon token file into a 0600 runtime directory at unit start and the
-    service reads only that copy. Fails closed exactly like the file provider
-    when the credential is missing, unreadable, empty, loosely permissioned,
-    or a symlink.
+    daemon token into service-scoped read-only staging at unit start and the
+    service reads only that copy. Refuse every write bit (``mode & 0o222``),
+    allowing systemd read-only ACL staging such as ``0400``/``0440``. Mode
+    alone does not establish ACL membership or custody. Missing, unreadable,
+    empty, non-file or final-symlink credentials still refuse. This provider
+    does not add a UID check; the generated service capability preflight owns
+    exact staged-path and service-observable read-only validation.
     """
 
     CREDENTIAL_NAME = "daemon.token"
@@ -96,7 +99,9 @@ class SystemdCredentialProvider:
             mode = stat.S_IMODE(path.stat().st_mode)
         except OSError as exc:
             raise CredentialUnavailable("daemon credential unreadable") from exc
-        if mode & 0o077:
+        # THR228seq428: systemd read ACLs may occupy stat group-mask bits.
+        # Unlike the sidecar staged0022 mask, also refuse owner writes.
+        if mode & 0o222:
             raise CredentialUnavailable("daemon credential permissions too loose")
         try:
             token = path.read_text(encoding="utf-8").strip()

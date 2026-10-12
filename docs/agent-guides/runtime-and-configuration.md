@@ -1127,9 +1127,56 @@ These are acceptance deadlines, not a hard wall-clock limit on contextless initi
 
 **Bounded N3 system-manager preflight (THR-228 seq409).** Before the execution ledger or product work, one owned `systemctl is-system-running --wait` query has a 120-second absolute observation deadline, including complete stdout, exit and final validation. Pinned upstream systemd v255 waits while initializing/starting, returns running with status 0 and degraded with status 1; only those exact LF-terminated byte/status pairs qualify. No decoding or whitespace/NUL normalization can admit malformed output. At most 32 bytes plus one overflow sentinel are held in memory; stderr is discarded. Timeout, unavailable/query failure, unknown, malformed/unexpected or contradictory output and nonready states refuse. Timeout/refusal/cancellation kills an unfinished query and reserves at most one additional second to confirm reaping; an unconfirmed reap refuses. Catchable shell HUP/INT/TERM before the child wait completes forwards TERM to the owned preflight and confirms cleanup; after a completed wait the handler exits synchronously, including the final flag-decision/trap-removal window. Both paths preserve exit 129/130/143 and fixed cancellation evidence (best effort if writing fails); traps are removed before subsequent harness work. Before the later cleanup trap exists, `system-manager-preflight.txt` in the existing always-uploaded diagnostics retains only fixed finite state/reason tokens and the observed numeric query status (or `not_observed`), alongside the unchanged bootstrap subject. Shell cancellation additionally retains fixed `shell_reason=cancelled` and its original numeric signal exit, including cancellation after the query has already completed. Failure retains exit 1 and the original fixed system-manager-unavailable message; no raw query bytes or stderr are persisted. This fits inside the existing 20-minute hosted job and adds no system-manager repair or privilege/provisioning. The prior run38180885346/attempt1 failed without state evidence; early boot remains a hypothesis. Readiness, timeout/cancellation, red/green, mutation and repetition behavior remain unexecuted/suspended; this document is no executable proof.
 
+**SYSTEMD staged credential compatibility and mode capture (THR-228 seq428).**
+The connector selects SYSTEMD from nonempty `CREDENTIALS_DIRECTORY`, then
+configured `credentials_directory`, then the ordinary File provider. Generated
+`LoadCredential=daemon.token` and the unchanged `credential-capability`
+ExecStartPre own exact staged-directory, component-symlink, regular-file and
+service-observable read-only checks. SYSTEMD `read_bearer` now refuses every
+owner/group/other write bit (`mode & 0o222`), admitting read-only staging such
+as `0400` and systemd ACL-mask `0440`. Its missing/unreadable/empty/non-file and
+final-symlink refusals remain; this provider has no UID check. The ordinary
+File provider retains `0077` refusal. Sidecar staged input retains its narrower
+`0022` mask, which does **not** reject owner writes; its ordinary input retains
+exact `0600` and current ownership. No sidecar policy change follows.
+
+Pinned [systemd v255 write_credential](https://github.com/systemd/systemd/blob/v255/src/core/exec-credential.c#L150-L199)
+removes writes and adds service-user read ACL permission; ownership fallback
+requires the documented read-only remount capability. This supports ACL-mask
+compatibility, not blanket privacy for arbitrary `0440` files or the historical
+failure diagnosis. The previous run has no staged-mode or internal-gate evidence.
+
+The two failure-only snapshots add `connector.credential_mode`, containing only
+fixed location `systemd-daemon-token`, namespace `connector-service-root`,
+four-digit numeric octal mode, microsecond observation time and a closed loss.
+The existing original-MainPID worker uses metadata only through
+`/proc/PID/root/run/credentials/happyranch-connector.service/daemon.token`, never
+opens/reads the token. Root/mount view, file metadata and original process
+identity are checked for ordinary drift. Both complete process samples must
+agree apart from observation times; the enclosing boot/invocation/MainPID and
+process-start binding applies. No raw ACL, UID or path is serialized. Missing
+root/staging view is `unavailable_namespace`; missing final location is
+`unavailable_location`, not proof of credential absence from the running
+service. `unsafe_type`, query/launch/parse error, timeout, truncation and
+attribution loss keep mode/time null. Mode alone establishes neither service
+readability nor the last evaluated credential gate. All five internal gates
+remain null/`unavailable_internal`, and original listener attribution remains.
+
+Metadata shares the existing two-second process samples and 11-second section,
+13-second command, one-second kill grace and 4096-byte output reservation;
+there is no new section, budget, process connector, readiness API, privilege or
+sandbox grant. Late/lost capture preserves the initiating exit and all cleanup
+attempts. [Finite four-answer cases](../operations/managed-remote-access-staged-credential-cases.md)
+are SOURCE ONLY: behavior/red-green/mutation/repetition/executable QA remain
+UNEXECUTED/SUSPENDED, Python units RETIRED, general integration SKIPPED243seq42.
+Seq428 allocation remains manager-owned0/1 until the one nonforce PR800 update
+from published `8c34a6ad28fa1e9fc3892d6acc2313b11a641c85`; both CI guards retain
+all other repository/ref/event/attempt1/pre-build fences. Ordinary PR/main
+checks remain lint/static only and Product E2E daily-only19UTC.
+
 **Original connector observation (THR-228 seq421).** The two failure-only snapshots reserve a separate 13-second command allowance plus one-second kill grace for `connector`, after the existing sidecar-first channels and before teardown. The helper admits four observations under one 11-second section: named unit properties (one second), original process tree (two seconds), repeated unit properties (one second), repeated process tree (two seconds), each with at most one second for owned group termination/reaping. Reads and iterations are capped: 4096-byte unit output, 128 threads per process, at most eight descendants/four levels, 512 descriptors per process, 262144-byte TCP table per process, 2048-byte process projection and 4096-byte retained section. Boot, invocation, MainPID, process start ticks, parent relations and exact unit cgroup bind the existing Go supervisor and its actual descendants, including the onefile launcher's Python worker. Repeated process, child and socket sets must agree. Only a matching owned socket inode in LISTEN at the harness-configured literal `127.0.0.1:18443` yields `listening=true`, its actual `listener_pid` and `bound_port=18443`; a complete stable scan without it yields false/null. This is sampled process-attributed listening evidence, not atomic readiness or a hard bound on kernel filesystem stalls. Missing MainPID is `failed` for a failed unit, otherwise `absent`; unavailable child/process, query/launch/parse failure, attribution loss, timeout and truncation remain explicit, with null listening and binding. Unknown StatusText is reduced to `unclassified`; raw logs, tokens, identities, argv, paths, requests, trust state and credentials are never retained. Systemd's fixed aggregate `composite healthy`, stopping and exited statuses are observations, not gate-level cause. All five original-instance readiness gates are `ok=null/loss=unavailable_internal`: the existing private child health pipe publishes only aggregate states. The separate `diagnose` CLI constructs a new supervisor, readiness evaluation and adapter; it is never called or labeled original process state. No new inspection API, listener or initialization is added. Evidence failure neither admits readiness nor changes the initiating exit or remaining cleanup attempts. Collector cases are source specifications with executable coverage unavailable after Python-unit retirement; no behavioral PASS follows.
 
-**Single N3 publication selection (THR-228 seq421).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=95fdf24416a104f629d0d339ea04e214c89c697a`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. This local candidate spends no allocation; the manager owns one publication after fresh independent full review and scoped QA, then the actual run/result before any further repair or rerun. Seq402 and seq409 remain exhausted (1/1 each); seq421 remains unspent (0/1) until the manager publication.
+**Single N3 publication selection (THR-228 seq428).** The PR800 candidate integrates current-main lint-only `Source Boundary Lint` and `Web Lint (Node 24)` plus the existing Managed N3 package/harness/evidence job. N3 selects only a `pull_request` `synchronize` for PR800 on same-repository `task/TASK-6475` targeting main, with payload `before=8c34a6ad28fa1e9fc3892d6acc2313b11a641c85`, changed `after` equal to the event head, and `run_attempt=1`. Checkout and proof subject use that `after` SHA. Other PRs, opening/reopening, subsequent updates, main pushes, manual runs and reruns cannot renew this allocation. Current-main hooks/local `all` remain lint/static only; no general build/test lane is restored. Product E2E remains daily-only 19:00 UTC from default branch. This local candidate spends no allocation; the manager owns one publication after fresh independent full review and scoped QA, then the actual run/result before any further repair or rerun. Seq402, seq409 and seq421 remain exhausted (1/1 each), with all historical failures preserved; seq428 remains unspent (0/1) until the manager publication.
 
 ## THR299 compatible reconciliation installation
 

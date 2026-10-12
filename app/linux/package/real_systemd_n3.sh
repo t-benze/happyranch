@@ -571,9 +571,10 @@ capture_headscale_fixture() {
 }
 capture_connector_instance() {
   # Own a reserved section, independent of sidecar/Headscale caps. Read only
-  # the original unit/process tree; never run the product diagnose CLI.
+  # the original unit/process tree and staged-file numeric mode in its root
+  # view. Existing budgets/privilege boundary stay fixed; no token reads.
   local safe_file status=0 restore_errexit=0 loss=launch_failure
-  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{"daemon_loopback":{"ok":null,"loss":"unavailable_internal"},"credential_permissions":{"ok":null,"loss":"unavailable_internal"},"current_policy":{"ok":null,"loss":"unavailable_internal"},"bind_identity":{"ok":null,"loss":"unavailable_internal"},"trust_state":{"ok":null,"loss":"unavailable_internal"}}}'
+  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{"daemon_loopback":{"ok":null,"loss":"unavailable_internal"},"credential_permissions":{"ok":null,"loss":"unavailable_internal"},"current_policy":{"ok":null,"loss":"unavailable_internal"},"bind_identity":{"ok":null,"loss":"unavailable_internal"},"trust_state":{"ok":null,"loss":"unavailable_internal"}}}'
   case "$-" in *e*) restore_errexit=1 ;; esac
   safe_file="$(mktemp "$diagnostics/.n3-connector-safe.XXXXXX")" || return 0
   set +e
@@ -589,7 +590,7 @@ capture_connector_instance() {
     elif (( status != 0 )); then loss=query_error
     else loss=parse_loss
     fi
-    connector_observation="${connector_observation/\"loss\":\"unattempted\"/\"loss\":\"$loss\"}"
+    connector_observation="${connector_observation//\"loss\":\"unattempted\"/\"loss\":\"$loss\"}"
   fi
   rm -f "$safe_file"
 }
@@ -626,7 +627,7 @@ capture_failure_snapshot() {
   capture_completed_jobs
   begin_observation_section 8 8192
   capture_diagnostic_receipts
-  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{}}'
+  connector_observation='{"unit":"happyranch-connector.service","binding":null,"listening":null,"bound_port":null,"status":"unavailable","loss":"unattempted","credential_mode":{"location":"systemd-daemon-token","namespace":"connector-service-root","mode":null,"observed_at_us":null,"loss":"unattempted"},"collection":{"observation_budget_seconds":11,"command_budget_seconds":13,"kill_grace_seconds":1,"output_cap_bytes":4096},"readiness_gates":{}}'
   headscale_observation='{"process_state":"unknown","log":{"events":[],"losses":["unattempted"]},"nodes":{"peer":{"count":null,"state":"unknown"},"sidecar":{"count":null,"state":"unknown"},"losses":["unattempted"]}}'
   if [[ "$name" == first-positive-start-failure || "$name" == failure-before-teardown ]]; then
     capture_connector_instance

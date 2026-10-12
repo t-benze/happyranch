@@ -512,9 +512,78 @@ CONNECTOR_STATUS = {
 }
 
 
+CREDENTIAL_MODE_LOSSES = frozenset({
+    "observed", "unattempted", "unavailable_namespace", "unavailable_location",
+    "query_error", "unsafe_type", "attribution_loss", "timeout", "truncated",
+    "parse_loss", "launch_failure", "unavailable_process", "unavailable_child", "absent", "failed",
+})
+
+
+def _credential_mode_unknown(loss: str) -> dict[str, Any]:
+    return {"location": "systemd-daemon-token", "namespace": "connector-service-root",
+            "mode": None, "observed_at_us": None, "loss": loss}
+
+
+def _connector_credential_mode(pid: int) -> dict[str, Any]:
+    """Metadata only in the existing MainPID's root view, never token reads.
+
+    A missing namespace/location is unavailable, not host-path absence proof.
+    No ACL membership, service readability or internal gate is inferred.
+    """
+    root = Path(f"/proc/{pid}/root")
+    namespace = Path(f"/proc/{pid}/ns/mnt")
+    directory = root / "run/credentials" / CONNECTOR_UNIT
+    path = directory / "daemon.token"
+    try:
+        mount_identity = namespace.stat()
+        if not root.is_dir():
+            return _credential_mode_unknown("unavailable_namespace")
+        directory_metadata = directory.lstat()
+        if not stat.S_ISDIR(directory_metadata.st_mode):
+            return _credential_mode_unknown("unsafe_type")
+    except FileNotFoundError:
+        return _credential_mode_unknown("unavailable_namespace")
+    except OSError:
+        return _credential_mode_unknown("query_error")
+    try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            return _credential_mode_unknown("unsafe_type")
+        observed_at_us = time.time_ns() // 1000
+        # Detect ordinary namespace/file drift without serializing identities.
+        confirmed = path.lstat()
+        mount_confirmed = namespace.stat()
+        if (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_ctime_ns) != (
+            confirmed.st_dev, confirmed.st_ino, confirmed.st_mode, confirmed.st_ctime_ns
+        ) or (mount_identity.st_dev, mount_identity.st_ino) != (mount_confirmed.st_dev, mount_confirmed.st_ino):
+            return _credential_mode_unknown("attribution_loss")
+        result = _credential_mode_unknown("observed")
+        result.update(mode=f"{stat.S_IMODE(metadata.st_mode):04o}", observed_at_us=observed_at_us)
+        return result
+    except FileNotFoundError:
+        return _credential_mode_unknown("unavailable_location")
+    except OSError:
+        return _credential_mode_unknown("query_error")
+
+
+def _credential_mode_sample(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != {"location", "namespace", "mode", "observed_at_us", "loss"}:
+        raise ValueError
+    if value["location"] != "systemd-daemon-token" or value["namespace"] != "connector-service-root" or value["loss"] not in CREDENTIAL_MODE_LOSSES:
+        raise ValueError
+    if value["loss"] == "observed":
+        if not isinstance(value["mode"], str) or re.fullmatch(r"[0-7]{4}", value["mode"]) is None:
+            raise ValueError
+        if type(value["observed_at_us"]) is not int or not 0 < value["observed_at_us"] < 10**18:
+            raise ValueError
+    elif value["mode"] is not None or value["observed_at_us"] is not None:
+        raise ValueError
+
+
 def _connector_unknown(loss: str) -> dict[str, Any]:
     return {"unit": CONNECTOR_UNIT, "binding": None, "listening": None, "bound_port": None,
             "status": "unavailable", "loss": loss,
+            "credential_mode": _credential_mode_unknown(loss if loss in CREDENTIAL_MODE_LOSSES else "unattempted"),
             "collection": {"observation_budget_seconds": 11, "command_budget_seconds": 13, "kill_grace_seconds": 1, "output_cap_bytes": 4096},
             "readiness_gates": {name: {"ok": None, "loss": "unavailable_internal"} for name in CONNECTOR_GATES}}
 
@@ -610,6 +679,7 @@ def _connector_process(pid: int) -> dict[str, Any]:
 
         boot = boot_id()
         identities = {pid: _proc_identity(pid)}
+        credential_mode = _connector_credential_mode(pid)
         child_sets: dict[int, set[int]] = {}
         pending = [(pid, 0)]
         while pending:
@@ -652,6 +722,7 @@ def _connector_process(pid: int) -> dict[str, Any]:
         listening = bool(listener_pids)
         return {"loss": "observed", "boot_id": boot, "main_pid": pid,
                 "processes": [{"pid": owner, "parent_pid": identity[0], "start_ticks": identity[1]} for owner, identity in sorted(identities.items())],
+                "credential_mode": credential_mode,
                 "listener_pid": listener_pids[0] if listening else None,
                 "listening": listening, "bound_port": 18443 if listening else None}
     except OverflowError:
@@ -671,10 +742,11 @@ def _connector_process_sample(raw: bytes, pid: int) -> dict[str, Any]:
         raise ValueError
     if set(process) == {"loss"} and process["loss"] in {"truncated", "unavailable_process", "unavailable_child", "attribution_loss", "parse_loss", "query_error"}:
         return process
-    if set(process) != {"loss", "boot_id", "main_pid", "processes", "listener_pid", "listening", "bound_port"}:
+    if set(process) != {"loss", "boot_id", "main_pid", "processes", "listener_pid", "listening", "bound_port", "credential_mode"}:
         raise ValueError
     if process["loss"] != "observed" or not isinstance(process["boot_id"], str) or _compact_hex(process["boot_id"], size=32) != process["boot_id"] or type(process["listening"]) is not bool:
         raise ValueError
+    _credential_mode_sample(process["credential_mode"])
     rows = process["processes"]
     if not isinstance(rows, list) or not 2 <= len(rows) <= 9:
         raise ValueError
@@ -744,7 +816,14 @@ def capture_connector() -> dict[str, Any]:
         confirmed = _connector_process_sample(repeated, pid)
         if confirmed["loss"] != "observed":
             return _connector_unknown(confirmed["loss"])
-        if confirmed != process:
+        # Observation times differ; every other closed field must agree.
+        if ({key: value for key, value in confirmed.items() if key != "credential_mode"} !=
+                {key: value for key, value in process.items() if key != "credential_mode"} or
+                {key: value for key, value in confirmed["credential_mode"].items() if key != "observed_at_us"} !=
+                {key: value for key, value in process["credential_mode"].items() if key != "observed_at_us"}):
+            return _connector_unknown("attribution_loss")
+        first_time, last_time = process["credential_mode"]["observed_at_us"], confirmed["credential_mode"]["observed_at_us"]
+        if first_time is not None and (last_time < first_time or last_time > time.time_ns() // 1000):
             return _connector_unknown("attribution_loss")
     except (UnicodeError, ValueError, TypeError, RecursionError):
         return _connector_unknown("parse_loss")
@@ -753,6 +832,7 @@ def capture_connector() -> dict[str, Any]:
     result = _connector_unknown("observed")
     result.update(binding={key: process[key] for key in ("boot_id", "main_pid", "processes", "listener_pid")},
                   listening=process["listening"], bound_port=process["bound_port"],
+                  credential_mode=process["credential_mode"],
                   status=CONNECTOR_STATUS.get(before["StatusText"], "unclassified"))
     result["binding"]["invocation_id"] = _compact_hex(before["InvocationID"], size=32)
     return result
