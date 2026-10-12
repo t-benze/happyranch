@@ -216,6 +216,10 @@ def finish_chain(c: Controller, root: str, manager: dict, worker: dict, reviewer
     c.finish("alpha", root)
     payloads.extend([review, final])
     snap = c.stores["alpha"].snapshot(root)
+    # Preserve sanitized diagnostic input even when a later closure assertion
+    # fails. Only the record below all assertions is validated closure evidence.
+    c.durable.append(dict(pause_chain_observation=dict(
+        root=root, prefix=prefix, validation="partial/unvalidated", snapshot=snap)))
     expected = {root: "case_manager", worker["task"]: "case_worker", reviewer["task"]: "code_reviewer"}
     require(len(snap["tasks"]) == 3 and {r["id"] for r in snap["tasks"]} == set(expected)
             and len(snap["results"]) == 4, "exact chain task/result closure", snap)
@@ -227,22 +231,46 @@ def finish_chain(c: Controller, root: str, manager: dict, worker: dict, reviewer
         require(task["current_session_id"] == next(p["session_id"] for p in reversed(payloads) if p["task_id"] == task["id"]),
                 "final actual session binding", task)
         require(task["orchestration_step_count"] == (2 if task["id"] == root else 1), "unchanged chain step count", task)
-    for p in payloads:
-        c.stores["alpha"].result(p)
+    results = [c.stores["alpha"].result(p) for p in payloads]
+    require(all(type(r["id"]) is int for r in results)
+            and len({r["id"] for r in results}) == 4
+            and results == snap["results"], "same genuine INTEGER results and snapshot contents", results)
     audits = {key: [r for r in snap["audit"] if r["action"] == key]
               for key in ("session_start", "session_end", "completion_report", "orchestration_step", "chain_auto_advance")}
     starts = [manager, worker, reviewer, continuation]
     for key in ("session_start", "session_end", "completion_report"):
         require(len(audits[key]) == 4, f"exact chain {key} count", audits[key])
-    require([s["session"] for s in starts] == [p["session_id"] for p in payloads], "real chain launch order")
+    require(len(payloads) == 4 and len({s["session"] for s in starts}) == 4
+            and [(s["task"], s["agent"], s["session"]) for s in starts]
+            == [(p["task_id"], p["agent"], p["session_id"]) for p in payloads], "real chain launch order/identity")
     for index, p in enumerate(payloads):
         a, b, d = (audits[key][index] for key in ("session_start", "session_end", "completion_report"))
         consumed = json.loads(d["payload"])
-        require(json.loads(a["payload"])["session_id"] == p["session_id"]
-                and consumed["session_id"] == p["session_id"] and consumed["agent"] == p["agent"]
-                and consumed["output_summary"] == p["summary"] and consumed.get("verdict") == p.get("verdict")
-                and a["task_id"] == b["task_id"] == d["task_id"] == p["task_id"] and a["id"] < b["id"] < d["id"],
-                "authentic start/end/consumption joins", (a, b, d))
+        result = results[index]
+        # CompletionReport is semantic evidence, without a session_id field.
+        # The unique callback result and session_start bind the actual SID.
+        require(json.loads(a["payload"])["session_id"] == result["session_id"] == p["session_id"]
+                and a["task_id"] == b["task_id"] == d["task_id"] == consumed["task_id"] == result["task_id"] == p["task_id"]
+                and a["agent"] == b["agent"] == d["agent"] == consumed["agent"] == result["agent"] == p["agent"]
+                and a["id"] < b["id"] < d["id"], "authentic start/end/result/consumption joins", (a, b, result, d))
+        require(consumed["status"] == result["status"] == p["status"] == "completed"
+                and consumed["confidence"] == result["confidence_score"] == p["confidence"]
+                and consumed["output_summary"] == result["output_summary"] == p["summary"]
+                and consumed["verdict"] == result["verdict"] == (p["verdict"] if index == 2 else None),
+                "exact consumed completion semantics", (result, consumed))
+        accepted_decision = json.loads(result["decision_json"]) if result["decision_json"] is not None else None
+        decision = consumed["decision"]
+        if index in (0, 3):
+            require(accepted_decision == p["decision"], "exact original manager decision", result)
+            # NextStep/ChainLeg model_dump adds nullable fields and empty lists.
+            # Compare every declared value and refuse any extra active value.
+            require({k: v for k, v in decision.items() if v is not None and k not in {"then", "children"}}
+                    == {k: v for k, v in accepted_decision.items() if k != "then"}
+                    and decision["children"] == []
+                    and [{k: v for k, v in leg.items() if v is not None} for leg in decision["then"]]
+                    == (accepted_decision["then"] if index == 0 else []), "exact consumed manager decision", consumed)
+        else:
+            require(accepted_decision is None and decision is None, "worker/reviewer has no manager decision", consumed)
     require([json.loads(a["payload"])["decision"]["action"] for a in audits["orchestration_step"]] == ["delegate", "done"],
             "two genuine manager decisions", audits)
     require(len(audits["chain_auto_advance"]) == 1, "one genuine chain advance", audits)
