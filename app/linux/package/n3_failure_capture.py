@@ -664,6 +664,38 @@ def _connector_process(pid: int) -> dict[str, Any]:
         return {"loss": "parse_loss"}
 
 
+def _connector_process_sample(raw: bytes, pid: int) -> dict[str, Any]:
+    """Validate each closed worker projection before retaining or comparing it."""
+    process = _closed_json(raw.decode("ascii"))
+    if not isinstance(process, dict):
+        raise ValueError
+    if set(process) == {"loss"} and process["loss"] in {"truncated", "unavailable_process", "unavailable_child", "attribution_loss", "parse_loss", "query_error"}:
+        return process
+    if set(process) != {"loss", "boot_id", "main_pid", "processes", "listener_pid", "listening", "bound_port"}:
+        raise ValueError
+    if process["loss"] != "observed" or not isinstance(process["boot_id"], str) or _compact_hex(process["boot_id"], size=32) != process["boot_id"] or type(process["listening"]) is not bool:
+        raise ValueError
+    rows = process["processes"]
+    if not isinstance(rows, list) or not 2 <= len(rows) <= 9:
+        raise ValueError
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"pid", "parent_pid", "start_ticks"} or any(type(value) is not int or value <= 0 for value in row.values()):
+            raise ValueError
+    pids = {row["pid"] for row in rows}
+    if len(pids) != len(rows) or pid not in pids or any(row["pid"] != pid and row["parent_pid"] not in pids for row in rows):
+        raise ValueError
+    if process["listening"]:
+        if type(process["listener_pid"]) is not int or process["listener_pid"] not in pids:
+            raise ValueError
+        if type(process["bound_port"]) is not int or process["bound_port"] != 18443:
+            raise ValueError
+    elif process["listener_pid"] is not None or process["bound_port"] is not None:
+        raise ValueError
+    if type(process["main_pid"]) is not int or process["main_pid"] != pid:
+        raise ValueError
+    return process
+
+
 def capture_connector() -> dict[str, Any]:
     # Four observations: 1s query, 2s process, 1s query, 2s process,
     # each with at most 1s group reaping, all within the reserved 11s section;
@@ -691,28 +723,9 @@ def capture_connector() -> dict[str, Any]:
     if loss != "observed":
         return _connector_unknown(loss)
     try:
-        process = _closed_json(raw.decode("ascii"))
-        if not isinstance(process, dict):
-            raise ValueError
-        if set(process) == {"loss"} and process["loss"] in {"truncated", "unavailable_process", "unavailable_child", "attribution_loss", "parse_loss", "query_error"}:
+        process = _connector_process_sample(raw, pid)
+        if process["loss"] != "observed":
             return _connector_unknown(process["loss"])
-        if set(process) != {"loss", "boot_id", "main_pid", "processes", "listener_pid", "listening", "bound_port"}:
-            raise ValueError
-        if process["loss"] != "observed" or _compact_hex(process["boot_id"], size=32) != process["boot_id"] or type(process["listening"]) is not bool:
-            raise ValueError
-        rows = process["processes"]
-        if not isinstance(rows, list) or not 2 <= len(rows) <= 9:
-            raise ValueError
-        for row in rows:
-            if not isinstance(row, dict) or set(row) != {"pid", "parent_pid", "start_ticks"} or any(type(value) is not int or value <= 0 for value in row.values()):
-                raise ValueError
-        pids = {row["pid"] for row in rows}
-        if len(pids) != len(rows) or pid not in pids or any(row["pid"] != pid and row["parent_pid"] not in pids for row in rows):
-            raise ValueError
-        if process["listening"] and (type(process["listener_pid"]) is not int or process["listener_pid"] not in pids) or not process["listening"] and process["listener_pid"] is not None:
-            raise ValueError
-        if type(process["main_pid"]) is not int or process["main_pid"] != pid or process["bound_port"] != (18443 if process["listening"] else None):
-            raise ValueError
     except (UnicodeError, ValueError, TypeError, RecursionError):
         return _connector_unknown("parse_loss")
     raw, loss = observe(query, 1, 4096)
@@ -728,7 +741,10 @@ def capture_connector() -> dict[str, Any]:
     if loss != "observed":
         return _connector_unknown(loss)
     try:
-        if _closed_json(repeated.decode("ascii")) != process:
+        confirmed = _connector_process_sample(repeated, pid)
+        if confirmed["loss"] != "observed":
+            return _connector_unknown(confirmed["loss"])
+        if confirmed != process:
             return _connector_unknown("attribution_loss")
     except (UnicodeError, ValueError, TypeError, RecursionError):
         return _connector_unknown("parse_loss")
